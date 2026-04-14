@@ -16,6 +16,9 @@
     // Suppress deprecation warnings until TS 7.0
     "ignoreDeprecations": "6.0",
     "resolveJsonModule": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    },
     "isolatedModules": true,
     "jsx": "preserve",
     "plugins": [
