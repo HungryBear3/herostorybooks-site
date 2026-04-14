@@ -40,7 +40,8 @@ export function FAQ() {
         <h2 className="text-[var(--forest)] text-3xl font-bold text-center mb-6">
           Questions?
         </h2>
-        <Accordion type="single" collapsible className="max-w-2xl mx-auto">
+        {/* Removed unsupported props from Accordion primitive */}
+        <Accordion className="max-w-2xl mx-auto">
           {faqs.map((item, idx) => (
             <AccordionItem key={idx} value={`item-${idx}`}> 
               <AccordionTrigger>{item.question}</AccordionTrigger>

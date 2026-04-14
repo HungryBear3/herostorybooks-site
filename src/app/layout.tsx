@@ -1,8 +1,8 @@
 import '../styles/globals.css';
-import { Geist } from "next/font/google";
+// Removed unsupported Geist font import
 import { cn } from "@/lib/utils";
 
-const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+// Removed unsupported Geist font setup
 
 export const metadata = {
   title: 'Hero Story Books',
@@ -11,7 +11,7 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={cn("font-sans", geist.variable)}>
+    <html lang="en" className="font-sans">
       <body className="bg-cream text-gray-900">{children}</body>
     </html>
   );
