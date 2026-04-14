@@ -12,7 +12,7 @@ Read `PRD.md` for full spec before touching any code.
 ## UI Component Strategy
 
 ### 21st.dev Magic Components (install when API key available)
-When `TWENTY_FIRST_API_KEY` is set in env, use 21st.dev for pre-built, polished components:
+**21st.dev key is LIVE** (`TWENTYFIRST_API_KEY` in env). Use 21st.dev for pre-built, polished components:
 - Accordion FAQ: `npx shadcn@latest add "https://21st.dev/r/accordion"`
 - Hero section: `npx shadcn@latest add "https://21st.dev/r/hero-section"`
 - Pricing cards: `npx shadcn@latest add "https://21st.dev/r/pricing"`
@@ -79,7 +79,7 @@ src/components/
 
 ## Environment Variables Needed
 ```
-TWENTY_FIRST_API_KEY=    ← pending (grab from 21st.dev/magic/console)
+TWENTYFIRST_API_KEY=    ← ✅ CONFIGURED (in ~/.zshrc and MCP server)
 HSB_STRIPE_SECRET_KEY=   ← pending (new product in Stripe dashboard)
 ```
 
