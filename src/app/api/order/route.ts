@@ -1,28 +1,22 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
 
 export async function POST(request: Request) {
-  const form = await request.formData();
-  const data: Record<string, any> = {};
-  for (const [key, value] of form.entries()) {
-    if (value instanceof File) {
-      const buffer = Buffer.from(await value.arrayBuffer());
-      const uploadDir = path.join(process.cwd(), 'uploads');
-      if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
-      const filePath = path.join(uploadDir, value.name);
-      fs.writeFileSync(filePath, buffer);
-      data[key] = filePath;
-    } else {
-      data[key] = value;
+  try {
+    const form = await request.formData();
+    const data: Record<string, string> = {};
+    for (const [key, value] of form.entries()) {
+      if (value instanceof File) {
+        // File uploads will be handled by a storage service (e.g. S3/Cloudinary) — skipped for now
+        data[key] = value.name;
+      } else {
+        data[key] = value as string;
+      }
     }
+    // TODO: persist order to database / send confirmation email
+    console.log('New order received:', data);
+    return NextResponse.redirect(new URL('/thank-you', request.url));
+  } catch (error) {
+    console.error('Order error:', error);
+    return NextResponse.json({ error: 'Order submission failed' }, { status: 500 });
   }
-  const ordersPath = path.join(process.cwd(), 'orders.json');
-  let orders = [];
-  if (fs.existsSync(ordersPath)) {
-    orders = JSON.parse(fs.readFileSync(ordersPath, 'utf-8'));
-  }
-  orders.push({ id: Date.now(), ...data });
-  fs.writeFileSync(ordersPath, JSON.stringify(orders, null, 2));
-  return NextResponse.redirect(new URL('/thank-you', request.url));
 }
