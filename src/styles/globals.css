@@ -83,6 +83,12 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
+    /* Custom brand colors */
+    --cream: #FDF8F4;
+    --forest: #2D5016;
+    --gold: #D4A017;
+    --purple: #5B4A8A;
+    --peach: #E8A87C;
 }
 
 .dark {
@@ -124,9 +130,19 @@
     @apply border-border outline-ring/50;
     }
   body {
-    @apply bg-background text-foreground;
-    }
+    /* Override body background and font */
+    background-color: var(--cream);
+    font-family: system-ui, sans-serif;
+  }
   html {
+    /* Smooth scrolling */
+    scroll-behavior: smooth;
     @apply font-sans;
-    }
+  }
+}
+/* Utility class for serif font */
+@layer utilities {
+  .font-serif {
+    font-family: Georgia, serif;
+  }
 }
