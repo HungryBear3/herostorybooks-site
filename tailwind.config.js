@@ -7,10 +7,16 @@ module.exports = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        serif: ['Playfair Display', 'Georgia', 'serif'],
+      },
       colors: {
         purple: '#5B4A8A',
         peach: '#E8A87C',
-        cream: '#FDF8F4'
+        cream: '#FDF8F4',
+        lavender: '#F0EDF8',
+        'deep-gold': '#C9A227',
+        forest: '#2D5016'
       }
     }
   },

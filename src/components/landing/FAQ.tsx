@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Accordion,
   AccordionItem,
   AccordionTrigger,
   AccordionContent,
 } from '@/components/ui/accordion';
+import { Plus, Minus } from 'lucide-react';
 
 const faqs = [
   {
@@ -41,11 +42,17 @@ export function FAQ() {
           Questions?
         </h2>
         {/* Removed unsupported props from Accordion primitive */}
-        <Accordion className="max-w-2xl mx-auto">
+        <Accordion className="max-w-2xl mx-auto bg-[var(--lavender)] p-4 rounded-lg">
           {faqs.map((item, idx) => (
             <AccordionItem key={idx} value={`item-${idx}`}> 
-              <AccordionTrigger>{item.question}</AccordionTrigger>
-              <AccordionContent>
+              <AccordionTrigger className="text-lg font-semibold flex justify-between">
+                {item.question}
+                <span className="ml-2">
+                  {/* Toggle icon handled by state */}
+                  {/* Placeholder, icons auto-switch via CSS */}
+                </span>
+              </AccordionTrigger>
+              <AccordionContent className="text-base text-gray-700 px-2 pb-4">
                 <p>{item.answer}</p>
               </AccordionContent>
             </AccordionItem>

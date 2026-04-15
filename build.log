@@ -1,0 +1,46 @@
+
+> site@1.0.0 build
+> next build
+
+  ▲ Next.js 14.2.35
+  - Environments: .env.local
+
+   Creating an optimized production build ...
+Found 1 warning while optimizing generated CSS:
+
+[2m│   --radius-md: calc(var(--radius) * 0.8);[22m
+[2m│ }[22m
+[2m│[22m @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&display=swap');
+[2m┆[22m        [33m[2m^--[22m @import rules must precede all rules aside from @charset and @layer statements[39m
+[2m┆[22m
+[2m│ .pointer-events-none {[22m
+[2m│   pointer-events: none;[22m
+
+ ✓ Compiled successfully
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/9) ...
+   Generating static pages (2/9) 
+   Generating static pages (4/9) 
+   Generating static pages (6/9) 
+ ✓ Generating static pages (9/9)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                              Size     First Load JS
+┌ ○ /                                    19.3 kB         166 kB
+├ ○ /_not-found                          875 B          88.2 kB
+├ ƒ /api/checkout                        0 B                0 B
+├ ƒ /api/order                           0 B                0 B
+├ ○ /checkout                            2.92 kB         149 kB
+├ ○ /order                               945 B          88.3 kB
+└ ○ /thank-you                           137 B          87.5 kB
++ First Load JS shared by all            87.3 kB
+  ├ chunks/117-41d56f7932bf74ff.js       31.7 kB
+  ├ chunks/fd9d1056-0c6b652873f16624.js  53.7 kB
+  └ other shared chunks (total)          1.94 kB
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

@@ -1,5 +1,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+/* Import Playfair Display for headings */
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&display=swap');
 
 @tailwind base;
 
@@ -8,7 +10,7 @@
 @tailwind utilities;
 
 @theme inline {
-    --font-heading: var(--font-sans);
+    --font-heading: 'Playfair Display', serif;
     --font-sans: var(--font-sans);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
@@ -89,6 +91,10 @@
     --gold: #D4A017;
     --purple: #5B4A8A;
     --peach: #E8A87C;
+    /* New brand colors */
+    --lavender: #F0EDF8;
+    --deep-gold: #C9A227;
+    --gradient: linear-gradient(135deg, #FFFDF7 0%, #FFF3E8 100%);
 }
 
 .dark {
@@ -139,10 +145,30 @@
     scroll-behavior: smooth;
     @apply font-sans;
   }
+  /* Use serif font for headings */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+  }
 }
 /* Utility class for serif font */
 @layer utilities {
   .font-serif {
     font-family: Georgia, serif;
   }
+  /* Sparkle particle utility */
+  .sparkle {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background-color: white;
+    border-radius: 50%;
+    opacity: 0;
+    animation: sparkle 0.5s ease-in-out infinite;
+  }
+}
+
+@keyframes sparkle {
+  0% { opacity: 0; transform: scale(0.5); }
+  50% { opacity: 1; transform: scale(1.5); }
+  100% { opacity: 0; transform: scale(0.5); }
 }
