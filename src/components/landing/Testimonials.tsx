@@ -1,6 +1,7 @@
 "use client";
 import React from 'react';
 import { motion } from 'framer-motion';
+import Image from 'next/image';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 20 },
@@ -39,8 +40,8 @@ export function Testimonials() {
               variants={fadeUp}
               className="bg-white p-6 rounded-lg shadow-md text-center"
             >
-              <div className="w-16 h-16 mx-auto mb-4">
-                <img src={t.avatar} alt={t.name} className="w-full h-full rounded-full object-cover" />
+              <div className="w-16 h-16 mx-auto mb-4 relative">
+                <Image src={t.avatar} alt={t.name} fill className="rounded-full object-cover" />
               </div>
               <p className="text-gray-700 italic mb-4">“{t.text}”</p>
               <div className="font-semibold text-forest">{t.name}</div>
