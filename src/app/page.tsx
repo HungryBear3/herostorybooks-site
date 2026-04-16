@@ -1,10 +1,11 @@
 'use client';
 import React from 'react';
-import { Hero } from '@/components/landing/Hero';
 import { MothersDayBanner } from '@/components/landing/MothersDayBanner';
-import { ValueProposition } from '@/components/landing/ValueProposition';
+import { Navbar } from '@/components/landing/Navbar';
+import { Hero } from '@/components/landing/Hero';
 import { HowItWorks } from '@/components/landing/HowItWorks';
 import { FeaturedBooks } from '@/components/landing/FeaturedBooks';
+import { ValueProposition } from '@/components/landing/ValueProposition';
 import { Testimonials } from '@/components/landing/Testimonials';
 import { Pricing } from '@/components/landing/Pricing';
 import { TrustBadges } from '@/components/landing/TrustBadges';
@@ -17,14 +18,23 @@ export default function HomePage() {
   return (
     <main className="w-full">
       <MothersDayBanner />
+      <Navbar />
       <Hero />
+      <div id="how-it-works">
+        <HowItWorks />
+      </div>
+      <div id="samples">
+        <FeaturedBooks />
+      </div>
       <ValueProposition />
-      <HowItWorks />
-      <FeaturedBooks />
       <Testimonials />
-      <Pricing />
+      <div id="pricing">
+        <Pricing />
+      </div>
       <TrustBadges />
-      <FAQ />
+      <div id="faq">
+        <FAQ />
+      </div>
       <Footer />
     </main>
   );

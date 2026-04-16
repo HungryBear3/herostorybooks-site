@@ -4,89 +4,117 @@ import { motion } from 'framer-motion';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 30 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.6 } },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0, 0, 0.2, 1] as const } },
 };
 
 const steps = [
   {
-    icon: '📖',
     number: 1,
-    title: 'Choose Your Book',
-    description: 'Browse our collection of beautifully illustrated storybooks'
+    icon: '📸',
+    title: 'Upload a Photo',
+    description: 'Share a clear photo of your child. Our AI uses it to create illustrations that look just like them.',
   },
   {
-    icon: '✏️',
     number: 2,
-    title: 'Add Your Child\'s Details',
-    description: 'Personalize with your child\'s name, photo, and favorite details'
+    icon: '✨',
+    title: 'AI Creates Your Story',
+    description: 'Our AI weaves a personalized tale featuring your child as the hero, with their name on every page.',
   },
   {
-    icon: '📦',
     number: 3,
-    title: 'Preview & Order',
-    description: 'Review your magical book and order your hardcover or digital copy'
-  }
+    icon: '🎨',
+    title: 'We Print & Bind',
+    description: 'Your book is professionally printed on premium paper with museum-quality binding.',
+  },
+  {
+    number: 4,
+    icon: '📦',
+    title: 'You Receive a Keepsake',
+    description: 'Your personalized storybook arrives at your door in a beautiful gift box, ready to treasure forever.',
+  },
 ];
 
 export function HowItWorks() {
   return (
-    <section id="how-it-works" className="w-full bg-white py-20 px-4">
+    <section className="w-full py-20 px-4" style={{ backgroundColor: '#F5F1E8' }}>
       <div className="container mx-auto">
+        {/* Section Header */}
         <motion.div
           initial="hidden"
           whileInView="visible"
           viewport={{ once: true }}
-          className="mb-16 text-center"
           variants={fadeUp}
+          className="text-center mb-16"
         >
-          <h2 className="font-serif text-4xl md:text-5xl text-forest mb-4">
+          <h2 className="font-serif text-4xl md:text-5xl mb-4" style={{ color: '#1F3A5F' }}>
             How It Works
           </h2>
-          <p className="text-gray-700 text-lg max-w-2xl mx-auto">
-            Create your child's personalized story in three simple steps
+          <p className="text-gray-600 text-lg max-w-2xl mx-auto">
+            Creating your personalized storybook is simple — ready in just a few minutes
           </p>
         </motion.div>
 
+        {/* Steps */}
         <motion.div
-          className="grid grid-cols-1 md:grid-cols-3 gap-8 relative"
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 relative"
           initial="hidden"
           whileInView="visible"
           viewport={{ once: true }}
           variants={{ visible: { transition: { staggerChildren: 0.15 } } }}
         >
-          {/* Connecting line (desktop only) */}
-          <div className="hidden md:block absolute top-16 left-0 right-0 h-1 bg-gradient-to-r from-deep-gold via-deep-gold to-transparent -z-10" />
-
           {steps.map((step, idx) => (
             <motion.div
               key={idx}
               variants={fadeUp}
-              className="relative"
+              className="relative flex flex-col items-center text-center"
             >
-              {/* Step card */}
-              <div className="bg-white border-2 border-lavender rounded-xl p-8 text-center hover:border-deep-gold transition-colors duration-300 h-full flex flex-col justify-between">
-                {/* Step number badge */}
-                <div className="flex justify-center mb-6">
-                  <div className="w-16 h-16 rounded-full bg-deep-gold text-white flex items-center justify-center text-3xl font-serif font-bold">
-                    {step.number}
-                  </div>
-                </div>
+              {/* Connector line (desktop, between cards) */}
+              {idx < steps.length - 1 && (
+                <div
+                  className="hidden lg:block absolute top-8 left-[calc(50%+2rem)] w-[calc(100%-2rem)] h-0.5"
+                  style={{ backgroundColor: 'rgba(212,175,55,0.4)' }}
+                />
+              )}
 
-                {/* Icon */}
-                <div className="text-5xl mb-4">{step.icon}</div>
+              {/* Number circle */}
+              <div
+                className="w-16 h-16 rounded-full flex items-center justify-center text-white font-serif text-2xl font-bold mb-4 shadow-lg"
+                style={{ backgroundColor: '#1F3A5F' }}
+              >
+                {step.number}
+              </div>
 
-                {/* Content */}
-                <div>
-                  <h3 className="font-serif text-2xl text-forest mb-3">
-                    {step.title}
-                  </h3>
-                  <p className="text-gray-600 text-sm leading-relaxed">
-                    {step.description}
-                  </p>
-                </div>
+              {/* Icon */}
+              <div className="text-5xl mb-4">{step.icon}</div>
+
+              {/* Content */}
+              <div className="bg-white rounded-xl p-6 shadow-sm w-full">
+                <h3 className="font-serif text-xl mb-2" style={{ color: '#1F3A5F' }}>
+                  {step.title}
+                </h3>
+                <p className="text-gray-600 text-sm leading-relaxed">
+                  {step.description}
+                </p>
               </div>
             </motion.div>
           ))}
+        </motion.div>
+
+        {/* CTA */}
+        <motion.div
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true }}
+          variants={fadeUp}
+          className="text-center mt-14"
+        >
+          <a
+            href="/order"
+            className="inline-flex items-center justify-center px-10 py-4 rounded-xl font-semibold text-lg transition-all duration-300 hover:scale-105"
+            style={{ backgroundColor: '#D4AF37', color: '#1F3A5F', boxShadow: '0 4px 16px rgba(212,175,55,0.35)' }}
+          >
+            Start Your Story
+          </a>
         </motion.div>
       </div>
     </section>

@@ -2,148 +2,191 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import Link from 'next/link';
-import { Button } from '@/components/ui/button';
-import { Check } from 'lucide-react';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 30 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.6 } },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0, 0, 0.2, 1] as const } },
 };
 
 const plans = [
   {
-    title: 'Digital',
-    price: '$29',
-    priceDesc: 'one-time',
+    id: 'starter',
+    title: 'Starter',
+    price: '$29.99',
+    description: 'Digital PDF only',
     features: [
-      'PDF delivered in ~15 minutes',
+      'Personalized PDF storybook',
       'Read on any device',
       'Print at home',
-      'Standard illustrations'
+      'AI-generated illustrations',
+      'Delivered in ~15 minutes',
     ],
-    highlight: false,
-    cta: 'Get Digital Copy'
+    popular: false,
+    cta: 'Get Digital Copy',
   },
   {
-    title: 'Printed Hardcover',
-    price: '$49',
-    priceDesc: 'one-time',
+    id: 'classic',
+    title: 'Classic',
+    price: '$49.99',
+    description: 'Softcover printed book',
+    features: [
+      'Premium softcover book',
+      'Professional printing',
+      'Ships in 5-7 business days',
+      'AI-generated illustrations',
+      'Includes digital PDF',
+    ],
+    popular: true,
+    badge: 'Most Popular',
+    cta: 'Order Classic',
+  },
+  {
+    id: 'premium',
+    title: 'Premium',
+    price: '$79.99',
+    description: 'Hardcover + digital + extras',
     features: [
       'Premium hardcover book',
-      'Ships in 7-10 business days',
-      'Professional quality printing',
-      'Perfect for gifting'
+      'Museum-quality printing',
+      'Ships in 5-7 business days',
+      'Includes digital PDF',
+      '2 extra softcover copies',
     ],
-    highlight: true,
-    cta: 'Order Hardcover',
-    badge: 'Most Popular'
+    popular: false,
+    cta: 'Go Premium',
   },
-  {
-    title: 'Bundle',
-    price: '$59',
-    priceDesc: 'one-time',
-    features: [
-      'Digital + Hardcover copies',
-      'Everything from both tiers',
-      'Best value',
-      'Share in multiple formats'
-    ],
-    highlight: false,
-    cta: 'Get Bundle'
-  }
 ];
 
 export function Pricing() {
   return (
     <section className="w-full bg-white py-20 px-4">
       <div className="container mx-auto">
+        {/* Header */}
         <motion.div
           initial="hidden"
           whileInView="visible"
           viewport={{ once: true }}
-          className="mb-16 text-center"
           variants={fadeUp}
+          className="text-center mb-6"
         >
-          <h2 className="font-serif text-4xl md:text-5xl text-gray-900 mb-4">
+          <h2 className="font-serif text-4xl md:text-5xl mb-4" style={{ color: '#1F3A5F' }}>
             Choose Your Story
           </h2>
           <p className="text-gray-600 text-lg max-w-2xl mx-auto">
-            Every option includes personalization — your child as the hero
+            Every option includes full personalization — your child as the hero
           </p>
-          <div className="mt-4 inline-flex items-center gap-2 bg-coral/10 text-coral-dark rounded-full px-4 py-2 text-sm font-semibold">
-            🌸 Use code <strong>MOM20</strong> to save 20% — offer ends April 30
+        </motion.div>
+
+        {/* Mother's Day Callout */}
+        <motion.div
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true }}
+          variants={fadeUp}
+          className="text-center mb-14"
+        >
+          <div
+            className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold"
+            style={{ backgroundColor: 'rgba(212,175,55,0.12)', color: '#1F3A5F', border: '1px solid rgba(212,175,55,0.4)' }}
+          >
+            Use <strong className="font-mono mx-1">MOM20</strong> for 20% off — offer expires April 30, 2026!
           </div>
         </motion.div>
 
+        {/* Pricing Cards */}
         <motion.div
-          className="grid grid-cols-1 md:grid-cols-3 gap-8"
+          className="grid grid-cols-1 md:grid-cols-3 gap-8 items-start"
           initial="hidden"
           whileInView="visible"
           viewport={{ once: true }}
           variants={{ visible: { transition: { staggerChildren: 0.1 } } }}
         >
-          {plans.map((plan, idx) => (
+          {plans.map((plan) => (
             <motion.div
-              key={idx}
+              key={plan.id}
               variants={fadeUp}
-              className={`relative rounded-2xl overflow-hidden transition-all duration-300 flex flex-col h-full ${
-                plan.highlight
-                  ? 'bg-gradient-to-b from-teal/10 to-white border-2 border-teal shadow-xl scale-105'
-                  : 'bg-white border border-gray-200 shadow-md hover:shadow-lg'
+              className={`relative rounded-2xl overflow-hidden flex flex-col transition-all duration-300 ${
+                plan.popular
+                  ? 'shadow-2xl scale-105'
+                  : 'shadow-md hover:shadow-lg'
               }`}
+              style={{
+                border: plan.popular ? '2px solid #D4AF37' : '1px solid #e5e7eb',
+              }}
             >
-              {/* Badge */}
+              {/* Popular Badge */}
               {plan.badge && (
-                <div className="bg-teal text-white px-4 py-2 text-center text-sm font-semibold">
+                <div
+                  className="text-center py-2.5 text-sm font-bold tracking-wide"
+                  style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}
+                >
                   {plan.badge}
                 </div>
               )}
 
-              {/* Content */}
-              <div className="p-8 flex flex-col h-full">
-                {/* Title */}
-                <h3 className="font-serif text-2xl text-gray-900 mb-4">
+              <div className="p-8 flex flex-col h-full bg-white">
+                {/* Plan name */}
+                <h3 className="font-serif text-2xl mb-1" style={{ color: '#1F3A5F' }}>
                   {plan.title}
                 </h3>
+                <p className="text-sm text-gray-500 mb-6">{plan.description}</p>
 
                 {/* Price */}
                 <div className="mb-8">
-                  <span className={`text-4xl font-bold ${plan.highlight ? 'text-teal' : 'text-coral'}`}>
+                  <span
+                    className="text-4xl font-bold"
+                    style={{ color: plan.popular ? '#D4AF37' : '#1F3A5F' }}
+                  >
                     {plan.price}
                   </span>
-                  <span className="text-gray-500 text-sm ml-2">
-                    {plan.priceDesc}
-                  </span>
+                  <span className="text-gray-500 text-sm ml-1">one-time</span>
                 </div>
 
                 {/* Features */}
-                <ul className="space-y-4 mb-8 flex-grow">
+                <ul className="space-y-3 mb-8 flex-grow">
                   {plan.features.map((feature, i) => (
-                    <li key={i} className="flex items-start gap-3">
-                      <Check className={`w-5 h-5 flex-shrink-0 mt-0.5 ${plan.highlight ? 'text-teal' : 'text-coral'}`} />
-                      <span className="text-gray-600 text-sm">
-                        {feature}
-                      </span>
+                    <li key={i} className="flex items-start gap-3 text-sm">
+                      <svg
+                        className="w-5 h-5 flex-shrink-0 mt-0.5"
+                        style={{ color: plan.popular ? '#D4AF37' : '#1F3A5F' }}
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                      <span className="text-gray-600">{feature}</span>
                     </li>
                   ))}
                 </ul>
 
                 {/* CTA */}
-                <Link href="/checkout" className="block w-full">
-                  <Button
-                    className={`w-full py-6 text-lg font-semibold rounded-xl transition transform hover:scale-105 ${
-                      plan.highlight
-                        ? 'bg-teal hover:bg-teal-dark text-white shadow-lg shadow-teal/30'
-                        : 'bg-coral hover:bg-coral-dark text-white shadow-md'
-                    }`}
-                  >
-                    {plan.cta}
-                  </Button>
+                <Link
+                  href={`/order?tier=${plan.id}`}
+                  className="block w-full text-center py-3.5 rounded-xl font-semibold text-base transition-all duration-300 hover:scale-105"
+                  style={
+                    plan.popular
+                      ? { backgroundColor: '#D4AF37', color: '#1F3A5F', boxShadow: '0 4px 14px rgba(212,175,55,0.4)' }
+                      : { backgroundColor: '#1F3A5F', color: 'white' }
+                  }
+                >
+                  {plan.cta}
                 </Link>
               </div>
             </motion.div>
           ))}
         </motion.div>
+
+        {/* Guarantee note */}
+        <motion.p
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true }}
+          variants={fadeUp}
+          className="text-center text-sm text-gray-500 mt-10"
+        >
+          100% satisfaction guarantee · Full refund within 7 days · No questions asked
+        </motion.p>
       </div>
     </section>
   );

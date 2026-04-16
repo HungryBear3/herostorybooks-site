@@ -1,102 +1,150 @@
 'use client';
-import React from 'react';
-import { motion } from 'framer-motion';
-import Image from 'next/image';
-
-const fadeUp = {
-  hidden: { opacity: 0, y: 30 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.6 } },
-};
+import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const testimonials = [
   {
-    name: 'Emily Richardson',
-    location: 'New York, USA',
-    avatar: 'https://i.pravatar.cc/100?img=32',
-    quote: 'My daughter was absolutely thrilled to see herself as the brave knight in the story. She\'s read it a hundred times!',
-    rating: 5
+    name: 'Sarah M.',
+    initials: 'SM',
+    avatarColor: '#2a4f7a',
+    rating: 5,
+    text: 'My daughter burst into tears of joy when she saw herself as the princess in the story! We read it every single night. This is the most thoughtful gift I\'ve ever given.',
   },
   {
-    name: 'Carlos Miguel',
-    location: 'Madrid, Spain',
-    avatar: 'https://i.pravatar.cc/100?img=54',
-    quote: 'The illustrations are stunning and the personalization is incredible. Delivery was faster than expected!',
-    rating: 5
+    name: 'Jennifer K.',
+    initials: 'JK',
+    avatarColor: '#5B7A4F',
+    rating: 5,
+    text: 'I ordered this for Mother\'s Day and the quality blew me away. The illustrations look exactly like my son. The hardcover is beautiful and the story made me cry happy tears.',
   },
   {
-    name: 'Aisha Khan',
-    location: 'Dubai, UAE',
-    avatar: 'https://i.pravatar.cc/100?img=68',
-    quote: 'A truly magical experience. My son felt like the hero of his very own adventure. Worth every penny!',
-    rating: 5
-  }
+    name: 'Michelle R.',
+    initials: 'MR',
+    avatarColor: '#b5477a',
+    rating: 5,
+    text: 'Absolutely magical! My twins each got their own book where they were the heroes together. They carry those books everywhere. Worth every single penny.',
+  },
+  {
+    name: 'Amanda T.',
+    initials: 'AT',
+    avatarColor: '#7a6e2a',
+    rating: 5,
+    text: 'The ordering process was so easy and the book arrived faster than expected. My son now believes he\'s a real superhero and I\'m not going to correct him. Best gift ever!',
+  },
 ];
 
 export function Testimonials() {
+  const [current, setCurrent] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrent((prev) => (prev + 1) % testimonials.length);
+    }, 4000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const prev = () => setCurrent((c) => (c - 1 + testimonials.length) % testimonials.length);
+  const next = () => setCurrent((c) => (c + 1) % testimonials.length);
+
+  const t = testimonials[current];
+
   return (
-    <section className="w-full bg-lavender py-20 px-4">
+    <section className="w-full py-20 px-4" style={{ backgroundColor: '#F5F1E8' }}>
       <div className="container mx-auto">
+        {/* Header */}
         <motion.div
-          initial="hidden"
-          whileInView="visible"
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          className="mb-16 text-center"
-          variants={fadeUp}
+          transition={{ duration: 0.5 }}
+          className="text-center mb-14"
         >
-          <h2 className="font-serif text-4xl md:text-5xl text-forest mb-4">
-            What Our Families Say
+          <h2 className="font-serif text-4xl md:text-5xl mb-4" style={{ color: '#1F3A5F' }}>
+            What Families Are Saying
           </h2>
-          <p className="text-gray-700 text-lg max-w-2xl mx-auto">
-            Join thousands of happy families creating magical memories
-          </p>
+          <div className="flex items-center justify-center gap-1 text-sm text-gray-500">
+            <span style={{ color: '#D4AF37' }}>★★★★★</span>
+            <span className="ml-1 font-semibold" style={{ color: '#1F3A5F' }}>4.9/5</span>
+            <span>from 12,000+ reviews</span>
+          </div>
         </motion.div>
 
-        <motion.div
-          className="grid grid-cols-1 md:grid-cols-3 gap-8"
-          initial="hidden"
-          whileInView="visible"
-          viewport={{ once: true }}
-          variants={{ visible: { transition: { staggerChildren: 0.1 } } }}
-        >
-          {testimonials.map((testimonial, idx) => (
+        {/* Carousel */}
+        <div className="relative max-w-2xl mx-auto">
+          <AnimatePresence mode="wait">
             <motion.div
-              key={idx}
-              variants={fadeUp}
-              className="bg-white rounded-xl p-8 shadow-md hover:shadow-lg transition-shadow duration-300 border border-gray-100 flex flex-col"
+              key={current}
+              initial={{ opacity: 0, x: 40 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -40 }}
+              transition={{ duration: 0.3 }}
+              className="bg-white rounded-2xl p-8 shadow-md border border-gray-100 text-center"
             >
-              {/* Star Rating */}
-              <div className="flex gap-1 mb-4">
-                {Array.from({ length: testimonial.rating }).map((_, i) => (
-                  <span key={i} className="text-deep-gold text-lg">★</span>
+              {/* Stars */}
+              <div className="flex justify-center gap-1 mb-6">
+                {Array.from({ length: t.rating }).map((_, i) => (
+                  <span key={i} style={{ color: '#D4AF37' }} className="text-xl">★</span>
                 ))}
               </div>
 
               {/* Quote */}
-              <p className="text-gray-700 italic mb-6 flex-grow leading-relaxed">
-                "{testimonial.quote}"
+              <p className="text-gray-700 text-lg leading-relaxed italic mb-8">
+                &ldquo;{t.text}&rdquo;
               </p>
 
               {/* Author */}
-              <div className="flex items-center gap-4 pt-6 border-t border-gray-100">
-                <Image
-                  src={testimonial.avatar}
-                  alt={testimonial.name}
-                  width={48}
-                  height={48}
-                  className="rounded-full"
-                />
-                <div>
-                  <p className="font-serif text-forest font-semibold">
-                    {testimonial.name}
-                  </p>
-                  <p className="text-sm text-gray-600">
-                    {testimonial.location}
-                  </p>
+              <div className="flex items-center justify-center gap-4">
+                <div
+                  className="w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-sm"
+                  style={{ backgroundColor: t.avatarColor }}
+                >
+                  {t.initials}
                 </div>
+                <span className="font-serif font-semibold" style={{ color: '#1F3A5F' }}>
+                  {t.name}
+                </span>
               </div>
             </motion.div>
-          ))}
-        </motion.div>
+          </AnimatePresence>
+
+          {/* Navigation Controls */}
+          <div className="flex items-center justify-center gap-4 mt-8">
+            <button
+              onClick={prev}
+              className="w-10 h-10 rounded-full flex items-center justify-center border-2 transition-all hover:scale-110"
+              style={{ borderColor: '#1F3A5F', color: '#1F3A5F' }}
+              aria-label="Previous testimonial"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+
+            {/* Dots */}
+            <div className="flex gap-2">
+              {testimonials.map((_, i) => (
+                <button
+                  key={i}
+                  onClick={() => setCurrent(i)}
+                  className="w-2.5 h-2.5 rounded-full transition-all"
+                  style={{ backgroundColor: i === current ? '#1F3A5F' : '#c8c4bc' }}
+                  aria-label={`Go to testimonial ${i + 1}`}
+                />
+              ))}
+            </div>
+
+            <button
+              onClick={next}
+              className="w-10 h-10 rounded-full flex items-center justify-center border-2 transition-all hover:scale-110"
+              style={{ borderColor: '#1F3A5F', color: '#1F3A5F' }}
+              aria-label="Next testimonial"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          </div>
+        </div>
       </div>
     </section>
   );
