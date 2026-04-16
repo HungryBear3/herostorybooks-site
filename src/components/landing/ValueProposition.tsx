@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 30 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0, 0, 0.2, 1] as const } },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.5, } },
 };
 
 const values = [
