@@ -64,12 +64,15 @@ export function Pricing() {
           className="mb-16 text-center"
           variants={fadeUp}
         >
-          <h2 className="font-serif text-4xl md:text-5xl text-forest mb-4">
-            Choose Your Adventure
+          <h2 className="font-serif text-4xl md:text-5xl text-gray-900 mb-4">
+            Choose Your Story
           </h2>
-          <p className="text-gray-700 text-lg max-w-2xl mx-auto">
-            Multiple ways to bring your child's story to life
+          <p className="text-gray-600 text-lg max-w-2xl mx-auto">
+            Every option includes personalization — your child as the hero
           </p>
+          <div className="mt-4 inline-flex items-center gap-2 bg-coral/10 text-coral-dark rounded-full px-4 py-2 text-sm font-semibold">
+            🌸 Use code <strong>MOM20</strong> to save 20% — offer ends April 30
+          </div>
         </motion.div>
 
         <motion.div
@@ -83,15 +86,15 @@ export function Pricing() {
             <motion.div
               key={idx}
               variants={fadeUp}
-              className={`relative rounded-xl overflow-hidden transition-all duration-300 flex flex-col h-full ${
+              className={`relative rounded-2xl overflow-hidden transition-all duration-300 flex flex-col h-full ${
                 plan.highlight
-                  ? 'bg-gradient-to-b from-deep-gold/10 to-white border-2 border-deep-gold shadow-xl scale-105'
-                  : 'bg-white border border-gray-200 shadow-lg'
+                  ? 'bg-gradient-to-b from-teal/10 to-white border-2 border-teal shadow-xl scale-105'
+                  : 'bg-white border border-gray-200 shadow-md hover:shadow-lg'
               }`}
             >
               {/* Badge */}
               {plan.badge && (
-                <div className="bg-deep-gold text-white px-4 py-2 text-center text-sm font-semibold">
+                <div className="bg-teal text-white px-4 py-2 text-center text-sm font-semibold">
                   {plan.badge}
                 </div>
               )}
@@ -99,16 +102,16 @@ export function Pricing() {
               {/* Content */}
               <div className="p-8 flex flex-col h-full">
                 {/* Title */}
-                <h3 className="font-serif text-2xl text-forest mb-4">
+                <h3 className="font-serif text-2xl text-gray-900 mb-4">
                   {plan.title}
                 </h3>
 
                 {/* Price */}
                 <div className="mb-8">
-                  <span className="text-4xl font-bold text-deep-gold">
+                  <span className={`text-4xl font-bold ${plan.highlight ? 'text-teal' : 'text-coral'}`}>
                     {plan.price}
                   </span>
-                  <span className="text-gray-600 text-sm ml-2">
+                  <span className="text-gray-500 text-sm ml-2">
                     {plan.priceDesc}
                   </span>
                 </div>
@@ -117,8 +120,8 @@ export function Pricing() {
                 <ul className="space-y-4 mb-8 flex-grow">
                   {plan.features.map((feature, i) => (
                     <li key={i} className="flex items-start gap-3">
-                      <Check className="w-5 h-5 text-deep-gold flex-shrink-0 mt-0.5" />
-                      <span className="text-gray-700 text-sm">
+                      <Check className={`w-5 h-5 flex-shrink-0 mt-0.5 ${plan.highlight ? 'text-teal' : 'text-coral'}`} />
+                      <span className="text-gray-600 text-sm">
                         {feature}
                       </span>
                     </li>
@@ -128,10 +131,10 @@ export function Pricing() {
                 {/* CTA */}
                 <Link href="/checkout" className="block w-full">
                   <Button
-                    className={`w-full py-6 text-lg font-semibold rounded-lg transition transform hover:scale-105 ${
+                    className={`w-full py-6 text-lg font-semibold rounded-xl transition transform hover:scale-105 ${
                       plan.highlight
-                        ? 'bg-deep-gold text-white hover:bg-opacity-90'
-                        : 'bg-forest text-white hover:bg-opacity-90'
+                        ? 'bg-teal hover:bg-teal-dark text-white shadow-lg shadow-teal/30'
+                        : 'bg-coral hover:bg-coral-dark text-white shadow-md'
                     }`}
                   >
                     {plan.cta}

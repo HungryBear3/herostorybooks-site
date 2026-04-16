@@ -21,7 +21,7 @@ export function Hero() {
   };
 
   return (
-    <section className="w-full min-h-screen bg-white py-20 px-4 md:px-0">
+    <section className="w-full min-h-screen bg-gradient-to-br from-cream via-white to-teal/5 py-20 px-4 md:px-0">
       <div className="container mx-auto">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
           {/* Left: Text Content */}
@@ -32,45 +32,66 @@ export function Hero() {
             viewport={{ once: true }}
             variants={{ visible: { transition: { staggerChildren: 0.1 } } }}
           >
+            <motion.div variants={fadeUp} className="inline-flex items-center gap-2 bg-coral/10 text-coral-dark rounded-full px-4 py-2 text-sm font-semibold">
+              🌸 Perfect Mother&apos;s Day Gift
+            </motion.div>
+
             <motion.h1
               variants={fadeUp}
-              className="font-serif text-4xl md:text-5xl lg:text-6xl leading-tight text-forest"
+              className="font-serif text-4xl md:text-5xl lg:text-6xl leading-tight text-gray-900"
             >
-              Every child deserves to be the hero of their own story
+              Give the gift that becomes a{' '}
+              <span className="text-teal">keepsake</span>
             </motion.h1>
 
             <motion.p
               variants={fadeUp}
-              className="text-lg md:text-xl text-gray-700 leading-relaxed max-w-lg"
+              className="text-lg md:text-xl text-gray-600 leading-relaxed max-w-lg"
             >
-              Personalized storybooks that celebrate your child's magic
+              Personalized storybooks where your child becomes the hero —
+              a treasure they&apos;ll cherish forever.
             </motion.p>
+
+            {/* Trust signals */}
+            <motion.div variants={fadeUp} className="flex flex-wrap gap-4">
+              <div className="flex items-center gap-1.5 text-sm text-gray-600">
+                <span className="text-yellow-500">★★★★★</span>
+                <span className="font-semibold text-gray-800">4.9/5</span>
+                <span>from 12,000+ reviews</span>
+              </div>
+              <div className="text-gray-300">|</div>
+              <div className="text-sm text-gray-600">
+                <span className="font-semibold text-gray-800">150,000+</span> happy families
+              </div>
+              <div className="text-gray-300">|</div>
+              <div className="text-sm text-gray-600">
+                <span className="font-semibold text-gray-800">5–7 day</span> delivery
+              </div>
+            </motion.div>
 
             {/* CTAs */}
             <motion.div
               variants={fadeUp}
-              className="flex flex-col sm:flex-row gap-4 pt-4"
+              className="flex flex-col sm:flex-row gap-4 pt-2"
             >
               <Link href="/checkout" className="w-full sm:w-auto">
                 <Button
-                  className="w-full sm:w-auto bg-deep-gold text-white hover:bg-opacity-90 px-8 py-6 text-lg font-semibold rounded-lg transition transform hover:scale-105"
+                  className="w-full sm:w-auto bg-coral hover:bg-coral-dark text-white px-8 py-6 text-lg font-semibold rounded-xl transition transform hover:scale-105 shadow-lg shadow-coral/30"
                 >
                   Create Your Story Now
                 </Button>
               </Link>
               <button
                 onClick={handleSeeHowItWorks}
-                className="w-full sm:w-auto px-8 py-6 text-lg font-semibold text-forest border-2 border-forest hover:bg-forest hover:text-white rounded-lg transition"
+                className="w-full sm:w-auto px-8 py-6 text-lg font-semibold text-teal border-2 border-teal hover:bg-teal hover:text-white rounded-xl transition"
               >
                 See How It Works
               </button>
             </motion.div>
 
-            {/* Trust Badge */}
-            <motion.div variants={fadeUp} className="pt-4">
-              <p className="text-sm md:text-base text-forest font-medium">
-                ✨ Join 50,000+ families who've created magical books
-              </p>
+            {/* Delivery note */}
+            <motion.div variants={fadeUp} className="text-sm text-gray-500">
+              📦 Order by April 25 for guaranteed Mother&apos;s Day delivery
             </motion.div>
           </motion.div>
 
@@ -83,12 +104,13 @@ export function Hero() {
             className="flex justify-center"
           >
             <div className="relative w-full max-w-sm">
+              <div className="absolute -inset-4 bg-gradient-to-br from-teal/20 to-coral/20 rounded-3xl blur-2xl" />
               <Image
                 src="/sample1.png"
-                alt="Sample storybook mockup"
+                alt="Personalized children's storybook"
                 width={400}
                 height={500}
-                className="w-full h-auto rounded-2xl shadow-2xl"
+                className="relative w-full h-auto rounded-2xl shadow-2xl"
                 priority
               />
             </div>

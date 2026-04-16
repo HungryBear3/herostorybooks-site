@@ -16,7 +16,11 @@ module.exports = {
         cream: '#FDF8F4',
         lavender: '#F0EDF8',
         'deep-gold': '#C9A227',
-        forest: '#2D5016'
+        forest: '#2D5016',
+        teal: '#0D9488',
+        coral: '#FF6B6B',
+        'teal-dark': '#0F766E',
+        'coral-dark': '#E85555',
       }
     }
   },

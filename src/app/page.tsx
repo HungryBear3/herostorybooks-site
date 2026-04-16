@@ -1,6 +1,7 @@
 'use client';
 import React from 'react';
 import { Hero } from '@/components/landing/Hero';
+import { MothersDayBanner } from '@/components/landing/MothersDayBanner';
 import { ValueProposition } from '@/components/landing/ValueProposition';
 import { HowItWorks } from '@/components/landing/HowItWorks';
 import { FeaturedBooks } from '@/components/landing/FeaturedBooks';
@@ -15,6 +16,7 @@ export const dynamic = 'force-dynamic';
 export default function HomePage() {
   return (
     <main className="w-full">
+      <MothersDayBanner />
       <Hero />
       <ValueProposition />
       <HowItWorks />
