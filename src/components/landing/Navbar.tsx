@@ -1,6 +1,7 @@
 'use client';
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import Logo from '../ui/Logo';
 
 export function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -22,17 +23,12 @@ export function Navbar() {
   return (
     <nav
       className={`sticky top-0 z-40 w-full transition-all duration-300 ${
-        scrolled ? 'bg-white shadow-md' : 'bg-white/95 backdrop-blur'
+        scrolled ? 'bg-cream shadow-md' : 'bg-cream/95 backdrop-blur'
       }`}
     >
       <div className="container mx-auto px-4 flex items-center justify-between h-16">
         {/* Logo */}
-        <Link href="/" className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-[#1F3A5F] flex items-center justify-center">
-            <span className="text-[#D4AF37] font-bold text-sm">H</span>
-          </div>
-          <span className="font-serif text-xl font-bold text-[#1F3A5F]">HeroStoryBooks</span>
-        </Link>
+        <Logo />
 
         {/* Desktop Nav Links */}
         <div className="hidden md:flex items-center gap-8">
@@ -51,9 +47,9 @@ export function Navbar() {
         <div className="hidden md:flex items-center">
           <Link
             href="/order"
-            className="bg-[#D4AF37] hover:bg-[#b8972e] text-white font-semibold px-5 py-2.5 rounded-lg text-sm transition-colors shadow-sm"
+            className="bg-deep-gold hover:bg-deep-gold/90 text-white font-semibold px-5 py-2.5 rounded-lg text-sm transition-colors shadow-sm"
           >
-            Create Your Book
+            Create Your Book Now
           </Link>
         </div>
 
@@ -90,10 +86,10 @@ export function Navbar() {
           ))}
           <Link
             href="/order"
-            className="block w-full bg-[#D4AF37] hover:bg-[#b8972e] text-white font-semibold px-5 py-3 rounded-lg text-center transition-colors mt-4"
+            className="block w-full bg-deep-gold hover:bg-deep-gold/90 text-white font-semibold px-5 py-3 rounded-lg text-center transition-colors mt-4"
             onClick={() => setMenuOpen(false)}
           >
-            Create Your Book
+            Create Your Book Now
           </Link>
         </div>
       )}
