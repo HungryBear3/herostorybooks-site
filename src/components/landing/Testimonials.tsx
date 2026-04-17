@@ -9,9 +9,9 @@ const fadeUp = {
 };
 
 const testimonials = [
-  { name: 'Sarah M.', location: 'TX, USA', text: 'My daughter cried tears of joy when she saw herself as the princess! We read it nightly.', avatar: '/sample1.png' },
-  { name: 'Jennifer K.', location: 'CA, USA', text: 'The quality blew me away. Illustrations look exactly like my son. Stunning keepsake!', avatar: '/sample2.png' },
-  { name: 'Michelle R.', location: 'NY, USA', text: 'Absolutely magical! My twins each got their own heroic tale together. Worth every penny.', avatar: '/sample3.png' },
+  { name: 'Sarah M.', location: 'TX, USA', text: 'My daughter cried tears of joy when she saw herself as the princess! We read it nightly.', avatar: '/assets/hero-1.jpg' },
+  { name: 'Jennifer K.', location: 'CA, USA', text: 'The quality blew me away. Illustrations look exactly like my son. Stunning keepsake!', avatar: '/assets/hero-2.jpg' },
+  { name: 'Michelle R.', location: 'NY, USA', text: 'Absolutely magical! My twins each got their own heroic tale together. Worth every penny.', avatar: '/assets/hero-3.jpg' },
 ];
 
 export function Testimonials() {
@@ -27,8 +27,8 @@ export function Testimonials() {
         >
           What Families Are Saying
         </motion.h2>
-        <p className="text-gray-700 mb-8">
-          <span className="text-deep-gold">★★★★★</span> 50,000+ families love their storybooks
+        <p className="text-gray-700 mb-8 text-lg">
+          <span className="text-deep-gold text-xl">★★★★★</span> <span className="font-semibold">50,000+ families</span> love their storybooks
         </p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
           {testimonials.map((t, idx) => (
@@ -38,14 +38,14 @@ export function Testimonials() {
               whileInView="visible"
               viewport={{ once: true }}
               variants={fadeUp}
-              className="bg-white p-6 rounded-lg shadow-md text-center"
+              className="bg-white p-6 rounded-lg shadow-lg hover:shadow-xl transition border-t-4 border-deep-gold/30"
             >
-              <div className="w-16 h-16 mx-auto mb-4 relative">
+              <div className="w-20 h-20 mx-auto mb-4 relative ring-4 ring-deep-gold/30">
                 <Image src={t.avatar} alt={t.name} fill className="rounded-full object-cover" />
               </div>
-              <p className="text-gray-700 italic mb-4">“{t.text}”</p>
-              <div className="font-semibold text-forest">{t.name}</div>
-              <div className="text-sm text-gray-500">{t.location}</div>
+              <p className="text-gray-700 italic mb-4 leading-relaxed">"{t.text}"</p>
+              <div className="font-semibold text-forest text-lg">{t.name}</div>
+              <div className="text-sm text-gray-500 font-medium">{t.location}</div>
             </motion.div>
           ))}
         </div>

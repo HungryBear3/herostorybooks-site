@@ -10,10 +10,10 @@ const fadeUp: Variants = {
 };
 
 const samples = [
-  { id: 1, img: '/sample1.png', title: 'Keepsake Classic', description: 'Your child as the heroic star of an enchanted tale.' },
-  { id: 2, img: '/sample2.png', title: "Mom's Love Story", description: 'A heartwarming adventure celebrating mom and child.' },
-  { id: 3, img: '/sample3.png', title: 'Sibling Journey', description: 'Team up siblings for a quest of friendship and courage.' },
-  { id: 4, img: '/sample4.png', title: 'Magical School', description: 'Dive into a whimsical academy where magic comes alive.' },
+  { id: 1, img: '/assets/37e76712-92e0-49fb-a509-a82a4230a8b7.png', title: 'Keepsake Classic', description: 'Your child as the heroic star of an enchanted tale.' },
+  { id: 2, img: '/assets/84392084-718e-4e0a-96b6-d4aa7286cb36.png', title: "Mom's Love Story", description: 'A heartwarming adventure celebrating mom and child.' },
+  { id: 3, img: '/assets/3d42ac55-0870-409d-b3eb-236200e093dc.png', title: 'Sibling Journey', description: 'Team up siblings for a quest of friendship and courage.' },
+  { id: 4, img: '/assets/b22b6d5d-f9cb-42a5-af1a-de96c983f5e5.png', title: 'Magical School', description: 'Dive into a whimsical academy where magic comes alive.' },
 ];
 
 export function FeaturedBooks() {
@@ -44,10 +44,10 @@ export function FeaturedBooks() {
             <motion.div
               key={book.id}
               variants={fadeUp}
-              className="group bg-white rounded-lg overflow-hidden shadow-md hover:shadow-lg transition hover:-translate-y-1"
+              className="group bg-white rounded-lg overflow-hidden shadow-lg hover:shadow-2xl transition hover:-translate-y-2"
             >
-              <div className="w-full h-64 relative">
-                <Image src={book.img} alt={book.title} fill className="object-cover" />
+              <div className="w-full h-80 relative overflow-hidden rounded-t-lg bg-gradient-to-br from-deep-gold/10 to-forest/10">
+                <Image src={book.img} alt={book.title} fill className="object-cover group-hover:scale-105 transition duration-500" />
               </div>
               <div className="p-4 flex flex-col">
                 <h3 className="font-serif text-lg text-forest mb-2">{book.title}</h3>
