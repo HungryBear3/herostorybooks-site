@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { sendOrderConfirmationEmail } from '@/lib/order-email';
 import { createOrderRecord, persistOrder, uploadOrderPhoto } from '@/lib/orders';
+import { markRecoveryLeadConverted } from '@/lib/recovery';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -44,6 +45,9 @@ export async function POST(request: Request) {
     });
 
     await sendOrderConfirmationEmail(order);
+
+    // Mark recovery lead converted — fire-and-forget, never fails the order
+    markRecoveryLeadConverted(order.email, order.id).catch(() => {});
 
     const params = new URLSearchParams({
       orderId: order.id,

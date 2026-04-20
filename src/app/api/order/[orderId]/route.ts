@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { isOrderStatus, getOrder, updateOrderStatus } from '@/lib/orders';
+import { sendLifecycleEmail } from '@/lib/order-email';
 
 function getAdminKey() {
   return process.env.HSB_ORDER_ADMIN_KEY;
@@ -63,5 +64,19 @@ export async function PATCH(
     return NextResponse.json({ error: 'Order not found' }, { status: 404 });
   }
 
-  return NextResponse.json({ ok: true, order });
+  // Send lifecycle email for the new status. Email failure does not fail the request.
+  let emailResult: { skipped: boolean; reason?: string; id?: string | null } = {
+    skipped: true,
+    reason: 'not_attempted',
+  };
+  try {
+    emailResult = await sendLifecycleEmail(order, {
+      trackingNumber: typeof body.trackingNumber === 'string' ? body.trackingNumber : undefined,
+      trackingUrl: typeof body.trackingUrl === 'string' ? body.trackingUrl : undefined,
+    });
+  } catch {
+    emailResult = { skipped: true, reason: 'email_send_error' };
+  }
+
+  return NextResponse.json({ ok: true, order, email: emailResult });
 }

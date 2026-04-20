@@ -15,6 +15,7 @@
     "moduleResolution": "node",
     // Suppress deprecation warnings until TS 7.0
     "ignoreDeprecations": "6.0",
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "paths": {
       "@/*": [

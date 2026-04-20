@@ -62,6 +62,11 @@ const FORMATS = [
 
 const STORAGE_KEY = 'hsb_order_v1';
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
+const RECOVERY_DEBOUNCE_MS = 1500;
+
+function looksLikeEmail(e: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
 
 const SAMPLE_IMAGES = ['/sample1.png', '/sample2.png', '/sample3.png'];
 
@@ -133,6 +138,7 @@ export default function CheckoutPage() {
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
+  const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Restore saved progress on mount
   useEffect(() => {
@@ -150,6 +156,28 @@ export default function CheckoutPage() {
     }
   }, [form.theme, form.childName, form.childAge, form.lesson, form.occasion,
       form.giftMessage, form.bookFormat, form.email]);
+
+  // Server-side recovery capture — debounced, fires when email + any key field is present
+  useEffect(() => {
+    if (!looksLikeEmail(form.email) || (!form.childName && !form.theme)) return;
+    if (recoveryTimerRef.current) clearTimeout(recoveryTimerRef.current);
+    recoveryTimerRef.current = setTimeout(() => {
+      fetch('/api/recovery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: form.email,
+          childName: form.childName || undefined,
+          bookFormat: form.bookFormat || undefined,
+          theme: form.theme || undefined,
+          captureSource: 'checkout_form',
+        }),
+      }).catch(() => {}); // fire-and-forget — never surface errors to the user
+    }, RECOVERY_DEBOUNCE_MS);
+    return () => {
+      if (recoveryTimerRef.current) clearTimeout(recoveryTimerRef.current);
+    };
+  }, [form.email, form.childName, form.bookFormat, form.theme]);
 
   const set = (key: keyof FormState, value: string) =>
     setForm(prev => ({ ...prev, [key]: value }));
@@ -176,6 +204,10 @@ export default function CheckoutPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
+    if (recoveryTimerRef.current) {
+      clearTimeout(recoveryTimerRef.current);
+      recoveryTimerRef.current = null;
+    }
 
     try {
       const payload = new FormData();
