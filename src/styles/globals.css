@@ -1,7 +1,4 @@
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
-/* Import Playfair Display for headings */
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&display=swap');
 
 @tailwind base;
 
