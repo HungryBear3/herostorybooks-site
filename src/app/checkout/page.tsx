@@ -176,13 +176,42 @@ export default function CheckoutPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
-    // Stripe integration pending — simulate
-    setTimeout(() => {
-      setIsSubmitting(false);
+
+    try {
+      const payload = new FormData();
+      payload.set('childName', form.childName);
+      payload.set('childAge', form.childAge);
+      payload.set('theme', form.theme);
+      payload.set('lesson', form.lesson);
+      payload.set('occasion', form.occasion);
+      payload.set('giftMessage', form.giftMessage);
+      payload.set('bookFormat', form.bookFormat);
+      payload.set('email', form.email);
+      if (form.photoFile) {
+        payload.set('photo', form.photoFile);
+      }
+
+      const response = await fetch('/api/order', {
+        method: 'POST',
+        body: payload,
+      });
+
+      if (!response.ok) {
+        throw new Error('Order submission failed');
+      }
+
+      const result = await response.json();
       setSuccess(true);
       localStorage.removeItem(STORAGE_KEY);
-      setTimeout(() => { window.location.href = '/thank-you'; }, 2000);
-    }, 1500);
+      setTimeout(() => {
+        window.location.href = result.redirectTo || '/thank-you';
+      }, 1200);
+    } catch (error) {
+      console.error(error);
+      alert('We could not save your order. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const selectedFormat = FORMATS.find(f => f.id === form.bookFormat) ?? FORMATS[1];
@@ -200,7 +229,7 @@ export default function CheckoutPage() {
           <p className="text-gray-700 mb-2">
             {form.childName ? `${form.childName}'s magical story` : 'Your magical story'} is being created.
           </p>
-          <p className="text-sm text-gray-500">Redirecting to complete payment…</p>
+          <p className="text-sm text-gray-500">Saving your order and sending confirmation…</p>
         </motion.div>
       </main>
     );
