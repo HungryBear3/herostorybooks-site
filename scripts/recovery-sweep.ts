@@ -1,4 +1,4 @@
-import { runRecoverySweep } from '../src/lib/recovery-sweep.ts';
+import { runRecoverySweep } from '../src/lib/recovery-sweep';
 
 const dryRun = process.argv.includes('--dry-run');
 

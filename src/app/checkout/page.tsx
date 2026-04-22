@@ -2,16 +2,18 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Progress } from '@/components/ui/progress';
+import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from '@/lib/checkout-flow';
+import { CHECKOUT_SAMPLE_IMAGES, STORY_OCCASIONS, STORY_THEMES } from '@/lib/story-catalog';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const THEMES = [
-  { id: 'brave-explorer', label: 'Brave Explorer', emoji: '🗺️', desc: 'Jungle adventure & discovery' },
-  { id: 'space-voyager',  label: 'Space Voyager',  emoji: '🚀', desc: 'Astronauts & alien planets' },
-  { id: 'ocean-dreams',   label: 'Ocean Dreams',   emoji: '🐠', desc: 'Underwater kingdoms & treasure' },
-  { id: 'dragon-quest',   label: 'Dragon Quest',   emoji: '🐉', desc: 'Fantasy hero & magical realm' },
-  { id: 'royal-adventure',label: 'Royal Adventure',emoji: '👑', desc: 'Prince/Princess & castle quest' },
-];
+const THEMES = STORY_THEMES.map((theme) => ({
+  id: theme.id,
+  label: theme.name,
+  emoji: theme.emoji,
+  desc: theme.description,
+}));
 
 const LESSONS = [
   { id: 'courage',       label: 'Courage',       emoji: '🦁' },
@@ -21,13 +23,7 @@ const LESSONS = [
   { id: 'perseverance',  label: 'Never Give Up',  emoji: '⭐' },
 ];
 
-const OCCASIONS = [
-  { id: 'birthday',     label: '🎂 Birthday' },
-  { id: 'holiday',      label: '🎁 Holiday Gift' },
-  { id: 'mothers-day',  label: '💐 Mother\'s Day' },
-  { id: 'just-because', label: '❤️ Just Because' },
-  { id: 'welcome-baby', label: '🍼 Welcome Baby' },
-];
+const OCCASIONS = STORY_OCCASIONS;
 
 const FORMATS = [
   {
@@ -68,7 +64,14 @@ function looksLikeEmail(e: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
 
-const SAMPLE_IMAGES = ['/sample1.png', '/sample2.png', '/sample3.png'];
+const SAMPLE_IMAGES = CHECKOUT_SAMPLE_IMAGES;
+const CHECKOUT_STEPS = [
+  { id: 'theme', label: 'Adventure' },
+  { id: 'hero', label: 'Hero' },
+  { id: 'format', label: 'Format' },
+  { id: 'email', label: 'Email' },
+  { id: 'photo', label: 'Photo' },
+];
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -81,6 +84,10 @@ interface FormState {
   lesson: string;
   occasion: string;
   giftMessage: string;
+  characterNotes: string;
+  skinTone: string;
+  hairStyle: string;
+  eyewear: string;
   bookFormat: string;
   email: string;
 }
@@ -94,6 +101,10 @@ const emptyForm: FormState = {
   lesson: '',
   occasion: '',
   giftMessage: '',
+  characterNotes: '',
+  skinTone: '',
+  hairStyle: '',
+  eyewear: '',
   bookFormat: 'classic',
   email: '',
 };
@@ -109,6 +120,10 @@ function saveProgress(form: FormState) {
       lesson: form.lesson,
       occasion: form.occasion,
       giftMessage: form.giftMessage,
+      characterNotes: form.characterNotes,
+      skinTone: form.skinTone,
+      hairStyle: form.hairStyle,
+      eyewear: form.eyewear,
       bookFormat: form.bookFormat,
       email: form.email,
       savedAt: Date.now(),
@@ -140,12 +155,23 @@ export default function CheckoutPage() {
   const photoInputRef = useRef<HTMLInputElement>(null);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Restore saved progress on mount
+  // Restore saved progress on mount + honor format query param
   useEffect(() => {
     const saved = loadProgress();
+    const params = new URLSearchParams(window.location.search);
+    const formatFromUrl = params.get('format');
+    const nextFormat = formatFromUrl && FORMATS.some((fmt) => fmt.id === formatFromUrl)
+      ? formatFromUrl
+      : '';
+
     if (saved && (saved.childName || saved.theme)) {
       setShowRecovery(true);
-      setForm(prev => ({ ...prev, ...saved }));
+      setForm(prev => ({ ...prev, ...saved, ...(nextFormat ? { bookFormat: nextFormat } : {}) }));
+      return;
+    }
+
+    if (nextFormat) {
+      setForm(prev => ({ ...prev, bookFormat: nextFormat }));
     }
   }, []);
 
@@ -155,7 +181,8 @@ export default function CheckoutPage() {
       saveProgress(form);
     }
   }, [form.theme, form.childName, form.childAge, form.lesson, form.occasion,
-      form.giftMessage, form.bookFormat, form.email]);
+      form.giftMessage, form.characterNotes, form.skinTone, form.hairStyle, form.eyewear,
+      form.bookFormat, form.email]);
 
   // Server-side recovery capture — debounced, fires when email + any key field is present
   useEffect(() => {
@@ -181,6 +208,16 @@ export default function CheckoutPage() {
 
   const set = (key: keyof FormState, value: string) =>
     setForm(prev => ({ ...prev, [key]: value }));
+
+  const selectedFormat = FORMATS.find((fmt) => fmt.id == form.bookFormat) ?? FORMATS[1];
+  const completedStepCount = [
+    Boolean(form.theme),
+    Boolean(form.childName),
+    Boolean(form.bookFormat),
+    looksLikeEmail(form.email),
+    Boolean(form.photoFile),
+  ].filter(Boolean).length;
+  const progressValue = (completedStepCount / CHECKOUT_STEPS.length) * 100;
 
   const processPhoto = useCallback((file: File) => {
     const reader = new FileReader();
@@ -217,6 +254,12 @@ export default function CheckoutPage() {
       payload.set('lesson', form.lesson);
       payload.set('occasion', form.occasion);
       payload.set('giftMessage', form.giftMessage);
+      payload.set('characterNotes', form.characterNotes);
+      payload.set('appearanceOptions', JSON.stringify({
+        skinTone: form.skinTone,
+        hairStyle: form.hairStyle,
+        eyewear: form.eyewear,
+      }));
       payload.set('bookFormat', form.bookFormat);
       payload.set('email', form.email);
       if (form.photoFile) {
@@ -245,8 +288,6 @@ export default function CheckoutPage() {
       setIsSubmitting(false);
     }
   };
-
-  const selectedFormat = FORMATS.find(f => f.id === form.bookFormat) ?? FORMATS[1];
 
   if (success) {
     return (
@@ -310,111 +351,38 @@ export default function CheckoutPage() {
             Create Your Story
           </h1>
           <p className="text-gray-600 text-lg">
-            Upload a photo · Choose the adventure · Your child becomes the hero
+            Choose the adventure · Tell us about your hero · Add a photo when you&apos;re ready
           </p>
         </motion.div>
 
+        <motion.section
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-8 rounded-2xl border border-deep-gold/20 bg-white/90 p-4 shadow-sm"
+        >
+          <div className="mb-3 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">
+            <span>Checkout progress</span>
+            <span>{completedStepCount}/{CHECKOUT_STEPS.length} complete</span>
+          </div>
+          <Progress value={progressValue} className="h-2.5 bg-gray-100" />
+          <div className="mt-4 grid grid-cols-5 gap-2">
+            {CHECKOUT_STEPS.map((step, index) => {
+              const complete = completedStepCount > index;
+              return (
+                <div key={step.id} className="text-center">
+                  <div className={`mx-auto flex h-8 w-8 items-center justify-center rounded-full border text-xs font-bold ${complete ? 'border-deep-gold bg-deep-gold text-white' : 'border-gray-200 bg-white text-gray-400'}`}>
+                    {index + 1}
+                  </div>
+                  <p className={`mt-2 text-[11px] font-medium ${complete ? 'text-forest' : 'text-gray-400'}`}>{step.label}</p>
+                </div>
+              );
+            })}
+          </div>
+        </motion.section>
+
         <form onSubmit={handleSubmit} className="space-y-8">
 
-          {/* ── 1. Photo Upload ── */}
-          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
-            <div>
-              <h2 className="font-serif text-xl text-forest mb-1">
-                📸 Upload Your Child&apos;s Photo
-              </h2>
-              <p className="text-sm text-gray-500">
-                Our AI places your child&apos;s face into every illustration — the clearer the photo, the better the magic.
-              </p>
-            </div>
-
-            {/* Sample teaser — shown before upload */}
-            {!form.photoDataUrl && (
-              <div className="space-y-2">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest text-center">
-                  What your book looks like
-                </p>
-                <div className="grid grid-cols-3 gap-2">
-                  {SAMPLE_IMAGES.map((src, i) => (
-                    <div key={i} className="relative aspect-square rounded-xl overflow-hidden border border-gray-100 bg-gray-50">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={src} alt={`Sample page ${i + 1}`} className="w-full h-full object-cover" />
-                      {i === 1 && (
-                        <div className="absolute inset-x-0 bottom-2 flex justify-center">
-                          <span className="bg-deep-gold/90 text-white text-xs font-bold px-2 py-0.5 rounded-full shadow">
-                            Your child here ✨
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                <p className="text-xs text-center text-gray-400">
-                  Real AI output · Your child becomes the illustrated hero
-                </p>
-              </div>
-            )}
-
-            {/* Upload zone / preview */}
-            {form.photoDataUrl ? (
-              <div className="space-y-3">
-                <div className="relative rounded-xl overflow-hidden border-2 border-deep-gold shadow-md">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={form.photoDataUrl}
-                    alt="Uploaded photo"
-                    className="w-full max-h-72 object-contain bg-gray-50"
-                  />
-                  <div className="absolute inset-0 flex items-end p-3 pointer-events-none">
-                    <span className="bg-forest/80 text-white text-xs font-semibold px-3 py-1 rounded-full">
-                      ✨ {form.childName ? `${form.childName} becomes` : 'Your child becomes'} the hero
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => { setForm(prev => ({ ...prev, photoFile: null, photoDataUrl: null })); }}
-                    className="absolute top-2 right-2 bg-white/90 hover:bg-white text-forest text-xs font-semibold px-3 py-1.5 rounded-full shadow transition"
-                  >
-                    Change Photo
-                  </button>
-                </div>
-                <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
-                  <span>✅</span>
-                  <span className="font-medium">{form.photoFile?.name}</span>
-                  <span className="text-green-600 text-xs ml-auto">Ready for magic</span>
-                </div>
-              </div>
-            ) : (
-              <div
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={handleDrop}
-                onClick={() => photoInputRef.current?.click()}
-                className={`
-                  flex flex-col items-center justify-center gap-3 min-h-40 rounded-xl border-2 border-dashed cursor-pointer transition-all
-                  ${dragOver ? 'border-deep-gold bg-deep-gold/5 scale-[1.01]' : 'border-gray-300 hover:border-deep-gold/60 hover:bg-gray-50'}
-                `}
-              >
-                <input
-                  ref={photoInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) processPhoto(f); }}
-                />
-                <span className="text-5xl">{dragOver ? '🌟' : '📸'}</span>
-                <div className="text-center">
-                  <p className="font-semibold text-forest">{dragOver ? 'Drop it here!' : 'Click to Upload'}</p>
-                  <p className="text-sm text-gray-400 mt-0.5">or drag &amp; drop · JPG, PNG, WebP</p>
-                </div>
-              </div>
-            )}
-
-            <p className="text-xs text-center text-gray-400">
-              🔒 Photos processed securely · Never stored after your book is made · 7-day satisfaction guarantee
-            </p>
-          </section>
-
-          {/* ── 2. Theme ── */}
+          {/* ── 1. Theme ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
             <h2 className="font-serif text-xl text-forest">🗺️ Choose the Adventure</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -444,7 +412,7 @@ export default function CheckoutPage() {
             </div>
           </section>
 
-          {/* ── 3. Child Details ── */}
+          {/* ── 2. Child Details ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-5">
             <h2 className="font-serif text-xl text-forest">👦 About the Hero</h2>
 
@@ -559,7 +527,78 @@ export default function CheckoutPage() {
             </AnimatePresence>
           </section>
 
-          {/* ── 4. Format + Delivery ── */}
+          {/* ── 2.5 Character details (optional) ── */}
+          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
+            <div>
+              <h2 className="font-serif text-xl text-forest mb-1">🪄 Character details</h2>
+              <p className="text-sm text-gray-500">
+                Want a closer match? Tell us a few visible details so the art feels more like your child.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-forest mb-1.5">Skin tone</label>
+                <select
+                  value={form.skinTone}
+                  onChange={e => set('skinTone', e.target.value)}
+                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold transition text-gray-900 bg-white"
+                >
+                  <option value="">Prefer AI to decide</option>
+                  <option value="fair">Fair</option>
+                  <option value="light">Light</option>
+                  <option value="medium">Medium</option>
+                  <option value="tan">Tan</option>
+                  <option value="deep">Deep</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-forest mb-1.5">Hair</label>
+                <select
+                  value={form.hairStyle}
+                  onChange={e => set('hairStyle', e.target.value)}
+                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold transition text-gray-900 bg-white"
+                >
+                  <option value="">Prefer AI to decide</option>
+                  <option value="straight-dark">Straight dark hair</option>
+                  <option value="straight-light">Straight light hair</option>
+                  <option value="wavy">Wavy hair</option>
+                  <option value="curly">Curly hair</option>
+                  <option value="coily">Coily hair</option>
+                  <option value="short-cropped">Short / cropped</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-forest mb-1.5">Glasses or aids</label>
+                <select
+                  value={form.eyewear}
+                  onChange={e => set('eyewear', e.target.value)}
+                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold transition text-gray-900 bg-white"
+                >
+                  <option value="">None / not needed</option>
+                  <option value="glasses">Glasses</option>
+                  <option value="hearing-aid">Hearing aid</option>
+                  <option value="mobility-aid">Mobility aid</option>
+                  <option value="other">Other visible detail</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-forest mb-1.5">
+                Anything else we should capture? <span className="text-gray-400 font-normal">(optional)</span>
+              </label>
+              <textarea
+                value={form.characterNotes}
+                onChange={e => set('characterNotes', e.target.value)}
+                placeholder="Examples: freckles, favorite hoodie color, wheelchair, curly bangs, hijab, braces..."
+                rows={3}
+                maxLength={240}
+                className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold transition text-gray-900 bg-white resize-none text-sm"
+              />
+              <p className="text-xs text-gray-400 text-right mt-0.5">{form.characterNotes.length}/240</p>
+            </div>
+          </section>
+
+          {/* ── 3. Format + Delivery ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
             <h2 className="font-serif text-xl text-forest">📦 Choose Your Format</h2>
             <div className="space-y-3">
@@ -593,20 +632,127 @@ export default function CheckoutPage() {
             </div>
           </section>
 
-          {/* ── 5. Email ── */}
-          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm">
-            <label htmlFor="email" className="block text-sm font-semibold text-forest mb-1.5">
-              Email address <span className="text-red-400">*</span>
-            </label>
+          {/* ── 4. Email + Preview Promise ── */}
+          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
+            <div>
+              <h2 className="font-serif text-xl text-forest mb-1">✉️ Where should we send everything?</h2>
+              <p className="text-sm text-gray-500">
+                We&apos;ll send your confirmation, delivery updates, and any preview approval steps here.
+              </p>
+            </div>
             <input
               id="email"
               type="email"
               value={form.email}
               onChange={e => set('email', e.target.value)}
-              placeholder="your@email.com — for confirmation &amp; delivery"
+              placeholder="your@email.com — for confirmation & delivery"
               required
               className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold transition text-gray-900 bg-white"
             />
+            <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+              ✨ {PRINT_PREVIEW_PROMISE}
+            </div>
+          </section>
+
+          {/* ── 5. Photo Upload ── */}
+          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
+            <div>
+              <h2 className="font-serif text-xl text-forest mb-1">
+                📸 Add a Photo When You&apos;re Ready
+              </h2>
+              <p className="text-sm text-gray-500">
+                Our AI places your child&apos;s face into every illustration — the clearer the photo, the better the magic.
+              </p>
+            </div>
+            <div className="rounded-xl border border-deep-gold/20 bg-deep-gold/5 px-4 py-3 text-sm text-forest">
+              {PHOTO_UPLOAD_HELP}
+            </div>
+
+            {/* Sample teaser — shown before upload */}
+            {!form.photoDataUrl && (
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest text-center">
+                  What your book looks like
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  {SAMPLE_IMAGES.map((src, i) => (
+                    <div key={i} className="relative aspect-square rounded-xl overflow-hidden border border-gray-100 bg-gray-50">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={src} alt={`Sample page ${i + 1}`} className="w-full h-full object-cover" />
+                      {i === 1 && (
+                        <div className="absolute inset-x-0 bottom-2 flex justify-center">
+                          <span className="bg-deep-gold/90 text-white text-xs font-bold px-2 py-0.5 rounded-full shadow">
+                            Your child here ✨
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-center text-gray-400">
+                  Real AI output · Your child becomes the illustrated hero
+                </p>
+              </div>
+            )}
+
+            {/* Upload zone / preview */}
+            {form.photoDataUrl ? (
+              <div className="space-y-3">
+                <div className="relative rounded-xl overflow-hidden border-2 border-deep-gold shadow-md">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={form.photoDataUrl}
+                    alt="Uploaded photo"
+                    className="w-full max-h-72 object-contain bg-gray-50"
+                  />
+                  <div className="absolute inset-0 flex items-end p-3 pointer-events-none">
+                    <span className="bg-forest/80 text-white text-xs font-semibold px-3 py-1 rounded-full">
+                      ✨ {form.childName ? `${form.childName} becomes` : 'Your child becomes'} the hero
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setForm(prev => ({ ...prev, photoFile: null, photoDataUrl: null })); }}
+                    className="absolute top-2 right-2 bg-white/90 hover:bg-white text-forest text-xs font-semibold px-3 py-1.5 rounded-full shadow transition"
+                  >
+                    Change Photo
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                  <span>✅</span>
+                  <span className="font-medium">{form.photoFile?.name}</span>
+                  <span className="text-green-600 text-xs ml-auto">Ready for magic</span>
+                </div>
+              </div>
+            ) : (
+              <div
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+                onClick={() => photoInputRef.current?.click()}
+                className={`
+                  flex flex-col items-center justify-center gap-3 min-h-40 rounded-xl border-2 border-dashed cursor-pointer transition-all
+                  ${dragOver ? 'border-deep-gold bg-deep-gold/5 scale-[1.01]' : 'border-gray-300 hover:border-deep-gold/60 hover:bg-gray-50'}
+                `}
+              >
+                <input
+                  ref={photoInputRef}
+                  type="file"
+                  accept="image/*,.heic,.heif"
+                  className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) processPhoto(f); }}
+                />
+                <span className="text-5xl">{dragOver ? '🌟' : '📸'}</span>
+                <div className="text-center">
+                  <p className="font-semibold text-forest">{dragOver ? 'Drop it here!' : 'Click to Upload'}</p>
+                  <p className="text-sm text-gray-400 mt-0.5">or drag &amp; drop · JPG, PNG, WebP, HEIC</p>
+                </div>
+              </div>
+            )}
+
+            <p className="text-xs text-center text-gray-400">
+              🔒 Photos processed securely · Never stored after your book is made · Add it later if you need to
+            </p>
           </section>
 
           {/* ── 6. Order Summary ── */}
@@ -647,7 +793,7 @@ export default function CheckoutPage() {
               </div>
               {form.bookFormat !== 'digital' && (
                 <div className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
-                  📱 A digital preview will be emailed first so you can approve before it prints.
+                  📱 {PRINT_PREVIEW_PROMISE}
                 </div>
               )}
               <div className="flex justify-between pt-3 border-t border-gray-300 mt-2">
@@ -666,7 +812,7 @@ export default function CheckoutPage() {
                 bg-deep-gold hover:bg-deep-gold/90 text-white shadow-md hover:shadow-lg hover:-translate-y-0.5
                 disabled:opacity-50 disabled:cursor-not-allowed disabled:translate-y-0 disabled:shadow-none"
             >
-              {isSubmitting ? '⏳ Processing…' : `Continue to Payment — ${selectedFormat.price}`}
+              {isSubmitting ? '⏳ Processing…' : `Continue to Preview & Payment — ${selectedFormat.price}`}
             </button>
             <p className="text-xs text-center text-gray-400">
               🔒 Secured by Stripe &nbsp;·&nbsp; 7-day satisfaction guarantee &nbsp;·&nbsp; Your data is never shared

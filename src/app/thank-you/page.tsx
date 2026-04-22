@@ -15,10 +15,10 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
   const orderId = params.orderId?.trim();
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-cream px-4 py-16 space-y-8">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--cream)] px-4 py-16 space-y-8">
       <div className="text-center">
         <span className="text-7xl">✨</span>
-        <h1 className="font-serif text-4xl font-bold text-forest mt-4 mb-2">
+        <h1 className="text-4xl font-bold text-[var(--forest)] mt-4 mb-2">
           {childName}&apos;s Storybook Is In Motion!
         </h1>
         <p className="text-lg text-gray-600 max-w-md mx-auto">
@@ -27,19 +27,19 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
       </div>
 
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 w-full max-w-md space-y-4">
-        <p className="font-semibold text-forest text-base">What happens next</p>
+        <p className="font-semibold text-[var(--forest)] text-base">What happens next</p>
         <div className="space-y-3 text-sm text-gray-700">
           <div className="flex items-start gap-3">
             <span className="text-xl flex-shrink-0">✅</span>
             <div>
-              <p className="font-semibold text-forest">Order received</p>
+              <p className="font-semibold text-[var(--forest)]">Order received</p>
               <p className="text-gray-500">We saved your order details{orderId ? ` under ${orderId}` : ''} so the team can track it cleanly.</p>
             </div>
           </div>
           <div className="flex items-start gap-3">
             <span className="text-xl flex-shrink-0">📱</span>
             <div>
-              <p className="font-semibold text-forest">Confirmation + digital-first delivery</p>
+              <p className="font-semibold text-[var(--forest)]">Confirmation + digital-first delivery</p>
               <p className="text-gray-500">
                 {email ? `A confirmation was sent to ${email}. ` : ''}
                 Digital PDFs arrive in about 15 minutes, and print orders get a digital preview first before they go to print.
@@ -49,7 +49,7 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
           <div className="flex items-start gap-3">
             <span className="text-xl flex-shrink-0">📦</span>
             <div>
-              <p className="font-semibold text-forest">Print timeline</p>
+              <p className="font-semibold text-[var(--forest)]">Print timeline</p>
               <p className="text-gray-500">If you chose a printed book, production and shipping follow after preview approval. Typical ship window is 5–7 business days.</p>
             </div>
           </div>
@@ -69,7 +69,7 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
         </a>
         <a
           href="/"
-          className="px-6 py-3 rounded-xl border-2 border-gray-200 font-semibold text-sm text-center text-forest hover:bg-gray-50 transition"
+          className="px-6 py-3 rounded-xl border-2 border-gray-200 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
         >
           Back to Home
         </a>

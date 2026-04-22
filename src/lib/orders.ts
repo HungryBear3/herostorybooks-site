@@ -13,6 +13,8 @@ export interface OrderInput {
   lesson?: string;
   occasion?: string;
   giftMessage?: string;
+  characterNotes?: string;
+  appearanceOptions?: string;
   bookFormat: string;
   email: string;
   photoFileName?: string | null;
@@ -48,6 +50,14 @@ function normalizeFormat(bookFormat: string): BookFormat {
     return bookFormat;
   }
 
+  if (bookFormat === 'printed') {
+    return 'classic';
+  }
+
+  if (bookFormat === 'bundle') {
+    return 'premium';
+  }
+
   return 'classic';
 }
 
@@ -78,6 +88,8 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     lesson: input.lesson?.trim() || '',
     occasion: input.occasion?.trim() || '',
     giftMessage: input.giftMessage?.trim() || '',
+    characterNotes: input.characterNotes?.trim() || '',
+    appearanceOptions: input.appearanceOptions?.trim() || '',
     bookFormat: format,
     formatLabel: meta.label,
     priceCents: meta.priceCents,

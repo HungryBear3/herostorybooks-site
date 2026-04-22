@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     const form = await request.formData();
     const childName = String(form.get('childName') || '').trim();
     const email = String(form.get('email') || '').trim();
-    const bookFormat = String(form.get('bookFormat') || 'classic').trim();
+    const bookFormat = String(form.get('bookFormat') || form.get('bookType') || 'classic').trim();
 
     if (!childName || !email || !isValidEmail(email)) {
       return NextResponse.json(
@@ -22,6 +22,12 @@ export async function POST(request: Request) {
       );
     }
 
+    const photoInput = form.get('photo') instanceof File
+      ? (form.get('photo') as File)
+      : form.get('photoFile') instanceof File
+        ? (form.get('photoFile') as File)
+        : null;
+
     const draftOrder = createOrderRecord({
       childName,
       childAge: String(form.get('childAge') || ''),
@@ -29,14 +35,15 @@ export async function POST(request: Request) {
       lesson: String(form.get('lesson') || ''),
       occasion: String(form.get('occasion') || ''),
       giftMessage: String(form.get('giftMessage') || ''),
+      characterNotes: String(form.get('characterNotes') || ''),
+      appearanceOptions: String(form.get('appearanceOptions') || ''),
       bookFormat,
       email,
-      photoFileName: form.get('photo') instanceof File ? (form.get('photo') as File).name : null,
+      photoFileName: photoInput ? photoInput.name : null,
     });
 
-    const photo = form.get('photo');
-    const photoBlobPath = photo instanceof File && photo.size > 0
-      ? await uploadOrderPhoto(draftOrder.id, photo)
+    const photoBlobPath = photoInput && photoInput.size > 0
+      ? await uploadOrderPhoto(draftOrder.id, photoInput)
       : null;
 
     const order = await persistOrder({
@@ -46,7 +53,6 @@ export async function POST(request: Request) {
 
     await sendOrderConfirmationEmail(order);
 
-    // Mark recovery lead converted — fire-and-forget, never fails the order
     markRecoveryLeadConverted(order.email, order.id).catch(() => {});
 
     const params = new URLSearchParams({

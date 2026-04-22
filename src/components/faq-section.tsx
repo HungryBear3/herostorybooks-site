@@ -31,7 +31,7 @@ const faqs = [
   },
   {
     question: "Do you offer gift options?",
-    answer: "Yes! Our Premium and Deluxe tiers include complimentary gift wrapping. The Deluxe tier comes in a beautiful collector's gift box. You can also add a personalized gift message at checkout for any tier.",
+    answer: "Yes. You can add a personalized gift message at checkout, and our Classic and Premium print formats are built for gifting.",
   },
 ];
 
