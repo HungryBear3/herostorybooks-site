@@ -3,6 +3,8 @@
 import { Button } from "@/components/ui/button";
 import { Star } from "lucide-react";
 import { motion } from "framer-motion";
+import Link from "next/link";
+import Image from "next/image";
 
 export function HeroSection() {
   return (
@@ -56,19 +58,23 @@ export function HeroSection() {
 
             {/* CTAs */}
             <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
-              <Button
-                size="lg"
-                className="bg-gold text-navy hover:bg-gold/90 font-semibold text-lg px-8 py-6 shadow-lg shadow-gold/20"
-              >
-                Create Your Book
-              </Button>
-              <Button
-                size="lg"
-                variant="outline"
-                className="border-2 border-gold/60 text-gold hover:bg-gold/10 hover:border-gold font-semibold text-lg px-8 py-6 bg-transparent"
-              >
-                See a Sample
-              </Button>
+              <Link href="/checkout">
+                <Button
+                  size="lg"
+                  className="bg-gold text-navy hover:bg-gold/90 font-semibold text-lg px-8 py-6 shadow-lg shadow-gold/20"
+                >
+                  Create Your Book
+                </Button>
+              </Link>
+              <Link href="/samples">
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="border-2 border-gold/60 text-gold hover:bg-gold/10 hover:border-gold font-semibold text-lg px-8 py-6 bg-transparent"
+                >
+                  See a Sample
+                </Button>
+              </Link>
             </div>
           </motion.div>
 
@@ -87,21 +93,17 @@ export function HeroSection() {
               {/* Book shadow */}
               <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 w-3/4 h-8 bg-black/30 rounded-full blur-xl" />
               
-              {/* Book placeholder */}
-              <div className="relative w-72 h-96 sm:w-80 sm:h-[440px] lg:w-96 lg:h-[520px] bg-gradient-to-br from-cream via-peach to-lavender rounded-lg shadow-2xl overflow-hidden">
-                <div className="absolute inset-0 flex flex-col items-center justify-center p-8">
-                  <div className="w-20 h-20 bg-navy/10 rounded-full flex items-center justify-center mb-6">
-                    <span className="font-serif text-3xl text-navy">H</span>
-                  </div>
-                  <h3 className="font-serif text-2xl text-navy text-center mb-2">
-                    Your Child&apos;s Name
-                  </h3>
-                  <p className="text-navy/60 text-center text-sm">
-                    Becomes the hero of an amazing adventure
-                  </p>
-                </div>
+              {/* Book mockup with image */}
+              <div className="relative w-72 h-96 sm:w-80 sm:h-[440px] lg:w-96 lg:h-[520px] rounded-lg shadow-2xl overflow-hidden bg-navy">
+                <Image
+                  src="/assets/featured-1.png"
+                  alt="Sample personalized storybook"
+                  fill
+                  className="object-cover"
+                  priority
+                />
                 {/* Book spine effect */}
-                <div className="absolute left-0 top-0 bottom-0 w-4 bg-gradient-to-r from-navy/20 to-transparent" />
+                <div className="absolute left-0 top-0 bottom-0 w-4 bg-gradient-to-r from-navy/40 to-transparent" />
               </div>
 
               {/* Floating decorative stars */}

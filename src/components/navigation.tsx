@@ -6,8 +6,8 @@ import { Menu, X } from "lucide-react";
 import { useState } from "react";
 
 const navLinks = [
-  { href: "#features", label: "Features" },
-  { href: "#pricing", label: "Pricing" },
+  { href: "/how-it-works", label: "How It Works" },
+  { href: "/samples", label: "See Samples" },
   { href: "#about", label: "About" },
   { href: "#faq", label: "FAQ" },
 ];
@@ -43,11 +43,13 @@ export function Navigation() {
 
         {/* CTA Button */}
         <div className="hidden md:block">
-          <Button
-            className="bg-navy text-gold hover:bg-navy/90 font-semibold px-6"
-          >
-            Order Now
-          </Button>
+          <Link href="/checkout">
+            <Button
+              className="bg-navy text-gold hover:bg-navy/90 font-semibold px-6"
+            >
+              Order Now
+            </Button>
+          </Link>
         </div>
 
         {/* Mobile Menu Button */}
@@ -74,11 +76,13 @@ export function Navigation() {
                 {link.label}
               </Link>
             ))}
-            <Button
-              className="bg-navy text-gold hover:bg-navy/90 font-semibold w-full mt-2"
-            >
-              Order Now
-            </Button>
+            <Link href="/checkout" className="w-full">
+              <Button
+                className="bg-navy text-gold hover:bg-navy/90 font-semibold w-full mt-2"
+              >
+                Order Now
+              </Button>
+            </Link>
           </div>
         </div>
       )}
