@@ -3,31 +3,30 @@
 import { motion } from "framer-motion";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
-import Image from "next/image";
 
 const books = [
   {
     title: "The Brave Explorer",
     description: "An adventurous journey through enchanted forests and magical kingdoms.",
-    image: "/assets/brave-explorer.png",
+    color: "from-forest/20 to-forest/5",
     accent: "forest",
   },
   {
     title: "Space Voyager",
     description: "Blast off to the stars and discover wonders beyond imagination.",
-    image: "/assets/space-voyager.png",
+    color: "from-navy/20 to-navy/5",
     accent: "navy",
   },
   {
     title: "Ocean Dreams",
     description: "Dive deep into underwater adventures with friendly sea creatures.",
-    image: "/assets/ocean-dreams.png",
+    color: "from-lavender to-lavender/30",
     accent: "navy",
   },
   {
     title: "Dinosaur Discovery",
     description: "Travel back in time to meet prehistoric friends and learn their secrets.",
-    image: "/assets/dinosaur-discovery.png",
+    color: "from-peach to-peach/30",
     accent: "forest",
   },
 ];
@@ -82,17 +81,22 @@ export function BookShowcase() {
               className="group cursor-pointer"
             >
               <div className="relative overflow-hidden rounded-2xl bg-white border border-border shadow-sm hover:shadow-xl transition-all duration-300">
-                {/* Book cover image */}
-                <div className="aspect-[3/4] relative overflow-hidden bg-navy/10">
-                  <Image
-                    src={book.image}
-                    alt={book.title}
-                    fill
-                    className="object-cover group-hover:scale-105 transition-transform duration-500"
-                    sizes="(max-width: 768px) 50vw, 25vw"
-                  />
+                {/* Book cover placeholder */}
+                <div className={`aspect-[3/4] bg-gradient-to-br ${book.color} relative overflow-hidden`}>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="text-center p-6">
+                      <div className="w-16 h-16 mx-auto mb-4 bg-white/50 rounded-full flex items-center justify-center">
+                        <span className="font-serif text-2xl text-navy">H</span>
+                      </div>
+                      <h4 className="font-serif text-lg text-navy font-semibold">
+                        {book.title}
+                      </h4>
+                    </div>
+                  </div>
                   {/* Hover overlay */}
-                  <div className="absolute inset-0 bg-navy/0 group-hover:bg-navy/20 transition-colors duration-300" />
+                  <div className="absolute inset-0 bg-navy/0 group-hover:bg-navy/10 transition-colors duration-300" />
+                  {/* Zoom effect on image */}
+                  <div className="absolute inset-0 scale-100 group-hover:scale-105 transition-transform duration-500" />
                 </div>
 
                 {/* Book info */}
@@ -104,10 +108,10 @@ export function BookShowcase() {
                     {book.description}
                   </p>
                   <Link
-                    href="/checkout"
+                    href="#"
                     className="inline-flex items-center gap-1.5 text-sm font-medium text-gold hover:text-gold/80 transition-colors"
                   >
-                    Create This Book
+                    See Details
                     <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                   </Link>
                 </div>
