@@ -2,7 +2,12 @@
 
 export default function OrderPage() {
   return (
-    <div className="container mx-auto p-6">
+    <div className="min-h-screen w-full bg-gradient-to-b from-cream via-cream to-white relative overflow-hidden">
+      {/* Decorative elements */}
+      <div className="absolute top-20 right-10 w-96 h-96 bg-gold/5 rounded-full blur-3xl pointer-events-none"></div>
+      <div className="absolute bottom-20 left-10 w-96 h-96 bg-purple/5 rounded-full blur-3xl pointer-events-none"></div>
+      
+      <div className="container mx-auto p-6 relative z-10">
       <h1 className="text-4xl font-serif text-[var(--forest)] mb-8">Place Your Order</h1>
       {/* Progress Bar */}
       <div className="flex items-center mb-10">
@@ -90,6 +95,7 @@ export default function OrderPage() {
           </div>
         </div>
       </div>
+    </div>
     </div>
   );
 }

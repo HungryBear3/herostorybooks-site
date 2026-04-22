@@ -49,7 +49,7 @@ const itemVariants = {
 
 export function BookShowcase() {
   return (
-    <section className="py-24 bg-cream">
+    <section id="samples" className="py-24 bg-cream">
       <div className="container mx-auto px-6">
         {/* Section header */}
         <motion.div

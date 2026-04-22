@@ -1,6 +1,7 @@
 "use client";
 import React, { useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 
 export function Footer() {
   const [email, setEmail] = useState('');
@@ -11,7 +12,14 @@ export function Footer() {
       <div className="container mx-auto grid grid-cols-1 md:grid-cols-3 gap-8">
         {/* Brand & Social */}
         <div>
-          <h3 className="font-serif text-2xl mb-4">HeroStoryBooks</h3>
+          <Image
+            src="/assets/logo-horizontal-text.png"
+            alt="HeroStoryBooks - Stories That Build Courage & Kindness"
+            width={220}
+            height={80}
+            className="h-14 w-auto mb-4"
+          />
+          <p className="text-sm mb-2 font-medium tracking-[0.2em] uppercase text-white/70">Stories That Build Courage & Kindness</p>
           <p className="text-sm mb-4">Magical storybooks where every child is the hero.</p>
           <div className="flex gap-4">
             <a href="#" className="hover:text-gray-300">Instagram</a>

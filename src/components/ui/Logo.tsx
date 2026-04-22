@@ -6,8 +6,8 @@ export default function Logo() {
   return (
     <Link href="/" className="flex items-center space-x-2 hover:opacity-80 transition">
       <Image
-        src="/assets/logo-horizontal.png"
-        alt="HeroStoryBooks"
+        src="/assets/logo-horizontal-text.png"
+        alt="HeroStoryBooks - Personalized Story Books for Children"
         width={180}
         height={50}
         className="h-12 w-auto"
