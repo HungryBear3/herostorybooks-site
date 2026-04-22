@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 
 export function Footer() {
   return (
@@ -7,13 +8,14 @@ export function Footer() {
         <div className="grid md:grid-cols-4 gap-12 mb-12">
           {/* Logo and description */}
           <div className="md:col-span-2">
-            <Link href="/" className="flex items-center gap-2 mb-4">
-              <div className="w-10 h-10 bg-gold rounded-lg flex items-center justify-center">
-                <span className="text-navy font-serif font-bold text-xl">H</span>
-              </div>
-              <span className="font-serif text-xl font-semibold text-cream">
-                HeroStoryBooks
-              </span>
+            <Link href="/" className="mb-4 inline-flex rounded-2xl bg-cream px-4 py-3 shadow-sm">
+              <Image
+                src="/assets/logo-horizontal-text.png"
+                alt="HeroStoryBooks"
+                width={220}
+                height={56}
+                className="h-10 w-auto"
+              />
             </Link>
             <p className="text-cream/70 max-w-sm leading-relaxed">
               Creating magical, personalized storybooks that spark imagination and 

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Menu, X } from "lucide-react";
 import { useState } from "react";
@@ -19,13 +20,15 @@ export function Navigation() {
     <header className="fixed top-0 left-0 right-0 z-50 bg-cream/95 backdrop-blur-sm border-b border-border">
       <nav className="container mx-auto px-6 py-4 flex items-center justify-between">
         {/* Logo */}
-        <Link href="/" className="flex items-center gap-2">
-          <div className="w-10 h-10 bg-navy rounded-lg flex items-center justify-center">
-            <span className="text-gold font-serif font-bold text-xl">H</span>
-          </div>
-          <span className="font-serif text-xl font-semibold text-navy hidden sm:block">
-            HeroStoryBooks
-          </span>
+        <Link href="/" className="flex items-center">
+          <Image
+            src="/assets/logo-horizontal-text.png"
+            alt="HeroStoryBooks"
+            width={220}
+            height={56}
+            className="h-10 w-auto sm:h-11"
+            priority
+          />
         </Link>
 
         {/* Desktop Navigation */}

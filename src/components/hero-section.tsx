@@ -66,7 +66,7 @@ export function HeroSection() {
                   Create Your Book
                 </Button>
               </Link>
-              <a href="#samples" onClick={(e) => { e.preventDefault(); document.querySelector('#samples')?.scrollIntoView({ behavior: 'smooth' }); }}>
+              <Link href="/samples">
                 <Button
                   size="lg"
                   variant="outline"
@@ -74,7 +74,7 @@ export function HeroSection() {
                 >
                   See a Sample
                 </Button>
-              </a>
+              </Link>
             </div>
           </motion.div>
 
