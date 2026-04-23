@@ -49,7 +49,7 @@ const itemVariants = {
 
 export function BookShowcase() {
   return (
-    <section id="samples" className="py-24 bg-cream">
+    <section id="samples" className="pt-16 pb-10 bg-cream">
       <div className="container mx-auto px-6">
         {/* Section header */}
         <motion.div
@@ -57,7 +57,7 @@ export function BookShowcase() {
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.6 }}
-          className="text-center mb-16"
+          className="text-center mb-10"
         >
           <h2 className="font-serif text-3xl sm:text-4xl lg:text-5xl font-bold text-navy mb-4">
             Featured Adventures

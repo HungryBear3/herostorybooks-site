@@ -18,15 +18,15 @@ export function Navigation() {
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-cream/95 backdrop-blur-sm border-b border-border">
-      <nav className="container mx-auto px-6 py-4 flex items-center justify-between">
+      <nav className="container mx-auto px-6 py-2.5 flex items-center justify-between gap-4">
         {/* Logo */}
-        <Link href="/" className="flex items-center">
+        <Link href="/" className="flex items-center shrink-0 overflow-hidden rounded-xl bg-white/85 px-1.5 py-1 shadow-sm ring-1 ring-navy/10">
           <Image
             src="/assets/logo-horizontal-text.png"
             alt="HeroStoryBooks"
-            width={220}
-            height={56}
-            className="h-10 w-auto sm:h-11"
+            width={280}
+            height={76}
+            className="h-[3.4rem] w-auto scale-[1.14] origin-left sm:h-[3.9rem]"
             priority
           />
         </Link>

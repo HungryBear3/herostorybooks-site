@@ -40,7 +40,7 @@ export function HeroSection() {
                 ))}
               </div>
               <span className="text-cream/90 text-sm font-medium">
-                Trusted by 50,000+ families
+                Trusted by 5,000+ families
               </span>
             </motion.div>
 
@@ -96,7 +96,7 @@ export function HeroSection() {
               {/* Book mockup with image */}
               <div className="relative w-72 h-96 sm:w-80 sm:h-[440px] lg:w-96 lg:h-[520px] rounded-lg shadow-2xl overflow-hidden bg-navy">
                 <Image
-                  src="/assets/featured-1.png"
+                  src="/assets/space-voyager.png"
                   alt="Sample personalized storybook"
                   fill
                   className="object-cover"

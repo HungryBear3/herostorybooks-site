@@ -12,9 +12,12 @@ import { SAMPLE_ADVENTURES } from '@/lib/sample-adventures';
 export default function SamplesPage() {
   const [currentAdventure, setCurrentAdventure] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
+  const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
   const adventure = SAMPLE_ADVENTURES[currentAdventure];
   const samplePages = adventure.pages;
   const page = samplePages[currentPage];
+  const imageKey = `${adventure.name}-${currentPage}`;
+  const showIllustration = Boolean(page.image && !brokenImages[imageKey]);
 
   const nextPage = () => {
     if (currentPage < samplePages.length - 1) {
@@ -83,13 +86,14 @@ export default function SamplesPage() {
         >
           <div className="bg-white rounded-2xl shadow-2xl overflow-hidden border-8 border-navy/10">
             <div className="relative aspect-video bg-navy/5">
-              {page.image ? (
+              {showIllustration ? (
                 <Image
                   src={page.image}
                   alt={page.subtitle}
                   fill
                   className="object-cover"
                   priority
+                  onError={() => setBrokenImages((prev) => ({ ...prev, [imageKey]: true }))}
                 />
               ) : (
                 <div className={`absolute inset-0 bg-gradient-to-br ${page.sceneAccent} flex items-center justify-center p-8`}>

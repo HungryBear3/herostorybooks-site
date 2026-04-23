@@ -23,14 +23,14 @@ const itemVariants = {
 
 export function PricingSection() {
   return (
-    <section id="pricing" className="py-24 bg-gradient-to-b from-cream to-peach/20">
+    <section id="pricing" className="pt-12 pb-16 bg-gradient-to-b from-cream to-peach/20">
       <div className="container mx-auto px-6">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.6 }}
-          className="text-center mb-16"
+          className="text-center mb-10"
         >
           <h2 className="font-serif text-3xl sm:text-4xl lg:text-5xl font-bold text-navy mb-4">
             Clear Pricing, Before You Upload Anything

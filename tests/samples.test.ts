@@ -17,3 +17,22 @@ test('every sample adventure shows more than a thin three-page teaser', () => {
     assert.ok(adventure.pages.length >= 5, `${adventure.name} only has ${adventure.pages.length} pages`);
   }
 });
+
+test('sample adventure interior pages are prewired to fal output filenames', () => {
+  const expectedPrefixes = {
+    'Brave Explorer': '/assets/brave-explorer-page-',
+    'Space Voyager': '/assets/space-voyager-page-',
+    'Ocean Dreams': '/assets/ocean-dreams-page-',
+    'Dinosaur Discovery': '/assets/dinosaur-discovery-page-',
+  } as const;
+
+  for (const adventure of SAMPLE_ADVENTURES) {
+    const prefix = expectedPrefixes[adventure.name as keyof typeof expectedPrefixes];
+    assert.ok(prefix, `unexpected adventure ${adventure.name}`);
+
+    for (const [index, page] of adventure.pages.entries()) {
+      if (index === 0) continue;
+      assert.equal(page.image?.startsWith(prefix), true, `${adventure.name} page ${index + 1} missing prewired image`);
+    }
+  }
+});

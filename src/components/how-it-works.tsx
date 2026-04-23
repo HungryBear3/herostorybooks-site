@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { motion } from "framer-motion";
 import { Palette, Upload, Sparkles, Gift } from "lucide-react";
 
@@ -43,7 +44,7 @@ const itemVariants = {
 
 export function HowItWorks() {
   return (
-    <section id="features" className="py-24 bg-gradient-to-b from-cream to-peach/30">
+    <section id="features" className="pt-24 pb-20 bg-gradient-to-b from-cream to-peach/30">
       <div className="container mx-auto px-6">
         {/* Section header */}
         <motion.div
@@ -51,7 +52,7 @@ export function HowItWorks() {
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.6 }}
-          className="text-center mb-16"
+          className="text-center mb-12"
         >
           <h2 className="font-serif text-3xl sm:text-4xl lg:text-5xl font-bold text-navy mb-4">
             How It Works
@@ -59,6 +60,46 @@ export function HowItWorks() {
           <p className="text-navy/70 text-lg max-w-2xl mx-auto">
             Creating a personalized storybook is simple, magical, and unforgettable.
           </p>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.6, delay: 0.1 }}
+          className="mb-12 overflow-hidden rounded-3xl border border-gold/20 bg-white shadow-lg"
+        >
+          <div className="grid gap-0 lg:grid-cols-[1.05fr_auto_1.05fr]">
+            <div className="p-6 md:p-8">
+              <p className="mb-3 text-xs font-semibold uppercase tracking-[0.3em] text-navy/50">1. Start with a real photo</p>
+              <div className="relative overflow-hidden rounded-2xl bg-peach/20 shadow-sm">
+                <Image
+                  src="/assets/real-photo-demo.png"
+                  alt="Example child photo uploaded for personalization"
+                  width={1536}
+                  height={1024}
+                  className="h-full w-full object-cover"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-center px-2 py-4 lg:px-0">
+              <div className="rounded-full bg-gold px-4 py-2 text-sm font-semibold text-navy shadow-sm">→ Storybook magic</div>
+            </div>
+
+            <div className="p-6 md:p-8 lg:border-l lg:border-gold/10">
+              <p className="mb-3 text-xs font-semibold uppercase tracking-[0.3em] text-navy/50">2. We transform it into their adventure</p>
+              <div className="relative overflow-hidden rounded-2xl bg-navy/5 shadow-sm">
+                <Image
+                  src="/assets/storybook-transform-demo.png"
+                  alt="Example transformed storybook illustration from the uploaded child photo"
+                  width={1536}
+                  height={1024}
+                  className="h-full w-full object-cover"
+                />
+              </div>
+            </div>
+          </div>
         </motion.div>
 
         {/* Steps grid */}
