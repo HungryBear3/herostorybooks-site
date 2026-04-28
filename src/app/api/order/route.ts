@@ -20,7 +20,28 @@ function getStripe() {
   return new Stripe(key);
 }
 
-function getBaseUrl() {
+function getReturnBaseUrl(request: Request): string {
+  // Production: pin Stripe success/cancel URLs to the canonical brand domain.
+  // We deliberately do NOT use the inbound origin in production because
+  // production may be served from herostorybooks.com or from a Vercel domain,
+  // and we always want the customer to land on the branded URL.
+  if (process.env.VERCEL_ENV === 'production') {
+    const explicit = process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '');
+    if (explicit) return explicit;
+    return 'https://herostorybooks.com';
+  }
+  // Preview / development: derive base URL from the inbound request origin
+  // so Stripe returns the customer to the EXACT deployment that created the
+  // Checkout Session — not a stale shared preview alias that may serve older
+  // code. NEXT_PUBLIC_URL is the alias and would pin previews to whichever
+  // deployment that alias currently points at, which can be older than the
+  // deployment that handled this POST.
+  try {
+    const origin = new URL(request.url).origin;
+    if (origin) return origin;
+  } catch {
+    // fall through to env / localhost
+  }
   return process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'http://localhost:3000';
 }
 
@@ -102,7 +123,7 @@ export async function POST(request: Request) {
     markRecoveryLeadConverted(order.email, order.id).catch(() => {});
 
     const stripe = getStripe();
-    const baseUrl = getBaseUrl();
+    const baseUrl = getReturnBaseUrl(request);
     const successParams = new URLSearchParams({
       orderId: order.id,
       childName: order.childName,
