@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "dev": "next dev",
     "lint": "eslint .",
+    "order:status": "node --experimental-strip-types scripts/order-status.ts",
+    "start": "next start",
     "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "dependencies": {
@@ -51,6 +52,9 @@
     "lucide-react": "^0.564.0",
     "next": "16.2.0",
     "next-themes": "^0.4.6",
+    "node-fetch": "^2.6.9",
+    "openai": "^6.34.0",
+    "pdfkit": "^0.18.0",
     "react": "^19",
     "react-day-picker": "9.13.2",
     "react-dom": "^19",
@@ -59,6 +63,7 @@
     "recharts": "2.15.0",
     "resend": "^6.12.2",
     "sonner": "^1.7.1",
+    "stripe": "^22.0.2",
     "tailwind-merge": "^3.3.1",
     "vaul": "^1.1.2",
     "zod": "^3.24.1"
@@ -66,6 +71,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.0",
     "@types/node": "^22",
+    "@types/pdfkit": "^0.17.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "postcss": "^8.5",

@@ -2,6 +2,7 @@ export interface SampleAdventurePage {
   subtitle: string;
   story: string;
   image?: string;
+  imageLayout?: 'landscape' | 'portrait';
   sceneTitle?: string;
   sceneAccent?: string;
 }
@@ -166,6 +167,91 @@ export const SAMPLE_ADVENTURES: SampleAdventure[] = [
         sceneTitle: 'A Story to Keep Forever',
         sceneAccent: 'from-orange-500 via-amber-500 to-rose-400',
         story: "As the crystal glowed again, Sam said goodbye to his dinosaur friends. Back in his own time, he held the crystal close and smiled, knowing he would never forget the day he walked with dinosaurs.",
+      },
+    ],
+  },
+  {
+    name: 'Dragon Quest',
+    title: "Ava's Dragon Quest",
+    pages: [
+      {
+        subtitle: 'Page 1 - A Map in Moonlight',
+        image: '/assets/dragon-quest-gpt.png',
+        story: "Ava found a shimmering map tucked inside an old castle library book. As moonlight touched the page, a silver path appeared, winding toward the mountains where a dragon was said to guard a hidden light.",
+      },
+      {
+        subtitle: 'Page 2 - Through the Lantern Forest',
+        image: '/assets/dragon-quest-page-2.png',
+        sceneTitle: 'Lanterns Beneath the Trees',
+        sceneAccent: 'from-violet-700 via-fuchsia-600 to-amber-400',
+        story: "With a lantern in hand, Ava followed the map through a forest glowing with hanging lights. Each step felt braver than the last, and every sparkling leaf whispered that the adventure had chosen exactly the right hero.",
+      },
+      {
+        subtitle: 'Page 3 - The Sleeping Dragon',
+        image: '/assets/dragon-quest-page-3.png',
+        sceneTitle: 'A Gentle Giant Wakes',
+        sceneAccent: 'from-emerald-700 via-teal-600 to-violet-500',
+        story: "At the edge of a crystal cave, Ava met a great emerald dragon curled around a glowing stone. Instead of roaring, the dragon opened one golden eye and smiled, as if it had been waiting all along for a kind and curious friend.",
+      },
+      {
+        subtitle: 'Page 4 - Flight Above the Kingdom',
+        image: '/assets/dragon-quest-page-4.png',
+        sceneTitle: 'Over Towers and Clouds',
+        sceneAccent: 'from-sky-600 via-indigo-500 to-amber-400',
+        story: "The dragon invited Ava onto its back, and together they soared above castle towers, silver rivers, and clouds painted pink by the evening sun. From the sky, Ava could see that courage made the whole kingdom feel bright and new.",
+      },
+      {
+        subtitle: 'Page 5 - The Heartfire Gift',
+        image: '/assets/dragon-quest-page-5.png',
+        sceneTitle: 'A Light to Carry Home',
+        sceneAccent: 'from-amber-500 via-orange-500 to-rose-400',
+        story: "Before dawn, the dragon placed the glowing stone into Ava's hands. It was called heartfire, a light that shines brightest for those who choose bravery with kindness. Back home, Ava kept it close and remembered the night she learned both.",
+      },
+    ],
+  },
+  {
+    name: 'Royal Adventure',
+    title: "Mia's Royal Adventure",
+    pages: [
+      {
+        subtitle: 'Page 1 - Invitation to the Palace',
+        image: '/assets/royal-regen-candidates-v7/cover-v7.png',
+        imageLayout: 'portrait',
+        sceneTitle: 'A Golden Invitation Arrives',
+        sceneAccent: 'from-fuchsia-700 via-rose-500 to-amber-300',
+        story: "Mia opened a golden envelope sealed with a sparkling crest. Inside was an invitation to the palace for a day of royal surprises, secret gardens, and one very important task that only a thoughtful young guest could complete.",
+      },
+      {
+        subtitle: 'Page 2 - Through the Grand Hall',
+        image: '/assets/royal-regen-candidates-v7/page2-v7.png',
+        imageLayout: 'portrait',
+        sceneTitle: 'Marble Floors and Morning Light',
+        sceneAccent: 'from-indigo-700 via-purple-600 to-rose-400',
+        story: "Mia stepped into the grand hall where sunlight danced across marble floors and banners swayed high above. Courtiers bowed, musicians played softly, and every shining doorway seemed to promise a new wonder waiting just ahead.",
+      },
+      {
+        subtitle: 'Page 3 - The Garden Key',
+        image: '/assets/royal-regen-candidates-v7/page3-v7.png',
+        imageLayout: 'portrait',
+        sceneTitle: 'A Secret in the Roses',
+        sceneAccent: 'from-rose-600 via-pink-500 to-amber-300',
+        story: "In the royal garden, Mia discovered a tiny silver key hidden among the roses. A friendly palace fox led the way to a secret gate, where fountains sang and the flowers seemed to bloom brighter with every brave step she took.",
+      },
+      {
+        subtitle: 'Page 4 - The Kindness Crown',
+        image: '/assets/royal-regen-candidates-v7/page4-v7.png',
+        imageLayout: 'portrait',
+        sceneTitle: 'The Choice of a True Royal',
+        sceneAccent: 'from-amber-400 via-yellow-300 to-rose-300',
+        story: "At the center of the garden stood a crown on a velvet cushion. But the palace keeper explained it could only be earned by choosing kindness over glory. Mia shared the garden's hidden treasure with everyone, and the crown shimmered with approval.",
+      },
+      {
+        subtitle: 'Page 5 - A Celebration to Remember',
+        image: '/assets/royal-regen-candidates-v7/page5-v7.png',
+        imageLayout: 'portrait',
+        sceneTitle: 'The Palace Glows at Dusk',
+        sceneAccent: 'from-amber-500 via-orange-400 to-fuchsia-500',
+        story: "That evening the palace lit with lanterns, music, and laughter as Mia was celebrated for her generous heart. She rode home beneath a sky of stars, knowing the very best kind of royal adventure is one that leaves everyone feeling included.",
       },
     ],
   },

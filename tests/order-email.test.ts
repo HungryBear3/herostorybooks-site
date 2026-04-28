@@ -5,7 +5,9 @@ import {
   buildOrderConfirmationEmail,
   buildPreviewReadyEmail,
   buildPrintInProductionEmail,
+  buildProofReadyEmail,
   buildShippedEmail,
+  getSupportEmail,
   sendLifecycleEmail,
 } from '../src/lib/order-email.ts';
 import { createOrderRecord } from '../src/lib/orders.ts';
@@ -43,7 +45,25 @@ function makeDigitalOrder() {
   );
 }
 
-const SUPPORT = 'hello@herostorybooks.com';
+// ── Support alias defaults ─────────────────────────────────────────────────────
+
+test('getSupportEmail defaults to support@herostorybooks.com for MVP', () => {
+  const originalSupport = process.env.HSB_SUPPORT_EMAIL;
+  const originalFrom = process.env.EMAIL_FROM;
+  delete process.env.HSB_SUPPORT_EMAIL;
+  delete process.env.EMAIL_FROM;
+
+  try {
+    assert.equal(getSupportEmail(), 'support@herostorybooks.com');
+  } finally {
+    if (originalSupport === undefined) delete process.env.HSB_SUPPORT_EMAIL;
+    else process.env.HSB_SUPPORT_EMAIL = originalSupport;
+    if (originalFrom === undefined) delete process.env.EMAIL_FROM;
+    else process.env.EMAIL_FROM = originalFrom;
+  }
+});
+
+const SUPPORT = 'support@herostorybooks.com';
 
 // ── Existing confirmation email ───────────────────────────────────────────────
 
@@ -54,11 +74,11 @@ test('buildOrderConfirmationEmail includes the promised order details and suppor
   assert.match(email.subject, /Ava/i);
   assert.match(email.html, /Ava/);
   assert.match(email.html, /Premium/);
-  assert.match(email.html, /hello@herostorybooks.com/);
+  assert.match(email.html, /support@herostorybooks.com/);
   assert.match(email.html, /digital preview.*before it prints/i);
   assert.match(email.text, /Premium/);
   assert.match(email.text, /Hardcover ships in 5–7 business days/i);
-  assert.match(email.text, /hello@herostorybooks.com/);
+  assert.match(email.text, /support@herostorybooks.com/);
 });
 
 // ── buildPreviewReadyEmail ────────────────────────────────────────────────────
@@ -70,9 +90,9 @@ test('buildPreviewReadyEmail for print includes child name and approval framing'
   assert.match(email.subject, /Ava/i);
   assert.match(email.html, /Ava/);
   assert.match(email.html, /preview/i);
-  assert.match(email.html, /hello@herostorybooks.com/);
+  assert.match(email.html, /support@herostorybooks.com/);
   assert.match(email.text, /preview/i);
-  assert.match(email.text, /hello@herostorybooks.com/);
+  assert.match(email.text, /support@herostorybooks.com/);
 });
 
 test('buildPreviewReadyEmail for print mentions approval before printing', () => {
@@ -124,8 +144,8 @@ test('buildPrintInProductionEmail includes child name and format', () => {
   assert.match(email.subject, /Ava/i);
   assert.match(email.html, /Premium/i);
   assert.match(email.html, /Ava/);
-  assert.match(email.html, /hello@herostorybooks.com/);
-  assert.match(email.text, /hello@herostorybooks.com/);
+  assert.match(email.html, /support@herostorybooks.com/);
+  assert.match(email.text, /support@herostorybooks.com/);
 });
 
 test('buildPrintInProductionEmail does not claim the book has shipped', () => {
@@ -153,7 +173,7 @@ test('buildShippedEmail includes child name and format', () => {
   assert.match(email.subject, /Leo/i);
   assert.match(email.html, /Leo/);
   assert.match(email.html, /Classic/i);
-  assert.match(email.html, /hello@herostorybooks.com/);
+  assert.match(email.html, /support@herostorybooks.com/);
 });
 
 test('buildShippedEmail without tracking number gives honest placeholder', () => {
@@ -223,6 +243,71 @@ test('sendLifecycleEmail skips order_received (handled at order creation)', asyn
     (result as { skipped: true; reason: string }).reason,
     'no_lifecycle_email_for_status',
   );
+});
+
+// ── buildProofReadyEmail — must point primary CTA at /review, not legacy approve-proof ──
+
+test('buildProofReadyEmail: primary CTA is the /review/<orderId> surface', () => {
+  const order = makeClassicOrder();
+  const email = buildProofReadyEmail(order, {
+    reviewUrl: `https://hsb.example.com/review/${order.id}?token=abc`,
+    proofUrl: 'https://cdn.example.com/proof.pdf',
+    supportEmail: SUPPORT,
+  });
+
+  // The review URL is the primary CTA, surfaced as the prominent button.
+  assert.match(email.html, new RegExp(`href="https://hsb\\.example\\.com/review/${order.id}\\?token=abc"`));
+  assert.match(email.text, new RegExp(`https://hsb\\.example\\.com/review/${order.id}\\?token=abc`));
+  // Proof PDF stays as a fallback link.
+  assert.match(email.html, /href="https:\/\/cdn\.example\.com\/proof\.pdf"/);
+  assert.match(email.text, /https:\/\/cdn\.example\.com\/proof\.pdf/);
+});
+
+test('buildProofReadyEmail: does NOT link the legacy /api/order/.../approve-proof one-click endpoint', () => {
+  const order = makeClassicOrder();
+  const email = buildProofReadyEmail(order, {
+    reviewUrl: `https://hsb.example.com/review/${order.id}?token=abc`,
+    proofUrl: 'https://cdn.example.com/proof.pdf',
+    supportEmail: SUPPORT,
+  });
+  // Bypass URL must not be reintroduced — it would skip ack + per-page gates.
+  assert.doesNotMatch(email.html, /\/api\/order\/[^"]*\/approve-proof/);
+  assert.doesNotMatch(email.text, /\/api\/order\/[^\s]*\/approve-proof/);
+});
+
+test('buildProofReadyEmail: copy describes the per-page review + acknowledgment + approval flow', () => {
+  const order = makeClassicOrder();
+  const email = buildProofReadyEmail(order, {
+    reviewUrl: `https://hsb.example.com/review/${order.id}?token=abc`,
+    proofUrl: 'https://cdn.example.com/proof.pdf',
+    supportEmail: SUPPORT,
+  });
+  // Review-flow framing — illustrated pages + approve from the review surface.
+  assert.match(email.html, /illustrated page/i);
+  assert.match(email.html, /approve/i);
+  // Honest about the proof-only fallback.
+  assert.match(email.html, /proof PDF/i);
+});
+
+test('buildProofReadyEmail: subject + child name are present', () => {
+  const order = makeClassicOrder();
+  const email = buildProofReadyEmail(order, {
+    reviewUrl: `https://x/review/${order.id}?token=t`,
+    proofUrl: 'https://x/proof.pdf',
+    supportEmail: SUPPORT,
+  });
+  assert.match(email.subject, /Leo/i);
+  assert.match(email.subject, /proof.*ready/i);
+  assert.match(email.html, /Leo/);
+});
+
+test('buildPreviewReadyEmail (print): does NOT instruct customer to "reply to view the preview"', () => {
+  // Old copy directed customers to reply to the email instead of using the
+  // dedicated review surface. That contradicts the modern flow.
+  const order = { ...makeClassicOrder(), status: 'preview_ready' as const };
+  const email = buildPreviewReadyEmail(order, { supportEmail: SUPPORT });
+  assert.doesNotMatch(email.html, /reply to this email to view/i);
+  assert.doesNotMatch(email.text, /reply to this email to view/i);
 });
 
 // ── Missing config fails safely ───────────────────────────────────────────────

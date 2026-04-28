@@ -1,0 +1,118 @@
+import { NextResponse } from 'next/server';
+import Stripe from 'stripe';
+
+import { sendOrderConfirmationEmail } from '@/lib/order-email';
+import { isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
+import { triggerFulfillment } from '@/lib/fulfillment';
+
+interface StripeCheckoutSession {
+  id: string;
+  metadata?: Record<string, string> | null;
+  client_reference_id?: string | null;
+  shipping_details?: {
+    address?: {
+      line1?: string | null;
+      line2?: string | null;
+      city?: string | null;
+      state?: string | null;
+      postal_code?: string | null;
+      country?: string | null;
+    } | null;
+  } | null;
+}
+
+function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) throw new Error('STRIPE_SECRET_KEY not set');
+  return new Stripe(key);
+}
+
+function extractShipping(session: StripeCheckoutSession): ShippingAddress | undefined {
+  const addr = session.shipping_details?.address;
+  if (!addr) return undefined;
+  return {
+    line1: addr.line1 ?? '',
+    line2: addr.line2 ?? null,
+    city: addr.city ?? '',
+    state: addr.state ?? '',
+    zip: addr.postal_code ?? '',
+    country: addr.country ?? '',
+  };
+}
+
+export async function POST(request: Request) {
+  const stripe = getStripe();
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  if (!webhookSecret) {
+    console.error('STRIPE_WEBHOOK_SECRET not set');
+    return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 500 });
+  }
+
+  const body = await request.text();
+  const sig = request.headers.get('stripe-signature') ?? '';
+
+  let event: ReturnType<typeof stripe.webhooks.constructEvent>;
+  try {
+    event = stripe.webhooks.constructEvent(body, sig, webhookSecret);
+  } catch (err) {
+    console.error('Stripe signature verification failed:', err);
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object as StripeCheckoutSession;
+    const orderId = (session.metadata?.orderId ?? session.client_reference_id) || null;
+
+    if (!orderId) {
+      console.error('Stripe webhook: no orderId in session metadata');
+      return NextResponse.json({ received: true });
+    }
+
+    try {
+      // Idempotency: if this session was already processed, skip silently
+      const existing = await (await import('@/lib/orders')).getOrder(orderId);
+      if (existing?.stripeSessionId === session.id && existing.paymentStatus === 'paid') {
+        console.warn(`Stripe webhook: session ${session.id} already processed — skipping`);
+        return NextResponse.json({ received: true });
+      }
+
+      const shipping = extractShipping(session);
+      const updated = await updateOrderPayment(orderId, 'paid', {
+        stripeSessionId: session.id,
+        ...(shipping ? { shippingAddress: shipping } : {}),
+      });
+
+      if (!updated) {
+        // Two distinct meanings collapse here in production: (a) the order
+        // record was never durably persisted before Stripe completed (a
+        // recovery candidate — run scripts/recover-orders.ts), (b) the order
+        // was persisted to a different store than we're reading from (an
+        // infra bug — investigate blob token + region). Both are losses.
+        // Return 500 so Stripe retries delivery; if it's still missing on
+        // retry, ops has a clear log line to act on.
+        console.error(
+          `[webhook] CRITICAL: order ${orderId} not found in durable store after paid Stripe session ${session.id} ` +
+            `(amount=${(session as { amount_total?: number }).amount_total ?? '?'}, customer_email=${(session as { customer_email?: string }).customer_email ?? '?'}). ` +
+            `This customer paid but their order is missing. Recovery via scripts/recover-orders.ts may be required.`,
+        );
+        return NextResponse.json(
+          { error: `Order ${orderId} not found in durable store` },
+          { status: 500 },
+        );
+      }
+
+      await sendOrderConfirmationEmail(updated);
+
+      // Fire-and-forget: fulfillment errors are captured on the order record
+      triggerFulfillment(orderId).catch(err =>
+        console.error(`[webhook] fulfillment trigger failed for ${orderId}:`, err),
+      );
+    } catch (err) {
+      console.error(`Stripe webhook: failed to process order ${orderId}:`, err);
+      return NextResponse.json({ error: 'Processing failed' }, { status: 500 });
+    }
+  }
+
+  return NextResponse.json({ received: true });
+}

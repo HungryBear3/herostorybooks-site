@@ -2,7 +2,7 @@ import { Resend } from 'resend';
 
 import type { OrderRecord } from './orders';
 
-const DEFAULT_SUPPORT_EMAIL = 'hello@herostorybooks.com';
+const DEFAULT_SUPPORT_EMAIL = 'support@herostorybooks.com';
 const DEFAULT_FROM_EMAIL = 'Hero Story Books <onboarding@resend.dev>';
 
 function isPrintFormat(order: OrderRecord) {
@@ -56,6 +56,7 @@ export function buildOrderConfirmationEmail(
     `Order ID: ${order.id}`,
     '',
     previewNote,
+    `Track your order: ${(process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'https://herostorybooks.com')}/status/${order.id}`,
     `Questions? ${supportEmail}`,
   ].join('\n');
 
@@ -103,7 +104,7 @@ export function buildPreviewReadyEmail(
 
   const bodyText = isDigital
     ? `Your personalized story is done. We're sending the PDF to you now — watch your inbox. If it doesn't arrive in a few minutes, check your spam folder or reply to this email and we'll resend it immediately.`
-    : `We've put together a digital preview of ${escapeHtml(name)}'s book so you can look it over before we send it to print. Reply to this email to view the preview and let us know if you'd like any changes — or give us the green light and we'll move it into production.`;
+    : `We've put together a digital preview of ${escapeHtml(name)}'s book. Look for our separate "proof is ready" email — it has the link to review each illustrated page and approve the book before printing. If you don't see it within a few minutes, check your spam folder or reply here and we'll resend it.`;
 
   const nextStepText = isDigital
     ? ''
@@ -132,8 +133,9 @@ export function buildPreviewReadyEmail(
     : [
         `${name}'s storybook preview is ready`,
         '',
-        `We've put together a digital preview of ${name}'s book so you can look it over before we print.`,
-        `Reply to this email to view the preview. Let us know if you'd like changes or give us the go-ahead.`,
+        `We've put together a digital preview of ${name}'s book.`,
+        `Look for our separate "proof is ready" email — it has the link to review each illustrated page and approve the book before printing.`,
+        `If you don't see it within a few minutes, check your spam folder or reply here and we'll resend it.`,
         '',
         `Once approved: printed and shipped in 5–7 business days.`,
         '',
@@ -282,6 +284,221 @@ export async function sendLifecycleEmail(
     replyTo: supportEmail,
   });
 
+  return { skipped: false as const, id: result.data?.id ?? null };
+}
+
+// ── Fulfillment-specific emails ───────────────────────────────────────────────
+
+export function buildDigitalDeliveryEmail(
+  order: OrderRecord,
+  options: { pdfUrl: string; supportEmail?: string } = { pdfUrl: '' },
+) {
+  const supportEmail = options.supportEmail || getSupportEmail();
+  const name = order.childName;
+  const subject = `${name}'s storybook is ready — download inside ✨`;
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937;line-height:1.5;">
+      <h1 style="font-size:28px;color:#1F3A5F;margin-bottom:12px;">${escapeHtml(name)}'s book is done ✨</h1>
+      <p style="margin:0 0 16px;">Your personalized storybook is ready. Click below to download your PDF.</p>
+      <div style="text-align:center;margin:28px 0;">
+        <a href="${escapeHtml(options.pdfUrl)}" style="background:#D4AF37;color:#1F3A5F;font-weight:bold;font-size:16px;text-decoration:none;padding:14px 32px;border-radius:12px;display:inline-block;">
+          📖 Download ${escapeHtml(name)}'s Storybook
+        </a>
+      </div>
+      <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">If the button doesn't work, copy this link: ${escapeHtml(options.pdfUrl)}</p>
+      <p style="margin:0 0 12px;">Questions? Reply to this email or contact <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>.</p>
+      <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Order ID: ${escapeHtml(order.id)} · 7-day satisfaction guarantee</p>
+    </div>
+  `;
+
+  const text = [
+    `${name}'s storybook is ready ✨`,
+    '',
+    `Download your PDF here: ${options.pdfUrl}`,
+    '',
+    `Questions? ${supportEmail}`,
+    `Order ID: ${order.id}`,
+  ].join('\n');
+
+  return { subject, html, text };
+}
+
+export async function sendDigitalDeliveryEmail(
+  order: OrderRecord,
+  options: { pdfUrl: string },
+) {
+  const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
+  if (!apiKey) return { skipped: true as const, reason: 'missing_resend_api_key' };
+
+  const resend = new Resend(apiKey);
+  const supportEmail = getSupportEmail();
+  const email = buildDigitalDeliveryEmail(order, { pdfUrl: options.pdfUrl, supportEmail });
+
+  const result = await resend.emails.send({
+    from: getOrderSenderEmail(),
+    to: [order.email],
+    subject: email.subject,
+    html: email.html,
+    text: email.text,
+    replyTo: supportEmail,
+  });
+
+  return { skipped: false as const, id: result.data?.id ?? null };
+}
+
+export function buildProofReadyEmail(
+  order: OrderRecord,
+  options: {
+    /** Primary CTA — the customer review surface (`/review/<id>?token=...`).
+     *  This is the only path that drives per-page accept, proof acknowledgment,
+     *  and the server-gated whole-book approval. */
+    reviewUrl: string;
+    /** Secondary fallback — direct PDF link, for customers who only want to
+     *  glance at the proof. Approval is NOT possible from this URL. */
+    proofUrl: string;
+    supportEmail?: string;
+  },
+) {
+  const supportEmail = options.supportEmail || getSupportEmail();
+  const name = order.childName;
+  const subject = `${name}'s proof is ready — please review`;
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937;line-height:1.5;">
+      <h1 style="font-size:28px;color:#1F3A5F;margin-bottom:12px;">${escapeHtml(name)}'s book is ready to review 📖</h1>
+      <p style="margin:0 0 16px;">We've created ${escapeHtml(name)}'s personalized storybook. Open the review page to look through each illustrated page, request changes if anything's off, then approve to send it to print.</p>
+      <div style="text-align:center;margin:20px 0;">
+        <a href="${escapeHtml(options.reviewUrl)}" style="background:#D4AF37;color:#1F3A5F;font-weight:bold;font-size:16px;text-decoration:none;padding:14px 32px;border-radius:12px;display:inline-block;">
+          📖 Review &amp; Approve ${escapeHtml(name)}'s Book
+        </a>
+      </div>
+      <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">On the review page you'll see every illustrated page, the full proof PDF, and the approval button — approval only unlocks after you've reviewed the proof.</p>
+      <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">Prefer to glance at just the proof PDF first? <a href="${escapeHtml(options.proofUrl)}" style="color:#1F3A5F;">View proof PDF</a> (you'll still need the review page to approve).</p>
+      <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">If you'd like any changes, request them on the review page or reply to this email. Once approved, we'll print and ship in 5–7 business days.</p>
+      <p style="margin:0 0 12px;">Questions? <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a></p>
+      <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Order ID: ${escapeHtml(order.id)}</p>
+    </div>
+  `;
+
+  const text = [
+    `${name}'s proof is ready`,
+    '',
+    `Review and approve here: ${options.reviewUrl}`,
+    `(The review page is where you check each page, acknowledge the proof, and approve.)`,
+    '',
+    `Proof PDF only (no approval): ${options.proofUrl}`,
+    '',
+    `If you'd like changes, request them on the review page or reply to this email.`,
+    `Once approved, we'll print and ship in 5–7 business days.`,
+    '',
+    `Questions? ${supportEmail}`,
+    `Order ID: ${order.id}`,
+  ].join('\n');
+
+  return { subject, html, text };
+}
+
+export async function sendProofReadyEmail(
+  order: OrderRecord,
+  options: { reviewUrl: string; proofUrl: string },
+) {
+  const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
+  if (!apiKey) return { skipped: true as const, reason: 'missing_resend_api_key' };
+
+  const resend = new Resend(apiKey);
+  const supportEmail = getSupportEmail();
+  const email = buildProofReadyEmail(order, { ...options, supportEmail });
+
+  const result = await resend.emails.send({
+    from: getOrderSenderEmail(),
+    to: [order.email],
+    subject: email.subject,
+    html: email.html,
+    text: email.text,
+    replyTo: supportEmail,
+  });
+
+  return { skipped: false as const, id: result.data?.id ?? null };
+}
+
+// ── Operator alert ────────────────────────────────────────────────────────────
+
+export async function sendOperatorFailureAlert(order: OrderRecord, lastError: string) {
+  const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
+  if (!apiKey) return { skipped: true as const, reason: 'missing_resend_api_key' };
+
+  const operatorEmail = process.env.HSB_OPERATOR_EMAIL || getSupportEmail();
+  const resend = new Resend(apiKey);
+
+  const subject = `[ACTION REQUIRED] Order ${order.id} failed fulfillment`;
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937;">
+      <h2 style="color:#dc2626;">Fulfillment failed — manual review needed</h2>
+      <p><strong>Order ID:</strong> ${escapeHtml(order.id)}</p>
+      <p><strong>Customer:</strong> ${escapeHtml(order.email)}</p>
+      <p><strong>Child:</strong> ${escapeHtml(order.childName)}</p>
+      <p><strong>Format:</strong> ${escapeHtml(order.formatLabel)}</p>
+      <p><strong>Last error:</strong></p>
+      <pre style="background:#f3f4f6;padding:12px;border-radius:6px;font-size:13px;white-space:pre-wrap;">${escapeHtml(lastError.slice(0, 500))}</pre>
+      <p>The order is now in <strong>failed_manual_review</strong> state. Resolve and re-trigger fulfillment manually.</p>
+    </div>
+  `;
+
+  const result = await resend.emails.send({
+    from: getOrderSenderEmail(),
+    to: [operatorEmail],
+    subject,
+    html,
+    text: `Order ${order.id} (${order.email}) failed fulfillment after max retries.\n\nLast error: ${lastError.slice(0, 500)}\n\nStatus: failed_manual_review`,
+  });
+
+  return { skipped: false as const, id: result.data?.id ?? null };
+}
+
+export interface RegenManualReviewAlertArgs {
+  pageIndex: number;
+  regenerateCount: number;
+  latestFeedback: string;
+}
+
+export async function sendRegenManualReviewAlert(
+  order: OrderRecord,
+  args: RegenManualReviewAlertArgs,
+) {
+  const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
+  if (!apiKey) return { skipped: true as const, reason: 'missing_resend_api_key' };
+
+  const operatorEmail = process.env.HSB_OPERATOR_EMAIL || getSupportEmail();
+  const resend = new Resend(apiKey);
+  const subject = `[REVIEW] ${order.childName} page ${args.pageIndex + 1} hit ${args.regenerateCount} regenerations`;
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937;">
+      <h2 style="color:#b45309;">Page hit manual-review threshold</h2>
+      <p><strong>Order ID:</strong> ${escapeHtml(order.id)}</p>
+      <p><strong>Customer:</strong> ${escapeHtml(order.email)}</p>
+      <p><strong>Child:</strong> ${escapeHtml(order.childName)}</p>
+      <p><strong>Page:</strong> ${args.pageIndex + 1}</p>
+      <p><strong>Regenerations:</strong> ${args.regenerateCount}</p>
+      <p><strong>Latest feedback:</strong></p>
+      <pre style="background:#f3f4f6;padding:12px;border-radius:6px;font-size:13px;white-space:pre-wrap;">${escapeHtml((args.latestFeedback || '(no text)').slice(0, 500))}</pre>
+      <p>Customer is iterating heavily on this page. Reach out and help personally.</p>
+    </div>
+  `;
+  const text = [
+    `Page ${args.pageIndex + 1} hit ${args.regenerateCount} regenerations`,
+    `Order: ${order.id}`,
+    `Customer: ${order.email} (${order.childName})`,
+    `Latest feedback: ${(args.latestFeedback || '(no text)').slice(0, 500)}`,
+  ].join('\n');
+
+  const result = await resend.emails.send({
+    from: getOrderSenderEmail(),
+    to: [operatorEmail],
+    subject,
+    html,
+    text,
+  });
   return { skipped: false as const, id: result.data?.id ?? null };
 }
 

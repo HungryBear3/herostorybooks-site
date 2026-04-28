@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   CHECKOUT_SAMPLE_IMAGES,
+  FEATURED_STORY_THEMES,
   STORY_OCCASIONS,
   STORY_THEMES,
 } from '../src/lib/story-catalog.ts';
@@ -23,7 +24,7 @@ test('story catalog includes both Mother\'s Day and Father\'s Day gifting occasi
   );
 });
 
-test('story catalog expands beyond the original four themes with family-gift options', () => {
+test('story catalog still keeps seasonal gift variants available behind the scenes', () => {
   const ids = STORY_THEMES.map((theme) => theme.id);
 
   assert.equal(ids.includes('brave-explorer'), true);
@@ -33,6 +34,74 @@ test('story catalog expands beyond the original four themes with family-gift opt
   assert.equal(ids.includes('mothers-day-memory-book'), true);
   assert.equal(ids.includes('fathers-day-adventure-book'), true);
   assert.ok(STORY_THEMES.length >= 6);
+});
+
+test('catalog surfaces the evergreen Dragon Quest and Royal Adventure options', () => {
+  const dragon = STORY_THEMES.find((theme) => theme.id === 'dragon-quest');
+  const royal = STORY_THEMES.find((theme) => theme.id === 'royal-adventure');
+  assert.ok(dragon, 'dragon-quest must be in catalog');
+  assert.ok(royal, 'royal-adventure must be in catalog');
+  assert.equal(dragon?.coverImage, '/assets/dragon-quest-gpt.png');
+  assert.equal(royal?.coverImage, '/assets/royal-regen-candidates-v7/cover-v7.png');
+});
+
+test('featured catalog now includes the expanded evergreen lineup', () => {
+  assert.deepEqual(
+    FEATURED_STORY_THEMES.map((theme) => theme.id),
+    [
+      'brave-explorer',
+      'space-voyager',
+      'ocean-dreams',
+      'dinosaur-discovery',
+      'dragon-quest',
+      'royal-adventure',
+    ],
+  );
+});
+
+test('featured evergreen stories do not fall back to the old low-quality -gpt cover assets', () => {
+  const forbiddenLegacyFeaturedCovers = new Set([
+    '/assets/brave-explorer-gpt.png',
+    '/assets/space-voyager-gpt.png',
+    '/assets/ocean-dreams-gpt.png',
+    '/assets/dinosaur-discovery-gpt.png',
+  ]);
+
+  for (const theme of FEATURED_STORY_THEMES) {
+    if (['brave-explorer', 'space-voyager', 'ocean-dreams', 'dinosaur-discovery'].includes(theme.id)) {
+      assert.equal(
+        forbiddenLegacyFeaturedCovers.has(theme.coverImage ?? ''),
+        false,
+        `${theme.id} is pointing at a forbidden legacy featured cover: ${theme.coverImage}`,
+      );
+    }
+  }
+});
+
+test('seasonal Mother\'s Day copy is honest about the one-photo experience', () => {
+  const mom = STORY_THEMES.find((t) => t.id === 'mothers-day-memory-book');
+  assert.ok(mom, 'mothers-day theme must exist');
+  // Must NOT imply two photos / Mom appearing in the book / shared illustration
+  assert.equal(
+    /two[- ]?photo|both[- ]?photos|mom[’']?s photo|shared illustration|mother and child together/i.test(mom!.description),
+    false,
+    `copy implies two-photo experience: ${mom!.description}`,
+  );
+  // Must position as child-starring, inspired by the bond
+  assert.match(mom!.description, /child|hero|starring/i);
+  assert.match(mom!.description, /mom|mother|love/i);
+});
+
+test('seasonal Father\'s Day copy is honest about the one-photo experience', () => {
+  const dad = STORY_THEMES.find((t) => t.id === 'fathers-day-adventure-book');
+  assert.ok(dad, 'fathers-day theme must exist');
+  assert.equal(
+    /two[- ]?photo|both[- ]?photos|dad[’']?s photo|shared illustration|father and child together/i.test(dad!.description),
+    false,
+    `copy implies two-photo experience: ${dad!.description}`,
+  );
+  assert.match(dad!.description, /child|hero|starring/i);
+  assert.match(dad!.description, /dad|father|adventure|memories/i);
 });
 
 test('homepage story cards point to live sample or checkout routes instead of dead anchors', () => {

@@ -1,7 +1,10 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { get, list, put } from '@vercel/blob';
+
+import { getBlobAccessMode, withBlobNamespace } from './orders.ts';
 
 export type RecoveryStatus = 'active' | 'converted' | 'abandoned' | 'unsubscribed';
 
@@ -65,13 +68,12 @@ export function mergeRecoveryUpdate(
 
 // ── Persistence (mirrors orders.ts blob/local-file pattern) ──────────────────
 
-const PRIVATE_BLOB_ACCESS = 'private' as const;
-
 function getBlobToken() {
   return process.env.BLOB_READ_WRITE_TOKEN;
 }
 
 function getRecoveryStoreDir() {
+  if (process.env.VERCEL) return path.join(os.tmpdir(), 'hsb', 'recovery');
   return path.join(process.cwd(), '.data', 'recovery');
 }
 
@@ -80,7 +82,11 @@ function emailHash(email: string): string {
 }
 
 function getRecoveryBlobPath(email: string): string {
-  return `recovery/${emailHash(email)}.json`;
+  return withBlobNamespace(`recovery/${emailHash(email)}.json`);
+}
+
+function getRecoveryListPrefix(): string {
+  return withBlobNamespace('recovery/');
 }
 
 async function getRecoveryLead(email: string): Promise<RecoveryLead | null> {
@@ -89,7 +95,7 @@ async function getRecoveryLead(email: string): Promise<RecoveryLead | null> {
   if (token) {
     try {
       const result = await get(getRecoveryBlobPath(email), {
-        access: PRIVATE_BLOB_ACCESS,
+        access: getBlobAccessMode(),
         token,
         useCache: false,
       });
@@ -97,7 +103,7 @@ async function getRecoveryLead(email: string): Promise<RecoveryLead | null> {
       const text = await new Response(result.stream).text();
       return JSON.parse(text) as RecoveryLead;
     } catch {
-      return null;
+      // fall through to filesystem fallback
     }
   }
 
@@ -118,14 +124,18 @@ async function persistRecoveryLead(lead: RecoveryLead): Promise<void> {
   const serialized = JSON.stringify(lead, null, 2);
 
   if (token) {
-    await put(getRecoveryBlobPath(lead.email), serialized, {
-      access: PRIVATE_BLOB_ACCESS,
-      allowOverwrite: true,
-      addRandomSuffix: false,
-      contentType: 'application/json',
-      token,
-    });
-    return;
+    try {
+      await put(getRecoveryBlobPath(lead.email), serialized, {
+        access: getBlobAccessMode(),
+        allowOverwrite: true,
+        addRandomSuffix: false,
+        contentType: 'application/json',
+        token,
+      });
+      return;
+    } catch {
+      // fall through to filesystem fallback
+    }
   }
 
   const dir = getRecoveryStoreDir();
@@ -166,19 +176,23 @@ export async function listRecoveryLeads(): Promise<RecoveryLead[]> {
   const token = getBlobToken();
 
   if (token) {
-    const { blobs } = await list({ prefix: 'recovery/', token });
-    const leads: RecoveryLead[] = [];
-    for (const blob of blobs) {
-      try {
-        const result = await get(blob.pathname, { access: PRIVATE_BLOB_ACCESS, token, useCache: false });
-        if (!result?.stream) continue;
-        const text = await new Response(result.stream).text();
-        leads.push(JSON.parse(text) as RecoveryLead);
-      } catch {
-        // skip corrupt/unreadable blobs
+    try {
+      const { blobs } = await list({ prefix: getRecoveryListPrefix(), token });
+      const leads: RecoveryLead[] = [];
+      for (const blob of blobs) {
+        try {
+          const result = await get(blob.pathname, { access: getBlobAccessMode(), token, useCache: false });
+          if (!result?.stream) continue;
+          const text = await new Response(result.stream).text();
+          leads.push(JSON.parse(text) as RecoveryLead);
+        } catch {
+          // skip corrupt/unreadable blobs
+        }
       }
+      return leads;
+    } catch {
+      // fall through to filesystem fallback
     }
-    return leads;
   }
 
   const dir = getRecoveryStoreDir();
