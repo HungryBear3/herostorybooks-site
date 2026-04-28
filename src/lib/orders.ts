@@ -1,7 +1,5 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import crypto from 'node:crypto';
-import os from 'node:os';
 import { get, list, put } from '@vercel/blob';
 
 import type { FulfillmentStatus } from './fulfillment-types.ts';
@@ -384,8 +382,12 @@ function getOrderStoreDir() {
   // Vercel still needs a writable scratch dir for the tiny number of legitimate
   // local-only call sites (e.g., the recovery script running during a one-off
   // job). Live persistence MUST go through blob — see persistOrder().
-  if (process.env.VERCEL) return path.join(os.tmpdir(), 'hsb', 'orders');
-  return path.join(process.cwd(), '.data', 'orders');
+  // Static paths only. Dynamic FS roots (os.tmpdir(), process.cwd()) made
+  // Turbopack's NFT pull the whole project into every function bundle and
+  // exceed Vercel's deploy upload limit. On Vercel/Linux os.tmpdir() is always
+  // '/tmp'; for local dev a relative path resolves against CWD at call time.
+  if (process.env.VERCEL) return '/tmp/hsb/orders';
+  return '.data/orders';
 }
 
 function getOrderBlobPath(orderId: string) {
@@ -507,7 +509,7 @@ export async function persistOrder(order: OrderRecord) {
   // Local-dev / explicit override path only.
   const dir = getOrderStoreDir();
   await mkdir(dir, { recursive: true });
-  await writeFile(path.join(dir, `${order.id}.json`), `${serialized}\n`, 'utf8');
+  await writeFile(`${dir}/${order.id}.json`, `${serialized}\n`, 'utf8');
   return order;
 }
 
@@ -552,7 +554,7 @@ export async function getOrder(orderId: string) {
   }
 
   try {
-    const file = await readFile(path.join(getOrderStoreDir(), `${orderId}.json`), 'utf8');
+    const file = await readFile(`${getOrderStoreDir()}/${orderId}.json`, 'utf8');
     return JSON.parse(file) as OrderRecord;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -592,7 +594,7 @@ export async function listOrders(): Promise<OrderRecord[]> {
     const orders: OrderRecord[] = [];
     for (const file of files.filter(f => f.endsWith('.json'))) {
       try {
-        const text = await readFile(path.join(dir, file), 'utf8');
+        const text = await readFile(`${dir}/${file}`, 'utf8');
         orders.push(JSON.parse(text) as OrderRecord);
       } catch {
         // skip corrupt files

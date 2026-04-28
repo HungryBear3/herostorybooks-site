@@ -1,7 +1,5 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import crypto from 'node:crypto';
-import os from 'node:os';
 import { get, list, put } from '@vercel/blob';
 
 import { getBlobAccessMode, withBlobNamespace } from './orders.ts';
@@ -73,8 +71,12 @@ function getBlobToken() {
 }
 
 function getRecoveryStoreDir() {
-  if (process.env.VERCEL) return path.join(os.tmpdir(), 'hsb', 'recovery');
-  return path.join(process.cwd(), '.data', 'recovery');
+  // Static paths only. Dynamic FS roots (os.tmpdir(), process.cwd()) made
+  // Turbopack's NFT pull the whole project into every function bundle and
+  // exceed Vercel's deploy upload limit. On Vercel/Linux os.tmpdir() is always
+  // '/tmp'; for local dev a relative path resolves against CWD at call time.
+  if (process.env.VERCEL) return '/tmp/hsb/recovery';
+  return '.data/recovery';
 }
 
 function emailHash(email: string): string {
@@ -109,7 +111,7 @@ async function getRecoveryLead(email: string): Promise<RecoveryLead | null> {
 
   try {
     const file = await readFile(
-      path.join(getRecoveryStoreDir(), `${emailHash(email)}.json`),
+      `${getRecoveryStoreDir()}/${emailHash(email)}.json`,
       'utf8',
     );
     return JSON.parse(file) as RecoveryLead;
@@ -140,7 +142,7 @@ async function persistRecoveryLead(lead: RecoveryLead): Promise<void> {
 
   const dir = getRecoveryStoreDir();
   await mkdir(dir, { recursive: true });
-  await writeFile(path.join(dir, `${emailHash(lead.email)}.json`), `${serialized}\n`, 'utf8');
+  await writeFile(`${dir}/${emailHash(lead.email)}.json`, `${serialized}\n`, 'utf8');
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -201,7 +203,7 @@ export async function listRecoveryLeads(): Promise<RecoveryLead[]> {
     const leads: RecoveryLead[] = [];
     for (const file of files.filter(f => f.endsWith('.json'))) {
       try {
-        const text = await readFile(path.join(dir, file), 'utf8');
+        const text = await readFile(`${dir}/${file}`, 'utf8');
         leads.push(JSON.parse(text) as RecoveryLead);
       } catch {
         // skip corrupt files
