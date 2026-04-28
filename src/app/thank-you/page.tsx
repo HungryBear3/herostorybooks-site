@@ -103,7 +103,7 @@ function SuccessView({
           </div>
         </div>
         <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
-          7-day satisfaction guarantee · Questions? hello@herostorybooks.com
+          7-day satisfaction guarantee · Questions? support@herostorybooks.com
         </p>
       </div>
 
@@ -167,7 +167,7 @@ function PendingView({
           You can safely re-try checkout, or contact support and we&apos;ll sort it out.
         </p>
         <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
-          Questions? hello@herostorybooks.com
+          Questions? support@herostorybooks.com
         </p>
       </div>
 
@@ -217,7 +217,7 @@ function FailedView({ orderId }: { orderId: string | undefined }) {
           </p>
         ) : null}
         <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
-          Questions? hello@herostorybooks.com
+          Questions? support@herostorybooks.com
         </p>
       </div>
 

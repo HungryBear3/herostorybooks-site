@@ -75,8 +75,8 @@ export default async function StatusPage({ params }: StatusPageProps) {
             </p>
             <p className="text-sm text-gray-700">
               If you would rather contact us first, reply to any Hero Story Books email or write to{' '}
-              <a className="underline text-forest" href={`mailto:hello@herostorybooks.com?subject=Order ${order.id}`}>
-                hello@herostorybooks.com
+              <a className="underline text-forest" href={`mailto:support@herostorybooks.com?subject=Order ${order.id}`}>
+                support@herostorybooks.com
               </a>
               . Include order ID <strong>{order.id}</strong>.
             </p>

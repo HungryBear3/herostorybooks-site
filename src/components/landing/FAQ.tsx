@@ -112,11 +112,11 @@ export function FAQ() {
         >
           <p className="text-gray-600 mb-4">Still have questions?</p>
           <a
-            href="mailto:hello@herostorybooks.com"
+            href="mailto:support@herostorybooks.com"
             className="text-sm font-semibold underline"
             style={{ color: '#1F3A5F' }}
           >
-            Contact us at hello@herostorybooks.com
+            Contact us at support@herostorybooks.com
           </a>
         </motion.div>
       </div>

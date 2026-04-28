@@ -91,7 +91,7 @@ export async function POST(request: Request) {
         return NextResponse.json(
           {
             error:
-              'We could not securely save your order. No charge was made. Please retry in a moment, and contact hello@herostorybooks.com if it keeps happening.',
+              'We could not securely save your order. No charge was made. Please retry in a moment, and contact support@herostorybooks.com if it keeps happening.',
           },
           { status: 503 },
         );

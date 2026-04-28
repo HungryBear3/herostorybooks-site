@@ -47,7 +47,7 @@ export function buildOrderStatusView(order: OrderRecord): OrderStatusView {
     isFailed,
     needsAction: false,
     timeline: [],
-    supportBlurb: `Questions? Reply to any Hero Story Books email or contact hello@herostorybooks.com with order ID ${order.id}.`,
+    supportBlurb: `Questions? Reply to any Hero Story Books email or contact support@herostorybooks.com with order ID ${order.id}.`,
   };
 
   if (isFailed) {
