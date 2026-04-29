@@ -94,6 +94,8 @@ export const falImageProvider: ImageProvider = {
         provider: 'fal',
         model: DEFAULT_MODEL,
         promptUsed: input.prompt,
+        conditioning: 'text_only',
+        referencePhotoUrl: null,
         latencyMs: Date.now() - startedAt,
         error: null,
       };

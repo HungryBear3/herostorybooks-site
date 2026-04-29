@@ -43,7 +43,7 @@ export interface PageFeedbackEntry {
   createdAt: string;
   rawText: string;
   tags: string[];
-  providerTried?: 'openai' | 'fal' | null;
+  providerTried?: 'openai' | 'fal' | 'fal_edit' | null;
   resultImageUrl?: string | null;
   success: boolean;
 }
@@ -51,9 +51,16 @@ export interface PageFeedbackEntry {
 export interface PageVersionEntry {
   createdAt: string;
   imageUrl: string | null;
-  provider: 'openai' | 'fal';
+  provider: 'openai' | 'fal' | 'fal_edit';
   model: string;
   promptUsed: string;
+  /** Whether this version came from a text-only or photo-conditioned call.
+   *  Optional for backward compatibility with versions written before the
+   *  conditioning lane existed. */
+  conditioning?: 'text_only' | 'photo_edit' | null;
+  /** When conditioning='photo_edit', the customer photo URL passed to the
+   *  provider. */
+  referencePhotoUrl?: string | null;
 }
 
 export type ReviewAuditEventType =
@@ -89,8 +96,11 @@ export interface PageArtifact {
   characterAnchor?: string | null;
   currentImageUrl: string | null;
   acceptedImageUrl?: string | null;
-  generationProvider?: 'openai' | 'fal' | null;
+  generationProvider?: 'openai' | 'fal' | 'fal_edit' | null;
   generationModel?: string | null;
+  /** Whether the CURRENT image on this page used text-only or photo-conditioned
+   *  generation. Refreshed every regenerate. Null when no image yet. */
+  generationConditioning?: 'text_only' | 'photo_edit' | null;
   regenerateCount: number;
   accepted: boolean;
   feedbackHistory: PageFeedbackEntry[];
@@ -401,6 +411,38 @@ function getOrderBlobPath(orderId: string) {
  */
 function getOrdersListPrefix() {
   return withBlobNamespace('orders/');
+}
+
+/**
+ * Resolve a stored `photoBlobPath` into a fetchable URL the FAL image-edit
+ * provider can pull. We do NOT depend on a runtime blob `head()` call here —
+ * the customer photo was uploaded with public access (see uploadOrderPhoto)
+ * and we know the host pattern. Returns null when:
+ *   - the order has no photoBlobPath set (no photo was uploaded), or
+ *   - we cannot construct a public URL for the current configured store.
+ *
+ * Honors `HSB_PUBLIC_BLOB_BASE` as an override; otherwise tries to derive
+ * from the standard Vercel Blob public store URL pattern.
+ */
+export function getOrderPhotoUrl(
+  order: Pick<OrderRecord, 'photoBlobPath'>,
+): string | null {
+  const blobPath = order.photoBlobPath?.trim();
+  if (!blobPath) return null;
+  // If photoBlobPath is already an absolute URL (some recovery flows store
+  // a full URL), return it as-is.
+  if (/^https?:\/\//i.test(blobPath)) return blobPath;
+
+  const explicit = process.env.HSB_PUBLIC_BLOB_BASE?.replace(/\/$/, '');
+  if (explicit) return `${explicit}/${blobPath}`;
+
+  // Vercel Blob public-store URLs look like:
+  //   https://<storeId>.public.blob.vercel-storage.com/<pathname>
+  // We don't know <storeId> at runtime without a head() call, so callers
+  // that need a public URL in production should set HSB_PUBLIC_BLOB_BASE
+  // (or pass the URL explicitly). Returning null here lets the orchestrator
+  // fall through to text-only FAL rather than 404 the photo-edit provider.
+  return null;
 }
 
 export async function uploadOrderPhoto(orderId: string, file: File) {

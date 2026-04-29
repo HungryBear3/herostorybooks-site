@@ -1,12 +1,13 @@
 import crypto from 'node:crypto';
 import { put } from '@vercel/blob';
 
-import { appendAuditEvent, getOrder, isPrintFormat, updateFulfillmentState, withBlobNamespace } from './orders.ts';
+import { appendAuditEvent, getOrder, getOrderPhotoUrl, isPrintFormat, updateFulfillmentState, withBlobNamespace } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { OrderRecord } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
 import { generateStory } from './story-generator.ts';
-import { generateStoryImages } from './image-generator.ts';
+import { generateStoryImageResults } from './image-generator.ts';
+import type { GeneratedImageResult } from './image-generator.ts';
 import { buildPdf, buildPrintCoverPdf, buildPrintInteriorPdf, getPrintInteriorPageCount } from './pdf-builder.ts';
 import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';
 import { sendDigitalDeliveryEmail, sendProofReadyEmail, sendLifecycleEmail, sendOperatorFailureAlert } from './order-email.ts';
@@ -46,7 +47,18 @@ export function backoffMs(attempt: number): number {
 
 export interface FulfillmentDeps {
   generateStory?: (order: OrderRecord) => Promise<StoryContent>;
+  /**
+   * Legacy URL-only image gen, kept for tests that don't care about
+   * conditioning metadata. Prefer generateImageResults when you want
+   * provider/model/conditioning on the persisted PageArtifact.
+   */
   generateImages?: (prompts: string[], order: OrderRecord) => Promise<(string | null)[]>;
+  /**
+   * Structured image gen — returns conditioning metadata per page so
+   * fulfillment can persist honest provider/model/conditioning on each
+   * PageArtifact. When this is set it takes precedence over generateImages.
+   */
+  generateImageResults?: (prompts: string[], order: OrderRecord) => Promise<GeneratedImageResult[]>;
   buildPdf?: (story: StoryContent, order: OrderRecord, urls: (string | null)[]) => Promise<Buffer>;
   buildPrintInteriorPdf?: (story: StoryContent, order: OrderRecord, urls: (string | null)[]) => Promise<Buffer>;
   buildPrintCoverPdf?: (widthPoints: number, heightPoints: number, title: string, order: OrderRecord) => Buffer;
@@ -87,6 +99,40 @@ function defaultGetBaseUrl(): string {
 
 function md5Hex(buffer: Buffer): string {
   return crypto.createHash('md5').update(buffer).digest('hex');
+}
+
+/**
+ * Run image generation through whichever dep the caller provided. Returns
+ * structured per-page results so fulfillment can persist conditioning
+ * metadata. When a test only supplied the legacy URL-only `generateImages`,
+ * we synthesize a `text_only` GeneratedImageResult per page so downstream
+ * code paths stay uniform.
+ */
+async function runImageGeneration(
+  imagePrompts: string[],
+  order: OrderRecord,
+  deps: FulfillmentDeps,
+): Promise<GeneratedImageResult[]> {
+  if (deps.generateImageResults) {
+    return deps.generateImageResults(imagePrompts, order);
+  }
+  if (deps.generateImages) {
+    const urls = await deps.generateImages(imagePrompts, order);
+    return urls.map((url, i) => ({
+      imageUrl: url ?? null,
+      provider: 'fal' as const,
+      model: 'fal-ai/flux/schnell',
+      promptUsed: imagePrompts[i] ?? '',
+      conditioning: 'text_only' as const,
+      referencePhotoUrl: null,
+      latencyMs: 0,
+      error: url ? null : 'no image url returned',
+    }));
+  }
+  // Real default path: try photo-conditioned FAL when we have a photo URL,
+  // else text-only. Fallback chain inside generatePageImage handles the rest.
+  const referenceImageUrl = getOrderPhotoUrl(order);
+  return generateStoryImageResults(imagePrompts, { referenceImageUrl });
 }
 
 // ── Retry wrapper ─────────────────────────────────────────────────────────────
@@ -137,7 +183,6 @@ async function runWithRetry(
 
 async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps): Promise<void> {
   const _generateStory = deps.generateStory ?? generateStory;
-  const _generateImages = deps.generateImages ?? ((prompts: string[]) => generateStoryImages(prompts));
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
   const _getBaseUrl = deps.getBaseUrl ?? defaultGetBaseUrl;
@@ -166,35 +211,45 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
       characterAnchor,
     }),
   );
-  const imageUrls = await _generateImages(imagePrompts, order);
+  const imageResults = await runImageGeneration(imagePrompts, order, deps);
+  const imageUrls = imageResults.map((r) => r.imageUrl);
 
   // Seed pageArtifacts so the customer review page can render even before the PDF builds.
   // Persist the LLM's per-page basePrompt AND the frozen character anchor so
   // regenerate can rebuild the same identity scaffolding deterministically.
-  const seededPageArtifacts = story.pages.map((page, i): import('./orders.ts').PageArtifact => ({
-    pageIndex: i,
-    storyText: page.story,
-    basePrompt: page.imagePrompt,
-    characterAnchor,
-    currentImageUrl: imageUrls[i] ?? null,
-    acceptedImageUrl: null,
-    generationProvider: null,
-    generationModel: null,
-    regenerateCount: 0,
-    accepted: false,
-    feedbackHistory: [],
-    versionHistory: imageUrls[i]
-      ? [
-          {
-            createdAt: new Date().toISOString(),
-            imageUrl: imageUrls[i] ?? null,
-            provider: 'openai',
-            model: 'initial',
-            promptUsed: imagePrompts[i] ?? page.imagePrompt,
-          },
-        ]
-      : [],
-  }));
+  // Conditioning metadata (provider/model/conditioning/referencePhotoUrl) flows
+  // through from the structured image result so diagnostics can show whether
+  // each page was photo-conditioned or text-only.
+  const seededPageArtifacts = story.pages.map((page, i): import('./orders.ts').PageArtifact => {
+    const result = imageResults[i];
+    return {
+      pageIndex: i,
+      storyText: page.story,
+      basePrompt: page.imagePrompt,
+      characterAnchor,
+      currentImageUrl: result?.imageUrl ?? null,
+      acceptedImageUrl: null,
+      generationProvider: result?.provider ?? null,
+      generationModel: result?.model ?? null,
+      generationConditioning: result?.conditioning ?? null,
+      regenerateCount: 0,
+      accepted: false,
+      feedbackHistory: [],
+      versionHistory: result?.imageUrl
+        ? [
+            {
+              createdAt: new Date().toISOString(),
+              imageUrl: result.imageUrl,
+              provider: result.provider,
+              model: result.model,
+              promptUsed: imagePrompts[i] ?? page.imagePrompt,
+              conditioning: result.conditioning ?? null,
+              referencePhotoUrl: result.referencePhotoUrl ?? null,
+            },
+          ]
+        : [],
+    };
+  });
 
   await updateFulfillmentState(order.id, { fulfillmentStatus: 'building_pdf' });
   // Include cover image (first imageUrl) + per-page images
@@ -226,7 +281,6 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
 
 async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): Promise<void> {
   const _generateStory = deps.generateStory ?? generateStory;
-  const _generateImages = deps.generateImages ?? ((prompts: string[]) => generateStoryImages(prompts));
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _buildPrintInteriorPdf = deps.buildPrintInteriorPdf ?? buildPrintInteriorPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
@@ -254,7 +308,8 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
       characterAnchor,
     }),
   );
-  const imageUrls = await _generateImages(imagePrompts, order);
+  const imageResults = await runImageGeneration(imagePrompts, order, deps);
+  const imageUrls = imageResults.map((r) => r.imageUrl);
 
   await updateFulfillmentState(order.id, { fulfillmentStatus: 'building_pdf' });
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
@@ -274,30 +329,36 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   const reviewUrl = `${baseUrl}/review/${order.id}?token=${proofApprovalToken}`;
   const interiorPageCount = getPrintInteriorPageCount(story, order);
 
-  const seededPageArtifacts = story.pages.map((page, i): import('./orders.ts').PageArtifact => ({
-    pageIndex: i,
-    storyText: page.story,
-    basePrompt: page.imagePrompt,
-    characterAnchor,
-    currentImageUrl: imageUrls[i] ?? null,
-    acceptedImageUrl: null,
-    generationProvider: null,
-    generationModel: null,
-    regenerateCount: 0,
-    accepted: false,
-    feedbackHistory: [],
-    versionHistory: imageUrls[i]
-      ? [
-          {
-            createdAt: new Date().toISOString(),
-            imageUrl: imageUrls[i] ?? null,
-            provider: 'openai',
-            model: 'initial',
-            promptUsed: imagePrompts[i] ?? page.imagePrompt,
-          },
-        ]
-      : [],
-  }));
+  const seededPageArtifacts = story.pages.map((page, i): import('./orders.ts').PageArtifact => {
+    const result = imageResults[i];
+    return {
+      pageIndex: i,
+      storyText: page.story,
+      basePrompt: page.imagePrompt,
+      characterAnchor,
+      currentImageUrl: result?.imageUrl ?? null,
+      acceptedImageUrl: null,
+      generationProvider: result?.provider ?? null,
+      generationModel: result?.model ?? null,
+      generationConditioning: result?.conditioning ?? null,
+      regenerateCount: 0,
+      accepted: false,
+      feedbackHistory: [],
+      versionHistory: result?.imageUrl
+        ? [
+            {
+              createdAt: new Date().toISOString(),
+              imageUrl: result.imageUrl,
+              provider: result.provider,
+              model: result.model,
+              promptUsed: imagePrompts[i] ?? page.imagePrompt,
+              conditioning: result.conditioning ?? null,
+              referencePhotoUrl: result.referencePhotoUrl ?? null,
+            },
+          ]
+        : [],
+    };
+  });
 
   await updateFulfillmentState(order.id, {
     fulfillmentStatus: 'proof_ready',

@@ -45,6 +45,12 @@ export interface OrderDiagnostics {
     pagesPending: number;
     totalRegenerations: number;
     pagesWithoutImage: number;
+    /** Per-conditioning page counts so ops can see at a glance whether the
+     *  customer's photo actually drove the illustrations or whether we
+     *  fell back to text-only on every page. */
+    pagesPhotoConditioned: number;
+    pagesTextOnly: number;
+    pagesUnknownConditioning: number;
   };
   review: {
     reviewStatus: string;
@@ -103,6 +109,9 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
   const pages = order.pageArtifacts ?? [];
   const pagesAccepted = pages.filter((p) => p.accepted).length;
   const pagesPending = pages.length - pagesAccepted;
+  const pagesPhotoConditioned = pages.filter((p) => p.generationConditioning === 'photo_edit').length;
+  const pagesTextOnly = pages.filter((p) => p.generationConditioning === 'text_only').length;
+  const pagesUnknownConditioning = pages.length - pagesPhotoConditioned - pagesTextOnly;
   const totalRegenerations = pages.reduce((sum, p) => sum + p.regenerateCount, 0);
   const pagesWithoutImage = pages.filter((p) => !p.currentImageUrl).length;
 
@@ -137,6 +146,9 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       pageArtifactCount: pages.length,
       pagesAccepted,
       pagesPending,
+      pagesPhotoConditioned,
+      pagesTextOnly,
+      pagesUnknownConditioning,
       totalRegenerations,
       pagesWithoutImage,
     },
@@ -217,6 +229,25 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
       severity: sev,
       detail: `${d.artifacts.totalRegenerations} total regenerations across all pages.`,
     });
+
+    // Conditioning observability — surface whether the customer's photo
+    // actually drove generation or whether we fell back to text-only.
+    const c = d.artifacts;
+    if (c.pagesPhotoConditioned > 0) {
+      checks.push({
+        id: 'conditioning',
+        label: `Conditioning: ${c.pagesPhotoConditioned} photo-edit · ${c.pagesTextOnly} text-only · ${c.pagesUnknownConditioning} unknown`,
+        severity: 'ok',
+        detail: 'At least one page used the customer photo as conditioning input.',
+      });
+    } else if (d.photo.hasBlobPath && c.pagesTextOnly === c.pageArtifactCount) {
+      checks.push({
+        id: 'conditioning',
+        label: 'All pages text-only despite having a customer photo',
+        severity: 'warn',
+        detail: 'Photo-conditioned generation may have failed for every page (FAL_KEY missing, model error, or no public URL for the photo). Check fulfillment logs.',
+      });
+    }
   }
 
   // Proof presence

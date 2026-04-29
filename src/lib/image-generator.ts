@@ -1,11 +1,20 @@
 // Image generator orchestrator.
 //
-// Provider order: OpenAI primary → FAL fallback.
-// - generatePageImage(): structured result; use for regenerate path.
-// - generateImage() / generateStoryImages(): legacy URL-only API for callers
-//   that just need a URL (fulfillment proof builder, tests).
+// Routes by conditioning intent:
+//   - When a referenceImageUrl (or imageUrls) is supplied, try the photo-
+//     conditioned `fal_edit` provider first, then fall through to the
+//     text-only `fal` provider on failure.
+//   - When no reference image is supplied, go straight to text-only `fal`
+//     (skips the edit provider — calling it without a reference would just
+//     fail-fast).
+//
+// Fallback ordering is deliberate: photo-conditioned generation can fail
+// transiently (rate limit, model error, missing FAL_KEY edit quota); we
+// would rather ship a recognizable scene from text-only FAL than fail the
+// whole order. Each returned GeneratedImageResult carries `conditioning`
+// and `referencePhotoUrl` so callers can record honest per-page metadata.
 
-import { openaiImageProvider } from './image-provider-openai.ts';
+import { falEditImageProvider } from './image-provider-fal-edit.ts';
 import { falImageProvider } from './image-provider-fal.ts';
 import type {
   GeneratedImageResult,
@@ -25,21 +34,29 @@ export type {
 
 export interface OrchestratorDeps {
   fetch?: typeof globalThis.fetch;
-  /** Inject providers in tests — defaults to [openai, fal]. */
+  /**
+   * Override the provider order. Defaults are derived from input:
+   *   - input.referenceImageUrl set → [fal_edit, fal]
+   *   - otherwise                    → [fal]
+   */
   providers?: ImageProvider[];
 }
 
-const DEFAULT_PROVIDER_ORDER: ImageProvider[] = [openaiImageProvider, falImageProvider];
+const FAL_EDIT_FIRST: ImageProvider[] = [falEditImageProvider, falImageProvider];
+const FAL_TEXT_ONLY: ImageProvider[] = [falImageProvider];
 
-/**
- * Try OpenAI first, then FAL. Returns whichever produces a non-null imageUrl.
- * If all providers fail, returns the last attempt so callers can log the error.
- */
+function defaultProviderOrder(input: ImageProviderInput): ImageProvider[] {
+  const hasReference = Boolean(
+    (input.imageUrls && input.imageUrls.length > 0) || input.referenceImageUrl,
+  );
+  return hasReference ? FAL_EDIT_FIRST : FAL_TEXT_ONLY;
+}
+
 export async function generatePageImage(
   input: ImageProviderInput,
   deps: OrchestratorDeps = {},
 ): Promise<GeneratedImageResult> {
-  const providers = deps.providers ?? DEFAULT_PROVIDER_ORDER;
+  const providers = deps.providers ?? defaultProviderOrder(input);
   const providerDeps: ImageProviderDeps = deps.fetch ? { fetch: deps.fetch } : {};
 
   let last: GeneratedImageResult | null = null;
@@ -51,9 +68,11 @@ export async function generatePageImage(
   return (
     last ?? {
       imageUrl: null,
-      provider: 'openai',
+      provider: 'fal',
       model: 'unknown',
       promptUsed: input.prompt,
+      conditioning: 'text_only',
+      referencePhotoUrl: input.referenceImageUrl ?? null,
       latencyMs: 0,
       error: 'No providers configured',
     }
@@ -66,12 +85,17 @@ interface FetchDep {
   (input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
 
+/**
+ * URL-only convenience. Accepts an optional reference photo URL so the
+ * full-book fulfillment path can opt into photo-conditioning per page
+ * without each call site reaching for the structured API.
+ */
 export async function generateImage(
   prompt: string,
-  deps: { fetch?: FetchDep } = {},
+  deps: { fetch?: FetchDep; referenceImageUrl?: string | null } = {},
 ): Promise<string | null> {
   const result = await generatePageImage(
-    { prompt },
+    { prompt, referenceImageUrl: deps.referenceImageUrl ?? null },
     { fetch: deps.fetch as typeof globalThis.fetch | undefined },
   );
   return result.imageUrl;
@@ -79,7 +103,26 @@ export async function generateImage(
 
 export async function generateStoryImages(
   imagePrompts: string[],
-  deps: { fetch?: FetchDep } = {},
+  deps: { fetch?: FetchDep; referenceImageUrl?: string | null } = {},
 ): Promise<(string | null)[]> {
   return Promise.all(imagePrompts.map((p) => generateImage(p, deps)));
+}
+
+/**
+ * Structured story-image generation that returns conditioning metadata per
+ * page (provider, model, conditioning, referencePhotoUrl). Use this from
+ * fulfillment when you want to persist honest per-page diagnostics.
+ */
+export async function generateStoryImageResults(
+  imagePrompts: string[],
+  deps: { fetch?: FetchDep; referenceImageUrl?: string | null } = {},
+): Promise<GeneratedImageResult[]> {
+  return Promise.all(
+    imagePrompts.map((p) =>
+      generatePageImage(
+        { prompt: p, referenceImageUrl: deps.referenceImageUrl ?? null },
+        { fetch: deps.fetch as typeof globalThis.fetch | undefined },
+      ),
+    ),
+  );
 }

@@ -4,7 +4,7 @@
 // updateFulfillmentState() at the end. Tests can also call the pure helpers
 // directly via applyAcceptPage()/applyRegeneratePage().
 
-import { appendAuditEvent, getOrder, updateFulfillmentState } from './orders.ts';
+import { appendAuditEvent, getOrder, getOrderPhotoUrl, updateFulfillmentState } from './orders.ts';
 import type {
   OrderRecord,
   PageArtifact,
@@ -75,10 +75,12 @@ export function applyRegeneratePage(
   artifacts: PageArtifact[],
   pageIndex: number,
   newImageUrl: string | null,
-  provider: 'openai' | 'fal',
+  provider: 'openai' | 'fal' | 'fal_edit',
   model: string,
   promptUsed: string,
   feedbackEntry: PageFeedbackEntry,
+  conditioning: 'text_only' | 'photo_edit' | null = null,
+  referencePhotoUrl: string | null = null,
 ): { artifacts: PageArtifact[]; page?: PageArtifact; error?: string } {
   const idx = artifacts.findIndex((p) => p.pageIndex === pageIndex);
   if (idx === -1) return { artifacts, error: 'page_not_found' };
@@ -94,6 +96,8 @@ export function applyRegeneratePage(
     provider,
     model,
     promptUsed,
+    conditioning,
+    referencePhotoUrl,
   };
   const next = artifacts.slice();
   next[idx] = {
@@ -101,6 +105,7 @@ export function applyRegeneratePage(
     currentImageUrl: newImageUrl,
     generationProvider: provider,
     generationModel: model,
+    generationConditioning: conditioning,
     regenerateCount: current.regenerateCount + 1,
     accepted: false,
     acceptedImageUrl: null,
@@ -163,7 +168,14 @@ export async function regeneratePage(
   });
 
   const generate = deps.generatePageImage ?? generatePageImage;
-  const result = await generate({ prompt }, { providers: deps.providers });
+  // Pass the customer photo URL so the regenerate request also goes through
+  // the photo-conditioned FAL provider (with text-only fallback) when a
+  // photo is available — same identity continuity as initial generation.
+  const referenceImageUrl = getOrderPhotoUrl(order);
+  const result = await generate(
+    { prompt, referenceImageUrl },
+    { providers: deps.providers },
+  );
   const now = (deps.now ?? (() => new Date()))();
 
   const feedbackEntry: PageFeedbackEntry = {
@@ -183,6 +195,8 @@ export async function regeneratePage(
     result.model,
     result.promptUsed,
     feedbackEntry,
+    result.conditioning ?? null,
+    result.referencePhotoUrl ?? null,
   );
   if (error || !updatedPage) {
     return { ok: false, status: 400, error: error ?? 'regenerate_failed' };
