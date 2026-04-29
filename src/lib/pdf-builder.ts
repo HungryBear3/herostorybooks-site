@@ -1,8 +1,23 @@
 import type { OrderRecord } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
 
-// pdfkit ships as CJS; Node.js ESM can import it as a default
-import PDFDocument from 'pdfkit';
+// Import the standalone PDFKit build directly. The default 'pdfkit' entry
+// (js/pdfkit.js) reads its AFM font metrics from node_modules/pdfkit/js/data
+// at runtime via fs.readFileSync, which fails on Vercel serverless with:
+//   ENOENT: no such file or directory, open
+//   '/ROOT/node_modules/pdfkit/js/data/Helvetica.afm'
+// because Next 16's NFT cannot statically detect those fs reads. Two
+// next.config.js packaging attempts (outputFileTracingIncludes and
+// serverExternalPackages) did not resolve the runtime ENOENT.
+//
+// pdfkit.standalone.js is a self-contained variant (~2.4 MB vs ~200 KB)
+// with all AFM font data inlined via the bundled virtual-fs shim — no
+// runtime fs reads. Same PDFDocument API; types still come from
+// '@types/pdfkit' via the type-only import below.
+//
+import PDFDocumentStandalone from 'pdfkit/js/pdfkit.standalone.js';
+import type PDFDocumentType from 'pdfkit';
+const PDFDocument = PDFDocumentStandalone as unknown as typeof PDFDocumentType;
 
 const PAGE_WIDTH = 595.28;  // A4 pt
 const PAGE_HEIGHT = 841.89;
