@@ -120,6 +120,10 @@ export interface OrderRecord extends OrderInput {
   fulfillmentAttempts?: number;
   fulfillmentLastError?: string | null;
   storyArtifactUrl?: string | null;
+  /** How the story for this order was produced (template / openai_chat /
+   *  template_after_openai_failure). Set once during fulfillment, never
+   *  overwritten. Optional for backward compatibility with older orders. */
+  storyMeta?: import('./fulfillment-types.ts').StoryMeta | null;
   printInteriorArtifactUrl?: string | null;
   printInteriorMd5?: string | null;
   printInteriorPageCount?: number | null;
@@ -675,6 +679,7 @@ type FulfillmentPatch = Partial<Pick<
   | 'fulfillmentAttempts'
   | 'fulfillmentLastError'
   | 'storyArtifactUrl'
+  | 'storyMeta'
   | 'printInteriorArtifactUrl'
   | 'printInteriorMd5'
   | 'printInteriorPageCount'

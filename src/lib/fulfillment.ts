@@ -5,7 +5,8 @@ import { appendAuditEvent, getOrder, getOrderPhotoUrl, isPrintFormat, updateFulf
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { OrderRecord } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
-import { generateStory } from './story-generator.ts';
+import { generateStory, generateStoryWithMeta } from './story-generator.ts';
+import type { StoryWithMeta } from './story-generator.ts';
 import { generateStoryImageResults } from './image-generator.ts';
 import type { GeneratedImageResult } from './image-generator.ts';
 import { buildPdf, buildPrintCoverPdf, buildPrintInteriorPdf, getPrintInteriorPageCount } from './pdf-builder.ts';
@@ -47,6 +48,12 @@ export function backoffMs(attempt: number): number {
 
 export interface FulfillmentDeps {
   generateStory?: (order: OrderRecord) => Promise<StoryContent>;
+  /**
+   * Structured story-with-meta dep. When set, takes precedence over
+   * generateStory. Lets fulfillment persist the StoryMeta record (source/
+   * model/generatedAt/fallbackError) onto the order for diagnostics.
+   */
+  generateStoryWithMeta?: (order: OrderRecord) => Promise<StoryWithMeta>;
   /**
    * Legacy URL-only image gen, kept for tests that don't care about
    * conditioning metadata. Prefer generateImageResults when you want
@@ -108,6 +115,35 @@ function md5Hex(buffer: Buffer): string {
  * we synthesize a `text_only` GeneratedImageResult per page so downstream
  * code paths stay uniform.
  */
+/**
+ * Run story generation through whichever dep the caller provided. Returns
+ * structured story+meta so fulfillment can persist the StoryMeta record.
+ * Tests that only mocked the legacy `generateStory` get a synthetic
+ * `template` meta — accurate for those tests since their mocks return a
+ * canned StoryContent.
+ */
+async function runStoryGeneration(
+  order: OrderRecord,
+  deps: FulfillmentDeps,
+): Promise<StoryWithMeta> {
+  if (deps.generateStoryWithMeta) {
+    return deps.generateStoryWithMeta(order);
+  }
+  if (deps.generateStory) {
+    const story = await deps.generateStory(order);
+    return {
+      story,
+      meta: {
+        source: 'template',
+        model: 'test_mock_legacy',
+        generatedAt: new Date().toISOString(),
+        fallbackError: null,
+      },
+    };
+  }
+  return generateStoryWithMeta(order);
+}
+
 async function runImageGeneration(
   imagePrompts: string[],
   order: OrderRecord,
@@ -182,13 +218,15 @@ async function runWithRetry(
 // ── Digital fulfillment ───────────────────────────────────────────────────────
 
 async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps): Promise<void> {
-  const _generateStory = deps.generateStory ?? generateStory;
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
   const _getBaseUrl = deps.getBaseUrl ?? defaultGetBaseUrl;
 
   await updateFulfillmentState(order.id, { fulfillmentStatus: 'generating_story' });
-  const story = await _generateStory(order);
+  const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
+  // Persist storyMeta as soon as it's known so diagnostics can answer
+  // "which story path ran?" even before image gen completes.
+  await updateFulfillmentState(order.id, { storyMeta });
 
   await updateFulfillmentState(order.id, { fulfillmentStatus: 'generating_images' });
   // Build per-page prompts that LEAD with the frozen character anchor + identity
@@ -280,14 +318,14 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
 // ── Print fulfillment ─────────────────────────────────────────────────────────
 
 async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): Promise<void> {
-  const _generateStory = deps.generateStory ?? generateStory;
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _buildPrintInteriorPdf = deps.buildPrintInteriorPdf ?? buildPrintInteriorPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
   const _getBaseUrl = deps.getBaseUrl ?? defaultGetBaseUrl;
 
   await updateFulfillmentState(order.id, { fulfillmentStatus: 'generating_story' });
-  const story = await _generateStory(order);
+  const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
+  await updateFulfillmentState(order.id, { storyMeta });
 
   await updateFulfillmentState(order.id, { fulfillmentStatus: 'generating_images' });
   // Same identity-anchored prompt construction as the digital path — keeps the

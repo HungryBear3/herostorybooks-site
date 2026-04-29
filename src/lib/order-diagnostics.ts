@@ -38,6 +38,14 @@ export interface OrderDiagnostics {
     fileName: string | null;
     blobPath: string | null;
   };
+  /** How the story was produced (template / openai_chat / fallback). Null
+   *  when storyMeta wasn't persisted (legacy orders before observability). */
+  story: {
+    source: string | null;
+    model: string | null;
+    generatedAt: string | null;
+    fallbackError: string | null;
+  };
   artifacts: {
     storyArtifactUrl: string | null;
     pageArtifactCount: number;
@@ -51,6 +59,18 @@ export interface OrderDiagnostics {
     pagesPhotoConditioned: number;
     pagesTextOnly: number;
     pagesUnknownConditioning: number;
+    /** Per-page conditioning detail. One entry per pageArtifact, in page
+     *  order. Lets admin/ops see exactly which path ran on each page
+     *  without parsing versionHistory. */
+    perPageConditioning: Array<{
+      pageIndex: number;
+      provider: string | null;
+      model: string | null;
+      conditioning: string | null;
+      hasReferencePhoto: boolean;
+      hasImage: boolean;
+      regenerateCount: number;
+    }>;
   };
   review: {
     reviewStatus: string;
@@ -141,6 +161,12 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       fileName: order.photoFileName ?? null,
       blobPath: order.photoBlobPath ?? null,
     },
+    story: {
+      source: order.storyMeta?.source ?? null,
+      model: order.storyMeta?.model ?? null,
+      generatedAt: order.storyMeta?.generatedAt ?? null,
+      fallbackError: order.storyMeta?.fallbackError ?? null,
+    },
     artifacts: {
       storyArtifactUrl: order.storyArtifactUrl ?? null,
       pageArtifactCount: pages.length,
@@ -151,6 +177,20 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       pagesUnknownConditioning,
       totalRegenerations,
       pagesWithoutImage,
+      perPageConditioning: [...pages]
+        .sort((a, b) => a.pageIndex - b.pageIndex)
+        .map((p) => {
+          const lastVersion = p.versionHistory[p.versionHistory.length - 1];
+          return {
+            pageIndex: p.pageIndex,
+            provider: p.generationProvider ?? null,
+            model: p.generationModel ?? null,
+            conditioning: p.generationConditioning ?? null,
+            hasReferencePhoto: Boolean(lastVersion?.referencePhotoUrl),
+            hasImage: Boolean(p.currentImageUrl),
+            regenerateCount: p.regenerateCount,
+          };
+        }),
     },
     review: {
       reviewStatus: order.reviewStatus ?? 'not_started',
@@ -207,6 +247,23 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
   // Stripe session presence — paid w/o a session ID is the classic "webhook fired before persist" smell
   if (d.payment.status === 'paid' && !d.payment.stripeSessionId) {
     checks.push({ id: 'stripe-session', label: 'Stripe session id missing', severity: 'warn', detail: 'Order is paid but no stripeSessionId is stored. Recovery may be needed.' });
+  }
+
+  // Story source observability
+  if (d.story.source === 'openai_chat') {
+    checks.push({ id: 'story-source', label: `Story source: openai_chat (${d.story.model ?? 'unknown'})`, severity: 'ok', detail: 'Model-generated story.' });
+  } else if (d.story.source === 'template') {
+    checks.push({ id: 'story-source', label: `Story source: template (${d.story.model ?? 'unknown'})`, severity: 'info', detail: 'Deterministic template fallback (no OPENAI_API_KEY or template-only path).' });
+  } else if (d.story.source === 'template_after_openai_failure') {
+    checks.push({
+      id: 'story-source',
+      label: 'Story source: template_after_openai_failure',
+      severity: 'warn',
+      detail: `OpenAI story call failed; template fallback ran. ${d.story.fallbackError ? `Error: ${d.story.fallbackError}` : ''}`,
+    });
+  } else if (d.flags.isPaid && d.artifacts.pageArtifactCount > 0) {
+    // Paid order with pages but no recorded story source = legacy / observability gap.
+    checks.push({ id: 'story-source', label: 'Story source: unknown (legacy order)', severity: 'info', detail: 'storyMeta not persisted. Order created before generation observability landed.' });
   }
 
   // Photo
@@ -312,7 +369,23 @@ export function formatDiagnosticsSummary(d: OrderDiagnostics): string {
   lines.push(`Payment: ${d.payment.status}${d.payment.stripeSessionId ? ` (${d.payment.stripeSessionId})` : ''}`);
   lines.push(`Fulfillment: ${d.fulfillment.fulfillmentStatus} · Order: ${d.fulfillment.orderStatus} · Attempts: ${d.fulfillment.attempts}${d.fulfillment.lastError ? ` · LastError: ${d.fulfillment.lastError}` : ''}`);
   lines.push(`Photo: blobPath=${d.photo.blobPath ?? 'none'} fileName=${d.photo.fileName ?? 'none'}`);
+  lines.push(
+    `Story: source=${d.story.source ?? 'unknown'} model=${d.story.model ?? 'unknown'}` +
+      `${d.story.generatedAt ? ` generatedAt=${d.story.generatedAt}` : ''}` +
+      `${d.story.fallbackError ? ` fallbackError="${d.story.fallbackError}"` : ''}`,
+  );
   lines.push(`Pages: ${d.artifacts.pagesAccepted}/${d.artifacts.pageArtifactCount} accepted · ${d.artifacts.pagesWithoutImage} missing image · ${d.artifacts.totalRegenerations} regenerations`);
+  lines.push(
+    `Conditioning: ${d.artifacts.pagesPhotoConditioned} photo-edit · ${d.artifacts.pagesTextOnly} text-only · ${d.artifacts.pagesUnknownConditioning} unknown`,
+  );
+  if (d.artifacts.perPageConditioning.length > 0) {
+    for (const p of d.artifacts.perPageConditioning) {
+      lines.push(
+        `  page ${p.pageIndex}: ${p.conditioning ?? '?'} · ${p.provider ?? '?'}/${p.model ?? '?'}` +
+          ` · refPhoto=${p.hasReferencePhoto ? 'yes' : 'no'} · img=${p.hasImage ? 'yes' : 'no'} · regens=${p.regenerateCount}`,
+      );
+    }
+  }
   lines.push(`Proof: ${d.artifacts.storyArtifactUrl ?? 'none'}`);
   lines.push(`Review: status=${d.review.reviewStatus} acknowledged=${d.review.proofReviewedAt ?? 'no'} approved=${d.review.proofApprovedAt ?? 'no'}`);
   if (d.identity.isPrint) {
