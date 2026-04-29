@@ -289,6 +289,13 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     };
   });
 
+  // Persist pageArtifacts BEFORE the slow PDF build so a serverless timeout
+  // during PDF generation doesn't lose the per-page generation evidence.
+  // Diagnostics + admin can now inspect what generation produced even if the
+  // function dies before the proof PDF is built. The final updateFulfillmentState
+  // below re-writes the same array (idempotent) plus the proof URL.
+  await updateFulfillmentState(order.id, { pageArtifacts: seededPageArtifacts });
+
   await updateFulfillmentState(order.id, { fulfillmentStatus: 'building_pdf' });
   // Include cover image (first imageUrl) + per-page images
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
@@ -349,24 +356,11 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   const imageResults = await runImageGeneration(imagePrompts, order, deps);
   const imageUrls = imageResults.map((r) => r.imageUrl);
 
-  await updateFulfillmentState(order.id, { fulfillmentStatus: 'building_pdf' });
-  const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
-  const previewBuffer = await _buildPdf(story, order, allUrls);
-  const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
-
-  const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);
-  const proofUrl = await _upload(order.id, previewBuffer, `${safeSlug}-proof.pdf`);
-  const interiorUrl = await _upload(order.id, interiorBuffer, `${safeSlug}-interior.pdf`);
-
-  const proofApprovalToken = crypto.randomBytes(24).toString('hex');
-  const baseUrl = _getBaseUrl();
-  // Primary CTA — the review surface drives per-page accept, proof ack, and the
-  // server-gated whole-book approval. The legacy /api/order/<id>/approve-proof
-  // endpoint still exists for backward compatibility but is no longer surfaced
-  // to customers.
-  const reviewUrl = `${baseUrl}/review/${order.id}?token=${proofApprovalToken}`;
-  const interiorPageCount = getPrintInteriorPageCount(story, order);
-
+  // Compute + PERSIST pageArtifacts BEFORE the slow PDF build steps so a
+  // serverless timeout during PDF/upload doesn't lose the generation evidence.
+  // Without this, classic/premium orders that timed out during _buildPdf
+  // ended up permanently stuck at fulfillmentStatus='building_pdf' with
+  // pageArtifacts=0 and the runner's catch-block never running.
   const seededPageArtifacts = story.pages.map((page, i): import('./orders.ts').PageArtifact => {
     const result = imageResults[i];
     return {
@@ -397,6 +391,28 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
         : [],
     };
   });
+  await updateFulfillmentState(order.id, { pageArtifacts: seededPageArtifacts });
+
+  await updateFulfillmentState(order.id, { fulfillmentStatus: 'building_pdf' });
+  const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
+  const previewBuffer = await _buildPdf(story, order, allUrls);
+  const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
+
+  const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);
+  const proofUrl = await _upload(order.id, previewBuffer, `${safeSlug}-proof.pdf`);
+  const interiorUrl = await _upload(order.id, interiorBuffer, `${safeSlug}-interior.pdf`);
+
+  const proofApprovalToken = crypto.randomBytes(24).toString('hex');
+  const baseUrl = _getBaseUrl();
+  // Primary CTA — the review surface drives per-page accept, proof ack, and the
+  // server-gated whole-book approval. The legacy /api/order/<id>/approve-proof
+  // endpoint still exists for backward compatibility but is no longer surfaced
+  // to customers.
+  const reviewUrl = `${baseUrl}/review/${order.id}?token=${proofApprovalToken}`;
+  const interiorPageCount = getPrintInteriorPageCount(story, order);
+
+  // seededPageArtifacts was already computed and persisted earlier (before
+  // PDF build), so we just re-use it in the final state write below.
 
   await updateFulfillmentState(order.id, {
     fulfillmentStatus: 'proof_ready',
