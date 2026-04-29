@@ -23,9 +23,14 @@ export async function retryOrderFulfillment(orderId: string): Promise<ActionResu
     fulfillmentLastError: null,
   });
 
-  triggerFulfillment(orderId).catch(err =>
-    console.error(`[admin] retry trigger failed for ${orderId}:`, err),
-  );
+  // Awaited so the admin retry actually waits for fulfillment to start.
+  // On Vercel/serverless a fire-and-forget promise gets dropped when the
+  // request returns, leaving the order stuck at not_started.
+  try {
+    await triggerFulfillment(orderId);
+  } catch (err) {
+    console.error(`[admin] retry trigger failed for ${orderId}:`, err);
+  }
 
   return { ok: true };
 }

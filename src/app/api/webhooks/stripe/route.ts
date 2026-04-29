@@ -104,10 +104,16 @@ export async function POST(request: Request) {
 
       await sendOrderConfirmationEmail(updated);
 
-      // Fire-and-forget: fulfillment errors are captured on the order record
-      triggerFulfillment(orderId).catch(err =>
-        console.error(`[webhook] fulfillment trigger failed for ${orderId}:`, err),
-      );
+      // Awaited so serverless runtime keeps the request alive until fulfillment
+      // actually starts. A fire-and-forget promise gets dropped when the
+      // function returns, which on Vercel left orders stuck at
+      // fulfillmentStatus='not_started' even after webhook marked them paid.
+      // Errors are still captured on the order record by triggerFulfillment.
+      try {
+        await triggerFulfillment(orderId);
+      } catch (err) {
+        console.error(`[webhook] fulfillment trigger failed for ${orderId}:`, err);
+      }
     } catch (err) {
       console.error(`Stripe webhook: failed to process order ${orderId}:`, err);
       return NextResponse.json({ error: 'Processing failed' }, { status: 500 });
