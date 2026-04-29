@@ -60,6 +60,7 @@ export function buildRecoveryOrderRecord(input: RecoveryInput): OrderRecord {
     stripeSessionId: input.stripeSessionId ?? null,
     shippingAddress: input.shippingAddress ?? null,
     photoBlobPath: input.photoBlobPath ?? base.photoBlobPath ?? null,
+    photoBlobUrl: input.photoBlobUrl ?? base.photoBlobUrl ?? null,
     photoFileName: input.photoFileName ?? base.photoFileName ?? null,
   };
 }
@@ -81,7 +82,7 @@ function contentTypeForFilename(name: string): string {
 export async function uploadOrderPhotoFromPath(
   orderId: string,
   filePath: string,
-): Promise<{ photoBlobPath: string | null; photoFileName: string; warning?: string }> {
+): Promise<{ photoBlobPath: string | null; photoBlobUrl: string | null; photoFileName: string; warning?: string }> {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const buffer = await readFile(filePath);
   const safeName =
@@ -91,6 +92,7 @@ export async function uploadOrderPhotoFromPath(
   if (!token) {
     return {
       photoBlobPath: null,
+      photoBlobUrl: null,
       photoFileName: safeName,
       warning:
         'BLOB_READ_WRITE_TOKEN not set — photo NOT uploaded. Re-run with token, or set OrderRecord.photoBlobPath manually.',
@@ -105,7 +107,7 @@ export async function uploadOrderPhotoFromPath(
     token,
   });
 
-  return { photoBlobPath: blob.pathname, photoFileName: safeName };
+  return { photoBlobPath: blob.pathname, photoBlobUrl: blob.url, photoFileName: safeName };
 }
 
 /**
@@ -116,12 +118,14 @@ export async function uploadOrderPhotoFromPath(
 export async function recoverOrder(input: RecoveryInput): Promise<RecoverySummary> {
   const warnings: string[] = [];
   let photoBlobPath = input.photoBlobPath ?? null;
+  let photoBlobUrl = input.photoBlobUrl ?? null;
   let photoFileName = input.photoFileName ?? null;
 
   if (input.photoFilePath) {
     try {
       const r = await uploadOrderPhotoFromPath(input.id, input.photoFilePath);
       if (r.photoBlobPath) photoBlobPath = r.photoBlobPath;
+      if (r.photoBlobUrl) photoBlobUrl = r.photoBlobUrl;
       if (r.photoFileName) photoFileName = r.photoFileName;
       if (r.warning) warnings.push(r.warning);
     } catch (err) {
@@ -134,6 +138,7 @@ export async function recoverOrder(input: RecoveryInput): Promise<RecoverySummar
   const record = buildRecoveryOrderRecord({
     ...input,
     photoBlobPath,
+    photoBlobUrl,
     photoFileName,
   });
 

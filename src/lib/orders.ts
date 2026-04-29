@@ -31,6 +31,16 @@ export interface OrderInput {
   email: string;
   photoFileName?: string | null;
   photoBlobPath?: string | null;
+  /**
+   * Absolute, fetchable URL for the uploaded customer photo. Returned by
+   * Vercel Blob's put() at upload time and persisted alongside photoBlobPath
+   * so the FAL image-edit provider can use the photo as image_urls input
+   * without needing to reconstruct a URL from HSB_PUBLIC_BLOB_BASE.
+   *
+   * Optional for backward compatibility with orders created before this
+   * field was persisted — those still resolve via HSB_PUBLIC_BLOB_BASE.
+   */
+  photoBlobUrl?: string | null;
 }
 
 export type ReviewStatus =
@@ -260,6 +270,7 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     email: input.email.trim().toLowerCase(),
     photoFileName: input.photoFileName?.trim() || null,
     photoBlobPath: input.photoBlobPath?.trim() || null,
+    photoBlobUrl: input.photoBlobUrl?.trim() || null,
     status: 'order_received',
     paymentStatus: 'pending',
     stripeSessionId: null,
@@ -418,38 +429,52 @@ function getOrdersListPrefix() {
 }
 
 /**
- * Resolve a stored `photoBlobPath` into a fetchable URL the FAL image-edit
- * provider can pull. We do NOT depend on a runtime blob `head()` call here —
- * the customer photo was uploaded with public access (see uploadOrderPhoto)
- * and we know the host pattern. Returns null when:
- *   - the order has no photoBlobPath set (no photo was uploaded), or
- *   - we cannot construct a public URL for the current configured store.
+ * Resolve the customer photo URL the FAL image-edit provider should fetch.
  *
- * Honors `HSB_PUBLIC_BLOB_BASE` as an override; otherwise tries to derive
- * from the standard Vercel Blob public store URL pattern.
+ * Resolution order (first match wins):
+ *   1. order.photoBlobUrl — the absolute URL Vercel Blob returned at upload
+ *      time. Set on every order created after this field landed; durable.
+ *   2. order.photoBlobPath if it is already an absolute URL (recovery flows
+ *      sometimes store a full URL there).
+ *   3. Reconstruct from process.env.HSB_PUBLIC_BLOB_BASE + photoBlobPath
+ *      (legacy path for orders persisted before photoBlobUrl was added).
+ *   4. Otherwise null — the orchestrator will fall through to text-only FAL.
+ *
+ * Returning null is by design: it signals "we cannot photo-condition this
+ * order safely" rather than fabricating a URL the FAL provider would 404 on.
  */
 export function getOrderPhotoUrl(
-  order: Pick<OrderRecord, 'photoBlobPath'>,
+  order: Pick<OrderRecord, 'photoBlobPath' | 'photoBlobUrl'>,
 ): string | null {
+  // 1. Persisted absolute URL — the durable, env-independent path.
+  const persistedUrl = order.photoBlobUrl?.trim();
+  if (persistedUrl) return persistedUrl;
+
   const blobPath = order.photoBlobPath?.trim();
   if (!blobPath) return null;
-  // If photoBlobPath is already an absolute URL (some recovery flows store
-  // a full URL), return it as-is.
+
+  // 2. photoBlobPath itself is absolute (recovery flows).
   if (/^https?:\/\//i.test(blobPath)) return blobPath;
 
+  // 3. Legacy reconstruction via env override.
   const explicit = process.env.HSB_PUBLIC_BLOB_BASE?.replace(/\/$/, '');
   if (explicit) return `${explicit}/${blobPath}`;
 
-  // Vercel Blob public-store URLs look like:
-  //   https://<storeId>.public.blob.vercel-storage.com/<pathname>
-  // We don't know <storeId> at runtime without a head() call, so callers
-  // that need a public URL in production should set HSB_PUBLIC_BLOB_BASE
-  // (or pass the URL explicitly). Returning null here lets the orchestrator
-  // fall through to text-only FAL rather than 404 the photo-edit provider.
+  // 4. No way to resolve — caller falls back to text-only.
   return null;
 }
 
-export async function uploadOrderPhoto(orderId: string, file: File) {
+/**
+ * Result of uploadOrderPhoto. The `url` is the absolute, fetchable Vercel
+ * Blob URL — persist it on OrderRecord.photoBlobUrl so downstream code
+ * (FAL image-edit) does not need HSB_PUBLIC_BLOB_BASE to reconstruct it.
+ */
+export interface UploadedPhotoRef {
+  pathname: string;
+  url: string;
+}
+
+export async function uploadOrderPhoto(orderId: string, file: File): Promise<UploadedPhotoRef | null> {
   const token = getBlobToken();
 
   if (typeof file.arrayBuffer !== 'function') {
@@ -487,7 +512,7 @@ export async function uploadOrderPhoto(orderId: string, file: File) {
       contentType: file.type || 'application/octet-stream',
       token,
     });
-    return blob.pathname;
+    return { pathname: blob.pathname, url: blob.url };
   } catch (err) {
     if (requiresDurablePersistence()) {
       console.error(

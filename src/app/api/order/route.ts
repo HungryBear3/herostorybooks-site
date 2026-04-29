@@ -74,10 +74,15 @@ export async function POST(request: Request) {
     });
 
     const photo = form.get('photo');
-    let photoBlobPath = null;
+    let photoBlobPath: string | null = null;
+    let photoBlobUrl: string | null = null;
     if (photo instanceof File && photo.size > 0) {
       try {
-        photoBlobPath = await uploadOrderPhoto(draftOrder.id, photo);
+        const uploaded = await uploadOrderPhoto(draftOrder.id, photo);
+        if (uploaded) {
+          photoBlobPath = uploaded.pathname;
+          photoBlobUrl = uploaded.url;
+        }
       } catch (error) {
         // In production, OrderPersistenceError from photo upload must abort
         // BEFORE the Stripe Checkout Session — otherwise the customer pays
@@ -94,6 +99,7 @@ export async function POST(request: Request) {
         }
         console.error(`[order] photo upload failed for ${draftOrder.id}; continuing without photo`, error);
         photoBlobPath = null;
+        photoBlobUrl = null;
       }
     }
 
@@ -102,7 +108,7 @@ export async function POST(request: Request) {
     // for an order the webhook + status page can never find.
     let order;
     try {
-      order = await persistOrder({ ...draftOrder, photoBlobPath });
+      order = await persistOrder({ ...draftOrder, photoBlobPath, photoBlobUrl });
     } catch (error) {
       if (error instanceof OrderPersistenceError) {
         console.error(
