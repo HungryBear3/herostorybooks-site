@@ -30,17 +30,18 @@ const nextConfig = {
       'node_modules/.cache/**',
     ],
   },
-  // pdfkit ships its font/data files (Helvetica.afm etc.) under
-  // node_modules/pdfkit/js/data and reads them at runtime via fs. NFT cannot
-  // statically detect those file accesses, so the .afm files were excluded
-  // from the function bundle on Vercel and `_buildPdf` failed with:
-  //   ENOENT: no such file or directory, open
-  //   '/ROOT/node_modules/pdfkit/js/data/Helvetica.afm'
-  // Explicitly include the entire pdfkit/js/data directory in every API
-  // route bundle so PDF generation can find its fonts at runtime.
+  // pdfkit reads its built-in font/AFM metrics from node_modules/pdfkit/js/data
+  // at runtime via fs. Next 16's NFT cannot statically detect those accesses,
+  // and even an explicit outputFileTracingIncludes for the data files did not
+  // resolve the runtime ENOENT. Marking pdfkit as a server external package
+  // tells Next to leave it unbundled so it loads from node_modules at runtime,
+  // where its data files are intact.
+  serverExternalPackages: ['pdfkit'],
+  // Belt-and-suspenders: also explicitly include the data files in every API
+  // route bundle in case the external resolution still goes through tracing.
   outputFileTracingIncludes: {
     '/api/**': [
-      'node_modules/pdfkit/js/data/**',
+      'node_modules/pdfkit/**',
     ],
   },
 };
