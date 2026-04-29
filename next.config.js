@@ -30,6 +30,19 @@ const nextConfig = {
       'node_modules/.cache/**',
     ],
   },
+  // pdfkit ships its font/data files (Helvetica.afm etc.) under
+  // node_modules/pdfkit/js/data and reads them at runtime via fs. NFT cannot
+  // statically detect those file accesses, so the .afm files were excluded
+  // from the function bundle on Vercel and `_buildPdf` failed with:
+  //   ENOENT: no such file or directory, open
+  //   '/ROOT/node_modules/pdfkit/js/data/Helvetica.afm'
+  // Explicitly include the entire pdfkit/js/data directory in every API
+  // route bundle so PDF generation can find its fonts at runtime.
+  outputFileTracingIncludes: {
+    '/api/**': [
+      'node_modules/pdfkit/js/data/**',
+    ],
+  },
 };
 
 module.exports = nextConfig;
