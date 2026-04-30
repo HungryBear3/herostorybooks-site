@@ -70,11 +70,35 @@ export async function POST(request: Request) {
     }
 
     try {
-      // Idempotency: if this session was already processed, skip silently
       const existing = await (await import('@/lib/orders')).getOrder(orderId);
-      if (existing?.stripeSessionId === session.id && existing.paymentStatus === 'paid') {
-        console.warn(`Stripe webhook: session ${session.id} already processed — skipping`);
-        return NextResponse.json({ received: true });
+
+      // Refund-safe idempotency:
+      //   1. If a prior session-completed already moved this order to paid,
+      //      skip — same as before.
+      //   2. If the order has since been refunded (paymentStatus='refunded'
+      //      OR refundedAt set), the same session_id replaying must NOT
+      //      flip state back to paid and must NOT re-trigger fulfillment.
+      //      Refund is terminal for the payment lifecycle.
+      //   3. More generally, for the same session_id we never overwrite
+      //      a non-pending paymentStatus — only the first pending → paid
+      //      transition is allowed.
+      if (existing?.stripeSessionId === session.id) {
+        if (existing.paymentStatus === 'paid') {
+          console.warn(`Stripe webhook: session ${session.id} already processed — skipping`);
+          return NextResponse.json({ received: true });
+        }
+        if (existing.paymentStatus === 'refunded' || existing.refundedAt) {
+          console.warn(
+            `Stripe webhook: replay on refunded order ${orderId} (session=${session.id}) — refusing to resurrect; no state change, no fulfillment retrigger`,
+          );
+          return NextResponse.json({ received: true, refundedSkipped: true });
+        }
+        if (existing.paymentStatus !== 'pending') {
+          console.warn(
+            `Stripe webhook: session ${session.id} replay on terminal paymentStatus=${existing.paymentStatus} — skipping`,
+          );
+          return NextResponse.json({ received: true });
+        }
       }
 
       const shipping = extractShipping(session);

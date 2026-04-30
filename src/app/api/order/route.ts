@@ -8,6 +8,10 @@ import {
   persistOrder,
   uploadOrderPhoto,
 } from '@/lib/orders';
+import {
+  missingFieldErrorCode,
+  missingRequiredField,
+} from '@/lib/checkout-flow';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 
 function isValidEmail(value: string) {
@@ -51,10 +55,34 @@ export async function POST(request: Request) {
     const childName = String(form.get('childName') || '').trim();
     const email = String(form.get('email') || '').trim();
     const bookFormat = String(form.get('bookFormat') || 'classic').trim();
+    const theme = String(form.get('theme') || '').trim();
 
-    if (!childName || !email || !isValidEmail(email)) {
+    // Structured appearance fields ride along inside the JSON
+    // appearanceOptions blob from the form (kept as-is for backward
+    // compatibility) AND as discrete top-level fields. The launch spec
+    // says skinTone + hairStyle MUST be explicit (no "Prefer AI to
+    // decide"). We accept either shape so the server is robust to
+    // future client refactors but enforce the same minimum.
+    const appearanceRaw = String(form.get('appearanceOptions') || '');
+    let appearance: { skinTone?: string; hairStyle?: string } = {};
+    if (appearanceRaw) {
+      try { appearance = JSON.parse(appearanceRaw) as typeof appearance; }
+      catch { appearance = {}; }
+    }
+    const skinTone = String(form.get('skinTone') || appearance.skinTone || '').trim();
+    const hairStyle = String(form.get('hairStyle') || appearance.hairStyle || '').trim();
+
+    const missing = missingRequiredField({ theme, childName, email, skinTone, hairStyle });
+    if (missing !== null || !isValidEmail(email)) {
+      const code = missing ? missingFieldErrorCode(missing) : 'email_invalid';
       return NextResponse.json(
-        { error: 'Child name and a valid email are required.' },
+        {
+          error:
+            code === 'email_invalid'
+              ? 'A valid email is required.'
+              : `Missing required field: ${code}`,
+          code,
+        },
         { status: 400 },
       );
     }
@@ -62,12 +90,12 @@ export async function POST(request: Request) {
     const draftOrder = createOrderRecord({
       childName,
       childAge: String(form.get('childAge') || ''),
-      theme: String(form.get('theme') || ''),
+      theme,
       lesson: String(form.get('lesson') || ''),
       occasion: String(form.get('occasion') || ''),
       giftMessage: String(form.get('giftMessage') || ''),
       characterNotes: String(form.get('characterNotes') || ''),
-      appearanceOptions: String(form.get('appearanceOptions') || ''),
+      appearanceOptions: appearanceRaw,
       bookFormat,
       email,
       photoFileName: form.get('photo') instanceof File ? (form.get('photo') as File).name : null,

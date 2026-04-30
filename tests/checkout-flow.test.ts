@@ -34,56 +34,44 @@ test('photo upload help supports gift buyers who want to start before finding a 
 
 // ── Required adventure + submit gating ───────────────────────────────────────
 
+const FULL = {
+  theme: 'brave-explorer',
+  childName: 'Emma',
+  email: 'a@b.com',
+  skinTone: 'medium',
+  hairStyle: 'curly',
+};
+
 test('canSubmitCheckoutForm: blocks submit when no adventure is selected', () => {
-  assert.equal(
-    canSubmitCheckoutForm({ theme: '', childName: 'Emma', email: 'a@b.com' }),
-    false,
-  );
+  assert.equal(canSubmitCheckoutForm({ ...FULL, theme: '' }), false);
 });
 
 test('canSubmitCheckoutForm: blocks submit when childName or email is missing', () => {
-  assert.equal(
-    canSubmitCheckoutForm({ theme: 'brave-explorer', childName: '', email: 'a@b.com' }),
-    false,
-  );
-  assert.equal(
-    canSubmitCheckoutForm({ theme: 'brave-explorer', childName: 'Emma', email: '' }),
-    false,
-  );
+  assert.equal(canSubmitCheckoutForm({ ...FULL, childName: '' }), false);
+  assert.equal(canSubmitCheckoutForm({ ...FULL, email: '' }), false);
 });
 
-test('canSubmitCheckoutForm: allows submit only when adventure + name + email are all present', () => {
-  assert.equal(
-    canSubmitCheckoutForm({
-      theme: 'brave-explorer',
-      childName: 'Emma',
-      email: 'a@b.com',
-    }),
-    true,
-  );
+test('canSubmitCheckoutForm: blocks submit when skinTone is missing (launch spec requires explicit value)', () => {
+  assert.equal(canSubmitCheckoutForm({ ...FULL, skinTone: '' }), false);
+  assert.equal(canSubmitCheckoutForm({ ...FULL, skinTone: '   ' }), false);
+});
+
+test('canSubmitCheckoutForm: blocks submit when hairStyle is missing', () => {
+  assert.equal(canSubmitCheckoutForm({ ...FULL, hairStyle: '' }), false);
+  assert.equal(canSubmitCheckoutForm({ ...FULL, hairStyle: '   ' }), false);
+});
+
+test('canSubmitCheckoutForm: allows submit only when every required field is present', () => {
+  assert.equal(canSubmitCheckoutForm(FULL), true);
 });
 
 test('missingRequiredField: reports the first gap for the disabled-state label', () => {
-  assert.equal(
-    missingRequiredField({ theme: '', childName: 'Emma', email: 'a@b.com' }),
-    'adventure',
-  );
-  assert.equal(
-    missingRequiredField({ theme: 'brave-explorer', childName: '', email: 'a@b.com' }),
-    'name',
-  );
-  assert.equal(
-    missingRequiredField({ theme: 'brave-explorer', childName: 'Emma', email: '' }),
-    'email',
-  );
-  assert.equal(
-    missingRequiredField({
-      theme: 'brave-explorer',
-      childName: 'Emma',
-      email: 'a@b.com',
-    }),
-    null,
-  );
+  assert.equal(missingRequiredField({ ...FULL, theme: '' }), 'adventure');
+  assert.equal(missingRequiredField({ ...FULL, childName: '' }), 'name');
+  assert.equal(missingRequiredField({ ...FULL, email: '' }), 'email');
+  assert.equal(missingRequiredField({ ...FULL, skinTone: '' }), 'skin_tone');
+  assert.equal(missingRequiredField({ ...FULL, hairStyle: '' }), 'hair_style');
+  assert.equal(missingRequiredField(FULL), null);
 });
 
 test('selectAdventureValue: radio-style — clicking the same card again keeps it selected', () => {
