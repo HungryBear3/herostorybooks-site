@@ -18,8 +18,6 @@ export interface StoryOccasion {
 export const STORY_OCCASIONS: StoryOccasion[] = [
   { id: 'birthday', label: '🎂 Birthday' },
   { id: 'holiday', label: '🎁 Holiday Gift' },
-  { id: 'mothers-day', label: '💐 Mother\'s Day' },
-  { id: 'fathers-day', label: '🛠️ Father\'s Day' },
   { id: 'just-because', label: '❤️ Just Because' },
   { id: 'welcome-baby', label: '🍼 Welcome Baby' },
 ];

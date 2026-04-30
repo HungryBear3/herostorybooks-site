@@ -17,10 +17,10 @@ test('story catalog includes real themed sample thumbnails instead of generic pl
   ]);
 });
 
-test('story catalog includes both Mother\'s Day and Father\'s Day gifting occasions', () => {
+test('story catalog launch occasions stay limited to evergreen gifting moments', () => {
   assert.deepEqual(
     STORY_OCCASIONS.map((occasion) => occasion.id),
-    ['birthday', 'holiday', 'mothers-day', 'fathers-day', 'just-because', 'welcome-baby'],
+    ['birthday', 'holiday', 'just-because', 'welcome-baby'],
   );
 });
 

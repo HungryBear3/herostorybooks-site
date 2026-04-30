@@ -103,7 +103,7 @@ function SuccessView({
           </div>
         </div>
         <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
-          7-day satisfaction guarantee · Questions? support@herostorybooks.com
+          Questions? support@herostorybooks.com · Print books move to production only after proof approval
         </p>
       </div>
 

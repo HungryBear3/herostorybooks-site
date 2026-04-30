@@ -7,7 +7,7 @@ export type { FulfillmentStatus };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
 export type BookFormat = 'digital' | 'classic' | 'premium';
-export type PaymentStatus = 'pending' | 'paid' | 'failed';
+export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded';
 
 export interface ShippingAddress {
   line1: string;
@@ -80,7 +80,9 @@ export type ReviewAuditEventType =
   | 'page_regenerated'
   | 'page_accepted'
   | 'whole_book_approved'
-  | 'whole_book_approval_rejected';
+  | 'whole_book_approval_rejected'
+  | 'refund_issued'
+  | 'refund_refused';
 
 export interface ReviewAuditEvent {
   /** ISO timestamp the event was recorded. */
@@ -156,6 +158,15 @@ export interface OrderRecord extends OrderInput {
   pageArtifacts?: PageArtifact[];
   /** Append-only audit log of review/approval events. Optional on legacy orders. */
   auditEvents?: ReviewAuditEvent[];
+  /** Pre-print refund state. Set when admin issues a Stripe refund for an
+   *  order that has not yet printed/shipped. Once set, no print operation
+   *  may run on this order. */
+  refundedAt?: string | null;
+  refundReason?: string | null;
+  /** Stripe refund id (re_...) when the refund was actually executed
+   *  through the processor. Null on legacy orders or refunds that fell
+   *  back to manual processing. */
+  stripeRefundId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -723,6 +734,10 @@ type FulfillmentPatch = Partial<Pick<
   | 'reviewStatus'
   | 'pageArtifacts'
   | 'auditEvents'
+  | 'paymentStatus'
+  | 'refundedAt'
+  | 'refundReason'
+  | 'stripeRefundId'
 >>;
 
 export async function updateFulfillmentState(

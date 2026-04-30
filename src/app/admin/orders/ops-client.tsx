@@ -4,12 +4,26 @@ import { useMemo, useState } from 'react';
 
 import type { OrderRecord } from '@/lib/orders';
 
+/** Client-side mirror of preprintRefundRefusalReason (kept inline to
+ *  avoid pulling Stripe into the client bundle through admin-actions).
+ *  Server is the source of truth — UI just hides the button when the
+ *  state already disqualifies the order. */
+function uiCanRefund(order: OrderRecord): boolean {
+  if (order.paymentStatus !== 'paid') return false;
+  if (order.refundedAt) return false;
+  if (order.status === 'shipped' || order.status === 'print_in_production') return false;
+  const fs = order.fulfillmentStatus ?? 'not_started';
+  if (fs === 'submitting_to_print' || fs === 'complete') return false;
+  return true;
+}
+
 type Filter = 'all' | 'paid' | 'in_progress' | 'proof_ready' | 'failed' | 'shipped';
 
 export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [retrying, setRetrying] = useState<string | null>(null);
+  const [refunding, setRefunding] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -45,6 +59,30 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
       }
     } finally {
       setRetrying(null);
+    }
+  }
+
+  async function refund(orderId: string) {
+    const reason = prompt(
+      `Refund ${orderId}? This calls Stripe and CANNOT be undone.\n\nReason (recorded in audit log):`,
+      'customer_request',
+    );
+    if (reason === null) return; // cancelled
+    setRefunding(orderId);
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/refund`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(`Refund failed: ${data.error ?? res.status}`);
+      } else {
+        alert(`Refund issued. ${data.detail ?? ''}\nReload to see updated state.`);
+      }
+    } finally {
+      setRefunding(null);
     }
   }
 
@@ -92,7 +130,14 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
                 <tr><td colSpan={8} className="text-center py-8 text-gray-400">No orders match.</td></tr>
               )}
               {filtered.map(o => (
-                <Row key={o.id} order={o} onRetry={retry} retrying={retrying === o.id} />
+                <Row
+                  key={o.id}
+                  order={o}
+                  onRetry={retry}
+                  retrying={retrying === o.id}
+                  onRefund={refund}
+                  refunding={refunding === o.id}
+                />
               ))}
             </tbody>
           </table>
@@ -102,8 +147,24 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
   );
 }
 
-function Row({ order, onRetry, retrying }: { order: OrderRecord; onRetry: (id: string) => void; retrying: boolean }) {
-  const paidTone = order.paymentStatus === 'paid' ? 'bg-forest/10 text-forest' : order.paymentStatus === 'failed' ? 'bg-coral/20 text-coral-dark' : 'bg-gray-100 text-gray-600';
+function Row({
+  order,
+  onRetry,
+  retrying,
+  onRefund,
+  refunding,
+}: {
+  order: OrderRecord;
+  onRetry: (id: string) => void;
+  retrying: boolean;
+  onRefund: (id: string) => void;
+  refunding: boolean;
+}) {
+  const paidTone =
+    order.paymentStatus === 'paid' ? 'bg-forest/10 text-forest' :
+    order.paymentStatus === 'failed' ? 'bg-coral/20 text-coral-dark' :
+    order.paymentStatus === 'refunded' ? 'bg-purple/20 text-purple' :
+    'bg-gray-100 text-gray-600';
   const f = order.fulfillmentStatus ?? 'not_started';
   const fulfillTone =
     f === 'complete' ? 'bg-forest/10 text-forest' :
@@ -161,6 +222,22 @@ function Row({ order, onRetry, retrying }: { order: OrderRecord; onRetry: (id: s
             >
               {retrying ? 'Queuing…' : 'Retry'}
             </button>
+          )}
+          {uiCanRefund(order) && (
+            <button
+              type="button"
+              onClick={() => onRefund(order.id)}
+              disabled={refunding}
+              className="text-xs px-2 py-1 rounded-md font-semibold border border-coral/40 text-coral-dark hover:bg-coral/5 disabled:opacity-50"
+              data-testid={`refund-${order.id}`}
+            >
+              {refunding ? 'Refunding…' : 'Refund'}
+            </button>
+          )}
+          {order.refundedAt && (
+            <span className="text-[10px] text-gray-400" data-testid={`refunded-${order.id}`}>
+              Refunded {new Date(order.refundedAt).toISOString().slice(0, 10)}
+            </span>
           )}
           <a href={`mailto:${order.email}?subject=Your%20Hero%20Story%20Books%20order%20${order.id}`} className="text-xs underline text-gray-500">
             Email customer

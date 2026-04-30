@@ -1,10 +1,12 @@
-import { getOrder, updateFulfillmentState, updateOrderStatus } from './orders.ts';
+import Stripe from 'stripe';
+
+import { appendAuditEvent, getOrder, updateFulfillmentState, updateOrderStatus, type OrderRecord } from './orders.ts';
 import { triggerFulfillment, approvePrintProof } from './fulfillment.ts';
 import { sendProofReadyEmail, sendLifecycleEmail } from './order-email.ts';
 
 export type ActionResult =
   | { ok: true; detail?: string }
-  | { ok: false; status: 400 | 404 | 409; error: string };
+  | { ok: false; status: 400 | 404 | 409 | 502 | 503; error: string };
 
 export type RetryResult = ActionResult;
 
@@ -120,6 +122,152 @@ export async function manuallyApproveProof(orderId: string): Promise<ActionResul
     return { ok: false, status: 409, error: result.error ?? 'Approval failed' };
   }
   return { ok: true, detail: 'Proof manually approved' };
+}
+
+// ── Pre-print Stripe refund ──────────────────────────────────────────────────
+
+export interface RefundDeps {
+  /** Inject for tests so we can assert the Stripe call shape without
+   *  hitting the real API. Returning `null` from `getStripe` forces the
+   *  503 manual-refund path. */
+  getStripe?: () => StripeRefundClient | null;
+  now?: () => string;
+}
+
+export interface StripeRefundClient {
+  retrieveSession: (sessionId: string) => Promise<{ payment_intent: string | null }>;
+  createRefund: (paymentIntent: string, reason?: string) => Promise<{ id: string }>;
+}
+
+function defaultStripeRefundClient(): StripeRefundClient | null {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) return null;
+  const stripe = new Stripe(key);
+  return {
+    async retrieveSession(sessionId) {
+      const s = await stripe.checkout.sessions.retrieve(sessionId);
+      const intent =
+        typeof s.payment_intent === 'string'
+          ? s.payment_intent
+          : s.payment_intent?.id ?? null;
+      return { payment_intent: intent };
+    },
+    async createRefund(paymentIntent) {
+      const r = await stripe.refunds.create({ payment_intent: paymentIntent });
+      return { id: r.id };
+    },
+  };
+}
+
+/**
+ * Pre-print refund (Plan §8). Refuses unless the order is paid AND not
+ * yet shipped/in-print AND not already refunded. Calls Stripe directly
+ * — no fake "refund recorded" path: if Stripe is not configured the
+ * action returns 503 without touching state, so the operator sees the
+ * exact blocker. On success, persists `paymentStatus='refunded'`,
+ * `refundedAt`, `stripeRefundId`, and an audit event; flips
+ * `fulfillmentStatus` to `failed_manual_review` so downstream paths
+ * cannot accidentally print a refunded order.
+ */
+export async function refundOrder(
+  orderId: string,
+  reason: string,
+  deps: RefundDeps = {},
+): Promise<ActionResult> {
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+
+  const refusal = preprintRefundRefusalReason(order);
+  if (refusal) {
+    await appendAuditEvent(order.id, {
+      type: 'refund_refused',
+      reason: refusal,
+      meta: {
+        paymentStatus: order.paymentStatus,
+        fulfillmentStatus: order.fulfillmentStatus ?? null,
+        status: order.status,
+      },
+    });
+    return { ok: false, status: 409, error: refusal };
+  }
+
+  if (!order.stripeSessionId) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Order has no stripeSessionId — cannot run a real refund',
+    };
+  }
+
+  const stripe = (deps.getStripe ?? defaultStripeRefundClient)();
+  if (!stripe) {
+    return {
+      ok: false,
+      status: 503,
+      error: 'STRIPE_SECRET_KEY is not configured — refund cannot run',
+    };
+  }
+
+  const trimmedReason = (reason || 'customer_request').trim().slice(0, 240);
+  const now = deps.now ? deps.now() : new Date().toISOString();
+
+  let refundId: string;
+  try {
+    const session = await stripe.retrieveSession(order.stripeSessionId);
+    if (!session.payment_intent) {
+      return {
+        ok: false,
+        status: 502,
+        error: 'Stripe session has no payment_intent — refund cannot run',
+      };
+    }
+    const refund = await stripe.createRefund(session.payment_intent, trimmedReason);
+    refundId = refund.id;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      status: 502,
+      error: `Stripe refund failed: ${message.slice(0, 200)}`,
+    };
+  }
+
+  await updateFulfillmentState(order.id, {
+    paymentStatus: 'refunded',
+    refundedAt: now,
+    refundReason: trimmedReason,
+    stripeRefundId: refundId,
+    fulfillmentStatus: 'failed_manual_review',
+    fulfillmentLastError: `refunded_pre_print: ${trimmedReason}`,
+  });
+
+  await appendAuditEvent(order.id, {
+    type: 'refund_issued',
+    reason: trimmedReason,
+    meta: { stripeRefundId: refundId },
+  });
+
+  return { ok: true, detail: `Refund issued: ${refundId}` };
+}
+
+/** Pure predicate. Returns null when refund is allowed, or a short
+ *  reason code when it must be refused. Exported for tests + UI gating. */
+export function preprintRefundRefusalReason(order: OrderRecord): string | null {
+  if (order.paymentStatus === 'refunded' || order.refundedAt) {
+    return 'already_refunded';
+  }
+  if (order.paymentStatus !== 'paid') {
+    return 'not_paid';
+  }
+  if (order.status === 'shipped') return 'already_shipped';
+  if (order.status === 'print_in_production') return 'already_in_print';
+  if (
+    order.fulfillmentStatus === 'submitting_to_print'
+    || order.fulfillmentStatus === 'complete'
+  ) {
+    return 'already_finalized';
+  }
+  return null;
 }
 
 // ── Lulu status sync ──────────────────────────────────────────────────────────

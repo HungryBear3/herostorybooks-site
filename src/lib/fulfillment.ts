@@ -446,6 +446,29 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
   const _calculateCoverDimensions = deps.calculateCoverDimensions ?? calculateCoverDimensions;
   const _buildPrintCoverPdf = deps.buildPrintCoverPdf ?? buildPrintCoverPdf;
 
+  // Defensive print-gate (Plan §6, §9). Until this slice the gate was
+  // implied by convention — only approvePrintProof / manuallyApproveProof
+  // could reach this function. We now assert the preconditions in code so
+  // a future caller cannot silently skip them.
+  //   - paymentStatus must be 'paid' (not 'refunded' or anything else)
+  //   - fulfillmentStatus must be 'proof_approved' or 'submitting_to_print'
+  //     (the latter for retries that re-enter mid-flow)
+  //   - the order must not be refunded
+  //   - the order must not already be in print/shipped
+  if (order.paymentStatus !== 'paid') {
+    throw new Error(`Refusing print: paymentStatus=${order.paymentStatus}`);
+  }
+  if (order.refundedAt) {
+    throw new Error('Refusing print: order has been refunded');
+  }
+  if (order.status === 'shipped' || order.status === 'print_in_production') {
+    throw new Error(`Refusing print: order.status=${order.status}`);
+  }
+  const fs = order.fulfillmentStatus ?? 'not_started';
+  if (fs !== 'proof_approved' && fs !== 'submitting_to_print') {
+    throw new Error(`Refusing print: fulfillmentStatus=${fs} — proof not approved`);
+  }
+
   if (!order.printInteriorArtifactUrl || !order.printInteriorMd5 || !order.printInteriorPageCount || !order.printTitle) {
     throw new Error('Missing print interior artifacts — cannot submit to print without interior PDF metadata');
   }

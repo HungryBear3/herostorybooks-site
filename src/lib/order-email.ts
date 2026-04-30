@@ -43,7 +43,7 @@ export function buildOrderConfirmationEmail(
       </div>
       <p style="margin:0 0 12px;">${escapeHtml(previewNote)}</p>
       <p style="margin:0 0 12px;">If you have questions, just reply to this email or contact <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>.</p>
-      <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">7-day satisfaction guarantee · Personalized with care by Hero Story Books</p>
+      <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Proof approval before print · Personalized with care by Hero Story Books</p>
     </div>
   `;
 
@@ -219,7 +219,7 @@ export function buildShippedEmail(
       ${trackingHtml}
       <p style="margin:0 0 12px;">If anything looks wrong when it arrives, reply to this email within 7 days and we'll make it right.</p>
       <p style="margin:0 0 12px;">Questions? <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a></p>
-      <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">7-day satisfaction guarantee · Hero Story Books</p>
+      <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Proof approval before print · Hero Story Books</p>
     </div>
   `;
 
@@ -308,7 +308,7 @@ export function buildDigitalDeliveryEmail(
       </div>
       <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">If the button doesn't work, copy this link: ${escapeHtml(options.pdfUrl)}</p>
       <p style="margin:0 0 12px;">Questions? Reply to this email or contact <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>.</p>
-      <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Order ID: ${escapeHtml(order.id)} · 7-day satisfaction guarantee</p>
+      <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Order ID: ${escapeHtml(order.id)} · Proof approval before print</p>
     </div>
   `;
 
