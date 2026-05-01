@@ -43,6 +43,53 @@ function getMinimumTotalPages(bookFormat: BookFormat): number {
   return 0;
 }
 
+/** Intentional, designed front-and-back matter pages added to every print
+ *  interior: title, dedication, end-note, about. Distinct from the
+ *  modular keepsake/filler safety net. Slice 2 of the print redesign. */
+const FRONT_MATTER_COUNT = 2;
+const BACK_MATTER_COUNT = 2;
+const INTENTIONAL_MATTER_PAGES = FRONT_MATTER_COUNT + BACK_MATTER_COUNT;
+
+interface MatterPage {
+  kind: 'title' | 'dedication' | 'end_note' | 'about';
+  title: string;
+  body: string;
+}
+
+function buildFrontMatterPages(story: StoryContent, order: OrderRecord): MatterPage[] {
+  return [
+    {
+      kind: 'title',
+      title: story.title,
+      body: `${order.childName}'s personalized Hero Story Book`,
+    },
+    {
+      kind: 'dedication',
+      title: 'Dedication',
+      body: story.dedication?.trim() || `For ${order.childName} — may every brave step lead to a wonderful story.`,
+    },
+  ];
+}
+
+function buildBackMatterPages(story: StoryContent, order: OrderRecord): MatterPage[] {
+  void story; // future-proof for matter that references story content
+  return [
+    {
+      kind: 'end_note',
+      title: 'The End',
+      body: `Thank you for reading ${order.childName}'s adventure.\n\nKeep being the hero of your own story.`,
+    },
+    {
+      kind: 'about',
+      title: 'About Hero Story Books',
+      body:
+        'Every Hero Story Book is personalized for one child, illustrated page by page, ' +
+        'and printed as a keepsake. Made with care for families everywhere.\n\n' +
+        'herostorybooks.com',
+    },
+  ];
+}
+
 function buildKeepsakePages(story: StoryContent, order: OrderRecord, fillerCount: number): KeepsakePage[] {
   const lesson = order.lesson || 'courage';
   const theme = order.theme || 'adventure';
@@ -342,8 +389,21 @@ export async function buildPdf(
 }
 
 export function getPrintInteriorPageCount(story: StoryContent, order: OrderRecord): number {
+  // Slice 2: every print interior includes 4 intentional matter pages
+  // (title + dedication + end-note + about). Filler keepsake pages are
+  // a safety net only — used when story + matter still falls short of
+  // the Lulu minimum. For new long-form orders (classic 24 / premium 32)
+  // this collapses or eliminates the filler dependency.
   const minimumPages = getMinimumTotalPages(order.bookFormat);
-  return Math.max(story.pages.length, minimumPages);
+  return Math.max(story.pages.length + INTENTIONAL_MATTER_PAGES, minimumPages);
+}
+
+/** Pure helper exposed for tests: how many filler keepsake pages would
+ *  be inserted for an order. Returns 0 once the story is long enough that
+ *  story + matter already meets the Lulu minimum. */
+export function getPrintFillerPageCount(story: StoryContent, order: OrderRecord): number {
+  const total = getPrintInteriorPageCount(story, order);
+  return Math.max(0, total - story.pages.length - INTENTIONAL_MATTER_PAGES);
 }
 
 export async function buildPrintInteriorPdf(
@@ -355,8 +415,10 @@ export async function buildPrintInteriorPdf(
     imageUrls.map(url => (url ? fetchImageBuffer(url) : Promise.resolve(null))),
   );
 
-  const interiorPageCount = getPrintInteriorPageCount(story, order);
-  const fillerPages = buildKeepsakePages(story, order, Math.max(0, interiorPageCount - story.pages.length));
+  const fillerCount = getPrintFillerPageCount(story, order);
+  const fillerPages = fillerCount > 0 ? buildKeepsakePages(story, order, fillerCount) : [];
+  const frontMatter = buildFrontMatterPages(story, order);
+  const backMatter = buildBackMatterPages(story, order);
   const trimWidth = 8.5 * 72;
   const trimHeight = 8.5 * 72;
   const margin = 42;
@@ -375,6 +437,33 @@ export async function buildPrintInteriorPdf(
     doc.on('error', reject);
 
     let pageNumber = 1;
+
+    const drawMatterPage = (page: MatterPage) => {
+      doc.addPage();
+      doc.rect(0, 0, trimWidth, trimHeight).fill(CREAM);
+      doc.rect(0, 0, trimWidth, 24).fill(FOREST);
+      doc
+        .fillColor(FOREST)
+        .font('Helvetica-Bold')
+        .fontSize(page.kind === 'title' ? 28 : 20)
+        .text(page.title, margin, 80, { width: contentWidth, align: 'center' });
+      doc
+        .fillColor(SLATE)
+        .font('Helvetica')
+        .fontSize(13)
+        .lineGap(6)
+        .text(page.body, margin, 160, { width: contentWidth, align: 'center' });
+      doc
+        .fillColor(GOLD)
+        .font('Helvetica-Bold')
+        .fontSize(10)
+        .text(String(pageNumber), margin, trimHeight - 28, { width: contentWidth, align: 'center' });
+      pageNumber += 1;
+    };
+
+    // Front matter — title + dedication (intentional, designed pages).
+    frontMatter.forEach(drawMatterPage);
+
     story.pages.forEach((page, index) => {
       doc.addPage();
       doc.rect(0, 0, trimWidth, trimHeight).fill(CREAM);
@@ -397,6 +486,10 @@ export async function buildPrintInteriorPdf(
       pageNumber += 1;
     });
 
+    // Filler keepsake pages — safety net only. For new long-form classic
+    // (24 story) this still runs to hit Lulu's 32 minimum; for new
+    // premium (32 story) and legacy short stories that already exceed
+    // the minimum, fillerPages is empty.
     fillerPages.forEach((page) => {
       doc.addPage();
       doc.rect(0, 0, trimWidth, trimHeight).fill(CREAM);
@@ -413,6 +506,9 @@ export async function buildPrintInteriorPdf(
       doc.fillColor(GOLD).font('Helvetica-Bold').fontSize(10).text(String(pageNumber), margin, trimHeight - 28, { width: contentWidth, align: 'center' });
       pageNumber += 1;
     });
+
+    // Back matter — end note + about (intentional, designed pages).
+    backMatter.forEach(drawMatterPage);
 
     doc.end();
   });

@@ -266,6 +266,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
           <InlineProofPreview
             proofUrl={snapshot.storyArtifactUrl}
             isPrint={snapshot.isPrint}
+            illustratedPageCount={snapshot.pageArtifacts.length}
           />
         </div>
 
@@ -288,7 +289,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
               </a>
               <p className="mt-2 text-xs text-gray-600">
                 {snapshot.isPrint
-                  ? 'Opens the assembled print proof — including the cover and any keepsake pages added to meet the printer\u2019s minimum length. The 6 illustrated story pages above are part of this proof, not the whole book.'
+                  ? `Opens the assembled print proof — including the cover, intentional title/dedication/end-note pages, and any keepsake pages added if needed to meet the printer\u2019s minimum length. The ${snapshot.pageArtifacts.length} illustrated story pages above are part of this proof, not the whole book.`
                   : 'Opens the full assembled PDF — what we\u2019ll send to your inbox once you approve.'}
               </p>
             </div>
@@ -351,7 +352,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
               />
               <span>
                 {snapshot.isPrint
-                  ? 'I reviewed the full proof PDF for the complete printed book and I\u2019m approving everything in it — not just the 6 illustrated story pages above.'
+                  ? `I reviewed the full proof PDF for the complete printed book and I\u2019m approving everything in it — not just the ${snapshot.pageArtifacts.length} illustrated story pages above.`
                   : 'I opened the full PDF and reviewed it before approving.'}
               </span>
             </label>

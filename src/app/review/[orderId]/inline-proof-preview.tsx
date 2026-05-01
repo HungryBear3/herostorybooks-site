@@ -5,6 +5,12 @@ import { useEffect, useRef, useState } from 'react';
 type Props = {
   proofUrl: string | null;
   isPrint: boolean;
+  /** Number of illustrated story pages above this preview block. Used to
+   *  describe the proof relationship truthfully — print proofs include the
+   *  cover, intentional matter pages, and any safety-net keepsake pages
+   *  beyond just the illustrated story pages. Defaults to a generic
+   *  "illustrated story pages" mention if omitted (legacy callers). */
+  illustratedPageCount?: number;
   testId?: string;
 };
 
@@ -20,7 +26,7 @@ type Props = {
  *   iframe are the supported path.
  * - Handles missing proof gracefully with an explicit shell.
  */
-export function InlineProofPreview({ proofUrl, isPrint, testId = 'inline-proof-preview' }: Props) {
+export function InlineProofPreview({ proofUrl, isPrint, illustratedPageCount, testId = 'inline-proof-preview' }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [shouldMount, setShouldMount] = useState(false);
   const [iframeBlocked, setIframeBlocked] = useState(false);
@@ -93,7 +99,7 @@ export function InlineProofPreview({ proofUrl, isPrint, testId = 'inline-proof-p
         </h2>
         <p className="mt-1 text-xs text-gray-600">
           {isPrint
-            ? 'This is the full assembled book that will be printed — including the cover and any keepsake pages added to meet the printer\u2019s minimum length. The 6 illustrated story pages above are part of this proof, not the whole book.'
+            ? `This is the full assembled book that will be printed — including the cover, intentional title/dedication/end-note pages, and any keepsake pages added if needed to meet the printer\u2019s minimum length. The ${illustratedPageCount ?? ''}${illustratedPageCount ? ' ' : ''}illustrated story pages above are part of this proof, not the whole book.`.replace(/\s+/g, ' ').trim()
             : 'This is the full assembled PDF you\u2019ll receive by email after approval.'}
         </p>
       </div>
