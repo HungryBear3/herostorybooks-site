@@ -36,12 +36,7 @@ const HSB_CUSTOM_TOKENS = [
   'peach',
   'cream',
   'lavender',
-  // Below: defined in legacy tailwind.config.js only — flagged here
-  // so any future use of them in checkout fails this test until the
-  // operator either ports the token to globals.css or stops using it.
   'purple',
-  'teal',
-  'teal-dark',
   'coral',
   'coral-dark',
 ];

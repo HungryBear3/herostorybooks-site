@@ -38,8 +38,6 @@ const HSB_CUSTOM_TOKENS = [
   'coral',
   'coral-dark',
   'purple',
-  'teal',
-  'teal-dark',
 ];
 
 const TOKEN_PREFIXES = [
