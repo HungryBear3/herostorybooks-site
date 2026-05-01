@@ -1,11 +1,10 @@
-// FAL image-conditioned ("edit") provider.
+// FAL Nano Banana image-conditioned ("edit") provider.
 //
-// Photo-conditioned generation path. Uses a FAL image-edit model that
-// accepts the customer's uploaded child photo as `image_urls` so the
+// Secondary photo-conditioned generation path. Uses Nano Banana edit so the
 // produced illustration is grounded in the actual child's face, rather
 // than a text description alone.
 //
-// Default model: fal-ai/nano-banana-pro/edit (documents image_urls input).
+// Default model: fal-ai/nano-banana/edit.
 // Override via FAL_EDIT_IMAGE_ENDPOINT / FAL_EDIT_IMAGE_MODEL.
 //
 // Returns conditioning='photo_edit' on success so fulfillment + diagnostics
@@ -24,8 +23,13 @@ import type {
 } from './image-provider-types.ts';
 
 const FAL_EDIT_ENDPOINT =
-  process.env.FAL_EDIT_IMAGE_ENDPOINT ?? 'https://fal.run/fal-ai/nano-banana-pro/edit';
-const DEFAULT_MODEL = process.env.FAL_EDIT_IMAGE_MODEL ?? 'fal-ai/nano-banana-pro/edit';
+  process.env.FAL_EDIT_IMAGE_ENDPOINT ?? 'https://fal.run/fal-ai/nano-banana/edit';
+const DEFAULT_MODEL = process.env.FAL_EDIT_IMAGE_MODEL ?? 'fal-ai/nano-banana/edit';
+/** Per-request timeout. A hung FAL edit request silently consumes the
+ *  serverless function budget; without AbortSignal.timeout the eventual
+ *  Vercel kill leaves runWithRetry's catch unreached and the order stuck
+ *  at fulfillmentStatus='generating_images' with no recorded error. */
+const FAL_EDIT_REQUEST_TIMEOUT_MS = Number(process.env.FAL_EDIT_REQUEST_TIMEOUT_MS ?? 60_000);
 
 function deterministicSeedFromPrompt(prompt: string): number {
   const digest = createHash('sha256').update(prompt).digest();
@@ -106,6 +110,7 @@ export const falEditImageProvider: ImageProvider = {
           enable_safety_checker: true,
           seed: deterministicSeedFromPrompt(input.prompt),
         }),
+        signal: AbortSignal.timeout(FAL_EDIT_REQUEST_TIMEOUT_MS),
       });
 
       if (!res.ok) {

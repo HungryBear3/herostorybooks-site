@@ -13,6 +13,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { seedreamEditImageProvider } from '../src/lib/image-provider-seedream-edit.ts';
 import { falEditImageProvider } from '../src/lib/image-provider-fal-edit.ts';
 
 function makeFakeFetch(captured: { url: string; body: unknown; status?: number; payload?: unknown }[]) {
@@ -43,6 +44,24 @@ function withFalKey<T>(value: string | undefined, fn: () => Promise<T> | T): Pro
   }
 }
 
+test('seedream_edit: posts image_urls + prompt + numeric seed', async () => {
+  await withFalKey('test-key', async () => {
+    const captured: { url?: string; body?: unknown }[] = [{}];
+    const fetch = makeFakeFetch(captured);
+    const result = await seedreamEditImageProvider.generate(
+      { prompt: 'a starry forest', referenceImageUrl: 'https://photos.example/kid.jpg' },
+      { fetch },
+    );
+    assert.equal(result.imageUrl, 'https://fake.example/edit.png');
+    assert.equal(result.error, null);
+    assert.equal(result.model, 'fal-ai/bytedance/seedream/v4/edit');
+    const body = captured[0]?.body as { prompt?: string; image_urls?: string[]; seed?: number };
+    assert.equal(body.prompt, 'a starry forest');
+    assert.deepEqual(body.image_urls, ['https://photos.example/kid.jpg']);
+    assert.equal(typeof body.seed, 'number');
+  });
+});
+
 test('fal_edit: posts image_urls + prompt + numeric seed', async () => {
   await withFalKey('test-key', async () => {
     const captured: { url?: string; body?: unknown }[] = [{}];
@@ -53,6 +72,7 @@ test('fal_edit: posts image_urls + prompt + numeric seed', async () => {
     );
     assert.equal(result.imageUrl, 'https://fake.example/edit.png');
     assert.equal(result.error, null);
+    assert.equal(result.model, 'fal-ai/nano-banana/edit');
     const body = captured[0]?.body as { prompt?: string; image_urls?: string[]; seed?: number };
     assert.equal(body.prompt, 'a starry forest');
     assert.deepEqual(body.image_urls, ['https://photos.example/kid.jpg']);

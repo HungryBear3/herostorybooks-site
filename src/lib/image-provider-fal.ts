@@ -12,6 +12,13 @@ import type {
 
 const FAL_ENDPOINT = process.env.FAL_IMAGE_ENDPOINT ?? 'https://fal.run/fal-ai/flux/schnell';
 const DEFAULT_MODEL = process.env.FAL_IMAGE_MODEL ?? 'fal-ai/flux/schnell';
+/** Per-request timeout in milliseconds. A FAL fetch that never resolves
+ *  silently consumes the entire serverless function budget; when Vercel
+ *  kills the function mid-await, runWithRetry never sees an error and
+ *  fulfillmentLastError stays null — the order is invisibly stuck. With
+ *  AbortSignal.timeout the await throws AbortError, runWithRetry catches
+ *  it, persists the error, and the order moves to failed_manual_review. */
+const FAL_REQUEST_TIMEOUT_MS = Number(process.env.FAL_REQUEST_TIMEOUT_MS ?? 45_000);
 
 /**
  * Derive a deterministic 32-bit seed from the prompt. Same prompt → same seed,
@@ -63,6 +70,7 @@ export const falImageProvider: ImageProvider = {
           enable_safety_checker: true,
           seed: deterministicSeedFromPrompt(input.prompt),
         }),
+        signal: AbortSignal.timeout(FAL_REQUEST_TIMEOUT_MS),
       });
 
       if (!res.ok) {
