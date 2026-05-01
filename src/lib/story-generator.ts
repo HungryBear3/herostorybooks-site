@@ -1,4 +1,5 @@
 import type { OrderRecord } from './orders.ts';
+import { getStoryPageCount } from './orders.ts';
 import type { StoryContent, StoryMeta, StoryPage } from './fulfillment-types.ts';
 import { STORY_THEMES } from './story-catalog.ts';
 import { SAMPLE_ADVENTURES } from './sample-adventures.ts';
@@ -17,7 +18,14 @@ interface TemplateVariantProfile {
   titleSuffix: string;
   dedicationTemplate: string;
   characterTemplate: string;
-  pageAdditions: [string, string, string, string, string];
+  /** Per-page flavor strings appended to the base sample-adventure scene
+   *  text. Slice 1 of the print redesign relaxed this from a fixed
+   *  5-element tuple to a variable-length array so long-form print
+   *  books (24 / 32 pages) can scale without TypeScript fighting us.
+   *  Callers cycle through these by `pageIndex % pageAdditions.length`,
+   *  combined with the variant's stable index + sample-adventure scene
+   *  so each page still feels meaningfully distinct. */
+  pageAdditions: string[];
 }
 
 const TEMPLATE_VARIANTS: TemplateVariantProfile[] = [
@@ -120,6 +128,10 @@ function buildTemplateFallback(order: OrderRecord): StoryContent {
   return buildTemplateFallbackWithVariant(order).story;
 }
 
+function isOpenAiStoryEnabled(): boolean {
+  return process.env.HSB_ENABLE_OPENAI_STORY === 'true';
+}
+
 /**
  * Internal — returns the rendered story AND the chosen variant so callers
  * (notably generateStoryWithMeta) can persist a meaningful model identifier
@@ -134,12 +146,26 @@ function buildTemplateFallbackWithVariant(
   const variant = chooseTemplateVariant(order);
 
   const childName = sanitizeInput(order.childName, 60) || 'Your Child';
-  const pages: StoryPage[] = sample.pages.map((p, i) => ({
-    pageNum: i + 1,
-    sceneTitle: p.sceneTitle ?? p.subtitle ?? `Chapter ${i + 1}`,
-    story: `${p.story.replace(/\b(Marcus|Zara|Lily|Sam|Ava|Mia)\b/g, childName)} ${personalizeTemplate(variant.pageAdditions[i] ?? '', order)}`.trim(),
-    imagePrompt: `A children's book illustration of ${childName}, ${theme?.description ?? 'on a grand adventure'}. ${p.subtitle ?? ''}. Warm, colorful, age-appropriate art style.`,
-  }));
+  // Slice 1: produce exactly N pages where N = getStoryPageCount(format).
+  // Digital still gets 6 (the legacy 5 sample-adventure pages + the
+  // original behavior). Print formats get 24 / 32 by cycling through the
+  // sample-adventure scenes and the variant pageAdditions, with a stable
+  // pass index so adjacent cycles aren't bit-identical.
+  const targetPageCount = getStoryPageCount(order.bookFormat);
+  const sourceCount = sample.pages.length;
+  const pages: StoryPage[] = Array.from({ length: targetPageCount }, (_, i) => {
+    const source = sample.pages[i % sourceCount];
+    const passIndex = Math.floor(i / sourceCount); // 0 for the first cycle, 1 for the next, etc.
+    const baseStory = source.story.replace(/\b(Marcus|Zara|Lily|Sam|Ava|Mia)\b/g, childName);
+    const addition = variant.pageAdditions[i % variant.pageAdditions.length] ?? '';
+    const passSuffix = passIndex === 0 ? '' : ` The story continued, deeper now, with new details ${childName} hadn't noticed before.`;
+    return {
+      pageNum: i + 1,
+      sceneTitle: source.sceneTitle ?? source.subtitle ?? `Chapter ${i + 1}`,
+      story: `${baseStory} ${personalizeTemplate(addition, order)}${passSuffix}`.trim(),
+      imagePrompt: `A children's book illustration of ${childName}, ${theme?.description ?? 'on a grand adventure'}. ${source.subtitle ?? ''}. Warm, colorful, age-appropriate art style.`,
+    };
+  });
 
   return {
     story: {
@@ -158,13 +184,32 @@ function buildSystemPrompt(): string {
   return `You are a professional children's book author. You write personalized, age-appropriate storybooks (ages 2-10). Stories should be warm, adventurous, educational, and about 100 words per page. Always write in the third person with the child as the hero.`;
 }
 
+/**
+ * Story arc beats per format. Digital keeps the original 6-beat arc;
+ * print formats use a longer beat structure with room for scenes between
+ * the named beats so the model can pace 24 / 32 illustrated pages.
+ */
+function buildStoryArcInstruction(pageCount: number): string {
+  if (pageCount <= 6) {
+    return 'Make the story arc: setup → adventure begins → challenge → peak moment → resolution → happy ending.';
+  }
+  return (
+    `Pace the story across ${pageCount} pages using these beats with room for scene-building pages between them: ` +
+    'opening world / hero introduction → inciting incident → first try → setback → wise help or new idea → ' +
+    'rising action → biggest challenge → peak moment → turning point → resolution → return home → reflection. ' +
+    'Distribute illustrated scenes evenly so no two adjacent pages repeat the same setting. ' +
+    `Every one of the ${pageCount} pages must move the story forward — no filler, no recap.`
+  );
+}
+
 function buildUserPrompt(order: OrderRecord): string {
   const theme = STORY_THEMES.find(t => t.id === order.theme);
   const childName = sanitizeInput(order.childName, 60);
   const giftMessage = sanitizeInput(order.giftMessage, 200);
   const characterNotes = sanitizeInput(order.characterNotes, 200);
   const appearanceOptions = sanitizeInput(order.appearanceOptions, 200);
-  return `Write a 6-page personalized children's storybook with the following details:
+  const pageCount = getStoryPageCount(order.bookFormat);
+  return `Write a ${pageCount}-page personalized children's storybook with the following details:
 - Hero's name: ${childName}
 - Age: ${sanitizeInput(order.childAge, 10) || 'not specified'}
 - Theme: ${theme?.name ?? sanitizeInput(order.theme, 60) ?? 'adventure'}. ${theme?.description ?? ''}
@@ -173,6 +218,7 @@ function buildUserPrompt(order: OrderRecord): string {
 - Gift message: ${giftMessage || 'none'}
 - Character notes: ${characterNotes || 'none'}
 - Appearance: ${appearanceOptions || 'not specified'}
+- Format: ${order.bookFormat}
 
 Respond ONLY with a valid JSON object matching this exact schema:
 {
@@ -189,7 +235,7 @@ Respond ONLY with a valid JSON object matching this exact schema:
   ]
 }
 
-Write exactly 6 pages. Make the story arc: setup → adventure begins → challenge → peak moment → resolution → happy ending.`;
+Write exactly ${pageCount} pages. ${buildStoryArcInstruction(pageCount)}`;
 }
 
 interface FetchDep {
@@ -210,7 +256,7 @@ export async function generateStoryWithMeta(
   const apiKey = process.env.OPENAI_API_KEY;
   const nowIso = (deps.now ?? (() => new Date()))().toISOString();
 
-  if (!apiKey) {
+  if (!apiKey || !isOpenAiStoryEnabled()) {
     const { story, variant } = buildTemplateFallbackWithVariant(order);
     return {
       story,

@@ -175,6 +175,26 @@ export function isPrintFormat(bookFormat: string): boolean {
   return bookFormat === 'classic' || bookFormat === 'premium';
 }
 
+/**
+ * Single source of truth for the number of REAL illustrated story pages
+ * a given book format gets (Plan slice 1 — print redesign).
+ *
+ * Distinct from `getMinimumTotalPages` in pdf-builder.ts: that one is
+ * the Lulu-required interior minimum (story + filler + cover/back).
+ * This helper is the *story-content* length the story generator and any
+ * downstream renderer should target. Filler/keepsake logic is unaffected
+ * for now — later slices will retire it.
+ *
+ *   digital  ->  6
+ *   classic  -> 24
+ *   premium  -> 32
+ */
+export function getStoryPageCount(bookFormat: string): number {
+  if (bookFormat === 'classic') return 24;
+  if (bookFormat === 'premium') return 32;
+  return 6;
+}
+
 interface CreateOrderOptions {
   now?: string;
   id?: string;

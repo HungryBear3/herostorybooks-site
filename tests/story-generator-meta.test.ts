@@ -56,66 +56,89 @@ test('story meta: no OPENAI_API_KEY → template path with template:<Variant> mo
   });
 });
 
-test('story meta: OpenAI 200 OK → source=openai_chat, model=gpt-4o-mini', async () => {
+test('story meta: OPENAI_API_KEY alone does not burn credits — default path stays template', async () => {
   await withEnv('OPENAI_API_KEY', 'test-key', async () => {
-    const fakeFetch = (async () => ({
-      ok: true,
-      status: 200,
-      text: async () => '',
-      json: async () => ({
-        choices: [
-          {
-            message: {
-              content: JSON.stringify({
-                title: 'Luna and the Stars',
-                dedication: 'For Luna',
-                characterDescription: 'A bright child',
-                pages: [
-                  { pageNum: 1, sceneTitle: 'Begin', story: 'p1', imagePrompt: 'i1' },
-                ],
-              }),
+    await withEnv('HSB_ENABLE_OPENAI_STORY', undefined, async () => {
+      let called = false;
+      const fakeFetch = (async () => {
+        called = true;
+        throw new Error('should not call OpenAI when template-only mode is default');
+      }) as unknown as typeof globalThis.fetch;
+      const result = await generateStoryWithMeta(makeOrder(), { fetch: fakeFetch });
+      assert.equal(called, false);
+      assert.equal(result.meta.source, 'template');
+      assert.match(result.meta.model, /^template:/);
+      assert.equal(result.meta.fallbackError ?? null, null);
+    });
+  });
+});
+
+test('story meta: explicit HSB_ENABLE_OPENAI_STORY=true + OpenAI 200 OK → source=openai_chat, model=gpt-4o-mini', async () => {
+  await withEnv('OPENAI_API_KEY', 'test-key', async () => {
+    await withEnv('HSB_ENABLE_OPENAI_STORY', 'true', async () => {
+      const fakeFetch = (async () => ({
+        ok: true,
+        status: 200,
+        text: async () => '',
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  title: 'Luna and the Stars',
+                  dedication: 'For Luna',
+                  characterDescription: 'A bright child',
+                  pages: [
+                    { pageNum: 1, sceneTitle: 'Begin', story: 'p1', imagePrompt: 'i1' },
+                  ],
+                }),
+              },
             },
-          },
-        ],
-      }),
-    })) as unknown as typeof globalThis.fetch;
-    const result = await generateStoryWithMeta(makeOrder(), { fetch: fakeFetch });
-    assert.equal(result.meta.source, 'openai_chat');
-    assert.equal(result.meta.model, 'gpt-4o-mini');
-    assert.equal(result.meta.fallbackError ?? null, null);
-    assert.equal(result.story.title, 'Luna and the Stars');
+          ],
+        }),
+      })) as unknown as typeof globalThis.fetch;
+      const result = await generateStoryWithMeta(makeOrder(), { fetch: fakeFetch });
+      assert.equal(result.meta.source, 'openai_chat');
+      assert.equal(result.meta.model, 'gpt-4o-mini');
+      assert.equal(result.meta.fallbackError ?? null, null);
+      assert.equal(result.story.title, 'Luna and the Stars');
+    });
   });
 });
 
-test('story meta: OpenAI 500 → source=template_after_openai_failure with truncated fallbackError', async () => {
+test('story meta: explicit HSB_ENABLE_OPENAI_STORY=true + OpenAI 500 → source=template_after_openai_failure with truncated fallbackError', async () => {
   await withEnv('OPENAI_API_KEY', 'test-key', async () => {
-    const fakeFetch = (async () => ({
-      ok: false,
-      status: 500,
-      text: async () => 'upstream meltdown'.repeat(50),
-      json: async () => ({}),
-    })) as unknown as typeof globalThis.fetch;
-    const result = await generateStoryWithMeta(makeOrder(), { fetch: fakeFetch });
-    assert.equal(result.meta.source, 'template_after_openai_failure');
-    assert.match(result.meta.model, /^template:/);
-    assert.match(result.meta.fallbackError ?? '', /OpenAI API error 500/);
-    assert.ok((result.meta.fallbackError ?? '').length <= 200);
-    assert.ok(result.story.title); // template story still rendered
+    await withEnv('HSB_ENABLE_OPENAI_STORY', 'true', async () => {
+      const fakeFetch = (async () => ({
+        ok: false,
+        status: 500,
+        text: async () => 'upstream meltdown'.repeat(50),
+        json: async () => ({}),
+      })) as unknown as typeof globalThis.fetch;
+      const result = await generateStoryWithMeta(makeOrder(), { fetch: fakeFetch });
+      assert.equal(result.meta.source, 'template_after_openai_failure');
+      assert.match(result.meta.model, /^template:/);
+      assert.match(result.meta.fallbackError ?? '', /OpenAI API error 500/);
+      assert.ok((result.meta.fallbackError ?? '').length <= 200);
+      assert.ok(result.story.title);
+    });
   });
 });
 
-test('story meta: OpenAI returns invalid JSON → fallback path with parse error', async () => {
+test('story meta: explicit HSB_ENABLE_OPENAI_STORY=true + OpenAI invalid JSON → fallback path with parse error', async () => {
   await withEnv('OPENAI_API_KEY', 'test-key', async () => {
-    const fakeFetch = (async () => ({
-      ok: true,
-      status: 200,
-      text: async () => '',
-      json: async () => ({
-        choices: [{ message: { content: 'not valid json {{{' } }],
-      }),
-    })) as unknown as typeof globalThis.fetch;
-    const result = await generateStoryWithMeta(makeOrder(), { fetch: fakeFetch });
-    assert.equal(result.meta.source, 'template_after_openai_failure');
-    assert.ok(result.meta.fallbackError);
+    await withEnv('HSB_ENABLE_OPENAI_STORY', 'true', async () => {
+      const fakeFetch = (async () => ({
+        ok: true,
+        status: 200,
+        text: async () => '',
+        json: async () => ({
+          choices: [{ message: { content: 'not valid json {{{' } }],
+        }),
+      })) as unknown as typeof globalThis.fetch;
+      const result = await generateStoryWithMeta(makeOrder(), { fetch: fakeFetch });
+      assert.equal(result.meta.source, 'template_after_openai_failure');
+      assert.ok(result.meta.fallbackError);
+    });
   });
 });
