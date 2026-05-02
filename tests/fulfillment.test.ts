@@ -121,6 +121,21 @@ test('paid digital order reaches complete with storyArtifactUrl set', async () =
   }
 });
 
+test('digital fulfillment final write preserves proof audit event and page artifacts together', async () => {
+  const dir = makeTmpDir();
+  try {
+    const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital' }, dir);
+    await triggerFulfillment(order.id, PASS_DEPS);
+    const after = await getOrder(order.id);
+    assert.equal(after?.pageArtifacts?.length, MOCK_STORY.pages.length);
+    assert.equal(after?.auditEvents?.filter((e) => e.type === 'proof_generated').length, 1);
+    assert.equal(after?.auditEvents?.[0]?.meta?.pageCount, MOCK_STORY.pages.length);
+    assert.ok(after?.storyArtifactUrl?.includes('.pdf'));
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
 test('digital fulfillment does not set proofApprovalToken', async () => {
   const dir = makeTmpDir();
   try {

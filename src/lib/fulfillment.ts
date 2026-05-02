@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { put } from '@vercel/blob';
 
-import { appendAuditEvent, getOrder, getOrderPhotoUrl, isPrintFormat, updateFulfillmentState, withBlobNamespace } from './orders.ts';
+import { getOrder, getOrderPhotoUrl, isPrintFormat, updateFulfillmentState, withBlobNamespace } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { OrderRecord } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
@@ -106,6 +106,17 @@ function defaultGetBaseUrl(): string {
 
 function md5Hex(buffer: Buffer): string {
   return crypto.createHash('md5').update(buffer).digest('hex');
+}
+
+function buildProofGeneratedAuditEvent(order: OrderRecord, pageCount: number) {
+  return {
+    at: new Date().toISOString(),
+    type: 'proof_generated' as const,
+    meta: {
+      bookFormat: order.bookFormat,
+      pageCount,
+    },
+  };
 }
 
 /**
@@ -305,6 +316,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   const filename = `${safeSlug}-storybook.pdf`;
   const pdfUrl = await _upload(order.id, pdfBuffer, filename);
 
+  const proofGeneratedEvent = buildProofGeneratedAuditEvent(order, seededPageArtifacts.length);
   await updateFulfillmentState(order.id, {
     fulfillmentStatus: 'complete',
     status: 'preview_ready',
@@ -313,10 +325,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     reviewStatus: 'in_review',
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
-  });
-  await appendAuditEvent(order.id, {
-    type: 'proof_generated',
-    meta: { bookFormat: order.bookFormat, pageCount: seededPageArtifacts.length },
+    auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   });
 
   await sendDigitalDeliveryEmail(order, { pdfUrl });
@@ -414,6 +423,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // seededPageArtifacts was already computed and persisted earlier (before
   // PDF build), so we just re-use it in the final state write below.
 
+  const proofGeneratedEvent = buildProofGeneratedAuditEvent(order, seededPageArtifacts.length);
   await updateFulfillmentState(order.id, {
     fulfillmentStatus: 'proof_ready',
     status: 'preview_ready',
@@ -429,10 +439,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     proofApprovalToken,
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
-  });
-  await appendAuditEvent(order.id, {
-    type: 'proof_generated',
-    meta: { bookFormat: order.bookFormat, pageCount: seededPageArtifacts.length },
+    auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   });
 
   await sendProofReadyEmail(order, { reviewUrl, proofUrl });
