@@ -85,6 +85,7 @@ async function defaultUploadArtifact(orderId: string, buffer: Buffer, filename: 
       access: 'public',
       contentType: 'application/pdf',
       addRandomSuffix: false,
+      allowOverwrite: true,
       token,
     });
     return blob.url;

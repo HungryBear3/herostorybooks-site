@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -76,6 +76,11 @@ test('backoffMs grows exponentially: 5s, 25s, 125s', () => {
   assert.equal(backoffMs(1), 5_000);
   assert.equal(backoffMs(2), 25_000);
   assert.equal(backoffMs(3), 125_000);
+});
+
+test('source-level: fulfillment artifact uploads allow overwrite for retries/rebuilds', () => {
+  const src = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
+  assert.match(src, /allowOverwrite:\s*true/);
 });
 
 // ── Payment gate ──────────────────────────────────────────────────────────────
