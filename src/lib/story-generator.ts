@@ -146,11 +146,10 @@ function buildTemplateFallbackWithVariant(
   const variant = chooseTemplateVariant(order);
 
   const childName = sanitizeInput(order.childName, 60) || 'Your Child';
-  // Slice 1: produce exactly N pages where N = getStoryPageCount(format).
-  // Digital still gets 6 (the legacy 5 sample-adventure pages + the
-  // original behavior). Print formats get 24 / 32 by cycling through the
-  // sample-adventure scenes and the variant pageAdditions, with a stable
-  // pass index so adjacent cycles aren't bit-identical.
+  // Produce exactly N pages where N = getStoryPageCount(format).
+  // Long-form formats cycle through the sample-adventure scenes and the
+  // variant pageAdditions, with a stable pass index so adjacent cycles
+  // aren't bit-identical.
   const targetPageCount = getStoryPageCount(order.bookFormat);
   const sourceCount = sample.pages.length;
   const pages: StoryPage[] = Array.from({ length: targetPageCount }, (_, i) => {
@@ -185,9 +184,9 @@ function buildSystemPrompt(): string {
 }
 
 /**
- * Story arc beats per format. Digital keeps the original 6-beat arc;
- * print formats use a longer beat structure with room for scenes between
- * the named beats so the model can pace 24 / 32 illustrated pages.
+ * Story arc beats per format. Short stories use the original 6-beat arc;
+ * long-form stories use a broader beat structure with room for scenes
+ * between the named beats so the model can pace 24 / 32 illustrated pages.
  */
 function buildStoryArcInstruction(pageCount: number): string {
   if (pageCount <= 6) {

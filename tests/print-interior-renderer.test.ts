@@ -2,7 +2,7 @@
  * Print interior renderer (slice 2 of the print redesign).
  *
  * Locked product rule:
- *   digital  =  6 real story pages (no print interior)
+ *   digital  = 24 real story pages (no print interior)
  *   classic  = 24 real story pages
  *   premium  = 32 real story pages
  *

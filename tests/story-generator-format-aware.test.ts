@@ -3,7 +3,7 @@
  * (print redesign — slice 1).
  *
  * Verified through two surfaces:
- *   1. The OpenAI user prompt — assert it asks for 6 / 24 / 32 pages.
+ *   1. The OpenAI user prompt — assert it asks for 24 / 24 / 32 pages.
  *   2. The template fallback — assert it produces N pages per format.
  *
  * The OpenAI prompt is reached by giving generateStoryWithMeta a fake
@@ -94,15 +94,16 @@ function userPromptOf(captured: CapturedRequest): string {
 
 // ── OpenAI prompt path ──────────────────────────────────────────────────────
 
-test('OpenAI prompt: digital order asks for 6 pages', async () => {
+test('OpenAI prompt: digital order asks for 24 pages', async () => {
   await withEnv(
     { OPENAI_API_KEY: 'sk-test', HSB_ENABLE_OPENAI_STORY: 'true' },
     async () => {
       const { fetch, captured } = makeOpenAiSpyFetch();
       await generateStoryWithMeta(makeOrder('digital'), { fetch });
       const prompt = userPromptOf(captured);
-      assert.match(prompt, /Write a 6-page personalized children's storybook/);
-      assert.match(prompt, /Write exactly 6 pages\./);
+      assert.match(prompt, /Write a 24-page personalized children's storybook/);
+      assert.match(prompt, /Write exactly 24 pages\./);
+      assert.match(prompt, /Pace the story across 24 pages/);
     },
   );
 });
@@ -136,26 +137,26 @@ test('OpenAI prompt: premium order asks for 32 pages', async () => {
   );
 });
 
-test('OpenAI prompt: digital keeps the legacy 6-beat arc, NOT the long-form arc', async () => {
+test('OpenAI prompt: digital now uses the long-form arc', async () => {
   await withEnv(
     { OPENAI_API_KEY: 'sk-test', HSB_ENABLE_OPENAI_STORY: 'true' },
     async () => {
       const { fetch, captured } = makeOpenAiSpyFetch();
       await generateStoryWithMeta(makeOrder('digital'), { fetch });
       const prompt = userPromptOf(captured);
-      assert.match(prompt, /setup → adventure begins → challenge/);
-      assert.doesNotMatch(prompt, /Pace the story across/);
+      assert.match(prompt, /Pace the story across 24 pages/);
+      assert.doesNotMatch(prompt, /setup → adventure begins → challenge/);
     },
   );
 });
 
 // ── Template fallback path ───────────────────────────────────────────────────
 
-test('template fallback: digital order produces exactly 6 pages', async () => {
+test('template fallback: digital order produces exactly 24 pages', async () => {
   await withEnv({ OPENAI_API_KEY: undefined, HSB_ENABLE_OPENAI_STORY: undefined }, async () => {
     const result = await generateStoryWithMeta(makeOrder('digital'));
     assert.equal(result.meta.source, 'template');
-    assert.equal(result.story.pages.length, 6);
+    assert.equal(result.story.pages.length, 24);
   });
 });
 

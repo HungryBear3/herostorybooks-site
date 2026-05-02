@@ -2,7 +2,7 @@
  * Single source of truth for story page count per book format
  * (print redesign — slice 1).
  *
- *   digital  ->  6
+ *   digital  -> 24
  *   classic  -> 24
  *   premium  -> 32
  */
@@ -12,8 +12,8 @@ import assert from 'node:assert/strict';
 
 import { getStoryPageCount } from '../src/lib/orders.ts';
 
-test('getStoryPageCount: digital -> 6', () => {
-  assert.equal(getStoryPageCount('digital'), 6);
+test('getStoryPageCount: digital -> 24', () => {
+  assert.equal(getStoryPageCount('digital'), 24);
 });
 
 test('getStoryPageCount: classic -> 24', () => {

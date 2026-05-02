@@ -185,11 +185,12 @@ export function isPrintFormat(bookFormat: string): boolean {
  * downstream renderer should target. Filler/keepsake logic is unaffected
  * for now — later slices will retire it.
  *
- *   digital  ->  6
+ *   digital  -> 24
  *   classic  -> 24
  *   premium  -> 32
  */
 export function getStoryPageCount(bookFormat: string): number {
+  if (bookFormat === 'digital') return 24;
   if (bookFormat === 'classic') return 24;
   if (bookFormat === 'premium') return 32;
   return 6;
