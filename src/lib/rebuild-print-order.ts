@@ -32,12 +32,12 @@ import type { GeneratedImageResult } from './image-generator.ts';
 import { generateStoryImageResults as defaultGenerateImageResults } from './image-generator.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import {
-  appendAuditEvent,
   getOrder,
   getOrderPhotoUrl,
   getStoryPageCount,
   isPrintFormat,
   persistOrder,
+  withBlobNamespace,
   type OrderRecord,
   type PageArtifact,
 } from './orders.ts';
@@ -315,20 +315,23 @@ export async function rebuildPrintOrder(
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
     status: 'preview_ready',
+    auditEvents: [
+      ...(order.auditEvents ?? []),
+      {
+        at: now.toISOString(),
+        type: 'proof_rebuilt',
+        reason: 'rebuild_print_order',
+        meta: {
+          bookFormat: order.bookFormat,
+          previousPageCount: order.pageArtifacts?.length ?? 0,
+          newPageCount: newPageArtifacts.length,
+          newInteriorPageCount: interiorPageCount,
+        },
+      },
+    ],
     updatedAt: now.toISOString(),
   };
   await persistOrder(updated);
-
-  await appendAuditEvent(order.id, {
-    type: 'proof_rebuilt',
-    reason: 'rebuild_print_order',
-    meta: {
-      bookFormat: order.bookFormat,
-      previousPageCount: order.pageArtifacts?.length ?? 0,
-      newPageCount: newPageArtifacts.length,
-      newInteriorPageCount: interiorPageCount,
-    },
-  });
 
   return {
     ok: true,
