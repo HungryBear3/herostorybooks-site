@@ -1,21 +1,18 @@
 // Image generator orchestrator.
 //
 // Routes by conditioning intent:
-//   - When a referenceImageUrl (or imageUrls) is supplied, try the photo-
-//     conditioned `fal_edit` provider first, then fall through to the
-//     text-only `fal` provider on failure.
-//   - When no reference image is supplied, go straight to text-only `fal`
-//     (skips the edit provider — calling it without a reference would just
-//     fail-fast).
+//   - When a referenceImageUrl (or imageUrls) is supplied, try the primary
+//     photo-conditioned Seedream edit provider first, then the secondary
+//     Nano Banana edit provider.
+//   - When no reference image is supplied, do not degrade to a text-only lane.
+//     Return a structured failure instead.
 //
-// Fallback ordering is deliberate: photo-conditioned generation can fail
-// transiently (rate limit, model error, missing FAL_KEY edit quota); we
-// would rather ship a recognizable scene from text-only FAL than fail the
-// whole order. Each returned GeneratedImageResult carries `conditioning`
-// and `referencePhotoUrl` so callers can record honest per-page metadata.
+// Fallback ordering is deliberate: Seedream is cheaper and preferred for
+// launch-quality output. Nano Banana edit is the recovery lane if Seedream
+// fails. We do not silently ship text-only art for photo-based books.
 
 import { falEditImageProvider } from './image-provider-fal-edit.ts';
-import { falImageProvider } from './image-provider-fal.ts';
+import { seedreamEditImageProvider } from './image-provider-seedream-edit.ts';
 import type {
   GeneratedImageResult,
   ImageProvider,
@@ -36,20 +33,20 @@ export interface OrchestratorDeps {
   fetch?: typeof globalThis.fetch;
   /**
    * Override the provider order. Defaults are derived from input:
-   *   - input.referenceImageUrl set → [fal_edit, fal]
-   *   - otherwise                    → [fal]
+   *   - input.referenceImageUrl set → [seedream_edit, fal_edit]
+   *   - otherwise                    → [] (no text-only fallback)
    */
   providers?: ImageProvider[];
 }
 
-const FAL_EDIT_FIRST: ImageProvider[] = [falEditImageProvider, falImageProvider];
-const FAL_TEXT_ONLY: ImageProvider[] = [falImageProvider];
+const PHOTO_EDIT_CHAIN: ImageProvider[] = [seedreamEditImageProvider, falEditImageProvider];
+const NO_TEXT_ONLY_FALLBACK: ImageProvider[] = [];
 
 function defaultProviderOrder(input: ImageProviderInput): ImageProvider[] {
   const hasReference = Boolean(
     (input.imageUrls && input.imageUrls.length > 0) || input.referenceImageUrl,
   );
-  return hasReference ? FAL_EDIT_FIRST : FAL_TEXT_ONLY;
+  return hasReference ? PHOTO_EDIT_CHAIN : NO_TEXT_ONLY_FALLBACK;
 }
 
 export async function generatePageImage(
@@ -68,13 +65,13 @@ export async function generatePageImage(
   return (
     last ?? {
       imageUrl: null,
-      provider: 'fal',
-      model: 'unknown',
+      provider: 'fal_edit',
+      model: 'photo-edit-unavailable',
       promptUsed: input.prompt,
-      conditioning: 'text_only',
+      conditioning: 'photo_edit',
       referencePhotoUrl: input.referenceImageUrl ?? null,
       latencyMs: 0,
-      error: 'No providers configured',
+      error: 'No photo-conditioned providers configured',
     }
   );
 }
@@ -101,11 +98,40 @@ export async function generateImage(
   return result.imageUrl;
 }
 
+function getImageGenConcurrency(): number {
+  const raw = Number(process.env.HSB_IMAGE_GEN_CONCURRENCY ?? 3);
+  if (!Number.isFinite(raw) || raw < 1) return 3;
+  return Math.max(1, Math.floor(raw));
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const current = nextIndex;
+      nextIndex += 1;
+      if (current >= items.length) return;
+      results[current] = await worker(items[current]!, current);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 export async function generateStoryImages(
   imagePrompts: string[],
   deps: { fetch?: FetchDep; referenceImageUrl?: string | null } = {},
 ): Promise<(string | null)[]> {
-  return Promise.all(imagePrompts.map((p) => generateImage(p, deps)));
+  return mapWithConcurrency(
+    imagePrompts,
+    getImageGenConcurrency(),
+    (p) => generateImage(p, deps),
+  );
 }
 
 /**
@@ -117,12 +143,13 @@ export async function generateStoryImageResults(
   imagePrompts: string[],
   deps: { fetch?: FetchDep; referenceImageUrl?: string | null } = {},
 ): Promise<GeneratedImageResult[]> {
-  return Promise.all(
-    imagePrompts.map((p) =>
+  return mapWithConcurrency(
+    imagePrompts,
+    getImageGenConcurrency(),
+    (p) =>
       generatePageImage(
         { prompt: p, referenceImageUrl: deps.referenceImageUrl ?? null },
         { fetch: deps.fetch as typeof globalThis.fetch | undefined },
       ),
-    ),
   );
 }
