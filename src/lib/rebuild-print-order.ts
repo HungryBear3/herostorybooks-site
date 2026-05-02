@@ -360,6 +360,7 @@ async function defaultUploadArtifact(
       access: 'public',
       contentType: 'application/pdf',
       addRandomSuffix: false,
+      allowOverwrite: true,
       token,
     });
     return blob.url;
