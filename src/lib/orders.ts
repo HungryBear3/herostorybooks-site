@@ -2,8 +2,8 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { get, list, put } from '@vercel/blob';
 
-import type { FulfillmentStatus } from './fulfillment-types.ts';
-export type { FulfillmentStatus };
+import type { FulfillmentStatus, PageTextLayout } from './fulfillment-types.ts';
+export type { FulfillmentStatus, PageTextLayout };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
 export type BookFormat = 'digital' | 'classic' | 'premium';
@@ -21,6 +21,8 @@ export interface ShippingAddress {
 export interface OrderInput {
   childName: string;
   childAge?: string;
+  /** Optional customer-selected pronouns for prose generation. Legacy orders infer from notes. */
+  childPronouns?: 'he/him' | 'she/her' | 'they/them' | string | null;
   theme?: string;
   lesson?: string;
   occasion?: string;
@@ -117,6 +119,9 @@ export interface PageArtifact {
   accepted: boolean;
   feedbackHistory: PageFeedbackEntry[];
   versionHistory: PageVersionEntry[];
+  /** Optional picture-book text layout persisted on newer generated/rebuilt pages.
+   *  Legacy orders may omit it, so scripts should provide a fallback when needed. */
+  textLayout?: PageTextLayout | null;
 }
 
 export interface OrderRecord extends OrderInput {
