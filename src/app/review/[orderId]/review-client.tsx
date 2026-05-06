@@ -29,6 +29,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [proofAck, setProofAck] = useState<boolean>(Boolean(initial.proofReviewedAt));
+  const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
 
   const selected = snapshot.pageArtifacts[selectedIdx];
   const acceptedCount = snapshot.pageArtifacts.filter((p) => p.accepted).length;
@@ -386,34 +387,7 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
               }
               className="rounded-xl bg-emerald-700 px-6 py-3 text-base font-bold text-white disabled:opacity-50"
               data-testid="approve-whole-book"
-              onClick={async () => {
-                setBusy('approving');
-                setError(null);
-                setNotice(null);
-                try {
-                  const res = await fetch(`/api/order/${snapshot.orderId}/approve-whole-book`, {
-                    method: 'POST',
-                  });
-                  const data = await res.json();
-                  if (!res.ok || !data.ok) {
-                    setError(data?.error ?? `Approval failed (${res.status})`);
-                    return;
-                  }
-                  setSnapshot((s) => ({ ...s, reviewStatus: 'approved' }));
-                  setNotice(
-                    data.printApproved
-                      ? 'Approved — thank you. We’re sending the finished book to print now.'
-                      : 'Approved — thank you. Your final storybook is ready.',
-                  );
-                  setTimeout(() => {
-                    window.location.href = `/status/${snapshot.orderId}`;
-                  }, 1500);
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : 'Network error');
-                } finally {
-                  setBusy('idle');
-                }
-              }}
+              onClick={() => setShowApprovalConfirm(true)}
             >
               {snapshot.reviewStatus === 'approved'
                 ? 'Approved'
@@ -436,6 +410,74 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
           </div>
         </section>
       </div>
+
+      {showApprovalConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="approval-confirm-title"
+          data-testid="approval-confirm-modal"
+        >
+          <div className="max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <h2 id="approval-confirm-title" className="font-serif text-2xl text-[#10263d]">
+              Approve the complete proof?
+            </h2>
+            <p className="mt-3 text-sm leading-relaxed text-slate-700">
+              This confirms you accept the full proof for {snapshot.childName}&apos;s book. For print
+              orders, approval may send the finished book to print, so please only continue if the
+              cover, story pages, and ending pages are ready.
+            </p>
+            <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
+                onClick={() => setShowApprovalConfirm(false)}
+                disabled={busy === 'approving'}
+              >
+                Go back and review
+              </button>
+              <button
+                type="button"
+                className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
+                data-testid="approval-confirm-submit"
+                disabled={busy !== 'idle'}
+                onClick={async () => {
+                  setBusy('approving');
+                  setError(null);
+                  setNotice(null);
+                  try {
+                    const res = await fetch(`/api/order/${snapshot.orderId}/approve-whole-book`, {
+                      method: 'POST',
+                    });
+                    const data = await res.json();
+                    if (!res.ok || !data.ok) {
+                      setError(data?.error ?? `Approval failed (${res.status})`);
+                      return;
+                    }
+                    setSnapshot((s) => ({ ...s, reviewStatus: 'approved' }));
+                    setShowApprovalConfirm(false);
+                    setNotice(
+                      data.printApproved
+                        ? 'Approved — thank you. We’re sending the finished book to print now.'
+                        : 'Approved — thank you. Your final storybook is ready.',
+                    );
+                    setTimeout(() => {
+                      window.location.href = `/status/${snapshot.orderId}`;
+                    }, 1500);
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : 'Network error');
+                  } finally {
+                    setBusy('idle');
+                  }
+                }}
+              >
+                {busy === 'approving' ? 'Approving…' : 'Yes, approve and continue'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
