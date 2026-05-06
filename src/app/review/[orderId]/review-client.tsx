@@ -6,7 +6,9 @@ import type { PageArtifact } from '@/lib/orders';
 import { InlineProofPreview } from './inline-proof-preview';
 
 const FEEDBACK_HELPER =
-  'Tell us what to change on this page \u2014 for example: fix the hands, make the child look happier, brighten the garden, or make the face look more like the uploaded photo.';
+  'Tell us what to change on this page — for example: fix the hands, make the child look happier, brighten the garden, or make the face look more like the uploaded photo.';
+const REGENERATION_POLICY =
+  'Regenerations are included for small fixes. After 3 tries on one page, we may step in to help; after 5, the page is flagged for a human quality check so we do not burn your time or the book budget.';
 
 interface Snapshot {
   orderId: string;
@@ -29,9 +31,10 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [proofAck, setProofAck] = useState<boolean>(Boolean(initial.proofReviewedAt));
 
   const selected = snapshot.pageArtifacts[selectedIdx];
+  const acceptedCount = snapshot.pageArtifacts.filter((p) => p.accepted).length;
   const allAccepted =
     snapshot.pageArtifacts.length > 0 &&
-    snapshot.pageArtifacts.every((p) => p.accepted);
+    acceptedCount === snapshot.pageArtifacts.length;
 
   async function regenerate() {
     if (!selected) return;
@@ -105,25 +108,26 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
             Review {snapshot.childName}&apos;s storybook
           </h1>
           <p className="mt-1 text-sm text-gray-600">
-            Tap any page to review. Regenerate it as many times as you need, then accept it.
+            Take your time. You can save your place, come back from your proof email later,
+            and approve only when the whole book feels ready.
           </p>
         </header>
 
         {/* What you're reviewing — explicit so customers don't think the
-            6 thumbnails below are the entire printed book. */}
+            illustrated-page cards below are the entire printed book. */}
         <section
           aria-label="Review scope"
           className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
           data-testid="review-scope-banner"
         >
-          <p className="font-semibold">What you&apos;re reviewing on this page</p>
+          <p className="font-semibold">Start with the artwork, then review the full book</p>
           <ul className="mt-1.5 list-disc pl-5 leading-relaxed">
-            <li>The {snapshot.pageArtifacts.length} cards below are the <strong>illustrated story pages</strong> — the core artwork you can regenerate per page.</li>
+            <li>The {snapshot.pageArtifacts.length} cards below are the <strong>illustrated story pages</strong> — check that the text is readable over the art and that the art style feels consistent page to page.</li>
             {snapshot.isPrint ? (
               <li>
                 The <strong>full proof PDF</strong> is the complete assembled print proof — including
                 the cover and any keepsake pages the printed book needs. Please review the full proof
-                before final approval.
+                before final approval, especially the final pages where style breaks are easiest to miss.
               </li>
             ) : (
               <li>
@@ -140,6 +144,8 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
             <button
               key={p.pageIndex}
               onClick={() => setSelectedIdx(i)}
+              aria-label={`Review page ${p.pageIndex + 1}${p.accepted ? ', accepted' : ''}`}
+              title={`Review page ${p.pageIndex + 1}${p.accepted ? ' — accepted' : ''}`}
               className={`relative aspect-[3/4] overflow-hidden rounded-lg border-2 transition ${
                 i === selectedIdx ? 'border-[#c9a227]' : 'border-gray-200'
               }`}
@@ -149,12 +155,12 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
                 /* eslint-disable-next-line @next/next/no-img-element */
                 <img
                   src={p.currentImageUrl}
-                  alt={`Page ${p.pageIndex + 1}`}
+                  alt={`Thumbnail preview for page ${p.pageIndex + 1}`}
                   className="h-full w-full object-cover"
                 />
               ) : (
                 <div className="flex h-full w-full items-center justify-center bg-gray-100 text-xs text-gray-400">
-                  No image
+No image yet
                 </div>
               )}
               <span className="absolute left-1 top-1 rounded bg-white/90 px-1.5 py-0.5 text-[10px] font-bold text-[#10263d]">
@@ -187,7 +193,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
                 /* eslint-disable-next-line @next/next/no-img-element */
                 <img
                   src={selected.currentImageUrl}
-                  alt={`Page ${selected.pageIndex + 1} preview`}
+                  alt={`Large preview for page ${selected.pageIndex + 1}`}
                   className="mx-auto block max-h-[600px] w-auto object-contain"
                 />
               ) : (
@@ -197,7 +203,10 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
               )}
             </div>
 
-            <p className="mb-4 text-sm text-gray-700">{selected.storyText}</p>
+            <p className="mb-3 text-sm text-gray-700">{selected.storyText}</p>
+            <p className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+              {REGENERATION_POLICY}
+            </p>
 
             <label
               htmlFor="feedback"
@@ -241,7 +250,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
                 disabled={busy !== 'idle' || !selected.currentImageUrl || selected.accepted}
                 className="rounded-xl bg-[#c9a227] px-5 py-2.5 text-sm font-semibold text-[#10263d] disabled:opacity-50"
               >
-                {selected.accepted ? 'Accepted' : busy === 'accepting' ? 'Accepting\u2026' : 'Accept this page'}
+                {selected.accepted ? 'Accepted' : busy === 'accepting' ? 'Accepting…' : 'Accept this page'}
               </button>
             </div>
 
@@ -276,7 +285,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
           {snapshot.storyArtifactUrl ? (
             <div className="mb-5">
               <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-                Step 1 — review the {snapshot.isPrint ? 'full print proof' : 'full assembled PDF'}
+                Step 1 — open the full {snapshot.isPrint ? 'printed-book proof' : 'storybook PDF'}
               </p>
               <a
                 href={snapshot.storyArtifactUrl}
@@ -285,36 +294,42 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
                 className="inline-flex w-full items-center justify-center gap-2 rounded-xl border-2 border-[#10263d] bg-[#10263d] px-5 py-3 text-base font-semibold text-white sm:w-auto"
                 data-testid="full-proof-cta"
               >
-                📄 Review Full Proof PDF
+📄 Open the full proof PDF
               </a>
               <p className="mt-2 text-xs text-gray-600">
                 {snapshot.isPrint
-                  ? `Opens the assembled print proof — including the cover, intentional title/dedication/end-note pages, and any keepsake pages added if needed to meet the printer\u2019s minimum length. The ${snapshot.pageArtifacts.length} illustrated story pages above are part of this proof, not the whole book.`
-                  : 'Opens the full assembled PDF — what we\u2019ll send to your inbox once you approve.'}
+                  ? `This opens the complete book we plan to print — cover, dedication/title pages, story pages, and any keepsake pages. The ${snapshot.pageArtifacts.length} illustrated story pages above are part of this proof, not the whole book.`
+                  : 'This opens the complete storybook PDF we’ll send to your inbox once you approve.'}
               </p>
             </div>
           ) : (
             <p className="mb-5 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              The full proof PDF isn&apos;t ready yet. It will appear here once page generation finishes.
+Your full proof PDF isn&apos;t ready yet. It will appear here automatically once the book finishes assembling.
             </p>
           )}
 
           {/* Step 2: page acceptance progress */}
           <div className="mb-5">
             <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-gray-500">
-              Step 2 — accept every illustrated story page
+Step 2 — accept each illustrated story page
             </p>
             <p className="text-sm text-gray-700">
               {allAccepted
                 ? `All ${snapshot.pageArtifacts.length} illustrated pages accepted.`
-                : `${snapshot.pageArtifacts.filter((p) => p.accepted).length} of ${snapshot.pageArtifacts.length} illustrated pages accepted.`}
+                : `${acceptedCount} of ${snapshot.pageArtifacts.length} illustrated pages accepted.`}
             </p>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-gray-100" aria-hidden>
+              <div
+                className="h-full rounded-full bg-emerald-600 transition-all"
+                style={{ width: `${snapshot.pageArtifacts.length ? (acceptedCount / snapshot.pageArtifacts.length) * 100 : 0}%` }}
+              />
+            </div>
           </div>
 
           {/* Step 3: explicit acknowledgment that proof was reviewed */}
           <div className="mb-5">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-              Step 3 — confirm you reviewed the {snapshot.isPrint ? 'full print proof' : 'full PDF'}
+Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proof' : 'PDF'}
             </p>
             <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-[#10263d]">
               <input
@@ -352,8 +367,8 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
               />
               <span>
                 {snapshot.isPrint
-                  ? `I reviewed the full proof PDF for the complete printed book and I\u2019m approving everything in it — not just the ${snapshot.pageArtifacts.length} illustrated story pages above.`
-                  : 'I opened the full PDF and reviewed it before approving.'}
+                  ? `I reviewed the full proof PDF for ${snapshot.childName}’s complete printed book and I’m approving everything in it — not just the ${snapshot.pageArtifacts.length} illustrated story pages above.`
+                  : 'I opened the full PDF and reviewed the complete storybook before approving.'}
               </span>
             </label>
           </div>
@@ -387,8 +402,8 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
                   setSnapshot((s) => ({ ...s, reviewStatus: 'approved' }));
                   setNotice(
                     data.printApproved
-                      ? 'Approved! Your book is being sent to the printer now.'
-                      : 'Approved! Your final book is ready.',
+                      ? 'Approved — thank you. We’re sending the finished book to print now.'
+                      : 'Approved — thank you. Your final storybook is ready.',
                   );
                   setTimeout(() => {
                     window.location.href = `/status/${snapshot.orderId}`;
@@ -405,17 +420,17 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
                 : busy === 'approving'
                   ? 'Approving\u2026'
                   : snapshot.isPrint
-                    ? 'Approve whole book & send to print'
-                    : 'Approve whole book'}
+                    ? 'Approve the whole book and send to print'
+                    : 'Approve the whole book'}
             </button>
             {!allAccepted && (
               <p className="mt-2 text-xs text-gray-500">
-                Accept every illustrated page first.
+Accept each illustrated page first — your progress is saved, so you can come back later.
               </p>
             )}
             {allAccepted && !proofAck && snapshot.storyArtifactUrl && (
               <p className="mt-2 text-xs text-gray-500" data-testid="ack-required-hint">
-                Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to enable approval.
+Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to enable approval.
               </p>
             )}
           </div>

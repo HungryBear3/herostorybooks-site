@@ -210,14 +210,14 @@ test('planRebuildPrintOrder: classic plan targets 24 story pages and 32 interior
   } finally { cleanup(dir); }
 });
 
-test('planRebuildPrintOrder: premium plan targets 32 story pages and 36 interior pages', async () => {
+test('planRebuildPrintOrder: premium plan targets 32 story pages and 38 interior pages', async () => {
   const dir = makeTmp();
   try {
     await seed({ bookFormat: 'premium' });
     const order = (await getOrder('ord_rebuild_test'))!;
     const plan = planRebuildPrintOrder(order);
     assert.equal(plan.targetStoryPageCount, 32);
-    assert.equal(plan.targetInteriorPageCount, 36);
+    assert.equal(plan.targetInteriorPageCount, 38);
   } finally { cleanup(dir); }
 });
 
@@ -280,8 +280,8 @@ test('rebuildPrintOrder: classic full rebuild updates artifacts + resets review 
     assert.equal(after.pageArtifacts?.length, 24);
     // Print artifact metadata refreshed.
     assert.equal(after.printInteriorPageCount, 32);
-    assert.match(String(after.printInteriorArtifactUrl), /-interior\.pdf$/);
-    assert.match(String(after.storyArtifactUrl), /-proof\.pdf$/);
+    assert.match(String(after.printInteriorArtifactUrl), /-interior-[0-9TZ-]+\.pdf$/);
+    assert.match(String(after.storyArtifactUrl), /-proof-[0-9TZ-]+\.pdf$/);
     assert.equal(after.printTitle, 'Rebuilt Title');
     assert.notEqual(after.printInteriorMd5, 'legacy-md5');
     // Cover cleared so next print submission rebuilds the cover against
@@ -311,7 +311,7 @@ test('rebuildPrintOrder: classic full rebuild updates artifacts + resets review 
   } finally { cleanup(dir); }
 });
 
-test('rebuildPrintOrder: premium full rebuild produces 32 story pages + 36 interior page count', async () => {
+test('rebuildPrintOrder: premium full rebuild produces 32 story pages + 38 interior page count', async () => {
   const dir = makeTmp();
   try {
     await seed({ bookFormat: 'premium' });
@@ -319,7 +319,7 @@ test('rebuildPrintOrder: premium full rebuild produces 32 story pages + 36 inter
     assert.equal(result.ok, true);
     if (!result.ok || !result.result) return;
     assert.equal(result.result.pageCount, 32);
-    assert.equal(result.result.interiorPageCount, 36);
+    assert.equal(result.result.interiorPageCount, 38);
   } finally { cleanup(dir); }
 });
 

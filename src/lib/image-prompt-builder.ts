@@ -11,6 +11,7 @@
 // hands") rather than just appending raw user text.
 
 import type { OrderRecord } from './orders.ts';
+import type { PageTextLayout } from './fulfillment-types.ts';
 
 export const FEEDBACK_TAGS = [
   'hands',
@@ -22,6 +23,7 @@ export const FEEDBACK_TAGS = [
   'pose',
   'outfit',
   'color',
+  'style_consistency',
 ] as const;
 export type FeedbackTag = (typeof FEEDBACK_TAGS)[number];
 
@@ -35,6 +37,7 @@ const TAG_PATTERNS: Array<{ tag: FeedbackTag; pattern: RegExp }> = [
   { tag: 'pose', pattern: /\b(pose|stance|standing|sitting|jumping|running|posture|arms up)\b/i },
   { tag: 'outfit', pattern: /\b(outfit|clothes|clothing|shirt|dress|hoodie|jacket|hat|shoes|sock|costume)\b/i },
   { tag: 'color', pattern: /\b(color|colour|red|blue|green|yellow|pink|purple|brown|black|white|orange)\b/i },
+  { tag: 'style_consistency', pattern: /\b(style|stylistic|painterly|painted|rendering|match the other pages|same style|consistent)\b/i },
 ];
 
 const QUALITY_CONSTRAINTS = [
@@ -44,9 +47,16 @@ const QUALITY_CONSTRAINTS = [
   'exactly two legs',
   'exactly two feet',
   'aligned eyes',
+  'face fully visible in front-facing or three-quarter view',
+  'both eyes visible unless the scene is physically impossible otherwise',
+  'head turned toward the camera even when the body is in motion',
+  'face not obscured by hands, hair, hat brim, water, mist, shadow, props, or posture',
+  'child is fully clothed and age-appropriate at all times',
+  'no nude-looking, shirtless, or bare-skin-only costume reads',
   'no extra limbs',
   'no floating props unless story-critical',
-  'warm, age-appropriate children\u2019s book art style',
+  'warm, painterly, age-appropriate children\u2019s book art style',
+  'style consistency must match the other pages of the same book, including indoor or nighttime scenes',
 ];
 
 export function deriveFeedbackTags(rawFeedback: string): FeedbackTag[] {
@@ -89,6 +99,14 @@ export interface PagePromptInput {
   characterAnchor?: string | null;
   /** Customer feedback for a regenerate. Empty/undefined for initial generation. */
   feedback?: string;
+  /**
+   * Where the page caption will sit on top of this illustration. When
+   * present we ask the generator to keep that zone visually quiet so the
+   * translucent caption panel doesn't have to fight a face, prop, or
+   * busy texture for legibility. The renderer uses the same layout to
+   * place the panel — this is how we keep image and typography in sync.
+   */
+  textLayout?: PageTextLayout;
 }
 
 /**
@@ -124,13 +142,64 @@ function continuitySection(order: PagePromptInput['order']): string {
   return [
     'Maintain visual continuity with prior pages of the same book:',
     `same child (${order.childName.trim()})`,
-    'same hair, skin tone, and outfit unless the story calls for a change',
-    'same illustration style and color palette',
+    'same apparent age, same haircut, same hair length, same skin tone, and same outfit unless the story explicitly calls for a change',
+    'no masks, no face-obscuring accessories, no logo costume treatment unless the story explicitly requires it',
+    'same illustration style, same painterly rendering language, and same color palette',
+    'the style does not change for indoor, nighttime, cave, or moonlit scenes',
   ].join(' — ');
+}
+
+function sceneGroundingSection(storyText?: string): string {
+  const trimmed = (storyText ?? '').trim();
+  if (!trimmed) {
+    return 'Illustrate the specific story beat in the base prompt. Do not invent a different scene, different costume, or unrelated action.';
+  }
+  return [
+    'Match the specific story beat on this page. Do not invent a different scene, different costume, or unrelated action.',
+    `Scene grounding from the page text: ${trimmed}`,
+  ].join(' ');
+}
+
+function themeGuidanceSection(order: PagePromptInput['order']): string {
+  switch (order.theme) {
+    case 'brave-explorer':
+      return [
+        'Theme outfit lock: tan explorer shirt, khaki shorts, explorer hat, small backpack, sturdy boots.',
+        'No capes. No masks. No superhero styling. No logo costume treatment.',
+        'Do not show a branded book, logo book, or random glowing storybook unless the page text explicitly mentions a book.',
+      ].join(' ');
+    case 'space-voyager':
+      return [
+        'Theme outfit lock: child-safe explorer/astronaut clothing that keeps the face visible.',
+        'No opaque face mask, no helmet blocking the face, no logo costume treatment.',
+        'Do not show a branded book, logo book, or random glowing storybook unless the page text explicitly mentions a book.',
+      ].join(' ');
+    default:
+      return 'Do not show a branded book, logo book, or random glowing storybook unless the page text explicitly mentions a book.';
+  }
 }
 
 function qualitySection(): string {
   return `Quality requirements: ${QUALITY_CONSTRAINTS.join('; ')}.`;
+}
+
+const ZONE_DESCRIPTIONS: Record<PageTextLayout['zone'], string> = {
+  top_left: 'the upper-left quarter of the frame',
+  top_right: 'the upper-right quarter of the frame',
+  bottom_left: 'the lower-left quarter of the frame',
+  bottom_right: 'the lower-right quarter of the frame',
+  bottom_band: 'a horizontal strip across the bottom ~22% of the frame',
+  top_band: 'a horizontal strip across the top ~22% of the frame',
+  natural: 'the lower portion of the frame',
+};
+
+function safeTextAreaSection(layout: PageTextLayout | undefined): string {
+  if (!layout) return '';
+  const zoneCopy = ZONE_DESCRIPTIONS[layout.zone];
+  return [
+    `Composition note for caption legibility: leave ${zoneCopy} visually quiet — keep faces, hands, and other key story details OUT of that zone, and use low-contrast background tones (sky, foliage, water, soft floor, distant terrain) so a translucent caption panel can sit there without hiding important art.`,
+    'Do not render any text, lettering, signs, captions, or word-shaped marks anywhere in the image. The book layout adds the caption itself.',
+  ].join(' ');
 }
 
 function tagEmphasisSection(tags: FeedbackTag[]): string {
@@ -155,6 +224,8 @@ function tagEmphasisSection(tags: FeedbackTag[]): string {
         return 'outfit: adjust clothing per the customer feedback';
       case 'color':
         return 'color: adjust palette per the customer feedback';
+      case 'style_consistency':
+        return 'style: match the same warm painterly rendering, brush texture, character design language, and palette as the strongest existing pages in the book';
     }
   });
   return `Customer-flagged focus areas: ${focus.join('; ')}.`;
@@ -166,6 +237,9 @@ export function buildPagePrompt(input: PagePromptInput): string {
     input.basePrompt.trim(),
     childIdentitySection(input.order),
     continuitySection(input.order),
+    themeGuidanceSection(input.order),
+    sceneGroundingSection(input.storyText),
+    safeTextAreaSection(input.textLayout),
     qualitySection(),
   ]
     .filter(Boolean)
@@ -186,6 +260,9 @@ export function buildRegeneratePrompt(input: PagePromptInput): RegeneratePromptR
     input.basePrompt.trim(),
     childIdentitySection(input.order),
     continuitySection(input.order),
+    themeGuidanceSection(input.order),
+    sceneGroundingSection(input.storyText),
+    safeTextAreaSection(input.textLayout),
   ];
   const tagSection = tagEmphasisSection(tags);
   if (tagSection) sections.push(tagSection);

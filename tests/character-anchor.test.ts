@@ -147,3 +147,35 @@ test('buildPagePrompt: identity section + continuity + quality all still emitted
   assert.ok(prompt.includes('Maintain visual continuity'), 'continuity section still present');
   assert.ok(prompt.includes('Quality requirements'), 'quality section still present');
 });
+
+test('buildPagePrompt: includes hard constraints for clothed, face-visible, story-matching child art', () => {
+  const prompt = buildPagePrompt({
+    basePrompt: 'A child discovers a hidden stone map behind jungle vines.',
+    storyText: 'Behind a curtain of vines, Luna found a weathered stone map and pulled it into the sunlight.',
+    order,
+    characterAnchor: ANCHOR,
+  });
+  assert.match(prompt, /face clearly visible|three-quarter/i, 'prompt should require a visible recognizable face');
+  assert.match(prompt, /fully clothed|never nude|no bare skin/i, 'prompt should forbid nude-looking child renders');
+  assert.match(prompt, /match the specific story beat|do not invent a different scene/i, 'prompt should tell the model to illustrate the actual page event');
+  assert.match(prompt, /Behind a curtain of vines, Luna found a weathered stone map/i, 'story text should be fed into the image prompt as scene grounding');
+  assert.match(prompt, /same haircut|same apparent age/i, 'prompt should lock age and hair continuity');
+  assert.match(prompt, /no masks|no face-obscuring accessories|no logo costume/i, 'prompt should avoid costume elements that hide the child identity');
+});
+
+test('buildPagePrompt: brave-explorer theme explicitly locks explorer outfit and forbids cape/logo-book drift', () => {
+  const prompt = buildPagePrompt({
+    basePrompt: 'A child follows a jungle trail toward ancient ruins.',
+    storyText: 'Rex adjusted his explorer hat and followed the trail toward the ruins.',
+    order: {
+      ...order,
+      childName: 'Rex',
+      theme: 'brave-explorer',
+      appearanceOptions: 'short dark hair, medium skin tone',
+    },
+    characterAnchor: 'Rex is a 5-year-old boy with short dark hair, medium skin tone, and a curious expression.',
+  });
+  assert.match(prompt, /explorer hat|backpack|boots|khaki|tan explorer/i, 'explorer theme should lock a specific explorer outfit');
+  assert.match(prompt, /no capes|no masks/i, 'explorer theme should explicitly ban superhero drift');
+  assert.match(prompt, /do not show a book cover|branded book|logo book|random glowing storybook/i, 'prompt should ban random branded-book/logo artifacts');
+});

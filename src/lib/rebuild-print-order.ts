@@ -224,6 +224,7 @@ export async function rebuildPrintOrder(
         theme: order.theme,
       },
       characterAnchor,
+      textLayout: p.textLayout,
     }),
   );
   const referenceImageUrl = getOrderPhotoUrl(order);
@@ -277,8 +278,9 @@ export async function rebuildPrintOrder(
   const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
 
   const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);
-  const proofUrl = await _upload(order.id, proofBuffer, `${safeSlug}-proof.pdf`);
-  const interiorUrl = await _upload(order.id, interiorBuffer, `${safeSlug}-interior.pdf`);
+  const artifactStamp = now.toISOString().replace(/[:.]/g, '-');
+  const proofUrl = await _upload(order.id, proofBuffer, `${safeSlug}-proof-${artifactStamp}.pdf`);
+  const interiorUrl = await _upload(order.id, interiorBuffer, `${safeSlug}-interior-${artifactStamp}.pdf`);
   const interiorMd5 = md5Hex(interiorBuffer);
   const interiorPageCount = getPrintInteriorPageCount(story, order);
 

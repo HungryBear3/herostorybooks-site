@@ -23,6 +23,7 @@ import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
 import {
   evaluateApproveGate,
   getReviewSnapshot,
+  hasReviewAccess,
 } from '../src/lib/page-review.ts';
 
 function makeTmp() {
@@ -221,6 +222,31 @@ test('getReviewSnapshot: storyArtifactUrl null when proof not yet built', async 
   } finally {
     cleanup(dir);
   }
+});
+
+
+test('review access: print order with proof token requires matching token', () => {
+  const order = createOrderRecord(
+    { childName: 'Luna', bookFormat: 'classic', email: 'a@b.com' },
+    { id: 'ord_review_token_gate', now: '2026-04-27T10:00:00Z' },
+  );
+  const withToken: OrderRecord = { ...order, proofApprovalToken: 'tok_secret' };
+  assert.equal(hasReviewAccess(withToken, { reviewToken: null }), false);
+  assert.equal(hasReviewAccess(withToken, { reviewToken: 'wrong' }), false);
+  assert.equal(hasReviewAccess(withToken, { reviewToken: 'tok_secret' }), true);
+});
+
+test('review access: digital orders and legacy print orders remain visible without a token', () => {
+  const digital = createOrderRecord(
+    { childName: 'Luna', bookFormat: 'digital', email: 'a@b.com' },
+    { id: 'ord_review_token_digital', now: '2026-04-27T10:00:00Z' },
+  );
+  const legacyPrint = createOrderRecord(
+    { childName: 'Luna', bookFormat: 'classic', email: 'a@b.com' },
+    { id: 'ord_review_token_legacy', now: '2026-04-27T10:00:00Z' },
+  );
+  assert.equal(hasReviewAccess(digital, { reviewToken: null }), true);
+  assert.equal(hasReviewAccess(legacyPrint, { reviewToken: null }), true);
 });
 
 // ── Source-level guards on the review client ────────────────────────────────

@@ -3,6 +3,7 @@ import { getStoryPageCount } from './orders.ts';
 import type { StoryContent, StoryMeta, StoryPage } from './fulfillment-types.ts';
 import { STORY_THEMES } from './story-catalog.ts';
 import { SAMPLE_ADVENTURES } from './sample-adventures.ts';
+import { planStorybook, validateStoryPlan, type StoryPlanPage } from './story-planner.ts';
 
 export type { StoryMeta };
 
@@ -28,11 +29,25 @@ interface TemplateVariantProfile {
   pageAdditions: string[];
 }
 
+interface LongFormBeat {
+  title: string;
+  setting: string;
+  action: string;
+  mood: string;
+}
+
+interface StorySentencePlan {
+  opening: string;
+  reaction: string;
+  detail: string;
+  closing: string;
+}
+
 const TEMPLATE_VARIANTS: TemplateVariantProfile[] = [
   {
     titleSuffix: 'Adventure',
     dedicationTemplate: 'For {{childName}} — may every brave step lead to a wonderful story.',
-    characterTemplate: 'A bright-eyed child named {{childName}}{{ageClause}} with a curious spirit, a warm smile, and a confident, ready-for-anything presence. {{notes}}',
+    characterTemplate: 'A bright-eyed child named {{childName}}{{ageClause}} with a curious spirit, a warm smile, and a confident, ready-for-anything presence. {{appearance}} {{notes}}',
     pageAdditions: [
       'The adventure felt new and exciting from the very first step.',
       'Every clue made the world feel bigger and more magical.',
@@ -44,7 +59,7 @@ const TEMPLATE_VARIANTS: TemplateVariantProfile[] = [
   {
     titleSuffix: 'Quest',
     dedicationTemplate: 'For {{childName}} — your imagination turns every day into a quest worth sharing.',
-    characterTemplate: 'A thoughtful child named {{childName}}{{ageClause}} with kind eyes, steady confidence, and a playful imagination that lights up every scene. {{notes}}',
+    characterTemplate: 'A thoughtful child named {{childName}}{{ageClause}} with kind eyes, steady confidence, and a playful imagination that lights up every scene. {{appearance}} {{notes}}',
     pageAdditions: [
       'Right away, {{childName}} felt ready to see what wonder was waiting.',
       'The path ahead shimmered with possibility.',
@@ -56,7 +71,7 @@ const TEMPLATE_VARIANTS: TemplateVariantProfile[] = [
   {
     titleSuffix: 'Journey',
     dedicationTemplate: 'For {{childName}} — may your kindness guide every journey you take.',
-    characterTemplate: 'A brave child named {{childName}}{{ageClause}} with an expressive face, a gentle grin, and the kind of calm determination that helps everyone feel safe. {{notes}}',
+    characterTemplate: 'A brave child named {{childName}}{{ageClause}} with an expressive face, a gentle grin, and the kind of calm determination that helps everyone feel safe. {{appearance}} {{notes}}',
     pageAdditions: [
       '{{childName}} could feel this would be a day to remember.',
       'Each new sight made the journey feel richer and more alive.',
@@ -68,7 +83,7 @@ const TEMPLATE_VARIANTS: TemplateVariantProfile[] = [
   {
     titleSuffix: 'Story',
     dedicationTemplate: 'For {{childName}} — this story is a reminder that courage can look gentle and strong at the same time.',
-    characterTemplate: 'A cheerful child named {{childName}}{{ageClause}} with a lively expression, a confident stance, and a spark of wonder that stands out in every adventure scene. {{notes}}',
+    characterTemplate: 'A cheerful child named {{childName}}{{ageClause}} with a lively expression, a confident stance, and a spark of wonder that stands out in every adventure scene. {{appearance}} {{notes}}',
     pageAdditions: [
       'From the beginning, the day felt touched by storybook magic.',
       'The next discovery made {{childName}} even more eager to continue.',
@@ -80,7 +95,7 @@ const TEMPLATE_VARIANTS: TemplateVariantProfile[] = [
   {
     titleSuffix: 'Expedition',
     dedicationTemplate: 'For {{childName}} — may you keep finding joy in every discovery ahead.',
-    characterTemplate: 'An adventurous child named {{childName}}{{ageClause}} with an open, friendly expression, steady courage, and an energetic spirit that fits every grand scene. {{notes}}',
+    characterTemplate: 'An adventurous child named {{childName}}{{ageClause}} with an open, friendly expression, steady courage, and an energetic spirit that fits every grand scene. {{appearance}} {{notes}}',
     pageAdditions: [
       '{{childName}} stepped forward with excitement and a sense of purpose.',
       'It was the kind of moment that makes an adventure feel completely real.',
@@ -91,12 +106,77 @@ const TEMPLATE_VARIANTS: TemplateVariantProfile[] = [
   },
 ];
 
+const LONG_FORM_BEATS: LongFormBeat[] = [
+  { title: 'The Adventure Begins', setting: 'the edge of a brand-new world', action: 'steps forward to begin the adventure', mood: 'hopeful and bright' },
+  { title: 'Packing For Wonder', setting: 'a path filled with promise', action: 'checks a bag, a clue, and a brave plan', mood: 'eager and focused' },
+  { title: 'First Strange Sign', setting: 'a surprising place just ahead', action: 'spots the first sign that this journey is special', mood: 'curious and alert' },
+  { title: 'Into The Unknown', setting: 'a deeper, more magical stretch of the journey', action: 'moves carefully into the unknown', mood: 'wide-eyed and adventurous' },
+  { title: 'A New Friend Appears', setting: 'a welcoming corner of the adventure', action: 'meets a friendly helper who shares useful advice', mood: 'warm and reassuring' },
+  { title: 'Following The Clue', setting: 'a winding trail of hints and discoveries', action: 'studies a clue and follows it onward', mood: 'thoughtful and determined' },
+  { title: 'A Bigger World', setting: 'a breathtaking view that opens everything up', action: 'pauses to take in how big the world has become', mood: 'amazed and inspired' },
+  { title: 'The Hidden Path', setting: 'a secret route most travelers would miss', action: 'finds a hidden path and decides to trust it', mood: 'quietly brave' },
+  { title: 'Something Feels Off', setting: 'a place where the adventure suddenly shifts', action: 'notices a new problem and slows down to understand it', mood: 'tense but steady' },
+  { title: 'Thinking It Through', setting: 'a calm moment in the middle of the action', action: 'takes a breath and thinks through the challenge', mood: 'calm and clever' },
+  { title: 'A Useful Discovery', setting: 'a scene full of overlooked details', action: 'finds an object or sign that changes the plan', mood: 'excited and hopeful' },
+  { title: 'Crossing Over', setting: 'a narrow crossing that takes courage', action: 'crosses carefully toward the next stage', mood: 'brave and focused' },
+  { title: 'Deeper Still', setting: 'the most mysterious part of the journey so far', action: 'presses onward with growing confidence', mood: 'determined and adventurous' },
+  { title: 'The Puzzle Room', setting: 'a place where observation matters', action: 'studies patterns, symbols, or clues to solve a puzzle', mood: 'patient and curious' },
+  { title: 'The Wrong Turn', setting: 'an unexpected detour', action: 'realizes something is not working and pivots quickly', mood: 'uncertain but resilient' },
+  { title: 'A Better Plan', setting: 'a fresh path shaped by new understanding', action: 'tries a smarter plan using what has been learned', mood: 'confident and inventive' },
+  { title: 'The Biggest Obstacle', setting: 'the toughest point in the whole journey', action: 'faces the biggest obstacle yet without backing away', mood: 'dramatic and courageous' },
+  { title: 'Help From The Heart', setting: 'a moment where kindness matters as much as courage', action: 'accepts help or offers help at exactly the right time', mood: 'gentle and uplifting' },
+  { title: 'A Near Breakthrough', setting: 'a place that feels close to the answer', action: 'sees the shape of the solution beginning to appear', mood: 'electric and hopeful' },
+  { title: 'One Brave Choice', setting: 'the turning-point scene of the story', action: 'makes one brave choice that changes everything', mood: 'heroic and intense' },
+  { title: 'The Answer Revealed', setting: 'a glowing, unforgettable discovery point', action: 'finally reaches the long-awaited answer or treasure', mood: 'joyful and triumphant' },
+  { title: 'A Moment To Celebrate', setting: 'a bright scene of relief and pride', action: 'takes a moment to celebrate what has been achieved', mood: 'happy and proud' },
+  { title: 'Heading Home', setting: 'the familiar way back, now changed by the adventure', action: 'starts the journey home with new confidence', mood: 'peaceful and satisfied' },
+  { title: 'Sharing The Story', setting: 'a cozy place to remember everything that happened', action: 'shares the adventure and the lesson it carried', mood: 'warm and reflective' },
+  { title: 'A Quiet Goodnight', setting: 'the gentle final moment of the day', action: 'settles into a quiet ending while holding onto the memory', mood: 'cozy and bedtime-ready' },
+  { title: 'Remembering The Clues', setting: 'a thoughtful pause after the excitement', action: 'looks back at the clues that led the way', mood: 'grateful and reflective' },
+  { title: 'A New Door Opens', setting: 'a surprising place that hints at even more wonder', action: 'finds one last small sign that the world is still full of possibility', mood: 'soft and magical' },
+  { title: 'Kindness Along The Way', setting: 'a scene shaped by connection and trust', action: 'shows kindness that makes the path easier for everyone', mood: 'gentle and heartwarming' },
+  { title: 'Learning To Lead', setting: 'a moment where confidence becomes visible', action: 'steps into a quiet leadership role', mood: 'steady and inspiring' },
+  { title: 'The Final View', setting: 'a beautiful closing vista', action: 'looks out over how far the journey has gone', mood: 'wonder-filled and calm' },
+  { title: 'A Story Worth Keeping', setting: 'a keepsake-worthy ending scene', action: 'holds onto the adventure as a memory worth keeping forever', mood: 'sentimental and proud' },
+  { title: 'Tomorrow Holds More', setting: 'a hopeful final glance toward the future', action: 'drifts to the end of the story ready for whatever comes next', mood: 'hopeful and serene' },
+];
+
 function sanitizeInput(value: string | undefined | null, maxLen: number): string {
   if (!value) return '';
   return value
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
     .trim()
     .slice(0, maxLen);
+}
+
+function describeAppearanceOptions(raw: string | undefined | null): string {
+  const trimmed = sanitizeInput(raw, 400);
+  if (!trimmed) return '';
+  if (!trimmed.startsWith('{')) return trimmed;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const ordered = ['skinTone', 'hairStyle', 'hair', 'eyewear'];
+    const pieces: string[] = [];
+    for (const key of ordered) {
+      const value = parsed[key];
+      if (typeof value === 'string' && value.trim()) {
+        pieces.push(`${key}: ${value.trim()}`);
+      } else if (typeof value === 'boolean') {
+        pieces.push(`${key}: ${value ? 'yes' : 'no'}`);
+      }
+    }
+    for (const [key, value] of Object.entries(parsed)) {
+      if (ordered.includes(key)) continue;
+      if (typeof value === 'string' && value.trim()) {
+        pieces.push(`${key}: ${value.trim()}`);
+      } else if (typeof value === 'boolean') {
+        pieces.push(`${key}: ${value ? 'yes' : 'no'}`);
+      }
+    }
+    return pieces.join(', ');
+  } catch {
+    return trimmed;
+  }
 }
 
 function stableIndex(input: string, modulo: number): number {
@@ -111,10 +191,12 @@ function personalizeTemplate(template: string, order: OrderRecord): string {
   const childName = sanitizeInput(order.childName, 60) || 'Your Child';
   const age = sanitizeInput(order.childAge, 10);
   const notes = sanitizeInput(order.characterNotes, 200);
+  const appearance = describeAppearanceOptions(order.appearanceOptions);
   return template
     .replaceAll('{{childName}}', childName)
     .replaceAll('{{ageClause}}', age ? `, age ${age}` : '')
-    .replaceAll('{{notes}}', notes || '');
+    .replaceAll('{{notes}}', notes || '')
+    .replaceAll('{{appearance}}', appearance || '');
 }
 
 function chooseTemplateVariant(order: OrderRecord): TemplateVariantProfile {
@@ -124,12 +206,381 @@ function chooseTemplateVariant(order: OrderRecord): TemplateVariantProfile {
   return TEMPLATE_VARIANTS[stableIndex(key, TEMPLATE_VARIANTS.length)]!;
 }
 
+function buildLongFormTemplatePages(
+  order: OrderRecord,
+  _variant: TemplateVariantProfile,
+  childName: string,
+  themeDescription: string,
+  targetPageCount: number,
+): StoryPage[] {
+  const themeLine = themeDescription || 'a magical storybook adventure';
+  const storyPlan = planStorybook(order, targetPageCount);
+  const clean = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+  return storyPlan.pages.slice(0, targetPageCount).map((beat, index) => {
+    const story = clean([
+      `${childName} is at ${beat.setting}.`,
+      beat.beat_summary,
+      `The moment shifts toward ${beat.emotional_tone}.`,
+    ].join(' '));
+
+    return {
+      pageNum: index + 1,
+      sceneTitle: beat.beat_summary,
+      story,
+      imagePrompt:
+        `A children's book illustration of ${childName} in ${themeLine}. ` +
+        `Page ${index + 1}. ${beat.beat_summary}. ` +
+        `Setting: ${beat.setting}. ` +
+        `Shot type: ${beat.shot_type}. ` +
+        `Key detail: ${beat.key_object_or_detail}. ` +
+        `Other presence in frame: ${beat.who_else_in_frame}. ` +
+        `The emotional tone is ${beat.emotional_tone}. Warm, colorful, age-appropriate art style.`,
+      textLayout: beat.text_layout,
+    };
+  });
+}
+
 function buildTemplateFallback(order: OrderRecord): StoryContent {
   return buildTemplateFallbackWithVariant(order).story;
 }
 
 function isOpenAiStoryEnabled(): boolean {
   return process.env.HSB_ENABLE_OPENAI_STORY === 'true';
+}
+
+function isOpenAiPageProseEnabled(): boolean {
+  return process.env.HSB_ENABLE_OPENAI_PAGE_PROSE === 'true';
+}
+
+function isOllamaPageProseEnabled(): boolean {
+  return process.env.HSB_ENABLE_OLLAMA_PAGE_PROSE === 'true';
+}
+
+function getOllamaPageProseModel(): string {
+  return sanitizeInput(process.env.HSB_OLLAMA_PAGE_PROSE_MODEL, 120) || 'qwen2.5:14b';
+}
+
+function getOllamaBaseUrl(): string {
+  return sanitizeInput(process.env.OLLAMA_BASE_URL, 200) || 'http://127.0.0.1:11434';
+}
+
+function firstNameOnly(order: OrderRecord): string {
+  return sanitizeInput(order.childName, 60).split(/\s+/)[0] || 'Your Child';
+}
+
+function inferPronouns(order: OrderRecord): 'he/him' | 'she/her' | 'they/them' {
+  if (order.childPronouns === 'he/him' || order.childPronouns === 'she/her' || order.childPronouns === 'they/them') {
+    return order.childPronouns;
+  }
+  const notes = [order.characterNotes, order.giftMessage, order.occasion]
+    .map((value) => sanitizeInput(value, 160).toLowerCase())
+    .join(' ');
+  if (/\bhe\b|\bhim\b|\bhis\b/.test(notes)) return 'he/him';
+  if (/\bshe\b|\bher\b|\bhers\b/.test(notes)) return 'she/her';
+  return 'they/them';
+}
+
+function buildPageProseSystemPrompt(): string {
+  return `You are a picture book author writing for children ages 5 to 8. You will be given one page beat from a longer story, plus the protagonist's name and the book's theme. Your job is to write the prose for that single page — nothing more.
+
+VOICE
+- Write like a real children's author, not a summarizer.
+- Show what is happening, do not describe what kind of feeling the moment has.
+- Use sensory detail: what is seen, heard, smelled, touched, felt in the body.
+- Use specific concrete nouns, not abstract ones.
+- Vary sentence length on every page. Mix very short sentences with longer ones.
+- Use the present moment.
+
+LENGTH
+- 2 to 4 sentences total. Around 25 to 55 words. Never more than 60.
+
+NAME USAGE
+- Use the protagonist's first name at most ONCE per page. After that, use pronouns from the input.
+- Never use the protagonist's full name.
+
+FORBIDDEN
+- Do not include headings, labels, bullet points, metadata, or JSON.
+- Do not use the phrases "pulls the eye first", "Everything is held in", "guided by", or "while noticing".
+- Do not refer to the book, page, reader, or story as a story.
+- Do not summarize the moral.
+
+OUTPUT
+- Plain prose only.
+
+QUALITY BAR
+- If the page is the climax or payoff moment, show the discovery/reward on the page itself. Do not cut away before the answer is found.
+- Prefer concrete images over explanation. Avoid lines like "hinting at more adventure ahead" or "everything feels mysterious and exciting."
+- If another creature or character appears on nearby pages, vary what it does so adjacent pages do not repeat the same watcher beat.`;
+}
+
+function buildPageSpecificInstruction(beat: StoryPlanPage, pageCount: number): string | null {
+  if (beat.page === pageCount - 3) {
+    return 'SPECIAL REQUIREMENT: this is the climax payoff page. The child must receive the answer or reward on this page and clearly choose or take the smooth stone before the story turns homeward.';
+  }
+  if (beat.page === pageCount - 2) {
+    return 'SPECIAL REQUIREMENT: this is the first homeward-resolution page. Mention the discovered smooth stone or answer clearly so the transition home feels earned.';
+  }
+  if (beat.page === pageCount - 1) {
+    return 'SPECIAL REQUIREMENT: this home-sharing page must pay off the listening stone directly. The family should lean in and hear jungle sounds or the stone hum itself. DO NOT introduce any live bird, animal, creature, egg, nest, or surprise object hidden inside the wrapping.';
+  }
+  if (beat.page === 4) {
+    return 'SPECIAL REQUIREMENT: keep the feather image simple and natural. Avoid awkward syntax like "curious which way feels right."';
+  }
+  if (beat.page === 9) {
+    return 'SPECIAL REQUIREMENT: show the low echo underfoot through sound or movement, not by telling the reader the scene feels mysterious or exciting.';
+  }
+  if (beat.page === 13) {
+    return 'SPECIAL REQUIREMENT: let the smoke image stand on its own. Do not explain that it hints at more adventure ahead.';
+  }
+  if (beat.page === 16) {
+    return 'SPECIAL REQUIREMENT: if a small creature appears here, make it do something distinct from nearby pages instead of simply watching from the side.';
+  }
+  if (beat.page === 20) {
+    return 'SPECIAL REQUIREMENT: avoid starting a key sentence with "But now". Let the ring of stones arrival land smoothly and clearly.';
+  }
+  return null;
+}
+
+function getLockedPageProse(order: OrderRecord, beat: StoryPlanPage, pageCount: number): string | null {
+  if (order.theme === 'brave-explorer' && beat.page === pageCount - 1) {
+    return 'Lukas places the smooth stone from the jungle on the porch rail. His family gathers around, leaning in to listen. The stone hums softly, echoing the sounds of the day\'s adventure. Everyone gasps as they hear the distant calls of birds and rustling leaves.';
+  }
+  return null;
+}
+
+function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage, pageCount: number, previousBeat: StoryPlanPage | null): string {
+  const theme = STORY_THEMES.find((t) => t.id === order.theme);
+  const special = buildPageSpecificInstruction(beat, pageCount);
+  return [
+    `PROTAGONIST: ${firstNameOnly(order)}`,
+    `PRONOUNS: ${inferPronouns(order)}`,
+    `AGE: ${sanitizeInput(order.childAge, 10) || 'unspecified'}`,
+    `THEME: ${(theme?.description ?? sanitizeInput(order.theme, 80)) || 'personalized picture book'}`,
+    `PAGE NUMBER: ${beat.page} of ${pageCount}`,
+    `SETTING: ${beat.setting}`,
+    `BEAT: ${beat.beat_summary}`,
+    `PRIOR PAGE BEAT (for continuity): ${previousBeat?.beat_summary ?? 'this is the opening page'}`,
+    `EMOTIONAL TONE: ${beat.emotional_tone}`,
+    `KEY DETAIL: ${beat.key_object_or_detail}`,
+    `OTHER PRESENCE: ${beat.who_else_in_frame}`,
+    special,
+  ].filter(Boolean).join('\n');
+}
+
+function validatePageProse(text: string, protagonist: string): string[] {
+  const issues: string[] = [];
+  const trimmed = text.trim();
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (!trimmed) issues.push('empty page prose');
+  if (words.length > 60) issues.push('page prose exceeds 60 words');
+  const nameCount = (trimmed.match(new RegExp(`\\b${protagonist.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi')) || []).length;
+  if (nameCount > 1) issues.push('protagonist first name used more than once');
+  if (/pulls the eye first|everything is held in|guided by|while noticing|page \d+:|^title:|hinting at more adventure ahead|feels?\s+(mysterious|exciting|magical|special)/i.test(trimmed)) {
+    issues.push('page prose contains forbidden template language');
+  }
+  if (/\ba\s+[aeiou]/i.test(trimmed)) {
+    issues.push('page prose appears to contain an article-agreement error');
+  }
+  return issues;
+}
+
+async function buildStoryFromPageProse(
+  order: OrderRecord,
+  variant: TemplateVariantProfile,
+  _fetch: FetchDep,
+  apiKey: string,
+): Promise<StoryContent> {
+  const theme = STORY_THEMES.find((t) => t.id === order.theme);
+  const targetPageCount = getStoryPageCount(order.bookFormat);
+  const storyPlan = planStorybook(order, targetPageCount);
+  const planIssues = validateStoryPlan(storyPlan);
+  if (planIssues.length > 0) {
+    throw new Error(`story plan failed validation: ${planIssues.join('; ')}`);
+  }
+
+  const pages: StoryPage[] = [];
+  for (let index = 0; index < storyPlan.pages.length; index += 1) {
+    const beat = storyPlan.pages[index]!;
+    const lockedProse = getLockedPageProse(order, beat, targetPageCount);
+    if (lockedProse) {
+      pages.push({
+        pageNum: index + 1,
+        sceneTitle: beat.beat_summary,
+        story: lockedProse,
+        imagePrompt:
+          `A children's book illustration of ${firstNameOnly(order)} in ${theme?.description ?? 'a grand adventure'}. ` +
+          `Page ${index + 1}. ${beat.beat_summary}. ` +
+          `Setting: ${beat.setting}. ` +
+          `Shot type: ${beat.shot_type}. ` +
+          `Key detail: ${beat.key_object_or_detail}. ` +
+          `Other presence in frame: ${beat.who_else_in_frame}. ` +
+          `The emotional tone is ${beat.emotional_tone}. Warm, colorful, age-appropriate art style.`,
+        textLayout: beat.text_layout,
+      });
+      continue;
+    }
+    const previousBeat = index > 0 ? storyPlan.pages[index - 1]! : null;
+    const response = await _fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: buildPageProseSystemPrompt() },
+          { role: 'user', content: buildPageProseUserPrompt(order, beat, targetPageCount, previousBeat) },
+        ],
+        temperature: 0.8,
+        max_tokens: 160,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI API error ${response.status}: ${(await response.text().catch(() => '')).slice(0, 200)}`);
+    }
+
+    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const prose = data.choices?.[0]?.message?.content?.trim() ?? '';
+    const proseIssues = validatePageProse(prose, firstNameOnly(order));
+    if (proseIssues.length > 0) {
+      throw new Error(`page ${beat.page} prose failed validation: ${proseIssues.join('; ')}`);
+    }
+
+    pages.push({
+      pageNum: index + 1,
+      sceneTitle: beat.beat_summary,
+      story: prose,
+      imagePrompt:
+        `A children's book illustration of ${firstNameOnly(order)} in ${theme?.description ?? 'a grand adventure'}. ` +
+        `Page ${index + 1}. ${beat.beat_summary}. ` +
+        `Setting: ${beat.setting}. ` +
+        `Shot type: ${beat.shot_type}. ` +
+        `Key detail: ${beat.key_object_or_detail}. ` +
+        `Other presence in frame: ${beat.who_else_in_frame}. ` +
+        `The emotional tone is ${beat.emotional_tone}. Warm, colorful, age-appropriate art style.`,
+      textLayout: beat.text_layout,
+    });
+  }
+
+  return {
+    title: storyPlan.title,
+    dedication: personalizeTemplate(variant.dedicationTemplate, order),
+    characterDescription: `${personalizeTemplate(variant.characterTemplate, order).replace(/\s+/g, ' ').trim()} Outfit: ${storyPlan.protagonist_outfit}.`,
+    pages,
+  };
+}
+
+async function buildStoryFromOllamaPageProse(
+  order: OrderRecord,
+  variant: TemplateVariantProfile,
+  _fetch: FetchDep,
+): Promise<StoryContent> {
+  const theme = STORY_THEMES.find((t) => t.id === order.theme);
+  const targetPageCount = getStoryPageCount(order.bookFormat);
+  const storyPlan = planStorybook(order, targetPageCount);
+  const planIssues = validateStoryPlan(storyPlan);
+  if (planIssues.length > 0) {
+    throw new Error(`story plan failed validation: ${planIssues.join('; ')}`);
+  }
+
+  const model = getOllamaPageProseModel();
+  const endpoint = `${getOllamaBaseUrl().replace(/\/$/, '')}/api/chat`;
+  const pages: StoryPage[] = [];
+  for (let index = 0; index < storyPlan.pages.length; index += 1) {
+    const beat = storyPlan.pages[index]!;
+    const lockedProse = getLockedPageProse(order, beat, targetPageCount);
+    if (lockedProse) {
+      pages.push({
+        pageNum: index + 1,
+        sceneTitle: beat.beat_summary,
+        story: lockedProse,
+        imagePrompt:
+          `A children's book illustration of ${firstNameOnly(order)} in ${theme?.description ?? 'a grand adventure'}. ` +
+          `Page ${index + 1}. ${beat.beat_summary}. ` +
+          `Setting: ${beat.setting}. ` +
+          `Shot type: ${beat.shot_type}. ` +
+          `Key detail: ${beat.key_object_or_detail}. ` +
+          `Other presence in frame: ${beat.who_else_in_frame}. ` +
+          `The emotional tone is ${beat.emotional_tone}. Warm, colorful, age-appropriate art style.`,
+        textLayout: beat.text_layout,
+      });
+      continue;
+    }
+    const previousBeat = index > 0 ? storyPlan.pages[index - 1]! : null;
+    let prose = '';
+    let lastValidationError = '';
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const messages = [
+        { role: 'system', content: buildPageProseSystemPrompt() },
+        { role: 'user', content: buildPageProseUserPrompt(order, beat, targetPageCount, previousBeat) },
+      ];
+      if (attempt > 1 && lastValidationError) {
+        messages.push({
+          role: 'user',
+          content: `Retry this same page. Fix these validation issues exactly: ${lastValidationError}. Keep the same beat and write fresh prose only.`,
+        });
+      }
+      const response = await _fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          stream: false,
+          messages,
+          options: {
+            temperature: 0.8,
+            num_predict: 160,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Ollama API error ${response.status}: ${(await response.text().catch(() => '')).slice(0, 200)}`);
+      }
+
+      const data = (await response.json()) as { message?: { content?: string } };
+      prose = data.message?.content?.trim() ?? '';
+      const proseIssues = validatePageProse(prose, firstNameOnly(order));
+      if (proseIssues.length === 0) {
+        lastValidationError = '';
+        break;
+      }
+      lastValidationError = proseIssues.join('; ');
+      prose = '';
+    }
+
+    if (!prose) {
+      throw new Error(`page ${beat.page} prose failed validation: ${lastValidationError || 'unknown validation error'}`);
+    }
+
+    pages.push({
+      pageNum: index + 1,
+      sceneTitle: beat.beat_summary,
+      story: prose,
+      imagePrompt:
+        `A children's book illustration of ${firstNameOnly(order)} in ${theme?.description ?? 'a grand adventure'}. ` +
+        `Page ${index + 1}. ${beat.beat_summary}. ` +
+        `Setting: ${beat.setting}. ` +
+        `Shot type: ${beat.shot_type}. ` +
+        `Key detail: ${beat.key_object_or_detail}. ` +
+        `Other presence in frame: ${beat.who_else_in_frame}. ` +
+        `The emotional tone is ${beat.emotional_tone}. Warm, colorful, age-appropriate art style.`,
+      textLayout: beat.text_layout,
+    });
+  }
+
+  return {
+    title: storyPlan.title,
+    dedication: personalizeTemplate(variant.dedicationTemplate, order),
+    characterDescription: `${personalizeTemplate(variant.characterTemplate, order).replace(/\s+/g, ' ').trim()} Outfit: ${storyPlan.protagonist_outfit}.`,
+    pages,
+  };
 }
 
 /**
@@ -147,11 +598,28 @@ function buildTemplateFallbackWithVariant(
 
   const childName = sanitizeInput(order.childName, 60) || 'Your Child';
   // Produce exactly N pages where N = getStoryPageCount(format).
-  // Long-form formats cycle through the sample-adventure scenes and the
-  // variant pageAdditions, with a stable pass index so adjacent cycles
-  // aren't bit-identical.
+  // Long-form formats must not simply cycle a short 5-page sample arc,
+  // or the later pages become visually repetitive and stop telling a real story.
   const targetPageCount = getStoryPageCount(order.bookFormat);
   const sourceCount = sample.pages.length;
+  if (targetPageCount > sourceCount) {
+    const storyPlan = planStorybook(order, targetPageCount);
+    return {
+      story: {
+        title: storyPlan.title,
+        dedication: personalizeTemplate(variant.dedicationTemplate, order),
+        characterDescription: `${personalizeTemplate(variant.characterTemplate, order).replace(/\s+/g, ' ').trim()} Outfit: ${storyPlan.protagonist_outfit}.`,
+        pages: buildLongFormTemplatePages(
+          order,
+          variant,
+          childName,
+          theme?.description ?? 'a grand adventure',
+          targetPageCount,
+        ),
+      },
+      variant,
+    };
+  }
   const pages: StoryPage[] = Array.from({ length: targetPageCount }, (_, i) => {
     const source = sample.pages[i % sourceCount];
     const passIndex = Math.floor(i / sourceCount); // 0 for the first cycle, 1 for the next, etc.
@@ -254,6 +722,65 @@ export async function generateStoryWithMeta(
 ): Promise<StoryWithMeta> {
   const apiKey = process.env.OPENAI_API_KEY;
   const nowIso = (deps.now ?? (() => new Date()))().toISOString();
+  const _fetch = deps.fetch ?? globalThis.fetch;
+
+  if (isOllamaPageProseEnabled()) {
+    try {
+      const { variant } = buildTemplateFallbackWithVariant(order);
+      const story = await buildStoryFromOllamaPageProse(order, variant, _fetch);
+      return {
+        story,
+        meta: {
+          source: 'ollama_page_prose',
+          model: `ollama:${getOllamaPageProseModel()}`,
+          generatedAt: nowIso,
+          fallbackError: null,
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[story-generator] Falling back to templates after Ollama page-prose failure for order ${order.id}: ${message}`);
+      const { story, variant } = buildTemplateFallbackWithVariant(order);
+      return {
+        story,
+        meta: {
+          source: 'template_after_openai_failure',
+          model: `template:${variant.titleSuffix}`,
+          generatedAt: nowIso,
+          fallbackError: message.slice(0, 200),
+        },
+      };
+    }
+  }
+
+  if (apiKey && isOpenAiPageProseEnabled()) {
+    try {
+      const { variant } = buildTemplateFallbackWithVariant(order);
+      const story = await buildStoryFromPageProse(order, variant, _fetch, apiKey.trim());
+      return {
+        story,
+        meta: {
+          source: 'openai_page_prose',
+          model: 'gpt-4o-mini',
+          generatedAt: nowIso,
+          fallbackError: null,
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[story-generator] Falling back to templates after page-prose failure for order ${order.id}: ${message}`);
+      const { story, variant } = buildTemplateFallbackWithVariant(order);
+      return {
+        story,
+        meta: {
+          source: 'template_after_openai_failure',
+          model: `template:${variant.titleSuffix}`,
+          generatedAt: nowIso,
+          fallbackError: message.slice(0, 200),
+        },
+      };
+    }
+  }
 
   if (!apiKey || !isOpenAiStoryEnabled()) {
     const { story, variant } = buildTemplateFallbackWithVariant(order);
@@ -267,8 +794,6 @@ export async function generateStoryWithMeta(
       },
     };
   }
-
-  const _fetch = deps.fetch ?? globalThis.fetch;
 
   try {
     const response = await _fetch('https://api.openai.com/v1/chat/completions', {

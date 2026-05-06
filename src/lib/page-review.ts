@@ -168,9 +168,10 @@ export async function regeneratePage(
   });
 
   const generate = deps.generatePageImage ?? generatePageImage;
-  // Pass the customer photo URL so the regenerate request also goes through
-  // the photo-conditioned FAL provider (with text-only fallback) when a
-  // photo is available — same identity continuity as initial generation.
+  // Pass the customer photo URL so the regenerate request stays on the
+  // photo-conditioned provider chain (Seedream primary, Nano Banana edit
+  // secondary) when a photo is available — same identity continuity as
+  // initial generation, with no text-only fallback.
   const referenceImageUrl = getOrderPhotoUrl(order);
   const result = await generate(
     { prompt, referenceImageUrl },
@@ -536,6 +537,13 @@ export function evaluateApproveGate(args: {
   return null;
 }
 
+export interface ReviewAccessInput {
+  /** Token from /review/<orderId>?token=... links. Required for print orders
+   *  once a proofApprovalToken exists, so a bare order id is not enough to
+   *  open the public-facing proof review route. */
+  reviewToken?: string | null;
+}
+
 export interface ReviewSnapshot {
   orderId: string;
   childName: string;
@@ -551,10 +559,23 @@ export interface ReviewSnapshot {
   proofReviewedAt: string | null;
 }
 
-export async function getReviewSnapshot(orderId: string): Promise<ReviewSnapshot | null> {
+export function hasReviewAccess(order: OrderRecord, input: ReviewAccessInput = {}): boolean {
+  const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
+  if (!isPrint) return true;
+  // Legacy/in-progress print orders may not have a proof token yet; preserve
+  // operator visibility until proof_ready creates one.
+  if (!order.proofApprovalToken) return true;
+  return input.reviewToken === order.proofApprovalToken;
+}
+
+export async function getReviewSnapshot(
+  orderId: string,
+  input: ReviewAccessInput = {},
+): Promise<ReviewSnapshot | null> {
   const order = await getOrder(orderId);
   if (!order) return null;
   if (!order.pageArtifacts || order.pageArtifacts.length === 0) return null;
+  if (!hasReviewAccess(order, input)) return null;
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
   return {
     orderId: order.id,

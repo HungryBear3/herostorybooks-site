@@ -92,8 +92,8 @@ test('review client still gates Approve on allAccepted + proofAck + storyArtifac
 test('review client preserves the existing Open Full Proof PDF CTA in the approval block', () => {
   const src = readFileSync(REVIEW_CLIENT, 'utf8');
   assert.match(src, /data-testid="full-proof-cta"/);
-  // The old CTA is the explicit "Review Full Proof PDF" button in step 1 — kept.
-  assert.match(src, /Review Full Proof PDF/);
+  // The approval block keeps an explicit full-proof PDF button in step 1.
+  assert.match(src, /Open the full proof PDF/);
 });
 
 test('inline preview is a client component (uses hooks)', () => {

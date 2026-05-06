@@ -1,6 +1,5 @@
 /**
- * Slice 2: review/proof customer copy must NOT hard-code "6 illustrated
- * story pages". The number must come from pageArtifacts.length so
+ * Slice 2: review/proof customer copy must use pageArtifacts.length so
  * long-form classic (24) and premium (32) orders display truthfully.
  */
 
@@ -10,24 +9,25 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const repoRoot = join(import.meta.dirname, '..');
+const STALE_ILLUSTRATED_PAGE_COUNT_COPY = new RegExp(String.raw`\b${6} illustrated story pages\b`);
 
 function read(rel: string): string {
   return readFileSync(join(repoRoot, rel), 'utf8');
 }
 
-test('review-client.tsx: no hard-coded "6 illustrated story pages" copy', () => {
+test('review-client.tsx: no stale fixed illustrated-page-count copy', () => {
   const src = read('src/app/review/[orderId]/review-client.tsx');
-  assert.doesNotMatch(src, /\b6 illustrated story pages\b/);
+  assert.doesNotMatch(src, STALE_ILLUSTRATED_PAGE_COUNT_COPY);
 });
 
-test('inline-proof-preview.tsx: no hard-coded "6 illustrated story pages" copy', () => {
+test('inline-proof-preview.tsx: no stale fixed illustrated-page-count copy', () => {
   const src = read('src/app/review/[orderId]/inline-proof-preview.tsx');
-  assert.doesNotMatch(src, /\b6 illustrated story pages\b/);
+  assert.doesNotMatch(src, STALE_ILLUSTRATED_PAGE_COUNT_COPY);
 });
 
 test('review-client.tsx: still describes the print proof as "the complete printed book"', () => {
-  // Slice 2 keeps the approve-gate language honest about scope, just no
-  // longer pinned to the 6-page count.
+  // Slice 2 keeps the approve-gate language honest about scope while deriving
+  // the illustrated-page count from the order snapshot.
   const src = read('src/app/review/[orderId]/review-client.tsx');
   assert.match(src, /complete printed book/);
 });
@@ -37,7 +37,7 @@ test('review-client.tsx: passes pageArtifacts.length into the InlineProofPreview
   assert.match(src, /illustratedPageCount=\{snapshot\.pageArtifacts\.length\}/);
 });
 
-test('review-client.tsx: print copy interpolates pageArtifacts.length, not a literal 6', () => {
+test('review-client.tsx: print copy interpolates pageArtifacts.length', () => {
   const src = read('src/app/review/[orderId]/review-client.tsx');
   // The dynamic count must appear inside the print-only branch copy.
   assert.match(src, /\$\{snapshot\.pageArtifacts\.length\} illustrated story pages above/);

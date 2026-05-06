@@ -1,5 +1,13 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import type { OrderRecord } from './orders.ts';
-import type { StoryContent } from './fulfillment-types.ts';
+import type {
+  PageTextLayout,
+  StoryContent,
+  TextColorMode,
+  TextPanelStyle,
+} from './fulfillment-types.ts';
 
 // Import the standalone PDFKit build directly. The default 'pdfkit' entry
 // (js/pdfkit.js) reads its AFM font metrics from node_modules/pdfkit/js/data
@@ -28,6 +36,230 @@ const FOREST = '#1F3A5F';
 const GOLD = '#D4AF37';
 const CREAM = '#FFF8F0';
 const SLATE = '#475569';
+const TEXT_SCRIM = '#0F172A';
+const TEXT_ON_SCRIM = '#FFF9F1';
+
+const EMBEDDED_BOOK_FONT = readFileSync(path.join(process.cwd(), 'src/lib/fonts/Geist-Regular.ttf'));
+const NO_LIGATURE_FEATURES = { liga: false, clig: false, dlig: false, hlig: false };
+
+function withNoLigatureText<T extends InstanceType<typeof PDFDocument>>(doc: T): T {
+  const originalText = doc.text.bind(doc);
+  doc.text = ((text: string, x?: number | string | Record<string, unknown>, y?: number | string | Record<string, unknown>, options?: Record<string, unknown>) => {
+    if (typeof x === 'object' && x !== null) {
+      return originalText(text, { ...(x as Record<string, unknown>), features: NO_LIGATURE_FEATURES } as never);
+    }
+    if (typeof y === 'object' && y !== null) {
+      return originalText(text, x as never, { ...(y as Record<string, unknown>), features: NO_LIGATURE_FEATURES } as never);
+    }
+    return originalText(text, x as never, y as never, { ...(options ?? {}), features: NO_LIGATURE_FEATURES } as never);
+  }) as typeof doc.text;
+  return doc;
+}
+
+function assertPdfEmbedsFonts(buffer: Buffer, label: string): void {
+  const raw = buffer.toString('latin1');
+  if (/\/BaseFont\/(Helvetica(?:-Bold)?|Times-Roman|Courier(?:-Bold)?)/.test(raw)) {
+    throw new Error(`${label} uses an unembedded base PDF font; commercial print PDFs must embed fonts.`);
+  }
+  if (!/\/FontFile[123]\b/.test(raw)) {
+    throw new Error(`${label} is missing embedded font data.`);
+  }
+}
+
+export interface PictureBookStoryLayout {
+  imageX: number;
+  imageY: number;
+  imageWidth: number;
+  imageHeight: number;
+  textPanelX: number;
+  textPanelY: number;
+  textPanelWidth: number;
+  textPanelHeight: number;
+  textInset: number;
+  textPanelFillOpacity: number;
+  sceneTitleY: number;
+  pageNumberY: number;
+  /** How the panel rectangle behind the text is rendered. Drives the
+   *  scrim color/opacity. Defaults to translucent_dark (legacy behavior)
+   *  when no PageTextLayout is supplied. */
+  textPanelStyle: TextPanelStyle;
+  /** Resolved color mode for the rendered text. 'auto' is collapsed to
+   *  light/dark inside this helper based on panelStyle so the renderer
+   *  can pick a fill color directly. */
+  textColorMode: Exclude<TextColorMode, 'auto'>;
+}
+
+export interface FittedPictureBookText {
+  sceneTitleFontSize: number;
+  sceneTitleHeight: number;
+  storyFontSize: number;
+  storyLineGap: number;
+  storyY: number;
+  storyHeight: number;
+  sceneTitleY: number;
+}
+
+/** Resolve a PageTextLayout's auto fields against the panel style so the
+ *  renderer never has to guess. Pure — exposed for tests. */
+export function resolvePageTextLayout(layout?: PageTextLayout): {
+  panelStyle: TextPanelStyle;
+  colorMode: Exclude<TextColorMode, 'auto'>;
+  zone: PageTextLayout['zone'];
+} {
+  const panelStyle: TextPanelStyle = layout?.panelStyle ?? 'translucent_dark';
+  const requestedMode = layout?.colorMode ?? 'auto';
+  const colorMode: Exclude<TextColorMode, 'auto'> =
+    requestedMode === 'auto'
+      ? panelStyle === 'translucent_cream' || panelStyle === 'none'
+        ? 'dark'
+        : 'light'
+      : requestedMode;
+  return { panelStyle, colorMode, zone: layout?.zone ?? 'natural' };
+}
+
+export function getPictureBookStoryLayout(
+  kind: 'proof' | 'print',
+  _textLayout?: PageTextLayout,
+): PictureBookStoryLayout {
+  // Release 1 print/proof rule: never place story copy on top of the art.
+  // Keep the PageTextLayout metadata API intact, but render every story page
+  // as a picture-book composition: cropped illustration above, clean cream
+  // paper band below. The deferred safe-zone system can re-enable in-art copy
+  // later once image generation guarantees quiet zones.
+  if (kind === 'print') {
+    const trimWidth = 8.5 * 72;
+    const trimHeight = 8.5 * 72;
+    const bandY = 456;
+    const bandHeight = 128;
+    return {
+      imageX: 18,
+      imageY: 18,
+      imageWidth: trimWidth - 36,
+      imageHeight: bandY - 24,
+      textInset: 18,
+      textPanelFillOpacity: 1,
+      pageNumberY: trimHeight - 26,
+      textPanelStyle: 'translucent_cream',
+      textColorMode: 'dark',
+      textPanelX: 28,
+      textPanelY: bandY,
+      textPanelWidth: trimWidth - 56,
+      textPanelHeight: bandHeight,
+      sceneTitleY: bandY + 16,
+    };
+  }
+
+  const bandY = 642;
+  const bandHeight = 158;
+  return {
+    imageX: 24,
+    imageY: 24,
+    imageWidth: PAGE_WIDTH - 48,
+    imageHeight: bandY - 34,
+    textInset: 22,
+    textPanelFillOpacity: 1,
+    pageNumberY: PAGE_HEIGHT - 28,
+    textPanelStyle: 'translucent_cream',
+    textColorMode: 'dark',
+    textPanelX: 36,
+    textPanelY: bandY,
+    textPanelWidth: PAGE_WIDTH - 72,
+    textPanelHeight: bandHeight,
+    sceneTitleY: bandY + 18,
+  };
+}
+
+interface PanelRectInput {
+  zone: PageTextLayout['zone'];
+  surfaceWidth: number;
+  surfaceHeight: number;
+  bandHeight: number;
+  bandX: number;
+  bandWidth: number;
+  bandTopY: number;
+  bandBottomY: number;
+  cornerWidth: number;
+  cornerHeight: number;
+  cornerInset: number;
+}
+
+function computePanelRect(input: PanelRectInput): { x: number; y: number; width: number; height: number } {
+  switch (input.zone) {
+    case 'top_band':
+      return { x: input.bandX, y: input.bandTopY, width: input.bandWidth, height: input.bandHeight };
+    case 'top_left':
+      return {
+        x: input.cornerInset,
+        y: input.cornerInset + 12,
+        width: input.cornerWidth,
+        height: input.cornerHeight,
+      };
+    case 'top_right':
+      return {
+        x: input.surfaceWidth - input.cornerInset - input.cornerWidth,
+        y: input.cornerInset + 12,
+        width: input.cornerWidth,
+        height: input.cornerHeight,
+      };
+    case 'bottom_left':
+      return {
+        x: input.cornerInset,
+        y: input.surfaceHeight - input.cornerInset - input.cornerHeight - 12,
+        width: input.cornerWidth,
+        height: input.cornerHeight,
+      };
+    case 'bottom_right':
+      return {
+        x: input.surfaceWidth - input.cornerInset - input.cornerWidth,
+        y: input.surfaceHeight - input.cornerInset - input.cornerHeight - 12,
+        width: input.cornerWidth,
+        height: input.cornerHeight,
+      };
+    case 'natural':
+    case 'bottom_band':
+    default:
+      return { x: input.bandX, y: input.bandBottomY, width: input.bandWidth, height: input.bandHeight };
+  }
+}
+
+function estimateWrappedLineCount(text: string, fontSize: number, width: number, weight: number): number {
+  const approxCharsPerLine = Math.max(10, Math.floor(width / (fontSize * weight)));
+  return Math.max(1, Math.ceil(text.length / approxCharsPerLine));
+}
+
+export function fitPictureBookText(
+  layout: PictureBookStoryLayout,
+  sceneTitle: string,
+  storyText: string,
+): FittedPictureBookText {
+  const textWidth = layout.textPanelWidth - layout.textInset * 2;
+  let sceneTitleFontSize = 15;
+  let storyFontSize = 15;
+  let storyLineGap = 5;
+
+  while (sceneTitleFontSize > 11) {
+    const titleLines = estimateWrappedLineCount(sceneTitle.toUpperCase(), sceneTitleFontSize, textWidth, 0.62);
+    const titleHeight = titleLines * (sceneTitleFontSize + 2);
+    const storyY = layout.sceneTitleY + titleHeight + 8;
+    const storyHeight = layout.textPanelY + layout.textPanelHeight - storyY - 8;
+    const storyLines = estimateWrappedLineCount(storyText, storyFontSize, textWidth, 0.56);
+    const neededStoryHeight = storyLines * (storyFontSize + storyLineGap);
+
+    if (neededStoryHeight <= storyHeight && titleHeight <= layout.textPanelHeight * 0.45) {
+      return { sceneTitleFontSize, sceneTitleHeight: titleHeight, storyFontSize, storyLineGap, storyY, storyHeight, sceneTitleY: layout.sceneTitleY };
+    }
+
+    if (storyFontSize > 12) storyFontSize -= 1;
+    else if (storyLineGap > 3) storyLineGap -= 1;
+    else sceneTitleFontSize -= 1;
+  }
+
+  const titleLines = estimateWrappedLineCount(sceneTitle.toUpperCase(), sceneTitleFontSize, textWidth, 0.62);
+  const titleHeight = titleLines * (sceneTitleFontSize + 2);
+  const storyY = layout.sceneTitleY + titleHeight + 8;
+  const storyHeight = Math.max(24, layout.textPanelY + layout.textPanelHeight - storyY - 8);
+  return { sceneTitleFontSize, sceneTitleHeight: titleHeight, storyFontSize, storyLineGap, storyY, storyHeight, sceneTitleY: layout.sceneTitleY };
+}
 
 type BookFormat = OrderRecord['bookFormat'];
 
@@ -44,16 +276,33 @@ function getMinimumTotalPages(bookFormat: BookFormat): number {
 }
 
 /** Intentional, designed front-and-back matter pages added to every print
- *  interior: title, dedication, end-note, about. Distinct from the
- *  modular keepsake/filler safety net. Slice 2 of the print redesign. */
+ *  interior/proof. These pages make the book feel finished without padding
+ *  the story itself. */
 const FRONT_MATTER_COUNT = 2;
-const BACK_MATTER_COUNT = 2;
+const BACK_MATTER_COUNT = 4;
 const INTENTIONAL_MATTER_PAGES = FRONT_MATTER_COUNT + BACK_MATTER_COUNT;
 
 interface MatterPage {
-  kind: 'title' | 'dedication' | 'end_note' | 'about';
+  kind: 'title' | 'dedication' | 'belongs' | 'memory' | 'about' | 'colophon';
   title: string;
   body: string;
+  prompt?: string;
+}
+
+interface KeepsakePage {
+  kind?: 'end_note' | 'copyright' | 'blank';
+  title: string;
+  body: string;
+  prompt?: string;
+}
+
+function childFirstName(order: OrderRecord): string {
+  return order.childName.trim().split(/\s+/)[0] || order.childName.trim();
+}
+
+function buildRichDedication(_story: StoryContent, order: OrderRecord): string {
+  const firstName = childFirstName(order);
+  return `For ${firstName} — may every brave step lead to a wonderful story.`;
 }
 
 function buildFrontMatterPages(story: StoryContent, order: OrderRecord): MatterPage[] {
@@ -61,99 +310,78 @@ function buildFrontMatterPages(story: StoryContent, order: OrderRecord): MatterP
     {
       kind: 'title',
       title: story.title,
-      body: `${order.childName}'s personalized Hero Story Book`,
+      body: 'A HeroStoryBooks Original',
     },
     {
       kind: 'dedication',
-      title: 'Dedication',
-      body: story.dedication?.trim() || `For ${order.childName} — may every brave step lead to a wonderful story.`,
+      title: '',
+      body: buildRichDedication(story, order),
     },
   ];
 }
 
 function buildBackMatterPages(story: StoryContent, order: OrderRecord): MatterPage[] {
-  void story; // future-proof for matter that references story content
+  const firstName = childFirstName(order);
   return [
     {
-      kind: 'end_note',
-      title: 'The End',
-      body: `Thank you for reading ${order.childName}'s adventure.\n\nKeep being the hero of your own story.`,
+      kind: 'belongs',
+      title: 'This Book Belongs To',
+      body: `${firstName}\n\nFirst read on ____________________\nAt ____________________`,
+    },
+    {
+      kind: 'memory',
+      title: 'A Memory To Keep',
+      body: 'Write a memory from the first time you read this story together.',
     },
     {
       kind: 'about',
-      title: 'About Hero Story Books',
+      title: 'About This Book',
       body:
-        'Every Hero Story Book is personalized for one child, illustrated page by page, ' +
-        'and printed as a keepsake. Made with care for families everywhere.\n\n' +
+        `This book was made just for ${firstName}. Every word and illustration was created uniquely for this story by Hero Story Books.\n\n` +
         'herostorybooks.com',
+    },
+    {
+      kind: 'colophon',
+      title: 'A Quiet Note',
+      body: `Every story has a little magic tucked inside it. ${story.title} was made to be read, remembered, and returned to whenever ${firstName} needs a brave step forward.`,
     },
   ];
 }
 
 function buildKeepsakePages(story: StoryContent, order: OrderRecord, fillerCount: number): KeepsakePage[] {
-  const lesson = order.lesson || 'courage';
-  const theme = order.theme || 'adventure';
-  const prompts: KeepsakePage[] = [
+  if (fillerCount <= 0) return [];
+  const pages: KeepsakePage[] = [
     {
-      title: 'This Book Belongs To',
-      body: `${order.childName}'s personalized Hero Story Book\n\nA keepsake adventure created just for your family.`,
-      prompt: 'Write the date you received this book and where you first read it together.',
+      kind: 'end_note',
+      title: 'The End',
+      body: `Thank you for reading ${story.title} together.`,
     },
     {
-      title: 'Hero Spotlight',
-      body: `${order.childName} is the hero of this story. Brave choices, a kind heart, and a spirit of ${lesson} carry the adventure forward.`,
-      prompt: `What makes ${order.childName} special in real life?`,
-    },
-    {
-      title: 'Favorite Memory',
-      body: 'Books become keepsakes when families add their own memories to the story.',
-      prompt: 'Write your favorite part of this adventure here.',
-    },
-    {
-      title: 'Story Lesson',
-      body: `This story was shaped around ${lesson}. Small brave moments often become the biggest memories.`,
-      prompt: `How did ${order.childName} show ${lesson} today?`,
-    },
-    {
-      title: 'Adventure Notes',
-      body: `Theme: ${theme}\nFormat: ${order.bookFormat === 'premium' ? 'Hardcover keepsake edition' : order.bookFormat === 'classic' ? 'Softcover keepsake edition' : 'Digital edition'}`,
-      prompt: 'Add a note from a parent, grandparent, aunt, uncle, or family friend.',
-    },
-    {
-      title: 'Picture This Scene',
-      body: 'Imagine one more page from the adventure and describe what happens next.',
-      prompt: 'What would the next illustration show?',
-    },
-    {
-      title: 'Read Together',
-      body: 'The best personalized books become part of bedtime, gift moments, and family traditions.',
-      prompt: 'Who should read this story aloud next?',
-    },
-    {
-      title: 'A Note For Later',
-      body: `One day ${order.childName} will look back at this story and remember being the hero.`,
-      prompt: 'Leave a message for them to read in the future.',
+      kind: 'copyright',
+      title: story.title,
+      body:
+        `© 2026 Hero Story Books. All rights reserved.\n\n` +
+        `This book was created uniquely for ${order.childName}.\n` +
+        'Personal use only. No part of this book may be reproduced for resale.\n\n' +
+        'Illustrations generated with AI assistance and reviewed before printing.\n\n' +
+        `First printing, May 2026. Printed in the United States.\n\n` +
+        `Hero Story Books Edition: ${order.id}\n` +
+        'herostorybooks.com',
     },
   ];
-
-  return Array.from({ length: fillerCount }, (_, index) => {
-    const template = prompts[index % prompts.length];
-    return {
-      title: template.title,
-      body: template.body,
-      prompt: template.prompt,
-    };
-  });
+  while (pages.length < fillerCount) {
+    pages.push({ kind: 'blank', title: '', body: '' });
+  }
+  return pages.slice(0, fillerCount);
 }
 
 // ── Image fetching ─────────────────────────────────────────────────────────────
 
-async function fetchImageBuffer(url: string): Promise<Buffer | null> {
+async function fetchImageBuffer(url: string): Promise<ArrayBuffer | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return null;
-    const ab = await res.arrayBuffer();
-    return Buffer.from(ab);
+    return await res.arrayBuffer();
   } catch {
     return null;
   }
@@ -165,99 +393,192 @@ function drawCover(
   doc: InstanceType<typeof PDFDocument>,
   story: StoryContent,
   order: OrderRecord,
-  coverImageBuffer: Buffer | null,
+  coverImageBuffer: ArrayBuffer | null,
 ) {
+  if (coverImageBuffer) {
+    doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill(FOREST);
+    try {
+      doc.image(coverImageBuffer, 0, 0, {
+        width: PAGE_WIDTH,
+        height: PAGE_HEIGHT,
+        cover: [PAGE_WIDTH, PAGE_HEIGHT],
+        align: 'center',
+        valign: 'center',
+      });
+    } catch { /* skip broken image */ }
+
+    // Soft title plaque: big enough to read like a picture-book cover, but
+    // translucent so the illustration still carries the emotional first look.
+    const panelX = 42;
+    const panelY = 58;
+    const panelW = PAGE_WIDTH - 84;
+    const panelH = 214;
+    doc.save();
+    doc.roundedRect(panelX, panelY, panelW, panelH, 20).fillOpacity(0.74).fill(FOREST);
+    doc.restore();
+
+    doc.fillOpacity(1).fillColor('#FFFFFF').font(EMBEDDED_BOOK_FONT).fontSize(40).lineGap(2)
+      .text(story.title, panelX + 24, panelY + 26, { width: panelW - 48, align: 'center' });
+    doc.fillColor(GOLD).font(EMBEDDED_BOOK_FONT).fontSize(15)
+      .text(`Made for ${order.childName}`, panelX + 24, panelY + 166, { width: panelW - 48, align: 'center' });
+
+    doc.fillColor('#FFFFFF').font(EMBEDDED_BOOK_FONT).fontSize(10)
+      .text('A HeroStoryBooks Original', MARGIN, PAGE_HEIGHT - 30, { width: CONTENT_WIDTH, align: 'center' });
+    return;
+  }
+
   doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill(FOREST);
 
   // gold accent bar
   doc.rect(0, PAGE_HEIGHT - 80, PAGE_WIDTH, 80).fill(GOLD);
 
-  const centerX = PAGE_WIDTH / 2;
-
-  if (coverImageBuffer) {
-    try {
-      doc.image(coverImageBuffer, MARGIN, 80, { width: CONTENT_WIDTH, height: 320, align: 'center' });
-    } catch { /* skip broken image */ }
-  }
-
-  const titleY = coverImageBuffer ? 440 : 200;
   doc
     .fillColor('#FFFFFF')
-    .font('Helvetica-Bold')
+    .font(EMBEDDED_BOOK_FONT)
     .fontSize(28)
-    .text(story.title, MARGIN, titleY, { width: CONTENT_WIDTH, align: 'center' });
-
-  if (story.dedication) {
-    doc
-      .fillColor(GOLD)
-      .font('Helvetica-Oblique')
-      .fontSize(13)
-      .text(story.dedication, MARGIN, doc.y + 16, { width: CONTENT_WIDTH, align: 'center' });
-  }
+    .text(story.title, MARGIN, 200, { width: CONTENT_WIDTH, align: 'center' });
 
   doc
-    .fillColor(FOREST)
-    .font('Helvetica-Bold')
+    .fillColor(GOLD)
+    .font(EMBEDDED_BOOK_FONT)
     .fontSize(12)
     .text('A HeroStoryBooks Original', MARGIN, PAGE_HEIGHT - 52, { width: CONTENT_WIDTH, align: 'center' });
 }
 
 // ── Story page ─────────────────────────────────────────────────────────────────
 
+/** Picks the scrim color/opacity for a panel style. None = no scrim
+ *  (text rides directly on the illustration; only safe when the image
+ *  was generated with a quiet zone there). */
+function panelScrim(style: TextPanelStyle): { color: string; opacity: number } | null {
+  switch (style) {
+    case 'none':
+      return null;
+    case 'translucent_cream':
+      // Release 1 print/proof story pages use this as an opaque paper band,
+      // not as a translucent overlay on top of the illustration.
+      return { color: CREAM, opacity: 1 };
+    case 'soft_scrim':
+      return { color: TEXT_SCRIM, opacity: 0.42 };
+    case 'translucent_dark':
+    default:
+      return { color: TEXT_SCRIM, opacity: 0.72 };
+  }
+}
+
+/** Corner radius for the text panel. Cream/scrim panels use a softer
+ *  radius so they read as book typography rather than UI chrome. */
+function panelCornerRadius(style: TextPanelStyle): number {
+  return style === 'translucent_cream' || style === 'soft_scrim' ? 10 : 18;
+}
+
+function textFillColor(mode: Exclude<TextColorMode, 'auto'>): string {
+  return mode === 'dark' ? FOREST : TEXT_ON_SCRIM;
+}
+
+/** Draw caption text with an optional subtle drop shadow when there is
+ *  no panel scrim behind it. The shadow keeps text-directly-on-art legible
+ *  without forcing a UI-style box. Two-pass: shadow first at low opacity,
+ *  then the main text. */
+function drawCaptionText(
+  doc: InstanceType<typeof PDFDocument>,
+  text: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  fontSize: number,
+  lineGap: number,
+  fillColor: string,
+  hasPanel: boolean,
+): void {
+  if (!hasPanel) {
+    doc.save();
+    doc
+      .fillColor('#000000')
+      .fillOpacity(0.45)
+      .font(EMBEDDED_BOOK_FONT)
+      .fontSize(fontSize)
+      .lineGap(lineGap)
+      .text(text, x + 1, y + 1, { width, height, align: 'left', ellipsis: true });
+    doc.restore();
+  }
+  doc
+    .fillOpacity(1)
+    .fillColor(fillColor)
+    .font(EMBEDDED_BOOK_FONT)
+    .fontSize(fontSize)
+    .lineGap(lineGap)
+    .text(text, x, y, { width, height, align: 'left', ellipsis: true });
+}
+
 function drawStoryPage(
   doc: InstanceType<typeof PDFDocument>,
   pageNum: number,
   sceneTitle: string,
   storyText: string,
-  imageBuffer: Buffer | null,
+  imageBuffer: ArrayBuffer | null,
+  textLayout?: PageTextLayout,
 ) {
+  const layout = getPictureBookStoryLayout('proof', textLayout);
+  const fitted = fitPictureBookText(layout, sceneTitle, storyText);
   doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill(CREAM);
-
-  // Header bar
-  doc.rect(0, 0, PAGE_WIDTH, 44).fill(FOREST);
-  doc
-    .fillColor('#FFFFFF')
-    .font('Helvetica-Bold')
-    .fontSize(12)
-    .text(sceneTitle.toUpperCase(), MARGIN, 14, { width: CONTENT_WIDTH, align: 'center' });
-
-  // Image zone
-  const imgY = 56;
-  const imgH = imageBuffer ? 300 : 0;
 
   if (imageBuffer) {
     try {
-      doc.image(imageBuffer, MARGIN, imgY, {
-        width: CONTENT_WIDTH,
-        height: imgH,
+      doc.image(imageBuffer, layout.imageX, layout.imageY, {
+        width: layout.imageWidth,
+        height: layout.imageHeight,
+        cover: [layout.imageWidth, layout.imageHeight],
         align: 'center',
         valign: 'center',
       });
-    } catch { /* skip broken image */ }
+    } catch {
+      doc.rect(layout.imageX, layout.imageY, layout.imageWidth, layout.imageHeight).fill('#E5E7EB');
+    }
   } else {
-    // decorative placeholder
-    doc.rect(MARGIN, imgY, CONTENT_WIDTH, 120).fill('#E5E7EB');
+    doc.rect(layout.imageX, layout.imageY, layout.imageWidth, layout.imageHeight).fill('#E5E7EB');
     doc
       .fillColor('#9CA3AF')
-      .font('Helvetica')
+      .font(EMBEDDED_BOOK_FONT)
       .fontSize(11)
-      .text('✨', MARGIN, imgY + 50, { width: CONTENT_WIDTH, align: 'center' });
+      .text('Illustration preview unavailable', layout.imageX, layout.imageY + 280, {
+        width: layout.imageWidth,
+        align: 'center',
+      });
   }
 
-  const textY = imageBuffer ? imgY + imgH + 20 : imgY + 20;
-  doc
-    .fillColor('#1f2937')
-    .font('Helvetica')
-    .fontSize(14)
-    .lineGap(4)
-    .text(storyText, MARGIN, textY, { width: CONTENT_WIDTH, align: 'justify' });
+  const scrim = panelScrim(layout.textPanelStyle);
+  if (scrim) {
+    doc.save();
+    doc.roundedRect(
+      layout.textPanelX,
+      layout.textPanelY,
+      layout.textPanelWidth,
+      layout.textPanelHeight,
+      panelCornerRadius(layout.textPanelStyle),
+    ).fillOpacity(scrim.opacity).fill(scrim.color);
+    doc.restore();
+  }
 
-  // Page number
+  drawCaptionText(
+    doc,
+    storyText,
+    layout.textPanelX + layout.textInset,
+    layout.textPanelY + 10,
+    layout.textPanelWidth - layout.textInset * 2,
+    layout.textPanelHeight - 20,
+    fitted.storyFontSize,
+    fitted.storyLineGap,
+    textFillColor(layout.textColorMode),
+    Boolean(scrim),
+  );
+
   doc
     .fillColor(GOLD)
-    .font('Helvetica-Bold')
+    .font(EMBEDDED_BOOK_FONT)
     .fontSize(11)
-    .text(String(pageNum), MARGIN, PAGE_HEIGHT - 36, { width: CONTENT_WIDTH, align: 'center' });
+    .text(String(pageNum), MARGIN, layout.pageNumberY, { width: CONTENT_WIDTH, align: 'center' });
 }
 
 function drawKeepsakePage(
@@ -266,25 +587,25 @@ function drawKeepsakePage(
   page: KeepsakePage,
 ) {
   doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill(CREAM);
-  doc.rect(0, 0, PAGE_WIDTH, 32).fill(GOLD);
+  doc.rect(0, 0, PAGE_WIDTH, 32).fill(page.kind === 'copyright' ? FOREST : GOLD);
 
   doc
     .fillColor(FOREST)
-    .font('Helvetica-Bold')
-    .fontSize(24)
-    .text(page.title, MARGIN, 72, { width: CONTENT_WIDTH, align: 'center' });
+    .font(EMBEDDED_BOOK_FONT)
+    .fontSize(page.kind === 'copyright' ? 18 : 24)
+    .text(page.title, MARGIN, page.kind === 'copyright' ? 84 : 72, { width: CONTENT_WIDTH, align: 'center' });
 
   doc
     .fillColor(SLATE)
-    .font('Helvetica')
-    .fontSize(15)
-    .lineGap(6)
-    .text(page.body, MARGIN, 138, { width: CONTENT_WIDTH, align: 'center' });
+    .font(EMBEDDED_BOOK_FONT)
+    .fontSize(page.kind === 'copyright' ? 11 : 15)
+    .lineGap(page.kind === 'copyright' ? 4 : 6)
+    .text(page.body, MARGIN, page.kind === 'copyright' ? 150 : 138, { width: CONTENT_WIDTH, align: 'center' });
 
   if (page.prompt) {
     doc
       .fillColor(FOREST)
-      .font('Helvetica-Bold')
+      .font(EMBEDDED_BOOK_FONT)
       .fontSize(13)
       .text(page.prompt, MARGIN, 280, { width: CONTENT_WIDTH, align: 'center' });
 
@@ -298,68 +619,161 @@ function drawKeepsakePage(
 
   doc
     .fillColor(GOLD)
-    .font('Helvetica-Bold')
+    .font(EMBEDDED_BOOK_FONT)
     .fontSize(11)
     .text(String(pageNum), MARGIN, PAGE_HEIGHT - 36, { width: CONTENT_WIDTH, align: 'center' });
 }
 
 // ── Back page ──────────────────────────────────────────────────────────────────
 
-function drawBackPage(doc: InstanceType<typeof PDFDocument>, order: OrderRecord) {
+function drawBackPage(
+  doc: InstanceType<typeof PDFDocument>,
+  story: StoryContent,
+  order: OrderRecord,
+  backCoverImage: ArrayBuffer | null = null,
+  tagline: string | null = null,
+) {
+  if (backCoverImage) {
+    // Full-bleed back-cover illustration with a translucent cream synopsis
+    // panel typeset on top.
+    try {
+      doc.image(backCoverImage, 0, 0, {
+        width: PAGE_WIDTH,
+        height: PAGE_HEIGHT,
+        cover: [PAGE_WIDTH, PAGE_HEIGHT],
+        align: 'center',
+        valign: 'center',
+      });
+    } catch {
+      doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill(FOREST);
+    }
+
+    if (tagline) {
+      const panelX = 48;
+      const panelY = 176;
+      const panelW = PAGE_WIDTH - 96;
+      const panelH = 184;
+      doc.save();
+      doc.roundedRect(panelX, panelY, panelW, panelH, panelCornerRadius('translucent_cream'))
+        .fillOpacity(0.86).fill(CREAM);
+      doc.restore();
+      doc.fillOpacity(1).fillColor(FOREST).font(EMBEDDED_BOOK_FONT).fontSize(17).lineGap(6)
+        .text(tagline, panelX + 24, panelY + 30, { width: panelW - 48, align: 'center' });
+    }
+
+    doc.save();
+    doc.roundedRect(92, PAGE_HEIGHT - 118, PAGE_WIDTH - 184, 44, 10).fillOpacity(0.78).fill(CREAM);
+    doc.restore();
+    doc.fillOpacity(1).fillColor(FOREST).font(EMBEDDED_BOOK_FONT).fontSize(12)
+      .text(`Made for ${order.childName}`, 108, PAGE_HEIGHT - 104, { width: PAGE_WIDTH - 216, align: 'center' });
+
+    doc.fillOpacity(1).fillColor('#FFFFFF').font(EMBEDDED_BOOK_FONT).fontSize(8.5)
+      .text('A HeroStoryBooks Original  ·  herostorybooks.com', MARGIN, PAGE_HEIGHT - 24, {
+        width: CONTENT_WIDTH, align: 'center',
+      });
+    return;
+  }
+
   doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill(FOREST);
   doc.rect(0, PAGE_HEIGHT - 80, PAGE_WIDTH, 80).fill(GOLD);
 
   doc
-    .fillColor(GOLD)
-    .font('Helvetica-Bold')
-    .fontSize(36)
-    .text('The End', MARGIN, 260, { width: CONTENT_WIDTH, align: 'center' });
+    .fillColor('#FFFFFF')
+    .font(EMBEDDED_BOOK_FONT)
+    .fontSize(28)
+    .text(story.title, MARGIN, 250, { width: CONTENT_WIDTH, align: 'center' });
 
   doc
-    .fillColor('#FFFFFF')
-    .font('Helvetica')
+    .fillColor(GOLD)
+    .font(EMBEDDED_BOOK_FONT)
     .fontSize(14)
-    .text(
-      `A personalized adventure created especially for ${order.childName}.`,
-      MARGIN,
-      330,
-      { width: CONTENT_WIDTH, align: 'center' },
-    );
+    .text('A HeroStoryBooks Original', MARGIN, 330, { width: CONTENT_WIDTH, align: 'center' });
 
   doc
     .fillColor(FOREST)
-    .font('Helvetica-Bold')
+    .font(EMBEDDED_BOOK_FONT)
     .fontSize(12)
     .text('herostorybooks.com', MARGIN, PAGE_HEIGHT - 52, { width: CONTENT_WIDTH, align: 'center' });
 }
 
 // ── Main export ────────────────────────────────────────────────────────────────
 
+export interface BuildPdfOptions {
+  /** Optional URL/path for a back-cover illustration. When provided, the
+   *  back page renders the image full-bleed with the tagline (if any) in a
+   *  translucent cream panel. When omitted, the legacy non-illustrated
+   *  back page is used (preserves existing tests). */
+  backCoverUrl?: string | null;
+  /** Optional tagline typeset on the back cover. Ignored if no back-cover
+   *  image is supplied. */
+  backCoverTagline?: string | null;
+}
+
 export async function buildPdf(
   story: StoryContent,
   order: OrderRecord,
   imageUrls: (string | null)[],
+  options: BuildPdfOptions = {},
 ): Promise<Buffer> {
   // Fetch all images in parallel (gracefully skip failures)
   const imageBuffers = await Promise.all(
     imageUrls.map(url => (url ? fetchImageBuffer(url) : Promise.resolve(null))),
   );
+  const backCoverBuffer = options.backCoverUrl ? await fetchImageBuffer(options.backCoverUrl) : null;
 
   const minimumTotalPages = getMinimumTotalPages(order.bookFormat);
-  const currentTotalPages = story.pages.length + 2; // cover + back
-  const fillerPages = buildKeepsakePages(story, order, Math.max(0, minimumTotalPages - currentTotalPages));
+  const frontMatter = buildFrontMatterPages(story, order);
+  const backMatter = buildBackMatterPages(story, order);
+  // Proof PDFs include front/back cover pages outside the interior minimum.
+  // Keep the interior flow aligned with the printed book by calculating filler
+  // against story + matter only, not against the extra proof-only cover pages.
+  const currentInteriorPages = story.pages.length + frontMatter.length + backMatter.length;
+  const fillerPages = buildKeepsakePages(story, order, Math.max(0, minimumTotalPages - currentInteriorPages));
 
   return new Promise<Buffer>((resolve, reject) => {
-    const doc = new PDFDocument({
+    const doc = withNoLigatureText(new PDFDocument({
       size: 'A4',
       margin: 0,
       autoFirstPage: false,
-    });
+    }));
 
     const chunks: Buffer[] = [];
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('end', () => {
+      const pdf = Buffer.concat(chunks);
+      assertPdfEmbedsFonts(pdf, 'proof PDF');
+      resolve(pdf);
+    });
     doc.on('error', reject);
+
+    const drawProofMatterPage = (page: MatterPage, pageNumber: number) => {
+      doc.addPage();
+      doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill(CREAM);
+      doc.rect(0, 0, PAGE_WIDTH, 28).fill(page.kind === 'about' ? GOLD : FOREST);
+      doc
+        .fillColor(FOREST)
+        .font(EMBEDDED_BOOK_FONT)
+        .fontSize(page.kind === 'title' ? 30 : page.kind === 'colophon' ? 20 : 22)
+        .text(page.title, MARGIN, page.kind === 'colophon' ? 140 : 96, { width: CONTENT_WIDTH, align: 'center' });
+      doc
+        .fillColor(SLATE)
+        .font(EMBEDDED_BOOK_FONT)
+        .fontSize(page.kind === 'colophon' ? 13 : 15)
+        .lineGap(page.kind === 'colophon' ? 6 : 8)
+        .text(page.body, MARGIN, page.kind === 'colophon' ? 240 : 190, { width: CONTENT_WIDTH, align: 'center' });
+      if (page.prompt) {
+        doc
+          .fillColor(FOREST)
+          .font(EMBEDDED_BOOK_FONT)
+          .fontSize(12)
+          .text(page.prompt, MARGIN, 336, { width: CONTENT_WIDTH, align: 'center' });
+        for (let i = 0; i < 6; i += 1) {
+          const y = 390 + i * 42;
+          doc.moveTo(MARGIN + 10, y).lineTo(PAGE_WIDTH - MARGIN - 10, y).strokeColor('#CBD5E1').lineWidth(1).stroke();
+        }
+      }
+      doc.fillColor(GOLD).font(EMBEDDED_BOOK_FONT).fontSize(10).text(String(pageNumber), MARGIN, PAGE_HEIGHT - 30, { width: CONTENT_WIDTH, align: 'center' });
+    };
 
     // Cover
     doc.addPage();
@@ -367,10 +781,15 @@ export async function buildPdf(
 
     let renderedPageNumber = 1;
 
+    frontMatter.forEach((page) => {
+      drawProofMatterPage(page, renderedPageNumber);
+      renderedPageNumber += 1;
+    });
+
     // Story pages
     story.pages.forEach((page, i) => {
       doc.addPage();
-      drawStoryPage(doc, renderedPageNumber, page.sceneTitle, page.story, imageBuffers[i + 1] ?? null);
+      drawStoryPage(doc, renderedPageNumber, page.sceneTitle, page.story, imageBuffers[i + 1] ?? null, page.textLayout);
       renderedPageNumber += 1;
     });
 
@@ -380,20 +799,26 @@ export async function buildPdf(
       renderedPageNumber += 1;
     });
 
+    backMatter.forEach((page) => {
+      drawProofMatterPage(page, renderedPageNumber);
+      renderedPageNumber += 1;
+    });
+
     // Back page
     doc.addPage();
-    drawBackPage(doc, order);
+    drawBackPage(doc, story, order, backCoverBuffer, options.backCoverTagline ?? null);
 
     doc.end();
   });
 }
 
 export function getPrintInteriorPageCount(story: StoryContent, order: OrderRecord): number {
-  // Slice 2: every print interior includes 4 intentional matter pages
-  // (title + dedication + end-note + about). Filler keepsake pages are
-  // a safety net only — used when story + matter still falls short of
-  // the Lulu minimum. For new long-form orders (classic 24 / premium 32)
-  // this collapses or eliminates the filler dependency.
+  // Every print interior includes 6 intentional matter pages:
+  // front matter (title + dedication) and back matter (belongs, memory,
+  // about, colophon). Filler keepsake pages are a safety net only — used
+  // when story + matter still falls short of the Lulu minimum. For new
+  // long-form orders (classic 24 / premium 32) this collapses or eliminates
+  // the filler dependency.
   const minimumPages = getMinimumTotalPages(order.bookFormat);
   return Math.max(story.pages.length + INTENTIONAL_MATTER_PAGES, minimumPages);
 }
@@ -425,15 +850,19 @@ export async function buildPrintInteriorPdf(
   const contentWidth = trimWidth - margin * 2;
 
   return new Promise<Buffer>((resolve, reject) => {
-    const doc = new PDFDocument({
+    const doc = withNoLigatureText(new PDFDocument({
       size: [trimWidth, trimHeight],
       margin: 0,
       autoFirstPage: false,
-    });
+    }));
 
     const chunks: Buffer[] = [];
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('end', () => {
+      const pdf = Buffer.concat(chunks);
+      assertPdfEmbedsFonts(pdf, 'print interior PDF');
+      resolve(pdf);
+    });
     doc.on('error', reject);
 
     let pageNumber = 1;
@@ -441,21 +870,32 @@ export async function buildPrintInteriorPdf(
     const drawMatterPage = (page: MatterPage) => {
       doc.addPage();
       doc.rect(0, 0, trimWidth, trimHeight).fill(CREAM);
-      doc.rect(0, 0, trimWidth, 24).fill(FOREST);
+      doc.rect(0, 0, trimWidth, 24).fill(page.kind === 'about' ? GOLD : FOREST);
       doc
         .fillColor(FOREST)
-        .font('Helvetica-Bold')
-        .fontSize(page.kind === 'title' ? 28 : 20)
-        .text(page.title, margin, 80, { width: contentWidth, align: 'center' });
+        .font(EMBEDDED_BOOK_FONT)
+        .fontSize(page.kind === 'title' ? 28 : page.kind === 'colophon' ? 18 : 20)
+        .text(page.title, margin, page.kind === 'colophon' ? 120 : 80, { width: contentWidth, align: 'center' });
       doc
         .fillColor(SLATE)
-        .font('Helvetica')
-        .fontSize(13)
-        .lineGap(6)
-        .text(page.body, margin, 160, { width: contentWidth, align: 'center' });
+        .font(EMBEDDED_BOOK_FONT)
+        .fontSize(page.kind === 'colophon' ? 12 : 13)
+        .lineGap(page.kind === 'colophon' ? 5 : 6)
+        .text(page.body, margin, page.kind === 'colophon' ? 220 : 160, { width: contentWidth, align: 'center' });
+      if (page.prompt) {
+        doc
+          .fillColor(FOREST)
+          .font(EMBEDDED_BOOK_FONT)
+          .fontSize(11)
+          .text(page.prompt, margin, 284, { width: contentWidth, align: 'center' });
+        for (let i = 0; i < 5; i += 1) {
+          const y = 336 + i * 36;
+          doc.moveTo(margin + 8, y).lineTo(trimWidth - margin - 8, y).strokeColor('#CBD5E1').lineWidth(1).stroke();
+        }
+      }
       doc
         .fillColor(GOLD)
-        .font('Helvetica-Bold')
+        .font(EMBEDDED_BOOK_FONT)
         .fontSize(10)
         .text(String(pageNumber), margin, trimHeight - 28, { width: contentWidth, align: 'center' });
       pageNumber += 1;
@@ -466,23 +906,54 @@ export async function buildPrintInteriorPdf(
 
     story.pages.forEach((page, index) => {
       doc.addPage();
+      const layout = getPictureBookStoryLayout('print', page.textLayout);
+      const fitted = fitPictureBookText(layout, page.sceneTitle, page.story);
       doc.rect(0, 0, trimWidth, trimHeight).fill(CREAM);
-      doc.rect(0, 0, trimWidth, 28).fill(FOREST);
-      doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(11).text(page.sceneTitle.toUpperCase(), margin, 9, { width: contentWidth, align: 'center' });
 
       const image = imageBuffers[index + 1] ?? null;
       if (image) {
         try {
-          doc.image(image, margin, 42, { width: contentWidth, height: 250, align: 'center', valign: 'center' });
+          doc.image(image, layout.imageX, layout.imageY, {
+            width: layout.imageWidth,
+            height: layout.imageHeight,
+            cover: [layout.imageWidth, layout.imageHeight],
+            align: 'center',
+            valign: 'center',
+          });
         } catch {
-          doc.rect(margin, 42, contentWidth, 120).fill('#E5E7EB');
+          doc.rect(layout.imageX, layout.imageY, layout.imageWidth, layout.imageHeight).fill('#E5E7EB');
         }
       } else {
-        doc.rect(margin, 42, contentWidth, 120).fill('#E5E7EB');
+        doc.rect(layout.imageX, layout.imageY, layout.imageWidth, layout.imageHeight).fill('#E5E7EB');
       }
 
-      doc.fillColor('#1f2937').font('Helvetica').fontSize(12).lineGap(4).text(page.story, margin, 310, { width: contentWidth, align: 'justify' });
-      doc.fillColor(GOLD).font('Helvetica-Bold').fontSize(10).text(String(pageNumber), margin, trimHeight - 28, { width: contentWidth, align: 'center' });
+      const scrim = panelScrim(layout.textPanelStyle);
+      if (scrim) {
+        doc.save();
+        doc.roundedRect(
+          layout.textPanelX,
+          layout.textPanelY,
+          layout.textPanelWidth,
+          layout.textPanelHeight,
+          panelCornerRadius(layout.textPanelStyle),
+        ).fillOpacity(scrim.opacity).fill(scrim.color);
+        doc.restore();
+      }
+
+      drawCaptionText(
+        doc,
+        page.story,
+        layout.textPanelX + layout.textInset,
+        layout.textPanelY + 10,
+        layout.textPanelWidth - layout.textInset * 2,
+        layout.textPanelHeight - 20,
+        fitted.storyFontSize,
+        fitted.storyLineGap,
+        textFillColor(layout.textColorMode),
+        Boolean(scrim),
+      );
+
+      doc.fillColor(GOLD).font(EMBEDDED_BOOK_FONT).fontSize(10).text(String(pageNumber), margin, trimHeight - 28, { width: contentWidth, align: 'center' });
       pageNumber += 1;
     });
 
@@ -493,55 +964,153 @@ export async function buildPrintInteriorPdf(
     fillerPages.forEach((page) => {
       doc.addPage();
       doc.rect(0, 0, trimWidth, trimHeight).fill(CREAM);
-      doc.rect(0, 0, trimWidth, 24).fill(GOLD);
-      doc.fillColor(FOREST).font('Helvetica-Bold').fontSize(22).text(page.title, margin, 56, { width: contentWidth, align: 'center' });
-      doc.fillColor(SLATE).font('Helvetica').fontSize(13).lineGap(5).text(page.body, margin, 120, { width: contentWidth, align: 'center' });
+      doc.rect(0, 0, trimWidth, 24).fill(page.kind === 'copyright' ? FOREST : GOLD);
+      doc.fillColor(FOREST).font(EMBEDDED_BOOK_FONT).fontSize(page.kind === 'copyright' ? 16 : 22).text(page.title, margin, page.kind === 'copyright' ? 72 : 56, { width: contentWidth, align: 'center' });
+      doc.fillColor(SLATE).font(EMBEDDED_BOOK_FONT).fontSize(page.kind === 'copyright' ? 10 : 13).lineGap(page.kind === 'copyright' ? 4 : 5).text(page.body, margin, page.kind === 'copyright' ? 130 : 120, { width: contentWidth, align: 'center' });
       if (page.prompt) {
-        doc.fillColor(FOREST).font('Helvetica-Bold').fontSize(12).text(page.prompt, margin, 240, { width: contentWidth, align: 'center' });
+        doc.fillColor(FOREST).font(EMBEDDED_BOOK_FONT).fontSize(12).text(page.prompt, margin, 240, { width: contentWidth, align: 'center' });
         for (let i = 0; i < 7; i += 1) {
           const y = 295 + i * 32;
           doc.moveTo(margin + 6, y).lineTo(trimWidth - margin - 6, y).strokeColor('#CBD5E1').lineWidth(1).stroke();
         }
       }
-      doc.fillColor(GOLD).font('Helvetica-Bold').fontSize(10).text(String(pageNumber), margin, trimHeight - 28, { width: contentWidth, align: 'center' });
+      doc.fillColor(GOLD).font(EMBEDDED_BOOK_FONT).fontSize(10).text(String(pageNumber), margin, trimHeight - 28, { width: contentWidth, align: 'center' });
       pageNumber += 1;
     });
 
-    // Back matter — end note + about (intentional, designed pages).
+    // Back matter — belongs, memory, about, and quiet colophon.
     backMatter.forEach(drawMatterPage);
 
     doc.end();
   });
 }
 
-export function buildPrintCoverPdf(
+export interface BuildPrintCoverOptions {
+  frontCoverUrl?: string | null;
+  backCoverUrl?: string | null;
+  backCoverTagline?: string | null;
+}
+
+export async function buildPrintCoverPdf(
   widthPoints: number,
   heightPoints: number,
   title: string,
   order: OrderRecord,
-): Buffer {
-  const doc = new PDFDocument({
-    size: [widthPoints, heightPoints],
-    margin: 0,
-    autoFirstPage: false,
+  options: BuildPrintCoverOptions = {},
+): Promise<Buffer> {
+  const frontCoverBuffer = options.frontCoverUrl ? await fetchImageBuffer(options.frontCoverUrl) : null;
+  const backCoverBuffer = options.backCoverUrl ? await fetchImageBuffer(options.backCoverUrl) : null;
+
+  return new Promise<Buffer>((resolve, reject) => {
+    const doc = withNoLigatureText(new PDFDocument({
+      size: [widthPoints, heightPoints],
+      margin: 0,
+      autoFirstPage: false,
+    }));
+
+    const chunks: Buffer[] = [];
+    doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+    doc.on('end', () => {
+      const pdf = Buffer.concat(chunks);
+      assertPdfEmbedsFonts(pdf, 'print cover PDF');
+      resolve(pdf);
+    });
+    doc.on('error', reject);
+
+    doc.addPage();
+
+    // Spread layout: back cover on the left half, spine in middle, front
+    // cover on the right half. Print specs use a single landscape page
+    // with both halves rendered onto it.
+    if (frontCoverBuffer || backCoverBuffer) {
+      const spineW = Math.max(8, widthPoints - (17.25 * 72));
+      const coverPanelW = (widthPoints - spineW) / 2;
+      const frontX = coverPanelW + spineW;
+      // Back cover (left)
+      if (backCoverBuffer) {
+        try {
+          doc.image(backCoverBuffer, 0, 0, {
+            width: coverPanelW, height: heightPoints,
+            cover: [coverPanelW, heightPoints], align: 'center', valign: 'center',
+          });
+        } catch { doc.rect(0, 0, coverPanelW, heightPoints).fill('#F8E7C7'); }
+        if (options.backCoverTagline) {
+          const panelX = 32;
+          const panelY = heightPoints * 0.28;
+          const panelW = coverPanelW - 64;
+          const panelH = Math.min(heightPoints * 0.32, 220);
+          doc.save();
+          doc.roundedRect(panelX, panelY, panelW, panelH, panelCornerRadius('translucent_cream'))
+            .fillOpacity(0.84).fill(CREAM);
+          doc.restore();
+          doc.fillOpacity(1).fillColor(FOREST).font(EMBEDDED_BOOK_FONT).fontSize(Math.max(14, widthPoints * 0.014)).lineGap(6)
+            .text(options.backCoverTagline, panelX + 22, panelY + 28, { width: panelW - 44, align: 'center' });
+        }
+        doc.save();
+        doc.roundedRect(64, heightPoints - 110, coverPanelW - 128, 40, 10).fillOpacity(0.78).fill(CREAM);
+        doc.restore();
+        doc.fillOpacity(1).fillColor(FOREST).font(EMBEDDED_BOOK_FONT).fontSize(Math.max(10, widthPoints * 0.009))
+          .text(`Made for ${order.childName}`, 78, heightPoints - 96, { width: coverPanelW - 156, align: 'center' });
+        doc.fillColor('#FFFFFF').font(EMBEDDED_BOOK_FONT).fontSize(Math.max(7, widthPoints * 0.0065))
+          .text('herostorybooks.com', 32, heightPoints - 26, { width: coverPanelW - 64, align: 'center' });
+        doc.save();
+        doc.roundedRect(38, heightPoints - 92, 118, 52, 4).fillOpacity(0.88).fill('#FFFFFF');
+        doc.restore();
+        doc.fillOpacity(1).fillColor(SLATE).font(EMBEDDED_BOOK_FONT).fontSize(6.5)
+          .text('Print barcode area', 44, heightPoints - 68, { width: 106, align: 'center' });
+      } else {
+        doc.rect(0, 0, coverPanelW, heightPoints).fill(FOREST);
+      }
+      // Front cover (right)
+      if (frontCoverBuffer) {
+        try {
+          doc.image(frontCoverBuffer, frontX, 0, {
+            width: coverPanelW, height: heightPoints,
+            cover: [coverPanelW, heightPoints], align: 'center', valign: 'center',
+          });
+        } catch { doc.rect(frontX, 0, coverPanelW, heightPoints).fill(FOREST); }
+        // Title typeset large over the front cover's calm upper third.
+        const titleY = heightPoints * 0.08;
+        const titlePanelX = frontX + 30;
+        const titlePanelW = coverPanelW - 60;
+        const titlePanelH = Math.min(heightPoints * 0.34, 210);
+        doc.save();
+        doc.roundedRect(titlePanelX, titleY - 12, titlePanelW, titlePanelH, 18).fillOpacity(0.74).fill(FOREST);
+        doc.restore();
+        doc.fillOpacity(1).fillColor('#FFFFFF').font(EMBEDDED_BOOK_FONT)
+          .fontSize(Math.max(28, widthPoints * 0.032)).lineGap(1)
+          .text(title, titlePanelX + 18, titleY + 8, { width: titlePanelW - 36, align: 'center' });
+        doc.fillColor(GOLD).font(EMBEDDED_BOOK_FONT).fontSize(Math.max(11, widthPoints * 0.012))
+          .text(`Made for ${order.childName}`, titlePanelX + 18, titleY + titlePanelH - 44, {
+            width: titlePanelW - 36, align: 'center',
+          });
+        doc.fillColor('#FFFFFF').font(EMBEDDED_BOOK_FONT).fontSize(Math.max(8, widthPoints * 0.0075))
+          .text('A HeroStoryBooks Original', frontX + 32, heightPoints - 28, { width: coverPanelW - 64, align: 'center' });
+      } else {
+        doc.rect(frontX, 0, coverPanelW, heightPoints).fill(FOREST);
+      }
+      // Slim spine seam over the centerline. For this 32-page classic book
+      // the spine is only about 0.13in wide, below a safe readable-text margin
+      // after binding tolerance, so intentionally do not place spine text.
+      doc.rect(coverPanelW, 0, spineW, heightPoints).fill(GOLD);
+
+      doc.end();
+      return;
+    }
+
+    // Legacy non-illustrated cover (preserves existing tests).
+    doc.rect(0, 0, widthPoints, heightPoints).fill('#F8E7C7');
+    doc.rect(widthPoints * 0.55, 0, widthPoints * 0.45, heightPoints).fill(FOREST);
+    doc.rect(widthPoints * 0.5 - 8, 0, 16, heightPoints).fill(GOLD);
+
+    const frontX = widthPoints * 0.58;
+    const frontWidth = widthPoints * 0.36;
+    doc.fillColor('#FFFFFF').font(EMBEDDED_BOOK_FONT).fontSize(Math.max(22, widthPoints * 0.03)).text(title, frontX, 90, { width: frontWidth, align: 'center' });
+    doc.fillColor(GOLD).font(EMBEDDED_BOOK_FONT).fontSize(16).text('A HeroStoryBooks Original', frontX, 190, { width: frontWidth, align: 'center' });
+
+    doc.fillColor(FOREST).font(EMBEDDED_BOOK_FONT).fontSize(18).text('Hero Story Books', 40, 90, { width: widthPoints * 0.38, align: 'center' });
+    doc.fillColor(SLATE).font(EMBEDDED_BOOK_FONT).fontSize(12).lineGap(4).text(`A keepsake adventure created for ${order.childName}.`, 40, 150, { width: widthPoints * 0.38, align: 'center' });
+
+    doc.end();
   });
-
-  const chunks: Buffer[] = [];
-  doc.on('data', (chunk: Buffer) => chunks.push(chunk));
-
-  doc.addPage();
-  doc.rect(0, 0, widthPoints, heightPoints).fill('#F8E7C7');
-  doc.rect(widthPoints * 0.55, 0, widthPoints * 0.45, heightPoints).fill(FOREST);
-  doc.rect(widthPoints * 0.5 - 8, 0, 16, heightPoints).fill(GOLD);
-
-  const frontX = widthPoints * 0.58;
-  const frontWidth = widthPoints * 0.36;
-  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(Math.max(22, widthPoints * 0.03)).text(title, frontX, 90, { width: frontWidth, align: 'center' });
-  doc.fillColor(GOLD).font('Helvetica').fontSize(16).text(`A personalized story for ${order.childName}`, frontX, 190, { width: frontWidth, align: 'center' });
-
-  doc.fillColor(FOREST).font('Helvetica-Bold').fontSize(18).text('Hero Story Books', 40, 90, { width: widthPoints * 0.38, align: 'center' });
-  doc.fillColor(SLATE).font('Helvetica').fontSize(12).lineGap(4).text('A personalized keepsake adventure created for story time, gifting, and family memories.', 40, 150, { width: widthPoints * 0.38, align: 'center' });
-
-  doc.end();
-  return Buffer.concat(chunks);
 }

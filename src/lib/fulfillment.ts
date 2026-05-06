@@ -259,6 +259,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
         theme: order.theme,
       },
       characterAnchor,
+      textLayout: p.textLayout,
     }),
   );
   const imageResults = await runImageGeneration(imagePrompts, order, deps);
@@ -361,6 +362,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
         theme: order.theme,
       },
       characterAnchor,
+      textLayout: p.textLayout,
     }),
   );
   const imageResults = await runImageGeneration(imagePrompts, order, deps);
@@ -486,7 +488,7 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
   let hydratedOrder = order;
   if (!order.printCoverArtifactUrl || !order.printCoverMd5) {
     const dims = await _calculateCoverDimensions(order, order.printInteriorPageCount);
-    const coverBuffer = _buildPrintCoverPdf(dims.widthPt, dims.heightPt, order.printTitle, order);
+    const coverBuffer = await _buildPrintCoverPdf(dims.widthPt, dims.heightPt, order.printTitle, order);
     const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);
     const coverUrl = await _upload(order.id, coverBuffer, `${safeSlug}-cover.pdf`);
     hydratedOrder = (await updateFulfillmentState(order.id, {
@@ -627,13 +629,19 @@ export async function approvePrintProof(
     return { ok: false, error: `Proof is in state ${order.fulfillmentStatus} — cannot approve` };
   }
 
-  await updateFulfillmentState(orderId, {
+  // Use the authoritative in-memory record returned by updateFulfillmentState
+  // rather than doing a second getOrder reload. The two-step variant could
+  // produce a stale snapshot (read-after-write inconsistency on the blob
+  // backend) where runPrintProduction's gate observed fulfillmentStatus=
+  // 'proof_ready' and refused — which then burned all retry attempts and
+  // pushed the order to failed_manual_review even though approval had
+  // already persisted. updateFulfillmentState returns the post-write state
+  // it just persisted; using it directly closes that race.
+  const updatedOrder = await updateFulfillmentState(orderId, {
     fulfillmentStatus: 'proof_approved',
     proofApprovedAt: new Date().toISOString(),
   });
-
-  const updatedOrder = await getOrder(orderId);
-  if (!updatedOrder) return { ok: false, error: 'Failed to reload order' };
+  if (!updatedOrder) return { ok: false, error: 'Failed to update order state' };
 
   await runWithRetry(
     orderId,

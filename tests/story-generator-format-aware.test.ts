@@ -180,3 +180,48 @@ test('template fallback: premium order produces exactly 32 pages', async () => {
     assert.equal(result.story.pages.length, 32);
   });
 });
+
+test('template fallback: long-form classic should not just repeat the same short sample arc', async () => {
+  await withEnv({ OPENAI_API_KEY: undefined, HSB_ENABLE_OPENAI_STORY: undefined }, async () => {
+    const result = await generateStoryWithMeta(makeOrder('classic'));
+    const sceneTitles = result.story.pages.map((p) => p.sceneTitle);
+    const imagePrompts = result.story.pages.map((p) => p.imagePrompt);
+
+    assert.notEqual(result.story.pages[0]?.story, result.story.pages[5]?.story, 'page 6 should not repeat page 1');
+    assert.notEqual(result.story.pages[1]?.imagePrompt, result.story.pages[6]?.imagePrompt, 'page 7 should not repeat page 2 prompt');
+    assert.ok(new Set(sceneTitles).size >= 18, 'long-form classic should have meaningfully varied scene titles');
+    assert.ok(new Set(imagePrompts).size >= 18, 'long-form classic should have meaningfully varied image prompts');
+  });
+});
+
+test('template fallback: long-form classic prose should avoid visible template boilerplate', async () => {
+  await withEnv({ OPENAI_API_KEY: undefined, HSB_ENABLE_OPENAI_STORY: undefined }, async () => {
+    const result = await generateStoryWithMeta(makeOrder('classic'));
+    const joined = result.story.pages.map((p) => p.story).join('\n');
+    assert.doesNotMatch(joined, /The whole adventure felt/i);
+    assert.doesNotMatch(joined, /shaped by/i);
+    assert.doesNotMatch(joined, /Page by page,/i);
+    assert.doesNotMatch(joined, /On birthday/i);
+    assert.doesNotMatch(joined, /journey felt especially meaningful/i);
+  });
+});
+
+test('template fallback: character anchor carries structured appearance details from intake', async () => {
+  await withEnv({ OPENAI_API_KEY: undefined, HSB_ENABLE_OPENAI_STORY: undefined }, async () => {
+    const order = createOrderRecord(
+      {
+        childName: 'Luna',
+        bookFormat: 'classic',
+        email: 'a@b.com',
+        theme: 'brave-explorer',
+        lesson: 'courage',
+        occasion: 'birthday',
+        appearanceOptions: JSON.stringify({ skinTone: 'deep', hairStyle: 'short curly black hair', eyewear: 'none' }),
+      },
+      { id: 'ord_fmt_anchor', now: '2026-05-01T10:00:00Z' },
+    );
+    const result = await generateStoryWithMeta(order);
+    assert.match(result.story.characterDescription, /deep/i);
+    assert.match(result.story.characterDescription, /short curly black hair/i);
+  });
+});

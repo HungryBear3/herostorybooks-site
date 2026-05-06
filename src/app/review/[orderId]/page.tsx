@@ -7,11 +7,14 @@ export const dynamic = 'force-dynamic';
 
 export default async function ReviewPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ orderId: string }>;
+  searchParams: Promise<{ token?: string }>;
 }) {
   const { orderId } = await params;
-  const snapshot = await getReviewSnapshot(orderId);
+  const { token } = await searchParams;
+  const snapshot = await getReviewSnapshot(orderId, { reviewToken: token ?? null });
   if (!snapshot) notFound();
   return <ReviewClient initial={snapshot} />;
 }
