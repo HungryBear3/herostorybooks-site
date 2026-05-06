@@ -11,7 +11,7 @@ import {
   type OrderRecord,
 } from '../src/lib/orders.ts';
 import { buildPdf, buildPrintCoverPdf } from '../src/lib/pdf-builder.ts';
-import type { StoryContent } from '../src/lib/fulfillment-types.ts';
+import type { PageTextLayout, StoryContent } from '../src/lib/fulfillment-types.ts';
 
 const ORDER_ID = 'ord_f5dcffc8a0b84d06';
 const EXPECTED_EXISTING_PRINT_JOB_ID = '2857729';
@@ -54,6 +54,15 @@ async function putBlob(pathname: string, buffer: Buffer, contentType: string, ap
   return blob.url;
 }
 
+type PageArtifactWithOptionalTextLayout = NonNullable<OrderRecord['pageArtifacts']>[number] & {
+  textLayout?: PageTextLayout | null;
+};
+
+function getPageTextLayout(page: NonNullable<OrderRecord['pageArtifacts']>[number]): PageTextLayout {
+  const withLayout = page as PageArtifactWithOptionalTextLayout;
+  return withLayout.textLayout ?? { zone: 'bottom_band', colorMode: 'auto', panelStyle: 'translucent_cream' };
+}
+
 function buildStory(order: OrderRecord): StoryContent {
   const pages = (order.pageArtifacts ?? [])
     .slice()
@@ -63,7 +72,7 @@ function buildStory(order: OrderRecord): StoryContent {
       sceneTitle: '',
       story: page.storyText,
       imagePrompt: page.basePrompt,
-      textLayout: page.textLayout ?? { zone: 'bottom_band', colorMode: 'auto', panelStyle: 'translucent_cream' },
+      textLayout: getPageTextLayout(page),
     }));
 
   return {
