@@ -627,6 +627,13 @@ export async function triggerFulfillment(
   deps: FulfillmentDeps = {},
   opts: TriggerFulfillmentOptions = {},
 ): Promise<void> {
+  // Observable entry: this single line is the proof-of-life that
+  // triggerFulfillment was actually called from a deferred kickoff.
+  // If you ever see a paid order stuck at not_started with no
+  // [fulfillment] entered line in the log, the kickoff scheduler
+  // (see fulfillment-kickoff.ts) failed before getting here.
+  console.log(`[fulfillment] entered for ${orderId}`);
+
   // Confirm authoritative paid state before doing ANY work. Read-after-
   // write inconsistency on the persistence backend cannot trick us into
   // running fulfillment on a non-paid order (the 2026-05-08 retest
@@ -639,6 +646,9 @@ export async function triggerFulfillment(
     );
     return;
   }
+  console.log(
+    `[fulfillment] order ${orderId} confirmed paid (stripeSessionId=${order.stripeSessionId ? 'present' : 'absent'}, fulfillmentStatus=${order.fulfillmentStatus ?? 'unset'})`,
+  );
 
   if (
     order.fulfillmentStatus &&
@@ -650,11 +660,13 @@ export async function triggerFulfillment(
   }
 
   const isDigital = !isPrintFormat(order.bookFormat);
+  console.log(`[fulfillment] starting ${isDigital ? 'digital' : 'print'} run for ${orderId}`);
   const run = isDigital
     ? (_attempt: number) => runDigitalFulfillment(order, deps)
     : (_attempt: number) => runPrintFulfillment(order, deps);
 
   await runWithRetry(orderId, run, deps);
+  console.log(`[fulfillment] runWithRetry returned for ${orderId}`);
 }
 
 /**

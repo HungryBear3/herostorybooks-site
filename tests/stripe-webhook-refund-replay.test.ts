@@ -56,26 +56,23 @@ test('webhook source: paid replay backfills fulfillment when still not_started',
   assert.match(src, /fulfillmentStatus === 'not_started'/);
 });
 
-test('webhook source: fulfillment is scheduled with after() (response not blocked by long fulfillment)', () => {
+test('webhook source: fulfillment is scheduled via setImmediate+after helper (response not blocked by long fulfillment)', () => {
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
-  // Webhook must import after from next/server.
+  // Webhook must import after from next/server (still needed as the
+  // serverless backup path passed to the helper).
   assert.match(src, /import\s*\{[^}]*\bafter\b[^}]*\}\s*from\s*'next\/server'/);
-  // Both fulfillment kickoffs must be scheduled via after(), not awaited inline.
-  // Two after() callbacks: one for new-paid, one for replay backfill.
-  const afterCalls = src.match(/after\(\s*async\s*\(\s*\)\s*=>/g) ?? [];
-  assert.ok(afterCalls.length >= 2, `expected at least 2 after(...) blocks, got ${afterCalls.length}`);
-  // Inside the callbacks, awaited triggerFulfillment is fine. Outside them, it must NOT be.
-  const inlineAwaits = src.match(/^\s*await\s+triggerFulfillment\(/gm) ?? [];
-  // The only awaits should appear inside the after() callbacks. Crude but
-  // effective check: count of `await triggerFulfillment(orderId)` inside an
-  // after() block must equal the total inline-await count, so no lone
-  // top-level await remains.
-  for (const line of inlineAwaits) {
-    void line;
-  }
-  // Stricter source-level guard: forbid the previous preloadedOrder shortcut
-  // and forbid triggerFulfillment being awaited at the top of the POST body.
+  // The helper is the actual durable kickoff path.
+  assert.match(src, /import\s*\{\s*scheduleFulfillmentKickoff\s*\}\s*from\s*'@\/lib\/fulfillment-kickoff'/);
+  // Both fulfillment kickoffs (new-paid + replay-backfill) must use the helper.
+  const calls = src.match(/scheduleFulfillmentKickoff\(orderId,\s*\{\s*afterImpl:\s*after\s*\}\s*\)/g) ?? [];
+  assert.ok(calls.length >= 2, `expected at least 2 scheduleFulfillmentKickoff() call sites, got ${calls.length}`);
+  // The previous direct after(async ...) → triggerFulfillment shape and the
+  // earlier preloadedOrder shortcut must both be gone.
+  assert.doesNotMatch(src, /after\(async\s*\(\s*\)\s*=>\s*\{[\s\S]{0,200}triggerFulfillment\(/);
   assert.doesNotMatch(src, /preloadedOrder/);
+  // Inline awaited triggerFulfillment in the POST body would re-introduce
+  // the ~10s Stripe-CLI timeout. Forbid it.
+  assert.doesNotMatch(src, /^\s*await\s+triggerFulfillment\(/m);
 });
 
 test('webhook source: payment write is awaited before responding (must commit before 200)', () => {
