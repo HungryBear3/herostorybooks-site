@@ -49,10 +49,18 @@ async function seed(overrides: Partial<OrderRecord>, id: string): Promise<OrderR
 
 // ── Source-level guards: the webhook route must contain the new branches.
 
-test('webhook source: skips replay when paymentStatus is already paid', () => {
+test('webhook source: paid replay backfills fulfillment when still not_started', () => {
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
   assert.match(src, /already processed/);
   assert.match(src, /paymentStatus === 'paid'/);
+  assert.match(src, /fulfillmentStatus === 'not_started'/);
+  assert.match(src, /backfilling fulfillment/);
+  // Both webhook fulfillment kickoffs must pass the in-memory record so
+  // a stale read-after-write 'pending' from the persistence backend
+  // can't make triggerFulfillment silently skip kickoff (the 2026-05-08
+  // paid-but-not-started incident).
+  assert.match(src, /await triggerFulfillment\(orderId,\s*\{\}\s*,\s*\{\s*preloadedOrder:\s*existing\s*\}\s*\)/);
+  assert.match(src, /await triggerFulfillment\(orderId,\s*\{\}\s*,\s*\{\s*preloadedOrder:\s*updated\s*\}\s*\)/);
 });
 
 test('webhook source: refuses to resurrect a refunded order on replay', () => {

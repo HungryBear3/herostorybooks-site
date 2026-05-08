@@ -4,6 +4,7 @@ import Stripe from 'stripe';
 import { sendOrderConfirmationEmail } from '@/lib/order-email';
 import { isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
 import { triggerFulfillment } from '@/lib/fulfillment';
+import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
 
 interface StripeCheckoutSession {
   id: string;
@@ -22,9 +23,7 @@ interface StripeCheckoutSession {
 }
 
 function getStripe() {
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) throw new Error('STRIPE_SECRET_KEY not set');
-  return new Stripe(key);
+  return new Stripe(getRequiredStripeSecretKey());
 }
 
 function extractShipping(session: StripeCheckoutSession): ShippingAddress | undefined {
@@ -42,9 +41,11 @@ function extractShipping(session: StripeCheckoutSession): ShippingAddress | unde
 
 export async function POST(request: Request) {
   const stripe = getStripe();
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  let webhookSecret: string;
 
-  if (!webhookSecret) {
+  try {
+    webhookSecret = getRequiredStripeWebhookSecret();
+  } catch {
     console.error('STRIPE_WEBHOOK_SECRET not set');
     return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 500 });
   }
@@ -84,7 +85,27 @@ export async function POST(request: Request) {
       //      transition is allowed.
       if (existing?.stripeSessionId === session.id) {
         if (existing.paymentStatus === 'paid') {
-          console.warn(`Stripe webhook: session ${session.id} already processed — skipping`);
+          console.warn(`Stripe webhook: session ${session.id} already processed — skipping payment update`);
+          if (!existing.fulfillmentStatus || existing.fulfillmentStatus === 'not_started') {
+            // Repair path for cases where the first webhook/replay marked the
+            // order paid but fulfillment never started (for example, local
+            // Stripe CLI delivery races or a previous serverless invocation
+            // exiting after the payment write). This remains idempotent because
+            // triggerFulfillment re-checks fulfillment state.
+            //
+            // Pass `existing` (the in-memory record we just loaded with
+            // verified paymentStatus='paid') so triggerFulfillment doesn't
+            // re-read the persistence backend and hit a stale 'pending'
+            // read that would silently skip kickoff.
+            console.warn(
+              `Stripe webhook: paid order ${orderId} still fulfillmentStatus=${existing.fulfillmentStatus ?? 'unset'} — backfilling fulfillment`,
+            );
+            try {
+              await triggerFulfillment(orderId, {}, { preloadedOrder: existing });
+            } catch (err) {
+              console.error(`[webhook] fulfillment backfill failed for ${orderId}:`, err);
+            }
+          }
           return NextResponse.json({ received: true });
         }
         if (existing.paymentStatus === 'refunded' || existing.refundedAt) {
@@ -133,8 +154,15 @@ export async function POST(request: Request) {
       // function returns, which on Vercel left orders stuck at
       // fulfillmentStatus='not_started' even after webhook marked them paid.
       // Errors are still captured on the order record by triggerFulfillment.
+      //
+      // Pass `updated` (the just-persisted post-write order record with
+      // paymentStatus='paid') so triggerFulfillment skips the re-read of
+      // the persistence backend. Read-after-write inconsistency on the
+      // blob backend would otherwise return a stale 'pending' record and
+      // make triggerFulfillment silently skip kickoff — that's the
+      // 2026-05-08 paid-but-not-started incident pattern.
       try {
-        await triggerFulfillment(orderId);
+        await triggerFulfillment(orderId, {}, { preloadedOrder: updated });
       } catch (err) {
         console.error(`[webhook] fulfillment trigger failed for ${orderId}:`, err);
       }

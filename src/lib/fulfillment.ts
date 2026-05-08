@@ -574,17 +574,48 @@ export async function rebuildProofFromPageArtifacts(
   return { ok: true, proofUrl };
 }
 
+export interface TriggerFulfillmentOptions {
+  /**
+   * Already-loaded post-write order record. Pass this when the caller has
+   * just performed the write that flipped `paymentStatus` to `paid` (or
+   * verified it directly). The webhook does this on both the new-paid
+   * path and the replay-backfill path.
+   *
+   * Why: `getOrder` re-reads the persistence backend. On Vercel Blob (and
+   * any backend with read-after-write inconsistency) the second read
+   * can return the pre-update `pending` state, in which case
+   * `triggerFulfillment` silently skipped with no exception, leaving
+   * the order stuck at `fulfillmentStatus=not_started`, `attempts=0`.
+   * Same fix pattern is used in `approvePrintProof`.
+   */
+  preloadedOrder?: OrderRecord;
+}
+
 export async function triggerFulfillment(
   orderId: string,
   deps: FulfillmentDeps = {},
+  opts: TriggerFulfillmentOptions = {},
 ): Promise<void> {
-  const order = await getOrder(orderId);
+  // Authoritative-record path: when the caller just wrote the order and
+  // hands us the in-memory result, trust it and skip the re-read race.
+  // Defensive: id must match.
+  let order: OrderRecord | null;
+  if (opts.preloadedOrder && opts.preloadedOrder.id === orderId) {
+    order = opts.preloadedOrder;
+  } else {
+    order = await getOrder(orderId);
+  }
   if (!order) {
     console.error(`[fulfillment] order ${orderId} not found`);
     return;
   }
 
   if (order.paymentStatus !== 'paid') {
+    // If a preloaded record was passed and it disagreed with the
+    // re-read, that would be a data-corruption signal. We don't reach
+    // this branch in the preloaded-paid case because we trust the
+    // preloaded record above. This log line stays as the fall-back
+    // diagnostic for the unloaded path.
     console.error(`[fulfillment] order ${orderId} not paid — skipping fulfillment`);
     return;
   }
@@ -600,8 +631,8 @@ export async function triggerFulfillment(
 
   const isDigital = !isPrintFormat(order.bookFormat);
   const run = isDigital
-    ? (attempt: number) => runDigitalFulfillment(order, deps)
-    : (attempt: number) => runPrintFulfillment(order, deps);
+    ? (_attempt: number) => runDigitalFulfillment(order!, deps)
+    : (_attempt: number) => runPrintFulfillment(order!, deps);
 
   await runWithRetry(orderId, run, deps);
 }

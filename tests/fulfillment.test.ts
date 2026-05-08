@@ -303,3 +303,111 @@ test('already-complete order is not re-processed', async () => {
     cleanupTmpDir(dir);
   }
 });
+
+// ── Read-after-write race fix: preloadedOrder + Lulu-skip for digital ────────
+//
+// 2026-05-08 incident: Rex's local digital test flow ended with the order
+// at paymentStatus=paid AND fulfillmentStatus=null/not_started, attempts=0.
+// The webhook awaited triggerFulfillment, but triggerFulfillment re-read
+// the order via getOrder and silently returned because the re-read
+// observed paymentStatus='pending' (read-after-write race). The fix is
+// to pass the in-memory post-write record so the re-read is skipped.
+
+test('triggerFulfillment: preloadedOrder=paid kicks off digital fulfillment even when persistence re-read is stale-pending', async () => {
+  const dir = makeTmpDir();
+  try {
+    // Persist the order with paymentStatus=PENDING — this simulates the
+    // worst case of read-after-write inconsistency where the just-written
+    // 'paid' state is not yet visible to a fresh read.
+    const stale = await makeOrder({ paymentStatus: 'pending', bookFormat: 'digital' }, dir);
+    // Hand the in-memory POST-write record to triggerFulfillment. It
+    // should trust the preloaded record and proceed.
+    const justPersistedPaid: OrderRecord = { ...stale, paymentStatus: 'paid' };
+    await triggerFulfillment(stale.id, PASS_DEPS, { preloadedOrder: justPersistedPaid });
+
+    // After kickoff, fulfillment will read state on its own writes.
+    // updateFulfillmentState reads then writes — without a true blob
+    // backend this collapses to a fast file write, so we should see
+    // the order progress to 'complete'.
+    const after = await getOrder(stale.id);
+    assert.equal(after?.fulfillmentStatus, 'complete');
+  } finally { cleanupTmpDir(dir); }
+});
+
+test('triggerFulfillment: preloadedOrder with mismatched id is ignored (defensive)', async () => {
+  const dir = makeTmpDir();
+  try {
+    const real = await makeOrder({ paymentStatus: 'pending', bookFormat: 'digital' }, dir);
+    // Swap in a preloaded record whose id does NOT match the orderId param.
+    // The function must NOT trust it; it must fall back to getOrder.
+    const otherPaid: OrderRecord = {
+      ...real,
+      id: 'ord_other',
+      paymentStatus: 'paid',
+    };
+    await triggerFulfillment(real.id, PASS_DEPS, { preloadedOrder: otherPaid });
+    // real order has paymentStatus=pending in storage → fulfillment skipped.
+    const after = await getOrder(real.id);
+    assert.ok(
+      !after?.fulfillmentStatus || after.fulfillmentStatus === 'not_started',
+      `Expected no fulfillment, got ${after?.fulfillmentStatus}`,
+    );
+  } finally { cleanupTmpDir(dir); }
+});
+
+test('digital fulfillment never calls submitPrint — Lulu must not be triggered for digital', async () => {
+  const dir = makeTmpDir();
+  try {
+    let submitPrintCalls = 0;
+    const luluTrap: FulfillmentDeps = {
+      ...PASS_DEPS,
+      submitPrint: async () => {
+        submitPrintCalls++;
+        return { jobId: 'should-not-happen' };
+      },
+    };
+    const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital' }, dir);
+    await triggerFulfillment(order.id, luluTrap);
+    assert.equal(submitPrintCalls, 0, 'submitPrint must NOT be called for digital orders');
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.ok(!after?.printJobId, 'digital order must not carry a print job id');
+  } finally { cleanupTmpDir(dir); }
+});
+
+test('digital fulfillment: duplicate triggerFulfillment is idempotent (no double-generation, no Lulu call)', async () => {
+  const dir = makeTmpDir();
+  try {
+    let storyCalls = 0;
+    let imageCalls = 0;
+    let pdfCalls = 0;
+    let submitPrintCalls = 0;
+    const counting: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStory: async () => { storyCalls++; return MOCK_STORY; },
+      generateImages: async (prompts) => { imageCalls++; return prompts.map(() => null); },
+      buildPdf: async () => { pdfCalls++; return MOCK_PDF; },
+      submitPrint: async () => { submitPrintCalls++; return { jobId: 'never' }; },
+    };
+    const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital' }, dir);
+
+    // First call — should kick off and complete.
+    await triggerFulfillment(order.id, counting);
+    assert.equal(storyCalls, 1);
+    assert.equal(imageCalls, 1);
+    assert.equal(pdfCalls, 1);
+
+    // Replay — fulfillmentStatus is now 'complete'; trigger must skip.
+    await triggerFulfillment(order.id, counting);
+    assert.equal(storyCalls, 1, 'story generation must not run twice');
+    assert.equal(imageCalls, 1, 'image generation must not run twice');
+    assert.equal(pdfCalls, 1, 'PDF build must not run twice');
+    assert.equal(submitPrintCalls, 0, 'Lulu must never be called for digital');
+  } finally { cleanupTmpDir(dir); }
+});
+
+test('source-level: triggerFulfillment exposes preloadedOrder option matching the approvePrintProof in-memory pattern', () => {
+  const src = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
+  assert.match(src, /preloadedOrder\??:\s*OrderRecord/);
+  assert.match(src, /opts\.preloadedOrder\s*&&\s*opts\.preloadedOrder\.id\s*===\s*orderId/);
+});
