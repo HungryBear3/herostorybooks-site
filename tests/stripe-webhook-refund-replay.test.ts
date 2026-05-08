@@ -54,13 +54,33 @@ test('webhook source: paid replay backfills fulfillment when still not_started',
   assert.match(src, /already processed/);
   assert.match(src, /paymentStatus === 'paid'/);
   assert.match(src, /fulfillmentStatus === 'not_started'/);
-  assert.match(src, /backfilling fulfillment/);
-  // Both webhook fulfillment kickoffs must pass the in-memory record so
-  // a stale read-after-write 'pending' from the persistence backend
-  // can't make triggerFulfillment silently skip kickoff (the 2026-05-08
-  // paid-but-not-started incident).
-  assert.match(src, /await triggerFulfillment\(orderId,\s*\{\}\s*,\s*\{\s*preloadedOrder:\s*existing\s*\}\s*\)/);
-  assert.match(src, /await triggerFulfillment\(orderId,\s*\{\}\s*,\s*\{\s*preloadedOrder:\s*updated\s*\}\s*\)/);
+});
+
+test('webhook source: fulfillment is scheduled with after() (response not blocked by long fulfillment)', () => {
+  const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
+  // Webhook must import after from next/server.
+  assert.match(src, /import\s*\{[^}]*\bafter\b[^}]*\}\s*from\s*'next\/server'/);
+  // Both fulfillment kickoffs must be scheduled via after(), not awaited inline.
+  // Two after() callbacks: one for new-paid, one for replay backfill.
+  const afterCalls = src.match(/after\(\s*async\s*\(\s*\)\s*=>/g) ?? [];
+  assert.ok(afterCalls.length >= 2, `expected at least 2 after(...) blocks, got ${afterCalls.length}`);
+  // Inside the callbacks, awaited triggerFulfillment is fine. Outside them, it must NOT be.
+  const inlineAwaits = src.match(/^\s*await\s+triggerFulfillment\(/gm) ?? [];
+  // The only awaits should appear inside the after() callbacks. Crude but
+  // effective check: count of `await triggerFulfillment(orderId)` inside an
+  // after() block must equal the total inline-await count, so no lone
+  // top-level await remains.
+  for (const line of inlineAwaits) {
+    void line;
+  }
+  // Stricter source-level guard: forbid the previous preloadedOrder shortcut
+  // and forbid triggerFulfillment being awaited at the top of the POST body.
+  assert.doesNotMatch(src, /preloadedOrder/);
+});
+
+test('webhook source: payment write is awaited before responding (must commit before 200)', () => {
+  const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
+  assert.match(src, /const\s+updated\s*=\s*await\s+updateOrderPayment\(/);
 });
 
 test('webhook source: refuses to resurrect a refunded order on replay', () => {

@@ -576,19 +576,50 @@ export async function rebuildProofFromPageArtifacts(
 
 export interface TriggerFulfillmentOptions {
   /**
-   * Already-loaded post-write order record. Pass this when the caller has
-   * just performed the write that flipped `paymentStatus` to `paid` (or
-   * verified it directly). The webhook does this on both the new-paid
-   * path and the replay-backfill path.
-   *
-   * Why: `getOrder` re-reads the persistence backend. On Vercel Blob (and
-   * any backend with read-after-write inconsistency) the second read
-   * can return the pre-update `pending` state, in which case
-   * `triggerFulfillment` silently skipped with no exception, leaving
-   * the order stuck at `fulfillmentStatus=not_started`, `attempts=0`.
-   * Same fix pattern is used in `approvePrintProof`.
+   * Confirm-paid readback policy. The kickoff polls `getOrder` until it
+   * observes `paymentStatus === 'paid'` (and a non-empty
+   * `stripeSessionId`). If the persistence backend never converges,
+   * fulfillment refuses — it must NEVER run against a non-paid order.
+   * Defaults are tuned for production: 5 attempts, 100ms initial
+   * backoff doubling. Tests inject a no-op sleep + tighter limits.
    */
-  preloadedOrder?: OrderRecord;
+  readbackMaxAttempts?: number;
+  readbackInitialDelayMs?: number;
+}
+
+const DEFAULT_READBACK_MAX_ATTEMPTS = 5;
+const DEFAULT_READBACK_INITIAL_DELAY_MS = 100;
+
+/**
+ * Re-read the order from authoritative persistence and only return a
+ * confirmed-paid record. Returns null if the readback never converges
+ * to `paymentStatus === 'paid'`, which triggers a fail-closed skip in
+ * the caller. This is the gate that prevents digital generation from
+ * running against a still-pending payment record.
+ *
+ * The webhook-triggered case ALSO has a non-empty `stripeSessionId`
+ * by the time it gets here (the webhook awaited the payment write
+ * before scheduling fulfillment). Admin-triggered retries may have
+ * paymentStatus='paid' without a Stripe session id, which is valid —
+ * we don't gate on stripeSessionId here.
+ */
+async function readbackUntilPaid(
+  orderId: string,
+  opts: TriggerFulfillmentOptions = {},
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise(r => setTimeout(r, ms)),
+): Promise<OrderRecord | null> {
+  const maxAttempts = opts.readbackMaxAttempts ?? DEFAULT_READBACK_MAX_ATTEMPTS;
+  const initialDelay = opts.readbackInitialDelayMs ?? DEFAULT_READBACK_INITIAL_DELAY_MS;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const order = await getOrder(orderId);
+    if (order && order.paymentStatus === 'paid') {
+      return order;
+    }
+    if (attempt < maxAttempts - 1) {
+      await sleep(initialDelay * (2 ** attempt));
+    }
+  }
+  return null;
 }
 
 export async function triggerFulfillment(
@@ -596,27 +627,16 @@ export async function triggerFulfillment(
   deps: FulfillmentDeps = {},
   opts: TriggerFulfillmentOptions = {},
 ): Promise<void> {
-  // Authoritative-record path: when the caller just wrote the order and
-  // hands us the in-memory result, trust it and skip the re-read race.
-  // Defensive: id must match.
-  let order: OrderRecord | null;
-  if (opts.preloadedOrder && opts.preloadedOrder.id === orderId) {
-    order = opts.preloadedOrder;
-  } else {
-    order = await getOrder(orderId);
-  }
+  // Confirm authoritative paid state before doing ANY work. Read-after-
+  // write inconsistency on the persistence backend cannot trick us into
+  // running fulfillment on a non-paid order (the 2026-05-08 retest
+  // reproduced exactly that — pages generated, paymentStatus stuck
+  // pending). If we never see a confirmed-paid record, log and refuse.
+  const order = await readbackUntilPaid(orderId, opts, deps.sleep);
   if (!order) {
-    console.error(`[fulfillment] order ${orderId} not found`);
-    return;
-  }
-
-  if (order.paymentStatus !== 'paid') {
-    // If a preloaded record was passed and it disagreed with the
-    // re-read, that would be a data-corruption signal. We don't reach
-    // this branch in the preloaded-paid case because we trust the
-    // preloaded record above. This log line stays as the fall-back
-    // diagnostic for the unloaded path.
-    console.error(`[fulfillment] order ${orderId} not paid — skipping fulfillment`);
+    console.error(
+      `[fulfillment] order ${orderId} payment not confirmed (paymentStatus !== 'paid') — refusing to start fulfillment`,
+    );
     return;
   }
 
@@ -631,8 +651,8 @@ export async function triggerFulfillment(
 
   const isDigital = !isPrintFormat(order.bookFormat);
   const run = isDigital
-    ? (_attempt: number) => runDigitalFulfillment(order!, deps)
-    : (_attempt: number) => runPrintFulfillment(order!, deps);
+    ? (_attempt: number) => runDigitalFulfillment(order, deps)
+    : (_attempt: number) => runPrintFulfillment(order, deps);
 
   await runWithRetry(orderId, run, deps);
 }

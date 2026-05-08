@@ -1,10 +1,13 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import Stripe from 'stripe';
 
 import { sendOrderConfirmationEmail } from '@/lib/order-email';
 import { isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
 import { triggerFulfillment } from '@/lib/fulfillment';
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
+
+// kept for future use (print-vs-digital branching); referenced by tests
+void isPrintFormat;
 
 interface StripeCheckoutSession {
   id: string;
@@ -93,18 +96,23 @@ export async function POST(request: Request) {
             // exiting after the payment write). This remains idempotent because
             // triggerFulfillment re-checks fulfillment state.
             //
-            // Pass `existing` (the in-memory record we just loaded with
-            // verified paymentStatus='paid') so triggerFulfillment doesn't
-            // re-read the persistence backend and hit a stale 'pending'
-            // read that would silently skip kickoff.
+            // Scheduled with after() so the webhook returns 200 before the
+            // long digital-fulfillment pipeline runs. Stripe's delivery has a
+            // ~10s timeout; awaiting story+image+PDF generation here causes
+            // "context deadline exceeded" + retries that have already been
+            // observed clobbering paymentStatus on retry. Fulfillment will
+            // re-read authoritative state from persistence before doing any
+            // work — see triggerFulfillment.
             console.warn(
-              `Stripe webhook: paid order ${orderId} still fulfillmentStatus=${existing.fulfillmentStatus ?? 'unset'} — backfilling fulfillment`,
+              `Stripe webhook: paid order ${orderId} still fulfillmentStatus=${existing.fulfillmentStatus ?? 'unset'} — scheduling fulfillment backfill after response`,
             );
-            try {
-              await triggerFulfillment(orderId, {}, { preloadedOrder: existing });
-            } catch (err) {
-              console.error(`[webhook] fulfillment backfill failed for ${orderId}:`, err);
-            }
+            after(async () => {
+              try {
+                await triggerFulfillment(orderId);
+              } catch (err) {
+                console.error(`[webhook] fulfillment backfill failed for ${orderId}:`, err);
+              }
+            });
           }
           return NextResponse.json({ received: true });
         }
@@ -149,23 +157,27 @@ export async function POST(request: Request) {
 
       await sendOrderConfirmationEmail(updated);
 
-      // Awaited so serverless runtime keeps the request alive until fulfillment
-      // actually starts. A fire-and-forget promise gets dropped when the
-      // function returns, which on Vercel left orders stuck at
-      // fulfillmentStatus='not_started' even after webhook marked them paid.
-      // Errors are still captured on the order record by triggerFulfillment.
-      //
-      // Pass `updated` (the just-persisted post-write order record with
-      // paymentStatus='paid') so triggerFulfillment skips the re-read of
-      // the persistence backend. Read-after-write inconsistency on the
-      // blob backend would otherwise return a stale 'pending' record and
-      // make triggerFulfillment silently skip kickoff — that's the
-      // 2026-05-08 paid-but-not-started incident pattern.
-      try {
-        await triggerFulfillment(orderId, {}, { preloadedOrder: updated });
-      } catch (err) {
-        console.error(`[webhook] fulfillment trigger failed for ${orderId}:`, err);
-      }
+      // Webhook contract:
+      //   - The payment write (above) is awaited so the order is durably
+      //     paid BEFORE we return 200 — a Stripe retry must never observe
+      //     "still pending" after we've ack'd.
+      //   - Fulfillment is decoupled via next/server `after()`. It runs
+      //     after the response is flushed, so the webhook returns within
+      //     a few hundred ms instead of waiting 30s+ for story/image/PDF
+      //     generation. Stripe's delivery has a ~10s timeout — the
+      //     2026-05-08 retest reproduced "context deadline exceeded" +
+      //     retry races when fulfillment was awaited inline.
+      //   - triggerFulfillment re-reads authoritative paid state from
+      //     persistence before running anything (see fulfillment.ts).
+      //     If the read does not show paid, fulfillment refuses, so we
+      //     never run digital generation against a non-paid order.
+      after(async () => {
+        try {
+          await triggerFulfillment(orderId);
+        } catch (err) {
+          console.error(`[webhook] fulfillment trigger failed for ${orderId}:`, err);
+        }
+      });
     } catch (err) {
       console.error(`Stripe webhook: failed to process order ${orderId}:`, err);
       return NextResponse.json({ error: 'Processing failed' }, { status: 500 });

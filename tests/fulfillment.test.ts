@@ -304,54 +304,70 @@ test('already-complete order is not re-processed', async () => {
   }
 });
 
-// ── Read-after-write race fix: preloadedOrder + Lulu-skip for digital ────────
+// ── 2026-05-08 retest regressions ────────────────────────────────────────────
 //
-// 2026-05-08 incident: Rex's local digital test flow ended with the order
-// at paymentStatus=paid AND fulfillmentStatus=null/not_started, attempts=0.
-// The webhook awaited triggerFulfillment, but triggerFulfillment re-read
-// the order via getOrder and silently returned because the re-read
-// observed paymentStatus='pending' (read-after-write race). The fix is
-// to pass the in-memory post-write record so the re-read is skipped.
+// Required behavior after the retest failure:
+//   1. Webhook response does not await long fulfillment.
+//   2. paymentStatus=pending cannot produce complete fulfillment.
+//   3. paid + stripeSessionId persisted → fulfillment kicks off.
+//   4. No Lulu/print-job for digital, ever.
+//
+// (1) is pinned by source-level assertions in
+//     tests/stripe-webhook-refund-replay.test.ts.
+// (2)–(4) below.
 
-test('triggerFulfillment: preloadedOrder=paid kicks off digital fulfillment even when persistence re-read is stale-pending', async () => {
+test('payment pending cannot produce complete fulfillment (readback gate)', async () => {
   const dir = makeTmpDir();
   try {
-    // Persist the order with paymentStatus=PENDING — this simulates the
-    // worst case of read-after-write inconsistency where the just-written
-    // 'paid' state is not yet visible to a fresh read.
-    const stale = await makeOrder({ paymentStatus: 'pending', bookFormat: 'digital' }, dir);
-    // Hand the in-memory POST-write record to triggerFulfillment. It
-    // should trust the preloaded record and proceed.
-    const justPersistedPaid: OrderRecord = { ...stale, paymentStatus: 'paid' };
-    await triggerFulfillment(stale.id, PASS_DEPS, { preloadedOrder: justPersistedPaid });
+    let storyCalls = 0;
+    let imageCalls = 0;
+    let pdfCalls = 0;
+    let submitPrintCalls = 0;
+    const counting: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStory: async () => { storyCalls++; return MOCK_STORY; },
+      generateImages: async (prompts) => { imageCalls++; return prompts.map(() => null); },
+      buildPdf: async () => { pdfCalls++; return MOCK_PDF; },
+      submitPrint: async () => { submitPrintCalls++; return { jobId: 'never' }; },
+      sleep: async () => {}, // make readback retries instant in tests
+    };
+    // Persisted state shows pending — this is the 2026-05-08 retest shape.
+    await makeOrder({ paymentStatus: 'pending', bookFormat: 'digital' }, dir);
+    const id = (await getOrder('ord_does_not_matter_we_use_real_id'))?.id; // no-op probe
 
-    // After kickoff, fulfillment will read state on its own writes.
-    // updateFulfillmentState reads then writes — without a true blob
-    // backend this collapses to a fast file write, so we should see
-    // the order progress to 'complete'.
-    const after = await getOrder(stale.id);
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    const real = await makeOrder({ paymentStatus: 'pending', bookFormat: 'digital' }, dir);
+    await triggerFulfillment(real.id, counting, { readbackMaxAttempts: 3, readbackInitialDelayMs: 0 });
+
+    // Fulfillment must NOT have run.
+    assert.equal(storyCalls, 0, 'story must not run on pending payment');
+    assert.equal(imageCalls, 0, 'images must not run on pending payment');
+    assert.equal(pdfCalls, 0, 'PDF must not build on pending payment');
+    assert.equal(submitPrintCalls, 0, 'Lulu must never be called on pending payment');
+
+    const after = await getOrder(real.id);
+    assert.equal(after?.paymentStatus, 'pending', 'paymentStatus must remain pending');
+    assert.ok(
+      !after?.fulfillmentStatus || after.fulfillmentStatus === 'not_started',
+      `fulfillmentStatus must NOT advance from pending payment (got ${after?.fulfillmentStatus})`,
+    );
+    assert.ok(!after?.storyArtifactUrl, 'no PDF should be uploaded for pending payment');
+    void id;
   } finally { cleanupTmpDir(dir); }
 });
 
-test('triggerFulfillment: preloadedOrder with mismatched id is ignored (defensive)', async () => {
+test('paid update + queued kickoff: confirmed-paid persistence drives fulfillment to complete', async () => {
   const dir = makeTmpDir();
   try {
-    const real = await makeOrder({ paymentStatus: 'pending', bookFormat: 'digital' }, dir);
-    // Swap in a preloaded record whose id does NOT match the orderId param.
-    // The function must NOT trust it; it must fall back to getOrder.
-    const otherPaid: OrderRecord = {
-      ...real,
-      id: 'ord_other',
-      paymentStatus: 'paid',
-    };
-    await triggerFulfillment(real.id, PASS_DEPS, { preloadedOrder: otherPaid });
-    // real order has paymentStatus=pending in storage → fulfillment skipped.
-    const after = await getOrder(real.id);
-    assert.ok(
-      !after?.fulfillmentStatus || after.fulfillmentStatus === 'not_started',
-      `Expected no fulfillment, got ${after?.fulfillmentStatus}`,
+    const order = await makeOrder(
+      { paymentStatus: 'paid', stripeSessionId: 'cs_test_paid_kickoff', bookFormat: 'digital' },
+      dir,
     );
+    await triggerFulfillment(order.id, PASS_DEPS);
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.paymentStatus, 'paid', 'paymentStatus must remain paid through fulfillment');
+    assert.equal(after?.stripeSessionId, 'cs_test_paid_kickoff', 'stripeSessionId must persist through fulfillment');
+    assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
   } finally { cleanupTmpDir(dir); }
 });
 
@@ -406,8 +422,12 @@ test('digital fulfillment: duplicate triggerFulfillment is idempotent (no double
   } finally { cleanupTmpDir(dir); }
 });
 
-test('source-level: triggerFulfillment exposes preloadedOrder option matching the approvePrintProof in-memory pattern', () => {
+test('source-level: triggerFulfillment uses readback-until-paid gate (no preloaded shortcut)', () => {
   const src = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
-  assert.match(src, /preloadedOrder\??:\s*OrderRecord/);
-  assert.match(src, /opts\.preloadedOrder\s*&&\s*opts\.preloadedOrder\.id\s*===\s*orderId/);
+  // The fail-closed gate must exist.
+  assert.match(src, /readbackUntilPaid/);
+  assert.match(src, /paymentStatus !== 'paid'/);
+  assert.match(src, /refusing to start fulfillment/);
+  // The previous shortcut must NOT exist (it bypassed the gate).
+  assert.doesNotMatch(src, /preloadedOrder/);
 });
