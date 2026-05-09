@@ -2,6 +2,7 @@ export interface PublicPricingPlan {
   id: 'digital' | 'classic' | 'premium';
   name: string;
   price: string;
+  anchorPrice?: string;
   description: string;
   promise: string;
   features: string[];
@@ -13,7 +14,8 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
   {
     id: 'digital',
     name: 'Digital',
-    price: '$29.99',
+    price: '$14.99',
+    anchorPrice: '$19.99',
     description: 'Personalized PDF delivered fast',
     promise: 'Delivered by email in about 15 minutes.',
     features: [
@@ -27,14 +29,14 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
   {
     id: 'classic',
     name: 'Classic',
-    price: '$49.99',
+    price: '$39.99',
     description: 'Softcover keepsake with digital preview',
-    promise: 'Ships in 5–7 business days. A digital preview arrives first so you can approve before it prints.',
+    promise: 'Free shipping included. Ships in 5–7 business days. A digital preview arrives first so you can approve before it prints.',
     features: [
       'Premium softcover printed book',
+      'Free shipping included',
       'Digital preview approval before print',
       'Digital PDF included',
-      'Most popular gift format',
     ],
     cta: 'Choose Classic',
     featured: true,
@@ -42,14 +44,15 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
   {
     id: 'premium',
     name: 'Premium',
-    price: '$79.99',
-    description: 'Hardcover gift set with extra copies',
-    promise: 'Ships in 5–7 business days. A digital preview arrives first so you can approve before it prints.',
+    price: '$59.99',
+    description: 'Hardcover keepsake edition',
+    promise: 'Free shipping included. Ships in 5–7 business days. A digital preview arrives first so you can approve before it prints.',
     features: [
-      'Premium hardcover printed book',
+      'Beautiful hardcover printed book',
+      'Free shipping included',
       'Digital preview approval before print',
       'Digital PDF included',
-      'Includes 2 extra softcover copies',
+      'Best for special gifts and keepsakes',
     ],
     cta: 'Choose Premium',
   },

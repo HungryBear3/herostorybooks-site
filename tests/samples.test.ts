@@ -18,21 +18,51 @@ test('every sample adventure shows more than a thin three-page teaser', () => {
   }
 });
 
-test('sample adventure interior pages are prewired to fal output filenames', () => {
-  const expectedPrefixes = {
-    'Brave Explorer': '/assets/brave-explorer-page-',
-    'Space Voyager': '/assets/space-voyager-page-',
-    'Ocean Dreams': '/assets/ocean-dreams-page-',
-    'Dinosaur Discovery': '/assets/dinosaur-discovery-page-',
-  } as const;
+test('samples include Dragon Quest and Royal Adventure with full five-page arcs', () => {
+  const names = SAMPLE_ADVENTURES.map((adventure) => adventure.name);
+  assert.equal(names.includes('Dragon Quest'), true);
+  assert.equal(names.includes('Royal Adventure'), true);
 
-  for (const adventure of SAMPLE_ADVENTURES) {
-    const prefix = expectedPrefixes[adventure.name as keyof typeof expectedPrefixes];
-    assert.ok(prefix, `unexpected adventure ${adventure.name}`);
+  const dragon = SAMPLE_ADVENTURES.find((adventure) => adventure.name === 'Dragon Quest');
+  const royal = SAMPLE_ADVENTURES.find((adventure) => adventure.name === 'Royal Adventure');
+  assert.equal(dragon?.pages.length, 5);
+  assert.equal(royal?.pages.length, 5);
+  assert.equal(dragon?.pages[0]?.image, '/assets/dragon-quest-gpt.png');
+  assert.equal(royal?.pages[0]?.image, '/assets/royal-regen-candidates-v7/cover-v7.png');
+  assert.equal(royal?.pages[0]?.sceneTitle, 'A Golden Invitation Arrives');
+});
 
-    for (const [index, page] of adventure.pages.entries()) {
-      if (index === 0) continue;
-      assert.equal(page.image?.startsWith(prefix), true, `${adventure.name} page ${index + 1} missing prewired image`);
-    }
+test('royal adventure sample now uses real artwork references for all five sample pages', () => {
+  const royal = SAMPLE_ADVENTURES.find((adventure) => adventure.name === 'Royal Adventure');
+  assert.ok(royal);
+  const expected = [
+    '/assets/royal-regen-candidates-v7/cover-v7.png',
+    '/assets/royal-regen-candidates-v7/page2-v7.png',
+    '/assets/royal-regen-candidates-v7/page3-v7.png',
+    '/assets/royal-regen-candidates-v7/page4-v7.png',
+    '/assets/royal-regen-candidates-v7/page5-v7.png',
+  ];
+
+  assert.deepEqual(
+    royal?.pages.map((page) => page.image),
+    expected,
+  );
+});
+
+test('royal adventure sample marks all v7 pages as portrait so the samples viewer does not crop their heads', () => {
+  const royal = SAMPLE_ADVENTURES.find((adventure) => adventure.name === 'Royal Adventure');
+  assert.ok(royal);
+  assert.deepEqual(
+    royal?.pages.map((page) => page.imageLayout),
+    ['portrait', 'portrait', 'portrait', 'portrait', 'portrait'],
+  );
+});
+
+test('royal adventure sample keeps scene metadata for placeholder fallback safety', () => {
+  const royal = SAMPLE_ADVENTURES.find((adventure) => adventure.name === 'Royal Adventure');
+  assert.ok(royal);
+  for (const page of royal.pages) {
+    assert.ok(page.sceneTitle);
+    assert.ok(page.sceneAccent);
   }
 });

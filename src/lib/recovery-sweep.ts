@@ -18,6 +18,7 @@ export interface SweepOptions {
   dryRun?: boolean;
   thresholdMs?: number;
   now?: string;
+  // Injectable for tests
   _leads?: RecoveryLead[];
   _onSend?: (lead: RecoveryLead) => Promise<{ id: string }>;
   _onMark?: (lead: RecoveryLead) => Promise<void>;
@@ -34,31 +35,27 @@ export async function runRecoverySweep(options: SweepOptions = {}): Promise<Swee
   } = options;
 
   const leads = _leads ?? await listRecoveryLeads();
-  const candidates = leads.filter((lead) => isAbandonedCandidate(lead, now, thresholdMs));
+  const candidates = leads.filter(l => isAbandonedCandidate(l, now, thresholdMs));
 
-  const result: SweepResult = {
-    eligible: candidates.length,
-    sent: 0,
-    failed: 0,
-    skipped: 0,
-    dryRun,
-  };
+  const result: SweepResult = { eligible: candidates.length, sent: 0, failed: 0, skipped: 0, dryRun };
+
+  if (dryRun) {
+    for (const lead of candidates) {
+      console.log(`[dry-run] would send to ${lead.email} (last active: ${lead.updatedAt})`);
+    }
+    result.skipped = candidates.length;
+    return result;
+  }
 
   for (const lead of candidates) {
-    if (dryRun) {
-      console.log(`[dry-run] would send to ${lead.email} (last active: ${lead.updatedAt})`);
-      result.skipped += 1;
-      continue;
-    }
-
     try {
       await _onSend(lead);
       await _onMark(lead);
-      result.sent += 1;
+      result.sent++;
       console.log(`Sent recovery email to ${lead.email}`);
-    } catch (error) {
-      result.failed += 1;
-      console.error(`Failed to send to ${lead.email}:`, error instanceof Error ? error.message : error);
+    } catch (err) {
+      result.failed++;
+      console.error(`Failed to send to ${lead.email}:`, err instanceof Error ? err.message : err);
     }
   }
 

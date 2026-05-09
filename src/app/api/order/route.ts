@@ -1,11 +1,51 @@
 import { NextResponse } from 'next/server';
+import Stripe from 'stripe';
 
-import { sendOrderConfirmationEmail } from '@/lib/order-email';
-import { createOrderRecord, persistOrder, uploadOrderPhoto } from '@/lib/orders';
+import {
+  createOrderRecord,
+  isPrintFormat,
+  OrderPersistenceError,
+  persistOrder,
+  uploadOrderPhoto,
+} from '@/lib/orders';
+import {
+  missingFieldErrorCode,
+  missingRequiredField,
+} from '@/lib/checkout-flow';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
+import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function getStripe() {
+  return new Stripe(getRequiredStripeSecretKey());
+}
+
+function getReturnBaseUrl(request: Request): string {
+  // Production: pin Stripe success/cancel URLs to the canonical brand domain.
+  // We deliberately do NOT use the inbound origin in production because
+  // production may be served from herostorybooks.com or from a Vercel domain,
+  // and we always want the customer to land on the branded URL.
+  if (process.env.VERCEL_ENV === 'production') {
+    const explicit = process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '');
+    if (explicit) return explicit;
+    return 'https://herostorybooks.com';
+  }
+  // Preview / development: derive base URL from the inbound request origin
+  // so Stripe returns the customer to the EXACT deployment that created the
+  // Checkout Session — not a stale shared preview alias that may serve older
+  // code. NEXT_PUBLIC_URL is the alias and would pin previews to whichever
+  // deployment that alias currently points at, which can be older than the
+  // deployment that handled this POST.
+  try {
+    const origin = new URL(request.url).origin;
+    if (origin) return origin;
+  } catch {
+    // fall through to env / localhost
+  }
+  return process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'http://localhost:3000';
 }
 
 export async function POST(request: Request) {
@@ -13,61 +53,145 @@ export async function POST(request: Request) {
     const form = await request.formData();
     const childName = String(form.get('childName') || '').trim();
     const email = String(form.get('email') || '').trim();
-    const bookFormat = String(form.get('bookFormat') || form.get('bookType') || 'classic').trim();
+    const bookFormat = String(form.get('bookFormat') || 'classic').trim();
+    const theme = String(form.get('theme') || '').trim();
+    const childPronouns = String(form.get('childPronouns') || '').trim();
 
-    if (!childName || !email || !isValidEmail(email)) {
+    // Structured appearance fields ride along inside the JSON
+    // appearanceOptions blob from the form (kept as-is for backward
+    // compatibility) AND as discrete top-level fields. The launch spec
+    // says skinTone + hairStyle MUST be explicit (no "Prefer AI to
+    // decide"). We accept either shape so the server is robust to
+    // future client refactors but enforce the same minimum.
+    const appearanceRaw = String(form.get('appearanceOptions') || '');
+    let appearance: { skinTone?: string; hairStyle?: string } = {};
+    if (appearanceRaw) {
+      try { appearance = JSON.parse(appearanceRaw) as typeof appearance; }
+      catch { appearance = {}; }
+    }
+    const skinTone = String(form.get('skinTone') || appearance.skinTone || '').trim();
+    const hairStyle = String(form.get('hairStyle') || appearance.hairStyle || '').trim();
+
+    const missing = missingRequiredField({ theme, childName, email, skinTone, hairStyle, childPronouns });
+    if (missing !== null || !isValidEmail(email)) {
+      const code = missing ? missingFieldErrorCode(missing) : 'email_invalid';
       return NextResponse.json(
-        { error: 'Child name and a valid email are required.' },
+        {
+          error:
+            code === 'email_invalid'
+              ? 'A valid email is required.'
+              : `Missing required field: ${code}`,
+          code,
+        },
         { status: 400 },
       );
     }
 
-    const photoInput = form.get('photo') instanceof File
-      ? (form.get('photo') as File)
-      : form.get('photoFile') instanceof File
-        ? (form.get('photoFile') as File)
-        : null;
-
     const draftOrder = createOrderRecord({
       childName,
       childAge: String(form.get('childAge') || ''),
-      theme: String(form.get('theme') || ''),
+      theme,
       lesson: String(form.get('lesson') || ''),
       occasion: String(form.get('occasion') || ''),
       giftMessage: String(form.get('giftMessage') || ''),
       characterNotes: String(form.get('characterNotes') || ''),
-      appearanceOptions: String(form.get('appearanceOptions') || ''),
+      childPronouns: childPronouns === 'he/him' || childPronouns === 'she/her' || childPronouns === 'they/them' ? childPronouns as 'he/him' | 'she/her' | 'they/them' : '',
+      appearanceOptions: appearanceRaw,
       bookFormat,
       email,
-      photoFileName: photoInput ? photoInput.name : null,
+      photoFileName: form.get('photo') instanceof File ? (form.get('photo') as File).name : null,
     });
 
-    const photoBlobPath = photoInput && photoInput.size > 0
-      ? await uploadOrderPhoto(draftOrder.id, photoInput)
-      : null;
+    const photo = form.get('photo');
+    let photoBlobPath: string | null = null;
+    let photoBlobUrl: string | null = null;
+    if (photo instanceof File && photo.size > 0) {
+      try {
+        const uploaded = await uploadOrderPhoto(draftOrder.id, photo);
+        if (uploaded) {
+          photoBlobPath = uploaded.pathname;
+          photoBlobUrl = uploaded.url;
+        }
+      } catch (error) {
+        // In production, OrderPersistenceError from photo upload must abort
+        // BEFORE the Stripe Checkout Session — otherwise the customer pays
+        // for an order whose photo is missing from durable storage.
+        if (error instanceof OrderPersistenceError) {
+          console.error(
+            `[order] ABORT BEFORE STRIPE: photo persistence failed for ${draftOrder.id}: ${error.message}`,
+            error.cause,
+          );
+          return NextResponse.json(
+            { error: 'We could not securely save your photo. Please retry — no charge was made.' },
+            { status: 503 },
+          );
+        }
+        console.error(`[order] photo upload failed for ${draftOrder.id}; continuing without photo`, error);
+        photoBlobPath = null;
+        photoBlobUrl = null;
+      }
+    }
 
-    const order = await persistOrder({
-      ...draftOrder,
-      photoBlobPath,
-    });
-
-    await sendOrderConfirmationEmail(order);
+    // Persist the order record durably. If this throws OrderPersistenceError
+    // we MUST NOT create a Stripe Checkout Session — the customer would pay
+    // for an order the webhook + status page can never find.
+    let order;
+    try {
+      order = await persistOrder({ ...draftOrder, photoBlobPath, photoBlobUrl });
+    } catch (error) {
+      if (error instanceof OrderPersistenceError) {
+        console.error(
+          `[order] ABORT BEFORE STRIPE: durable order persistence failed for ${draftOrder.id}: ${error.message}`,
+          error.cause,
+        );
+        return NextResponse.json(
+          {
+            error:
+              'We could not securely save your order. No charge was made. Please retry in a moment, and contact support@herostorybooks.com if it keeps happening.',
+          },
+          { status: 503 },
+        );
+      }
+      throw error;
+    }
 
     markRecoveryLeadConverted(order.email, order.id).catch(() => {});
 
-    const params = new URLSearchParams({
+    const stripe = getStripe();
+    const baseUrl = getReturnBaseUrl(request);
+    const successParams = new URLSearchParams({
       orderId: order.id,
       childName: order.childName,
       format: order.formatLabel,
       email: order.email,
     });
 
-    return NextResponse.json({
-      ok: true,
-      orderId: order.id,
-      status: order.status,
-      redirectTo: `/thank-you?${params.toString()}`,
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      customer_email: order.email,
+      client_reference_id: order.id,
+      metadata: { orderId: order.id },
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            unit_amount: order.priceCents,
+            product_data: {
+              name: `${order.formatLabel} HeroStoryBook — ${order.childName}`,
+              description: order.deliveryExpectation,
+            },
+          },
+          quantity: 1,
+        },
+      ],
+      ...(isPrintFormat(order.bookFormat)
+        ? { shipping_address_collection: { allowed_countries: ['US', 'CA', 'GB', 'AU', 'NZ'] } }
+        : {}),
+      success_url: `${baseUrl}/thank-you?${successParams.toString()}`,
+      cancel_url: `${baseUrl}/checkout`,
     });
+
+    return NextResponse.json({ ok: true, redirectTo: session.url });
   } catch (error) {
     console.error('Order error:', error);
     return NextResponse.json({ error: 'Order submission failed' }, { status: 500 });

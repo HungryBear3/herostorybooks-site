@@ -1,5 +1,26 @@
 node_modules
 .next
 .env.production
+.env.local
+.env.rebuild
 
 .vercel
+
+# OS / editor
+.DS_Store
+**/.DS_Store
+
+# Build/cache
+tsconfig.tsbuildinfo
+
+# Local-only artifacts and rescue scratch space
+.data/
+tmp/
+
+# Local sample/QA prompt packs (regenerable, not source)
+fal_sample_prompt_pack_*.json
+FAL_SAMPLE_PROMPT_PACK_*.md
+tmp_*.jsonl
+
+# Knowledge-graph output (regenerated from source)
+graphify-out/

@@ -1,0 +1,29 @@
+import { NextResponse } from 'next/server';
+
+import { regeneratePage } from '@/lib/page-review';
+
+export const dynamic = 'force-dynamic';
+
+export async function POST(
+  request: Request,
+  context: { params: Promise<{ orderId: string }> },
+) {
+  const { orderId } = await context.params;
+  const body = await request.json().catch(() => ({}));
+  const pageIndex = Number(body?.pageIndex);
+  const feedback = typeof body?.feedback === 'string' ? body.feedback : '';
+
+  if (!Number.isInteger(pageIndex) || pageIndex < 0) {
+    return NextResponse.json({ error: 'Invalid pageIndex' }, { status: 400 });
+  }
+
+  const result = await regeneratePage({ orderId, pageIndex, feedback });
+  const status = result.status ?? (result.ok ? 200 : 500);
+  if (!result.ok) {
+    return NextResponse.json(
+      { ok: false, error: result.error ?? 'regenerate_failed', page: result.page ?? null },
+      { status },
+    );
+  }
+  return NextResponse.json({ ok: true, page: result.page, warning: result.warning ?? null });
+}

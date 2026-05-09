@@ -1,0 +1,373 @@
+import Stripe from 'stripe';
+
+import { getOptionalStripeSecretKey } from './stripe-env.ts';
+
+import { appendAuditEvent, getOrder, updateFulfillmentState, updateOrderStatus, type OrderRecord } from './orders.ts';
+import { triggerFulfillment, approvePrintProof } from './fulfillment.ts';
+import { sendProofReadyEmail, sendLifecycleEmail } from './order-email.ts';
+
+export type ActionResult =
+  | { ok: true; detail?: string }
+  | { ok: false; status: 400 | 404 | 409 | 502 | 503; error: string };
+
+export type RetryResult = ActionResult;
+
+// ── Retry ─────────────────────────────────────────────────────────────────────
+
+export async function retryOrderFulfillment(orderId: string): Promise<ActionResult> {
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  if (order.paymentStatus !== 'paid') {
+    return { ok: false, status: 400, error: 'Cannot retry: payment not confirmed' };
+  }
+
+  await updateFulfillmentState(orderId, {
+    fulfillmentStatus: 'not_started',
+    fulfillmentAttempts: 0,
+    fulfillmentLastError: null,
+  });
+
+  // Awaited so the admin retry actually waits for fulfillment to start.
+  // On Vercel/serverless a fire-and-forget promise gets dropped when the
+  // request returns, leaving the order stuck at not_started.
+  try {
+    await triggerFulfillment(orderId);
+  } catch (err) {
+    console.error(`[admin] retry trigger failed for ${orderId}:`, err);
+  }
+
+  return { ok: true };
+}
+
+// ── Ship / mark shipped ───────────────────────────────────────────────────────
+
+export interface ShipInput {
+  trackingNumber?: string;
+  trackingUrl?: string;
+}
+
+export async function markOrderShipped(
+  orderId: string,
+  input: ShipInput,
+): Promise<ActionResult> {
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+
+  const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
+  if (!isPrint) {
+    return { ok: false, status: 400, error: 'Only print orders can be marked shipped' };
+  }
+  if (order.paymentStatus !== 'paid') {
+    return { ok: false, status: 400, error: 'Payment not confirmed' };
+  }
+
+  const tracking = (input.trackingNumber ?? '').trim();
+  const trackingUrl = (input.trackingUrl ?? '').trim();
+
+  await updateFulfillmentState(orderId, {
+    status: 'shipped',
+    ...(tracking ? { trackingNumber: tracking } : {}),
+    ...(trackingUrl ? { trackingUrl } : {}),
+    shippedAt: new Date().toISOString(),
+  });
+
+  const updated = await getOrder(orderId);
+  if (updated) {
+    try {
+      await sendLifecycleEmail(updated, {
+        trackingNumber: tracking || undefined,
+        trackingUrl: trackingUrl || undefined,
+      });
+    } catch (err) {
+      console.error(`[admin] shipped email failed for ${orderId}:`, err);
+    }
+  }
+
+  return { ok: true };
+}
+
+// ── Resend proof email ────────────────────────────────────────────────────────
+
+export async function resendProofEmail(
+  orderId: string,
+  baseUrl: string,
+): Promise<ActionResult> {
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  if (!order.storyArtifactUrl || !order.proofApprovalToken) {
+    return { ok: false, status: 409, error: 'No proof ready to resend' };
+  }
+  if (order.fulfillmentStatus !== 'proof_ready') {
+    return { ok: false, status: 409, error: `Proof is in state ${order.fulfillmentStatus}` };
+  }
+
+  const reviewUrl = `${baseUrl.replace(/\/$/, '')}/review/${order.id}?token=${order.proofApprovalToken}`;
+  await sendProofReadyEmail(order, { proofUrl: order.storyArtifactUrl, reviewUrl });
+  return { ok: true, detail: 'Proof email resent' };
+}
+
+// ── Manual proof approval (ops override) ──────────────────────────────────────
+
+export async function manuallyApproveProof(orderId: string): Promise<ActionResult> {
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  if (order.fulfillmentStatus !== 'proof_ready') {
+    return { ok: false, status: 409, error: `Proof is in state ${order.fulfillmentStatus}` };
+  }
+  if (!order.proofApprovalToken) {
+    return { ok: false, status: 409, error: 'No approval token on order' };
+  }
+
+  // Reuse the same code path as the customer approval — pass the stored token.
+  const result = await approvePrintProof(order.id, order.proofApprovalToken);
+  if (!result.ok) {
+    return { ok: false, status: 409, error: result.error ?? 'Approval failed' };
+  }
+  return { ok: true, detail: 'Proof manually approved' };
+}
+
+// ── Pre-print Stripe refund ──────────────────────────────────────────────────
+
+export interface RefundDeps {
+  /** Inject for tests so we can assert the Stripe call shape without
+   *  hitting the real API. Returning `null` from `getStripe` forces the
+   *  503 manual-refund path. */
+  getStripe?: () => StripeRefundClient | null;
+  now?: () => string;
+}
+
+export interface StripeRefundClient {
+  retrieveSession: (sessionId: string) => Promise<{ payment_intent: string | null }>;
+  createRefund: (paymentIntent: string, reason?: string) => Promise<{ id: string }>;
+}
+
+function defaultStripeRefundClient(): StripeRefundClient | null {
+  const key = getOptionalStripeSecretKey();
+  if (!key) return null;
+  const stripe = new Stripe(key);
+  return {
+    async retrieveSession(sessionId) {
+      const s = await stripe.checkout.sessions.retrieve(sessionId);
+      const intent =
+        typeof s.payment_intent === 'string'
+          ? s.payment_intent
+          : s.payment_intent?.id ?? null;
+      return { payment_intent: intent };
+    },
+    async createRefund(paymentIntent) {
+      const r = await stripe.refunds.create({ payment_intent: paymentIntent });
+      return { id: r.id };
+    },
+  };
+}
+
+/**
+ * Pre-print refund (Plan §8). Refuses unless the order is paid AND not
+ * yet shipped/in-print AND not already refunded. Calls Stripe directly
+ * — no fake "refund recorded" path: if Stripe is not configured the
+ * action returns 503 without touching state, so the operator sees the
+ * exact blocker. On success, persists `paymentStatus='refunded'`,
+ * `refundedAt`, `stripeRefundId`, and an audit event; flips
+ * `fulfillmentStatus` to `failed_manual_review` so downstream paths
+ * cannot accidentally print a refunded order.
+ */
+export async function refundOrder(
+  orderId: string,
+  reason: string,
+  deps: RefundDeps = {},
+): Promise<ActionResult> {
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+
+  const refusal = preprintRefundRefusalReason(order);
+  if (refusal) {
+    await appendAuditEvent(order.id, {
+      type: 'refund_refused',
+      reason: refusal,
+      meta: {
+        paymentStatus: order.paymentStatus,
+        fulfillmentStatus: order.fulfillmentStatus ?? null,
+        status: order.status,
+      },
+    });
+    return { ok: false, status: 409, error: refusal };
+  }
+
+  if (!order.stripeSessionId) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Order has no stripeSessionId — cannot run a real refund',
+    };
+  }
+
+  const stripe = (deps.getStripe ?? defaultStripeRefundClient)();
+  if (!stripe) {
+    return {
+      ok: false,
+      status: 503,
+      error: 'STRIPE_SECRET_KEY is not configured — refund cannot run',
+    };
+  }
+
+  const trimmedReason = (reason || 'customer_request').trim().slice(0, 240);
+  const now = deps.now ? deps.now() : new Date().toISOString();
+
+  let refundId: string;
+  try {
+    const session = await stripe.retrieveSession(order.stripeSessionId);
+    if (!session.payment_intent) {
+      return {
+        ok: false,
+        status: 502,
+        error: 'Stripe session has no payment_intent — refund cannot run',
+      };
+    }
+    const refund = await stripe.createRefund(session.payment_intent, trimmedReason);
+    refundId = refund.id;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      status: 502,
+      error: `Stripe refund failed: ${message.slice(0, 200)}`,
+    };
+  }
+
+  await updateFulfillmentState(order.id, {
+    paymentStatus: 'refunded',
+    refundedAt: now,
+    refundReason: trimmedReason,
+    stripeRefundId: refundId,
+    fulfillmentStatus: 'failed_manual_review',
+    fulfillmentLastError: `refunded_pre_print: ${trimmedReason}`,
+  });
+
+  await appendAuditEvent(order.id, {
+    type: 'refund_issued',
+    reason: trimmedReason,
+    meta: { stripeRefundId: refundId },
+  });
+
+  return { ok: true, detail: `Refund issued: ${refundId}` };
+}
+
+/** Pure predicate. Returns null when refund is allowed, or a short
+ *  reason code when it must be refused. Exported for tests + UI gating. */
+export function preprintRefundRefusalReason(order: OrderRecord): string | null {
+  if (order.paymentStatus === 'refunded' || order.refundedAt) {
+    return 'already_refunded';
+  }
+  if (order.paymentStatus !== 'paid') {
+    return 'not_paid';
+  }
+  if (order.status === 'shipped') return 'already_shipped';
+  if (order.status === 'print_in_production') return 'already_in_print';
+  if (
+    order.fulfillmentStatus === 'submitting_to_print'
+    || order.fulfillmentStatus === 'complete'
+  ) {
+    return 'already_finalized';
+  }
+  return null;
+}
+
+// ── Lulu status sync ──────────────────────────────────────────────────────────
+
+export interface LuluWebhookPayload {
+  data?: {
+    id?: number | string;
+    status?: { name?: string } | string;
+    line_items?: Array<{
+      tracking_id?: string | null;
+      tracking_urls?: string[] | null;
+      external_id?: string | null;
+    }>;
+    external_id?: string | null;
+  };
+  topic?: string;
+}
+
+function extractLuluStatus(payload: LuluWebhookPayload): string | null {
+  const status = payload.data?.status;
+  if (!status) return null;
+  if (typeof status === 'string') return status.toUpperCase();
+  return (status.name ?? '').toUpperCase() || null;
+}
+
+function extractTracking(payload: LuluWebhookPayload): { trackingNumber?: string; trackingUrl?: string } {
+  const items = payload.data?.line_items ?? [];
+  for (const item of items) {
+    const num = item.tracking_id;
+    const urls = item.tracking_urls;
+    if (num || (urls && urls.length > 0)) {
+      return {
+        ...(num ? { trackingNumber: num } : {}),
+        ...(urls && urls[0] ? { trackingUrl: urls[0] } : {}),
+      };
+    }
+  }
+  return {};
+}
+
+/**
+ * Apply an incoming Lulu webhook to the matching order.
+ * Resolves the order by external_id (preferred) or by matching printJobId.
+ */
+export async function applyLuluStatusUpdate(
+  payload: LuluWebhookPayload,
+  resolveOrderByJobId?: (jobId: string) => Promise<string | null>,
+): Promise<ActionResult> {
+  const externalId = payload.data?.external_id ?? payload.data?.line_items?.[0]?.external_id;
+  const jobId = payload.data?.id != null ? String(payload.data.id) : null;
+
+  let orderId = (externalId ?? '').trim() || null;
+  if (!orderId && jobId && resolveOrderByJobId) {
+    orderId = await resolveOrderByJobId(jobId);
+  }
+  if (!orderId) {
+    return { ok: false, status: 404, error: 'Could not resolve order from Lulu payload' };
+  }
+
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+
+  const status = extractLuluStatus(payload);
+  const tracking = extractTracking(payload);
+
+  const patch: Parameters<typeof updateFulfillmentState>[1] = {
+    ...(status ? { printJobStatus: status } : {}),
+    ...(tracking.trackingNumber ? { trackingNumber: tracking.trackingNumber } : {}),
+    ...(tracking.trackingUrl ? { trackingUrl: tracking.trackingUrl } : {}),
+  };
+
+  // Map Lulu status → order.status
+  if (status === 'IN_PRODUCTION' || status === 'PRODUCTION_READY' || status === 'PRODUCTION_DELAYED') {
+    patch.status = 'print_in_production';
+  } else if (status === 'SHIPPED') {
+    patch.status = 'shipped';
+    patch.shippedAt = new Date().toISOString();
+  } else if (status === 'REJECTED' || status === 'CANCELED') {
+    patch.fulfillmentStatus = 'failed_manual_review';
+    patch.fulfillmentLastError = `Lulu returned ${status}`;
+  }
+
+  await updateFulfillmentState(orderId, patch);
+
+  // Send shipped email on SHIPPED transition (idempotent: only if not already shipped)
+  if (status === 'SHIPPED' && order.status !== 'shipped') {
+    const updated = await getOrder(orderId);
+    if (updated) {
+      try {
+        await sendLifecycleEmail(updated, {
+          trackingNumber: tracking.trackingNumber,
+          trackingUrl: tracking.trackingUrl,
+        });
+      } catch (err) {
+        console.error(`[lulu-webhook] lifecycle email failed for ${orderId}:`, err);
+      }
+    }
+  }
+
+  return { ok: true, detail: status ?? 'updated' };
+}

@@ -7,10 +7,33 @@ test('public pricing plans match live checkout tiers and published route', () =>
   assert.deepEqual(
     PUBLIC_PRICING_PLANS.map((plan) => [plan.id, plan.price]),
     [
-      ['digital', '$29.99'],
-      ['classic', '$49.99'],
-      ['premium', '$79.99'],
+      ['digital', '$14.99'],
+      ['classic', '$39.99'],
+      ['premium', '$59.99'],
     ],
+  );
+});
+
+test('print plans (Classic + Premium) clearly include free shipping', () => {
+  const printPlans = PUBLIC_PRICING_PLANS.filter((plan) => plan.id !== 'digital');
+  for (const plan of printPlans) {
+    const hasFreeShippingFeature = plan.features.some((f) => /free shipping/i.test(f));
+    const promiseSaysFreeShipping = /free shipping/i.test(plan.promise);
+    assert.ok(
+      hasFreeShippingFeature || promiseSaysFreeShipping,
+      `${plan.id} must surface free shipping in features or promise`,
+    );
+  }
+});
+
+test('digital plan does NOT claim free shipping', () => {
+  const digital = PUBLIC_PRICING_PLANS.find((plan) => plan.id === 'digital');
+  assert.ok(digital);
+  assert.equal(/free shipping/i.test(digital!.promise), false, 'digital promise must not mention shipping');
+  assert.equal(
+    digital!.features.some((f) => /shipping/i.test(f)),
+    false,
+    'digital features must not mention shipping',
   );
 });
 
@@ -21,4 +44,21 @@ test('print plans promise preview approval before printing', () => {
     assert.match(plan.promise, /preview/i);
     assert.match(plan.promise, /before it prints/i);
   }
+});
+
+test('digital plan carries an anchor price after the discount drop', () => {
+  const digital = PUBLIC_PRICING_PLANS.find((plan) => plan.id === 'digital');
+  assert.ok(digital);
+  assert.equal(digital!.price, '$14.99');
+  assert.equal(digital!.anchorPrice, '$19.99');
+});
+
+test('premium plan is a hardcover keepsake edition without extra-copy bundle language', () => {
+  const premium = PUBLIC_PRICING_PLANS.find((plan) => plan.id === 'premium');
+  assert.ok(premium);
+  assert.match(premium!.description, /hardcover keepsake edition/i);
+  assert.ok(premium!.features.some((feature) => /hardcover printed book/i.test(feature)));
+  assert.ok(premium!.features.some((feature) => /digital pdf included/i.test(feature)));
+  assert.ok(premium!.features.some((feature) => /special gifts and keepsakes/i.test(feature)));
+  assert.ok(premium!.features.every((feature) => !/extra softcover copies|extra copies/i.test(feature)));
 });

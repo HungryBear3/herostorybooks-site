@@ -8,12 +8,23 @@ import { CHECKOUT_SAMPLE_IMAGES, STORY_OCCASIONS, STORY_THEMES } from '@/lib/sto
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const THEMES = STORY_THEMES.map((theme) => ({
-  id: theme.id,
-  label: theme.name,
-  emoji: theme.emoji,
-  desc: theme.description,
-}));
+const LAUNCH_THEME_IDS = new Set([
+  'brave-explorer',
+  'space-voyager',
+  'ocean-dreams',
+  'dinosaur-discovery',
+  'dragon-quest',
+  'royal-adventure',
+]);
+
+const THEMES = STORY_THEMES
+  .filter((theme) => LAUNCH_THEME_IDS.has(theme.id))
+  .map((theme) => ({
+    id: theme.id,
+    label: theme.name,
+    emoji: theme.emoji,
+    desc: theme.description,
+  }));
 
 const LESSONS = [
   { id: 'courage',       label: 'Courage',       emoji: '🦁' },
@@ -30,8 +41,8 @@ const FORMATS = [
     id: 'digital',
     label: 'Digital',
     icon: '📱',
-    price: '$29.99',
-    priceNum: 29.99,
+    price: '$14.99',
+    priceNum: 14.99,
     delivery: 'PDF by email in ~15 minutes',
     deliveryDetail: 'Read on any device · Print at home',
   },
@@ -39,8 +50,8 @@ const FORMATS = [
     id: 'classic',
     label: 'Classic',
     icon: '📚',
-    price: '$49.99',
-    priceNum: 49.99,
+    price: '$39.99',
+    priceNum: 39.99,
     badge: 'Most Popular',
     delivery: 'Softcover ships in 5–7 business days',
     deliveryDetail: 'Digital PDF also sent in ~15 min',
@@ -49,10 +60,10 @@ const FORMATS = [
     id: 'premium',
     label: 'Premium',
     icon: '⭐',
-    price: '$79.99',
-    priceNum: 79.99,
+    price: '$59.99',
+    priceNum: 59.99,
     delivery: 'Hardcover ships in 5–7 business days',
-    deliveryDetail: 'Digital PDF also sent in ~15 min · 2 extra copies',
+    deliveryDetail: 'Digital PDF also sent in ~15 min',
   },
 ];
 
@@ -527,23 +538,24 @@ export default function CheckoutPage() {
             </AnimatePresence>
           </section>
 
-          {/* ── 2.5 Character details (optional) ── */}
+          {/* ── 2.5 Character details ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
             <div>
               <h2 className="font-serif text-xl text-forest mb-1">🪄 Character details</h2>
               <p className="text-sm text-gray-500">
-                Want a closer match? Tell us a few visible details so the art feels more like your child.
+                Tell us a few visible details so the art feels more like your child.
               </p>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
-                <label className="block text-sm font-semibold text-forest mb-1.5">Skin tone</label>
+                <label className="block text-sm font-semibold text-forest mb-1.5">Skin tone *</label>
                 <select
                   value={form.skinTone}
                   onChange={e => set('skinTone', e.target.value)}
                   className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold transition text-gray-900 bg-white"
+                  required
                 >
-                  <option value="">Prefer AI to decide</option>
+                  <option value="">Select skin tone</option>
                   <option value="fair">Fair</option>
                   <option value="light">Light</option>
                   <option value="medium">Medium</option>
@@ -552,13 +564,14 @@ export default function CheckoutPage() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-semibold text-forest mb-1.5">Hair</label>
+                <label className="block text-sm font-semibold text-forest mb-1.5">Hair *</label>
                 <select
                   value={form.hairStyle}
                   onChange={e => set('hairStyle', e.target.value)}
                   className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold transition text-gray-900 bg-white"
+                  required
                 >
-                  <option value="">Prefer AI to decide</option>
+                  <option value="">Select hair</option>
                   <option value="straight-dark">Straight dark hair</option>
                   <option value="straight-light">Straight light hair</option>
                   <option value="wavy">Wavy hair</option>
@@ -807,7 +820,7 @@ export default function CheckoutPage() {
           <div className="space-y-3 pb-10">
             <button
               type="submit"
-              disabled={isSubmitting || !form.childName || !form.email}
+              disabled={isSubmitting || !form.theme || !form.childName || !form.email || !form.skinTone || !form.hairStyle}
               className="w-full py-4 rounded-xl font-bold text-lg transition-all
                 bg-deep-gold hover:bg-deep-gold/90 text-white shadow-md hover:shadow-lg hover:-translate-y-0.5
                 disabled:opacity-50 disabled:cursor-not-allowed disabled:translate-y-0 disabled:shadow-none"
@@ -815,7 +828,7 @@ export default function CheckoutPage() {
               {isSubmitting ? '⏳ Processing…' : `Continue to Preview & Payment — ${selectedFormat.price}`}
             </button>
             <p className="text-xs text-center text-gray-400">
-              🔒 Secured by Stripe &nbsp;·&nbsp; 7-day satisfaction guarantee &nbsp;·&nbsp; Your data is never shared
+              🔒 Secured by Stripe &nbsp;·&nbsp; Print books include proof approval before printing &nbsp;·&nbsp; Your data is never shared
             </p>
           </div>
 

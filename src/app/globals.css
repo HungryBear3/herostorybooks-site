@@ -38,6 +38,13 @@
   --peach: #F5DDD0;
   --cream: #FBF8F3;
   --lavender: #E8DFF5;
+  /* Status / failure-state tokens used by /status, /admin/orders, ops surfaces.
+     Ported from legacy tailwind.config.js — that file is inert under
+     Tailwind v4 (no @config directive), so any class referencing these
+     tokens silently produced no style until they were defined here. */
+  --coral: #FF6B6B;
+  --coral-dark: #E85555;
+  --purple: #5B4A8A;
 }
 
 @theme inline {
@@ -49,9 +56,13 @@
   --color-navy: var(--navy);
   --color-forest: var(--forest);
   --color-gold: var(--gold);
+  --color-deep-gold: var(--gold);
   --color-peach: var(--peach);
   --color-cream: var(--cream);
   --color-lavender: var(--lavender);
+  --color-coral: var(--coral);
+  --color-coral-dark: var(--coral-dark);
+  --color-purple: var(--purple);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);

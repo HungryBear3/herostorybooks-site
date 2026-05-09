@@ -18,8 +18,6 @@ export interface StoryOccasion {
 export const STORY_OCCASIONS: StoryOccasion[] = [
   { id: 'birthday', label: '🎂 Birthday' },
   { id: 'holiday', label: '🎁 Holiday Gift' },
-  { id: 'mothers-day', label: '💐 Mother\'s Day' },
-  { id: 'fathers-day', label: '🛠️ Father\'s Day' },
   { id: 'just-because', label: '❤️ Just Because' },
   { id: 'welcome-baby', label: '🍼 Welcome Baby' },
 ];
@@ -66,26 +64,59 @@ export const STORY_THEMES: StoryTheme[] = [
     accent: 'from-lime-900 via-green-700 to-amber-500',
   },
   {
+    id: 'dragon-quest',
+    name: 'Dragon Quest',
+    description: 'A magical dragon adventure full of courage, glowing skies, and castle-side wonder.',
+    emoji: '🐉',
+    href: '/samples',
+    coverImage: '/assets/dragon-quest-gpt.png',
+    accent: 'from-red-900 via-orange-700 to-amber-500',
+  },
+  {
+    id: 'royal-adventure',
+    name: 'Royal Adventure',
+    description: 'A royal fairytale filled with sparkling halls, brave choices, and storybook celebration.',
+    emoji: '👑',
+    href: '/samples',
+    coverImage: '/assets/royal-regen-candidates-v7/cover-v7.png',
+    accent: 'from-purple-900 via-indigo-700 to-amber-500',
+  },
+  {
     id: 'mothers-day-memory-book',
     name: 'Mother’s Day Memory Book',
-    description: 'A child-and-mom keepsake story built for heartfelt gifting.',
+    description: 'A heartfelt story starring your child, inspired by the love they share with Mom.',
     emoji: '💐',
     href: '/checkout',
+    coverImage: '/assets/mothers-day-memory-book.png',
     accent: 'from-rose-900 via-pink-700 to-amber-400',
     featuredLabel: 'Mother’s Day',
   },
   {
     id: 'fathers-day-adventure-book',
     name: 'Father’s Day Adventure Book',
-    description: 'A kid-plus-dad adventure with room for shared milestones and inside jokes.',
+    description: 'A fun story starring your child, inspired by the adventures and memories they share with Dad.',
     emoji: '🛠️',
     href: '/checkout',
+    coverImage: '/assets/fathers-day-adventure-book.png',
     accent: 'from-slate-900 via-blue-800 to-amber-500',
     featuredLabel: 'Father’s Day',
   },
 ];
 
-export const CHECKOUT_SAMPLE_IMAGES = STORY_THEMES
+const FEATURED_THEME_ORDER = [
+  'brave-explorer',
+  'space-voyager',
+  'ocean-dreams',
+  'dinosaur-discovery',
+  'dragon-quest',
+  'royal-adventure',
+] as const;
+
+export const FEATURED_STORY_THEMES: StoryTheme[] = FEATURED_THEME_ORDER
+  .map((id) => STORY_THEMES.find((theme) => theme.id === id))
+  .filter((theme): theme is StoryTheme => Boolean(theme));
+
+export const CHECKOUT_SAMPLE_IMAGES = FEATURED_STORY_THEMES
   .map((theme) => theme.sampleImage)
   .filter((image): image is string => Boolean(image))
   .slice(0, 3);
