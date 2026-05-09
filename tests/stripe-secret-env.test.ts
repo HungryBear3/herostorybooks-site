@@ -46,6 +46,15 @@ test('getOptionalStripeSecretKey returns null when env is blank after trimming',
   );
 });
 
+test('getRequiredStripeSecretKey removes accidental literal escaped newlines', async () => {
+  await withEnv(
+    { STRIPE_SECRET_KEY: 'fake_secret_with_literal_newline\\n' },
+    async () => {
+      assert.equal(getRequiredStripeSecretKey(), 'fake_secret_with_literal_newline');
+    },
+  );
+});
+
 test('getRequiredStripeWebhookSecret trims surrounding whitespace and newlines', async () => {
   await withEnv(
     { STRIPE_WEBHOOK_SECRET: '  fake_webhook_secret_with_newline\n' },

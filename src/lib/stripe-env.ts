@@ -1,10 +1,14 @@
-function trimEnv(name: string): string | null {
-  const value = process.env[name]?.trim() ?? '';
+function sanitizeStripeEnv(name: string): string | null {
+  const value = (process.env[name] ?? '')
+    .trim()
+    .replace(/\\n/g, '')
+    .replace(/[\r\n]/g, '')
+    .trim();
   return value || null;
 }
 
 export function getOptionalStripeSecretKey(): string | null {
-  return trimEnv('STRIPE_SECRET_KEY');
+  return sanitizeStripeEnv('STRIPE_SECRET_KEY');
 }
 
 export function getRequiredStripeSecretKey(): string {
@@ -16,7 +20,7 @@ export function getRequiredStripeSecretKey(): string {
 }
 
 export function getOptionalStripeWebhookSecret(): string | null {
-  return trimEnv('STRIPE_WEBHOOK_SECRET');
+  return sanitizeStripeEnv('STRIPE_WEBHOOK_SECRET');
 }
 
 export function getRequiredStripeWebhookSecret(): string {
