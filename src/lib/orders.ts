@@ -243,7 +243,9 @@ export async function readBlobText(input: {
   if (access === 'public') {
     const url = input.url;
     if (!url) return null;
-    const response = await fetch(url, { cache: 'no-store' });
+    const bust = `ts=${Date.now()}`;
+    const separator = url.includes('?') ? '&' : '?';
+    const response = await fetch(`${url}${separator}${bust}`, { cache: 'no-store' });
     if (response.status === 404) return null;
     if (!response.ok) {
       throw new Error(`Public blob fetch failed: ${response.status} ${response.statusText}`.trim());
@@ -295,6 +297,9 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     id: options.id ?? `ord_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
     childName: input.childName.trim(),
     childAge: input.childAge?.trim() || '',
+    childPronouns: input.childPronouns?.trim() === 'he/him' || input.childPronouns?.trim() === 'she/her' || input.childPronouns?.trim() === 'they/them'
+      ? input.childPronouns.trim() as 'he/him' | 'she/her' | 'they/them'
+      : '',
     theme: input.theme?.trim() || '',
     lesson: input.lesson?.trim() || '',
     occasion: input.occasion?.trim() || '',
@@ -761,10 +766,34 @@ type FulfillmentPatch = Partial<Pick<
   | 'pageArtifacts'
   | 'auditEvents'
   | 'paymentStatus'
+  | 'stripeSessionId'
+  | 'shippingAddress'
   | 'refundedAt'
   | 'refundReason'
   | 'stripeRefundId'
 >>;
+
+const PAYMENT_GATED_FULFILLMENT_STATUSES: FulfillmentStatus[] = [
+  'generating_story',
+  'generating_images',
+  'building_pdf',
+  'proof_ready',
+  'proof_approved',
+  'submitting_to_print',
+  'complete',
+];
+
+function patchRequiresPaidOrder(patch: FulfillmentPatch): boolean {
+  if (patch.storyArtifactUrl !== undefined) return true;
+  if (patch.pageArtifacts !== undefined) return true;
+  if (patch.printInteriorArtifactUrl !== undefined) return true;
+  if (patch.printCoverArtifactUrl !== undefined) return true;
+  if (patch.proofApprovalToken !== undefined) return true;
+  if (patch.printJobId !== undefined) return true;
+  if (patch.status === 'preview_ready' || patch.status === 'print_in_production' || patch.status === 'shipped') return true;
+  if (patch.fulfillmentStatus && PAYMENT_GATED_FULFILLMENT_STATUSES.includes(patch.fulfillmentStatus)) return true;
+  return false;
+}
 
 export async function updateFulfillmentState(
   orderId: string,
@@ -772,6 +801,13 @@ export async function updateFulfillmentState(
 ): Promise<OrderRecord | null> {
   const existing = await getOrder(orderId);
   if (!existing) return null;
+
+  const effectivePaymentStatus = patch.paymentStatus ?? existing.paymentStatus;
+  if (patchRequiresPaidOrder(patch) && effectivePaymentStatus !== 'paid') {
+    throw new Error(
+      `[orders] Refusing fulfillment mutation for ${orderId}: paymentStatus=${effectivePaymentStatus}`,
+    );
+  }
 
   const updated: OrderRecord = {
     ...existing,

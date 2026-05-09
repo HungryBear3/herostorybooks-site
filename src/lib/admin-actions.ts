@@ -1,5 +1,7 @@
 import Stripe from 'stripe';
 
+import { getOptionalStripeSecretKey } from './stripe-env.ts';
+
 import { appendAuditEvent, getOrder, updateFulfillmentState, updateOrderStatus, type OrderRecord } from './orders.ts';
 import { triggerFulfillment, approvePrintProof } from './fulfillment.ts';
 import { sendProofReadyEmail, sendLifecycleEmail } from './order-email.ts';
@@ -140,7 +142,7 @@ export interface StripeRefundClient {
 }
 
 function defaultStripeRefundClient(): StripeRefundClient | null {
-  const key = process.env.STRIPE_SECRET_KEY;
+  const key = getOptionalStripeSecretKey();
   if (!key) return null;
   const stripe = new Stripe(key);
   return {

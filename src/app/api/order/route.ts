@@ -13,15 +13,14 @@ import {
   missingRequiredField,
 } from '@/lib/checkout-flow';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
+import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function getStripe() {
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) throw new Error('STRIPE_SECRET_KEY not set');
-  return new Stripe(key);
+  return new Stripe(getRequiredStripeSecretKey());
 }
 
 function getReturnBaseUrl(request: Request): string {
@@ -56,6 +55,7 @@ export async function POST(request: Request) {
     const email = String(form.get('email') || '').trim();
     const bookFormat = String(form.get('bookFormat') || 'classic').trim();
     const theme = String(form.get('theme') || '').trim();
+    const childPronouns = String(form.get('childPronouns') || '').trim();
 
     // Structured appearance fields ride along inside the JSON
     // appearanceOptions blob from the form (kept as-is for backward
@@ -72,7 +72,7 @@ export async function POST(request: Request) {
     const skinTone = String(form.get('skinTone') || appearance.skinTone || '').trim();
     const hairStyle = String(form.get('hairStyle') || appearance.hairStyle || '').trim();
 
-    const missing = missingRequiredField({ theme, childName, email, skinTone, hairStyle });
+    const missing = missingRequiredField({ theme, childName, email, skinTone, hairStyle, childPronouns });
     if (missing !== null || !isValidEmail(email)) {
       const code = missing ? missingFieldErrorCode(missing) : 'email_invalid';
       return NextResponse.json(
@@ -95,6 +95,7 @@ export async function POST(request: Request) {
       occasion: String(form.get('occasion') || ''),
       giftMessage: String(form.get('giftMessage') || ''),
       characterNotes: String(form.get('characterNotes') || ''),
+      childPronouns: childPronouns === 'he/him' || childPronouns === 'she/her' || childPronouns === 'they/them' ? childPronouns as 'he/him' | 'she/her' | 'they/them' : '',
       appearanceOptions: appearanceRaw,
       bookFormat,
       email,

@@ -11,7 +11,7 @@ import {
   MAX_RETRIES,
   type FulfillmentDeps,
 } from '../src/lib/fulfillment.ts';
-import { createOrderRecord, persistOrder, getOrder } from '../src/lib/orders.ts';
+import { createOrderRecord, persistOrder, getOrder, updateFulfillmentState } from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 import type { StoryContent } from '../src/lib/fulfillment-types.ts';
 
@@ -108,6 +108,48 @@ test('triggerFulfillment: non-existent order is a no-op', async () => {
   } finally {
     cleanupTmpDir(dir);
   }
+});
+
+test('updateFulfillmentState: refuses fulfillment/artifact advancement for unpaid orders', async () => {
+  const dir = makeTmpDir();
+  try {
+    const order = await makeOrder({ paymentStatus: 'pending', bookFormat: 'digital' }, dir);
+
+    await assert.rejects(
+      () => updateFulfillmentState(order.id, {
+        fulfillmentStatus: 'complete',
+        status: 'preview_ready',
+        storyArtifactUrl: 'https://cdn.example.com/unpaid.pdf',
+      }),
+      /Refusing fulfillment mutation.*paymentStatus=pending/,
+    );
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.paymentStatus, 'pending');
+    assert.ok(!after?.storyArtifactUrl, 'unpaid order must not persist a story artifact');
+    assert.notEqual(after?.fulfillmentStatus, 'complete');
+  } finally { cleanupTmpDir(dir); }
+});
+
+test('updateFulfillmentState: paid webhook stamp is preserved with fulfillment writes', async () => {
+  const dir = makeTmpDir();
+  try {
+    const order = await makeOrder({ paymentStatus: 'pending', bookFormat: 'digital' }, dir);
+
+    await updateFulfillmentState(order.id, {
+      paymentStatus: 'paid',
+      stripeSessionId: 'cs_test_paid_preserved',
+      fulfillmentStatus: 'complete',
+      status: 'preview_ready',
+      storyArtifactUrl: 'https://cdn.example.com/paid.pdf',
+    });
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.paymentStatus, 'paid');
+    assert.equal(after?.stripeSessionId, 'cs_test_paid_preserved');
+    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.status, 'preview_ready');
+  } finally { cleanupTmpDir(dir); }
 });
 
 // ── Digital fulfillment ───────────────────────────────────────────────────────

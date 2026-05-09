@@ -76,6 +76,15 @@ export interface FulfillmentDeps {
   getBaseUrl?: () => string;
 }
 
+function paidFulfillmentPatch(order: OrderRecord, patch: Partial<OrderRecord>): Partial<OrderRecord> {
+  return {
+    ...patch,
+    paymentStatus: 'paid',
+    ...(order.stripeSessionId ? { stripeSessionId: order.stripeSessionId } : {}),
+    ...(order.shippingAddress ? { shippingAddress: order.shippingAddress } : {}),
+  };
+}
+
 // ── Default implementations ───────────────────────────────────────────────────
 
 async function defaultUploadArtifact(orderId: string, buffer: Buffer, filename: string): Promise<string> {
@@ -234,13 +243,13 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
   const _getBaseUrl = deps.getBaseUrl ?? defaultGetBaseUrl;
 
-  await updateFulfillmentState(order.id, { fulfillmentStatus: 'generating_story' });
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
   // Persist storyMeta as soon as it's known so diagnostics can answer
   // "which story path ran?" even before image gen completes.
-  await updateFulfillmentState(order.id, { storyMeta });
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta }));
 
-  await updateFulfillmentState(order.id, { fulfillmentStatus: 'generating_images' });
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images' }));
   // Build per-page prompts that LEAD with the frozen character anchor + identity
   // section + continuity rules + quality constraints. Initial generation now
   // goes through buildPagePrompt so it gets the same identity scaffolding the
@@ -307,9 +316,9 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // Diagnostics + admin can now inspect what generation produced even if the
   // function dies before the proof PDF is built. The final updateFulfillmentState
   // below re-writes the same array (idempotent) plus the proof URL.
-  await updateFulfillmentState(order.id, { pageArtifacts: seededPageArtifacts });
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts }));
 
-  await updateFulfillmentState(order.id, { fulfillmentStatus: 'building_pdf' });
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf' }));
   // Include cover image (first imageUrl) + per-page images
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
   const pdfBuffer = await _buildPdf(story, order, allUrls);
@@ -319,7 +328,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   const pdfUrl = await _upload(order.id, pdfBuffer, filename);
 
   const proofGeneratedEvent = buildProofGeneratedAuditEvent(order, seededPageArtifacts.length);
-  await updateFulfillmentState(order.id, {
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
     fulfillmentStatus: 'complete',
     status: 'preview_ready',
     storyArtifactUrl: pdfUrl,
@@ -328,7 +337,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
-  });
+  }));
 
   await sendDigitalDeliveryEmail(order, { pdfUrl });
 }
@@ -341,11 +350,11 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
   const _getBaseUrl = deps.getBaseUrl ?? defaultGetBaseUrl;
 
-  await updateFulfillmentState(order.id, { fulfillmentStatus: 'generating_story' });
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
-  await updateFulfillmentState(order.id, { storyMeta });
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta }));
 
-  await updateFulfillmentState(order.id, { fulfillmentStatus: 'generating_images' });
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images' }));
   // Same identity-anchored prompt construction as the digital path — keeps the
   // same child consistent across all pages of the print book.
   const characterAnchor = story.characterDescription ?? null;
@@ -403,9 +412,9 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
         : [],
     };
   });
-  await updateFulfillmentState(order.id, { pageArtifacts: seededPageArtifacts });
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts }));
 
-  await updateFulfillmentState(order.id, { fulfillmentStatus: 'building_pdf' });
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf' }));
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
   const previewBuffer = await _buildPdf(story, order, allUrls);
   const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
@@ -427,7 +436,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // PDF build), so we just re-use it in the final state write below.
 
   const proofGeneratedEvent = buildProofGeneratedAuditEvent(order, seededPageArtifacts.length);
-  await updateFulfillmentState(order.id, {
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
     fulfillmentStatus: 'proof_ready',
     status: 'preview_ready',
     storyArtifactUrl: proofUrl,
@@ -443,7 +452,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
-  });
+  }));
 
   await sendProofReadyEmail(order, { reviewUrl, proofUrl });
 }
@@ -483,7 +492,7 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
     throw new Error('Missing print interior artifacts — cannot submit to print without interior PDF metadata');
   }
 
-  await updateFulfillmentState(order.id, { fulfillmentStatus: 'submitting_to_print' });
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'submitting_to_print' }));
 
   let hydratedOrder = order;
   if (!order.printCoverArtifactUrl || !order.printCoverMd5) {
@@ -491,20 +500,20 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
     const coverBuffer = await _buildPrintCoverPdf(dims.widthPt, dims.heightPt, order.printTitle, order);
     const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);
     const coverUrl = await _upload(order.id, coverBuffer, `${safeSlug}-cover.pdf`);
-    hydratedOrder = (await updateFulfillmentState(order.id, {
+    hydratedOrder = (await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
       printCoverArtifactUrl: coverUrl,
       printCoverMd5: md5Hex(coverBuffer),
-    })) ?? { ...order, printCoverArtifactUrl: coverUrl, printCoverMd5: md5Hex(coverBuffer) };
+    }))) ?? { ...order, printCoverArtifactUrl: coverUrl, printCoverMd5: md5Hex(coverBuffer) };
   }
 
   const result = await _submitPrint(hydratedOrder);
 
-  const afterPrint = await updateFulfillmentState(order.id, {
+  const afterPrint = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
     fulfillmentStatus: 'complete',
     status: 'print_in_production',
     printJobId: result.jobId,
     fulfillmentLastError: null,
-  });
+  }));
 
   await sendLifecycleEmail(afterPrint ?? { ...hydratedOrder, status: 'print_in_production' });
 }
