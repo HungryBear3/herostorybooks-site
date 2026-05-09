@@ -577,17 +577,42 @@ export async function rebuildProofFromPageArtifacts(
 export interface TriggerFulfillmentOptions {
   /**
    * Confirm-paid readback policy. The kickoff polls `getOrder` until it
-   * observes `paymentStatus === 'paid'` (and a non-empty
-   * `stripeSessionId`). If the persistence backend never converges,
-   * fulfillment refuses — it must NEVER run against a non-paid order.
-   * Defaults are tuned for production: 5 attempts, 100ms initial
-   * backoff doubling. Tests inject a no-op sleep + tighter limits.
+   * observes `paymentStatus === 'paid'`. If the persistence backend
+   * never converges, returns `not_paid_yet` — caller decides whether
+   * to retry. Default is tight (3 × 100ms doubling = ~700ms) so the
+   * caller's bounded retry loop owns the total wait budget.
    */
   readbackMaxAttempts?: number;
   readbackInitialDelayMs?: number;
 }
 
-const DEFAULT_READBACK_MAX_ATTEMPTS = 5;
+/**
+ * Discriminated result from `triggerFulfillment`. Used by the kickoff
+ * helper to decide whether to retry, dedupe, or stop. The previous
+ * void/log-only contract caused the 2026-05-08 race: the closure-local
+ * `ran=true` was set when the scheduler fired (regardless of whether
+ * fulfillment actually started), so a refused-because-not-paid-yet
+ * call permanently blocked the fallback scheduler.
+ *
+ * Helper dedupe rule:
+ *   - `started` / `skipped_already_running` / `skipped_already_complete`:
+ *     real outcome — DO NOT fall through to a fallback scheduler.
+ *   - `not_paid_yet`: persistence hasn't converged — CALLER MAY RETRY
+ *     either via the fallback scheduler or a bounded retry loop.
+ *   - `not_found`: order does not exist; not retryable.
+ *
+ * `runWithRetry` catches its own errors internally (moves the order to
+ * failed_manual_review and returns), so no 'error' status propagates
+ * out of triggerFulfillment.
+ */
+export type TriggerResult =
+  | { status: 'started' }
+  | { status: 'skipped_already_running'; fulfillmentStatus: string }
+  | { status: 'skipped_already_complete'; fulfillmentStatus: string }
+  | { status: 'not_paid_yet'; attempts: number }
+  | { status: 'not_found' };
+
+const DEFAULT_READBACK_MAX_ATTEMPTS = 3;
 const DEFAULT_READBACK_INITIAL_DELAY_MS = 100;
 
 /**
@@ -603,30 +628,44 @@ const DEFAULT_READBACK_INITIAL_DELAY_MS = 100;
  * paymentStatus='paid' without a Stripe session id, which is valid —
  * we don't gate on stripeSessionId here.
  */
+interface ReadbackResult {
+  order: OrderRecord | null;
+  attempts: number;
+  notFound: boolean;
+}
+
 async function readbackUntilPaid(
   orderId: string,
   opts: TriggerFulfillmentOptions = {},
   sleep: (ms: number) => Promise<void> = (ms) => new Promise(r => setTimeout(r, ms)),
-): Promise<OrderRecord | null> {
+): Promise<ReadbackResult> {
   const maxAttempts = opts.readbackMaxAttempts ?? DEFAULT_READBACK_MAX_ATTEMPTS;
   const initialDelay = opts.readbackInitialDelayMs ?? DEFAULT_READBACK_INITIAL_DELAY_MS;
+  let attempts = 0;
+  let lastSeen: OrderRecord | null = null;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    attempts++;
     const order = await getOrder(orderId);
+    lastSeen = order ?? lastSeen;
     if (order && order.paymentStatus === 'paid') {
-      return order;
+      return { order, attempts, notFound: false };
     }
     if (attempt < maxAttempts - 1) {
       await sleep(initialDelay * (2 ** attempt));
     }
   }
-  return null;
+  // Distinguish "order doesn't exist at all" from "order exists but
+  // paymentStatus hasn't converged to paid". Caller's retry policy
+  // depends on the difference.
+  if (!lastSeen) return { order: null, attempts, notFound: true };
+  return { order: null, attempts, notFound: false };
 }
 
 export async function triggerFulfillment(
   orderId: string,
   deps: FulfillmentDeps = {},
   opts: TriggerFulfillmentOptions = {},
-): Promise<void> {
+): Promise<TriggerResult> {
   // Observable entry: this single line is the proof-of-life that
   // triggerFulfillment was actually called from a deferred kickoff.
   // If you ever see a paid order stuck at not_started with no
@@ -638,25 +677,38 @@ export async function triggerFulfillment(
   // write inconsistency on the persistence backend cannot trick us into
   // running fulfillment on a non-paid order (the 2026-05-08 retest
   // reproduced exactly that — pages generated, paymentStatus stuck
-  // pending). If we never see a confirmed-paid record, log and refuse.
-  const order = await readbackUntilPaid(orderId, opts, deps.sleep);
-  if (!order) {
-    console.error(
-      `[fulfillment] order ${orderId} payment not confirmed (paymentStatus !== 'paid') — refusing to start fulfillment`,
-    );
-    return;
+  // pending). If we never see a confirmed-paid record, return
+  // not_paid_yet so the caller can retry on a wider budget.
+  const readback = await readbackUntilPaid(orderId, opts, deps.sleep);
+  if (readback.notFound) {
+    console.error(`[fulfillment] order ${orderId} not found in persistence — refusing`);
+    return { status: 'not_found' };
   }
+  if (!readback.order) {
+    console.warn(
+      `[fulfillment] order ${orderId} payment not confirmed after ${readback.attempts} readback attempt(s) (paymentStatus !== 'paid') — caller may retry`,
+    );
+    return { status: 'not_paid_yet', attempts: readback.attempts };
+  }
+  const order = readback.order;
   console.log(
-    `[fulfillment] order ${orderId} confirmed paid (stripeSessionId=${order.stripeSessionId ? 'present' : 'absent'}, fulfillmentStatus=${order.fulfillmentStatus ?? 'unset'})`,
+    `[fulfillment] order ${orderId} confirmed paid after ${readback.attempts} readback attempt(s) (stripeSessionId=${order.stripeSessionId ? 'present' : 'absent'}, fulfillmentStatus=${order.fulfillmentStatus ?? 'unset'})`,
   );
 
-  if (
-    order.fulfillmentStatus &&
-    order.fulfillmentStatus !== 'not_started' &&
-    order.fulfillmentStatus !== 'failed_manual_review'
-  ) {
-    console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=${order.fulfillmentStatus} — skipping`);
-    return;
+  // fulfillmentStatus state machine:
+  //   - undefined / 'not_started' / 'failed_manual_review' → eligible to (re)start
+  //   - 'complete' → already-done (idempotent skip)
+  //   - any in-progress state ('generating_story', 'generating_images',
+  //     'building_pdf', 'proof_ready', 'proof_approved',
+  //     'submitting_to_print', 'print_in_production') → in-progress skip
+  const cur = order.fulfillmentStatus;
+  if (cur === 'complete') {
+    console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=complete — skipping (idempotent)`);
+    return { status: 'skipped_already_complete', fulfillmentStatus: cur };
+  }
+  if (cur && cur !== 'not_started' && cur !== 'failed_manual_review') {
+    console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=${cur} — skipping (in progress)`);
+    return { status: 'skipped_already_running', fulfillmentStatus: cur };
   }
 
   const isDigital = !isPrintFormat(order.bookFormat);
@@ -667,6 +719,7 @@ export async function triggerFulfillment(
 
   await runWithRetry(orderId, run, deps);
   console.log(`[fulfillment] runWithRetry returned for ${orderId}`);
+  return { status: 'started' };
 }
 
 /**

@@ -422,12 +422,83 @@ test('digital fulfillment: duplicate triggerFulfillment is idempotent (no double
   } finally { cleanupTmpDir(dir); }
 });
 
-test('source-level: triggerFulfillment uses readback-until-paid gate (no preloaded shortcut)', () => {
+test('source-level: triggerFulfillment uses readback-until-paid gate + structured TriggerResult', () => {
   const src = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
   // The fail-closed gate must exist.
   assert.match(src, /readbackUntilPaid/);
   assert.match(src, /paymentStatus !== 'paid'/);
-  assert.match(src, /refusing to start fulfillment/);
   // The previous shortcut must NOT exist (it bypassed the gate).
   assert.doesNotMatch(src, /preloadedOrder/);
+  // The structured TriggerResult union must exist so the kickoff helper
+  // can distinguish "refused once, may retry" from "really done".
+  assert.match(src, /export type TriggerResult/);
+  assert.match(src, /'started'/);
+  assert.match(src, /'not_paid_yet'/);
+  assert.match(src, /'skipped_already_complete'/);
+  assert.match(src, /'skipped_already_running'/);
+  // Triggers no longer return void.
+  assert.match(src, /Promise<TriggerResult>/);
+});
+
+test('triggerFulfillment returns not_paid_yet on a pending order (caller-controlled retry)', async () => {
+  const dir = makeTmpDir();
+  try {
+    const real = await makeOrder({ paymentStatus: 'pending', bookFormat: 'digital' }, dir);
+    const result = await triggerFulfillment(real.id, { ...PASS_DEPS, sleep: async () => {} }, {
+      readbackMaxAttempts: 2,
+      readbackInitialDelayMs: 0,
+    });
+    assert.equal(result.status, 'not_paid_yet');
+    assert.ok(
+      typeof (result as { attempts: number }).attempts === 'number'
+        && (result as { attempts: number }).attempts >= 1,
+      'not_paid_yet must include readback attempts count',
+    );
+  } finally { cleanupTmpDir(dir); }
+});
+
+test('triggerFulfillment returns started on a paid order', async () => {
+  const dir = makeTmpDir();
+  try {
+    const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital' }, dir);
+    const result = await triggerFulfillment(order.id, PASS_DEPS);
+    assert.equal(result.status, 'started');
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'complete');
+  } finally { cleanupTmpDir(dir); }
+});
+
+test('triggerFulfillment returns skipped_already_complete on replay against complete order', async () => {
+  const dir = makeTmpDir();
+  try {
+    const order = await makeOrder(
+      { paymentStatus: 'paid', bookFormat: 'digital', fulfillmentStatus: 'complete' },
+      dir,
+    );
+    const result = await triggerFulfillment(order.id, PASS_DEPS);
+    assert.equal(result.status, 'skipped_already_complete');
+  } finally { cleanupTmpDir(dir); }
+});
+
+test('triggerFulfillment returns skipped_already_running on a mid-flight order', async () => {
+  const dir = makeTmpDir();
+  try {
+    const order = await makeOrder(
+      { paymentStatus: 'paid', bookFormat: 'digital', fulfillmentStatus: 'generating_story' },
+      dir,
+    );
+    const result = await triggerFulfillment(order.id, PASS_DEPS);
+    assert.equal(result.status, 'skipped_already_running');
+  } finally { cleanupTmpDir(dir); }
+});
+
+test('triggerFulfillment returns not_found for a missing order', async () => {
+  const dir = makeTmpDir();
+  try {
+    const result = await triggerFulfillment('ord_does_not_exist', { ...PASS_DEPS, sleep: async () => {} }, {
+      readbackMaxAttempts: 1,
+      readbackInitialDelayMs: 0,
+    });
+    assert.equal(result.status, 'not_found');
+  } finally { cleanupTmpDir(dir); }
 });
