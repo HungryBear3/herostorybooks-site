@@ -24,6 +24,7 @@ const FULL: CheckoutRequiredFields = {
   email: 'a@b.com',
   skinTone: 'medium',
   hairStyle: 'curly',
+  childPronouns: 'she/her',
 };
 
 test('server contract: missing theme → theme_required', () => {
@@ -44,6 +45,12 @@ test('server contract: missing hairStyle → hair_style_required', () => {
   assert.equal(missingFieldErrorCode(m), 'hair_style_required');
 });
 
+test('server contract: missing childPronouns → pronouns_required', () => {
+  const m = missingRequiredField({ ...FULL, childPronouns: '' });
+  assert.equal(m, 'pronouns');
+  assert.equal(missingFieldErrorCode(m), 'pronouns_required');
+});
+
 test('server contract: full happy path returns null + null code', () => {
   const m = missingRequiredField(FULL);
   assert.equal(m, null);
@@ -62,6 +69,7 @@ test('server contract: skinTone supplied as JSON appearanceOptions blob (route a
     email: 'a@b.com',
     skinTone: parsed.skinTone,
     hairStyle: parsed.hairStyle,
+    childPronouns: 'she/her',
   });
   assert.equal(m, null);
 });
@@ -75,4 +83,5 @@ test('server contract: /api/order POST imports + calls missingRequiredField', ()
   assert.match(src, /from\s+['"]@\/lib\/checkout-flow['"]/);
   assert.match(src, /missingRequiredField\(/);
   assert.match(src, /missingFieldErrorCode\(/);
+  assert.match(src, /childPronouns/);
 });
