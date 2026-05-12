@@ -53,7 +53,7 @@ export interface ScheduleKickoffDeps {
   /** Override for tests. Real `setImmediate` in production. */
   setImmediateImpl?: (cb: () => void) => unknown;
   /** Override for tests / serverless. Real `next/server` `after` in production. */
-  afterImpl?: ((cb: () => void) => void) | null;
+  afterImpl?: ((cb: () => void | Promise<void>) => void) | null;
   /** Override for tests. Real console in production. */
   log?: (line: string) => void;
   /** Override for tests. Real console.error in production. */
@@ -198,9 +198,7 @@ export function scheduleFulfillmentKickoff(
   // actually runs the trigger; the other joins.
   if (typeof afterFn === 'function') {
     try {
-      afterFn(() => {
-        void attempt('after', 0);
-      });
+      afterFn(() => attempt('after', 0));
     } catch (err) {
       errorLog(`[webhook][kickoff] after() unavailable for ${orderId}:`, err);
     }

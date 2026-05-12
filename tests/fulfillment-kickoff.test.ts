@@ -39,13 +39,13 @@ function makeRecorder() {
  * later / retry fires after that" without real timers.
  */
 function makeQueue() {
-  const queue: Array<() => void> = [];
+  const queue: Array<() => void | Promise<void>> = [];
   return {
-    push: (cb: () => void) => { queue.push(cb); },
+    push: (cb: () => void | Promise<void>) => { queue.push(cb); },
     drain: async () => {
       while (queue.length > 0) {
         const cb = queue.shift()!;
-        cb();
+        await cb();
         // let the cb's async chain run before pulling the next one
         await new Promise((r) => setImmediate(r));
       }
@@ -253,7 +253,7 @@ test('scheduler-6: webhook source — kickoff is scheduled, never awaited inline
 test('source: scheduleFulfillmentKickoff uses BOTH setImmediate and after with bounded retry', () => {
   const src = readFileSync('src/lib/fulfillment-kickoff.ts', 'utf8');
   assert.match(src, /setImmediateFn\(/);
-  assert.match(src, /afterFn\(/);
+  assert.match(src, /afterFn\(\(\) => attempt\('after', 0\)\)/);
   assert.match(src, /setTimeoutFn\(/);
   assert.match(src, /inFlight/);
   assert.match(src, /not_paid_yet/);
