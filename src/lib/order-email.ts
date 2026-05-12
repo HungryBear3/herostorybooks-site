@@ -17,6 +17,23 @@ export function getOrderSenderEmail() {
   return process.env.HSB_EMAIL_FROM || process.env.EMAIL_FROM || DEFAULT_FROM_EMAIL;
 }
 
+function assertResendSuccess(
+  result: {
+    data?: { id?: string | null } | null;
+    error?: { statusCode?: number; name?: string; message?: string } | null;
+  },
+  context: string,
+) {
+  if (result.error) {
+    const status = result.error.statusCode ? ` (${result.error.statusCode})` : '';
+    const message = result.error.message || result.error.name || 'Unknown Resend error';
+    console.error(`[order-email] ${context} failed${status}: ${message}`);
+    throw new Error(`${context} failed${status}: ${message}`);
+  }
+
+  return { skipped: false as const, id: result.data?.id ?? null };
+}
+
 export function buildOrderConfirmationEmail(
   order: OrderRecord,
   options: { supportEmail?: string } = {},
@@ -81,7 +98,7 @@ export async function sendOrderConfirmationEmail(order: OrderRecord) {
     replyTo: supportEmail,
   });
 
-  return { skipped: false as const, id: result.data?.id ?? null };
+  return assertResendSuccess(result, `Order confirmation email for ${order.id}`);
 }
 
 // ── Lifecycle email builders ──────────────────────────────────────────────────
@@ -284,7 +301,7 @@ export async function sendLifecycleEmail(
     replyTo: supportEmail,
   });
 
-  return { skipped: false as const, id: result.data?.id ?? null };
+  return assertResendSuccess(result, `Lifecycle email for ${order.id} status ${order.status}`);
 }
 
 // ── Fulfillment-specific emails ───────────────────────────────────────────────
@@ -344,7 +361,7 @@ export async function sendDigitalDeliveryEmail(
     replyTo: supportEmail,
   });
 
-  return { skipped: false as const, id: result.data?.id ?? null };
+  return assertResendSuccess(result, `Digital delivery email for ${order.id}`);
 }
 
 export function buildProofReadyEmail(
@@ -419,7 +436,7 @@ export async function sendProofReadyEmail(
     replyTo: supportEmail,
   });
 
-  return { skipped: false as const, id: result.data?.id ?? null };
+  return assertResendSuccess(result, `Proof ready email for ${order.id}`);
 }
 
 // ── Operator alert ────────────────────────────────────────────────────────────
@@ -453,7 +470,7 @@ export async function sendOperatorFailureAlert(order: OrderRecord, lastError: st
     text: `Order ${order.id} (${order.email}) failed fulfillment after max retries.\n\nLast error: ${lastError.slice(0, 500)}\n\nStatus: failed_manual_review`,
   });
 
-  return { skipped: false as const, id: result.data?.id ?? null };
+  return assertResendSuccess(result, `Operator failure alert for ${order.id}`);
 }
 
 export interface RegenManualReviewAlertArgs {
@@ -499,7 +516,7 @@ export async function sendRegenManualReviewAlert(
     html,
     text,
   });
-  return { skipped: false as const, id: result.data?.id ?? null };
+  return assertResendSuccess(result, `Regeneration manual-review alert for ${order.id}`);
 }
 
 function escapeHtml(value: string) {
