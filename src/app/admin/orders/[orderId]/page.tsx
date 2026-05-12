@@ -91,6 +91,13 @@ export default async function AdminOrderDetail({ params }: Props) {
           <Row label="Email" value={order.email} />
           <Row label="Format" value={order.formatLabel} />
           <Row label="Price" value={`$${(order.priceCents / 100).toFixed(2)}`} />
+          {order.internalDisposition && (
+            <>
+              <Row label="Internal disposition" value={order.internalDisposition} tone="neutral" />
+              <Row label="Disposition note" value={order.internalDispositionNote ?? '—'} />
+              <Row label="Disposition marked" value={order.internalDispositionAt ?? '—'} />
+            </>
+          )}
           <Row label="Created" value={order.createdAt} />
           <Row label="Updated" value={order.updatedAt} />
         </Section>

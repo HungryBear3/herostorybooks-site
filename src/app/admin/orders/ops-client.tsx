@@ -19,15 +19,22 @@ function uiCanRefund(order: OrderRecord): boolean {
 
 type Filter = 'all' | 'paid' | 'in_progress' | 'proof_ready' | 'failed' | 'shipped';
 
+function isInternalArchived(order: OrderRecord): boolean {
+  return Boolean(order.internalDisposition);
+}
+
 export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
+  const [showInternalArchived, setShowInternalArchived] = useState(false);
   const [retrying, setRetrying] = useState<string | null>(null);
   const [refunding, setRefunding] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return orders.filter(o => {
+      if (!showInternalArchived && isInternalArchived(o)) return false;
+
       if (q && !(
         o.id.toLowerCase().includes(q) ||
         o.childName.toLowerCase().includes(q) ||
@@ -44,7 +51,12 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
         default: return true;
       }
     });
-  }, [orders, query, filter]);
+  }, [orders, query, filter, showInternalArchived]);
+
+  const internalArchivedCount = useMemo(
+    () => orders.filter(isInternalArchived).length,
+    [orders],
+  );
 
   async function retry(orderId: string) {
     if (!confirm(`Retry fulfillment for ${orderId}?`)) return;
@@ -107,6 +119,14 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
           <option value="failed">Failed</option>
           <option value="shipped">Shipped</option>
         </select>
+        <label className="inline-flex items-center gap-2 text-xs text-gray-600">
+          <input
+            type="checkbox"
+            checked={showInternalArchived}
+            onChange={e => setShowInternalArchived(e.target.checked)}
+          />
+          Show internal/test archived ({internalArchivedCount})
+        </label>
         <span className="text-xs text-gray-500">{filtered.length} shown</span>
       </div>
 
@@ -183,6 +203,11 @@ function Row({
         <a className="text-xs font-mono text-forest underline block" href={`/admin/orders/${order.id}`}>
           {order.id}
         </a>
+        {order.internalDisposition && (
+          <span className="mt-1 inline-block rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500" title={order.internalDispositionNote ?? undefined}>
+            {order.internalDisposition}
+          </span>
+        )}
         <a className="text-[10px] text-gray-400 underline" href={`/status/${order.id}`} target="_blank" rel="noopener">
           customer view ↗
         </a>

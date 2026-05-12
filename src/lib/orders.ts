@@ -8,6 +8,9 @@ export type { FulfillmentStatus, PageTextLayout };
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
 export type BookFormat = 'digital' | 'classic' | 'premium';
 export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded';
+export type InternalOrderDisposition =
+  | 'abandoned_internal_test'
+  | 'superseded_internal_smoke';
 
 export interface ShippingAddress {
   line1: string;
@@ -84,7 +87,8 @@ export type ReviewAuditEventType =
   | 'whole_book_approved'
   | 'whole_book_approval_rejected'
   | 'refund_issued'
-  | 'refund_refused';
+  | 'refund_refused'
+  | 'internal_disposition_marked';
 
 export interface ReviewAuditEvent {
   /** ISO timestamp the event was recorded. */
@@ -160,6 +164,11 @@ export interface OrderRecord extends OrderInput {
   deliveryExpectation: string;
   /** Per-page review state. Optional for backward compatibility with old orders. */
   reviewStatus?: ReviewStatus;
+  /** Internal-only archival/disposition marker for stale smoke/test orders.
+   *  This is deliberately separate from customer-facing order/payment state. */
+  internalDisposition?: InternalOrderDisposition | null;
+  internalDispositionNote?: string | null;
+  internalDispositionAt?: string | null;
   pageArtifacts?: PageArtifact[];
   /** Append-only audit log of review/approval events. Optional on legacy orders. */
   auditEvents?: ReviewAuditEvent[];
@@ -763,6 +772,9 @@ type FulfillmentPatch = Partial<Pick<
   | 'shippedAt'
   | 'status'
   | 'reviewStatus'
+  | 'internalDisposition'
+  | 'internalDispositionNote'
+  | 'internalDispositionAt'
   | 'pageArtifacts'
   | 'auditEvents'
   | 'paymentStatus'
