@@ -218,20 +218,33 @@ test('scheduler-4: duplicate webhook deliveries do not double-generate (in-fligh
   assert.ok(rec.lines.some((l) => l.includes('joining in-flight kickoff for ord_dup_deliveries')));
 });
 
-test('scheduler-5: source-level — direct fulfillmentStatus=complete writes only happen inside runDigitalFulfillment / runPrintFulfillment', () => {
+test('scheduler-5: source-level — direct fulfillmentStatus=complete writes are bounded and accounted for', () => {
   // Compute completion sources at the SOURCE level so any path that
-  // writes fulfillmentStatus=complete outside the audited two functions
-  // is caught immediately.
+  // writes fulfillmentStatus=complete outside the audited functions is
+  // caught immediately.
   const src = readFileSync('src/lib/fulfillment.ts', 'utf8');
   const completeAssignments = src.match(/fulfillmentStatus:\s*['"]complete['"]/g) ?? [];
-  // The two known sites: runDigitalFulfillment final write, runPrintFulfillment final write.
-  assert.ok(completeAssignments.length >= 2, `expected at least 2 fulfillmentStatus=complete writes, got ${completeAssignments.length}`);
-  assert.ok(completeAssignments.length <= 2, `if a NEW completion path is added, audit it before changing this assertion (got ${completeAssignments.length})`);
+  // The two known fulfillment-pipeline sites: runDigitalFulfillment final
+  // write, runPrintFulfillment final write.
+  assert.ok(completeAssignments.length >= 2, `expected at least 2 fulfillmentStatus=complete writes in fulfillment.ts, got ${completeAssignments.length}`);
+  assert.ok(completeAssignments.length <= 2, `if a NEW completion path is added to fulfillment.ts, audit it before changing this assertion (got ${completeAssignments.length})`);
 
-  // Outside fulfillment.ts, no other src/lib/* file may write
-  // fulfillmentStatus=complete directly.
+  // admin-actions.ts has TWO legitimate completion writes — both recover
+  // an order from fulfillmentStatus='delivery_email_failed' after a
+  // successful re-send of the customer email:
+  //   1. retryOrderFulfillment short-circuit (smart retry)
+  //   2. resendDigitalDelivery direct admin handle
+  // Any additional `fulfillmentStatus: 'complete'` write here MUST be
+  // audited — it would otherwise risk smuggling a "completed" order
+  // without the corresponding artifact-generation evidence.
   const adminSrc = readFileSync('src/lib/admin-actions.ts', 'utf8');
-  assert.doesNotMatch(adminSrc, /fulfillmentStatus:\s*['"]complete['"]/);
+  const adminCompleteAssignments = adminSrc.match(/fulfillmentStatus:\s*['"]complete['"]/g) ?? [];
+  assert.equal(
+    adminCompleteAssignments.length,
+    2,
+    `admin-actions.ts is allowed exactly 2 fulfillmentStatus=complete writes (delivery_email_failed → complete recovery), got ${adminCompleteAssignments.length}`,
+  );
+
   const ordersSrc = readFileSync('src/lib/orders.ts', 'utf8');
   assert.doesNotMatch(ordersSrc, /fulfillmentStatus:\s*['"]complete['"]/);
 });

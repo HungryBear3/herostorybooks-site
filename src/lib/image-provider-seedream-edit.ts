@@ -18,6 +18,10 @@ import type {
 const FAL_SEEDREAM_ENDPOINT =
   process.env.FAL_SEEDREAM_IMAGE_ENDPOINT ?? 'https://fal.run/fal-ai/bytedance/seedream/v4/edit';
 const DEFAULT_MODEL = process.env.FAL_SEEDREAM_IMAGE_MODEL ?? 'fal-ai/bytedance/seedream/v4/edit';
+/** Per-request timeout. A hung Seedream edit request can otherwise consume
+ *  the whole serverless budget and leave the order stuck at
+ *  fulfillmentStatus='generating_images' with no recorded error. */
+const FAL_SEEDREAM_REQUEST_TIMEOUT_MS = Number(process.env.FAL_SEEDREAM_REQUEST_TIMEOUT_MS ?? 60_000);
 
 function deterministicSeedFromPrompt(prompt: string): number {
   const digest = createHash('sha256').update(prompt).digest();
@@ -91,6 +95,7 @@ export const seedreamEditImageProvider: ImageProvider = {
           enable_safety_checker: true,
           seed: deterministicSeedFromPrompt(input.prompt),
         }),
+        signal: AbortSignal.timeout(FAL_SEEDREAM_REQUEST_TIMEOUT_MS),
       });
 
       if (!res.ok) {

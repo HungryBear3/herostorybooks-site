@@ -17,21 +17,113 @@ export function getOrderSenderEmail() {
   return process.env.HSB_EMAIL_FROM || process.env.EMAIL_FROM || DEFAULT_FROM_EMAIL;
 }
 
+/**
+ * Verified-sender fallback used when the primary configured sender fails
+ * Resend's domain-verification check (HTTP 403 "domain is not verified").
+ *
+ * Operator UX:
+ *   1. Set `HSB_EMAIL_FROM` to the branded sender (e.g.
+ *      "Hero Story Books <support@herostorybooks.com>").
+ *   2. Set `HSB_EMAIL_FROM_FALLBACK` to a sender on a Resend-verified
+ *      domain (e.g. "Hero Story Books <onboarding@resend.dev>") so
+ *      production fulfillment can still deliver while we work on
+ *      verifying the production domain.
+ *
+ * When the fallback is unset, a domain-not-verified failure surfaces a
+ * clear, actionable error instead of a generic Resend message.
+ */
+export function getFallbackSenderEmail(): string | null {
+  return process.env.HSB_EMAIL_FROM_FALLBACK ?? null;
+}
+
+interface ResendError {
+  statusCode?: number;
+  name?: string;
+  message?: string;
+}
+
+function isDomainNotVerifiedError(error: ResendError | null | undefined): boolean {
+  if (!error) return false;
+  const message = (error.message || '').toLowerCase();
+  if (error.statusCode === 403 && /domain.*verified|verify.*domain/.test(message)) {
+    return true;
+  }
+  // Resend has been seen returning the same hint under `name` in some clients.
+  if ((error.name || '').toLowerCase().includes('domain') && /verif/i.test(error.message || '')) {
+    return true;
+  }
+  return false;
+}
+
+function formatActionableError(
+  context: string,
+  sender: string,
+  error: ResendError,
+): string {
+  const statusFragment = error.statusCode ? ` (${error.statusCode})` : '';
+  const message = error.message || error.name || 'Unknown Resend error';
+  if (isDomainNotVerifiedError(error)) {
+    const fallbackHint = getFallbackSenderEmail()
+      ? ' (fallback HSB_EMAIL_FROM_FALLBACK also failed; verify that sender too)'
+      : ' — verify the sending domain at https://resend.com/domains, or set HSB_EMAIL_FROM_FALLBACK to a sender on an already-verified domain (e.g. "Hero Story Books <onboarding@resend.dev>")';
+    return `${context} failed${statusFragment}: sender ${sender} is not on a verified Resend domain${fallbackHint}. Underlying error: ${message}`;
+  }
+  return `${context} failed${statusFragment}: ${message}`;
+}
+
 function assertResendSuccess(
   result: {
     data?: { id?: string | null } | null;
-    error?: { statusCode?: number; name?: string; message?: string } | null;
+    error?: ResendError | null;
   },
   context: string,
+  sender: string = getOrderSenderEmail(),
 ) {
   if (result.error) {
-    const status = result.error.statusCode ? ` (${result.error.statusCode})` : '';
-    const message = result.error.message || result.error.name || 'Unknown Resend error';
-    console.error(`[order-email] ${context} failed${status}: ${message}`);
-    throw new Error(`${context} failed${status}: ${message}`);
+    const actionable = formatActionableError(context, sender, result.error);
+    console.error(`[order-email] ${actionable}`);
+    throw new Error(actionable);
   }
 
   return { skipped: false as const, id: result.data?.id ?? null };
+}
+
+/**
+ * Send via Resend with an optional verified-sender fallback. If the
+ * primary `from` returns a 403 "domain is not verified" and a fallback
+ * sender is configured, the send is retried once with the fallback.
+ * Either the success result is returned, or the final error is thrown
+ * via `assertResendSuccess` with an actionable message.
+ */
+async function sendWithFallback(
+  resend: Resend,
+  context: string,
+  payload: {
+    from: string;
+    to: string[];
+    subject: string;
+    html: string;
+    text: string;
+    replyTo?: string;
+  },
+) {
+  const primary = await resend.emails.send(payload);
+  if (!primary.error) {
+    return assertResendSuccess(primary, context, payload.from);
+  }
+
+  const fallback = getFallbackSenderEmail();
+  if (fallback && fallback !== payload.from && isDomainNotVerifiedError(primary.error)) {
+    console.warn(
+      `[order-email] ${context}: primary sender ${payload.from} unverified — retrying with HSB_EMAIL_FROM_FALLBACK=${fallback}`,
+    );
+    const retry = await resend.emails.send({ ...payload, from: fallback });
+    return assertResendSuccess(retry, context, fallback);
+  }
+
+  // No fallback available, or the failure was not a domain issue. Surface
+  // the actionable error message and throw.
+  return assertResendSuccess(primary, context, payload.from);
 }
 
 export function buildOrderConfirmationEmail(
@@ -89,7 +181,7 @@ export async function sendOrderConfirmationEmail(order: OrderRecord) {
   const resend = new Resend(apiKey);
   const supportEmail = getSupportEmail();
   const email = buildOrderConfirmationEmail(order, { supportEmail });
-  const result = await resend.emails.send({
+  return sendWithFallback(resend, `Order confirmation email for ${order.id}`, {
     from: getOrderSenderEmail(),
     to: [order.email],
     subject: email.subject,
@@ -97,8 +189,6 @@ export async function sendOrderConfirmationEmail(order: OrderRecord) {
     text: email.text,
     replyTo: supportEmail,
   });
-
-  return assertResendSuccess(result, `Order confirmation email for ${order.id}`);
 }
 
 // ── Lifecycle email builders ──────────────────────────────────────────────────
@@ -292,16 +382,18 @@ export async function sendLifecycleEmail(
   }
 
   const resend = new Resend(apiKey);
-  const result = await resend.emails.send({
-    from: getOrderSenderEmail(),
-    to: [order.email],
-    subject: email.subject,
-    html: email.html,
-    text: email.text,
-    replyTo: supportEmail,
-  });
-
-  return assertResendSuccess(result, `Lifecycle email for ${order.id} status ${order.status}`);
+  return sendWithFallback(
+    resend,
+    `Lifecycle email for ${order.id} status ${order.status}`,
+    {
+      from: getOrderSenderEmail(),
+      to: [order.email],
+      subject: email.subject,
+      html: email.html,
+      text: email.text,
+      replyTo: supportEmail,
+    },
+  );
 }
 
 // ── Fulfillment-specific emails ───────────────────────────────────────────────
@@ -352,7 +444,7 @@ export async function sendDigitalDeliveryEmail(
   const supportEmail = getSupportEmail();
   const email = buildDigitalDeliveryEmail(order, { pdfUrl: options.pdfUrl, supportEmail });
 
-  const result = await resend.emails.send({
+  return sendWithFallback(resend, `Digital delivery email for ${order.id}`, {
     from: getOrderSenderEmail(),
     to: [order.email],
     subject: email.subject,
@@ -360,8 +452,6 @@ export async function sendDigitalDeliveryEmail(
     text: email.text,
     replyTo: supportEmail,
   });
-
-  return assertResendSuccess(result, `Digital delivery email for ${order.id}`);
 }
 
 export function buildProofReadyEmail(
@@ -427,7 +517,7 @@ export async function sendProofReadyEmail(
   const supportEmail = getSupportEmail();
   const email = buildProofReadyEmail(order, { ...options, supportEmail });
 
-  const result = await resend.emails.send({
+  return sendWithFallback(resend, `Proof ready email for ${order.id}`, {
     from: getOrderSenderEmail(),
     to: [order.email],
     subject: email.subject,
@@ -435,8 +525,6 @@ export async function sendProofReadyEmail(
     text: email.text,
     replyTo: supportEmail,
   });
-
-  return assertResendSuccess(result, `Proof ready email for ${order.id}`);
 }
 
 // ── Operator alert ────────────────────────────────────────────────────────────
@@ -462,15 +550,13 @@ export async function sendOperatorFailureAlert(order: OrderRecord, lastError: st
     </div>
   `;
 
-  const result = await resend.emails.send({
+  return sendWithFallback(resend, `Operator failure alert for ${order.id}`, {
     from: getOrderSenderEmail(),
     to: [operatorEmail],
     subject,
     html,
     text: `Order ${order.id} (${order.email}) failed fulfillment after max retries.\n\nLast error: ${lastError.slice(0, 500)}\n\nStatus: failed_manual_review`,
   });
-
-  return assertResendSuccess(result, `Operator failure alert for ${order.id}`);
 }
 
 export interface RegenManualReviewAlertArgs {
@@ -509,14 +595,13 @@ export async function sendRegenManualReviewAlert(
     `Latest feedback: ${(args.latestFeedback || '(no text)').slice(0, 500)}`,
   ].join('\n');
 
-  const result = await resend.emails.send({
+  return sendWithFallback(resend, `Regeneration manual-review alert for ${order.id}`, {
     from: getOrderSenderEmail(),
     to: [operatorEmail],
     subject,
     html,
     text,
   });
-  return assertResendSuccess(result, `Regeneration manual-review alert for ${order.id}`);
 }
 
 function escapeHtml(value: string) {

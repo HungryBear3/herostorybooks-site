@@ -4,7 +4,11 @@ import { getOptionalStripeSecretKey } from './stripe-env.ts';
 
 import { appendAuditEvent, getOrder, updateFulfillmentState, updateOrderStatus, type OrderRecord } from './orders.ts';
 import { triggerFulfillment, approvePrintProof } from './fulfillment.ts';
-import { sendProofReadyEmail, sendLifecycleEmail } from './order-email.ts';
+import {
+  sendProofReadyEmail,
+  sendLifecycleEmail,
+  sendDigitalDeliveryEmail,
+} from './order-email.ts';
 
 export type ActionResult =
   | { ok: true; detail?: string }
@@ -19,6 +23,59 @@ export async function retryOrderFulfillment(orderId: string): Promise<ActionResu
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
   if (order.paymentStatus !== 'paid') {
     return { ok: false, status: 400, error: 'Cannot retry: payment not confirmed' };
+  }
+
+  // Smart short-circuit: when the order's artifacts are already persisted
+  // and the only failure was the delivery email (Resend domain not
+  // verified, transient SMTP error, etc.), we MUST NOT reset to
+  // not_started and regenerate. That would re-pay for the entire image
+  // pipeline for a book that's already correct. Resend just the email.
+  if (order.fulfillmentStatus === 'delivery_email_failed') {
+    const isDigital = order.bookFormat === 'digital';
+    if (isDigital && order.storyArtifactUrl) {
+      try {
+        await sendDigitalDeliveryEmail(order, { pdfUrl: order.storyArtifactUrl });
+        await updateFulfillmentState(orderId, {
+          fulfillmentStatus: 'complete',
+          fulfillmentLastError: null,
+        });
+        return { ok: true, detail: 'Delivery email resent (artifacts already existed)' };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await updateFulfillmentState(orderId, {
+          fulfillmentLastError: `delivery_email_failed (retry): ${message.slice(0, 500)}`,
+        });
+        return {
+          ok: false,
+          status: 502,
+          error: `Delivery email still failing: ${message.slice(0, 240)}`,
+        };
+      }
+    }
+    if (!isDigital && order.storyArtifactUrl && order.proofApprovalToken) {
+      const baseUrl = process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'http://localhost:3000';
+      const reviewUrl = `${baseUrl}/review/${order.id}?token=${order.proofApprovalToken}`;
+      try {
+        await sendProofReadyEmail(order, { reviewUrl, proofUrl: order.storyArtifactUrl });
+        await updateFulfillmentState(orderId, {
+          fulfillmentStatus: 'proof_ready',
+          fulfillmentLastError: null,
+        });
+        return { ok: true, detail: 'Proof-ready email resent (artifacts already existed)' };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await updateFulfillmentState(orderId, {
+          fulfillmentLastError: `delivery_email_failed (retry): ${message.slice(0, 500)}`,
+        });
+        return {
+          ok: false,
+          status: 502,
+          error: `Proof email still failing: ${message.slice(0, 240)}`,
+        };
+      }
+    }
+    // delivery_email_failed but somehow no artifact URL — fall through to
+    // a normal full retry; that path will at least regenerate properly.
   }
 
   await updateFulfillmentState(orderId, {
@@ -37,6 +94,46 @@ export async function retryOrderFulfillment(orderId: string): Promise<ActionResu
   }
 
   return { ok: true };
+}
+
+/**
+ * Email-only recovery: resend the delivery / proof email for an order
+ * whose artifacts are already persisted. Safe to call from the admin
+ * dashboard or a runbook. Does not touch fulfillment state when the
+ * order isn't in `delivery_email_failed` (caller should use the regular
+ * `retryOrderFulfillment` or `resendProofEmail` paths in that case).
+ */
+export async function resendDigitalDelivery(orderId: string): Promise<ActionResult> {
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  if (order.bookFormat !== 'digital') {
+    return {
+      ok: false,
+      status: 400,
+      error: `Use resendProofEmail / lifecycle paths for ${order.bookFormat} orders`,
+    };
+  }
+  if (!order.storyArtifactUrl) {
+    return { ok: false, status: 409, error: 'No digital artifact URL to resend' };
+  }
+  try {
+    await sendDigitalDeliveryEmail(order, { pdfUrl: order.storyArtifactUrl });
+    await updateFulfillmentState(orderId, {
+      fulfillmentStatus: 'complete',
+      fulfillmentLastError: null,
+    });
+    return { ok: true, detail: 'Digital delivery email resent' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await updateFulfillmentState(orderId, {
+      fulfillmentLastError: `delivery_email_failed (manual resend): ${message.slice(0, 500)}`,
+    });
+    return {
+      ok: false,
+      status: 502,
+      error: `Delivery email failed: ${message.slice(0, 240)}`,
+    };
+  }
 }
 
 // ── Ship / mark shipped ───────────────────────────────────────────────────────

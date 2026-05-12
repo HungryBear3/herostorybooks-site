@@ -339,7 +339,24 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   }));
 
-  await sendDigitalDeliveryEmail(order, { pdfUrl });
+  // Delivery email runs AFTER the artifacts are durably persisted at
+  // fulfillmentStatus='complete'. If the email fails (e.g. Resend domain
+  // not verified), we record `delivery_email_failed` and keep
+  // `storyArtifactUrl` intact. We deliberately do NOT re-throw — that
+  // would push the whole order to `failed_manual_review` via runWithRetry
+  // and trigger a wasted regeneration of the story + images for an order
+  // whose PDF is already correct. Admin's `retryOrderFulfillment` knows
+  // how to recover by resending just the email.
+  try {
+    await sendDigitalDeliveryEmail(order, { pdfUrl });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[fulfillment] delivery email failed for ${order.id}: ${message}`);
+    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+      fulfillmentStatus: 'delivery_email_failed',
+      fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+    }));
+  }
 }
 
 // ── Print fulfillment ─────────────────────────────────────────────────────────
@@ -454,7 +471,22 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   }));
 
-  await sendProofReadyEmail(order, { reviewUrl, proofUrl });
+  // Mirror of the digital path: proof artifacts are durably persisted at
+  // fulfillmentStatus='proof_ready'. If the proof-ready email fails we
+  // record `delivery_email_failed` (preserving the artifacts) instead of
+  // bubbling up to runWithRetry, which would burn retry attempts on
+  // already-correct PDFs and eventually move the order to
+  // `failed_manual_review`. Admin can resend the proof email separately.
+  try {
+    await sendProofReadyEmail(order, { reviewUrl, proofUrl });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[fulfillment] proof-ready email failed for ${order.id}: ${message}`);
+    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+      fulfillmentStatus: 'delivery_email_failed',
+      fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+    }));
+  }
 }
 
 // ── Print production (post-approval) ──────────────────────────────────────────
@@ -707,12 +739,21 @@ export async function triggerFulfillment(
   // fulfillmentStatus state machine:
   //   - undefined / 'not_started' / 'failed_manual_review' → eligible to (re)start
   //   - 'complete' → already-done (idempotent skip)
+  //   - 'delivery_email_failed' → artifacts already exist; full pipeline
+  //       re-run would burn money on a regenerated story. Treat as
+  //       skipped_already_complete so callers (e.g. webhook re-deliveries)
+  //       don't trigger a wasted regeneration. Admin's `retryOrderFulfillment`
+  //       handles the email-only recovery path explicitly.
   //   - any in-progress state ('generating_story', 'generating_images',
   //     'building_pdf', 'proof_ready', 'proof_approved',
   //     'submitting_to_print', 'print_in_production') → in-progress skip
   const cur = order.fulfillmentStatus;
   if (cur === 'complete') {
     console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=complete — skipping (idempotent)`);
+    return { status: 'skipped_already_complete', fulfillmentStatus: cur };
+  }
+  if (cur === 'delivery_email_failed') {
+    console.warn(`[fulfillment] order ${orderId} has fulfillmentStatus=delivery_email_failed — artifacts already exist, use admin resend rather than re-running fulfillment`);
     return { status: 'skipped_already_complete', fulfillmentStatus: cur };
   }
   if (cur && cur !== 'not_started' && cur !== 'failed_manual_review') {

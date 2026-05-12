@@ -793,6 +793,10 @@ const PAYMENT_GATED_FULFILLMENT_STATUSES: FulfillmentStatus[] = [
   'proof_approved',
   'submitting_to_print',
   'complete',
+  // delivery_email_failed implies artifacts already persisted under a
+  // paid record. Treat any write to that status the same as the other
+  // post-payment states.
+  'delivery_email_failed',
 ];
 
 function patchRequiresPaidOrder(patch: FulfillmentPatch): boolean {

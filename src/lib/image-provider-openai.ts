@@ -10,6 +10,14 @@ import type {
 
 const OPENAI_IMAGE_ENDPOINT = 'https://api.openai.com/v1/images/generations';
 const DEFAULT_MODEL = process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1';
+/** Per-request timeout. A hung OpenAI image request can otherwise consume
+ *  the whole serverless budget and leave the order stuck at
+ *  fulfillmentStatus='generating_images' with no recorded error. Matches
+ *  the timeout pattern used by the FAL and Seedream providers. Read on
+ *  each call so tests / runtime overrides apply without a fresh import. */
+function getOpenaiTimeoutMs(): number {
+  return Number(process.env.OPENAI_IMAGE_REQUEST_TIMEOUT_MS ?? 60_000);
+}
 
 export const openaiImageProvider: ImageProvider = {
   name: 'openai',
@@ -44,6 +52,7 @@ export const openaiImageProvider: ImageProvider = {
           n: 1,
           size: '1024x1024',
         }),
+        signal: AbortSignal.timeout(getOpenaiTimeoutMs()),
       });
 
       if (!res.ok) {

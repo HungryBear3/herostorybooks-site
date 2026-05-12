@@ -7,6 +7,16 @@ export type FulfillmentStatus =
   | 'proof_approved'
   | 'submitting_to_print'
   | 'complete'
+  /**
+   * Artifacts (story + images + PDF) generated and persisted successfully,
+   * but the customer delivery email failed. The order has a valid
+   * `storyArtifactUrl` (digital) or `proofApprovalToken` (print) — only
+   * the notification is missing. Admin should NOT retry the whole
+   * pipeline; the recovery path is "resend the email" (often after
+   * verifying the Resend sender domain). Treated as recoverable rather
+   * than `failed_manual_review` so the book itself is not regenerated.
+   */
+  | 'delivery_email_failed'
   | 'failed_manual_review';
 
 /**
