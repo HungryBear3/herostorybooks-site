@@ -13,6 +13,7 @@ import {
   missingRequiredField,
 } from '@/lib/checkout-flow';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
+import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 
 function isValidEmail(value: string) {
@@ -50,12 +51,11 @@ function getReturnBaseUrl(request: Request): string {
 
 export async function POST(request: Request) {
   try {
-    if (process.env.HSB_CHECKOUT_PAUSED === 'true') {
+    if (isCheckoutPaused()) {
       return NextResponse.json(
         {
-          error:
-            'Checkout is temporarily paused while we improve story quality. Please check back shortly or contact support@herostorybooks.com.',
-          code: 'checkout_paused',
+          error: CHECKOUT_PAUSED_MESSAGE,
+          code: CHECKOUT_PAUSED_CODE,
         },
         { status: 503 },
       );
