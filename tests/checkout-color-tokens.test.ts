@@ -8,7 +8,7 @@
  *   `coral`, `coral-dark`, `purple`, `teal`, `teal-dark`) silently
  *   produces NO style — selected states render visually blank.
  *
- *   This test scans the checkout page for every custom-token utility
+ *   This test scans the checkout page (including the client form component) for every custom-token utility
  *   class (`{prefix}-{token}` and `{prefix}-{token}/{opacity}`) and
  *   asserts that the matching `--color-{token}` exists in globals.css.
  *   Adding a token-classed element to checkout without its theme
@@ -22,7 +22,10 @@ import { join } from 'node:path';
 
 const repoRoot = join(import.meta.dirname, '..');
 const globalsCss = readFileSync(join(repoRoot, 'src/app/globals.css'), 'utf8');
-const checkoutPage = readFileSync(join(repoRoot, 'src/app/checkout/page.tsx'), 'utf8');
+const checkoutPage = [
+  readFileSync(join(repoRoot, 'src/app/checkout/page.tsx'), 'utf8'),
+  readFileSync(join(repoRoot, 'src/app/checkout/checkout-form.tsx'), 'utf8'),
+].join('\n');
 
 // HSB-custom token names that have been used somewhere in this repo.
 // We only check that any of these THAT APPEAR in the checkout page are
