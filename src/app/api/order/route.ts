@@ -50,6 +50,17 @@ function getReturnBaseUrl(request: Request): string {
 
 export async function POST(request: Request) {
   try {
+    if (process.env.HSB_CHECKOUT_PAUSED === 'true') {
+      return NextResponse.json(
+        {
+          error:
+            'Checkout is temporarily paused while we improve story quality. Please check back shortly or contact support@herostorybooks.com.',
+          code: 'checkout_paused',
+        },
+        { status: 503 },
+      );
+    }
+
     const form = await request.formData();
     const childName = String(form.get('childName') || '').trim();
     const email = String(form.get('email') || '').trim();
