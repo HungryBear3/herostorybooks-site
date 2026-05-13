@@ -285,3 +285,223 @@ test('source: triggerFulfillment logs at entry so silent kickoff drops are detec
   assert.match(src, /confirmed paid after \$\{[^}]*\} readback attempt/);
   assert.match(src, /payment not confirmed after \$\{[^}]*\} readback attempt/);
 });
+
+// ── Observability: kickoff correlation id + chain-exit summary ──────────────
+//
+// These guards close the contradictory preview-log state where logs said
+// "fulfillment kickoff refusing because paymentStatus !== paid" but admin
+// showed the order as complete. With the kickoff correlation id every log
+// line for one invocation grep-able as a single trace, and with the
+// chain-exit summary the operator can see the order's REAL paymentStatus +
+// fulfillmentStatus at the moment this helper exited — no need to
+// cross-reference admin to figure out whether some other path picked the
+// order up.
+
+test('observability-1: every log line for one kickoff carries the same [webhook][kickoff:<id>] prefix', async () => {
+  _resetInFlightForTest();
+
+  const trigger = async (): Promise<TriggerResult> => ({ status: 'started' });
+  const setImmediateQ = makeQueue();
+  const rec = makeRecorder();
+
+  scheduleFulfillmentKickoff('ord_corr_id', {
+    trigger,
+    setImmediateImpl: (cb) => { setImmediateQ.push(cb); return null; },
+    afterImpl: null,
+    setTimeoutImpl: () => null,
+    log: rec.log,
+    errorLog: rec.errorLog,
+    getOrderForSummary: async () => ({
+      // Minimal OrderRecord shape — only the two fields the summary line reads.
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'generating_story',
+    } as never),
+    kickoffIdFactory: () => 'deadbeef',
+  });
+  await setImmediateQ.drain();
+
+  // EVERY emitted line must carry the same correlation prefix.
+  assert.ok(rec.lines.length > 0, 'expected at least one emitted log line');
+  for (const line of rec.lines) {
+    assert.match(
+      line,
+      /\[webhook\]\[kickoff:deadbeef\]/,
+      `every log line must carry the kickoff correlation prefix; offender:\n${line}`,
+    );
+  }
+});
+
+test('observability-2: chain that initially saw not_paid_yet but later succeeded emits a closing summary with the order\'s real state', async () => {
+  _resetInFlightForTest();
+
+  let triggerCalls = 0;
+  const trigger = async (): Promise<TriggerResult> => {
+    triggerCalls++;
+    if (triggerCalls === 1) return { status: 'not_paid_yet', attempts: 3 };
+    return { status: 'started' };
+  };
+
+  const setImmediateQ = makeQueue();
+  const timeoutQ: Array<() => void> = [];
+  const rec = makeRecorder();
+
+  scheduleFulfillmentKickoff('ord_resolved_after_retry', {
+    trigger,
+    setImmediateImpl: (cb) => { setImmediateQ.push(cb); return null; },
+    afterImpl: null,
+    setTimeoutImpl: (cb) => { timeoutQ.push(cb); return null; },
+    log: rec.log,
+    errorLog: rec.errorLog,
+    notPaidYetMaxRetries: 3,
+    retryDelayMs: () => 0,
+    getOrderForSummary: async () => ({
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'generating_story',
+    } as never),
+    kickoffIdFactory: () => 'aaaaaaaa',
+  });
+
+  await setImmediateQ.drain();
+  // First attempt got not_paid_yet — chain scheduled a retry, did NOT exit yet.
+  assert.equal(triggerCalls, 1);
+  assert.equal(timeoutQ.length, 1);
+  // The retry is fired by setTimeout.
+  const retry = timeoutQ.shift()!;
+  retry();
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  // Trigger was called twice; second call returned started.
+  assert.equal(triggerCalls, 2);
+
+  // The closing summary line must be present, must include the
+  // outcome=started, and must include the order's real state.
+  const summary = rec.lines.find((l) => l.includes('chain exited:'));
+  assert.ok(summary, `expected a chain-exit summary line; got:\n${rec.lines.join('\n')}`);
+  assert.match(summary!, /\[webhook\]\[kickoff:aaaaaaaa\]/);
+  assert.match(summary!, /outcome=started/);
+  assert.match(summary!, /orderPaymentStatus=paid/);
+  assert.match(summary!, /orderFulfillmentStatus=generating_story/);
+});
+
+test('observability-3: exhausted-retries log line is reframed as helper-local, NOT terminal-for-order, and is followed by a chain-exit summary that shows real state', async () => {
+  _resetInFlightForTest();
+
+  let triggerCalls = 0;
+  const trigger = async (): Promise<TriggerResult> => {
+    triggerCalls++;
+    return { status: 'not_paid_yet', attempts: 1 };
+  };
+
+  const setImmediateQ = makeQueue();
+  const timeoutQ: Array<() => void> = [];
+  const rec = makeRecorder();
+
+  // Simulate the scary contradictory state: the kickoff helper exhausts
+  // its retry budget while paymentStatus has not converged in its view,
+  // BUT a parallel path has already advanced the order to complete by
+  // the time the summary read runs.
+  scheduleFulfillmentKickoff('ord_giveup_but_actually_complete', {
+    trigger,
+    setImmediateImpl: (cb) => { setImmediateQ.push(cb); return null; },
+    afterImpl: null,
+    setTimeoutImpl: (cb) => { timeoutQ.push(cb); return null; },
+    log: rec.log,
+    errorLog: rec.errorLog,
+    notPaidYetMaxRetries: 2,
+    retryDelayMs: () => 0,
+    getOrderForSummary: async () => ({
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'complete',
+    } as never),
+    kickoffIdFactory: () => 'bbbbbbbb',
+  });
+
+  await setImmediateQ.drain();
+  // Drain retries.
+  while (timeoutQ.length > 0) {
+    const cb = timeoutQ.shift()!;
+    cb();
+    await new Promise((r) => setImmediate(r));
+  }
+  // Let the trailing async emitChainExitSummary settle.
+  await new Promise((r) => setImmediate(r));
+
+  // Initial + 2 retries = 3 attempts; all not_paid_yet → helper gave up.
+  assert.equal(triggerCalls, 3);
+
+  // Existing "giving up" substring is preserved for backwards compat with
+  // older log greps, BUT the line must now also include the disambiguator
+  // that this is NOT a terminal failure for the order.
+  const giveupLine = rec.lines.find((l) =>
+    l.includes('giving up for ord_giveup_but_actually_complete'),
+  );
+  assert.ok(giveupLine, `expected give-up line, got:\n${rec.lines.join('\n')}`);
+  assert.match(giveupLine!, /\[webhook\]\[kickoff:bbbbbbbb\]/);
+  assert.match(giveupLine!, /NOT terminal for the order/);
+  assert.match(giveupLine!, /parallel scheduler.*Stripe webhook redelivery.*admin retry/i);
+
+  // The chain-exit summary line must immediately resolve the apparent
+  // contradiction: the order is actually paid+complete despite this
+  // helper's local view that payment hadn't converged.
+  const summary = rec.lines.find((l) => l.includes('chain exited:'));
+  assert.ok(summary, `expected a chain-exit summary line; got:\n${rec.lines.join('\n')}`);
+  assert.match(summary!, /\[webhook\]\[kickoff:bbbbbbbb\]/);
+  assert.match(summary!, /outcome=exhausted_retries/);
+  assert.match(summary!, /orderPaymentStatus=paid/);
+  assert.match(summary!, /orderFulfillmentStatus=complete/);
+});
+
+test('observability-4: chain-exit summary survives a getOrderForSummary failure (best-effort, never crashes the runtime)', async () => {
+  _resetInFlightForTest();
+
+  const trigger = async (): Promise<TriggerResult> => ({ status: 'started' });
+  const setImmediateQ = makeQueue();
+  const rec = makeRecorder();
+
+  scheduleFulfillmentKickoff('ord_summary_read_fails', {
+    trigger,
+    setImmediateImpl: (cb) => { setImmediateQ.push(cb); return null; },
+    afterImpl: null,
+    setTimeoutImpl: () => null,
+    log: rec.log,
+    errorLog: rec.errorLog,
+    getOrderForSummary: async () => { throw new Error('blob read timed out'); },
+    kickoffIdFactory: () => 'cccccccc',
+  });
+  await setImmediateQ.drain();
+  await new Promise((r) => setImmediate(r));
+
+  // The chain still completes; the summary degrades to a read_error line.
+  const degraded = rec.lines.find((l) => l.includes('orderState=read_error'));
+  assert.ok(degraded, `expected degraded summary line, got:\n${rec.lines.join('\n')}`);
+  assert.match(degraded!, /\[webhook\]\[kickoff:cccccccc\]/);
+  assert.match(degraded!, /outcome=started/);
+});
+
+test('observability-5: webhook source explicitly logs the replay-skip for already-paid orders past not_started', () => {
+  const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
+  // The new explicit-skip branch must exist and call out the reason so
+  // operators don't have to infer the skip from absence-of-kickoff lines.
+  assert.match(
+    src,
+    /replay skipped — paymentStatus=paid/,
+    'webhook must log an explicit skip reason for paid orders with fulfillment past not_started',
+  );
+  assert.match(
+    src,
+    /no kickoff retrigger needed/,
+    'skip log line must state that no kickoff was retriggered',
+  );
+});
+
+test('observability-6: source — kickoff helper imports getOrder for the summary read', () => {
+  const src = readFileSync('src/lib/fulfillment-kickoff.ts', 'utf8');
+  assert.match(src, /import\s*\{\s*getOrder\s+as\s+defaultGetOrder\s*\}\s*from\s*'\.\/orders\.ts'/);
+  // Per-invocation correlation id surface.
+  assert.match(src, /kickoffIdFactory/);
+  assert.match(src, /\[webhook\]\[kickoff:\$\{kickoffId\}\]/);
+  // Chain-exit summary surface.
+  assert.match(src, /emitChainExitSummary/);
+  assert.match(src, /chain exited: outcome=/);
+});
