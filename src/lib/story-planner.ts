@@ -202,10 +202,85 @@ const THEME_TEMPLATES: Record<string, ThemePlanTemplate> = {
     tagline: 'A dragon’s clue glows brightest when the child dares to follow it.',
     protagonist_outfit: 'forest-green travel coat, leather belt pouch, lace-up boots, wool scarf, and a small lantern clipped at the hip',
     setting_palette: 'Twilight blues, ember golds, mossy stone, and red-orange dragon light. The world should feel old, enchanted, and echoing, with firelight guiding the eye through shadow.',
-    settings: ['castle courtyard at dusk', 'moonlit forest track', 'stone bridge over a gorge', 'glowing mushroom grove', 'dragon-carved gate', 'ember cave tunnel', 'underground lake shore', 'mountain peak under stars', 'warm hearth at home'],
-    objects: ['iron lantern', 'dragon scale', 'ash feather', 'rope coil', 'rune tile', 'glowing mushroom', 'silver key', 'charred footprint', 'ruby ember'],
+    settings: [
+      'castle courtyard at dusk',
+      'pine path beyond the outer wall',
+      'stone bridge over a gorge',
+      'mossy stair under leaning towers',
+      'dragon-carved gate',
+      'ember cave tunnel',
+      'underground lake shore',
+      'crystal-lit cavern bend',
+      'warm ledge above a sleeping dragon tail',
+      'narrow ridge inside the mountain',
+      'rune chamber beneath hanging roots',
+      'black stone door with a silver keyhole',
+      'ruby-lit hollow near the old nest',
+      'windy shelf above the clouds',
+      'moonlit chamber of carved dragon faces',
+      'last tunnel before the mountain heart',
+      'round chamber around a quiet ruby ember',
+      'hidden stair rising through smoke',
+      'mountain peak under stars',
+      'lantern-lit path down the slope',
+      'castle courtyard under returning moonlight',
+      'home road at dawn',
+      'warm hearth at home',
+      'bedroom window in soft morning light',
+    ],
+    objects: [
+      'iron lantern',
+      'dragon scale',
+      'ash feather',
+      'rope coil',
+      'rune tile',
+      'glowing mushroom',
+      'silver key',
+      'charred footprint',
+      'warm dragon scale',
+      'lantern shadow',
+      'etched stone ring',
+      'silver key',
+      'ruby ember',
+      'scarf knot',
+      'carved dragon face',
+      'lantern spark',
+      'ruby ember',
+      'smoke-warmed stair',
+      'smooth mountain stone',
+      'wrapped ruby ember',
+      'answering lantern glow',
+      'wrapped smooth stone',
+      'ruby ember on the hearth',
+      'lantern by the window',
+    ],
     presences: ['none', 'a fox with bright eyes', 'a sleeping dragon tail', 'an owl overhead', 'a small dragon hatchling'],
-    actionPhrases: ['lifts a lantern and scans the dark path', 'steps across the bridge while wind pulls the scarf', 'turns a dragon scale in the light', 'pushes open a rune-marked gate', 'waits while a low rumble rolls through the cave', 'holds still as glowing mushrooms brighten', 'kneels beside a charred footprint', 'reaches toward a hatchling with an open palm', 'sets the lantern down beside a ruby ember'],
+    actionPhrases: [
+      'lifts a lantern and scans the dark path',
+      'turns a dragon scale until it catches blue moonlight',
+      'steps across the bridge while wind pulls the scarf',
+      'loops a rope around the safest stone post',
+      'pushes open a rune-marked gate',
+      'waits while a low rumble rolls through the cave',
+      'kneels beside a charred footprint at the water edge',
+      'holds still as glowing mushrooms brighten the cavern wall',
+      'notices the sleeping dragon tail and lowers the lantern',
+      'follows a lantern shadow along the narrow ridge',
+      'sets the etched stone ring into the floor mark',
+      'turns the silver key without making a sound',
+      'sets the lantern down beside the ruby ember',
+      'ties the scarf tighter before crossing the windy shelf',
+      'touches the carved dragon face and listens for the echo',
+      'protects the lantern spark from a sudden breath of smoke',
+      'holds the ruby ember up and sees the hidden answer inside',
+      'climbs the smoke-warmed stair as the mountain settles',
+      'chooses one smooth mountain stone from the starlit ledge',
+      'wraps the ember safely and starts down the slope',
+      'returns to the courtyard with the lantern glowing steady',
+      'walks home with the smooth stone wrapped in both hands',
+      'shows the ruby ember on the hearth while family leans close',
+      'sets the lantern by the bedroom window before sleep',
+    ],
   },
   'royal-adventure': {
     titleNoun: 'The Secret Balcony',
@@ -224,37 +299,37 @@ function sanitizeInput(value: string | undefined | null, maxLen: number): string
 }
 
 const SETTING_FLAVORS = [
-  'where dew beads on giant leaves',
-  'where parrots crack the morning quiet',
-  'with muddy footprints veering left',
-  'under a loop of hanging roots',
-  'beside a toppled stone lantern',
-  'where spray cools the air',
-  'with a low echo underfoot',
-  'where sun stripes the ground',
-  'beside a carved face in the rock',
-  'where bright insects skim the ferns',
-  'with a ribbon of smoke in the distance',
-  'beside a wall of wet moss',
-  'under a branch bent like an arch',
-  'where pebbles rattle into dark water',
-  'with a narrow ledge above the path',
-  'beside a cracked basin catching rain',
-  'where the air smells of stone and leaves',
+  'under a pale wash of light',
+  'with a small clue waiting just out of sight',
+  'where the path bends toward something new',
+  'under a quiet sky full of color',
+  'beside a shape that looks almost familiar',
+  'where the air feels still enough to listen',
+  'with soft shadows stretching ahead',
+  'where light catches on the smallest details',
+  'beside a marker that seems to matter',
+  'where the world feels larger than before',
+  'with a distant glow pulling the eye forward',
+  'beside a textured wall warm with reflected light',
+  'under an arch of sheltering shapes',
+  'where a faint sound suggests the next direction',
+  'with a narrow way opening ahead',
+  'beside a basin of reflected light',
+  'where the air smells fresh and unfamiliar',
   'under a shaft of pale gold light',
-  'with old marks cut into the ground',
+  'with old marks hidden in the scene',
   'where the path opens just long enough to breathe',
-  'beside a low pool black as glass',
-  'where evening birds settle overhead',
+  'beside a dark, mirror-like surface',
+  'where evening settles gently overhead',
   'with the way home finally visible',
   'under a sky turning soft and silver',
   'beside a doorway warmed by lantern light',
-  'where the last drops fall from the trees',
+  'where the last bright pieces of the day remain',
   'with distant voices on the breeze',
   'under a calm sweep of stars',
   'beside a familiar step worn smooth',
   'where warm light reaches the threshold',
-  'with the jungle quiet at last',
+  'with the adventure quiet at last',
   'under the hush of bedtime',
 ] as const;
 
@@ -313,7 +388,7 @@ export function defaultTextLayoutForPage(
   // Final-page bedtime cadence: the last spread is always a quiet
   // bottom_band so the closing line never floats over a face or pillow.
   if (pageIndex === totalPages - 1) {
-    return { zone: 'bottom_band', colorMode: 'auto', panelStyle: 'translucent_dark' };
+    return { zone: 'bottom_band', colorMode: 'auto', panelStyle: 'translucent_cream' };
   }
 
   const shotPreference: Partial<Record<StoryShotType, TextZone>> = {
@@ -337,11 +412,9 @@ export function defaultTextLayoutForPage(
     (shotType ? shotPreference[shotType] : undefined)
     ?? rotation[pageIndex % rotation.length]!;
 
-  // Bands get the same translucent_dark scrim that already prints well.
-  // Corner zones use the softer scrim so the smaller panel doesn't
-  // dominate the spread.
-  const panelStyle = zone.endsWith('_band') ? 'translucent_dark' : 'soft_scrim';
-  return { zone, colorMode: 'auto', panelStyle };
+  // Product lock: story text must render as dark text on an opaque cream
+  // paper band/margin. Never emit legacy translucent dark metadata.
+  return { zone, colorMode: 'auto', panelStyle: 'translucent_cream' };
 }
 
 function buildArcPositions(pageCount: number): StoryArcPosition[] {
@@ -371,6 +444,8 @@ function firstName(order: OrderRecord): string {
 }
 
 function pickThemeTemplate(order: OrderRecord): ThemePlanTemplate {
+  if (order.theme === 'mothers-day-memory-book') return THEME_TEMPLATES['royal-adventure'];
+  if (order.theme === 'fathers-day-adventure-book') return THEME_TEMPLATES['brave-explorer'];
   return THEME_TEMPLATES[order.theme ?? ''] ?? THEME_TEMPLATES['brave-explorer'];
 }
 

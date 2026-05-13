@@ -97,7 +97,7 @@ test('planStorybook: every plan page carries a deterministic text_layout for the
   for (const page of plan.pages) {
     assert.ok(page.text_layout, `page ${page.page} missing text_layout`);
     assert.ok(['top_left', 'top_right', 'bottom_left', 'bottom_right', 'bottom_band', 'top_band', 'natural'].includes(page.text_layout.zone));
-    assert.ok(['none', 'translucent_cream', 'translucent_dark', 'soft_scrim'].includes(page.text_layout.panelStyle));
+    assert.equal(page.text_layout.panelStyle, 'translucent_cream');
   }
   // Final page is always the cozy bottom_band cadence.
   assert.equal(plan.pages.at(-1)!.text_layout.zone, 'bottom_band');

@@ -88,6 +88,7 @@ export interface PagePromptInput {
     | 'appearanceOptions'
     | 'photoBlobPath'
     | 'theme'
+    | 'childPronouns'
   >;
   /**
    * Frozen story-level character description. When present, prepended to
@@ -100,11 +101,11 @@ export interface PagePromptInput {
   /** Customer feedback for a regenerate. Empty/undefined for initial generation. */
   feedback?: string;
   /**
-   * Where the page caption will sit on top of this illustration. When
-   * present we ask the generator to keep that zone visually quiet so the
-   * translucent caption panel doesn't have to fight a face, prop, or
-   * busy texture for legibility. The renderer uses the same layout to
-   * place the panel — this is how we keep image and typography in sync.
+   * Where the page caption/margin will sit relative to this illustration.
+   * Current production PDFs place prose in a separate cream margin below
+   * the art; this hint keeps important details away from the crop edge and
+   * remains useful for legacy/regenerated layouts that still carry per-page
+   * text-layout metadata.
    */
   textLayout?: PageTextLayout;
 }
@@ -123,17 +124,47 @@ function characterAnchorSection(anchor: string | null | undefined): string {
   ].join('\n');
 }
 
+function parseAppearanceOptions(raw: string | undefined): Record<string, string> {
+  if (!raw?.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([, value]) => typeof value === 'string' && value.trim())
+        .map(([key, value]) => [key, String(value).trim()]),
+    );
+  } catch {
+    return { raw: raw.trim() };
+  }
+}
+
+function describeLockedAppearance(order: PagePromptInput['order']): string[] {
+  const options = parseAppearanceOptions(order.appearanceOptions);
+  const lines: string[] = [];
+  const pronouns = (order.childPronouns ?? '').toLowerCase();
+  if (pronouns.includes('he/him')) {
+    lines.push('Gender presentation lock: Lukas is a young boy; do not feminize him, do not give him long hair, a bob, pigtails, hair ribbons, makeup, dresses, or feminine-coded styling.');
+  }
+  if (options.skinTone) lines.push(`Skin tone: ${options.skinTone}.`);
+  if (options.hairStyle === 'straight-dark') {
+    lines.push('Hair lock: short straight dark boy haircut, hair above the ears/neck, neat and childlike; never shoulder-length or long.');
+  } else if (options.hairStyle) {
+    lines.push(`Hair lock: ${options.hairStyle}; keep the same hair length and style on every page.`);
+  }
+  if (options.eyewear) lines.push(`Eyewear: ${options.eyewear}.`);
+  if (options.raw) lines.push(`Appearance: ${options.raw}.`);
+  return lines;
+}
+
 function childIdentitySection(order: PagePromptInput['order']): string {
   const lines: string[] = [];
   lines.push(`Hero: ${order.childName.trim()}${order.childAge ? `, age ${order.childAge}` : ''}.`);
-  if (order.appearanceOptions && order.appearanceOptions.trim()) {
-    lines.push(`Appearance: ${order.appearanceOptions.trim()}.`);
-  }
+  lines.push(...describeLockedAppearance(order));
   if (order.characterNotes && order.characterNotes.trim()) {
     lines.push(`Character notes: ${order.characterNotes.trim()}.`);
   }
   if (order.photoBlobPath) {
-    lines.push('Reference photo of the child is provided; preserve facial likeness across pages.');
+    lines.push('Reference photo of the child is provided; preserve facial likeness, age, haircut, and boyish presentation across every page.');
   }
   return lines.join(' ');
 }
@@ -142,7 +173,8 @@ function continuitySection(order: PagePromptInput['order']): string {
   return [
     'Maintain visual continuity with prior pages of the same book:',
     `same child (${order.childName.trim()})`,
-    'same apparent age, same haircut, same hair length, same skin tone, and same outfit unless the story explicitly calls for a change',
+    'same apparent age, same short dark haircut, same hair length, same skin tone, and same outfit unless the story explicitly calls for a change',
+    'never change the child into a girl, never add long hair, never add feminine hair accessories, never soften the face into a different child',
     'no masks, no face-obscuring accessories, no logo costume treatment unless the story explicitly requires it',
     'same illustration style, same painterly rendering language, and same color palette',
     'the style does not change for indoor, nighttime, cave, or moonlit scenes',
@@ -171,7 +203,7 @@ function themeGuidanceSection(order: PagePromptInput['order']): string {
     case 'space-voyager':
       return [
         'Theme outfit lock: child-safe explorer/astronaut clothing that keeps the face visible.',
-        'No opaque face mask, no helmet blocking the face, no logo costume treatment.',
+        'No opaque face mask, no helmet blocking the face, no floating helmet, no duplicated head, no cutaway helmet, no glass glare hiding the face, no logo costume treatment.',
         'Do not show a branded book, logo book, or random glowing storybook unless the page text explicitly mentions a book.',
       ].join(' ');
     default:
@@ -197,7 +229,7 @@ function safeTextAreaSection(layout: PageTextLayout | undefined): string {
   if (!layout) return '';
   const zoneCopy = ZONE_DESCRIPTIONS[layout.zone];
   return [
-    `Composition note for caption legibility: leave ${zoneCopy} visually quiet — keep faces, hands, and other key story details OUT of that zone, and use low-contrast background tones (sky, foliage, water, soft floor, distant terrain) so a translucent caption panel can sit there without hiding important art.`,
+    `Composition note for the final book layout: prose is placed in a clean cream margin below the illustration. Keep faces, hands, and key paid-for story details away from ${zoneCopy} and the extreme bottom crop edge; use quieter low-detail background there so the image can crop cleanly without losing important art.`,
     'Do not render any text, lettering, signs, captions, or word-shaped marks anywhere in the image. The book layout adds the caption itself.',
   ].join(' ');
 }

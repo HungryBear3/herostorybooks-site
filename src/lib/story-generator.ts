@@ -206,6 +206,163 @@ function chooseTemplateVariant(order: OrderRecord): TemplateVariantProfile {
   return TEMPLATE_VARIANTS[stableIndex(key, TEMPLATE_VARIANTS.length)]!;
 }
 
+function titleCase(value: string): string {
+  return value ? value.slice(0, 1).toUpperCase() + value.slice(1) : value;
+}
+
+function cleanBeatFragment(text: string): string {
+  return sanitizeInput(text, 240)
+    .replace(/\b(Marcus|Zara|Lily|Sam|Ava|Mia|Lukas Kaplun)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^and\s+/i, '')
+    .replace(/[.!,;:]$/, '')
+    .trim();
+}
+
+function proseActionFromBeat(beat: StoryPlanPage): string {
+  let lead = sanitizeInput(beat.beat_summary, 280)
+    .split(/,\s*(?:then|but)\b/i)[0]!
+    .trim();
+  lead = lead
+    .replace(/\s+and\s+(?:squares up for the first step|tests which trail feels true|follows the smallest clue without rushing|ducks lower to see what others missed|notices the pattern hidden in plain sight|steadies a breath before moving on|listens for where the sound is coming from|shifts closer until the markings line up|keeps going even when the path narrows|checks the ground before trusting it|realizes the clue points somewhere stranger|stops when the next step suddenly looks wrong|pauses to study the problem from a calmer angle|tries a quieter, smarter approach|lets one new detail change the plan|reaches the place that seemed impossible before|chooses not to turn away|asks for help with a single look|answers the clue with one careful touch|makes the brave move the whole day was asking for|finally understands what the stones have been saying|turns back with the answer held close|shares the discovery before the light fades|carries the last hush home to bed|starts again with steadier feet|edges past the danger without blinking|kneels to fit the pieces together|lifts the clue into the open air|sees a safe path where none showed before|pauses to remember how far things have come|lets the silence settle around the answer|leaves room for tomorrow to stay gentle)\b.*$/i, '')
+    .replace(/\s+with\s+[^,.;]+$/i, '')
+    .replace(/\s+while\s+[^,.;]+$/i, '')
+    .trim();
+  return cleanBeatFragment(lead) || 'looks closely and chooses the next brave step';
+}
+
+function lowerFirst(value: string): string {
+  return value ? value.slice(0, 1).toLowerCase() + value.slice(1) : value;
+}
+
+function indefiniteArticleFor(value: string): 'a' | 'an' {
+  return /^[aeiou]/i.test(value.trim()) ? 'an' : 'a';
+}
+
+function settingPhrase(rawSetting: string, index: number): string {
+  const cleaned = cleanBeatFragment(rawSetting) || 'the next quiet place';
+  const [baseRaw, ...flavorParts] = cleaned.split(',');
+  const base = (baseRaw ?? cleaned).trim();
+  const flavor = flavorParts.join(',').trim();
+  if (/^(under|inside|beside|near|on|at|in|along|through)\b/i.test(base)) {
+    return flavor ? `${base}, ${flavor}` : base;
+  }
+  if (/\b(home|bedroom|porch|hearth|house|kitchen|window)\b/i.test(base)) return flavor ? `${base}, ${flavor}` : base;
+  const article = indefiniteArticleFor(base);
+  const preposition = /\b(path|ridge|stair|tunnel|road|slope)\b/i.test(base)
+    ? 'along'
+    : /\b(bridge|shore|ledge|door|hollow|shelf)\b/i.test(base)
+      ? 'beside'
+      : 'at';
+  const place = `${preposition} ${article} ${base}`;
+  return flavor ? `${place}, ${flavor}` : place;
+}
+
+function stripRepeatedDetail(action: string, detail: string): string {
+  const cleanDetail = detail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return action
+    .replace(new RegExp(`,?\\s*trusting\\s+(?:a|an|the)?\\s*${cleanDetail}\\s+enough[^,.;]*`, 'i'), '')
+    .replace(new RegExp(`\\s+(?:with|beside|near|toward|around)\\s+(?:a|an|the)?\\s*${cleanDetail}\\b`, 'i'), '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildSafeImagePrompt(input: {
+  childName: string;
+  themeDescription: string;
+  page: number;
+  beat: StoryPlanPage;
+}): string {
+  return [
+    `A children's book illustration of ${input.childName} in ${input.themeDescription || 'a grand adventure'}.`,
+    `Page ${input.page}. ${input.beat.beat_summary}.`,
+    `Setting: ${input.beat.setting}.`,
+    `Shot type: ${input.beat.shot_type}.`,
+    `Key detail: ${input.beat.key_object_or_detail}.`,
+    `Other presence in frame: ${input.beat.who_else_in_frame}.`,
+    `The emotional tone is ${input.beat.emotional_tone}.`,
+    'Composition: keep the important action, face, hands, key prop, horizon detail, creature, moon, planet, crystal, doorway, or other paid-for story detail in the upper 75% of the frame; leave the lowest edge visually simple because the book layout places prose in a separate cream caption margin below the illustration.',
+    'No text, no writing, no letters, no numbers, no signs, no labels, no glyphs, no readable or unreadable marks anywhere in the artwork; maps, charts, books, scrolls, screens, and papers must be blank, blurred, folded, or cropped so they do not contain fake writing.',
+    'Keep the child’s face fully visible and consistent with the reference photo; no masks and no face-obscuring accessories.',
+    'For space scenes, use child-safe explorer/astronaut clothing with the face visible; no opaque helmet, no floating helmet, no duplicated head, no cutaway helmet, and no face hidden by glass glare unless the page beat explicitly requires a worn clear-visor helmet.',
+    'Warm, colorful, age-appropriate painterly children’s book art style.',
+  ].join(' ');
+}
+
+function buildTemplatePageProse(order: OrderRecord, beat: StoryPlanPage, index: number, pageCount: number): string {
+  const name = firstNameOnly(order);
+  const pronouns = (() => {
+    switch (inferPronouns(order)) {
+      case 'he/him': return { subject: 'he', object: 'him', possessive: 'his', reflexive: 'himself' };
+      case 'she/her': return { subject: 'she', object: 'her', possessive: 'her', reflexive: 'herself' };
+      case 'they/them':
+      default: return { subject: 'they', object: 'them', possessive: 'their', reflexive: 'themselves' };
+    }
+  })();
+  const subject = index === 0 || index % 6 === 0 ? name : titleCase(pronouns.subject);
+  const followSubject = pronouns.subject;
+  const possessive = pronouns.possessive;
+  const setting = settingPhrase(beat.setting, index);
+  const detail = cleanBeatFragment(beat.key_object_or_detail) || 'one small clue';
+  const other = cleanBeatFragment(beat.who_else_in_frame);
+  const action = stripRepeatedDetail(proseActionFromBeat(beat), detail);
+  const detailAlreadyInAction = action.toLowerCase().includes(detail.toLowerCase());
+  const clue = detailAlreadyInAction ? 'clue' : detail;
+  const usableOther = other && !/none|alone|no one/i.test(other) ? other : '';
+
+  if (beat.page === pageCount) {
+    const keepsake = /\bby the window\b/i.test(detail) ? detail : `${detail} down`;
+    return `${name} sets the ${keepsake} before sleep. ${titleCase(pronouns.subject)} tells the best parts in ${possessive} own words while moonlight rests on the room. The adventure is over for tonight, but ${possessive} brave heart still feels warm.`;
+  }
+
+  if (beat.page === pageCount - 3) {
+    return `${name} reaches the answer at last ${setting}. The ${detail} catches the light, and ${followSubject} understands what the whole path has been asking. ${titleCase(followSubject)} chooses carefully, holding the discovery with both hands.`;
+  }
+
+  if (beat.page === pageCount - 2) {
+    return `${titleCase(followSubject)} turns toward home with ${detail} tucked safely close. The path behind ${pronouns.object} is darker now, but every step feels steadier than before. By the time the first porch light appears, ${followSubject} is ready to share what ${followSubject} found.`;
+  }
+
+  if (beat.page === pageCount - 1) {
+    return `${titleCase(followSubject)} sets the ${detail} where everyone can see it. The room grows quiet as ${followSubject} explains the marks, the smoke, and the mountain light. For a moment, even home seems to glow with the secret ${followSubject} brought back.`;
+  }
+
+  const sensoryOpeners = [
+    `${subject} pauses ${setting}, where the shadows make the lantern glow brighter.`,
+    `${setting.replace(/^./, (c) => c.toUpperCase())}, ${lowerFirst(subject)} hears a small sound and stands very still.`,
+    `${subject} follows the path ${setting}, keeping one hand ready and one eye on the clue.`,
+    `The air feels close here, and ${lowerFirst(subject)} takes a slow breath before moving on.`,
+    `${subject} crouches ${setting}, careful not to miss the mark hidden near ${possessive} feet.`,
+    `A soft glow waits ${setting}, just bright enough for ${pronouns.object} to choose the next step.`,
+  ];
+  const middleLines = [
+    `${titleCase(followSubject)} ${action}, then checks the ${clue} for the tiny change ${followSubject} almost missed.`,
+    `${titleCase(possessive)} fingers hover near the ${clue}; it is warmer than the stones around it.`,
+    `${titleCase(followSubject)} studies the ${clue} until the old marks begin to make sense.`,
+    `${titleCase(followSubject)} waits one quiet moment and lets the ${clue} point the way without rushing.`,
+    `${titleCase(followSubject)} ${action}, stopping only when the ${clue} gives a quiet answer.`,
+    `${titleCase(possessive)} brave idea starts small, but the ${clue} makes it strong enough to try.`,
+  ];
+  const closingLines = [
+    usableOther
+      ? `Nearby, ${usableOther} shifts in the light, and ${followSubject} keeps going without turning back.`
+      : `This time, ${followSubject} does not hurry past the strange part.`,
+    `The path is still uncertain, but ${followSubject} has a real clue now.`,
+    `Slowly, the next choice becomes clear enough to trust.`,
+    `When ${followSubject} moves again, ${possessive} courage is quieter and stronger.`,
+    usableOther
+      ? `${titleCase(followSubject)} gives ${usableOther} a careful nod, and the way ahead no longer feels empty.`
+      : `${titleCase(followSubject)} smiles once, small and proud, before stepping forward.`,
+    `Nothing announces the answer; ${followSubject} has to notice it for ${pronouns.reflexive}.`,
+  ];
+
+  return [
+    sensoryOpeners[index % sensoryOpeners.length],
+    middleLines[index % middleLines.length],
+    closingLines[index % closingLines.length],
+  ].join(' ');
+}
+
 function buildLongFormTemplatePages(
   order: OrderRecord,
   _variant: TemplateVariantProfile,
@@ -218,24 +375,13 @@ function buildLongFormTemplatePages(
   const clean = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
   return storyPlan.pages.slice(0, targetPageCount).map((beat, index) => {
-    const story = clean([
-      `${childName} is at ${beat.setting}.`,
-      beat.beat_summary,
-      `The moment shifts toward ${beat.emotional_tone}.`,
-    ].join(' '));
+    const story = clean(buildTemplatePageProse(order, beat, index, targetPageCount));
 
     return {
       pageNum: index + 1,
       sceneTitle: beat.beat_summary,
       story,
-      imagePrompt:
-        `A children's book illustration of ${childName} in ${themeLine}. ` +
-        `Page ${index + 1}. ${beat.beat_summary}. ` +
-        `Setting: ${beat.setting}. ` +
-        `Shot type: ${beat.shot_type}. ` +
-        `Key detail: ${beat.key_object_or_detail}. ` +
-        `Other presence in frame: ${beat.who_else_in_frame}. ` +
-        `The emotional tone is ${beat.emotional_tone}. Warm, colorful, age-appropriate art style.`,
+      imagePrompt: buildSafeImagePrompt({ childName, themeDescription: themeLine, page: index + 1, beat }),
       textLayout: beat.text_layout,
     };
   });
@@ -376,8 +522,11 @@ function validatePageProse(text: string, protagonist: string): string[] {
   if (words.length > 60) issues.push('page prose exceeds 60 words');
   const nameCount = (trimmed.match(new RegExp(`\\b${protagonist.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi')) || []).length;
   if (nameCount > 1) issues.push('protagonist first name used more than once');
-  if (/pulls the eye first|everything is held in|guided by|while noticing|page \d+:|^title:|hinting at more adventure ahead|feels?\s+(mysterious|exciting|magical|special)/i.test(trimmed)) {
+  if (/pulls the eye first|everything is held in|guided by|while noticing|moment shifts|shifts toward|page \d+:|^title:|hinting at more adventure ahead|feels?\s+(mysterious|exciting|magical|special)/i.test(trimmed)) {
     issues.push('page prose contains forbidden template language');
+  }
+  if (/\b(is|are) at [^.!?]+, where [^.!?]+\.\s+[a-z]/.test(trimmed)) {
+    issues.push('page prose appears to contain unassembled scaffold prose');
   }
   if (/\ba\s+[aeiou]/i.test(trimmed)) {
     issues.push('page prose appears to contain an article-agreement error');
@@ -408,14 +557,12 @@ async function buildStoryFromPageProse(
         pageNum: index + 1,
         sceneTitle: beat.beat_summary,
         story: lockedProse,
-        imagePrompt:
-          `A children's book illustration of ${firstNameOnly(order)} in ${theme?.description ?? 'a grand adventure'}. ` +
-          `Page ${index + 1}. ${beat.beat_summary}. ` +
-          `Setting: ${beat.setting}. ` +
-          `Shot type: ${beat.shot_type}. ` +
-          `Key detail: ${beat.key_object_or_detail}. ` +
-          `Other presence in frame: ${beat.who_else_in_frame}. ` +
-          `The emotional tone is ${beat.emotional_tone}. Warm, colorful, age-appropriate art style.`,
+        imagePrompt: buildSafeImagePrompt({
+          childName: firstNameOnly(order),
+          themeDescription: theme?.description ?? 'a grand adventure',
+          page: index + 1,
+          beat,
+        }),
         textLayout: beat.text_layout,
       });
       continue;
@@ -453,14 +600,12 @@ async function buildStoryFromPageProse(
       pageNum: index + 1,
       sceneTitle: beat.beat_summary,
       story: prose,
-      imagePrompt:
-        `A children's book illustration of ${firstNameOnly(order)} in ${theme?.description ?? 'a grand adventure'}. ` +
-        `Page ${index + 1}. ${beat.beat_summary}. ` +
-        `Setting: ${beat.setting}. ` +
-        `Shot type: ${beat.shot_type}. ` +
-        `Key detail: ${beat.key_object_or_detail}. ` +
-        `Other presence in frame: ${beat.who_else_in_frame}. ` +
-        `The emotional tone is ${beat.emotional_tone}. Warm, colorful, age-appropriate art style.`,
+      imagePrompt: buildSafeImagePrompt({
+        childName: firstNameOnly(order),
+        themeDescription: theme?.description ?? 'a grand adventure',
+        page: index + 1,
+        beat,
+      }),
       textLayout: beat.text_layout,
     });
   }
@@ -497,14 +642,12 @@ async function buildStoryFromOllamaPageProse(
         pageNum: index + 1,
         sceneTitle: beat.beat_summary,
         story: lockedProse,
-        imagePrompt:
-          `A children's book illustration of ${firstNameOnly(order)} in ${theme?.description ?? 'a grand adventure'}. ` +
-          `Page ${index + 1}. ${beat.beat_summary}. ` +
-          `Setting: ${beat.setting}. ` +
-          `Shot type: ${beat.shot_type}. ` +
-          `Key detail: ${beat.key_object_or_detail}. ` +
-          `Other presence in frame: ${beat.who_else_in_frame}. ` +
-          `The emotional tone is ${beat.emotional_tone}. Warm, colorful, age-appropriate art style.`,
+        imagePrompt: buildSafeImagePrompt({
+          childName: firstNameOnly(order),
+          themeDescription: theme?.description ?? 'a grand adventure',
+          page: index + 1,
+          beat,
+        }),
         textLayout: beat.text_layout,
       });
       continue;
@@ -563,14 +706,12 @@ async function buildStoryFromOllamaPageProse(
       pageNum: index + 1,
       sceneTitle: beat.beat_summary,
       story: prose,
-      imagePrompt:
-        `A children's book illustration of ${firstNameOnly(order)} in ${theme?.description ?? 'a grand adventure'}. ` +
-        `Page ${index + 1}. ${beat.beat_summary}. ` +
-        `Setting: ${beat.setting}. ` +
-        `Shot type: ${beat.shot_type}. ` +
-        `Key detail: ${beat.key_object_or_detail}. ` +
-        `Other presence in frame: ${beat.who_else_in_frame}. ` +
-        `The emotional tone is ${beat.emotional_tone}. Warm, colorful, age-appropriate art style.`,
+      imagePrompt: buildSafeImagePrompt({
+        childName: firstNameOnly(order),
+        themeDescription: theme?.description ?? 'a grand adventure',
+        page: index + 1,
+        beat,
+      }),
       textLayout: beat.text_layout,
     });
   }
@@ -686,6 +827,12 @@ function buildUserPrompt(order: OrderRecord): string {
 - Character notes: ${characterNotes || 'none'}
 - Appearance: ${appearanceOptions || 'not specified'}
 - Format: ${order.bookFormat}
+
+Visual identity hard rules for this child:
+- If pronouns are he/him, describe and illustrate the hero as a young boy.
+- For Lukas with straight-dark hair, the canonical description must say short straight dark boy haircut, above the ears/neck.
+- Never give the hero long hair, a bob, pigtails, hair ribbons, makeup, dress-like styling, or feminine-coded presentation unless the customer explicitly requested it.
+- The child must keep the same haircut, age, face, skin tone, and boyish presentation on every page.
 
 Respond ONLY with a valid JSON object matching this exact schema:
 {
