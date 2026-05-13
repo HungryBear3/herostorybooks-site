@@ -7,7 +7,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createOrderRecord, type OrderRecord, type PageArtifact } from '../src/lib/orders.ts';
-import { buildOrderDiagnostics, formatDiagnosticsSummary } from '../src/lib/order-diagnostics.ts';
+import {
+  buildOrderDiagnostics,
+  classifyPaidOrderOpsIssue,
+  formatDiagnosticsSummary,
+} from '../src/lib/order-diagnostics.ts';
 
 function pageFixture(i: number, overrides: Partial<PageArtifact> = {}): PageArtifact {
   return {
@@ -79,6 +83,43 @@ test('diagnostics: failed_manual_review surfaces fail check with last error', ()
   assert.equal(fail?.severity, 'fail');
   assert.match(fail?.detail ?? '', /rate limit/i);
   assert.equal(d.flags.isFailed, true);
+});
+
+test('diagnostics: paid + not_started + no artifact is an ops attention item', () => {
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    fulfillmentStatus: 'not_started',
+    storyArtifactUrl: null,
+  }));
+  assert.equal(d.flags.paidWithoutArtifact, true);
+  assert.equal(d.flags.paidArtifactNeedsAttention, true);
+  assert.equal(d.paidOrderOpsIssue?.kind, 'paid_no_artifact_not_started');
+  const c = d.checks.find((c) => c.id === 'paid-artifact');
+  assert.equal(c?.severity, 'fail');
+});
+
+test('classifyPaidOrderOpsIssue: fresh in-progress paid order waits before alerting', () => {
+  const order = makeOrder({
+    paymentStatus: 'paid',
+    fulfillmentStatus: 'generating_images',
+    storyArtifactUrl: null,
+    updatedAt: '2026-04-27T10:10:00Z',
+  });
+  const issue = classifyPaidOrderOpsIssue(order, new Date('2026-04-27T10:20:00Z'));
+  assert.equal(issue?.kind, 'paid_no_artifact_waiting');
+  assert.equal(issue?.severity, 'info');
+});
+
+test('classifyPaidOrderOpsIssue: stale in-progress paid order alerts', () => {
+  const order = makeOrder({
+    paymentStatus: 'paid',
+    fulfillmentStatus: 'building_pdf',
+    storyArtifactUrl: null,
+    updatedAt: '2026-04-27T10:00:00Z',
+  });
+  const issue = classifyPaidOrderOpsIssue(order, new Date('2026-04-27T10:16:00Z'));
+  assert.equal(issue?.kind, 'paid_no_artifact_stale_in_progress');
+  assert.equal(issue?.severity, 'fail');
 });
 
 test('diagnostics: paid + missing photo blob path → warn when filename present', () => {

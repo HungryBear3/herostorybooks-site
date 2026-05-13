@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { isAdminAuthedFromRequest } from '@/lib/admin-auth';
+import { classifyPaidOrderOpsIssue } from '@/lib/order-diagnostics';
 import { listOrders } from '@/lib/orders';
 
 export const dynamic = 'force-dynamic';
@@ -10,7 +11,14 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const orders = await listOrders();
+  let orders = await listOrders();
+  const url = new URL(request.url);
+  if (url.searchParams.get('opsIssue') === 'paid_artifact') {
+    orders = orders.filter((order) => {
+      const issue = classifyPaidOrderOpsIssue(order);
+      return Boolean(issue && issue.severity !== 'info');
+    });
+  }
   // Newest first
   orders.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
   return NextResponse.json({ orders });

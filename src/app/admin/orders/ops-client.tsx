@@ -17,10 +17,29 @@ function uiCanRefund(order: OrderRecord): boolean {
   return true;
 }
 
-type Filter = 'all' | 'paid' | 'in_progress' | 'proof_ready' | 'failed' | 'shipped';
+type Filter = 'all' | 'paid_attention' | 'paid' | 'in_progress' | 'proof_ready' | 'failed' | 'shipped';
+
+const STUCK_AFTER_MS = 15 * 60 * 1000;
+const IN_PROGRESS_FULFILLMENT_STATUSES = new Set([
+  'generating_story',
+  'generating_images',
+  'building_pdf',
+  'submitting_to_print',
+]);
 
 function isInternalArchived(order: OrderRecord): boolean {
   return Boolean(order.internalDisposition);
+}
+
+function paidArtifactNeedsAttention(order: OrderRecord, now = Date.now()): boolean {
+  if (order.paymentStatus !== 'paid' || order.storyArtifactUrl) return false;
+  const f = order.fulfillmentStatus ?? 'not_started';
+  if (f === 'not_started' || f === 'failed_manual_review') return true;
+  if (IN_PROGRESS_FULFILLMENT_STATUSES.has(f)) {
+    const updatedAt = Date.parse(order.updatedAt ?? order.createdAt ?? '');
+    return !Number.isFinite(updatedAt) || now - updatedAt >= STUCK_AFTER_MS;
+  }
+  return true;
 }
 
 export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] }) {
@@ -32,6 +51,7 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const now = Date.now();
     return orders.filter(o => {
       if (!showInternalArchived && isInternalArchived(o)) return false;
 
@@ -42,6 +62,7 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
       )) return false;
 
       switch (filter) {
+        case 'paid_attention': return paidArtifactNeedsAttention(o, now);
         case 'paid': return o.paymentStatus === 'paid';
         case 'in_progress':
           return ['generating_story', 'generating_images', 'building_pdf', 'submitting_to_print'].includes(o.fulfillmentStatus ?? '');
@@ -56,6 +77,10 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
   const internalArchivedCount = useMemo(
     () => orders.filter(isInternalArchived).length,
     [orders],
+  );
+  const paidAttentionCount = useMemo(
+    () => orders.filter((o) => (!showInternalArchived && isInternalArchived(o)) ? false : paidArtifactNeedsAttention(o)).length,
+    [orders, showInternalArchived],
   );
 
   async function retry(orderId: string) {
@@ -113,6 +138,7 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
           className="border border-gray-200 rounded-lg px-3 py-2 text-sm"
         >
           <option value="all">All</option>
+          <option value="paid_attention">Paid attention ({paidAttentionCount})</option>
           <option value="paid">Paid</option>
           <option value="in_progress">In progress</option>
           <option value="proof_ready">Proof ready</option>
@@ -195,6 +221,7 @@ function Row({
 
   const created = order.createdAt ? new Date(order.createdAt) : null;
   const createdShort = created ? `${created.toISOString().slice(0, 10)} ${created.toISOString().slice(11, 16)}Z` : '—';
+  const needsPaidArtifactAttention = paidArtifactNeedsAttention(order);
 
   return (
     <tr className="border-t border-gray-100 align-top">
@@ -220,6 +247,11 @@ function Row({
       <td className="px-3 py-3"><span className={`inline-block px-2 py-0.5 rounded-full text-xs ${paidTone}`}>{order.paymentStatus}</span></td>
       <td className="px-3 py-3">
         <span className={`inline-block px-2 py-0.5 rounded-full text-xs ${fulfillTone}`}>{f}</span>
+        {needsPaidArtifactAttention && (
+          <p className="text-[10px] text-coral-dark mt-1 max-w-[220px]">
+            Paid but no proof/digital artifact — check diagnostics/retry.
+          </p>
+        )}
         {order.fulfillmentLastError && (
           <p className="text-[10px] text-coral-dark mt-1 max-w-[220px] truncate" title={order.fulfillmentLastError}>
             {order.fulfillmentLastError}

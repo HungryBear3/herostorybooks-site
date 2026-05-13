@@ -2,6 +2,7 @@ import { getConfiguredAdminKey } from '@/lib/admin-auth';
 import { isAdminAuthedFromCookie } from '@/lib/admin-auth-server';
 import { listOrders } from '@/lib/orders';
 import type { OrderRecord } from '@/lib/orders';
+import { classifyPaidOrderOpsIssue } from '@/lib/order-diagnostics';
 
 import AdminOrdersClient from './ops-client';
 
@@ -46,6 +47,7 @@ export default async function AdminOrdersPage({ searchParams }: PageProps) {
           </div>
           <div className="flex gap-3 text-xs">
             <Stat label="Paid" value={stats.paid} />
+            <Stat label="Paid attention" value={stats.paidAttention} tone="failure" />
             <Stat label="In progress" value={stats.inProgress} />
             <Stat label="Proof ready" value={stats.proofReady} />
             <Stat label="Failed" value={stats.failed} tone="failure" />
@@ -69,15 +71,17 @@ function Stat({ label, value, tone = 'neutral' }: { label: string; value: number
 }
 
 function summarize(orders: OrderRecord[]) {
-  let paid = 0, inProgress = 0, proofReady = 0, failed = 0;
+  let paid = 0, paidAttention = 0, inProgress = 0, proofReady = 0, failed = 0;
   for (const o of orders) {
     if (o.paymentStatus === 'paid') paid++;
+    const paidIssue = classifyPaidOrderOpsIssue(o);
+    if (paidIssue && paidIssue.severity !== 'info') paidAttention++;
     const f = o.fulfillmentStatus;
     if (f === 'generating_story' || f === 'generating_images' || f === 'building_pdf' || f === 'submitting_to_print') inProgress++;
     if (f === 'proof_ready') proofReady++;
     if (f === 'failed_manual_review') failed++;
   }
-  return { paid, inProgress, proofReady, failed };
+  return { paid, paidAttention, inProgress, proofReady, failed };
 }
 
 function LoginCard({ error }: { error: boolean }) {
