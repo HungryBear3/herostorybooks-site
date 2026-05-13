@@ -5,6 +5,7 @@
   "scripts": {
     "build": "next build",
     "dev": "next dev",
+    "launch:hygiene": "node scripts/launch-hygiene-check.mjs",
     "lint": "eslint .",
     "order:status": "node --experimental-strip-types scripts/order-status.ts",
     "start": "next start",
