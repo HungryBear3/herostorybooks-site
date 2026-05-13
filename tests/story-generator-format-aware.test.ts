@@ -206,6 +206,47 @@ test('template fallback: long-form classic prose should avoid visible template b
   });
 });
 
+test('template fallback: Lukas dragon quest prose avoids broken planner/template artifacts', async () => {
+  await withEnv(
+    {
+      OPENAI_API_KEY: undefined,
+      HSB_ENABLE_OPENAI_STORY: undefined,
+      HSB_ENABLE_OPENAI_PAGE_PROSE: undefined,
+      HSB_ENABLE_OLLAMA_PAGE_PROSE: undefined,
+    },
+    async () => {
+      const order = createOrderRecord(
+        {
+          childName: 'Lukas Kaplun',
+          childAge: '5',
+          bookFormat: 'classic',
+          email: 'a@b.com',
+          theme: 'dragon-quest',
+          lesson: 'courage',
+          occasion: 'birthday',
+          childPronouns: 'he/him',
+          appearanceOptions: JSON.stringify({ skinTone: 'medium', hairStyle: 'straight-dark' }),
+        },
+        { id: 'ord_fmt_lukas_dragon', now: '2026-05-01T10:00:00Z' },
+      );
+
+      const result = await generateStoryWithMeta(order);
+      const joined = result.story.pages.map((p) => p.story).join('\n');
+
+      assert.equal(result.story.pages.length, 24);
+      assert.doesNotMatch(joined, /The moment shifts/i);
+      assert.doesNotMatch(joined, /Lukas Kaplun/);
+      assert.doesNotMatch(joined, /\bis at (castle|moonlit|dragon|ember|mountain|warm)\b/i);
+      assert.doesNotMatch(joined, /where parrots crack the morning quiet/i);
+      assert.doesNotMatch(joined, /where sun stripes the ground/i);
+      assert.doesNotMatch(joined, /\.[a-z]/, 'sentences should not restart with lowercase letters');
+
+      const endings = result.story.pages.map((p) => p.story.split('.').at(-2)?.trim() ?? '');
+      assert.ok(new Set(endings).size >= 10, 'page endings should not repeat a single planner-template line');
+    },
+  );
+});
+
 test('template fallback: character anchor carries structured appearance details from intake', async () => {
   await withEnv({ OPENAI_API_KEY: undefined, HSB_ENABLE_OPENAI_STORY: undefined }, async () => {
     const order = createOrderRecord(

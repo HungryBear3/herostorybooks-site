@@ -29,11 +29,10 @@ export type FulfillmentStatus =
  *                 'natural' lets the renderer pick a safe default for the
  *                 page index/shot type.
  * - colorMode   : how the text colors itself relative to the panel/scrim.
- *                 'auto' resolves to a sensible default for the panel style
- *                 (e.g. light text on a dark scrim, dark text on a cream).
- * - panelStyle  : the visual treatment behind the text. 'none' is naked
- *                 text directly on the illustration — only safe when the
- *                 image already has a quiet zone in that area.
+ *                 Release 1 story pages resolve to dark text on cream.
+ * - panelStyle  : the visual treatment behind the text. Legacy dark/scrim
+ *                 values may exist in old metadata, but the PDF renderer
+ *                 coerces story pages to the approved cream paper band.
  */
 export type TextZone =
   | 'top_left'
@@ -63,9 +62,9 @@ export interface StoryPage {
   sceneTitle: string;
   story: string;
   imagePrompt: string;
-  /** Optional per-page typography override. When omitted the renderer uses
-   *  the legacy bottom_band + translucent_dark default that has been
-   *  validated for legibility across every existing book. */
+  /** Optional per-page typography override. Legacy records may contain
+   *  translucent_dark/soft_scrim, but Release 1 PDFs coerce story prose to
+   *  dark text on an approved cream paper band. */
   textLayout?: PageTextLayout;
 }
 
