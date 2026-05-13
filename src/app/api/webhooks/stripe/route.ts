@@ -105,6 +105,18 @@ export async function POST(request: Request) {
               `Stripe webhook: paid order ${orderId} still fulfillmentStatus=${existing.fulfillmentStatus ?? 'unset'} — scheduling fulfillment backfill after response`,
             );
             scheduleFulfillmentKickoff(orderId, { afterImpl: after });
+          } else {
+            // Make the no-op explicit: a Stripe redelivery for a paid order
+            // whose fulfillment is in-progress or already complete is a
+            // benign skip — there is nothing to do here. Logging it
+            // closes a preview-log observability gap where this branch
+            // was previously silent (operators had to infer the skip
+            // reason from absence-of-kickoff lines).
+            console.warn(
+              `Stripe webhook: paid order ${orderId} replay skipped — paymentStatus=paid ` +
+                `fulfillmentStatus=${existing.fulfillmentStatus} (already in-progress or complete); ` +
+                `no kickoff retrigger needed`,
+            );
           }
           return NextResponse.json({ received: true });
         }
