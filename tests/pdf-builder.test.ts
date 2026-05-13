@@ -293,18 +293,26 @@ test('getPictureBookStoryLayout: translucent_cream metadata also renders as the 
   assert.equal(proof.textColorMode, 'dark');
 });
 
-test('resolvePageTextLayout: auto color resolves to dark on cream/none scrims and light on dark scrims', () => {
+test('resolvePageTextLayout: story pages force dark text on cream, even for legacy dark scrim metadata', () => {
   assert.equal(resolvePageTextLayout({ zone: 'bottom_band', colorMode: 'auto', panelStyle: 'translucent_cream' }).colorMode, 'dark');
   assert.equal(resolvePageTextLayout({ zone: 'bottom_band', colorMode: 'auto', panelStyle: 'none' }).colorMode, 'dark');
-  assert.equal(resolvePageTextLayout({ zone: 'bottom_band', colorMode: 'auto', panelStyle: 'translucent_dark' }).colorMode, 'light');
-  assert.equal(resolvePageTextLayout({ zone: 'bottom_band', colorMode: 'auto', panelStyle: 'soft_scrim' }).colorMode, 'light');
+  assert.deepEqual(resolvePageTextLayout({ zone: 'bottom_band', colorMode: 'auto', panelStyle: 'translucent_dark' }), {
+    zone: 'bottom_band',
+    panelStyle: 'translucent_cream',
+    colorMode: 'dark',
+  });
+  assert.deepEqual(resolvePageTextLayout({ zone: 'bottom_band', colorMode: 'auto', panelStyle: 'soft_scrim' }), {
+    zone: 'bottom_band',
+    panelStyle: 'translucent_cream',
+    colorMode: 'dark',
+  });
 });
 
-test('resolvePageTextLayout: undefined input falls back to legacy bottom_band/translucent_dark/light', () => {
+test('resolvePageTextLayout: undefined input falls back to cream paper band with dark text', () => {
   const r = resolvePageTextLayout(undefined);
   assert.equal(r.zone, 'natural');
-  assert.equal(r.panelStyle, 'translucent_dark');
-  assert.equal(r.colorMode, 'light');
+  assert.equal(r.panelStyle, 'translucent_cream');
+  assert.equal(r.colorMode, 'dark');
 });
 
 test('buildPdf: per-page textLayout flows through and renders without throwing', async () => {

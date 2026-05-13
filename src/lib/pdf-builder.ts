@@ -81,9 +81,9 @@ export interface PictureBookStoryLayout {
   textPanelFillOpacity: number;
   sceneTitleY: number;
   pageNumberY: number;
-  /** How the panel rectangle behind the text is rendered. Drives the
-   *  scrim color/opacity. Defaults to translucent_dark (legacy behavior)
-   *  when no PageTextLayout is supplied. */
+  /** How the panel rectangle behind the text is rendered. Release 1 story
+   *  pages must never use the old translucent dark overlay; all story copy
+   *  resolves to dark text on an opaque cream paper band. */
   textPanelStyle: TextPanelStyle;
   /** Resolved color mode for the rendered text. 'auto' is collapsed to
    *  light/dark inside this helper based on panelStyle so the renderer
@@ -108,13 +108,15 @@ export function resolvePageTextLayout(layout?: PageTextLayout): {
   colorMode: Exclude<TextColorMode, 'auto'>;
   zone: PageTextLayout['zone'];
 } {
-  const panelStyle: TextPanelStyle = layout?.panelStyle ?? 'translucent_dark';
+  const requestedStyle: TextPanelStyle = layout?.panelStyle ?? 'translucent_cream';
+  const panelStyle: TextPanelStyle =
+    requestedStyle === 'translucent_dark' || requestedStyle === 'soft_scrim'
+      ? 'translucent_cream'
+      : requestedStyle;
   const requestedMode = layout?.colorMode ?? 'auto';
   const colorMode: Exclude<TextColorMode, 'auto'> =
-    requestedMode === 'auto'
-      ? panelStyle === 'translucent_cream' || panelStyle === 'none'
-        ? 'dark'
-        : 'light'
+    requestedMode === 'auto' || requestedStyle === 'translucent_dark' || requestedStyle === 'soft_scrim'
+      ? 'dark'
       : requestedMode;
   return { panelStyle, colorMode, zone: layout?.zone ?? 'natural' };
 }
@@ -123,51 +125,51 @@ export function getPictureBookStoryLayout(
   kind: 'proof' | 'print',
   _textLayout?: PageTextLayout,
 ): PictureBookStoryLayout {
-  // Release 1 print/proof rule: never place story copy on top of the art.
-  // Keep the PageTextLayout metadata API intact, but render every story page
-  // as a picture-book composition: cropped illustration above, clean cream
-  // paper band below. The deferred safe-zone system can re-enable in-art copy
-  // later once image generation guarantees quiet zones.
+  // Story pages should read as full illustrated spreads, not a small image
+  // sitting above a huge cream field. Keep a compact paper caption panel for
+  // print safety, but let art bleed behind the whole page.
   if (kind === 'print') {
     const trimWidth = 8.5 * 72;
     const trimHeight = 8.5 * 72;
-    const bandY = 456;
-    const bandHeight = 128;
+    const imageHeight = 456;
+    const bandY = imageHeight;
+    const bandHeight = 132;
     return {
-      imageX: 18,
-      imageY: 18,
-      imageWidth: trimWidth - 36,
-      imageHeight: bandY - 24,
+      imageX: 0,
+      imageY: 0,
+      imageWidth: trimWidth,
+      imageHeight,
       textInset: 18,
       textPanelFillOpacity: 1,
-      pageNumberY: trimHeight - 26,
+      pageNumberY: trimHeight - 24,
       textPanelStyle: 'translucent_cream',
       textColorMode: 'dark',
-      textPanelX: 28,
+      textPanelX: 36,
       textPanelY: bandY,
-      textPanelWidth: trimWidth - 56,
+      textPanelWidth: trimWidth - 72,
       textPanelHeight: bandHeight,
-      sceneTitleY: bandY + 16,
+      sceneTitleY: bandY + 12,
     };
   }
 
-  const bandY = 642;
-  const bandHeight = 158;
+  const imageHeight = 650;
+  const bandY = imageHeight;
+  const bandHeight = 156;
   return {
-    imageX: 24,
-    imageY: 24,
-    imageWidth: PAGE_WIDTH - 48,
-    imageHeight: bandY - 34,
-    textInset: 22,
+    imageX: 0,
+    imageY: 0,
+    imageWidth: PAGE_WIDTH,
+    imageHeight,
+    textInset: 20,
     textPanelFillOpacity: 1,
-    pageNumberY: PAGE_HEIGHT - 28,
+    pageNumberY: PAGE_HEIGHT - 24,
     textPanelStyle: 'translucent_cream',
     textColorMode: 'dark',
-    textPanelX: 36,
+    textPanelX: 42,
     textPanelY: bandY,
-    textPanelWidth: PAGE_WIDTH - 72,
+    textPanelWidth: PAGE_WIDTH - 84,
     textPanelHeight: bandHeight,
-    sceneTitleY: bandY + 18,
+    sceneTitleY: bandY + 12,
   };
 }
 
@@ -280,19 +282,19 @@ function getMinimumTotalPages(bookFormat: BookFormat): number {
 /** Intentional, designed front-and-back matter pages added to every print
  *  interior/proof. These pages make the book feel finished without padding
  *  the story itself. */
-const FRONT_MATTER_COUNT = 3;
-const BACK_MATTER_COUNT = 2;
+const FRONT_MATTER_COUNT = 2;
+const BACK_MATTER_COUNT = 4;
 const INTENTIONAL_MATTER_PAGES = FRONT_MATTER_COUNT + BACK_MATTER_COUNT;
 
 interface MatterPage {
-  kind: 'title' | 'dedication' | 'memory' | 'belongs' | 'closing';
+  kind: 'title' | 'dedication' | 'end' | 'copyright' | 'belongs' | 'closing';
   title: string;
   body: string;
   prompt?: string;
 }
 
 interface KeepsakePage {
-  kind?: 'end_note' | 'copyright' | 'blank';
+  kind?: 'endpaper' | 'vignette' | 'copyright';
   title: string;
   body: string;
   prompt?: string;
@@ -319,18 +321,34 @@ function buildFrontMatterPages(story: StoryContent, order: OrderRecord): MatterP
       title: '',
       body: buildRichDedication(story, order),
     },
-    {
-      kind: 'memory',
-      title: 'A Memory To Keep',
-      body: 'Write a memory from the first time you read this story together.',
-      prompt: 'Date, place, favorite page, funny moment, or the brave thing you want to remember:',
-    },
   ];
+}
+
+function buildCopyrightBody(story: StoryContent, order: OrderRecord): string {
+  return (
+    `© 2026 Hero Story Books. All rights reserved.\n\n` +
+    `This book was created uniquely for ${order.childName}.\n` +
+    'Personal use only. No part of this book may be reproduced for resale.\n\n' +
+    'Illustrations generated with AI assistance and reviewed before printing.\n\n' +
+    `First printing, May 2026. Printed in the United States.\n\n` +
+    `Hero Story Books Edition: ${order.id}\n` +
+    'herostorybooks.com'
+  );
 }
 
 function buildBackMatterPages(story: StoryContent, order: OrderRecord): MatterPage[] {
   const firstName = childFirstName(order);
   return [
+    {
+      kind: 'end',
+      title: 'The End',
+      body: `Thank you for reading ${story.title} together.`,
+    },
+    {
+      kind: 'copyright',
+      title: story.title,
+      body: buildCopyrightBody(story, order),
+    },
     {
       kind: 'belongs',
       title: 'This Book Belongs To',
@@ -351,32 +369,38 @@ function buildKeepsakePages(story: StoryContent, order: OrderRecord, fillerCount
   if (fillerCount <= 0) return [];
   const pages: KeepsakePage[] = [
     {
-      kind: 'end_note',
-      title: 'The End',
-      body: `Thank you for reading ${story.title} together.`,
+      kind: 'endpaper',
+      title: 'Adventure Endpaper',
+      body: `A patterned keepsake page inspired by ${story.title}.`,
+      prompt: 'Little marks for the path, the clue, the brave choice, and the way home.',
+    },
+    {
+      kind: 'vignette',
+      title: 'One More Brave Step',
+      body: `Every adventure leaves a small glow behind. Here is a place to remember ${childFirstName(order)}'s favorite moment from the journey.`,
+      prompt: 'Favorite scene, biggest smile, or bravest choice:',
+    },
+    {
+      kind: 'endpaper',
+      title: 'Star Map Of The Story',
+      body: 'A tiny constellation for the beginning, the tricky middle, the bright answer, and the cozy ending.',
+      prompt: 'Trace the path again with your finger before the next bedtime read.',
+    },
+    {
+      kind: 'vignette',
+      title: 'A Memory To Keep',
+      body: 'Write a memory from the first time you read this story together.',
+      prompt: 'Date, place, favorite page, funny moment, or the brave thing you want to remember:',
     },
     {
       kind: 'copyright',
       title: story.title,
-      body:
-        `© 2026 Hero Story Books. All rights reserved.\n\n` +
-        `This book was created uniquely for ${order.childName}.\n` +
-        'Personal use only. No part of this book may be reproduced for resale.\n\n' +
-        'Illustrations generated with AI assistance and reviewed before printing.\n\n' +
-        `First printing, May 2026. Printed in the United States.\n\n` +
-        `Hero Story Books Edition: ${order.id}\n` +
-        'herostorybooks.com',
-    },
-    {
-      kind: 'end_note',
-      title: 'Notes From Our Adventure',
-      body: 'A little extra room for favorite words, drawings, or memories from this story.',
-      prompt: 'Sketch, write, or save one more thought here:',
+      body: buildCopyrightBody(story, order),
     },
   ];
   while (pages.length < fillerCount) {
     pages.push({
-      kind: 'end_note',
+      kind: pages.length % 2 === 0 ? 'endpaper' : 'vignette',
       title: 'Notes From Our Adventure',
       body: 'A little extra room for favorite words, drawings, or memories from this story.',
       prompt: 'Sketch, write, or save one more thought here:',
@@ -516,10 +540,12 @@ function panelScrim(style: TextPanelStyle): { color: string; opacity: number } |
       // not as a translucent overlay on top of the illustration.
       return { color: CREAM, opacity: 1 };
     case 'soft_scrim':
-      return { color: TEXT_SCRIM, opacity: 0.42 };
     case 'translucent_dark':
     default:
-      return { color: TEXT_SCRIM, opacity: 0.72 };
+      // Hard product rule: no translucent black boxes with white text on
+      // story pages. Legacy metadata may still request these styles, but the
+      // renderer must coerce them to the approved cream paper band.
+      return { color: CREAM, opacity: 1 };
   }
 }
 
@@ -632,10 +658,12 @@ function drawStoryPage(
   );
 
   doc
-    .fillColor(GOLD)
+    .fillColor(SLATE)
+    .fillOpacity(0.55)
     .font(EMBEDDED_BOOK_FONT)
-    .fontSize(11)
-    .text(String(pageNum), MARGIN, layout.pageNumberY, { width: CONTENT_WIDTH, align: 'center' });
+    .fontSize(9)
+    .text(String(pageNum), MARGIN, layout.pageNumberY, { width: CONTENT_WIDTH, align: 'center' })
+    .fillOpacity(1);
 }
 
 function drawKeepsakePage(
@@ -669,11 +697,9 @@ function drawKeepsakePage(
     drawWritingLines(doc, MARGIN + 8, PAGE_WIDTH - MARGIN - 8, 340, 8, 34);
   }
 
-  doc
-    .fillColor(GOLD)
-    .font(EMBEDDED_BOOK_FONT)
-    .fontSize(11)
-    .text(String(pageNum), MARGIN, PAGE_HEIGHT - 36, { width: CONTENT_WIDTH, align: 'center' });
+  // Keepsake/filler pages intentionally omit visible page numbers; numbering
+  // otherwise makes quiet cream pages look emptier instead of more premium.
+  void pageNum;
 }
 
 // ── Back page ──────────────────────────────────────────────────────────────────
@@ -814,7 +840,9 @@ export async function buildPdf(
           .text(page.prompt, MARGIN, 336, { width: CONTENT_WIDTH, align: 'center' });
         drawWritingLines(doc, MARGIN + 10, PAGE_WIDTH - MARGIN - 10, 390, 6, 42);
       }
-      doc.fillColor(GOLD).font(EMBEDDED_BOOK_FONT).fontSize(10).text(String(pageNumber), MARGIN, PAGE_HEIGHT - 30, { width: CONTENT_WIDTH, align: 'center' });
+      // Front/back matter pages are designed as keepsake pages, so proof PDFs
+      // do not add small floating page numbers to the quiet cream field.
+      void pageNumber;
     };
 
     // Cover
@@ -835,14 +863,14 @@ export async function buildPdf(
       renderedPageNumber += 1;
     });
 
-    fillerPages.forEach((page) => {
-      doc.addPage();
-      drawKeepsakePage(doc, renderedPageNumber, page);
+    backMatter.forEach((page) => {
+      drawProofMatterPage(page, renderedPageNumber);
       renderedPageNumber += 1;
     });
 
-    backMatter.forEach((page) => {
-      drawProofMatterPage(page, renderedPageNumber);
+    fillerPages.forEach((page) => {
+      doc.addPage();
+      drawKeepsakePage(doc, renderedPageNumber, page);
       renderedPageNumber += 1;
     });
 
@@ -855,12 +883,10 @@ export async function buildPdf(
 }
 
 export function getPrintInteriorPageCount(story: StoryContent, order: OrderRecord): number {
-  // Every print interior includes 5 intentional matter pages:
-  // front matter (title + dedication + memory) and back matter (belongs,
-  // merged closing note). Filler keepsake pages are a safety net only — used
-  // when story + matter still falls short of the Lulu minimum. For new
-  // long-form orders (classic 24 / premium 32) this collapses or eliminates
-  // the filler dependency.
+  // Every print interior includes 6 intentional matter pages:
+  // front matter (title + dedication) and back matter (The End, copyright,
+  // belongs, merged closing note). Filler keepsake pages are a safety net only
+  // when story + matter still falls short of the Lulu minimum.
   const minimumPages = getMinimumTotalPages(order.bookFormat);
   return Math.max(story.pages.length + INTENTIONAL_MATTER_PAGES, minimumPages);
 }
@@ -932,11 +958,6 @@ export async function buildPrintInteriorPdf(
           .text(page.prompt, margin, 284, { width: contentWidth, align: 'center' });
         drawWritingLines(doc, margin + 8, trimWidth - margin - 8, 336, 5, 36);
       }
-      doc
-        .fillColor(GOLD)
-        .font(EMBEDDED_BOOK_FONT)
-        .fontSize(10)
-        .text(String(pageNumber), margin, trimHeight - 28, { width: contentWidth, align: 'center' });
       pageNumber += 1;
     };
 
@@ -992,9 +1013,12 @@ export async function buildPrintInteriorPdf(
         Boolean(scrim),
       );
 
-      doc.fillColor(GOLD).font(EMBEDDED_BOOK_FONT).fontSize(10).text(String(pageNumber), margin, trimHeight - 28, { width: contentWidth, align: 'center' });
+      doc.fillColor(SLATE).fillOpacity(0.55).font(EMBEDDED_BOOK_FONT).fontSize(9).text(String(pageNumber), margin, trimHeight - 24, { width: contentWidth, align: 'center' }).fillOpacity(1);
       pageNumber += 1;
     });
+
+    // Back matter — The End, copyright, belongs page, and merged about/quiet closing note.
+    backMatter.forEach(drawMatterPage);
 
     // Filler keepsake pages — safety net only. For new long-form classic
     // (24 story) this still runs to hit Lulu's 32 minimum; for new
@@ -1010,12 +1034,8 @@ export async function buildPrintInteriorPdf(
         doc.fillColor(FOREST).font(EMBEDDED_BOOK_FONT).fontSize(12).text(page.prompt, margin, 240, { width: contentWidth, align: 'center' });
         drawWritingLines(doc, margin + 6, trimWidth - margin - 6, 295, 7, 32);
       }
-      doc.fillColor(GOLD).font(EMBEDDED_BOOK_FONT).fontSize(10).text(String(pageNumber), margin, trimHeight - 28, { width: contentWidth, align: 'center' });
       pageNumber += 1;
     });
-
-    // Back matter — belongs page plus the merged about/quiet closing note.
-    backMatter.forEach(drawMatterPage);
 
     doc.end();
   });
