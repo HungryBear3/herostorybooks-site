@@ -15,6 +15,21 @@ export interface DiagnosticCheck {
   detail: string;
 }
 
+export type PaidOrderOpsIssueKind =
+  | 'paid_no_artifact_not_started'
+  | 'paid_no_artifact_failed'
+  | 'paid_no_artifact_stale_in_progress'
+  | 'paid_no_artifact_terminal'
+  | 'paid_no_artifact_waiting';
+
+export interface PaidOrderOpsIssue {
+  kind: PaidOrderOpsIssueKind;
+  severity: Exclude<DiagnosticSeverity, 'ok'>;
+  label: string;
+  detail: string;
+  minutesSinceUpdate: number | null;
+}
+
 export interface OrderDiagnostics {
   orderId: string;
   capturedAt: string;
@@ -104,9 +119,90 @@ export interface OrderDiagnostics {
     approved: boolean;
     sentToPrint: boolean;
     shipped: boolean;
+    /** Paid order has not produced a customer-facing proof/digital PDF yet. */
+    paidWithoutArtifact: boolean;
+    /** Paid-without-artifact is actionable now (not merely seconds into generation). */
+    paidArtifactNeedsAttention: boolean;
   };
+  /** Compact ops-facing classification for paid orders missing their artifact. */
+  paidOrderOpsIssue: PaidOrderOpsIssue | null;
   /** Ordered list of named checks — the ones that fail are what to escalate on. */
   checks: DiagnosticCheck[];
+}
+
+export const PAID_ARTIFACT_STALE_AFTER_MS = 15 * 60 * 1000;
+
+const IN_PROGRESS_FULFILLMENT_STATUSES = new Set([
+  'generating_story',
+  'generating_images',
+  'building_pdf',
+  'submitting_to_print',
+]);
+
+/**
+ * Single source of truth for the ops dashboard/query: a paid order without a
+ * story/proof artifact is either (a) an immediate action item, or (b) a fresh
+ * in-progress run that is still inside the normal generation window.
+ */
+export function classifyPaidOrderOpsIssue(
+  order: OrderRecord,
+  now: Date = new Date(),
+): PaidOrderOpsIssue | null {
+  if (order.paymentStatus !== 'paid' || order.storyArtifactUrl) return null;
+
+  const fulfillment = order.fulfillmentStatus ?? 'not_started';
+  const updatedAt = Date.parse(order.updatedAt ?? order.createdAt ?? '');
+  const minutesSinceUpdate = Number.isFinite(updatedAt)
+    ? Math.max(0, Math.floor((now.getTime() - updatedAt) / 60_000))
+    : null;
+  const ageMs = minutesSinceUpdate == null ? Number.POSITIVE_INFINITY : minutesSinceUpdate * 60_000;
+
+  if (fulfillment === 'not_started') {
+    return {
+      kind: 'paid_no_artifact_not_started',
+      severity: 'fail',
+      label: 'Paid but fulfillment has not started',
+      detail: 'Payment is confirmed, but no proof/digital artifact exists and fulfillmentStatus is not_started. Check webhook/kickoff logs; use admin retry if safe.',
+      minutesSinceUpdate,
+    };
+  }
+
+  if (fulfillment === 'failed_manual_review') {
+    return {
+      kind: 'paid_no_artifact_failed',
+      severity: 'fail',
+      label: 'Paid fulfillment failed before artifact',
+      detail: `No proof/digital artifact exists. Last error: ${order.fulfillmentLastError ?? '(none recorded)'}`,
+      minutesSinceUpdate,
+    };
+  }
+
+  if (IN_PROGRESS_FULFILLMENT_STATUSES.has(fulfillment)) {
+    if (ageMs >= PAID_ARTIFACT_STALE_AFTER_MS) {
+      return {
+        kind: 'paid_no_artifact_stale_in_progress',
+        severity: 'fail',
+        label: 'Paid fulfillment appears stuck before artifact',
+        detail: `No proof/digital artifact exists and fulfillmentStatus=${fulfillment} has not updated for ${minutesSinceUpdate ?? 'unknown'} minute(s).`,
+        minutesSinceUpdate,
+      };
+    }
+    return {
+      kind: 'paid_no_artifact_waiting',
+      severity: 'info',
+      label: 'Paid fulfillment in progress; artifact pending',
+      detail: `fulfillmentStatus=${fulfillment}; still inside the ${PAID_ARTIFACT_STALE_AFTER_MS / 60_000}-minute stuck threshold.`,
+      minutesSinceUpdate,
+    };
+  }
+
+  return {
+    kind: 'paid_no_artifact_terminal',
+    severity: 'fail',
+    label: 'Paid order is in an artifact-inconsistent state',
+    detail: `fulfillmentStatus=${fulfillment} but no proof/digital artifact URL exists. This needs manual review before customer follow-up.`,
+    minutesSinceUpdate,
+  };
 }
 
 const RECENT_EVENT_LIMIT = 10;
@@ -125,6 +221,7 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
     order.status === 'print_in_production' ||
     order.status === 'shipped';
   const shipped = order.status === 'shipped';
+  const paidOrderOpsIssue = classifyPaidOrderOpsIssue(order);
 
   const pages = order.pageArtifacts ?? [];
   const pagesAccepted = pages.filter((p) => p.accepted).length;
@@ -223,7 +320,10 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       approved,
       sentToPrint,
       shipped,
+      paidWithoutArtifact: Boolean(paidOrderOpsIssue),
+      paidArtifactNeedsAttention: Boolean(paidOrderOpsIssue && paidOrderOpsIssue.severity !== 'info'),
     },
+    paidOrderOpsIssue,
     checks: [],
   };
 
@@ -308,6 +408,14 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
   }
 
   // Proof presence
+  if (d.paidOrderOpsIssue) {
+    checks.push({
+      id: 'paid-artifact',
+      label: d.paidOrderOpsIssue.label,
+      severity: d.paidOrderOpsIssue.severity,
+      detail: d.paidOrderOpsIssue.detail,
+    });
+  }
   if (d.flags.proofReady) {
     checks.push({ id: 'proof', label: 'Proof PDF ready', severity: 'ok', detail: d.artifacts.storyArtifactUrl ?? '' });
   } else if (d.artifacts.storyArtifactUrl) {
