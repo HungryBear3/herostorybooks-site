@@ -36,7 +36,13 @@ test('readBlobText in public mode reads directly from blob.url via fetch and nev
         token: 'blob_rw_test',
       });
       assert.equal(text, '{"id":"ord_public"}');
-      assert.deepEqual(seen, ['https://example.public.blob.vercel-storage.com/orders/ord_public.json']);
+      assert.equal(seen.length, 1);
+      const fetchedUrl = new URL(seen[0]);
+      assert.equal(
+        `${fetchedUrl.origin}${fetchedUrl.pathname}`,
+        'https://example.public.blob.vercel-storage.com/orders/ord_public.json',
+      );
+      assert.ok(fetchedUrl.searchParams.has('ts'), 'public blob reads should include a cache-busting timestamp');
     });
   } finally {
     globalThis.fetch = originalFetch;
