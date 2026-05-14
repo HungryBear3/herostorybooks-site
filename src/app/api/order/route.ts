@@ -4,9 +4,11 @@ import Stripe from 'stripe';
 import {
   createOrderRecord,
   isPrintFormat,
+  MAX_VOICE_BYTES,
   OrderPersistenceError,
   persistOrder,
   uploadOrderPhoto,
+  uploadOrderVoice,
 } from '@/lib/orders';
 import {
   missingFieldErrorCode,
@@ -22,6 +24,14 @@ function isValidEmail(value: string) {
 
 function getStripe() {
   return new Stripe(getRequiredStripeSecretKey());
+}
+
+const VOICE_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|flac|mp4)$/i;
+
+function isAcceptedVoiceFile(file: File): boolean {
+  if (file.type && file.type.startsWith('audio/')) return true;
+  if (file.name && VOICE_EXT_RE.test(file.name)) return true;
+  return false;
 }
 
 function getReturnBaseUrl(request: Request): string {
@@ -83,6 +93,41 @@ export async function POST(request: Request) {
     const skinTone = String(form.get('skinTone') || appearance.skinTone || '').trim();
     const hairStyle = String(form.get('hairStyle') || appearance.hairStyle || '').trim();
 
+    const voiceRaw = form.get('voice');
+    const hasVoiceUpload = voiceRaw instanceof File && voiceRaw.size > 0;
+    const voiceConsentRaw = String(form.get('voiceConsent') || '').trim().toLowerCase();
+    const voiceConsentGiven = voiceConsentRaw === 'true' || voiceConsentRaw === 'on' || voiceConsentRaw === '1';
+    const voiceSourceRaw = String(form.get('voiceSource') || '').trim();
+    const voiceSource: 'recorded' | 'uploaded' | null =
+      voiceSourceRaw === 'recorded' || voiceSourceRaw === 'uploaded' ? voiceSourceRaw : null;
+
+    if (hasVoiceUpload) {
+      if (!voiceConsentGiven) {
+        return NextResponse.json(
+          {
+            error: 'Parent/guardian consent is required to attach a voice recording.',
+            code: 'voice_consent_required',
+          },
+          { status: 400 },
+        );
+      }
+
+      const voiceFile = voiceRaw as File;
+      if (!isAcceptedVoiceFile(voiceFile)) {
+        return NextResponse.json(
+          { error: 'Voice attachment must be an audio file.', code: 'voice_invalid_type' },
+          { status: 400 },
+        );
+      }
+
+      if (voiceFile.size > MAX_VOICE_BYTES) {
+        return NextResponse.json(
+          { error: 'Voice attachment is too large (max 15 MB).', code: 'voice_too_large' },
+          { status: 400 },
+        );
+      }
+    }
+
     const missing = missingRequiredField({ theme, childName, email, skinTone, hairStyle, childPronouns });
     if (missing !== null || !isValidEmail(email)) {
       const code = missing ? missingFieldErrorCode(missing) : 'email_invalid';
@@ -111,6 +156,7 @@ export async function POST(request: Request) {
       bookFormat,
       email,
       photoFileName: form.get('photo') instanceof File ? (form.get('photo') as File).name : null,
+      voiceFileName: hasVoiceUpload ? (voiceRaw as File).name : null,
     });
 
     const photo = form.get('photo');
@@ -143,12 +189,53 @@ export async function POST(request: Request) {
       }
     }
 
+    let voiceBlobPath: string | null = null;
+    let voiceBlobUrl: string | null = null;
+    let voiceConsentAt: string | null = null;
+    if (hasVoiceUpload) {
+      try {
+        const uploadedVoice = await uploadOrderVoice(draftOrder.id, voiceRaw as File);
+        if (uploadedVoice) {
+          voiceBlobPath = uploadedVoice.pathname;
+          voiceBlobUrl = uploadedVoice.url;
+          voiceConsentAt = new Date().toISOString();
+        }
+      } catch (error) {
+        // Match the photo path: an OrderPersistenceError on voice persistence
+        // must abort BEFORE Stripe, so no customer pays for an order whose
+        // consented audio note was dropped.
+        if (error instanceof OrderPersistenceError) {
+          console.error(
+            `[order] ABORT BEFORE STRIPE: voice persistence failed for ${draftOrder.id}: ${error.message}`,
+            error.cause,
+          );
+          return NextResponse.json(
+            { error: 'We could not securely save your voice recording. Please retry — no charge was made.' },
+            { status: 503 },
+          );
+        }
+        console.error(`[order] voice upload failed for ${draftOrder.id}; aborting`, error);
+        return NextResponse.json(
+          { error: 'We could not securely save your voice recording. Please retry — no charge was made.' },
+          { status: 503 },
+        );
+      }
+    }
+
     // Persist the order record durably. If this throws OrderPersistenceError
     // we MUST NOT create a Stripe Checkout Session — the customer would pay
     // for an order the webhook + status page can never find.
     let order;
     try {
-      order = await persistOrder({ ...draftOrder, photoBlobPath, photoBlobUrl });
+      order = await persistOrder({
+        ...draftOrder,
+        photoBlobPath,
+        photoBlobUrl,
+        voiceBlobPath,
+        voiceBlobUrl,
+        voiceConsentAt,
+        voiceSource: hasVoiceUpload ? voiceSource : null,
+      });
     } catch (error) {
       if (error instanceof OrderPersistenceError) {
         console.error(
