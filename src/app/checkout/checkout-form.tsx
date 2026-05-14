@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Progress } from '@/components/ui/progress';
 import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from '@/lib/checkout-flow';
+import { VoiceRecorderSection } from '@/components/checkout/VoiceRecorderSection';
 import { CHECKOUT_SAMPLE_IMAGES, STORY_OCCASIONS, STORY_THEMES } from '@/lib/story-catalog';
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -67,6 +68,8 @@ const FORMATS = [
   },
 ];
 
+const VOICE_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_VOICE_BETA === 'true';
+
 const STORAGE_KEY = 'hsb_order_v1';
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
 const RECOVERY_DEBOUNCE_MS = 1500;
@@ -101,6 +104,10 @@ interface FormState {
   eyewear: string;
   bookFormat: string;
   email: string;
+  voiceFile: File | null;
+  voicePreviewUrl: string | null;
+  voiceSource: 'recorded' | 'uploaded' | null;
+  voiceConsent: boolean;
 }
 
 const emptyForm: FormState = {
@@ -118,6 +125,10 @@ const emptyForm: FormState = {
   eyewear: '',
   bookFormat: 'classic',
   email: '',
+  voiceFile: null,
+  voicePreviewUrl: null,
+  voiceSource: null,
+  voiceConsent: false,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -275,6 +286,11 @@ export function CheckoutForm() {
       payload.set('email', form.email);
       if (form.photoFile) {
         payload.set('photo', form.photoFile);
+      }
+      if (VOICE_BETA_ENABLED && form.voiceFile) {
+        payload.set('voice', form.voiceFile);
+        payload.set('voiceConsent', form.voiceConsent ? 'true' : 'false');
+        if (form.voiceSource) payload.set('voiceSource', form.voiceSource);
       }
 
       const response = await fetch('/api/order', {
@@ -768,6 +784,25 @@ export function CheckoutForm() {
             </p>
           </section>
 
+          {VOICE_BETA_ENABLED && (
+            <VoiceRecorderSection
+              voiceFile={form.voiceFile}
+              voicePreviewUrl={form.voicePreviewUrl}
+              voiceSource={form.voiceSource}
+              voiceConsent={form.voiceConsent}
+              onVoiceChange={(file, previewUrl, source) =>
+                setForm((prev) => ({
+                  ...prev,
+                  voiceFile: file,
+                  voicePreviewUrl: previewUrl,
+                  voiceSource: source,
+                  voiceConsent: file ? prev.voiceConsent : false,
+                }))
+              }
+              onConsentChange={(consent) => setForm((prev) => ({ ...prev, voiceConsent: consent }))}
+            />
+          )}
+
           {/* ── 6. Order Summary ── */}
           <section className="bg-lavender rounded-2xl border border-gray-200 p-6 shadow-sm">
             <h3 className="font-semibold text-forest mb-4">Order Summary</h3>
@@ -820,7 +855,7 @@ export function CheckoutForm() {
           <div className="space-y-3 pb-10">
             <button
               type="submit"
-              disabled={isSubmitting || !form.theme || !form.childName || !form.email || !form.skinTone || !form.hairStyle}
+              disabled={isSubmitting || !form.theme || !form.childName || !form.email || !form.skinTone || !form.hairStyle || (VOICE_BETA_ENABLED && form.voiceFile != null && !form.voiceConsent)}
               className="w-full py-4 rounded-xl font-bold text-lg transition-all
                 bg-deep-gold hover:bg-deep-gold/90 text-white shadow-md hover:shadow-lg hover:-translate-y-0.5
                 disabled:opacity-50 disabled:cursor-not-allowed disabled:translate-y-0 disabled:shadow-none"

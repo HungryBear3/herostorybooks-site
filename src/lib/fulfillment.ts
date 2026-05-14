@@ -188,6 +188,11 @@ async function runImageGeneration(
   }
   // Real default path: try photo-conditioned FAL when we have a photo URL,
   // else text-only. Fallback chain inside generatePageImage handles the rest.
+  // TODO(voice-beta): when order.voiceBlobUrl is present and a server-flagged
+  // transcription path is wired up (HSB_VOICE_TRANSCRIPTION_ENABLED), call the
+  // transcription provider here, extract reviewed personalization signals, and feed
+  // them into the story planner — NOT into voice cloning. Until then the audio
+  // remains optional source material only.
   const referenceImageUrl = getOrderPhotoUrl(order);
   return generateStoryImageResults(imagePrompts, { referenceImageUrl });
 }

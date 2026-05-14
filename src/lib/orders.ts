@@ -46,6 +46,14 @@ export interface OrderInput {
    * field was persisted — those still resolve via HSB_PUBLIC_BLOB_BASE.
    */
   photoBlobUrl?: string | null;
+  // Optional child-voice-note beta (NEXT_PUBLIC_HSB_VOICE_BETA). The audio is
+  // NOT used for voice cloning; it's stored as inspiration/source material for
+  // later operator-reviewed story personalization.
+  voiceFileName?: string | null;
+  voiceBlobPath?: string | null;
+  voiceBlobUrl?: string | null;
+  voiceConsentAt?: string | null;
+  voiceSource?: 'recorded' | 'uploaded' | null;
 }
 
 export type ReviewStatus =
@@ -322,6 +330,14 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     photoFileName: input.photoFileName?.trim() || null,
     photoBlobPath: input.photoBlobPath?.trim() || null,
     photoBlobUrl: input.photoBlobUrl?.trim() || null,
+    voiceFileName: input.voiceFileName?.trim() || null,
+    voiceBlobPath: input.voiceBlobPath?.trim() || null,
+    voiceBlobUrl: input.voiceBlobUrl?.trim() || null,
+    voiceConsentAt: input.voiceConsentAt?.trim() || null,
+    voiceSource:
+      input.voiceSource === 'recorded' || input.voiceSource === 'uploaded'
+        ? input.voiceSource
+        : null,
     status: 'order_received',
     paymentStatus: 'pending',
     stripeSessionId: null,
@@ -523,6 +539,72 @@ export function getOrderPhotoUrl(
 export interface UploadedPhotoRef {
   pathname: string;
   url: string;
+}
+
+/** Maximum accepted size for an attached child-voice note, in bytes (15 MB). */
+export const MAX_VOICE_BYTES = 15 * 1024 * 1024;
+
+/** Result of uploadOrderVoice. Mirrors UploadedPhotoRef. */
+export interface UploadedVoiceRef {
+  pathname: string;
+  url: string;
+}
+
+/**
+ * Upload an attached child-voice audio file to durable blob storage. Mirrors
+ * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
+ */
+export async function uploadOrderVoice(orderId: string, file: File): Promise<UploadedVoiceRef | null> {
+  const token = getBlobToken();
+
+  if (typeof file.arrayBuffer !== 'function') {
+    return null;
+  }
+
+  if (!token) {
+    if (requiresDurablePersistence()) {
+      console.error(
+        `[orders] uploadOrderVoice: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=${orderId}). Refusing to drop customer voice note silently.`,
+      );
+      throw new OrderPersistenceError(
+        orderId,
+        'BLOB_READ_WRITE_TOKEN missing in production — cannot durably store customer voice note',
+      );
+    }
+    return null;
+  }
+
+  const safeName = (file.name || 'voice')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'voice';
+
+  const pathname = withBlobNamespace(`orders/${orderId}/voice-${safeName}`);
+  const buffer = Buffer.from(await file.arrayBuffer());
+
+  try {
+    const blob = await put(pathname, buffer, {
+      access: getBlobAccessMode(),
+      allowOverwrite: true,
+      addRandomSuffix: false,
+      contentType: file.type || 'application/octet-stream',
+      token,
+    });
+    return { pathname: blob.pathname, url: blob.url };
+  } catch (err) {
+    if (requiresDurablePersistence()) {
+      console.error(
+        `[orders] uploadOrderVoice: blob put failed in production-like env (orderId=${orderId}, pathname=${pathname}):`,
+        err,
+      );
+      throw new OrderPersistenceError(
+        orderId,
+        'Customer voice note upload to durable storage failed',
+        err,
+      );
+    }
+    console.warn(`[orders] uploadOrderVoice blob put failed in dev for ${orderId}:`, err);
+    return null;
+  }
 }
 
 export async function uploadOrderPhoto(orderId: string, file: File): Promise<UploadedPhotoRef | null> {
