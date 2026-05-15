@@ -83,14 +83,19 @@ export interface StoryContent {
  * - 'openai_chat'     : OpenAI gpt-4o-mini chat-completions story path
  * - 'openai_page_prose': planner + per-page OpenAI prose generation path
  * - 'ollama_page_prose': planner + per-page Ollama prose generation path
+ * - 'gemini_page_prose': planner + per-page Gemini prose generation path
  * - 'template'        : deterministic template fallback (no API call)
- * - 'template_after_openai_failure' : OpenAI/Ollama was attempted, threw, and the
- *                                     template fallback ran instead
+ * - 'template_after_openai_failure' : OpenAI/Ollama/Gemini was attempted, threw,
+ *                                     and the template fallback ran instead.
+ *                                     Name retained for legacy/diagnostic
+ *                                     continuity — it now covers any LLM
+ *                                     story-path failure, not OpenAI alone.
  */
 export type StorySource =
   | 'openai_chat'
   | 'openai_page_prose'
   | 'ollama_page_prose'
+  | 'gemini_page_prose'
   | 'template'
   | 'template_after_openai_failure';
 
