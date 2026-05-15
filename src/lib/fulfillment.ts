@@ -254,7 +254,17 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // "which story path ran?" even before image gen completes.
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta }));
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images' }));
+  // Every subsequent updateFulfillmentState in this function is a
+  // read-modify-write against blob. If the blob read returns a slightly
+  // stale snapshot (taken before the storyMeta write fully landed), the
+  // patch merge drops storyMeta — which is exactly what the 2026-05-15
+  // Gemini preview proof test reproduced (final persisted storyMeta was
+  // null even though it was written here). Carry storyMeta forward in
+  // every later patch so the merge is deterministic regardless of
+  // blob-read freshness. Defense-in-depth: also carry it through
+  // delivery_email_failed so an email-side failure cannot drop it
+  // either.
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta }));
   // Build per-page prompts that LEAD with the frozen character anchor + identity
   // section + continuity rules + quality constraints. Initial generation now
   // goes through buildPagePrompt so it gets the same identity scaffolding the
@@ -320,10 +330,11 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // during PDF generation doesn't lose the per-page generation evidence.
   // Diagnostics + admin can now inspect what generation produced even if the
   // function dies before the proof PDF is built. The final updateFulfillmentState
-  // below re-writes the same array (idempotent) plus the proof URL.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts }));
+  // below re-writes the same array (idempotent) plus the proof URL. storyMeta
+  // carried forward to survive stale blob-readback (see comment above).
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf' }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
   // Include cover image (first imageUrl) + per-page images
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
   const pdfBuffer = await _buildPdf(story, order, allUrls);
@@ -333,11 +344,17 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   const pdfUrl = await _upload(order.id, pdfBuffer, filename);
 
   const proofGeneratedEvent = buildProofGeneratedAuditEvent(order, seededPageArtifacts.length);
+  // CRITICAL: include storyMeta explicitly in the final 'complete' patch.
+  // The 2026-05-15 Gemini preview proof test showed final persisted
+  // storyMeta=null because (a) storyMeta was written in a separate prior
+  // patch, and (b) a stale blob-read in this final write merged-in over
+  // the storyMeta field. Explicit inclusion makes the merge deterministic.
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
     fulfillmentStatus: 'complete',
     status: 'preview_ready',
     storyArtifactUrl: pdfUrl,
     pageArtifacts: seededPageArtifacts,
+    storyMeta,
     reviewStatus: 'in_review',
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
@@ -357,9 +374,17 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[fulfillment] delivery email failed for ${order.id}: ${message}`);
+    // Preserve artifacts + storyMeta + pageArtifacts explicitly on the
+    // email-failure path. Email failure must never drop persisted proof
+    // state (this was the regression class the original
+    // fulfillment-email-failure tests were written to lock down — extend
+    // it to cover storyMeta here too).
     await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'delivery_email_failed',
       fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+      storyArtifactUrl: pdfUrl,
+      pageArtifacts: seededPageArtifacts,
+      storyMeta,
     }));
   }
 }
@@ -376,7 +401,12 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta }));
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images' }));
+  // Mirror of the digital path: carry storyMeta forward in every later
+  // patch so a stale blob-read cannot drop it during the proof_ready
+  // write. The 2026-05-15 Gemini preview proof test reproduced the
+  // dropped-storyMeta failure on the digital path; same risk applies
+  // here.
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta }));
   // Same identity-anchored prompt construction as the digital path — keeps the
   // same child consistent across all pages of the print book.
   const characterAnchor = story.characterDescription ?? null;
@@ -434,9 +464,9 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
         : [],
     };
   });
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf' }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
   const previewBuffer = await _buildPdf(story, order, allUrls);
   const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
@@ -458,6 +488,8 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // PDF build), so we just re-use it in the final state write below.
 
   const proofGeneratedEvent = buildProofGeneratedAuditEvent(order, seededPageArtifacts.length);
+  // storyMeta included explicitly so the proof_ready merge is
+  // deterministic regardless of blob-read freshness.
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
     fulfillmentStatus: 'proof_ready',
     status: 'preview_ready',
@@ -469,6 +501,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     printCoverArtifactUrl: null,
     printCoverMd5: null,
     pageArtifacts: seededPageArtifacts,
+    storyMeta,
     reviewStatus: 'in_review',
     proofApprovalToken,
     fulfillmentAttempts: 0,
@@ -487,9 +520,15 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[fulfillment] proof-ready email failed for ${order.id}: ${message}`);
+    // Email failure must not drop the proof artifacts or storyMeta —
+    // admin's email-only resend path depends on them being present.
     await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'delivery_email_failed',
       fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+      storyArtifactUrl: proofUrl,
+      printInteriorArtifactUrl: interiorUrl,
+      pageArtifacts: seededPageArtifacts,
+      storyMeta,
     }));
   }
 }
