@@ -166,6 +166,18 @@ function loadProgress(): Partial<FormState> | null {
   } catch { return null; }
 }
 
+const CHILD_NAME_PARAM_MAX_LEN = 24;
+const CHILD_NAME_PARAM_STRIP_PUNCTUATION_RE = /[<>{}`$&;]/g;
+const CHILD_NAME_PARAM_STRIP_CONTROL_CHARS_RE = /[\x00-\x1F\x7F]/g;
+
+function sanitizeChildNameParam(value: string | null): string {
+  return (value ?? '')
+    .replace(CHILD_NAME_PARAM_STRIP_PUNCTUATION_RE, '')
+    .replace(CHILD_NAME_PARAM_STRIP_CONTROL_CHARS_RE, '')
+    .trim()
+    .slice(0, CHILD_NAME_PARAM_MAX_LEN);
+}
+
 // ── Component ──────────────────────────────────────────────────────────────
 
 export function CheckoutForm() {
@@ -177,23 +189,31 @@ export function CheckoutForm() {
   const photoInputRef = useRef<HTMLInputElement>(null);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Restore saved progress on mount + honor format query param
+  // Restore saved progress on mount + honor checkout query params.
+  // NamePreview passes ?childName=... as the only handoff into Checkout; if
+  // present, it should pre-fill/override the saved child name while leaving
+  // the rest of any recoverable checkout progress intact.
   useEffect(() => {
     const saved = loadProgress();
     const params = new URLSearchParams(window.location.search);
     const formatFromUrl = params.get('format');
+    const childNameFromUrl = sanitizeChildNameParam(params.get('childName'));
     const nextFormat = formatFromUrl && FORMATS.some((fmt) => fmt.id === formatFromUrl)
       ? formatFromUrl
       : '';
+    const queryPrefill: Partial<FormState> = {
+      ...(nextFormat ? { bookFormat: nextFormat } : {}),
+      ...(childNameFromUrl ? { childName: childNameFromUrl } : {}),
+    };
 
     if (saved && (saved.childName || saved.theme)) {
       setShowRecovery(true);
-      setForm(prev => ({ ...prev, ...saved, ...(nextFormat ? { bookFormat: nextFormat } : {}) }));
+      setForm(prev => ({ ...prev, ...saved, ...queryPrefill }));
       return;
     }
 
-    if (nextFormat) {
-      setForm(prev => ({ ...prev, bookFormat: nextFormat }));
+    if (nextFormat || childNameFromUrl) {
+      setForm(prev => ({ ...prev, ...queryPrefill }));
     }
   }, []);
 
