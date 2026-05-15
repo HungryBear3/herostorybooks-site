@@ -140,6 +140,54 @@ test('orchestrator: no referenceImageUrl → does not silently fall back to text
   assert.equal(nanoCalls.length, 0);
 });
 
+test('orchestrator: caller-supplied openai provider is filtered when gate unset → falls through to seedream stub', async () => {
+  // PR1 contract: the OpenAI gate is a no-op for default callers (the
+  // default chain never contains openai). It DOES apply when a caller
+  // builds its own chain. In that case openai is silently filtered out
+  // unless HSB_ENABLE_OPENAI_IMAGE === 'true', and the rest of the chain
+  // continues to run normally. This test guards that "no silent text-only
+  // fallback" stays true even in the presence of a filtered openai entry.
+  const originalGate = process.env.HSB_ENABLE_OPENAI_IMAGE;
+  delete process.env.HSB_ENABLE_OPENAI_IMAGE;
+
+  const openaiCalls: ImageProviderInput[] = [];
+  const openaiProvider: ImageProvider = {
+    name: 'openai',
+    async generate(input) {
+      openaiCalls.push(input);
+      throw new Error('openai provider must not be invoked when gate is unset');
+    },
+  };
+  const seedreamProvider = makeProvider('fal_edit', () => ({
+    imageUrl: 'https://fake/seedream.png',
+    provider: 'fal_edit',
+    model: 'fal-ai/bytedance/seedream/v4/edit',
+    promptUsed: 'p',
+    conditioning: 'photo_edit',
+    referencePhotoUrl: 'https://photos/kid.jpg',
+    latencyMs: 1,
+    error: null,
+  }));
+
+  try {
+    const result = await generatePageImage(
+      { prompt: 'p', referenceImageUrl: 'https://photos/kid.jpg' },
+      { providers: [openaiProvider, seedreamProvider] },
+    );
+    assert.equal(openaiCalls.length, 0);
+    assert.equal(
+      (seedreamProvider as unknown as { calls: ImageProviderInput[] }).calls.length,
+      1,
+    );
+    assert.equal(result.provider, 'fal_edit');
+    assert.equal(result.conditioning, 'photo_edit');
+    assert.equal(result.imageUrl, 'https://fake/seedream.png');
+  } finally {
+    if (originalGate === undefined) delete process.env.HSB_ENABLE_OPENAI_IMAGE;
+    else process.env.HSB_ENABLE_OPENAI_IMAGE = originalGate;
+  }
+});
+
 test('orchestrator: when both photo-conditioned providers fail, returns the final photo-conditioned failure instead of text-only output', async () => {
   const result = await generatePageImage(
     { prompt: 'p', referenceImageUrl: 'https://photos/kid.jpg' },

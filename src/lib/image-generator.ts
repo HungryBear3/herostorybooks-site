@@ -35,8 +35,22 @@ export interface OrchestratorDeps {
    * Override the provider order. Defaults are derived from input:
    *   - input.referenceImageUrl set → [seedream_edit, fal_edit]
    *   - otherwise                    → [] (no text-only fallback)
+   *
+   * OpenAI image providers are not in the default chain. A caller may
+   * include one explicitly, but it will be filtered out unless
+   * `HSB_ENABLE_OPENAI_IMAGE === 'true'`. See PR1 of the image-pipeline
+   * architecture work — business decision: avoid OpenAI image API by
+   * default.
    */
   providers?: ImageProvider[];
+  /**
+   * Optional short context tags for the structured per-call log line.
+   * `orderIdShort` should be the order ID prefix (the logger sanitises
+   * anything URL- or secret-shaped regardless of field name). Both are
+   * optional; existing callers that don't pass them keep working.
+   */
+  orderIdShort?: string;
+  pageIndex?: number;
 }
 
 const PHOTO_EDIT_CHAIN: ImageProvider[] = [seedreamEditImageProvider, falEditImageProvider];
@@ -49,31 +63,172 @@ function defaultProviderOrder(input: ImageProviderInput): ImageProvider[] {
   return hasReference ? PHOTO_EDIT_CHAIN : NO_TEXT_ONLY_FALLBACK;
 }
 
+// ── OpenAI gate ───────────────────────────────────────────────────────────────
+//
+// The OpenAI image API is intentionally NOT in the default chain. PR1's job is
+// to make sure a future caller that constructs its own `deps.providers` cannot
+// accidentally smuggle OpenAI in without an explicit operator opt-in.
+
+const OPENAI_PROVIDER_NAMES = new Set<string>(['openai']);
+
+function applyOpenAIGate(
+  providers: ImageProvider[],
+  orderIdShort: string | undefined,
+): ImageProvider[] {
+  const allowOpenAI = process.env.HSB_ENABLE_OPENAI_IMAGE === 'true';
+  if (allowOpenAI) return providers;
+  const filtered = providers.filter((p) => !OPENAI_PROVIDER_NAMES.has(p.name));
+  if (filtered.length !== providers.length) {
+    // One-line warning identifying the order (short id only) when a filter
+    // happens. We deliberately do NOT include the dropped provider object
+    // itself — only that we dropped something OpenAI-shaped — so we don't
+    // risk leaking model names or config embedded on the provider.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[image-gen] orderIdShort=${sanitizeFieldValue(orderIdShort ?? 'unknown')} ` +
+        `event=openai_filtered count=${providers.length - filtered.length} ` +
+        `reason=HSB_ENABLE_OPENAI_IMAGE_not_true`,
+    );
+  }
+  return filtered;
+}
+
+// ── Structured log helper ─────────────────────────────────────────────────────
+//
+// One machine-grep-able line per generation attempt. NEVER throws. NEVER
+// fails image generation. Field values are sanitised — anything URL-shaped,
+// secret-shaped, or unreasonably long is replaced with a redacted marker
+// so a future field rename can't leak. Whole helper is wrapped in
+// try/catch as defence-in-depth.
+
+const REDACTED_URL = '[redacted-url]';
+const REDACTED_SECRET = '[redacted-secret]';
+const REDACTED_TOO_LONG = '[redacted-too-long]';
+const MAX_FIELD_LEN = 200;
+
+function sanitizeFieldValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  let s: string;
+  try {
+    s = typeof value === 'string' ? value : String(value);
+  } catch {
+    return '[redacted-unstringifiable]';
+  }
+  if (s.length > MAX_FIELD_LEN) return REDACTED_TOO_LONG;
+  if (/^https?:\/\//i.test(s)) return REDACTED_URL;
+  if (/^Bearer\s+/i.test(s) || /^sk_/i.test(s) || /^sk-/i.test(s)) return REDACTED_SECRET;
+  return s;
+}
+
+/**
+ * Classify a provider error string into a short bucket so logs can answer
+ * "what kind of failure?" without echoing the underlying message (which
+ * might carry a URL, body fragment, or provider-supplied detail).
+ */
+function classifyError(error: string | null | undefined): string | undefined {
+  if (!error) return undefined;
+  const lower = error.toLowerCase();
+  if (/abort|timed?\s*out|timeout/.test(lower)) return 'timeout';
+  if (/4\d\d/.test(error)) return 'http_4xx';
+  if (/5\d\d/.test(error)) return 'http_5xx';
+  if (/no image|no_image|returned no image/i.test(error)) return 'no_image_returned';
+  if (/no photo-conditioned/i.test(error)) return 'no_photo_provider';
+  if (/key not set|apikey/i.test(error)) return 'auth_missing';
+  return 'other';
+}
+
+interface ImageGenLogPayload {
+  orderIdShort?: string;
+  pageIndex?: number;
+  provider: string;
+  model: string;
+  conditioning?: string | null;
+  latencyMs: number;
+  refPhoto: 'yes' | 'no';
+  result: 'ok' | 'error';
+  errorClass?: string;
+}
+
+function logImageGen(payload: ImageGenLogPayload): void {
+  try {
+    const safe: Record<string, string> = {};
+    for (const [k, v] of Object.entries(payload)) {
+      if (v === undefined || v === null) continue;
+      safe[k] = sanitizeFieldValue(v);
+    }
+    const line = Object.entries(safe)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(' ');
+    // eslint-disable-next-line no-console
+    console.info(`[image-gen] ${line}`);
+  } catch {
+    // Logging is observability, not behaviour. A failure here must never
+    // propagate to the generation pipeline.
+  }
+}
+
 export async function generatePageImage(
   input: ImageProviderInput,
   deps: OrchestratorDeps = {},
 ): Promise<GeneratedImageResult> {
-  const providers = deps.providers ?? defaultProviderOrder(input);
+  const rawProviders = deps.providers ?? defaultProviderOrder(input);
+  // Apply the OpenAI gate ONLY when the caller supplied its own chain.
+  // The default chains don't contain OpenAI, so this is a no-op for normal
+  // callers — but it slams the door on future code that builds its own
+  // `deps.providers` list without thinking about provider policy.
+  const callerSupplied = deps.providers !== undefined;
+  const providers = callerSupplied
+    ? applyOpenAIGate(rawProviders, deps.orderIdShort)
+    : rawProviders;
   const providerDeps: ImageProviderDeps = deps.fetch ? { fetch: deps.fetch } : {};
+  const refPhoto: 'yes' | 'no' =
+    input.referenceImageUrl || (input.imageUrls && input.imageUrls.length > 0) ? 'yes' : 'no';
 
   let last: GeneratedImageResult | null = null;
   for (const provider of providers) {
     const result = await provider.generate(input, providerDeps);
     last = result;
+    logImageGen({
+      orderIdShort: deps.orderIdShort,
+      pageIndex: deps.pageIndex,
+      provider: result.provider,
+      model: result.model,
+      conditioning: result.conditioning ?? null,
+      latencyMs: result.latencyMs,
+      refPhoto,
+      result: result.imageUrl ? 'ok' : 'error',
+      errorClass: result.imageUrl ? undefined : classifyError(result.error),
+    });
     if (result.imageUrl) return result;
   }
-  return (
-    last ?? {
-      imageUrl: null,
-      provider: 'fal_edit',
-      model: 'photo-edit-unavailable',
-      promptUsed: input.prompt,
-      conditioning: 'photo_edit',
-      referencePhotoUrl: input.referenceImageUrl ?? null,
-      latencyMs: 0,
-      error: 'No photo-conditioned providers configured',
-    }
-  );
+  if (last) return last;
+
+  // No providers in the chain at all (typical: no-photo branch). Emit a
+  // synthetic failure line so the absence of generation is still visible
+  // in the log stream — silence here would look like "didn't run" rather
+  // than "ran with no chain".
+  const synthetic: GeneratedImageResult = {
+    imageUrl: null,
+    provider: 'fal_edit',
+    model: 'photo-edit-unavailable',
+    promptUsed: input.prompt,
+    conditioning: 'photo_edit',
+    referencePhotoUrl: input.referenceImageUrl ?? null,
+    latencyMs: 0,
+    error: 'No photo-conditioned providers configured',
+  };
+  logImageGen({
+    orderIdShort: deps.orderIdShort,
+    pageIndex: deps.pageIndex,
+    provider: synthetic.provider,
+    model: synthetic.model,
+    conditioning: synthetic.conditioning ?? null,
+    latencyMs: synthetic.latencyMs,
+    refPhoto,
+    result: 'error',
+    errorClass: classifyError(synthetic.error),
+  });
+  return synthetic;
 }
 
 // ── Legacy URL-only API (used by fulfillment proof generation) ───────────────

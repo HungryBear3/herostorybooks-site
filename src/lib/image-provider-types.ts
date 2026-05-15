@@ -51,6 +51,19 @@ export interface ImageProviderInput {
   imageUrls?: string[] | null;
   /** Hint to the provider about how aggressively to condition on the photo. */
   conditioningMode?: ImageConditioningMode | null;
+  /**
+   * When true and no reference image is supplied, providers MUST return a
+   * structured failure rather than attempt a text-only fallback. This is the
+   * machine-checkable shape of the rule the orchestrator already enforces
+   * for photo-based books: if the customer uploaded a photo, the order
+   * cannot ship text-only art under any provider's hood.
+   *
+   * Today the orchestrator enforces the policy via its provider chain
+   * (no text-only lane in the photo branch). This flag lets individual
+   * providers self-enforce as defense-in-depth, and lets future callers
+   * that supply their own provider chain still get the same protection.
+   */
+  referenceImageRequired?: boolean;
 }
 
 export interface ImageProviderDeps {
