@@ -11,6 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { geminiImageProvider } from '../src/lib/image-provider-gemini.ts';
+import type { BlobPutFn } from '../src/lib/image-provider-types.ts';
 
 interface StubCall {
   url: string;
@@ -300,5 +301,174 @@ test('gemini provider: accepts camelCase inlineData shape from the API response'
     );
     assert.equal(result.error, null);
     assert.equal(result.imageUrl, 'data:image/png;base64,AAAA');
+  });
+});
+
+// ── Blob upload (rehosting inline base64 to durable HTTPS storage) ───────────
+
+function makeBlobPutStub(returnUrl: string): {
+  blobPut: BlobPutFn;
+  calls: Array<{ path: string; opts: { contentType?: string } }>;
+} {
+  const calls: Array<{ path: string; opts: { contentType?: string } }> = [];
+  const blobPut: BlobPutFn = async (path, _body, opts) => {
+    calls.push({ path, opts });
+    return { url: returnUrl };
+  };
+  return { blobPut, calls };
+}
+
+test('gemini provider: uploads inline image to Blob and returns the HTTPS URL when blobPut is injected', async () => {
+  await withEnv({ GOOGLE_GEMINI_API_KEY: 'test-key' }, async () => {
+    const photoBytes = makePngBytes();
+    const generatedBase64 = Buffer.from(photoBytes).toString('base64');
+    const { fetch } = makeFetchStub((_call, index) => {
+      if (index === 0) {
+        return new Response(photoBytes, {
+          status: 200,
+          headers: { 'content-type': 'image/jpeg' },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  { inline_data: { mime_type: 'image/png', data: generatedBase64 } },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const { blobPut, calls } = makeBlobPutStub('https://hsb-blob.example.com/preview/generated/gemini/abcd1234.png');
+    const result = await geminiImageProvider.generate(
+      { prompt: 'a brave kid', referenceImageUrl: 'https://photos/kid.jpg' },
+      { fetch, blobPut },
+    );
+    assert.equal(result.error, null);
+    assert.equal(result.imageUrl, 'https://hsb-blob.example.com/preview/generated/gemini/abcd1234.png');
+    assert.equal(result.imageUrl?.startsWith('data:'), false, 'must not return data: URL when upload succeeded');
+    assert.equal(calls.length, 1, 'blobPut must be called exactly once');
+    assert.match(calls[0]!.path, /generated\/gemini\/[a-f0-9]{16}\.png$/);
+    assert.equal(calls[0]!.opts.contentType, 'image/png');
+  });
+});
+
+test('gemini provider: blob upload failure surfaces a structured error (no silent data-URL fallback)', async () => {
+  await withEnv({ GOOGLE_GEMINI_API_KEY: 'test-key' }, async () => {
+    const generatedBase64 = Buffer.from(makePngBytes()).toString('base64');
+    const { fetch } = makeFetchStub((_call, index) => {
+      if (index === 0) {
+        return new Response(makePngBytes(), {
+          status: 200,
+          headers: { 'content-type': 'image/jpeg' },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  { inline_data: { mime_type: 'image/png', data: generatedBase64 } },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    });
+    const blobPut: BlobPutFn = async () => {
+      throw new Error('vercel blob 503');
+    };
+    const result = await geminiImageProvider.generate(
+      { prompt: 'p', referenceImageUrl: 'https://photos/kid.jpg' },
+      { fetch, blobPut },
+    );
+    assert.equal(result.imageUrl, null);
+    assert.match(result.error ?? '', /gemini blob upload failed/);
+    assert.match(result.error ?? '', /vercel blob 503/);
+  });
+});
+
+test('gemini provider: blob put returning empty url is treated as upload failure', async () => {
+  await withEnv({ GOOGLE_GEMINI_API_KEY: 'test-key' }, async () => {
+    const generatedBase64 = Buffer.from(makePngBytes()).toString('base64');
+    const { fetch } = makeFetchStub((_call, index) => {
+      if (index === 0) {
+        return new Response(makePngBytes(), {
+          status: 200,
+          headers: { 'content-type': 'image/jpeg' },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  { inline_data: { mime_type: 'image/png', data: generatedBase64 } },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    });
+    const blobPut: BlobPutFn = async () => ({ url: '' });
+    const result = await geminiImageProvider.generate(
+      { prompt: 'p', referenceImageUrl: 'https://photos/kid.jpg' },
+      { fetch, blobPut },
+    );
+    assert.equal(result.imageUrl, null);
+    assert.match(result.error ?? '', /blob put returned no url/);
+  });
+});
+
+test('gemini provider: same prompt + bytes produces a deterministic blob path (hash-stable)', async () => {
+  await withEnv({ GOOGLE_GEMINI_API_KEY: 'test-key' }, async () => {
+    const generatedBase64 = Buffer.from(makePngBytes()).toString('base64');
+    const buildFetchStub = () =>
+      makeFetchStub((_call, index) => {
+        if (index === 0) {
+          return new Response(makePngBytes(), {
+            status: 200,
+            headers: { 'content-type': 'image/jpeg' },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    { inline_data: { mime_type: 'image/png', data: generatedBase64 } },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      });
+    const { blobPut: putA, calls: callsA } = makeBlobPutStub('https://blob/x.png');
+    const { blobPut: putB, calls: callsB } = makeBlobPutStub('https://blob/x.png');
+    const stubA = buildFetchStub();
+    const stubB = buildFetchStub();
+    await geminiImageProvider.generate(
+      { prompt: 'same prompt', referenceImageUrl: 'https://photos/kid.jpg' },
+      { fetch: stubA.fetch, blobPut: putA },
+    );
+    await geminiImageProvider.generate(
+      { prompt: 'same prompt', referenceImageUrl: 'https://photos/kid.jpg' },
+      { fetch: stubB.fetch, blobPut: putB },
+    );
+    assert.equal(callsA[0]!.path, callsB[0]!.path, 'same prompt + same bytes must hash to same blob path');
   });
 });

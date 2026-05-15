@@ -66,8 +66,42 @@ export interface ImageProviderInput {
   referenceImageRequired?: boolean;
 }
 
+/**
+ * Minimal `put` surface that providers needing to rehost their inline output
+ * (notably gemini — Google returns base64 inline, not a hosted URL) call to
+ * push the bytes to durable storage and get back a public URL.
+ *
+ * Shape matches `@vercel/blob`'s `put`, narrowed to the options HSB actually
+ * uses. Tests inject a stub so the upload path is exercised without touching
+ * the network or Blob. Production code falls back to `@vercel/blob`'s real
+ * `put` when this dep is absent.
+ */
+export interface BlobPutOptions {
+  access: 'public';
+  contentType?: string;
+  addRandomSuffix?: boolean;
+  allowOverwrite?: boolean;
+  token?: string;
+}
+export interface BlobPutResult {
+  url: string;
+}
+export type BlobPutFn = (
+  path: string,
+  body: Buffer | Uint8Array,
+  opts: BlobPutOptions,
+) => Promise<BlobPutResult>;
+
 export interface ImageProviderDeps {
   fetch?: typeof globalThis.fetch;
+  /**
+   * Optional Vercel Blob `put` override. Currently used only by the Gemini
+   * image provider to rehost its inline base64 output as a public HTTPS URL.
+   * When unset, the provider falls back to dynamic-importing `@vercel/blob`
+   * if `BLOB_READ_WRITE_TOKEN` is configured, or returns the image as a
+   * `data:` URL if not (dev-friendly degraded mode).
+   */
+  blobPut?: BlobPutFn;
 }
 
 export interface ImageProvider {

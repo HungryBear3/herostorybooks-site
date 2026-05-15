@@ -27,7 +27,10 @@
 //     docs/runbooks/gemini-image-routing.md for the production-readiness
 //     checklist.
 
+import { createHash } from 'node:crypto';
+
 import type {
+  BlobPutFn,
   GeneratedImageResult,
   ImageProvider,
   ImageProviderDeps,
@@ -119,6 +122,78 @@ interface GeminiImageResponseBody {
     finishReason?: string;
   }>;
   promptFeedback?: { blockReason?: string };
+}
+
+/**
+ * Strict mime → file extension. Limited to image mime types Google's image
+ * models actually return so we don't write an unbounded set of extensions
+ * to blob keys.
+ */
+function extForMime(mime: string): string {
+  const lower = (mime || '').toLowerCase();
+  if (lower === 'image/png') return 'png';
+  if (lower === 'image/jpeg' || lower === 'image/jpg') return 'jpg';
+  if (lower === 'image/webp') return 'webp';
+  return 'png';
+}
+
+type HostResult =
+  | { kind: 'hosted'; url: string }
+  | { kind: 'no_storage' }
+  | { kind: 'failed'; error: string };
+
+/**
+ * Rehost the inline image bytes returned by Gemini to durable public storage
+ * and return an HTTPS URL.
+ *
+ * Resolution order:
+ *   1. Caller-injected `deps.blobPut` (used by tests + future custom storage).
+ *   2. Dynamic import of `@vercel/blob` `put`, gated on
+ *      `BLOB_READ_WRITE_TOKEN`. Production path.
+ *   3. Neither available → return `no_storage` so the caller can degrade to
+ *      a `data:` URL. Dev/test friendly; never used in production because
+ *      every prod-like env has the token (orders.ts enforces this).
+ *
+ * Path layout mirrors `withBlobNamespace('generated/gemini/<hash>.<ext>')` so
+ * preview + production share a token but never collide.
+ */
+async function hostInlineImage(
+  bytes: Buffer,
+  mimeType: string,
+  prompt: string,
+  injectedPut: BlobPutFn | undefined,
+): Promise<HostResult> {
+  const hash = createHash('sha256').update(bytes).update(prompt).digest('hex').slice(0, 16);
+  const ext = extForMime(mimeType);
+  let relPath = `generated/gemini/${hash}.${ext}`;
+  // Best-effort namespace alignment with the rest of the codebase. If the
+  // import fails (unlikely; same module is used for orders), fall back to
+  // the un-namespaced path — still functionally correct, just less tidy.
+  try {
+    const { withBlobNamespace } = await import('./orders.ts');
+    relPath = withBlobNamespace(relPath);
+  } catch {
+    // ignore
+  }
+
+  const token = (process.env.BLOB_READ_WRITE_TOKEN ?? '').trim() || undefined;
+  const putFn = injectedPut ?? (token ? (await import('@vercel/blob')).put : null);
+  if (!putFn) return { kind: 'no_storage' };
+
+  try {
+    const result = await putFn(relPath, bytes, {
+      access: 'public',
+      contentType: mimeType,
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      token,
+    });
+    if (!result?.url) return { kind: 'failed', error: 'blob put returned no url' };
+    return { kind: 'hosted', url: result.url };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { kind: 'failed', error: message.slice(0, 200) };
+  }
 }
 
 function extractFirstImage(body: GeminiImageResponseBody): { mimeType: string; data: string } | null {
@@ -292,8 +367,42 @@ export const geminiImageProvider: ImageProvider = {
       };
     }
 
+    // Rehost the inline bytes to durable HTTPS storage. Without this every
+    // downstream consumer (PDF builder, order persistence, version history,
+    // admin/review UI) would have to round-trip a multi-MB data: URL —
+    // workable for fetch + PDF embed, but the persisted order JSON would
+    // grow unboundedly on each regenerate.
+    const bytes = Buffer.from(image.data, 'base64');
+    const hosted = await hostInlineImage(bytes, image.mimeType, input.prompt, deps.blobPut);
+    if (hosted.kind === 'failed') {
+      return {
+        imageUrl: null,
+        provider: 'gemini',
+        model,
+        promptUsed: input.prompt,
+        conditioning: 'photo_edit',
+        referencePhotoUrl: primaryReference,
+        latencyMs: Date.now() - startedAt,
+        error: `gemini blob upload failed: ${hosted.error}`,
+      };
+    }
+    const imageUrl =
+      hosted.kind === 'hosted'
+        ? hosted.url
+        : `data:${image.mimeType};base64,${image.data}`;
+    if (hosted.kind === 'no_storage') {
+      // No token + no injected put. This branch is intentional for local dev
+      // and tests; production environments always have BLOB_READ_WRITE_TOKEN
+      // (orders.ts hard-fails without it). A single info line per call so
+      // operators can spot accidental token-missing config in staging.
+      // eslint-disable-next-line no-console
+      console.info(
+        '[image-provider-gemini] returning data: URL (BLOB_READ_WRITE_TOKEN unset and no blobPut injected)',
+      );
+    }
+
     return {
-      imageUrl: `data:${image.mimeType};base64,${image.data}`,
+      imageUrl,
       provider: 'gemini',
       model,
       promptUsed: input.prompt,

@@ -51,22 +51,35 @@ The text-only branch (no reference photo) remains intentionally empty — we nev
 - Reference photo + `HSB_ENABLE_GEMINI_IMAGE=true` + key set + fallback flag unset → `[gemini]`.
 - Reference photo + `HSB_ENABLE_GEMINI_IMAGE` not `true` (or key missing) → `[seedream_edit, fal_edit]` (legacy default).
 
-## Before flipping `HSB_ENABLE_GEMINI_IMAGE=true` in production
+## How the inline base64 output is rehosted
 
-The Gemini direct API returns generated images as inline base64 (not a
-hosted URL), so this provider returns a `data:image/...;base64,...` URL.
+The Gemini direct API returns generated images as **inline base64** (no
+hosted URL), so `image-provider-gemini.ts` rehosts the bytes to Vercel
+Blob inside the provider and returns the public HTTPS URL — the same
+shape FAL providers already return. Downstream consumers (PDF builder,
+order persistence, version history, review/admin UIs) need no changes.
 
-**Verify these consumers accept data URLs before flipping the gate, or add a
-blob-upload step inside `image-provider-gemini.ts` first:**
+**Upload path** (`hostInlineImage` in `image-provider-gemini.ts`):
+1. Decode base64 → `Buffer`.
+2. Hash `sha256(bytes + prompt).slice(0,16)` to make a deterministic blob key.
+3. `put(withBlobNamespace('generated/gemini/<hash>.<ext>'), buffer, { access: 'public', contentType, addRandomSuffix: false, allowOverwrite: true, token })`.
+4. Return the resulting `result.url`.
 
-1. `src/lib/fulfillment.ts` — `imageUrls` array gets persisted onto the order and embedded into proof / version-history records. Confirm the persistence layer accepts data URLs (size + serialisation).
-2. PDF builders in `src/lib/pdf-builder.ts` and friends — confirm they can embed images from a `data:` URL rather than fetching an `https:` URL.
-3. Anywhere that fetches an `imageUrl` to re-process (e.g. proof preview, admin diagnostics, retry flow).
+**Token requirement.** `BLOB_READ_WRITE_TOKEN` must be set in any
+production-like env (Vercel injects it). Without the token the provider
+returns the image as a `data:` URL with an info log — workable for local
+dev and tests, **never used in production** because `src/lib/orders.ts`
+already hard-fails persistence without the token.
 
-If any of those need a real URL, the simplest fix is: in
-`image-provider-gemini.ts` after decoding the inline image, upload it to
-Vercel Blob and return the resulting public URL, mirroring what the FAL
-providers already return.
+**Upload failures fail the provider call.** If `put` throws or returns an
+empty url, the provider returns `imageUrl: null` with
+`error: 'gemini blob upload failed: …'`. The orchestrator then falls
+through to FAL fallback iff `HSB_GEMINI_IMAGE_FAL_FALLBACK=true`.
+
+**Test injection.** Tests inject `deps.blobPut` (an optional
+`ImageProviderDeps` field) so the upload path is exercised without
+touching the network or `@vercel/blob`. See
+`tests/image-provider-gemini.test.ts` "Blob upload" section.
 
 ## Test coverage
 
