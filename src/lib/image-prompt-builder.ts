@@ -225,12 +225,40 @@ const ZONE_DESCRIPTIONS: Record<PageTextLayout['zone'], string> = {
   natural: 'the lower portion of the frame',
 };
 
+/**
+ * Baseline composition discipline that EVERY page image must follow,
+ * regardless of whether the story planner attached a specific
+ * `textLayout` zone hint. Pulled out as its own always-on section after
+ * the 2026-05-15 Gemini preview proof test, where p16 and p19 failed
+ * text-safe / natural-negative-space checks because the page had no
+ * `textLayout` and `safeTextAreaSection` therefore emitted nothing.
+ *
+ * Phrasing rules picked from Rex's benchmark feedback:
+ *   - prefer "natural negative space" over abrupt blank bars (p01 note)
+ *   - protect a clean text-safe area for the layout's prose box
+ *   - explicitly forbid pseudo-text, glyphs, signage, labels, and
+ *     readable-looking lettering of any kind (p19 note)
+ *   - avoid splash-page busy compositions when the page must carry text
+ *     (p16 note)
+ */
+function compositionDisciplineSection(): string {
+  return [
+    'Page composition rules (this is a children’s picture book; the final layout overlays prose in a clean cream margin around the illustration):',
+    '- Preserve a clear, protected text-safe area that the book layout can use without covering faces or paid-for story details.',
+    '- Achieve the protected area through natural negative space — soft sky, calm water, open ground, gentle fog, quiet foliage — NOT through a hard blank bar, a hard rectangle, a vignette mask, or an abrupt color block.',
+    '- Let the focal subject sit naturally off-center when the page needs room for text; do not paint an over-centered, edge-to-edge splash composition that fights the prose box.',
+    '- Maintain a warm watercolor storybook style with painterly brushwork and soft edges. Style consistency must hold across every page of the same book, including indoor or nighttime scenes.',
+    '- Render zero readable lettering anywhere in the image: no captions, no titles, no signage, no shop signs, no labels, no maps with readable text, no banners, no scrolls with writing, no chalkboards, no books showing words, no symbols arranged to look like writing, no pseudo-text glyphs, no decorative scribbles that read as letters. The book layout adds the caption itself.',
+  ].join('\n');
+}
+
 function safeTextAreaSection(layout: PageTextLayout | undefined): string {
   if (!layout) return '';
   const zoneCopy = ZONE_DESCRIPTIONS[layout.zone];
   return [
-    `Composition note for the final book layout: prose is placed in a clean cream margin below the illustration. Keep faces, hands, and key paid-for story details away from ${zoneCopy} and the extreme bottom crop edge; use quieter low-detail background there so the image can crop cleanly without losing important art.`,
-    'Do not render any text, lettering, signs, captions, or word-shaped marks anywhere in the image. The book layout adds the caption itself.',
+    `Layout hint for this specific page: prose will be placed in a clean cream margin below the illustration, with extra protection over ${zoneCopy} and the extreme bottom crop edge.`,
+    `Keep faces, hands, and key paid-for story details away from ${zoneCopy}; quiet the brushwork there so the image can crop cleanly without losing important art.`,
+    'Reminder: no readable text, lettering, signs, captions, glyphs, signage, labels, or word-shaped marks anywhere in the image.',
   ].join(' ');
 }
 
@@ -271,6 +299,7 @@ export function buildPagePrompt(input: PagePromptInput): string {
     continuitySection(input.order),
     themeGuidanceSection(input.order),
     sceneGroundingSection(input.storyText),
+    compositionDisciplineSection(),
     safeTextAreaSection(input.textLayout),
     qualitySection(),
   ]
@@ -294,6 +323,7 @@ export function buildRegeneratePrompt(input: PagePromptInput): RegeneratePromptR
     continuitySection(input.order),
     themeGuidanceSection(input.order),
     sceneGroundingSection(input.storyText),
+    compositionDisciplineSection(),
     safeTextAreaSection(input.textLayout),
   ];
   const tagSection = tagEmphasisSection(tags);
