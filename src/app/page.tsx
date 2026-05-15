@@ -2,6 +2,7 @@ import { Navigation } from "@/components/navigation"
 import { HeroSection } from "@/components/hero-section"
 import { HowItWorks } from "@/components/how-it-works"
 import { BookShowcase } from "@/components/book-showcase"
+import { NamePreview } from "@/components/name-preview"
 import { Testimonials } from "@/components/testimonials"
 import { PricingSection } from "@/components/pricing-section"
 import { FAQSection } from "@/components/faq-section"
@@ -14,6 +15,7 @@ export default function HomePage() {
       <HeroSection />
       <HowItWorks />
       <BookShowcase />
+      <NamePreview />
       <Testimonials />
       <PricingSection />
       <FAQSection />
