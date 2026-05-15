@@ -12,6 +12,12 @@
 // fails. We do not silently ship text-only art for photo-based books.
 
 import { falEditImageProvider } from './image-provider-fal-edit.ts';
+import {
+  geminiImageProvider,
+  hasGeminiImageApiKey,
+  isGeminiImageEnabled,
+  isGeminiImageFalFallbackEnabled,
+} from './image-provider-gemini.ts';
 import { seedreamEditImageProvider } from './image-provider-seedream-edit.ts';
 import type {
   GeneratedImageResult,
@@ -56,11 +62,35 @@ export interface OrchestratorDeps {
 const PHOTO_EDIT_CHAIN: ImageProvider[] = [seedreamEditImageProvider, falEditImageProvider];
 const NO_TEXT_ONLY_FALLBACK: ImageProvider[] = [];
 
-function defaultProviderOrder(input: ImageProviderInput): ImageProvider[] {
+/**
+ * Build the default provider chain based on input + env flags.
+ *
+ * When a reference photo is present:
+ *   - `HSB_ENABLE_GEMINI_IMAGE=true` + `GOOGLE_GEMINI_API_KEY` set:
+ *       primary chain is [gemini].
+ *       If `HSB_GEMINI_IMAGE_FAL_FALLBACK=true` is ALSO set, FAL providers
+ *       (Seedream then Nano Banana) are appended as fallback. The brief
+ *       requires this fallback to be explicit, not implicit — Gemini is
+ *       the intended primary while operator credits permit.
+ *   - Otherwise: legacy `[seedream_edit, fal_edit]` chain.
+ *
+ * When no reference photo is present: empty chain. We never silently
+ * degrade a photo-based book to text-only art.
+ *
+ * Exported for tests so the chain-composition contract can be asserted
+ * without going through the full orchestrator.
+ */
+export function defaultProviderOrder(input: ImageProviderInput): ImageProvider[] {
   const hasReference = Boolean(
     (input.imageUrls && input.imageUrls.length > 0) || input.referenceImageUrl,
   );
-  return hasReference ? PHOTO_EDIT_CHAIN : NO_TEXT_ONLY_FALLBACK;
+  if (!hasReference) return NO_TEXT_ONLY_FALLBACK;
+  if (isGeminiImageEnabled() && hasGeminiImageApiKey()) {
+    return isGeminiImageFalFallbackEnabled()
+      ? [geminiImageProvider, ...PHOTO_EDIT_CHAIN]
+      : [geminiImageProvider];
+  }
+  return PHOTO_EDIT_CHAIN;
 }
 
 // ── OpenAI gate ───────────────────────────────────────────────────────────────

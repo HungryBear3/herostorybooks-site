@@ -66,7 +66,7 @@ export interface PageFeedbackEntry {
   createdAt: string;
   rawText: string;
   tags: string[];
-  providerTried?: 'openai' | 'fal' | 'fal_edit' | null;
+  providerTried?: 'openai' | 'fal' | 'fal_edit' | 'gemini' | null;
   resultImageUrl?: string | null;
   success: boolean;
 }
@@ -74,7 +74,7 @@ export interface PageFeedbackEntry {
 export interface PageVersionEntry {
   createdAt: string;
   imageUrl: string | null;
-  provider: 'openai' | 'fal' | 'fal_edit';
+  provider: 'openai' | 'fal' | 'fal_edit' | 'gemini';
   model: string;
   promptUsed: string;
   /** Whether this version came from a text-only or photo-conditioned call.
@@ -122,7 +122,7 @@ export interface PageArtifact {
   characterAnchor?: string | null;
   currentImageUrl: string | null;
   acceptedImageUrl?: string | null;
-  generationProvider?: 'openai' | 'fal' | 'fal_edit' | null;
+  generationProvider?: 'openai' | 'fal' | 'fal_edit' | 'gemini' | null;
   generationModel?: string | null;
   /** Whether the CURRENT image on this page used text-only or photo-conditioned
    *  generation. Refreshed every regenerate. Null when no image yet. */
