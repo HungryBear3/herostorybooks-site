@@ -178,7 +178,31 @@ async function hostInlineImage(
 
   const token = (process.env.BLOB_READ_WRITE_TOKEN ?? '').trim() || undefined;
   const putFn = injectedPut ?? (token ? (await import('@vercel/blob')).put : null);
-  if (!putFn) return { kind: 'no_storage' };
+  if (!putFn) {
+    // Defense-in-depth: in a production-like environment (Vercel deploy or
+    // NODE_ENV=production), refuse to silently degrade to a data: URL.
+    // Otherwise an operator who flips HSB_ENABLE_GEMINI_IMAGE=true without
+    // first ensuring BLOB_READ_WRITE_TOKEN is set would write multi-MB
+    // base64 strings into every order's currentImageUrl + versionHistory —
+    // bloating the order JSON on each regenerate and stressing Blob
+    // serialisation. The data: URL fallback is intentional for local dev
+    // and unit tests; not safe for preview/production traffic.
+    try {
+      const { requiresDurablePersistence } = await import('./orders.ts');
+      if (requiresDurablePersistence()) {
+        return {
+          kind: 'failed',
+          error:
+            'BLOB_READ_WRITE_TOKEN must be set when HSB_ENABLE_GEMINI_IMAGE is on in a production-like env',
+        };
+      }
+    } catch {
+      // If the import itself fails, fall through to the dev-friendly
+      // no_storage result. We never want this safety check to become its
+      // own outage source.
+    }
+    return { kind: 'no_storage' };
+  }
 
   try {
     const result = await putFn(relPath, bytes, {
