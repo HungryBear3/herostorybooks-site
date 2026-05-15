@@ -1,0 +1,10 @@
+scenario,sku,price,stripe_fee,base_ai,regen_ai,blob,lulu_print_ship,runtime_email,support_labor,reprint_reserve,cogs_before_refunds,refund_reserve,contribution_after_reserves,contribution_margin,max_allowable_cac_break_even,target_cac_for_30pct_margin
+Upside,Digital,14.99,0.73,0.62,0.03,0.02,0.00,0.05,0.67,0.00,2.12,1.20,11.67,77.9%,11.67,7.17
+Upside,Classic softcover,39.99,1.46,0.62,0.03,0.03,11.72,0.05,0.67,0.23,14.81,3.20,21.98,55.0%,21.98,9.98
+Upside,Premium hardcover,59.99,2.04,0.83,0.03,0.04,18.00,0.05,0.67,0.36,22.02,4.80,33.17,55.3%,33.17,15.17
+Base,Digital,14.99,0.73,0.77,0.09,0.02,0.00,0.11,2.67,0.00,4.39,2.25,8.35,55.7%,8.35,3.85
+Base,Classic softcover,39.99,1.46,0.77,0.09,0.03,11.72,0.11,2.67,0.59,17.44,6.00,16.55,41.4%,16.55,4.55
+Base,Premium hardcover,59.99,2.04,1.02,0.09,0.04,18.00,0.11,2.67,0.90,24.87,9.00,26.12,43.5%,26.12,8.12
+Stress,Digital,14.99,0.73,1.50,0.36,0.02,0.00,0.32,8.33,0.00,11.26,3.75,-0.02,-0.1%,-0.02,-4.52
+Stress,Classic softcover,39.99,1.46,1.50,0.36,0.03,11.72,0.32,8.33,1.17,24.89,10.00,5.10,12.8%,5.10,-6.90
+Stress,Premium hardcover,59.99,2.04,1.99,0.36,0.04,18.00,0.32,8.33,1.80,32.88,15.00,12.11,20.2%,12.11,-5.89
