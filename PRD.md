@@ -1,5 +1,10 @@
 # HeroStoryBooks.com — Landing Page + Order Flow
 
+> **Status:** Original/historical product spec. Use this for broad product
+> intent, but verify current launch details in the implementation and current
+> runbooks before changing pricing, checkout, fulfillment, or image generation.
+> Current image-provider source of truth: `docs/image-flow-decision.md`.
+
 ## Overview
 A Next.js site for HeroStoryBooks — personalized children's storybooks where the child is the hero. The site needs to sell the product, collect order details, and eventually integrate Stripe checkout.
 
@@ -26,7 +31,7 @@ The hero section should sell the magic — "Your child is the hero of their own 
    - Step 3: "Get your book" (digital PDF delivered by email, optional printed book)
 
 3. **Sample Pages** — Gallery of 3-4 illustration samples
-   - Use the PuLID test images we already generated
+   - Use representative samples from the **current image flow** (direct Gemini Nano Banana lead lane per `docs/image-flow-decision.md`). Earlier PuLID test images are archived/optional and should not be presented as current.
    - Show variety: forest scene, meadow scene, bedroom scene
 
 4. **Pricing** — Two tiers
@@ -45,6 +50,10 @@ The hero section should sell the magic — "Your child is the hero of their own 
 6. **Footer** — Simple: © 2026 HeroStoryBooks, contact email, social links (placeholder)
 
 ### 2. Order Page (`/order`)
+
+> Current implementation note: the active customer flow has moved toward
+> `/checkout`. Treat `/order` references in this historical PRD as legacy unless
+> current route files or launch runbooks say otherwise.
 A clean, multi-step form that collects everything needed to generate the book.
 
 **Form fields:**

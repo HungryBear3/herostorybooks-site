@@ -1,7 +1,13 @@
 # CLAUDE.md — HeroStoryBooks Build Instructions
 
+> **Status:** Legacy build brief + agent handoff notes. This file is useful
+> for product/design direction, but it is not the sole launch source of truth.
+> Before changing image generation, checkout, pricing, fulfillment, or deploy
+> behavior, check the current docs/runbooks first.
+
 You are building HeroStoryBooks.com — a personalized children's storybook e-commerce site.
-Read `PRD.md` for full spec before touching any code.
+Read `PRD.md` for the original product spec and `docs/image-flow-decision.md`
+for the current personalized-art provider decision before touching image flow.
 
 ## Tech Stack
 - **Next.js 14** (App Router) + **TypeScript** + **Tailwind CSS**
@@ -68,7 +74,7 @@ src/components/
 
 ## Placeholder Assets
 - Use placeholder images from `https://placehold.co/` for book spreads and samples
-- Drop real PuLID images into `public/samples/` when available
+- Real sample images come from the **current image flow** (direct Gemini Nano Banana lead lane, fal.ai Nano Banana fallback). See `docs/image-flow-decision.md` for the active source of truth. Earlier PuLID/RunPod placeholders are **archived/optional**, not the default.
 - Art style previews: generate 3 placeholder thumbnails (watercolor, storybook, cartoon)
 
 ## Stripe Integration
@@ -94,7 +100,9 @@ HSB_STRIPE_SECRET_KEY=   ← pending (new product in Stripe dashboard)
 
 ## Git Discipline
 - Commit after each page/section is complete
-- Branch: `main` only (solo project, no PRs needed)
+- Use focused branches/PRs for launch-sensitive work; keep docs-only,
+  checkout, pricing, fulfillment, and provider-routing changes separate unless
+  there is an explicit reason to bundle them.
 - Commit message format: `feat: add [section name]`
 
 ## Do NOT
