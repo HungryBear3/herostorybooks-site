@@ -4,6 +4,12 @@ import type { StoryContent, StoryMeta, StoryPage } from './fulfillment-types.ts'
 import { STORY_THEMES } from './story-catalog.ts';
 import { SAMPLE_ADVENTURES } from './sample-adventures.ts';
 import { planStorybook, validateStoryPlan, type StoryPlanPage } from './story-planner.ts';
+import {
+  buildStoryFromGeminiPageProse,
+  getGeminiApiKey,
+  getGeminiPageProseModel,
+  isGeminiPageProseEnabled,
+} from './story-provider-gemini.ts';
 
 export type { StoryMeta };
 
@@ -15,7 +21,7 @@ export interface StoryWithMeta {
 
 // ── Template fallback ──────────────────────────────────────────────────────────
 
-interface TemplateVariantProfile {
+export interface TemplateVariantProfile {
   titleSuffix: string;
   dedicationTemplate: string;
   characterTemplate: string;
@@ -187,7 +193,7 @@ function stableIndex(input: string, modulo: number): number {
   return hash % modulo;
 }
 
-function personalizeTemplate(template: string, order: OrderRecord): string {
+export function personalizeTemplate(template: string, order: OrderRecord): string {
   const childName = sanitizeInput(order.childName, 60) || 'Your Child';
   const age = sanitizeInput(order.childAge, 10);
   const notes = sanitizeInput(order.characterNotes, 200);
@@ -267,7 +273,7 @@ function stripRepeatedDetail(action: string, detail: string): string {
     .trim();
 }
 
-function buildSafeImagePrompt(input: {
+export function buildSafeImagePrompt(input: {
   childName: string;
   themeDescription: string;
   page: number;
@@ -411,7 +417,7 @@ function getOllamaBaseUrl(): string {
   return sanitizeInput(process.env.OLLAMA_BASE_URL, 200) || 'http://127.0.0.1:11434';
 }
 
-function firstNameOnly(order: OrderRecord): string {
+export function firstNameOnly(order: OrderRecord): string {
   return sanitizeInput(order.childName, 60).split(/\s+/)[0] || 'Your Child';
 }
 
@@ -427,7 +433,7 @@ function inferPronouns(order: OrderRecord): 'he/him' | 'she/her' | 'they/them' {
   return 'they/them';
 }
 
-function buildPageProseSystemPrompt(): string {
+export function buildPageProseSystemPrompt(): string {
   return `You are a picture book author writing for children ages 5 to 8. You will be given one page beat from a longer story, plus the protagonist's name and the book's theme. Your job is to write the prose for that single page — nothing more.
 
 VOICE
@@ -488,14 +494,14 @@ function buildPageSpecificInstruction(beat: StoryPlanPage, pageCount: number): s
   return null;
 }
 
-function getLockedPageProse(order: OrderRecord, beat: StoryPlanPage, pageCount: number): string | null {
+export function getLockedPageProse(order: OrderRecord, beat: StoryPlanPage, pageCount: number): string | null {
   if (order.theme === 'brave-explorer' && beat.page === pageCount - 1) {
     return 'Lukas places the smooth stone from the jungle on the porch rail. His family gathers around, leaning in to listen. The stone hums softly, echoing the sounds of the day\'s adventure. Everyone gasps as they hear the distant calls of birds and rustling leaves.';
   }
   return null;
 }
 
-function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage, pageCount: number, previousBeat: StoryPlanPage | null): string {
+export function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage, pageCount: number, previousBeat: StoryPlanPage | null): string {
   const theme = STORY_THEMES.find((t) => t.id === order.theme);
   const special = buildPageSpecificInstruction(beat, pageCount);
   return [
@@ -514,7 +520,7 @@ function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage, pageC
   ].filter(Boolean).join('\n');
 }
 
-function validatePageProse(text: string, protagonist: string): string[] {
+export function validatePageProse(text: string, protagonist: string): string[] {
   const issues: string[] = [];
   const trimmed = text.trim();
   const words = trimmed.split(/\s+/).filter(Boolean);
@@ -852,7 +858,7 @@ Respond ONLY with a valid JSON object matching this exact schema:
 Write exactly ${pageCount} pages. ${buildStoryArcInstruction(pageCount)}`;
 }
 
-interface FetchDep {
+export interface FetchDep {
   (input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
 
@@ -870,6 +876,40 @@ export async function generateStoryWithMeta(
   const apiKey = process.env.OPENAI_API_KEY;
   const nowIso = (deps.now ?? (() => new Date()))().toISOString();
   const _fetch = deps.fetch ?? globalThis.fetch;
+
+  // Gemini per-page prose (PR2). Highest priority among LLM paths when the
+  // gate is on AND the key is present. Failures fall through to the same
+  // template-after-LLM-failure branch as Ollama/OpenAI do, with the
+  // standard fallbackError recorded on meta.
+  const geminiApiKey = getGeminiApiKey();
+  if (isGeminiPageProseEnabled() && geminiApiKey) {
+    try {
+      const { variant } = buildTemplateFallbackWithVariant(order);
+      const story = await buildStoryFromGeminiPageProse(order, variant, _fetch, geminiApiKey);
+      return {
+        story,
+        meta: {
+          source: 'gemini_page_prose',
+          model: `gemini:${getGeminiPageProseModel()}`,
+          generatedAt: nowIso,
+          fallbackError: null,
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[story-generator] Falling back to templates after Gemini page-prose failure for order ${order.id}: ${message}`);
+      const { story, variant } = buildTemplateFallbackWithVariant(order);
+      return {
+        story,
+        meta: {
+          source: 'template_after_openai_failure',
+          model: `template:${variant.titleSuffix}`,
+          generatedAt: nowIso,
+          fallbackError: message.slice(0, 200),
+        },
+      };
+    }
+  }
 
   if (isOllamaPageProseEnabled()) {
     try {
