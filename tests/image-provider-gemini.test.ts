@@ -431,6 +431,100 @@ test('gemini provider: blob put returning empty url is treated as upload failure
   });
 });
 
+test('gemini provider: refuses to return a data: URL when in a production-like env with no token + no injected put', async () => {
+  await withEnv(
+    {
+      GOOGLE_GEMINI_API_KEY: 'test-key',
+      BLOB_READ_WRITE_TOKEN: undefined,
+      // Simulate a Vercel deployment without the token. orders.ts's
+      // requiresDurablePersistence() returns true whenever VERCEL is set.
+      VERCEL: '1',
+      HSB_REQUIRE_DURABLE_PERSISTENCE: undefined,
+    },
+    async () => {
+      const generatedBase64 = Buffer.from(makePngBytes()).toString('base64');
+      const { fetch } = makeFetchStub((_call, index) => {
+        if (index === 0) {
+          return new Response(makePngBytes(), {
+            status: 200,
+            headers: { 'content-type': 'image/jpeg' },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    { inline_data: { mime_type: 'image/png', data: generatedBase64 } },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      });
+      // Note: no blobPut injected. Token unset. VERCEL set.
+      const result = await geminiImageProvider.generate(
+        { prompt: 'p', referenceImageUrl: 'https://photos/kid.jpg' },
+        { fetch },
+      );
+      assert.equal(result.imageUrl, null, 'must NOT return a data: URL in a production-like env');
+      assert.match(
+        result.error ?? '',
+        /BLOB_READ_WRITE_TOKEN must be set.*production-like env/,
+      );
+    },
+  );
+});
+
+test('gemini provider: dev-friendly data: URL fallback still works when not production-like', async () => {
+  await withEnv(
+    {
+      GOOGLE_GEMINI_API_KEY: 'test-key',
+      BLOB_READ_WRITE_TOKEN: undefined,
+      VERCEL: undefined,
+      NODE_ENV: 'test',
+      HSB_REQUIRE_DURABLE_PERSISTENCE: 'false',
+    },
+    async () => {
+      const generatedBase64 = Buffer.from(makePngBytes()).toString('base64');
+      const { fetch } = makeFetchStub((_call, index) => {
+        if (index === 0) {
+          return new Response(makePngBytes(), {
+            status: 200,
+            headers: { 'content-type': 'image/jpeg' },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    { inline_data: { mime_type: 'image/png', data: generatedBase64 } },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      });
+      const result = await geminiImageProvider.generate(
+        { prompt: 'p', referenceImageUrl: 'https://photos/kid.jpg' },
+        { fetch },
+      );
+      assert.equal(result.error, null);
+      assert.ok(
+        result.imageUrl?.startsWith('data:image/png;base64,'),
+        'dev/test path must still produce a data: URL for ergonomic local runs',
+      );
+    },
+  );
+});
+
 test('gemini provider: same prompt + bytes produces a deterministic blob path (hash-stable)', async () => {
   await withEnv({ GOOGLE_GEMINI_API_KEY: 'test-key' }, async () => {
     const generatedBase64 = Buffer.from(makePngBytes()).toString('base64');
