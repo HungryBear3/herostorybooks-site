@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { motion } from "framer-motion";
 
 /**
@@ -37,7 +38,14 @@ function sanitizeName(input: string): string {
 export function NamePreview() {
   const [name, setName] = useState(DEFAULT_NAME);
   const inputId = useId();
-  const displayName = name.trim() || DEFAULT_NAME;
+  const trimmedName = name.trim();
+  const displayName = trimmedName || DEFAULT_NAME;
+  // Only carry childName into checkout when the visitor actually typed
+  // something; otherwise we would falsely prefill the placeholder DEFAULT_NAME
+  // and overwrite any saved progress on the checkout side.
+  const checkoutHref = trimmedName
+    ? `/checkout?childName=${encodeURIComponent(trimmedName)}`
+    : "/checkout";
 
   return (
     <section id="name-preview" className="py-20 bg-cream">
@@ -108,6 +116,24 @@ export function NamePreview() {
                 {displayName} tiptoed toward the glowing cave, heart racing with curiosity.
               </span>
             </PreviewCard>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.5, delay: 0.2 }}
+            className="mt-8 text-center"
+          >
+            <Link
+              href={checkoutHref}
+              className="inline-block bg-navy text-cream px-8 py-3.5 rounded-xl font-semibold text-base shadow-sm hover:bg-navy/90 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200"
+            >
+              Start {displayName}&apos;s book
+            </Link>
+            <p className="text-xs text-navy/50 mt-3">
+              You&apos;ll review a personalized preview before any printing.
+            </p>
           </motion.div>
         </div>
       </div>
