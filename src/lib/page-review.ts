@@ -75,7 +75,7 @@ export function applyRegeneratePage(
   artifacts: PageArtifact[],
   pageIndex: number,
   newImageUrl: string | null,
-  provider: 'openai' | 'fal' | 'fal_edit',
+  provider: 'openai' | 'fal' | 'fal_edit' | 'gemini',
   model: string,
   promptUsed: string,
   feedbackEntry: PageFeedbackEntry,
