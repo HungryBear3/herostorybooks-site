@@ -71,16 +71,22 @@ const sampleBooks = [
     copy: 'A bedtime spread from the proof set — the child reading the book while a friendly dinosaur dream takes shape above the lamp. Illustration only, no story text overlaid.',
   },
   {
-    // Was lukas-watercolor-dino-cover.jpg — moving that to card 1 left
-    // the cluster with two cover-style tiles next to each other. Swapped
-    // to an interior jungle spread so the cluster reads as one cover +
-    // two interior moments.
-    tag: 'WATERCOLOR DIRECTION',
-    title: 'The Same Story, Delivered Digitally',
+    // Was lukas-watercolor-adventure-page.jpg. The jungle-kneeling shot
+    // had the child far from camera with a small, indistinct face —
+    // likeness was visibly weak in QA. Swapped to the "King of All
+    // Dinosaurs" interior proof from the print book set: the child's
+    // face is centered, in focus, smiling, and reads unambiguously as
+    // the canonical Lukas. The page-text panel sits cleanly in the
+    // lower-left corner of the image, so it reads as an intentional
+    // inside-book proof rather than an unreadable hero thumbnail.
+    // Tag + title + copy updated honestly to reflect it is an interior
+    // proof, not a watercolor-direction concept.
+    tag: 'INTERIOR PROOF',
+    title: 'Lukas, King of All Dinosaurs',
     star: 'the child',
     tone: 'digital',
-    image: '/assets/lukas-watercolor-adventure-page.jpg',
-    copy: 'Digital orders ship the same proof-approved book as a PDF. The watercolor jungle direction shown here is part of the personalized illustration set.',
+    image: '/assets/hsb-lukas-print-story-21.jpg',
+    copy: 'A real interior proof with a stronger Lukas likeness — the same proof-approved book that digital orders receive as a high-resolution PDF.',
   },
 ];
 
