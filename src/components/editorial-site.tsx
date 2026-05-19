@@ -358,7 +358,7 @@ function BookCoverStack() {
         <img src="/assets/lukas-dino-bedtime-proof.jpg" alt="Bedtime scene: the child reading the book with a dinosaur dream — illustration proof" className="aspect-[3/4] w-full object-cover" />
       </div>
       <div className="absolute -right-4 top-10 hidden w-44 rotate-6 overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fff8ec] shadow-xl md:block">
-        <img src="/assets/lukas-watercolor-adventure-page.jpg" alt="Watercolor adventure spread — the child exploring a jungle path" className="aspect-[3/4] w-full object-cover" />
+        <img src="/assets/hsb-lukas-print-story-16.jpg" alt="Interior proof: the child between a T-Rex and a Triceratops — Two Sides of Lukas spread" className="aspect-[3/4] w-full object-cover" />
       </div>
     </div>
   );
