@@ -327,7 +327,13 @@ function HeroSection() {
 
 function BookCoverStack() {
   return (
-    <div className="relative mx-auto w-full max-w-[520px]">
+    // pb-0 on mobile (floating thumbs hidden) → md:pb-60 on md+ to reserve
+    // ≥240px below the book card. The bedside thumb is w-40 (160px) ×
+    // aspect-[3/4] so its rendered height is ~213px; we need pb >= 213px
+    // for `bottom:0` positioning to place the entire thumb BELOW the
+    // caption panel without overlap. Playwright check at 1440 confirms
+    // zero overlap; at 375 the thumb is hidden entirely.
+    <div className="relative mx-auto w-full max-w-[520px] pb-0 md:pb-60">
       <div className="overflow-hidden rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_30px_80px_-50px_rgba(31,26,22,0.55)]">
         <div className="aspect-[4/5] bg-[#eadfc7]">
           {/* Was hsb-lukas-print-front-cover.jpg which exposed
@@ -354,12 +360,20 @@ function BookCoverStack() {
                 hero look like two near-identical covers. Side thumb
                 moved to the jungle adventure illustration for a
                 visually distinct second impression. */}
-      <div className="absolute -bottom-6 -left-3 hidden w-40 rotate-[-5deg] overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fff8ec] shadow-xl md:block">
+      {/* Lower-left bedside-reading thumb. Moved to bottom:0 inside a
+          padded parent (pb-32 below) so the thumbnail sits BELOW the
+          caption panel instead of overlapping it. md+ only — on mobile
+          the floating thumbs are hidden entirely to avoid overlap. */}
+      <div className="absolute bottom-0 -left-3 hidden w-40 rotate-[-5deg] overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fff8ec] shadow-xl md:block">
         <img src="/assets/lukas-dino-bedtime-proof.jpg" alt="Bedtime scene: the child reading the book with a dinosaur dream — illustration proof" className="aspect-[3/4] w-full object-cover" />
       </div>
-      <div className="absolute -right-4 top-10 hidden w-44 rotate-6 overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fff8ec] shadow-xl md:block">
-        <img src="/assets/hsb-lukas-print-story-16.jpg" alt="Interior proof: the child between a T-Rex and a Triceratops — Two Sides of Lukas spread" className="aspect-[3/4] w-full object-cover" />
-      </div>
+      {/* Upper-right inset removed in the 2026-05-19 hotfix. The previous
+          asset (hsb-lukas-print-story-16.jpg) was an interior story page
+          with body copy visible at thumbnail size and a different-looking
+          child — it broke the same-hero-likeness rule at thumbnail scale.
+          Per the hero-asset rule "If no strong asset exists, hide it
+          rather than show a weak one," the slot is intentionally empty
+          and not back-filled with a same-style or text-heavy alternative. */}
     </div>
   );
 }
@@ -614,7 +628,7 @@ export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Sample" title="A peek inside a personalized proof book." sub="This page uses watercolor proof art from the Lukas book work as a sample: one child, one story, one consistent watercolor direction. Real customer details aren\u2019t shown on the artwork. Digital buyers receive the same proof-first book as a PDF after approval." centered />
+        <SectionHeader eyebrow="Sample" title="A peek inside a personalized proof book." sub="This page uses watercolor proof art from the Lukas book work as a sample: one child, one story, one consistent watercolor direction. Real customer details aren't shown on the artwork. Digital buyers receive the same proof-first book as a PDF after approval." centered />
         <div className="grid items-start gap-8 md:grid-cols-[0.9fr_1.1fr]">
           <div className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
             <div className="mx-auto max-w-[320px] [perspective:1200px]">

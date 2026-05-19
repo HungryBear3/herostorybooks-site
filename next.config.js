@@ -25,6 +25,8 @@ const nextConfig = {
       'scripts/**',
       'graphify-out/**',
       '.data/**',
+      'tmp/**',
+      'tmp_*/**',
       'node_modules/@types/**',
       'node_modules/typescript/**',
       'node_modules/.cache/**',
@@ -43,6 +45,20 @@ const nextConfig = {
     '/api/**': [
       'node_modules/pdfkit/**',
     ],
+  },
+  // Route-safety redirects added in the 2026-05-19 hotfix. These cover
+  // short / legacy URLs that visitors and link-shares hit. All three are
+  // permanent (308) because the destinations are stable.
+  //   /faq    → /#faq      (FAQ anchor on the homepage)
+  //   /start  → /checkout  (legacy "start your book" entry)
+  //   /sample → /samples   (singular alias for the samples page)
+  // Branded 404 for everything else lives at src/app/not-found.tsx.
+  async redirects() {
+    return [
+      { source: '/faq',    destination: '/#faq',     permanent: true },
+      { source: '/start',  destination: '/checkout', permanent: true },
+      { source: '/sample', destination: '/samples',  permanent: true },
+    ];
   },
 };
 
