@@ -190,13 +190,30 @@ function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' })
     active === id ? 'text-[#1f1a16] underline decoration-[#a64c4c]' : 'text-[#695f54]'
   );
 
+  // Mobile-nav menu items reused inside the <details> drawer so visitors
+  // at 375/390px have a one-tap path to Sample, Pricing, FAQ, and Start.
+  const mobileItems: Array<[string, string]> = [
+    ['How it works', '/#how'],
+    ['Sample', '/samples'],
+    ['Pricing', '/pricing'],
+    ['FAQ', '/#faq'],
+  ];
+
   return (
     <header className="sticky top-0 z-50 border-b border-[#dfd2b8] bg-[#f8f0dd]/95 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-4 md:px-8">
-        <Link href="/" className="flex items-center gap-3 font-serif text-base font-semibold uppercase tracking-[0.14em] text-[#1f1a16] md:text-lg">
-          <span className="h-2 w-2 rounded-full bg-[#a64c4c] shadow-[0_0_0_4px_rgba(166,76,76,0.14)]" />
-          HeroStoryBooks
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 md:gap-4 md:px-8 md:py-4">
+        {/* Logo. min-w-0 lets the truncate class work; tracking-[0.10em] on
+            mobile shaves enough letter-spacing to keep "HeroStoryBooks"
+            from overflowing at 375px. */}
+        <Link
+          href="/"
+          className="flex min-w-0 items-center gap-2 font-serif text-[15px] font-semibold uppercase tracking-[0.10em] text-[#1f1a16] md:gap-3 md:text-lg md:tracking-[0.14em]"
+        >
+          <span className="h-2 w-2 shrink-0 rounded-full bg-[#a64c4c] shadow-[0_0_0_4px_rgba(166,76,76,0.14)]" />
+          <span className="truncate">HeroStoryBooks</span>
         </Link>
+
+        {/* Desktop nav. */}
         <nav className="hidden items-center gap-8 md:flex">
           <Link href="/#how" className={linkClass('home')}>How it works</Link>
           <Link href="/samples" className={linkClass('sample')}>Sample</Link>
@@ -204,9 +221,67 @@ function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' })
           <Link href="/#faq" className="text-sm font-medium text-[#695f54] transition hover:text-[#a64c4c]">FAQ</Link>
           <PrimaryCta href="/checkout" size="sm">Start your book</PrimaryCta>
         </nav>
-        <Link href="/checkout" className="rounded-full bg-[#1f1a16] px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#fff8ec] shadow-sm md:hidden">
-          Start
-        </Link>
+
+        {/* Mobile: compact Start button + accessible <details> drawer.
+            <details>/<summary> is a native disclosure widget; it
+            announces correctly to screen readers and needs no React
+            state or client JS. The drawer panel positions absolutely so
+            it overlays page content instead of pushing it down. */}
+        <div className="flex items-center gap-2 md:hidden">
+          <Link
+            href="/checkout"
+            className="rounded-full bg-[#1f1a16] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#fff8ec] shadow-sm"
+          >
+            Start
+          </Link>
+          <details className="relative">
+            <summary
+              aria-label="Open navigation menu"
+              className="inline-flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-full border border-[#d8c6a2] bg-[#fff8ec] text-[#1f1a16] [&::-webkit-details-marker]:hidden"
+            >
+              <span aria-hidden="true" className="relative block h-3 w-5">
+                <span className="absolute left-0 top-0 h-[2px] w-5 rounded bg-[#1f1a16]" />
+                <span className="absolute left-0 top-[5px] h-[2px] w-5 rounded bg-[#1f1a16]" />
+                <span className="absolute bottom-0 left-0 h-[2px] w-5 rounded bg-[#1f1a16]" />
+              </span>
+            </summary>
+            <div
+              role="menu"
+              aria-label="Site navigation"
+              className="absolute right-0 top-12 z-50 w-60 overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_30px_60px_-30px_rgba(31,26,22,0.45)]"
+            >
+              <ul className="divide-y divide-[#eadfc7] py-1 text-sm">
+                {mobileItems.map(([label, href]) => (
+                  <li key={label}>
+                    <Link
+                      href={href}
+                      className={cx(
+                        'block px-4 py-3 font-medium text-[#1f1a16] transition hover:bg-[#f5ead2]',
+                        (label === 'Sample' && active === 'sample') ||
+                          (label === 'Pricing' && active === 'pricing') ||
+                          (label === 'How it works' && active === 'home')
+                          ? 'text-[#a64c4c]'
+                          : ''
+                      )}
+                      role="menuitem"
+                    >
+                      {label}
+                    </Link>
+                  </li>
+                ))}
+                <li>
+                  <Link
+                    href="/checkout"
+                    role="menuitem"
+                    className="block bg-[#1f1a16] px-4 py-3 text-center text-xs font-semibold uppercase tracking-[0.14em] text-[#fff8ec]"
+                  >
+                    Start your book
+                  </Link>
+                </li>
+              </ul>
+            </div>
+          </details>
+        </div>
       </div>
     </header>
   );
@@ -327,13 +402,12 @@ function HeroSection() {
 
 function BookCoverStack() {
   return (
-    // pb-0 on mobile (floating thumbs hidden) → md:pb-60 on md+ to reserve
-    // ≥240px below the book card. The bedside thumb is w-40 (160px) ×
-    // aspect-[3/4] so its rendered height is ~213px; we need pb >= 213px
-    // for `bottom:0` positioning to place the entire thumb BELOW the
-    // caption panel without overlap. Playwright check at 1440 confirms
-    // zero overlap; at 375 the thumb is hidden entirely.
-    <div className="relative mx-auto w-full max-w-[520px] pb-0 md:pb-60">
+    // Single strong main visual — no floating side thumbs. Both the
+    // upper-right interior-page inset and the lower-left bedside thumb
+    // were removed in the 2026-05-19 hotfix series; the prior
+    // composition kept reading as a "loose-sticker" collage at every
+    // viewport. The watercolor cover + its caption panel is the hero.
+    <div className="relative mx-auto w-full max-w-[520px]">
       <div className="overflow-hidden rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_30px_80px_-50px_rgba(31,26,22,0.55)]">
         <div className="aspect-[4/5] bg-[#eadfc7]">
           {/* Was hsb-lukas-print-front-cover.jpg which exposed
@@ -360,20 +434,13 @@ function BookCoverStack() {
                 hero look like two near-identical covers. Side thumb
                 moved to the jungle adventure illustration for a
                 visually distinct second impression. */}
-      {/* Lower-left bedside-reading thumb. Moved to bottom:0 inside a
-          padded parent (pb-32 below) so the thumbnail sits BELOW the
-          caption panel instead of overlapping it. md+ only — on mobile
-          the floating thumbs are hidden entirely to avoid overlap. */}
-      <div className="absolute bottom-0 -left-3 hidden w-40 rotate-[-5deg] overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fff8ec] shadow-xl md:block">
-        <img src="/assets/lukas-dino-bedtime-proof.jpg" alt="Bedtime scene: the child reading the book with a dinosaur dream — illustration proof" className="aspect-[3/4] w-full object-cover" />
-      </div>
-      {/* Upper-right inset removed in the 2026-05-19 hotfix. The previous
-          asset (hsb-lukas-print-story-16.jpg) was an interior story page
-          with body copy visible at thumbnail size and a different-looking
-          child — it broke the same-hero-likeness rule at thumbnail scale.
-          Per the hero-asset rule "If no strong asset exists, hide it
-          rather than show a weak one," the slot is intentionally empty
-          and not back-filled with a same-style or text-heavy alternative. */}
+      {/* Both side thumbs removed in 2026-05-19 hotfix series. The
+          upper-right interior-page inset was removed first (likeness
+          break + readable body copy at thumbnail size). The lower-left
+          bedside thumb was removed second after launch review: even
+          when repositioned below the caption panel it still read as a
+          loose sticker rather than an intentional design element. The
+          hero is now a single watercolor cover + caption — no collage. */}
     </div>
   );
 }
@@ -666,23 +733,16 @@ export function EditorialSamplesPage() {
                 A bedtime illustration proof from the watercolor direction. Illustration only — no real customer details shown on the artwork.
               </figcaption>
             </figure>
-            {/* 2×2 supporting-proof grid. Two new QA fixes here:
-                  - slot 1 was lukas-dino-companion-proof.jpg, which has
-                    no child visible (just two dinosaurs) and so cannot
-                    serve as a "child proof" tile. Swapped to the jungle
-                    adventure illustration, where the child is clearly
-                    present.
-                  - slot 4 was lukas-watercolor-dino-cover.jpg, which is
-                    a cover-style image. The mockup above the grid is
-                    already cover-style, so two near-duplicate covers
-                    appeared in the same first viewport. Swapped to the
-                    print-order story-page-21 — a real interior page,
-                    which the brief explicitly allows lower as "inside
-                    the book" proof. Slots 2 and 3 stay as the real
-                    interior pages from the previous pass. */}
-            <div className="grid gap-4 sm:grid-cols-2">
+            {/* Supporting-proof grid — three real interior pages from
+                the Lukas print order. lukas-watercolor-adventure-page.jpg
+                was removed in the 2026-05-19 launch round: weak Lukas
+                likeness (kneeling, far from camera, indistinct face),
+                no story-text context, and read as disconnected from the
+                proofed book. No replacement asset substituted; per the
+                rule "remove the tile rather than show weak art." Grid
+                drops to sm:grid-cols-3 so the row stays balanced. */}
+            <div className="grid gap-4 sm:grid-cols-3">
               {[
-                ['/assets/lukas-watercolor-adventure-page.jpg', 'Watercolor jungle adventure spread — the child exploring a palm forest'],
                 ['/assets/hsb-lukas-print-story-07.jpg', 'Interior page from a real Lukas-book order — dinosaur story page'],
                 ['/assets/hsb-lukas-print-story-16.jpg', 'Interior page from a real Lukas-book order — two sides of the hero'],
                 ['/assets/hsb-lukas-print-story-21.jpg', 'Interior page from a real Lukas-book order — story spread'],
