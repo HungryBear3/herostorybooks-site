@@ -43,35 +43,44 @@ const tiers: Tier[] = [
 
 const sampleBooks = [
   {
-    tag: 'PRINT ORDER COVER',
-    title: 'Lukas and the Dinosaur King',
-    star: 'Lukas',
+    // Was hsb-lukas-print-front-cover.jpg, which carried "Made for Lukas
+    // Kaplun" on the cover subtitle — exposing a real customer surname on
+    // a marketing tile. Swapped to the watercolor dinosaur cover, which
+    // shows the child + dinosaurs without any real-name overlay. This is
+    // the ONE cover-style tile in the 3-card cluster (cards 2 and 3 are
+    // now interior spreads, per the "at most one cover-style per cluster"
+    // rule).
+    tag: 'WATERCOLOR DINOSAUR COVER',
+    title: 'A Dinosaur Adventure Cover',
+    star: 'the child',
     tone: 'hardcover',
-    image: '/assets/hsb-lukas-print-front-cover.jpg',
-    copy: 'The front cover from the latest Lukas print production packet, shown as the canonical style source for the site.',
+    image: '/assets/lukas-watercolor-dino-cover.jpg',
+    copy: 'A watercolor dinosaur cover proof — example of the personalized cover direction, with no real customer details on the artwork.',
   },
   {
-    // Switched from the interior story-page screenshot (text-bearing thumbnail
-    // that read as a placeholder at card size) to the illustration-only
-    // dinosaur-companion proof. Sells the emotional product instead of showing
-    // unreadable paragraph text.
+    // Was lukas-dino-companion-proof.jpg, which shows only a T-Rex and a
+    // Triceratops in a forest — no child. Card copy claimed "Lukas meets
+    // the dinosaur," which the image did not back up. Swapped to the
+    // bedtime proof, where the child is clearly present alongside the
+    // dinosaur dream-bubble.
     tag: 'DINOSAUR STORY ART',
-    title: 'Lukas Meets the Dinosaur',
-    star: 'Lukas',
+    title: 'Bedtime With Dinosaurs',
+    star: 'the child',
     tone: 'softcover',
-    image: '/assets/lukas-dino-companion-proof.jpg',
-    copy: 'A dinosaur-companion proof from the Lukas book work — the illustration direction, without the page-text overlay you would see in the finished book.',
+    image: '/assets/lukas-dino-bedtime-proof.jpg',
+    copy: 'A bedtime spread from the proof set — the child reading the book while a friendly dinosaur dream takes shape above the lamp. Illustration only, no story text overlaid.',
   },
   {
-    // Same swap: was the bedtime-style interior story page; replaced with the
-    // canonical watercolor dinosaur cover style so the third card reinforces
-    // the cover language instead of showing unreadable page text.
+    // Was lukas-watercolor-dino-cover.jpg — moving that to card 1 left
+    // the cluster with two cover-style tiles next to each other. Swapped
+    // to an interior jungle spread so the cluster reads as one cover +
+    // two interior moments.
     tag: 'WATERCOLOR DIRECTION',
     title: 'The Same Story, Delivered Digitally',
-    star: 'Lukas',
+    star: 'the child',
     tone: 'digital',
-    image: '/assets/lukas-watercolor-dino-cover.jpg',
-    copy: 'Digital orders ship the same proof-approved book as a PDF. The watercolor direction Lukas\u2019s cover uses applies to the digital edition too.',
+    image: '/assets/lukas-watercolor-adventure-page.jpg',
+    copy: 'Digital orders ship the same proof-approved book as a PDF. The watercolor jungle direction shown here is part of the personalized illustration set.',
   },
 ];
 
@@ -315,26 +324,35 @@ function BookCoverStack() {
     <div className="relative mx-auto w-full max-w-[520px]">
       <div className="overflow-hidden rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_30px_80px_-50px_rgba(31,26,22,0.55)]">
         <div className="aspect-[4/5] bg-[#eadfc7]">
-          <img src="/assets/hsb-lukas-print-front-cover.jpg" alt="Lukas King of the Dinosaurs print-order front cover" className="h-full w-full object-cover" />
+          {/* Was hsb-lukas-print-front-cover.jpg which exposed
+              "Made for Lukas Kaplun" in the cover subtitle. Swapped to
+              the watercolor dinosaur cover — same hero-cover feel,
+              shows the child + dinosaurs, and carries no real customer
+              surname on the artwork. */}
+          <img src="/assets/lukas-watercolor-dino-cover.jpg" alt="Watercolor dinosaur cover proof — child with a friendly T-Rex" className="h-full w-full object-cover" />
         </div>
         <div className="border-t border-[#eadfc7] p-5">
-          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.22em] text-[#a64c4c]">Real print-order sample</div>
-          <p className="font-serif text-2xl leading-tight text-[#1f1a16]">The latest Lukas dinosaur book, shown from its production proof assets.</p>
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.22em] text-[#a64c4c]">Watercolor cover proof</div>
+          <p className="font-serif text-2xl leading-tight text-[#1f1a16]">An example of the personalized dinosaur direction — shown without any real customer details.</p>
         </div>
       </div>
-      {/* Above-fold side thumbnails. Previously these used the
-          dedication-page and story-page-21 screenshots from the print
-          packet — at this rotated thumbnail size the body paragraphs were
-          visible-but-unreadable and read as placeholder. Swapped to two
-          illustration-only Lukas dinosaur proof assets so the first
-          impression is character + cover language, not tiny text. The full
-          interior story pages still appear lower on /samples as honest
-          "inside the book" proof. */}
+      {/* Above-fold side thumbnails. The previous pass swapped tiny
+          text-bearing page screenshots out; this pass fixes two new
+          issues spotted in QA:
+            (1) lukas-dino-companion-proof.jpg shows only two
+                dinosaurs and no child, so it cannot serve as "Lukas
+                with a friendly dinosaur." Replaced with the bedtime
+                proof, which shows the child clearly.
+            (2) lukas-watercolor-dino-cover.jpg now lives as the main
+                hero center, so reusing it as a side thumb made the
+                hero look like two near-identical covers. Side thumb
+                moved to the jungle adventure illustration for a
+                visually distinct second impression. */}
       <div className="absolute -bottom-6 -left-3 hidden w-40 rotate-[-5deg] overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fff8ec] shadow-xl md:block">
-        <img src="/assets/lukas-dino-companion-proof.jpg" alt="Lukas with a friendly dinosaur — illustration proof from the Lukas book" className="aspect-[3/4] w-full object-cover" />
+        <img src="/assets/lukas-dino-bedtime-proof.jpg" alt="Bedtime scene: the child reading the book with a dinosaur dream — illustration proof" className="aspect-[3/4] w-full object-cover" />
       </div>
       <div className="absolute -right-4 top-10 hidden w-44 rotate-6 overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fff8ec] shadow-xl md:block">
-        <img src="/assets/lukas-watercolor-dino-cover.jpg" alt="Lukas dinosaur watercolor cover treatment — illustration proof" className="aspect-[3/4] w-full object-cover" />
+        <img src="/assets/lukas-watercolor-adventure-page.jpg" alt="Watercolor adventure spread — the child exploring a jungle path" className="aspect-[3/4] w-full object-cover" />
       </div>
     </div>
   );
@@ -590,43 +608,64 @@ export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Sample" title="Meet Lukas, inside one real proof book." sub="This page uses the latest Lukas print production assets as the canonical sample: one child, one story, one consistent watercolor direction. Digital buyers receive the same proof-first book as a PDF after approval." centered />
+        <SectionHeader eyebrow="Sample" title="A peek inside a personalized proof book." sub="This page uses watercolor proof art from the Lukas book work as a sample: one child, one story, one consistent watercolor direction. Real customer details aren\u2019t shown on the artwork. Digital buyers receive the same proof-first book as a PDF after approval." centered />
         <div className="grid items-start gap-8 md:grid-cols-[0.9fr_1.1fr]">
           <div className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
             <div className="mx-auto max-w-[320px] [perspective:1200px]">
               <div className="relative origin-left overflow-hidden rounded-xl bg-[#fff8ec] shadow-2xl ring-1 ring-[#d8c6a2] [transform:rotateY(-10deg)_rotateZ(-1deg)]">
-                <img src="/assets/hsb-lukas-print-front-cover.jpg" alt="Lukas King of the Dinosaurs print-order front cover" className="aspect-[4/5] h-full w-full object-cover" />
+                {/* Was hsb-lukas-print-front-cover.jpg, which exposed
+                    "Made for Lukas Kaplun" as the cover subtitle.
+                    Replaced with the watercolor dinosaur cover that
+                    shows the child + dinosaurs without any real
+                    customer surname on the artwork. */}
+                <img src="/assets/lukas-watercolor-dino-cover.jpg" alt="Watercolor dinosaur cover proof — child with a friendly T-Rex" className="aspect-[4/5] h-full w-full object-cover" />
                 <div className="absolute inset-y-0 left-0 w-7 bg-gradient-to-r from-black/18 to-transparent" aria-hidden="true" />
                 <div className="absolute inset-y-0 right-0 w-4 bg-white/30" aria-hidden="true" />
               </div>
             </div>
-            <p className="mt-5 text-center text-xs leading-5 text-[#695f54]">Front cover from the Lukas print production packet, displayed as a book-style mockup. Every new order still receives its own proof and approval pass.</p>
+            <p className="mt-5 text-center text-xs leading-5 text-[#695f54]">A watercolor dinosaur cover proof, displayed as a book-style mockup. Every new order still receives its own proof and approval pass.</p>
           </div>
           <div className="space-y-5">
+            {/* Was hsb-lukas-print-cover-wrap.jpg, the front-and-back
+                production cover wrap — which exposed "Made for Lukas
+                Kaplun" on the front face AND "With Love from Alexy
+                Kaplun & Michelle Kim" on the back face. Replaced with
+                the bedtime illustration proof. We lose the
+                "production-artifact" framing for the lead figure, but
+                we keep the child-visible, no-surname rule intact.
+                Real production artifacts still appear lower on this
+                page as "inside the book" interior proofs. */}
             <figure className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-3 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
               <img
-                src="/assets/hsb-lukas-print-cover-wrap.jpg"
-                alt="Lukas King of the Dinosaurs production cover wrap"
+                src="/assets/lukas-dino-bedtime-proof.jpg"
+                alt="Bedtime illustration proof — child reading the book with a dinosaur dream above the lamp"
                 className="aspect-[16/10] w-full rounded-xl object-cover"
                 loading="lazy"
               />
               <figcaption className="mt-3 px-2 text-center text-xs leading-5 text-[#695f54]">
-                Production cover wrap from the latest Lukas print packet. This replaces loose gallery images with a real order artifact.
+                A bedtime illustration proof from the watercolor direction. Illustration only — no real customer details shown on the artwork.
               </figcaption>
             </figure>
-            {/* The 2×2 grid is the first-viewport proof point on /samples.
-                Slot 1 was the dedication page and slot 4 was the bedtime
-                story page — both rendered as unreadable text thumbnails
-                that felt placeholder above the fold. Replaced with two
-                illustration-only proofs (Lukas dinosaur companion, Lukas
-                watercolor cover). The two middle slots remain real
-                interior pages so buyers still see honest page geometry. */}
+            {/* 2×2 supporting-proof grid. Two new QA fixes here:
+                  - slot 1 was lukas-dino-companion-proof.jpg, which has
+                    no child visible (just two dinosaurs) and so cannot
+                    serve as a "child proof" tile. Swapped to the jungle
+                    adventure illustration, where the child is clearly
+                    present.
+                  - slot 4 was lukas-watercolor-dino-cover.jpg, which is
+                    a cover-style image. The mockup above the grid is
+                    already cover-style, so two near-duplicate covers
+                    appeared in the same first viewport. Swapped to the
+                    print-order story-page-21 — a real interior page,
+                    which the brief explicitly allows lower as "inside
+                    the book" proof. Slots 2 and 3 stay as the real
+                    interior pages from the previous pass. */}
             <div className="grid gap-4 sm:grid-cols-2">
               {[
-                ['/assets/lukas-dino-companion-proof.jpg', 'Lukas with a friendly dinosaur — illustration proof from the Lukas book'],
-                ['/assets/hsb-lukas-print-story-07.jpg', 'Lukas dinosaur story interior page'],
-                ['/assets/hsb-lukas-print-story-16.jpg', 'Two sides of Lukas interior page'],
-                ['/assets/lukas-watercolor-dino-cover.jpg', 'Lukas dinosaur watercolor cover treatment — illustration proof'],
+                ['/assets/lukas-watercolor-adventure-page.jpg', 'Watercolor jungle adventure spread — the child exploring a palm forest'],
+                ['/assets/hsb-lukas-print-story-07.jpg', 'Interior page from a real Lukas-book order — dinosaur story page'],
+                ['/assets/hsb-lukas-print-story-16.jpg', 'Interior page from a real Lukas-book order — two sides of the hero'],
+                ['/assets/hsb-lukas-print-story-21.jpg', 'Interior page from a real Lukas-book order — story spread'],
               ].map(([src, alt]) => (
                 <img key={src} src={src} alt={alt} className="aspect-square w-full rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] object-cover" loading="lazy" />
               ))}
