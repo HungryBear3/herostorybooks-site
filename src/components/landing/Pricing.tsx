@@ -8,18 +8,22 @@ const fadeUp = {
   visible: { opacity: 1, y: 0, transition: { duration: 0.5, } },
 };
 
+// Orphan legacy landing component (the new homepage uses
+// editorial-site.tsx and does not import this). Kept in the tree for
+// backwards-compat; pricing and timing copy updated so this file
+// cannot leak stale claims if accidentally re-mounted.
 const plans = [
   {
     id: 'starter',
-    title: 'Starter',
-    price: '$29.99',
-    description: 'Digital PDF only',
+    title: 'Digital',
+    price: '$14.99',
+    description: 'Personalized PDF after proof approval',
     features: [
       'Personalized PDF storybook',
       'Read on any device',
       'Print at home',
-      'AI-generated illustrations',
-      'Delivered in ~15 minutes',
+      'AI-assisted illustration',
+      'Digital proof first, usually within 2 business days',
     ],
     popular: false,
     cta: 'Get Digital Copy',
@@ -27,13 +31,13 @@ const plans = [
   {
     id: 'classic',
     title: 'Classic',
-    price: '$49.99',
+    price: '$39.99',
     description: 'Softcover printed book',
     features: [
       'Premium softcover book',
       'Professional printing',
-      'Ships in 5-7 business days',
-      'AI-generated illustrations',
+      'Ships 5-7 business days after proof approval',
+      'AI-assisted illustration',
       'Includes digital PDF',
     ],
     popular: true,
@@ -43,14 +47,14 @@ const plans = [
   {
     id: 'premium',
     title: 'Premium',
-    price: '$79.99',
-    description: 'Hardcover + digital + extras',
+    price: '$59.99',
+    description: 'Hardcover keepsake edition',
     features: [
       'Premium hardcover book',
       'Museum-quality printing',
-      'Ships in 5-7 business days',
+      'Ships 5-7 business days after proof approval',
       'Includes digital PDF',
-      '2 extra softcover copies',
+      'Best for gifts and keepsakes',
     ],
     popular: false,
     cta: 'Go Premium',

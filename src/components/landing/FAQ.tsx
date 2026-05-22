@@ -16,7 +16,7 @@ const faqs = [
   {
     question: 'How long does delivery take?',
     answer:
-      'Digital PDFs are delivered by email in approximately 15 minutes. Printed softcover and hardcover books are professionally printed and ship in 5-7 business days via standard shipping. Expedited options are available at checkout.',
+      'We email a digital proof first, usually within 2 business days. Once you approve the proof, digital orders receive the final high-resolution PDF and printed softcover/hardcover books ship within 5-7 business days via standard US shipping.',
   },
   {
     question: 'Can I customize the story theme?',
@@ -26,12 +26,12 @@ const faqs = [
   {
     question: "What's your refund policy?",
     answer:
-      'We offer a full 100% refund within 7 days of purchase, no questions asked. For printed books, we also offer a free reprint if there are any quality issues.',
+      "Digital orders are fully refundable up until you approve the proof. Printed books are refundable up until you approve the proof for print. After proof approval, we can only replace books with printing defects or fulfillment errors.",
   },
   {
-    question: 'Is this good for a Mother\'s Day gift?',
+    question: 'Is this a good gift?',
     answer:
-      "Absolutely! It's one of our most popular gifts. Order by April 25, 2026 to guarantee delivery by Mother's Day. Use code MOM20 for 20% off. We also offer beautiful gift wrapping and a personalized message card.",
+      "Yes — personalized storybooks are a popular birthday and holiday gift. Approve the proof at least 9–12 business days before the date you need it to give the printed book the best chance of arriving in time. Carriers vary, so we don't promise specific delivery dates; for tight timing the Digital PDF is a reliable fallback you can print at home or share instantly.",
   },
 ];
 

@@ -37,34 +37,36 @@ const LESSONS = [
 
 const OCCASIONS = STORY_OCCASIONS;
 
+// FORMATS — display copy aligned to the editorial landing tone:
+// no emoji-as-icon; proof-first promise (digital proof → parent approval
+// → final PDF / print). Prices match src/lib/orders.ts FORMAT_META
+// priceCents (1499 / 3999 / 5999) and src/lib/pricing.ts. Update all
+// three together if backend pricing changes.
 const FORMATS = [
   {
     id: 'digital',
     label: 'Digital',
-    icon: '📱',
     price: '$14.99',
     priceNum: 14.99,
-    delivery: 'PDF by email in ~15 minutes',
-    deliveryDetail: 'Read on any device · Print at home',
+    delivery: 'Digital proof first, then final PDF after approval',
+    deliveryDetail: 'Proofs usually ready within 2 business days · Read on any device · Print at home',
   },
   {
     id: 'classic',
     label: 'Classic',
-    icon: '📚',
     price: '$39.99',
     priceNum: 39.99,
     badge: 'Most Popular',
-    delivery: 'Softcover ships in 5–7 business days',
-    deliveryDetail: 'Digital PDF also sent in ~15 min',
+    delivery: 'Softcover ships 5–7 business days after proof approval',
+    deliveryDetail: 'Digital proof first; final PDF included after you approve',
   },
   {
     id: 'premium',
     label: 'Premium',
-    icon: '⭐',
     price: '$59.99',
     priceNum: 59.99,
-    delivery: 'Hardcover ships in 5–7 business days',
-    deliveryDetail: 'Digital PDF also sent in ~15 min',
+    delivery: 'Hardcover ships 5–7 business days after proof approval',
+    deliveryDetail: 'Digital proof first; final PDF included after you approve',
   },
 ];
 
@@ -431,7 +433,7 @@ export function CheckoutForm() {
 
           {/* ── 1. Theme ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
-            <h2 className="font-serif text-xl text-forest">🗺️ Choose the Adventure</h2>
+            <h2 className="font-serif text-xl text-forest">Choose the adventure</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {THEMES.map(theme => (
                 <button
@@ -461,7 +463,7 @@ export function CheckoutForm() {
 
           {/* ── 2. Child Details ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-5">
-            <h2 className="font-serif text-xl text-forest">👦 About the Hero</h2>
+            <h2 className="font-serif text-xl text-forest">About the hero</h2>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -577,7 +579,7 @@ export function CheckoutForm() {
           {/* ── 2.5 Character details ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
             <div>
-              <h2 className="font-serif text-xl text-forest mb-1">🪄 Character details</h2>
+              <h2 className="font-serif text-xl text-forest mb-1">Character details</h2>
               <p className="text-sm text-gray-500">
                 Tell us a few visible details so the art feels more like your child.
               </p>
@@ -649,7 +651,7 @@ export function CheckoutForm() {
 
           {/* ── 3. Format + Delivery ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
-            <h2 className="font-serif text-xl text-forest">📦 Choose Your Format</h2>
+            <h2 className="font-serif text-xl text-forest">Choose your format</h2>
             <div className="space-y-3">
               {FORMATS.map(fmt => (
                 <button
@@ -664,7 +666,6 @@ export function CheckoutForm() {
                     }
                   `}
                 >
-                  <span className="text-3xl flex-shrink-0">{fmt.icon}</span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-0.5">
                       <p className="font-bold text-forest">{fmt.label}</p>
@@ -672,7 +673,7 @@ export function CheckoutForm() {
                         <span className="text-xs bg-deep-gold text-white font-bold px-2 py-0.5 rounded-full">{fmt.badge}</span>
                       )}
                     </div>
-                    <p className="text-sm text-gray-600">⚡ {fmt.delivery}</p>
+                    <p className="text-sm text-gray-600">{fmt.delivery}</p>
                     <p className="text-xs text-gray-400 mt-0.5">{fmt.deliveryDetail}</p>
                   </div>
                   <span className="font-bold text-xl text-forest flex-shrink-0">{fmt.price}</span>
@@ -684,7 +685,7 @@ export function CheckoutForm() {
           {/* ── 4. Email + Preview Promise ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
             <div>
-              <h2 className="font-serif text-xl text-forest mb-1">✉️ Where should we send everything?</h2>
+              <h2 className="font-serif text-xl text-forest mb-1">Where should we send everything?</h2>
               <p className="text-sm text-gray-500">
                 We&apos;ll send your confirmation, delivery updates, and any preview approval steps here.
               </p>
@@ -699,7 +700,7 @@ export function CheckoutForm() {
               className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white"
             />
             <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-              ✨ {PRINT_PREVIEW_PROMISE}
+              {PRINT_PREVIEW_PROMISE}
             </div>
           </section>
 
@@ -707,10 +708,10 @@ export function CheckoutForm() {
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
             <div>
               <h2 className="font-serif text-xl text-forest mb-1">
-                📸 Add a Photo When You&apos;re Ready
+                Add a photo when you&apos;re ready
               </h2>
               <p className="text-sm text-gray-500">
-                Our AI places your child&apos;s face into every illustration — the clearer the photo, the better the magic.
+                AI-assisted illustration uses your photo as a reference. A clearer photo helps — and you review every page in a digital proof before any final PDF or printing.
               </p>
             </div>
             <div className="rounded-xl border border-deep-gold/20 bg-deep-gold/5 px-4 py-3 text-sm text-forest">
@@ -853,15 +854,14 @@ export function CheckoutForm() {
               )}
               <div className="flex justify-between">
                 <span>Format</span>
-                <span className="font-medium">{selectedFormat.icon} {selectedFormat.label}</span>
+                <span className="font-medium">{selectedFormat.label}</span>
               </div>
-              <div className="flex items-center gap-1.5 mt-2 text-xs text-gray-500 bg-white/60 rounded-lg px-3 py-2">
-                <span>⚡</span>
-                <span>{selectedFormat.delivery}</span>
+              <div className="mt-2 text-xs text-gray-500 bg-white/60 rounded-lg px-3 py-2">
+                {selectedFormat.delivery}
               </div>
               {form.bookFormat !== 'digital' && (
                 <div className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
-                  📱 {PRINT_PREVIEW_PROMISE}
+                  {PRINT_PREVIEW_PROMISE}
                 </div>
               )}
               <div className="flex justify-between pt-3 border-t border-gray-300 mt-2">
