@@ -16,7 +16,7 @@ const faqs = [
   {
     question: 'How long does delivery take?',
     answer:
-      'Digital PDFs are delivered by email in approximately 15 minutes. Printed softcover and hardcover books are professionally printed and ship in 5-7 business days via standard shipping. Expedited options are available at checkout.',
+      'We email a digital proof first, usually within 2 business days. Once you approve the proof, digital orders receive the final high-resolution PDF and printed softcover/hardcover books ship within 5-7 business days via standard US shipping.',
   },
   {
     question: 'Can I customize the story theme?',
