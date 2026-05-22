@@ -77,7 +77,18 @@ export interface PictureBookStoryLayout {
   textPanelY: number;
   textPanelWidth: number;
   textPanelHeight: number;
+  /** Horizontal inset applied symmetrically inside the text panel. Story
+   *  copy is drawn between `textPanelX + textInset` and
+   *  `textPanelX + textPanelWidth - textInset`. */
   textInset: number;
+  /** Vertical inset applied symmetrically at the top + bottom of the text
+   *  panel. The "text safe zone" rectangle (used by the centering math
+   *  and by the layout tests) is the panel minus textInset on the sides
+   *  and panelVerticalInset on the top/bottom. Held distinct from
+   *  textInset so we don't accidentally shrink the existing typography
+   *  budget — the legacy hard-coded value was +10pt top / -20pt height,
+   *  which matches `panelVerticalInset: 10`. */
+  panelVerticalInset: number;
   textPanelFillOpacity: number;
   sceneTitleY: number;
   pageNumberY: number;
@@ -96,9 +107,39 @@ export interface FittedPictureBookText {
   sceneTitleHeight: number;
   storyFontSize: number;
   storyLineGap: number;
+  /** Legacy top-anchored story Y. Kept for backward compatibility — the
+   *  renderers now consume storyDrawY instead. */
   storyY: number;
+  /** Legacy story-height from the top-anchored Y to the panel bottom. */
   storyHeight: number;
+  /** Legacy scene-title Y. */
   sceneTitleY: number;
+  /** Mirrors the renderTitle option so the renderer doesn't have to
+   *  remember which path it asked for. */
+  renderTitle: boolean;
+  /** Y at which the renderer should draw the story body. When
+   *  renderTitle is false, this is vertically centered inside the safe
+   *  zone (panel minus textInset/panelVerticalInset). When renderTitle
+   *  is true, the title + story block is centered as a group and
+   *  storyDrawY lands below the title. */
+  storyDrawY: number;
+  /** Maximum height the story body can occupy starting at storyDrawY.
+   *  Always stays inside the safe zone. */
+  storyDrawHeight: number;
+  /** Y at which the renderer should draw the scene title (only used
+   *  when renderTitle is true). */
+  titleDrawY: number;
+  /** Vertical padding above the title/story block — i.e. the centering
+   *  offset. 0 when the rendered content fills the safe zone. */
+  verticalPaddingTop: number;
+}
+
+export interface FitPictureBookTextOptions {
+  /** When false (the new print/proof default for body-only pages), the
+   *  helper does NOT reserve vertical room for the title and centers
+   *  the story body alone inside the panel safe zone. When true, it
+   *  budgets for the title and centers the title+body group. */
+  renderTitle?: boolean;
 }
 
 /** Resolve a PageTextLayout's auto fields against the panel style so the
@@ -123,107 +164,63 @@ export function resolvePageTextLayout(layout?: PageTextLayout): {
 
 export function getPictureBookStoryLayout(
   kind: 'proof' | 'print',
-  _textLayout?: PageTextLayout,
+  textLayout?: PageTextLayout,
 ): PictureBookStoryLayout {
-  // Story pages should read as full illustrated spreads, not a small image
-  // sitting above a huge cream field. Keep a compact paper caption panel for
-  // print safety, but let art bleed behind the whole page.
+  // Release 1 contract: story pages are always rendered as a clean bottom
+  // paper band under the art. Legacy `textLayout.zone` metadata is parsed
+  // through resolvePageTextLayout so panelStyle/colorMode normalization
+  // still happens, but the panel rectangle itself is pinned to the bottom
+  // band — copy must never sit over art. Per-page zone routing is
+  // intentionally out of scope for Commit 1.
+  const { panelStyle, colorMode } = resolvePageTextLayout(textLayout);
+
   if (kind === 'print') {
     const trimWidth = 8.5 * 72;
     const trimHeight = 8.5 * 72;
     const imageHeight = 456;
-    const bandY = imageHeight;
     const bandHeight = 132;
+    const bandX = 36;
+    const bandWidth = trimWidth - 72;
     return {
       imageX: 0,
       imageY: 0,
       imageWidth: trimWidth,
       imageHeight,
       textInset: 18,
+      panelVerticalInset: 10,
       textPanelFillOpacity: 1,
       pageNumberY: trimHeight - 24,
-      textPanelStyle: 'translucent_cream',
-      textColorMode: 'dark',
-      textPanelX: 36,
-      textPanelY: bandY,
-      textPanelWidth: trimWidth - 72,
+      textPanelStyle: panelStyle,
+      textColorMode: colorMode,
+      textPanelX: bandX,
+      textPanelY: imageHeight,
+      textPanelWidth: bandWidth,
       textPanelHeight: bandHeight,
-      sceneTitleY: bandY + 12,
+      sceneTitleY: imageHeight + 12,
     };
   }
 
   const imageHeight = 650;
-  const bandY = imageHeight;
   const bandHeight = 156;
+  const bandX = 42;
+  const bandWidth = PAGE_WIDTH - 84;
   return {
     imageX: 0,
     imageY: 0,
     imageWidth: PAGE_WIDTH,
     imageHeight,
     textInset: 20,
+    panelVerticalInset: 10,
     textPanelFillOpacity: 1,
     pageNumberY: PAGE_HEIGHT - 24,
-    textPanelStyle: 'translucent_cream',
-    textColorMode: 'dark',
-    textPanelX: 42,
-    textPanelY: bandY,
-    textPanelWidth: PAGE_WIDTH - 84,
+    textPanelStyle: panelStyle,
+    textColorMode: colorMode,
+    textPanelX: bandX,
+    textPanelY: imageHeight,
+    textPanelWidth: bandWidth,
     textPanelHeight: bandHeight,
-    sceneTitleY: bandY + 12,
+    sceneTitleY: imageHeight + 12,
   };
-}
-
-interface PanelRectInput {
-  zone: PageTextLayout['zone'];
-  surfaceWidth: number;
-  surfaceHeight: number;
-  bandHeight: number;
-  bandX: number;
-  bandWidth: number;
-  bandTopY: number;
-  bandBottomY: number;
-  cornerWidth: number;
-  cornerHeight: number;
-  cornerInset: number;
-}
-
-function computePanelRect(input: PanelRectInput): { x: number; y: number; width: number; height: number } {
-  switch (input.zone) {
-    case 'top_band':
-      return { x: input.bandX, y: input.bandTopY, width: input.bandWidth, height: input.bandHeight };
-    case 'top_left':
-      return {
-        x: input.cornerInset,
-        y: input.cornerInset + 12,
-        width: input.cornerWidth,
-        height: input.cornerHeight,
-      };
-    case 'top_right':
-      return {
-        x: input.surfaceWidth - input.cornerInset - input.cornerWidth,
-        y: input.cornerInset + 12,
-        width: input.cornerWidth,
-        height: input.cornerHeight,
-      };
-    case 'bottom_left':
-      return {
-        x: input.cornerInset,
-        y: input.surfaceHeight - input.cornerInset - input.cornerHeight - 12,
-        width: input.cornerWidth,
-        height: input.cornerHeight,
-      };
-    case 'bottom_right':
-      return {
-        x: input.surfaceWidth - input.cornerInset - input.cornerWidth,
-        y: input.surfaceHeight - input.cornerInset - input.cornerHeight - 12,
-        width: input.cornerWidth,
-        height: input.cornerHeight,
-      };
-    case 'natural':
-    case 'bottom_band':
-    default:
-      return { x: input.bandX, y: input.bandBottomY, width: input.bandWidth, height: input.bandHeight };
-  }
 }
 
 function estimateWrappedLineCount(text: string, fontSize: number, width: number, weight: number): number {
@@ -231,38 +228,126 @@ function estimateWrappedLineCount(text: string, fontSize: number, width: number,
   return Math.max(1, Math.ceil(text.length / approxCharsPerLine));
 }
 
+/**
+ * Fit story (and optionally title) inside a panel's safe zone and return
+ * deterministic draw coordinates the renderer can pass straight into
+ * `doc.text(...)`. Output fields `storyDrawY` / `storyDrawHeight` /
+ * `titleDrawY` are vertically centered when the rendered content is
+ * shorter than the safe zone — fixing the previous top-anchor bug where
+ * short story bodies left uneven whitespace at the bottom of the cream
+ * band.
+ *
+ * `options.renderTitle` defaults to true (legacy behavior: budget for
+ * title). Pass `false` for body-only pages — both active story render
+ * paths currently omit the title, so they pass false. When false, the
+ * helper does not reserve any vertical room for the title, which gives
+ * the story body access to the full safe zone and removes the extra
+ * bottom whitespace previously caused by a phantom title budget.
+ *
+ * The legacy `storyY` / `sceneTitleY` fields are preserved on the
+ * return type so any older caller still compiles, but the active
+ * renderers now consume `storyDrawY` / `titleDrawY` instead.
+ */
 export function fitPictureBookText(
   layout: PictureBookStoryLayout,
   sceneTitle: string,
   storyText: string,
+  options: FitPictureBookTextOptions = {},
 ): FittedPictureBookText {
+  const renderTitle = options.renderTitle ?? true;
   const textWidth = layout.textPanelWidth - layout.textInset * 2;
+
+  // Safe zone = panel rect minus the textInset on each side and the
+  // panelVerticalInset on top/bottom. All centering math operates on
+  // this rectangle.
+  const safeTop = layout.textPanelY + layout.panelVerticalInset;
+  const safeBottom = layout.textPanelY + layout.textPanelHeight - layout.panelVerticalInset;
+  const safeHeight = safeBottom - safeTop;
+
   let sceneTitleFontSize = 15;
   let storyFontSize = 15;
   let storyLineGap = 5;
 
+  // Iterative shrink loop — same shape as before, but now considers
+  // whether the renderer actually plans to draw the title. When
+  // renderTitle is false, titleHeight is treated as 0 in the budget.
   while (sceneTitleFontSize > 11) {
-    const titleLines = estimateWrappedLineCount(sceneTitle.toUpperCase(), sceneTitleFontSize, textWidth, 0.62);
-    const titleHeight = titleLines * (sceneTitleFontSize + 2);
-    const storyY = layout.sceneTitleY + titleHeight + 8;
-    const storyHeight = layout.textPanelY + layout.textPanelHeight - storyY - 8;
+    const titleLines = renderTitle
+      ? estimateWrappedLineCount(sceneTitle.toUpperCase(), sceneTitleFontSize, textWidth, 0.62)
+      : 0;
+    const titleHeight = renderTitle ? titleLines * (sceneTitleFontSize + 2) : 0;
+    const titleStoryGap = renderTitle ? 8 : 0;
+
     const storyLines = estimateWrappedLineCount(storyText, storyFontSize, textWidth, 0.56);
     const neededStoryHeight = storyLines * (storyFontSize + storyLineGap);
+    const renderedTotalHeight = titleHeight + titleStoryGap + neededStoryHeight;
 
-    if (neededStoryHeight <= storyHeight && titleHeight <= layout.textPanelHeight * 0.45) {
-      return { sceneTitleFontSize, sceneTitleHeight: titleHeight, storyFontSize, storyLineGap, storyY, storyHeight, sceneTitleY: layout.sceneTitleY };
+    const fits =
+      renderedTotalHeight <= safeHeight &&
+      (!renderTitle || titleHeight <= safeHeight * 0.45);
+
+    if (fits) {
+      const verticalPaddingTop = Math.max(
+        0,
+        Math.floor((safeHeight - renderedTotalHeight) / 2),
+      );
+      const titleDrawY = safeTop + verticalPaddingTop;
+      const storyDrawY = titleDrawY + titleHeight + titleStoryGap;
+      const storyDrawHeight = Math.max(24, safeBottom - storyDrawY);
+      // Legacy top-anchored fields kept stable for any other reader.
+      const storyY = layout.sceneTitleY + titleHeight + 8;
+      const storyHeight = layout.textPanelY + layout.textPanelHeight - storyY - 8;
+      return {
+        sceneTitleFontSize,
+        sceneTitleHeight: titleHeight,
+        storyFontSize,
+        storyLineGap,
+        storyY,
+        storyHeight,
+        sceneTitleY: layout.sceneTitleY,
+        renderTitle,
+        storyDrawY,
+        storyDrawHeight,
+        titleDrawY,
+        verticalPaddingTop,
+      };
     }
 
     if (storyFontSize > 12) storyFontSize -= 1;
     else if (storyLineGap > 3) storyLineGap -= 1;
-    else sceneTitleFontSize -= 1;
+    else if (renderTitle) sceneTitleFontSize -= 1;
+    else break; // body-only path can't shrink further once font/lineGap bottoms out
   }
 
-  const titleLines = estimateWrappedLineCount(sceneTitle.toUpperCase(), sceneTitleFontSize, textWidth, 0.62);
-  const titleHeight = titleLines * (sceneTitleFontSize + 2);
+  // Fallback — text is too long to fit at the minimum size; ellipsis at
+  // draw time will handle clipping. We still emit centered coords for
+  // the title block (even if it overflows) so the renderer stays
+  // deterministic and tests stay green on a known edge.
+  const titleLines = renderTitle
+    ? estimateWrappedLineCount(sceneTitle.toUpperCase(), sceneTitleFontSize, textWidth, 0.62)
+    : 0;
+  const titleHeight = renderTitle ? titleLines * (sceneTitleFontSize + 2) : 0;
+  const titleStoryGap = renderTitle ? 8 : 0;
+  const verticalPaddingTop = 0;
+  const titleDrawY = safeTop;
+  const storyDrawY = titleDrawY + titleHeight + titleStoryGap;
+  const storyDrawHeight = Math.max(24, safeBottom - storyDrawY);
   const storyY = layout.sceneTitleY + titleHeight + 8;
   const storyHeight = Math.max(24, layout.textPanelY + layout.textPanelHeight - storyY - 8);
-  return { sceneTitleFontSize, sceneTitleHeight: titleHeight, storyFontSize, storyLineGap, storyY, storyHeight, sceneTitleY: layout.sceneTitleY };
+  return {
+    sceneTitleFontSize,
+    sceneTitleHeight: titleHeight,
+    storyFontSize,
+    storyLineGap,
+    storyY,
+    storyHeight,
+    sceneTitleY: layout.sceneTitleY,
+    renderTitle,
+    storyDrawY,
+    storyDrawHeight,
+    titleDrawY,
+    verticalPaddingTop,
+  };
 }
 
 type BookFormat = OrderRecord['bookFormat'];
@@ -604,7 +689,11 @@ function drawStoryPage(
   textLayout?: PageTextLayout,
 ) {
   const layout = getPictureBookStoryLayout('proof', textLayout);
-  const fitted = fitPictureBookText(layout, sceneTitle, storyText);
+  // Body-only render — the proof draw site does NOT print sceneTitle,
+  // so we ask the fitter not to budget any vertical room for it. That
+  // lets the story body use the whole safe zone and removes the
+  // top-anchor whitespace bug.
+  const fitted = fitPictureBookText(layout, sceneTitle, storyText, { renderTitle: false });
   doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill(CREAM);
 
   if (imageBuffer) {
@@ -648,9 +737,9 @@ function drawStoryPage(
     doc,
     storyText,
     layout.textPanelX + layout.textInset,
-    layout.textPanelY + 10,
+    fitted.storyDrawY,
     layout.textPanelWidth - layout.textInset * 2,
-    layout.textPanelHeight - 20,
+    fitted.storyDrawHeight,
     fitted.storyFontSize,
     fitted.storyLineGap,
     textFillColor(layout.textColorMode),
@@ -967,7 +1056,11 @@ export async function buildPrintInteriorPdf(
     story.pages.forEach((page, index) => {
       doc.addPage();
       const layout = getPictureBookStoryLayout('print', page.textLayout);
-      const fitted = fitPictureBookText(layout, page.sceneTitle, page.story);
+      // Body-only render — the print loop does NOT print sceneTitle on
+      // story pages, so the fitter must not budget for a title or the
+      // story copy sits in the upper half of the cream band with
+      // unbalanced bottom whitespace.
+      const fitted = fitPictureBookText(layout, page.sceneTitle, page.story, { renderTitle: false });
       doc.rect(0, 0, trimWidth, trimHeight).fill(CREAM);
 
       const image = imageBuffers[index + 1] ?? null;
@@ -1004,9 +1097,9 @@ export async function buildPrintInteriorPdf(
         doc,
         page.story,
         layout.textPanelX + layout.textInset,
-        layout.textPanelY + 10,
+        fitted.storyDrawY,
         layout.textPanelWidth - layout.textInset * 2,
-        layout.textPanelHeight - 20,
+        fitted.storyDrawHeight,
         fitted.storyFontSize,
         fitted.storyLineGap,
         textFillColor(layout.textColorMode),
