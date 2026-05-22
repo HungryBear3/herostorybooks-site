@@ -134,6 +134,18 @@ export interface PageArtifact {
   /** Optional picture-book text layout persisted on newer generated/rebuilt pages.
    *  Legacy orders may omit it, so scripts should provide a fallback when needed. */
   textLayout?: PageTextLayout | null;
+  /** Internal-only flag set by an operator from the admin page-review grid
+   *  to mark this page as needing a targeted regeneration in a later pass.
+   *  Never surfaced to the customer. Optional for backward compatibility
+   *  with orders created before the review grid existed. */
+  targetedRegenNeeded?: boolean;
+  /** Internal-only free-form note attached by an operator from the admin
+   *  page-review grid. Capped at 500 characters by applyPageReviewPatch.
+   *  Never surfaced to the customer. Optional for backward compatibility. */
+  reviewerNotes?: string | null;
+  /** ISO timestamp the operator last touched this page in the review
+   *  grid. Helpful for spotting stale reviews. Optional. */
+  reviewedAt?: string | null;
 }
 
 export interface OrderRecord extends OrderInput {
@@ -216,6 +228,82 @@ export function getStoryPageCount(bookFormat: string): number {
   if (bookFormat === 'classic') return 24;
   if (bookFormat === 'premium') return 32;
   return 6;
+}
+
+export const PAGE_REVIEW_NOTES_MAX_LENGTH = 500;
+
+export interface PageReviewPatch {
+  targetedRegenNeeded?: boolean;
+  reviewerNotes?: string | null;
+}
+
+export type ApplyPageReviewPatchResult =
+  | { ok: true; order: OrderRecord; page: PageArtifact }
+  | { ok: false; status: number; error: string };
+
+/**
+ * Pure: apply an internal-only review patch (targetedRegenNeeded /
+ * reviewerNotes) to a single page on an OrderRecord and return a NEW
+ * OrderRecord with the updated page. Bumps `updatedAt` on the order
+ * and `reviewedAt` on the page whenever any field actually changes.
+ *
+ * Caller is responsible for persistence. Pure so it's trivially
+ * testable without I/O.
+ */
+export function applyPageReviewPatch(
+  order: OrderRecord,
+  pageIndex: number,
+  patch: PageReviewPatch,
+  now: string,
+): ApplyPageReviewPatchResult {
+  if (!Number.isInteger(pageIndex) || pageIndex < 0) {
+    return { ok: false, status: 400, error: 'pageIndex must be a non-negative integer' };
+  }
+  const artifacts = order.pageArtifacts ?? [];
+  const idx = artifacts.findIndex((p) => p.pageIndex === pageIndex);
+  if (idx === -1) {
+    return { ok: false, status: 404, error: `no page artifact at index ${pageIndex}` };
+  }
+
+  const current = artifacts[idx];
+  const next: PageArtifact = { ...current };
+  let changed = false;
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'targetedRegenNeeded')) {
+    const flag = Boolean(patch.targetedRegenNeeded);
+    if (Boolean(current.targetedRegenNeeded) !== flag) {
+      next.targetedRegenNeeded = flag;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'reviewerNotes')) {
+    const raw = patch.reviewerNotes;
+    const normalized =
+      raw === null || raw === undefined
+        ? null
+        : String(raw).trim().slice(0, PAGE_REVIEW_NOTES_MAX_LENGTH);
+    const currentValue = current.reviewerNotes ?? null;
+    const nextValue = normalized && normalized.length > 0 ? normalized : null;
+    if (currentValue !== nextValue) {
+      next.reviewerNotes = nextValue;
+      changed = true;
+    }
+  }
+
+  if (!changed) {
+    return { ok: true, order, page: current };
+  }
+
+  next.reviewedAt = now;
+  const nextArtifacts = [...artifacts];
+  nextArtifacts[idx] = next;
+  const nextOrder: OrderRecord = {
+    ...order,
+    pageArtifacts: nextArtifacts,
+    updatedAt: now,
+  };
+  return { ok: true, order: nextOrder, page: next };
 }
 
 interface CreateOrderOptions {

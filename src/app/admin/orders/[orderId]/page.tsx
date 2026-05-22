@@ -7,6 +7,7 @@ import { getOrder } from '@/lib/orders';
 import { buildOrderDiagnostics, formatDiagnosticsSummary } from '@/lib/order-diagnostics';
 
 import OrderDetailActions from './detail-client';
+import PageReviewGrid from './page-review-grid';
 
 export const dynamic = 'force-dynamic';
 
@@ -132,6 +133,10 @@ export default async function AdminOrderDetail({ params }: Props) {
               } />
             )}
           </Section>
+        )}
+
+        {order.pageArtifacts && order.pageArtifacts.length > 0 && (
+          <PageReviewGrid orderId={order.id} pages={order.pageArtifacts} />
         )}
 
         {order.pageArtifacts && order.pageArtifacts.length > 0 && (
