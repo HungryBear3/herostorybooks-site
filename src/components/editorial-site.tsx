@@ -417,12 +417,16 @@ function BookCoverStack() {
     <div className="relative mx-auto w-full max-w-[520px]">
       <div className="overflow-hidden rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_30px_80px_-50px_rgba(31,26,22,0.55)]">
         <div className="aspect-[4/5] bg-[#eadfc7]">
-          {/* Was hsb-lukas-print-front-cover.jpg which exposed
-              "Made for Lukas Kaplun" in the cover subtitle. Swapped to
-              the watercolor dinosaur cover — same hero-cover feel,
-              shows the child + dinosaurs, and carries no real customer
-              surname on the artwork. */}
-          <img src="/assets/lukas-watercolor-dino-cover.jpg" alt="Watercolor dinosaur cover proof — child with a friendly T-Rex" className="h-full w-full object-cover" />
+          {/* Watercolor cover proof, off-center crop. The child's face
+              sits slightly left and below center on the source art;
+              object-position [30%_55%] biases the visible window so
+              the face lands in the upper-left third instead of being
+              clipped by the default 50%/50% center crop. */}
+          <img
+            src="/assets/lukas-watercolor-dino-cover.jpg"
+            alt="Watercolor dinosaur cover proof — child with a friendly T-Rex"
+            className="h-full w-full object-cover object-[30%_55%]"
+          />
         </div>
         <div className="border-t border-[#eadfc7] p-5">
           <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.22em] text-[#a64c4c]">Watercolor cover proof</div>
@@ -712,7 +716,11 @@ export function EditorialSamplesPage() {
                     Replaced with the watercolor dinosaur cover that
                     shows the child + dinosaurs without any real
                     customer surname on the artwork. */}
-                <img src="/assets/lukas-watercolor-dino-cover.jpg" alt="Watercolor dinosaur cover proof — child with a friendly T-Rex" className="aspect-[4/5] h-full w-full object-cover" />
+                <img
+                  src="/assets/lukas-watercolor-dino-cover.jpg"
+                  alt="Watercolor dinosaur cover proof — child with a friendly T-Rex"
+                  className="aspect-[4/5] h-full w-full object-cover object-[30%_55%]"
+                />
                 <div className="absolute inset-y-0 left-0 w-7 bg-gradient-to-r from-black/18 to-transparent" aria-hidden="true" />
                 <div className="absolute inset-y-0 right-0 w-4 bg-white/30" aria-hidden="true" />
               </div>
@@ -730,10 +738,14 @@ export function EditorialSamplesPage() {
                 Real production artifacts still appear lower on this
                 page as "inside the book" interior proofs. */}
             <figure className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-3 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
+              {/* Bedtime hero figure crop tightened from 16:10 → 4:3 so
+                  the child reading on the bed isn't letterboxed off the
+                  top edge. object-position center-top keeps the lamp +
+                  dream bubble in frame instead of cropping them. */}
               <img
                 src="/assets/lukas-dino-bedtime-proof.jpg"
                 alt="Bedtime illustration proof — child reading the book with a dinosaur dream above the lamp"
-                className="aspect-[16/10] w-full rounded-xl object-cover"
+                className="aspect-[4/3] w-full rounded-xl object-cover object-[50%_30%]"
                 loading="lazy"
               />
               <figcaption className="mt-3 px-2 text-center text-xs leading-5 text-[#695f54]">
@@ -748,13 +760,23 @@ export function EditorialSamplesPage() {
                 proofed book. No replacement asset substituted; per the
                 rule "remove the tile rather than show weak art." Grid
                 drops to sm:grid-cols-3 so the row stays balanced. */}
+            {/* Interior-proof grid. Square crops biased upward
+                (object-position 50% 35%) so the child's face / upper
+                body stays in frame on each tile instead of being
+                clipped by the centered crop default. */}
             <div className="grid gap-4 sm:grid-cols-3">
               {[
                 ['/assets/hsb-lukas-print-story-07.jpg', 'Interior page from a real Lukas-book order — dinosaur story page'],
                 ['/assets/hsb-lukas-print-story-16.jpg', 'Interior page from a real Lukas-book order — two sides of the hero'],
                 ['/assets/hsb-lukas-print-story-21.jpg', 'Interior page from a real Lukas-book order — story spread'],
               ].map(([src, alt]) => (
-                <img key={src} src={src} alt={alt} className="aspect-square w-full rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] object-cover" loading="lazy" />
+                <img
+                  key={src}
+                  src={src}
+                  alt={alt}
+                  className="aspect-square w-full rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] object-cover object-[50%_35%]"
+                  loading="lazy"
+                />
               ))}
             </div>
           </div>
