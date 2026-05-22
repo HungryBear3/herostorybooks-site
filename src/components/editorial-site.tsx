@@ -126,7 +126,7 @@ const faqs: Array<[string, string]> = [
   ['Can I send it as a gift or surprise someone?', 'Yes. Add a dedication and gift message at checkout. The proof email goes to whoever you list as the buyer, not the recipient, so the surprise stays intact.'],
   ['What if my child doesn’t like the proof?', 'Reply to the proof email with what to change — a different scene, a softer dinosaur, a recolored sweater, whatever. Revisions before approval are free. We don’t print until you say go.'],
   ['What is the refund policy for digital orders?', 'Digital orders are fully refundable up until you approve the proof. Once you approve and we deliver the high-resolution PDF, the digital order is final.'],
-  ['What is the refund policy for printed books?', 'Printed books are refundable up until you approve the proof for print. After approval, the book goes to fulfillment and generally cannot be canceled, but we replace or fix printing defects and production errors.'],
+  ['What is the refund policy for printed books?', 'Printed books are refundable up until you approve the proof for print. After proof approval, we can only replace books with printing defects or fulfillment errors — the book goes to print and generally cannot be canceled.'],
   ['Do you ship internationally?', 'For launch, printed books ship within the US only. International buyers can order the Digital PDF from anywhere with a US-billed payment method.'],
   ['Can I order multiple copies?', 'Yes. Add the book to checkout once for the personalization, then email support after approval and we’ll arrange additional softcover or hardcover prints at a reduced rate.'],
   ['What kind of photo should I upload?', 'One clear, well-lit, front-facing photo where your child’s face is in focus. Phone snapshots are fine — we don’t need a studio portrait. A recent everyday photo usually works best.'],
@@ -311,7 +311,7 @@ function EditorialFooter() {
       </div>
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 border-t border-[#dfd2b8] px-5 py-5 text-xs text-[#695f54] md:px-8">
         <span>© 2026 HeroStoryBooks · Made by a small team in California · <a href="mailto:support@herostorybooks.com" className="hover:text-[#a64c4c]">support@herostorybooks.com</a></span>
-        <span>SSL-encrypted · Stripe-secured · US shipping included</span>
+        <span>SSL-encrypted · Stripe-secured · US shipping included on printed books</span>
       </div>
     </footer>
   );
@@ -397,7 +397,8 @@ function HeroSection() {
             </div>
           )}
           <p className="mt-5 text-sm italic text-[#695f54]">
-            From <b className="not-italic text-[#1f1a16]">$14.99</b> digital · <b className="not-italic text-[#1f1a16]">$39.99</b> softcover · <b className="not-italic text-[#1f1a16]">$59.99</b> hardcover · <span className="not-italic font-semibold text-[#a64c4c]">US shipping included</span>
+            <b className="not-italic text-[#1f1a16]">Digital $14.99</b> · <b className="not-italic text-[#1f1a16]">Softcover $39.99</b> · <b className="not-italic text-[#1f1a16]">Hardcover $59.99</b>
+            <span className="block text-sm not-italic font-semibold text-[#a64c4c]">US shipping included on printed books</span>
           </p>
         </div>
         <BookCoverStack />

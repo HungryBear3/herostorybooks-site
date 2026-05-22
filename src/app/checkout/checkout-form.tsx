@@ -433,7 +433,7 @@ export function CheckoutForm() {
 
           {/* ── 1. Theme ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
-            <h2 className="font-serif text-xl text-forest">🗺️ Choose the Adventure</h2>
+            <h2 className="font-serif text-xl text-forest">Choose the adventure</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {THEMES.map(theme => (
                 <button
@@ -463,7 +463,7 @@ export function CheckoutForm() {
 
           {/* ── 2. Child Details ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-5">
-            <h2 className="font-serif text-xl text-forest">👦 About the Hero</h2>
+            <h2 className="font-serif text-xl text-forest">About the hero</h2>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -579,7 +579,7 @@ export function CheckoutForm() {
           {/* ── 2.5 Character details ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
             <div>
-              <h2 className="font-serif text-xl text-forest mb-1">🪄 Character details</h2>
+              <h2 className="font-serif text-xl text-forest mb-1">Character details</h2>
               <p className="text-sm text-gray-500">
                 Tell us a few visible details so the art feels more like your child.
               </p>
@@ -651,7 +651,7 @@ export function CheckoutForm() {
 
           {/* ── 3. Format + Delivery ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
-            <h2 className="font-serif text-xl text-forest">📦 Choose Your Format</h2>
+            <h2 className="font-serif text-xl text-forest">Choose your format</h2>
             <div className="space-y-3">
               {FORMATS.map(fmt => (
                 <button
@@ -685,7 +685,7 @@ export function CheckoutForm() {
           {/* ── 4. Email + Preview Promise ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
             <div>
-              <h2 className="font-serif text-xl text-forest mb-1">✉️ Where should we send everything?</h2>
+              <h2 className="font-serif text-xl text-forest mb-1">Where should we send everything?</h2>
               <p className="text-sm text-gray-500">
                 We&apos;ll send your confirmation, delivery updates, and any preview approval steps here.
               </p>
