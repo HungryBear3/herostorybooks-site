@@ -627,7 +627,7 @@ function SeasonalCallout() {
     <section className="mx-auto max-w-6xl px-5 py-16 md:px-8">
       <div className="grid items-center gap-8 rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-7 md:grid-cols-[1fr_0.8fr] md:p-10">
         <div>
-          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">Father&apos;s Day-ready</div>
+          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">Father&apos;s Day gift</div>
           <h2 className="font-serif text-4xl font-medium leading-tight md:text-5xl">A gift Dad will actually keep.</h2>
           <p className="mt-4 text-base leading-7 text-[#695f54]">Choose Father&apos;s Day at checkout and we&apos;ll shape the story around your child&apos;s favorite memories with Dad — camping, building, bedtime stories, backyard adventures, or the little rituals only your family knows.</p>
           {fathersDay.tier !== 'past-event' && (
