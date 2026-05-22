@@ -1,0 +1,529 @@
+/* HeroStoryBooks — Family & Friends Test Portal
+   All rules are scoped under `.hsb-portal`. Class names that collide
+   with Tailwind v4 utilities (.h-1, .h-2, .h-3, .h-display, .gap-N,
+   .container, .row*, .fill) are renamed with an `fr-` prefix or `stack-`
+   prefix so Tailwind's utilities can't override them. */
+
+.hsb-portal {
+  --paper: #f5ede0;
+  --paper-2: #efe5d3;
+  --paper-3: #e8ddc6;
+  --ink: #221c14;
+  --ink-2: #4a3f30;
+  --ink-3: #75695a;
+  --ink-4: #a09480;
+  --line: #d9cdb2;
+  --line-2: #c7b893;
+  --hair: rgba(34, 28, 20, 0.08);
+
+  --forest: #3d5240;
+  --forest-2: #4a6249;
+  --ochre: #b88a3e;
+  --ochre-2: #a37a2f;
+  --terracotta: #c87454;
+  --terracotta-2: #b25e3e;
+  --dusk: #6b5b8c;
+  --dusk-2: #5a4c79;
+
+  --leaf: #e9e0c8;
+  --leaf-2: #f0e8d4;
+
+  --ok: #5b7e4c;
+  --warn: #b88a3e;
+  --err: #b25e3e;
+
+  --r-card: 8px;
+  --r-input: 6px;
+  --r-chip: 999px;
+
+  --serif: "Source Serif 4", "Source Serif Pro", Georgia, serif;
+  --sans: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+  font-family: var(--sans);
+  color: var(--ink);
+  background: var(--paper);
+  min-height: 100vh;
+  position: relative;
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.005em;
+}
+
+.hsb-portal *,
+.hsb-portal *::before,
+.hsb-portal *::after {
+  box-sizing: border-box;
+}
+
+.hsb-portal::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 25% 30%, rgba(184, 138, 62, 0.05), transparent 45%),
+    radial-gradient(circle at 80% 70%, rgba(107, 91, 140, 0.04), transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+.hsb-portal > * { position: relative; z-index: 1; }
+
+/* typography */
+.hsb-portal .serif { font-family: var(--serif); font-weight: 400; letter-spacing: -0.012em; }
+.hsb-portal .fr-display { font-family: var(--serif); font-weight: 400; font-size: 34px; line-height: 1.15; letter-spacing: -0.018em; margin: 0; }
+.hsb-portal .fr-h1 { font-family: var(--serif); font-weight: 400; font-size: 26px; line-height: 1.25; letter-spacing: -0.015em; margin: 0; }
+.hsb-portal .fr-h2 { font-family: var(--serif); font-weight: 400; font-size: 20px; line-height: 1.3; letter-spacing: -0.01em; margin: 0; }
+.hsb-portal .fr-h3 { font-family: var(--serif); font-weight: 500; font-size: 16px; line-height: 1.35; margin: 0; }
+.hsb-portal .eyebrow {
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 500;
+}
+.hsb-portal .eyebrow.ochre { color: var(--ochre-2); }
+.hsb-portal .eyebrow.forest { color: var(--forest); }
+.hsb-portal .body { font-size: 14px; color: var(--ink-2); line-height: 1.55; margin: 0; }
+.hsb-portal .body-lg { font-size: 15.5px; color: var(--ink-2); line-height: 1.6; margin: 0; }
+.hsb-portal .meta { font-size: 12px; color: var(--ink-3); }
+.hsb-portal .mono { font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em; color: var(--ink-3); }
+
+/* links / buttons */
+.hsb-portal a { color: var(--forest); text-decoration: none; border-bottom: 1px solid rgba(61, 82, 64, 0.3); }
+.hsb-portal a:hover { border-bottom-color: var(--forest); }
+
+.hsb-portal .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 44px; padding: 0 20px;
+  font-family: var(--sans); font-size: 14px; font-weight: 500;
+  border-radius: var(--r-input);
+  border: 1px solid transparent;
+  cursor: pointer;
+  letter-spacing: -0.005em;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.hsb-portal .btn[disabled],
+.hsb-portal .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.hsb-portal .btn-primary { background: var(--ink); color: var(--paper); }
+.hsb-portal .btn-primary:hover:not(:disabled) { background: #000; }
+.hsb-portal .btn-forest { background: var(--forest); color: #f7f1e3; }
+.hsb-portal .btn-forest:hover:not(:disabled) { background: var(--forest-2); }
+.hsb-portal .btn-ghost { background: transparent; color: var(--ink); border-color: var(--line-2); }
+.hsb-portal .btn-ghost:hover:not(:disabled) { background: var(--paper-2); }
+.hsb-portal .btn-link {
+  background: transparent; border: 0; color: var(--ink-2);
+  height: auto; padding: 0;
+  border-bottom: 1px solid var(--line-2);
+  border-radius: 0;
+  font-size: 13px;
+  cursor: pointer;
+}
+.hsb-portal .btn-sm { height: 32px; padding: 0 12px; font-size: 13px; }
+.hsb-portal .btn-lg { height: 52px; padding: 0 28px; font-size: 15px; }
+.hsb-portal .btn-block { width: 100%; }
+
+/* inputs */
+.hsb-portal .input,
+.hsb-portal .select,
+.hsb-portal .textarea {
+  width: 100%;
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--ink);
+  background: #fcf8ef;
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  padding: 11px 12px;
+  outline: none;
+  transition: border-color .12s, background .12s;
+}
+.hsb-portal .input:focus,
+.hsb-portal .select:focus,
+.hsb-portal .textarea:focus {
+  border-color: var(--forest);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(61, 82, 64, 0.1);
+}
+.hsb-portal .input::placeholder,
+.hsb-portal .textarea::placeholder { color: var(--ink-4); }
+.hsb-portal .field { display: flex; flex-direction: column; gap: 6px; }
+.hsb-portal .field-label {
+  font-size: 13px;
+  color: var(--ink-2);
+  font-weight: 500;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: text;
+  user-select: text;
+  display: block;
+}
+.hsb-portal .field-label .opt { color: var(--ink-4); font-weight: 400; margin-left: 6px; font-size: 12px; }
+.hsb-portal .help { font-size: 12px; color: var(--ink-3); line-height: 1.5; }
+
+/* cards */
+.hsb-portal .card {
+  background: #fcf8ef;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+}
+.hsb-portal .card-warm { background: linear-gradient(180deg, #fcf8ef 0%, #f7efdc 100%); border-color: var(--line-2); }
+.hsb-portal .card-quiet { background: rgba(252, 248, 239, 0.6); border-color: var(--hair); }
+
+/* checkbox */
+.hsb-portal .check {
+  display: flex; gap: 12px; align-items: flex-start;
+  cursor: pointer;
+}
+.hsb-portal .check-box {
+  flex: 0 0 18px;
+  width: 18px; height: 18px;
+  border: 1.5px solid var(--line-2);
+  border-radius: 4px;
+  background: #fcf8ef;
+  margin-top: 2px;
+  position: relative;
+  transition: background .12s, border-color .12s;
+}
+.hsb-portal .check.checked .check-box { background: var(--forest); border-color: var(--forest); }
+.hsb-portal .check.checked .check-box::after {
+  content: "";
+  position: absolute; left: 4px; top: 1px;
+  width: 5px; height: 9px;
+  border-right: 2px solid #f5ede0;
+  border-bottom: 2px solid #f5ede0;
+  transform: rotate(45deg);
+}
+.hsb-portal .check-label { font-size: 13.5px; color: var(--ink-2); line-height: 1.5; }
+.hsb-portal .check-label strong { color: var(--ink); font-weight: 500; }
+
+/* chips */
+.hsb-portal .chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 10px;
+  border-radius: var(--r-chip);
+  border: 1px solid var(--line);
+  background: #fcf8ef;
+  font-size: 12px;
+  color: var(--ink-2);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.hsb-portal .chip.has-dot::before {
+  content: ""; width: 6px; height: 6px; border-radius: 999px; background: var(--ink-4);
+}
+.hsb-portal .chip.s-new { background: #f0e7d4; border-color: var(--line-2); color: var(--ink-2); }
+.hsb-portal .chip.s-new.has-dot::before { background: var(--ink-3); }
+.hsb-portal .chip.s-gen { background: #f4ebe3; border-color: #e3cdb6; color: var(--ochre-2); }
+.hsb-portal .chip.s-gen.has-dot::before { background: var(--ochre); }
+.hsb-portal .chip.s-ready { background: #e9e8d6; border-color: #c7c79f; color: var(--forest); }
+.hsb-portal .chip.s-ready.has-dot::before { background: var(--forest); }
+.hsb-portal .chip.s-pass { background: #dce8d3; border-color: #b6c8a3; color: #3d5240; }
+.hsb-portal .chip.s-pass.has-dot::before { background: var(--ok); }
+.hsb-portal .chip.s-fail { background: #f0d9cf; border-color: #d7ab94; color: var(--terracotta-2); }
+.hsb-portal .chip.s-fail.has-dot::before { background: var(--terracotta); }
+.hsb-portal .chip.s-invited { background: #ddd6e6; border-color: #b3a8cb; color: var(--dusk-2); }
+.hsb-portal .chip.s-invited.has-dot::before { background: var(--dusk); }
+
+/* dividers */
+.hsb-portal .rule { height: 1px; background: var(--hair); border: 0; margin: 0; }
+
+/* layout */
+.hsb-portal .fr-container {
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 0 20px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.hsb-portal .topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 20px 8px;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+/* brand mark */
+.hsb-portal .wordmark {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--serif);
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.hsb-portal .wordmark-dot {
+  width: 18px; height: 18px;
+  background: var(--terracotta);
+  border-radius: 50%;
+  position: relative;
+  flex-shrink: 0;
+}
+.hsb-portal .wordmark-dot::after {
+  content: ""; position: absolute; left: 5px; top: 5px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ochre);
+}
+
+/* progress dots */
+.hsb-portal .steps { display: flex; gap: 6px; align-items: center; }
+.hsb-portal .steps .step {
+  width: 18px; height: 3px; border-radius: 2px;
+  background: var(--line-2);
+}
+.hsb-portal .steps .step.done { background: var(--forest); }
+.hsb-portal .steps .step.now { background: var(--ink); }
+
+/* photo placeholder */
+.hsb-portal .photo-ph {
+  position: relative;
+  border-radius: 6px;
+  background: repeating-linear-gradient(45deg, #e9dec4 0 8px, #e3d4b3 8px 16px);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-3);
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+}
+.hsb-portal .photo-ph .ph-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  background: rgba(245, 237, 224, 0.92);
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--ink-3);
+}
+
+/* rows */
+.hsb-portal .fr-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.hsb-portal .fr-row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+
+/* pills */
+.hsb-portal .pillrow { display: flex; flex-wrap: wrap; gap: 6px; }
+.hsb-portal .pill {
+  height: 32px; padding: 0 14px;
+  border: 1px solid var(--line);
+  background: #fcf8ef;
+  border-radius: var(--r-chip);
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+  display: inline-flex; align-items: center;
+  font-family: var(--sans);
+}
+.hsb-portal .pill.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.hsb-portal .pill.tone-forest.on { background: var(--forest); border-color: var(--forest); }
+
+/* story direction cards */
+.hsb-portal .story-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: #fcf8ef;
+  padding: 14px;
+  display: flex; flex-direction: column; gap: 12px;
+  cursor: pointer;
+  position: relative;
+  transition: border-color .12s, background .12s;
+}
+.hsb-portal .story-card .art {
+  aspect-ratio: 4 / 3;
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+}
+.hsb-portal .story-card.on { border-color: var(--forest); background: #f7f1df; box-shadow: 0 0 0 1px var(--forest) inset; }
+.hsb-portal .story-card .ck {
+  position: absolute; top: 10px; right: 10px;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: #fcf8ef;
+  border: 1.5px solid var(--line-2);
+}
+.hsb-portal .story-card.on .ck { background: var(--forest); border-color: var(--forest); }
+.hsb-portal .story-card.on .ck::after {
+  content: ""; position: absolute; left: 6px; top: 3px;
+  width: 5px; height: 9px;
+  border-right: 2px solid var(--paper);
+  border-bottom: 2px solid var(--paper);
+  transform: rotate(45deg);
+}
+
+/* rating dots */
+.hsb-portal .rate { display: flex; gap: 6px; align-items: center; }
+.hsb-portal .rate .rate-btn {
+  width: 34px; height: 34px;
+  border: 1px solid var(--line);
+  background: #fcf8ef;
+  border-radius: var(--r-input);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.hsb-portal .rate .rate-btn.on { background: var(--forest); color: var(--paper); border-color: var(--forest); }
+
+/* upload zone */
+.hsb-portal .upload-zone {
+  border: 1.5px dashed var(--line-2);
+  background: rgba(252, 248, 239, 0.5);
+  border-radius: var(--r-card);
+  padding: 22px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  text-align: center;
+  transition: background .12s, border-color .12s;
+}
+.hsb-portal .upload-zone.is-hover { background: #f7efdc; border-color: var(--forest); }
+.hsb-portal .upload-zone.err { border-color: var(--terracotta); background: #f7e6dd; }
+
+/* vertical stacks (renamed from .gap-N to avoid Tailwind .gap-N utility) */
+.hsb-portal .stack-4 { display: flex; flex-direction: column; gap: 4px; }
+.hsb-portal .stack-6 { display: flex; flex-direction: column; gap: 6px; }
+.hsb-portal .stack-8 { display: flex; flex-direction: column; gap: 8px; }
+.hsb-portal .stack-10 { display: flex; flex-direction: column; gap: 10px; }
+.hsb-portal .stack-12 { display: flex; flex-direction: column; gap: 12px; }
+.hsb-portal .stack-14 { display: flex; flex-direction: column; gap: 14px; }
+.hsb-portal .stack-16 { display: flex; flex-direction: column; gap: 16px; }
+.hsb-portal .stack-20 { display: flex; flex-direction: column; gap: 20px; }
+.hsb-portal .stack-24 { display: flex; flex-direction: column; gap: 24px; }
+
+/* horizontal rows (renamed from .row to avoid potential collisions) */
+.hsb-portal .fr-row { display: flex; align-items: center; gap: 8px; }
+.hsb-portal .fr-row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hsb-portal .fr-row-center { display: flex; align-items: center; justify-content: center; }
+.hsb-portal .fr-fill { flex: 1; }
+
+/* admin */
+.hsb-portal .admin-shell {
+  min-height: 100vh;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 240px 1fr;
+}
+.hsb-portal .admin-rail {
+  border-right: 1px solid var(--hair);
+  padding: 24px 18px;
+  display: flex; flex-direction: column; gap: 22px;
+}
+.hsb-portal .admin-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.6fr);
+}
+.hsb-portal .admin-list { border-right: 1px solid var(--hair); }
+.hsb-portal .admin-list-head {
+  padding: 22px 22px 14px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.hsb-portal .list-row {
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--hair);
+  display: flex; gap: 12px; align-items: center;
+  cursor: pointer;
+}
+.hsb-portal .list-row.on { background: rgba(184, 138, 62, 0.06); }
+.hsb-portal .list-row .avatar {
+  width: 36px; height: 36px; border-radius: 6px;
+  background: repeating-linear-gradient(45deg, #e9dec4 0 6px, #e3d4b3 6px 12px);
+  flex-shrink: 0;
+  border: 1px solid var(--line-2);
+}
+.hsb-portal .list-row .who { flex: 1; min-width: 0; }
+.hsb-portal .list-row .who .who-name { font-size: 13.5px; color: var(--ink); font-weight: 500; }
+.hsb-portal .list-row .who .meta { font-size: 11.5px; color: var(--ink-3); margin-top: 1px; }
+.hsb-portal .detail { padding: 24px 28px; display: flex; flex-direction: column; gap: 20px; }
+.hsb-portal .illu {
+  aspect-ratio: 1 / 1;
+  border-radius: var(--r-card);
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+}
+.hsb-portal .illu .illu-meta {
+  position: absolute; bottom: 8px; left: 8px;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(34, 28, 20, 0.7); color: var(--paper);
+  font-family: var(--mono); font-size: 10px;
+  padding: 4px 8px; border-radius: 999px;
+  letter-spacing: 0.04em;
+}
+
+/* Admin detail page — meta + actions toolbar.
+   Desktop: meta line on the left, actions cluster on the right.
+   Mobile: stack vertically so the four action buttons can wrap
+   to two rows without forcing horizontal scroll. */
+.hsb-portal .admin-detail-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  row-gap: 12px;
+}
+.hsb-portal .admin-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  row-gap: 4px;
+  color: var(--ink-3);
+  min-width: 0;
+  flex: 1 1 240px;
+}
+.hsb-portal .admin-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  row-gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Admin detail-page inner grids. Desktop = two-column with a 220px
+   sidebar; ≤640 = single column so 390/375px viewports don't overflow.
+   Samples grid (illustrations) and ratings grid both collapse on
+   narrow screens too. */
+.hsb-portal .admin-detail-grid {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 24px;
+}
+.hsb-portal .admin-samples-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.hsb-portal .admin-rating-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+@media (max-width: 880px) {
+  .hsb-portal .admin-shell { grid-template-columns: 1fr; }
+  .hsb-portal .admin-rail { border-right: 0; border-bottom: 1px solid var(--hair); }
+  .hsb-portal .admin-main { grid-template-columns: 1fr; }
+  .hsb-portal .admin-list { border-right: 0; border-bottom: 1px solid var(--hair); }
+}
+
+@media (max-width: 640px) {
+  .hsb-portal .input,
+  .hsb-portal .select,
+  .hsb-portal .textarea {
+    font-size: 16px;
+  }
+  .hsb-portal .fr-display {
+    font-size: 30px;
+    line-height: 1.18;
+  }
+  .hsb-portal .admin-detail-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .hsb-portal .admin-samples-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hsb-portal .admin-rating-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .hsb-portal .detail { padding: 16px 14px; }
+  .hsb-portal .admin-list-head { padding: 16px 14px 10px; }
+  .hsb-portal .list-row { padding: 12px 14px; }
+  /* Stack meta + actions vertically on mobile so 4 ghost buttons can
+     wrap to two short rows instead of forcing a horizontal scroll. */
+  .hsb-portal .admin-detail-toolbar { flex-direction: column; align-items: stretch; gap: 12px; }
+  .hsb-portal .admin-detail-actions { width: 100%; }
+  .hsb-portal .admin-detail-actions .btn { flex: 1 1 calc(50% - 4px); min-width: 0; }
+}
