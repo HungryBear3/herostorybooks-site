@@ -358,7 +358,7 @@ export function CheckoutForm() {
   }
 
   return (
-    <main className="w-full min-h-screen bg-cream py-10 px-4">
+    <main className="w-full min-h-screen bg-cream px-4 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-7 sm:py-10">
       <div className="container mx-auto max-w-2xl">
 
         {/* Nav */}
@@ -429,10 +429,10 @@ export function CheckoutForm() {
           </div>
         </motion.section>
 
-        <form onSubmit={handleSubmit} className="space-y-8">
+        <form onSubmit={handleSubmit} className="space-y-6 sm:space-y-8">
 
           {/* ── 1. Theme ── */}
-          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
+          <section className="bg-white rounded-2xl border-2 border-gray-100 p-4 shadow-sm space-y-4 sm:p-6">
             <h2 className="font-serif text-xl text-forest">Choose the adventure</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {THEMES.map(theme => (
@@ -724,14 +724,14 @@ export function CheckoutForm() {
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest text-center">
                   What your book looks like
                 </p>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
                   {SAMPLE_IMAGES.map((src, i) => (
-                    <div key={i} className="relative aspect-square rounded-xl overflow-hidden border border-gray-100 bg-gray-50">
+                    <div key={i} className="relative aspect-square rounded-lg overflow-hidden border border-gray-100 bg-gray-50 sm:rounded-xl">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={src} alt={`Sample page ${i + 1}`} className="w-full h-full object-cover" />
                       {i === 1 && (
-                        <div className="absolute inset-x-0 bottom-2 flex justify-center">
-                          <span className="bg-deep-gold/90 text-white text-xs font-bold px-2 py-0.5 rounded-full shadow">
+                        <div className="absolute inset-x-0 bottom-1.5 flex justify-center px-1 sm:bottom-2">
+                          <span className="whitespace-nowrap rounded-full bg-deep-gold/90 px-1.5 py-0.5 text-[10px] font-bold text-white shadow sm:px-2 sm:text-xs">
                             Your child here ✨
                           </span>
                         </div>
@@ -781,7 +781,7 @@ export function CheckoutForm() {
                 onDrop={handleDrop}
                 onClick={() => photoInputRef.current?.click()}
                 className={`
-                  flex flex-col items-center justify-center gap-3 min-h-40 rounded-xl border-2 border-dashed cursor-pointer transition-all
+                  flex flex-col items-center justify-center gap-2 min-h-32 rounded-xl border-2 border-dashed cursor-pointer transition-all sm:min-h-40 sm:gap-3
                   ${dragOver ? 'border-deep-gold bg-deep-gold/5 scale-[1.01]' : 'border-gray-300 hover:border-deep-gold/60 hover:bg-gray-50'}
                 `}
               >
@@ -792,15 +792,15 @@ export function CheckoutForm() {
                   className="hidden"
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) processPhoto(f); }}
                 />
-                <span className="text-5xl">{dragOver ? '🌟' : '📸'}</span>
+                <span className="text-4xl sm:text-5xl">{dragOver ? '🌟' : '📸'}</span>
                 <div className="text-center">
                   <p className="font-semibold text-forest">{dragOver ? 'Drop it here!' : 'Click to Upload'}</p>
-                  <p className="text-sm text-gray-400 mt-0.5">or drag &amp; drop · JPG, PNG, WebP, HEIC</p>
+                  <p className="mt-0.5 px-2 text-sm leading-5 text-gray-400">or drag &amp; drop · JPG, PNG, WebP, HEIC</p>
                 </div>
               </div>
             )}
 
-            <p className="text-xs text-center text-gray-400">
+            <p className="px-2 text-center text-xs leading-5 text-gray-400">
               🔒 Photos processed securely · Never stored after your book is made · Add it later if you need to
             </p>
           </section>
@@ -825,7 +825,7 @@ export function CheckoutForm() {
           )}
 
           {/* ── 6. Order Summary ── */}
-          <section className="bg-lavender rounded-2xl border border-gray-200 p-6 shadow-sm">
+          <section className="scroll-mb-[calc(7rem+env(safe-area-inset-bottom))] rounded-2xl border border-gray-200 bg-lavender p-5 shadow-sm sm:p-6">
             <h3 className="font-semibold text-forest mb-4">Order Summary</h3>
             <div className="space-y-2 text-sm text-gray-700">
               {form.theme && (
