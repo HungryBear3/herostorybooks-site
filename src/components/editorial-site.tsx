@@ -43,28 +43,28 @@ const tiers: Tier[] = [
 
 const sampleBooks = [
   {
-    tag: 'SPACE ADVENTURE ART',
-    title: 'Rocket Launch Moment',
+    tag: 'CHARACTER LIKENESS',
+    title: 'Forest Hero Portrait',
     star: 'the child',
     tone: 'hardcover',
-    image: '/assets/lukas-sample-space-rocket-launch.png',
-    copy: 'A recent generated sample with a clear hero moment, bright storybook color, and a strong sense of action.',
+    image: '/assets/lukas-watercolor-forest-portrait.jpg',
+    copy: 'A warmer portrait-style sample that keeps the child central, expressive, and gift-worthy.',
   },
   {
-    tag: 'CHARACTER LIKENESS',
-    title: 'Close-Up Hero Portrait',
+    tag: 'DINOSAUR ADVENTURE',
+    title: 'Walking With a Dinosaur',
     star: 'the child',
     tone: 'softcover',
-    image: '/assets/lukas-sample-space-helmet-closeup.png',
-    copy: 'A cleaner close-up direction that makes the child feel like the star instead of a tiny figure in the background.',
+    image: '/assets/lukas-watercolor-dino-walk.jpg',
+    copy: 'A full story scene with a clear companion character, readable adventure setting, and stronger child likeness.',
   },
   {
-    tag: 'DINOSAUR STORY PAGE',
-    title: 'Temple Discovery Scene',
+    tag: 'SPACE ADVENTURE',
+    title: 'Astronaut Close-Up',
     star: 'the child',
     tone: 'digital',
-    image: '/assets/lukas-sample-dino-temple-closeup.jpg',
-    copy: 'A newer story-page sample that shows the page treatment: illustrated scene, readable story area, and adventure context.',
+    image: '/assets/lukas-watercolor-space-portrait.jpg',
+    copy: 'A polished close-up direction that shows how different themes can still keep the child as the hero.',
   },
 ];
 
@@ -490,7 +490,7 @@ function SamplePreviewSection() {
   return (
     <section className="bg-[#fff8ec]/45 py-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
-        <SectionHeader eyebrow="What your book looks like" title="Full-color story art, built around your child." sub="These newer samples show the visual range more clearly: action scenes, close-up likeness, and proof-style story pages. Every order still gets its own review pass before final delivery or print." />
+        <SectionHeader eyebrow="What your book looks like" title="Full-color story art, built around your child." sub="These recent generated samples show the visual range more clearly: strong likeness, adventure scenes, and different story themes. Every order still gets its own review pass before final delivery or print." />
         <div className="grid gap-5 md:grid-cols-3">
           {sampleBooks.map((book) => <SampleCard key={book.title} {...book} />)}
         </div>
@@ -679,7 +679,7 @@ export function EditorialSamplesPage() {
           <div className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
             <div className="mx-auto max-w-[320px] [perspective:1200px]">
               <div className="relative origin-left overflow-hidden rounded-xl bg-[#fff8ec] shadow-2xl ring-1 ring-[#d8c6a2] [transform:rotateY(-10deg)_rotateZ(-1deg)]">
-                <img src="/assets/lukas-sample-space-rocket-launch.png" alt="Generated storybook sample — child launching into a space adventure" className="aspect-[4/5] h-full w-full object-cover" />
+                <img src="/assets/lukas-watercolor-dino-walk.jpg" alt="Generated storybook sample - child walking with a dinosaur companion" className="aspect-[4/5] h-full w-full object-cover" />
                 <div className="absolute inset-y-0 left-0 w-7 bg-gradient-to-r from-black/18 to-transparent" aria-hidden="true" />
                 <div className="absolute inset-y-0 right-0 w-4 bg-white/30" aria-hidden="true" />
               </div>
@@ -689,9 +689,9 @@ export function EditorialSamplesPage() {
           <div className="space-y-5">
             <figure className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-3 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
               <img
-                src="/assets/lukas-sample-space-helmet-closeup.png"
-                alt="Generated storybook sample — close-up child hero in an astronaut helmet"
-                className="aspect-[16/10] w-full rounded-xl object-cover"
+                src="/assets/lukas-watercolor-space-portrait.jpg"
+                alt="Generated storybook sample - close-up child hero in an astronaut suit"
+                className="aspect-[16/10] w-full rounded-xl object-cover object-top"
                 loading="lazy"
               />
               <figcaption className="mt-3 px-2 text-center text-xs leading-5 text-[#695f54]">
@@ -700,9 +700,9 @@ export function EditorialSamplesPage() {
             </figure>
             <div className="grid gap-4 sm:grid-cols-3">
               {[
-                ['/assets/lukas-sample-dino-forest-discovery.jpg', 'Generated dinosaur story sample — forest discovery scene'],
-                ['/assets/lukas-sample-dino-temple-closeup.jpg', 'Generated dinosaur story sample — temple discovery page'],
-                ['/assets/lukas-sample-dino-sunset-hero.jpg', 'Generated dinosaur story sample — sunset hero scene'],
+                ['/assets/lukas-watercolor-forest-portrait.jpg', 'Generated storybook sample - forest hero portrait'],
+                ['/assets/lukas-watercolor-dino-walk.jpg', 'Generated dinosaur story sample - child walking with dinosaur companion'],
+                ['/assets/lukas-watercolor-space-portrait.jpg', 'Generated space story sample - astronaut portrait'],
               ].map(([src, alt]) => (
                 <img key={src} src={src} alt={alt} className="aspect-square w-full rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] object-cover" loading="lazy" />
               ))}
