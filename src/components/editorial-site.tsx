@@ -503,7 +503,7 @@ function HowItWorksSection() {
     ['3', 'You approve, then we print', 'We email a full digital proof. Nothing prints until you approve. Revisions are free.'],
   ];
   return (
-    <section id="how" className="mx-auto max-w-6xl px-5 pt-10 pb-20 md:px-8 md:pt-16 md:pb-24">
+    <section id="how" className="mx-auto max-w-6xl px-5 pt-10 pb-10 md:px-8 md:pt-16 md:pb-12">
       <SectionHeader eyebrow="How it works" title="A custom book without the custom-project chaos." centered />
       <div className="grid gap-5 md:grid-cols-3">
         {steps.map(([n, title, body]) => (
@@ -520,7 +520,7 @@ function HowItWorksSection() {
 
 function SamplePreviewSection() {
   return (
-    <section className="bg-[#fff8ec]/45 py-20">
+    <section className="bg-[#fff8ec]/45 pt-10 pb-20 md:pt-12 md:pb-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
         <SectionHeader eyebrow="Real order sample" title="One finished book, shown consistently." sub="The sample art below comes from the latest Lukas print production packet. Digital orders use the same proof-first story experience, without the print-and-ship step." />
         <div className="grid gap-5 md:grid-cols-3">
