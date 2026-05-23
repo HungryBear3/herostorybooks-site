@@ -199,6 +199,14 @@ function FathersDayBadge({
 }
 
 function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' }) {
+  const mobileLinks = [
+    ['How it works', '/#how'],
+    ['Sample', '/samples'],
+    ['Pricing', '/pricing'],
+    ['FAQ', '/#faq'],
+    ['Start your book', '/checkout'],
+  ] as const;
+
   const linkClass = (id: typeof active) => cx(
     'text-sm font-medium underline-offset-8 transition hover:text-[#a64c4c]',
     active === id ? 'text-[#1f1a16] underline decoration-[#a64c4c]' : 'text-[#695f54]'
@@ -218,9 +226,35 @@ function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' })
           <Link href="/#faq" className="text-sm font-medium text-[#695f54] transition hover:text-[#a64c4c]">FAQ</Link>
           <PrimaryCta href="/checkout" size="sm">Start your book</PrimaryCta>
         </nav>
-        <Link href="/checkout" className="rounded-full bg-[#1f1a16] px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#fff8ec] shadow-sm md:hidden">
-          Start
-        </Link>
+        <div className="flex items-center gap-2 md:hidden">
+          <Link href="/checkout" className="rounded-full bg-[#1f1a16] px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#fff8ec] shadow-sm">
+            Start
+          </Link>
+          <details className="group relative">
+            <summary
+              className="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-full border border-[#dfd2b8] bg-[#fff8ec] text-[#1f1a16] shadow-sm marker:hidden"
+              aria-label="Open navigation menu"
+            >
+              <span className="sr-only">Menu</span>
+              <span className="flex flex-col gap-1" aria-hidden="true">
+                <span className="block h-0.5 w-4 rounded-full bg-current" />
+                <span className="block h-0.5 w-4 rounded-full bg-current" />
+                <span className="block h-0.5 w-4 rounded-full bg-current" />
+              </span>
+            </summary>
+            <div className="absolute right-0 top-12 w-56 overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#fff8ec] p-2 shadow-[0_18px_45px_-24px_rgba(31,26,22,0.5)]">
+              {mobileLinks.map(([label, href]) => (
+                <Link
+                  key={label}
+                  href={href}
+                  className="block rounded-xl px-4 py-3 text-sm font-semibold text-[#1f1a16] transition hover:bg-[#f1dfbd]"
+                >
+                  {label}
+                </Link>
+              ))}
+            </div>
+          </details>
+        </div>
       </div>
     </header>
   );
