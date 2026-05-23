@@ -116,7 +116,8 @@ export const FEATURED_STORY_THEMES: StoryTheme[] = FEATURED_THEME_ORDER
   .map((id) => STORY_THEMES.find((theme) => theme.id === id))
   .filter((theme): theme is StoryTheme => Boolean(theme));
 
-export const CHECKOUT_SAMPLE_IMAGES = FEATURED_STORY_THEMES
-  .map((theme) => theme.sampleImage)
-  .filter((image): image is string => Boolean(image))
-  .slice(0, 3);
+export const CHECKOUT_SAMPLE_IMAGES = [
+  '/assets/lukas-sample-space-rocket-launch.png',
+  '/assets/lukas-sample-space-helmet-closeup.png',
+  '/assets/lukas-sample-dino-temple-closeup.jpg',
+];

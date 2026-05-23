@@ -11,9 +11,9 @@ import {
 test('story catalog includes real themed sample thumbnails instead of generic placeholders', () => {
   assert.equal(CHECKOUT_SAMPLE_IMAGES.some((image) => image.startsWith('/sample')), false);
   assert.deepEqual(CHECKOUT_SAMPLE_IMAGES, [
-    '/assets/explorer-sample.png',
-    '/assets/space-sample.png',
-    '/assets/ocean-sample.png',
+    '/assets/lukas-sample-space-rocket-launch.png',
+    '/assets/lukas-sample-space-helmet-closeup.png',
+    '/assets/lukas-sample-dino-temple-closeup.jpg',
   ]);
 });
 
