@@ -15,6 +15,11 @@ type Tier = {
   featured?: boolean;
 };
 
+// Canonical pricing — matches src/lib/orders.ts FORMAT_META.priceCents
+// (1900 / 3900 / 6400) and src/lib/pricing.ts PUBLIC_PRICING_PLANS.
+// If backend priceCents change, update this list AND lib/pricing.ts in
+// the same commit so the customer-facing display never diverges from
+// what Stripe actually charges.
 const tiers: Tier[] = [
   {
     id: 'digital',
@@ -43,22 +48,44 @@ const tiers: Tier[] = [
 
 const sampleBooks = [
   {
-    tag: 'REAL BOOK COVER',
-    title: 'Lukas, King of the Dinosaurs',
+    // Was hsb-lukas-print-front-cover.jpg, which carried "Made for Lukas
+    // Kaplun" on the cover subtitle — exposing a real customer surname on
+    // a marketing tile. Swapped to the watercolor dinosaur cover, which
+    // shows the child + dinosaurs without any real-name overlay. This is
+    // the ONE cover-style tile in the 3-card cluster (cards 2 and 3 are
+    // now interior spreads, per the "at most one cover-style per cluster"
+    // rule).
+    tag: 'WATERCOLOR DINOSAUR COVER',
+    title: 'A Dinosaur Adventure Cover',
     star: 'the child',
     tone: 'hardcover',
-    image: '/assets/hsb-lukas-print-front-cover.jpg',
-    copy: 'The real cover proof from the Dino/Lukas book, shown as an example of the finished keepsake direction.',
+    image: '/assets/lukas-watercolor-dino-cover.jpg',
+    copy: 'A watercolor dinosaur cover proof — example of the personalized cover direction, with no real customer details on the artwork.',
   },
   {
-    tag: 'INTERIOR PAGE',
-    title: 'The Two Sides of Lukas',
+    // Was lukas-dino-companion-proof.jpg, which shows only a T-Rex and a
+    // Triceratops in a forest — no child. Card copy claimed "Lukas meets
+    // the dinosaur," which the image did not back up. Swapped to the
+    // bedtime proof, where the child is clearly present alongside the
+    // dinosaur dream-bubble.
+    tag: 'DINOSAUR STORY ART',
+    title: 'Bedtime With Dinosaurs',
     star: 'the child',
     tone: 'softcover',
-    image: '/assets/hsb-lukas-print-story-16.jpg',
-    copy: 'A real interior page from the proofed book, matching the Dino story text on this sample page.',
+    image: '/assets/lukas-dino-bedtime-proof.jpg',
+    copy: 'A bedtime spread from the proof set — the child reading the book while a friendly dinosaur dream takes shape above the lamp. Illustration only, no story text overlaid.',
   },
   {
+    // Was lukas-watercolor-adventure-page.jpg. The jungle-kneeling shot
+    // had the child far from camera with a small, indistinct face —
+    // likeness was visibly weak in QA. Swapped to the "King of All
+    // Dinosaurs" interior proof from the print book set: the child's
+    // face is centered, in focus, smiling, and reads unambiguously as
+    // the canonical Lukas. The page-text panel sits cleanly in the
+    // lower-left corner of the image, so it reads as an intentional
+    // inside-book proof rather than an unreadable hero thumbnail.
+    // Tag + title + copy updated honestly to reflect it is an interior
+    // proof, not a watercolor-direction concept.
     tag: 'INTERIOR PROOF',
     title: 'Lukas, King of All Dinosaurs',
     star: 'the child',
@@ -99,7 +126,7 @@ const faqs: Array<[string, string]> = [
   ['Can I send it as a gift or surprise someone?', 'Yes. Add a dedication and gift message at checkout. The proof email goes to whoever you list as the buyer, not the recipient, so the surprise stays intact.'],
   ['What if my child doesn’t like the proof?', 'Reply to the proof email with what to change — a different scene, a softer dinosaur, a recolored sweater, whatever. Revisions before approval are free. We don’t print until you say go.'],
   ['What is the refund policy for digital orders?', 'Digital orders are fully refundable up until you approve the proof. Once you approve and we deliver the high-resolution PDF, the digital order is final.'],
-  ['What is the refund policy for printed books?', 'Printed books are refundable up until you approve the proof for print. After approval, the book goes to fulfillment and generally cannot be canceled, but we replace or fix printing defects and production errors.'],
+  ['What is the refund policy for printed books?', 'Printed books are refundable up until you approve the proof for print. After proof approval, we can only replace books with printing defects or fulfillment errors — the book goes to print and generally cannot be canceled.'],
   ['Do you ship internationally?', 'For launch, printed books ship within the US only. International buyers can order the Digital PDF from anywhere with a US-billed payment method.'],
   ['Can I order multiple copies?', 'Yes. Add the book to checkout once for the personalization, then email support after approval and we’ll arrange additional softcover or hardcover prints at a reduced rate.'],
   ['What kind of photo should I upload?', 'One clear, well-lit, front-facing photo where your child’s face is in focus. Phone snapshots are fine — we don’t need a studio portrait. A recent everyday photo usually works best.'],
@@ -284,7 +311,7 @@ function EditorialFooter() {
       </div>
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 border-t border-[#dfd2b8] px-5 py-5 text-xs text-[#695f54] md:px-8">
         <span>© 2026 HeroStoryBooks · Made by a small team in California · <a href="mailto:support@herostorybooks.com" className="hover:text-[#a64c4c]">support@herostorybooks.com</a></span>
-        <span>SSL-encrypted · Stripe-secured · US shipping included</span>
+        <span>SSL-encrypted · Stripe-secured · US shipping included on printed books</span>
       </div>
     </footer>
   );
@@ -370,7 +397,8 @@ function HeroSection() {
             </div>
           )}
           <p className="mt-5 text-sm italic text-[#695f54]">
-            From <b className="not-italic text-[#1f1a16]">$19</b> digital · <b className="not-italic text-[#1f1a16]">$39</b> softcover · <b className="not-italic text-[#1f1a16]">$64</b> hardcover · <span className="not-italic font-semibold text-[#a64c4c]">US shipping included</span>
+            <b className="not-italic text-[#1f1a16]">Digital $19</b> · <b className="not-italic text-[#1f1a16]">Softcover $39</b> · <b className="not-italic text-[#1f1a16]">Hardcover $64</b>
+            <span className="block text-sm not-italic font-semibold text-[#a64c4c]">US shipping included on printed books</span>
           </p>
         </div>
         <BookCoverStack />
@@ -389,12 +417,16 @@ function BookCoverStack() {
     <div className="relative mx-auto w-full max-w-[520px]">
       <div className="overflow-hidden rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_30px_80px_-50px_rgba(31,26,22,0.55)]">
         <div className="aspect-[4/5] bg-[#eadfc7]">
-          {/* Was hsb-lukas-print-front-cover.jpg which exposed
-              "Made for Lukas Kaplun" in the cover subtitle. Swapped to
-              the watercolor dinosaur cover — same hero-cover feel,
-              shows the child + dinosaurs, and carries no real customer
-              surname on the artwork. */}
-          <img src="/assets/lukas-watercolor-dino-cover.jpg" alt="Watercolor dinosaur cover proof — child with a friendly T-Rex" className="h-full w-full object-cover" />
+          {/* Watercolor cover proof, off-center crop. The child's face
+              sits slightly left and below center on the source art;
+              object-position [30%_55%] biases the visible window so
+              the face lands in the upper-left third instead of being
+              clipped by the default 50%/50% center crop. */}
+          <img
+            src="/assets/lukas-watercolor-dino-cover.jpg"
+            alt="Watercolor dinosaur cover proof — child with a friendly T-Rex"
+            className="h-full w-full object-cover object-[30%_55%]"
+          />
         </div>
         <div className="border-t border-[#eadfc7] p-5">
           <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.22em] text-[#a64c4c]">Watercolor cover proof</div>
@@ -490,7 +522,7 @@ function SamplePreviewSection() {
   return (
     <section className="bg-[#fff8ec]/45 py-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
-        <SectionHeader eyebrow="What your book looks like" title="Full-color story art, built around your child." sub="These recent generated samples show the visual range more clearly: strong likeness, adventure scenes, and different story themes. Every order still gets its own review pass before final delivery or print." />
+        <SectionHeader eyebrow="Real order sample" title="One finished book, shown consistently." sub="The sample art below comes from the latest Lukas print production packet. Digital orders use the same proof-first story experience, without the print-and-ship step." />
         <div className="grid gap-5 md:grid-cols-3">
           {sampleBooks.map((book) => <SampleCard key={book.title} {...book} />)}
         </div>
@@ -599,7 +631,7 @@ function SeasonalCallout() {
     <section className="mx-auto max-w-6xl px-5 py-16 md:px-8">
       <div className="grid items-center gap-8 rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-7 md:grid-cols-[1fr_0.8fr] md:p-10">
         <div>
-          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">Father&apos;s Day-ready</div>
+          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">Father&apos;s Day gift</div>
           <h2 className="font-serif text-4xl font-medium leading-tight md:text-5xl">A gift Dad will actually keep.</h2>
           <p className="mt-4 text-base leading-7 text-[#695f54]">Choose Father&apos;s Day at checkout and we&apos;ll shape the story around your child&apos;s favorite memories with Dad — camping, building, bedtime stories, backyard adventures, or the little rituals only your family knows.</p>
           {fathersDay.tier !== 'past-event' && (
@@ -674,41 +706,77 @@ export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Sample" title="A peek inside a personalized proof book." sub="This page uses real proof images from the Lukas King of the Dinosaurs book: one child, one story, and the same proof-first process every order receives before final delivery or print." centered />
+        <SectionHeader eyebrow="Sample" title="A peek inside a personalized proof book." sub="This page uses watercolor proof art from the Lukas book work as a sample: one child, one story, one consistent watercolor direction. Real customer details aren't shown on the artwork. Digital buyers receive the same proof-first book as a PDF after approval." centered />
         <div className="grid items-start gap-8 md:grid-cols-[0.9fr_1.1fr]">
           <div className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
             <div className="mx-auto max-w-[320px] [perspective:1200px]">
               <div className="relative origin-left overflow-hidden rounded-xl bg-[#fff8ec] shadow-2xl ring-1 ring-[#d8c6a2] [transform:rotateY(-10deg)_rotateZ(-1deg)]">
+                {/* Was hsb-lukas-print-front-cover.jpg, which exposed
+                    "Made for Lukas Kaplun" as the cover subtitle.
+                    Replaced with the watercolor dinosaur cover that
+                    shows the child + dinosaurs without any real
+                    customer surname on the artwork. */}
                 <img
-                  src="/assets/hsb-lukas-print-front-cover.jpg"
-                  alt="Real Lukas dinosaur book front cover proof"
-                  className="aspect-[4/5] h-full w-full object-cover object-[50%_48%]"
+                  src="/assets/lukas-watercolor-dino-cover.jpg"
+                  alt="Watercolor dinosaur cover proof — child with a friendly T-Rex"
+                  className="aspect-[4/5] h-full w-full object-cover object-[30%_55%]"
                 />
                 <div className="absolute inset-y-0 left-0 w-7 bg-gradient-to-r from-black/18 to-transparent" aria-hidden="true" />
                 <div className="absolute inset-y-0 right-0 w-4 bg-white/30" aria-hidden="true" />
               </div>
             </div>
-            <p className="mt-5 text-center text-xs leading-5 text-[#695f54]">A real front-cover proof, displayed as a book-style mockup. Every new order still receives its own proof and approval pass.</p>
+            <p className="mt-5 text-center text-xs leading-5 text-[#695f54]">A watercolor dinosaur cover proof, displayed as a book-style mockup. Every new order still receives its own proof and approval pass.</p>
           </div>
           <div className="space-y-5">
+            {/* Was hsb-lukas-print-cover-wrap.jpg, the front-and-back
+                production cover wrap — which exposed "Made for Lukas
+                Kaplun" on the front face AND "With Love from Alexy
+                Kaplun & Michelle Kim" on the back face. Replaced with
+                the bedtime illustration proof. We lose the
+                "production-artifact" framing for the lead figure, but
+                we keep the child-visible, no-surname rule intact.
+                Real production artifacts still appear lower on this
+                page as "inside the book" interior proofs. */}
             <figure className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-3 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
+              {/* Bedtime hero figure crop tightened from 16:10 → 4:3 so
+                  the child reading on the bed isn't letterboxed off the
+                  top edge. object-position center-top keeps the lamp +
+                  dream bubble in frame instead of cropping them. */}
               <img
-                src="/assets/hsb-lukas-print-cover-wrap.jpg"
-                alt="Real Lukas dinosaur book full cover wrap proof"
-                className="aspect-[16/10] w-full rounded-xl object-cover object-[50%_45%]"
+                src="/assets/lukas-dino-bedtime-proof.jpg"
+                alt="Bedtime illustration proof — child reading the book with a dinosaur dream above the lamp"
+                className="aspect-[4/3] w-full rounded-xl object-cover object-[50%_30%]"
                 loading="lazy"
               />
               <figcaption className="mt-3 px-2 text-center text-xs leading-5 text-[#695f54]">
-                The real cover-wrap proof from the Dino/Lukas book, shown here so the sample page matches the story below.
+                A bedtime illustration proof from the watercolor direction. Illustration only — no real customer details shown on the artwork.
               </figcaption>
             </figure>
+            {/* Supporting-proof grid — three real interior pages from
+                the Lukas print order. lukas-watercolor-adventure-page.jpg
+                was removed in the 2026-05-19 launch round: weak Lukas
+                likeness (kneeling, far from camera, indistinct face),
+                no story-text context, and read as disconnected from the
+                proofed book. No replacement asset substituted; per the
+                rule "remove the tile rather than show weak art." Grid
+                drops to sm:grid-cols-3 so the row stays balanced. */}
+            {/* Interior-proof grid. Square crops biased upward
+                (object-position 50% 35%) so the child's face / upper
+                body stays in frame on each tile instead of being
+                clipped by the centered crop default. */}
             <div className="grid gap-4 sm:grid-cols-3">
               {[
-                ['/assets/hsb-lukas-print-dedication.jpg', 'Dedication page from the real Lukas dinosaur book proof'],
+                ['/assets/hsb-lukas-print-story-07.jpg', 'Interior page from a real Lukas-book order — dinosaur story page'],
                 ['/assets/hsb-lukas-print-story-16.jpg', 'Interior page from a real Lukas-book order — two sides of the hero'],
                 ['/assets/hsb-lukas-print-story-21.jpg', 'Interior page from a real Lukas-book order — story spread'],
               ].map(([src, alt]) => (
-                <img key={src} src={src} alt={alt} className="aspect-square w-full rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] object-cover object-[50%_35%]" loading="lazy" />
+                <img
+                  key={src}
+                  src={src}
+                  alt={alt}
+                  className="aspect-square w-full rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] object-cover object-[50%_35%]"
+                  loading="lazy"
+                />
               ))}
             </div>
           </div>
