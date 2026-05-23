@@ -3,7 +3,7 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Progress } from '@/components/ui/progress';
-import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from '@/lib/checkout-flow';
+import { FREE_US_SHIPPING_NOTE, PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from '@/lib/checkout-flow';
 import { VoiceRecorderSection } from '@/components/checkout/VoiceRecorderSection';
 import { CHECKOUT_SAMPLE_IMAGES, STORY_OCCASIONS, STORY_THEMES } from '@/lib/story-catalog';
 
@@ -42,7 +42,22 @@ const OCCASIONS = STORY_OCCASIONS;
 // → final PDF / print). Prices match src/lib/orders.ts FORMAT_META
 // priceCents (1499 / 4499 / 6499) and src/lib/pricing.ts. Update all
 // three together if backend pricing changes.
-const FORMATS = [
+// valueNote distinguishes softcover vs hardcover at the point of choice;
+// includesUsShipping surfaces FREE_US_SHIPPING_NOTE so the printed price
+// reads as all-in. Digital intentionally has neither (no shipping step).
+interface CheckoutFormat {
+  id: string;
+  label: string;
+  price: string;
+  priceNum: number;
+  delivery: string;
+  deliveryDetail: string;
+  badge?: string;
+  valueNote?: string;
+  includesUsShipping?: boolean;
+}
+
+const FORMATS: CheckoutFormat[] = [
   {
     id: 'digital',
     label: 'Digital',
@@ -59,6 +74,8 @@ const FORMATS = [
     badge: 'Most Popular',
     delivery: 'Softcover ships 5–7 business days after proof approval',
     deliveryDetail: 'Digital proof first; final PDF included after you approve',
+    valueNote: 'Flexible softcover keepsake at our lowest print price',
+    includesUsShipping: true,
   },
   {
     id: 'premium',
@@ -67,6 +84,8 @@ const FORMATS = [
     priceNum: 64.99,
     delivery: 'Hardcover ships 5–7 business days after proof approval',
     deliveryDetail: 'Digital proof first; final PDF included after you approve',
+    valueNote: 'Sturdy hardcover binding built to last — best for gifts & keepsakes',
+    includesUsShipping: true,
   },
 ];
 
@@ -675,6 +694,12 @@ export function CheckoutForm() {
                     </div>
                     <p className="text-sm text-gray-600">{fmt.delivery}</p>
                     <p className="text-xs text-gray-400 mt-0.5">{fmt.deliveryDetail}</p>
+                    {fmt.valueNote && (
+                      <p className="text-xs text-gray-500 mt-1">{fmt.valueNote}</p>
+                    )}
+                    {fmt.includesUsShipping && (
+                      <p className="text-xs font-semibold text-forest mt-1">✓ {FREE_US_SHIPPING_NOTE}</p>
+                    )}
                   </div>
                   <span className="font-bold text-xl text-forest flex-shrink-0">{fmt.price}</span>
                 </button>
@@ -856,6 +881,12 @@ export function CheckoutForm() {
                 <span>Format</span>
                 <span className="font-medium">{selectedFormat.label}</span>
               </div>
+              {selectedFormat.includesUsShipping && (
+                <div className="flex justify-between">
+                  <span>US shipping</span>
+                  <span className="font-medium text-green-700">Free</span>
+                </div>
+              )}
               <div className="mt-2 text-xs text-gray-500 bg-white/60 rounded-lg px-3 py-2">
                 {selectedFormat.delivery}
               </div>

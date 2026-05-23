@@ -10,6 +10,11 @@ export const CHECKOUT_SECTION_ORDER = [
 export const PRINT_PREVIEW_PROMISE =
   'Print books include a digital preview first, so you can approve everything before it prints.';
 
+// Surfaced on printed-tier surfaces (format selector + order summary) so the
+// shown price reads as all-in: US shipping is included, not added at the end.
+// Digital must never show this — it has no shipping step (see pricing tests).
+export const FREE_US_SHIPPING_NOTE = 'Free US shipping included';
+
 export const PHOTO_UPLOAD_HELP =
   'No photo yet? Start now and add a photo later before you place the order. Large phone photos are automatically reduced when we can.';
 

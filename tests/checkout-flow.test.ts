@@ -5,6 +5,7 @@ import {
   CHECKOUT_SECTION_ORDER,
   PRINT_PREVIEW_PROMISE,
   PHOTO_UPLOAD_HELP,
+  FREE_US_SHIPPING_NOTE,
   canSubmitCheckoutForm,
   selectAdventureValue,
   missingRequiredField,
@@ -26,6 +27,13 @@ test('checkout flow leads with story and hero details before photo upload', () =
 test('print preview promise clearly says approval happens before printing', () => {
   assert.match(PRINT_PREVIEW_PROMISE, /approve/i);
   assert.match(PRINT_PREVIEW_PROMISE, /before it prints/i);
+});
+
+test('free US shipping note reassures printed-tier buyers the price is all-in', () => {
+  assert.match(FREE_US_SHIPPING_NOTE, /free/i);
+  assert.match(FREE_US_SHIPPING_NOTE, /us shipping/i);
+  // Kept short so it fits one line in the format card + order summary.
+  assert.ok(FREE_US_SHIPPING_NOTE.length <= 40, 'shipping note must stay compact to avoid overflow');
 });
 
 test('photo upload help supports gift buyers who want to start before finding a photo', () => {
