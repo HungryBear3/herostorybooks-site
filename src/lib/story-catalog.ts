@@ -117,7 +117,7 @@ export const FEATURED_STORY_THEMES: StoryTheme[] = FEATURED_THEME_ORDER
   .filter((theme): theme is StoryTheme => Boolean(theme));
 
 export const CHECKOUT_SAMPLE_IMAGES = [
-  '/assets/lukas-sample-space-rocket-launch.png',
-  '/assets/lukas-sample-space-helmet-closeup.png',
-  '/assets/lukas-sample-dino-temple-closeup.jpg',
+  '/assets/lukas-sample-forest-portrait.jpg',
+  '/assets/lukas-sample-dino-walk.jpg',
+  '/assets/lukas-sample-space-portrait.jpg',
 ];
