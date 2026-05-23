@@ -8,6 +8,7 @@
     "launch:hygiene": "node scripts/launch-hygiene-check.mjs",
     "lint": "eslint .",
     "order:status": "node --experimental-strip-types scripts/order-status.ts",
+    "order:watchdog": "node --experimental-strip-types scripts/order-watchdog.ts",
     "start": "next start",
     "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
