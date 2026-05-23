@@ -13,11 +13,10 @@ export interface PublicPricingPlan {
 export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
   {
     id: 'digital',
-    name: 'Digital',
-    price: '$14.99',
-    anchorPrice: '$19.99',
-    description: 'Personalized PDF delivered fast',
-    promise: 'Delivered by email in about 15 minutes.',
+    name: 'Digital PDF',
+    price: '$19',
+    description: 'Digital proof first, then high-resolution PDF',
+    promise: 'Digital proof usually ready within 2 business days; final high-res PDF delivered after approval. No printing or shipping step.',
     features: [
       'Personalized digital storybook PDF',
       'Read on any device',
@@ -28,13 +27,13 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
   },
   {
     id: 'classic',
-    name: 'Classic',
-    price: '$39.99',
+    name: 'Classic softcover',
+    price: '$39',
     description: 'Softcover keepsake with digital preview',
-    promise: 'Free shipping included. Ships in 5–7 business days. A digital preview arrives first so you can approve before it prints.',
+    promise: 'Free shipping included for US orders. Ships in 5–7 business days. A digital preview arrives first so you can approve before it prints.',
     features: [
       'Premium softcover printed book',
-      'Free shipping included',
+      'Free shipping included for US orders',
       'Digital preview approval before print',
       'Digital PDF included',
     ],
@@ -43,13 +42,13 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
   },
   {
     id: 'premium',
-    name: 'Premium',
-    price: '$59.99',
+    name: 'Premium hardcover',
+    price: '$64',
     description: 'Hardcover keepsake edition',
-    promise: 'Free shipping included. Ships in 5–7 business days. A digital preview arrives first so you can approve before it prints.',
+    promise: 'Free shipping included for US orders. Ships in 5–7 business days. A digital preview arrives first so you can approve before it prints.',
     features: [
       'Beautiful hardcover printed book',
-      'Free shipping included',
+      'Free shipping included for US orders',
       'Digital preview approval before print',
       'Digital PDF included',
       'Best for special gifts and keepsakes',

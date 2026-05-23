@@ -37,8 +37,8 @@ test('digital order also starts with paymentStatus pending', () => {
     email: 'test@example.com',
   });
   assert.equal(order.paymentStatus, 'pending');
-  assert.equal(order.priceCents, 1499);
-  assert.equal(order.formatLabel, 'Digital');
+  assert.equal(order.priceCents, 1900);
+  assert.equal(order.formatLabel, 'Digital instant');
 });
 
 // ── updateOrderPayment ───────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ const DUMMY_ORDER: OrderRecord = {
   childName: 'Sam',
   bookFormat: 'classic',
   formatLabel: 'Classic',
-  priceCents: 3999,
+  priceCents: 3900,
   email: 'sam@example.com',
   status: 'order_received',
   paymentStatus: 'pending',

@@ -85,7 +85,7 @@ test('buildRecoveryOrderRecord: digital format yields the digital priceCents + d
     email: 'a@b.com',
   });
   assert.equal(r.bookFormat, 'digital');
-  assert.equal(r.priceCents, 1499);
+  assert.equal(r.priceCents, 1900);
   assert.match(r.deliveryExpectation, /PDF/);
 });
 
