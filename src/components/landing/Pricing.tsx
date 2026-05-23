@@ -16,7 +16,7 @@ const plans = [
   {
     id: 'starter',
     title: 'Digital',
-    price: '$14.99',
+    price: '$19',
     description: 'Personalized PDF after proof approval',
     features: [
       'Personalized PDF storybook',
@@ -31,7 +31,7 @@ const plans = [
   {
     id: 'classic',
     title: 'Classic',
-    price: '$39.99',
+    price: '$39',
     description: 'Softcover printed book',
     features: [
       'Premium softcover book',
@@ -47,7 +47,7 @@ const plans = [
   {
     id: 'premium',
     title: 'Premium',
-    price: '$59.99',
+    price: '$64',
     description: 'Hardcover keepsake edition',
     features: [
       'Premium hardcover book',
