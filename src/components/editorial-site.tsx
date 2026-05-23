@@ -100,21 +100,29 @@ const lukasStorySnippets = [
     page: '1',
     title: 'The wish',
     body: 'Lukas did not want to just visit Dinosaur World. He wanted to be a real dinosaur, with a tail behind him and jungle light on his claws.',
+    image: '/assets/hsb-lukas-print-story-01.jpg',
+    imageAlt: 'Real Lukas dinosaur book story page for The wish',
   },
   {
     page: '2',
     title: 'The big decision',
     body: 'The leaves smelled wet and green. Lukas could stay where the room was quiet, or he could step through the bright doorway. He stepped through.',
+    image: '/assets/hsb-lukas-print-story-07.jpg',
+    imageAlt: 'Real Lukas dinosaur book story page for The big decision',
   },
   {
     page: '3',
     title: 'The two sides of Lukas',
     body: 'One side of him was T-Rex brave. One side was triceratops strong. Lukas stood between them and understood that both sides belonged to him.',
+    image: '/assets/hsb-lukas-print-story-16.jpg',
+    imageAlt: 'Real Lukas dinosaur book story page for The two sides of Lukas',
   },
   {
     page: 'Final',
     title: 'The crown',
     body: 'The brontosauruses lowered a leafy crown onto his head. Lukas held very still. Then the whole valley stomped once, very softly, for their king.',
+    image: '/assets/hsb-lukas-print-story-21.jpg',
+    imageAlt: 'Real Lukas dinosaur book story page for The crown',
   },
 ];
 
@@ -196,30 +204,13 @@ function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' })
     active === id ? 'text-[#1f1a16] underline decoration-[#a64c4c]' : 'text-[#695f54]'
   );
 
-  // Mobile-nav menu items reused inside the <details> drawer so visitors
-  // at 375/390px have a one-tap path to Sample, Pricing, FAQ, and Start.
-  const mobileItems: Array<[string, string]> = [
-    ['How it works', '/#how'],
-    ['Sample', '/samples'],
-    ['Pricing', '/pricing'],
-    ['FAQ', '/#faq'],
-  ];
-
   return (
     <header className="sticky top-0 z-50 border-b border-[#dfd2b8] bg-[#f8f0dd]/95 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 md:gap-4 md:px-8 md:py-4">
-        {/* Logo. min-w-0 lets the truncate class work; tracking-[0.10em] on
-            mobile shaves enough letter-spacing to keep "HeroStoryBooks"
-            from overflowing at 375px. */}
-        <Link
-          href="/"
-          className="flex min-w-0 items-center gap-2 font-serif text-[15px] font-semibold uppercase tracking-[0.10em] text-[#1f1a16] md:gap-3 md:text-lg md:tracking-[0.14em]"
-        >
-          <span className="h-2 w-2 shrink-0 rounded-full bg-[#a64c4c] shadow-[0_0_0_4px_rgba(166,76,76,0.14)]" />
-          <span className="truncate">HeroStoryBooks</span>
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-4 md:px-8">
+        <Link href="/" className="flex items-center gap-3 font-serif text-base font-semibold uppercase tracking-[0.14em] text-[#1f1a16] md:text-lg">
+          <span className="h-2 w-2 rounded-full bg-[#a64c4c] shadow-[0_0_0_4px_rgba(166,76,76,0.14)]" />
+          HeroStoryBooks
         </Link>
-
-        {/* Desktop nav. */}
         <nav className="hidden items-center gap-8 md:flex">
           <Link href="/#how" className={linkClass('home')}>How it works</Link>
           <Link href="/samples" className={linkClass('sample')}>Sample</Link>
@@ -227,67 +218,9 @@ function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' })
           <Link href="/#faq" className="text-sm font-medium text-[#695f54] transition hover:text-[#a64c4c]">FAQ</Link>
           <PrimaryCta href="/checkout" size="sm">Start your book</PrimaryCta>
         </nav>
-
-        {/* Mobile: compact Start button + accessible <details> drawer.
-            <details>/<summary> is a native disclosure widget; it
-            announces correctly to screen readers and needs no React
-            state or client JS. The drawer panel positions absolutely so
-            it overlays page content instead of pushing it down. */}
-        <div className="flex items-center gap-2 md:hidden">
-          <Link
-            href="/checkout"
-            className="rounded-full bg-[#1f1a16] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#fff8ec] shadow-sm"
-          >
-            Start
-          </Link>
-          <details className="relative">
-            <summary
-              aria-label="Open navigation menu"
-              className="inline-flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-full border border-[#d8c6a2] bg-[#fff8ec] text-[#1f1a16] [&::-webkit-details-marker]:hidden"
-            >
-              <span aria-hidden="true" className="relative block h-3 w-5">
-                <span className="absolute left-0 top-0 h-[2px] w-5 rounded bg-[#1f1a16]" />
-                <span className="absolute left-0 top-[5px] h-[2px] w-5 rounded bg-[#1f1a16]" />
-                <span className="absolute bottom-0 left-0 h-[2px] w-5 rounded bg-[#1f1a16]" />
-              </span>
-            </summary>
-            <div
-              role="menu"
-              aria-label="Site navigation"
-              className="absolute right-0 top-12 z-50 w-60 overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_30px_60px_-30px_rgba(31,26,22,0.45)]"
-            >
-              <ul className="divide-y divide-[#eadfc7] py-1 text-sm">
-                {mobileItems.map(([label, href]) => (
-                  <li key={label}>
-                    <Link
-                      href={href}
-                      className={cx(
-                        'block px-4 py-3 font-medium text-[#1f1a16] transition hover:bg-[#f5ead2]',
-                        (label === 'Sample' && active === 'sample') ||
-                          (label === 'Pricing' && active === 'pricing') ||
-                          (label === 'How it works' && active === 'home')
-                          ? 'text-[#a64c4c]'
-                          : ''
-                      )}
-                      role="menuitem"
-                    >
-                      {label}
-                    </Link>
-                  </li>
-                ))}
-                <li>
-                  <Link
-                    href="/checkout"
-                    role="menuitem"
-                    className="block bg-[#1f1a16] px-4 py-3 text-center text-xs font-semibold uppercase tracking-[0.14em] text-[#fff8ec]"
-                  >
-                    Start your book
-                  </Link>
-                </li>
-              </ul>
-            </div>
-          </details>
-        </div>
+        <Link href="/checkout" className="rounded-full bg-[#1f1a16] px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#fff8ec] shadow-sm md:hidden">
+          Start
+        </Link>
       </div>
     </header>
   );
@@ -503,7 +436,7 @@ function HowItWorksSection() {
     ['3', 'You approve, then we print', 'We email a full digital proof. Nothing prints until you approve. Revisions are free.'],
   ];
   return (
-    <section id="how" className="mx-auto max-w-6xl px-5 pt-10 pb-10 md:px-8 md:pt-16 md:pb-12">
+    <section id="how" className="mx-auto max-w-6xl px-5 pt-10 pb-4 md:px-8 md:pt-16 md:pb-6">
       <SectionHeader eyebrow="How it works" title="A custom book without the custom-project chaos." centered />
       <div className="grid gap-5 md:grid-cols-3">
         {steps.map(([n, title, body]) => (
@@ -520,7 +453,7 @@ function HowItWorksSection() {
 
 function SamplePreviewSection() {
   return (
-    <section className="bg-[#fff8ec]/45 pt-10 pb-20 md:pt-12 md:pb-20">
+    <section className="bg-[#fff8ec]/45 pt-4 pb-20 md:pt-6 md:pb-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
         <SectionHeader eyebrow="Real order sample" title="One finished book, shown consistently." sub="The sample art below comes from the latest Lukas print production packet. Digital orders use the same proof-first story experience, without the print-and-ship step." />
         <div className="grid gap-5 md:grid-cols-3">
@@ -781,12 +714,20 @@ export function EditorialSamplesPage() {
             </div>
           </div>
         </div>
-        <div className="mx-auto mt-10 max-w-3xl space-y-5">
-          {lukasStorySnippets.map(({ page, title, body }) => (
-            <article key={page} className="relative rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-7 shadow-[0_20px_60px_-52px_rgba(31,26,22,0.35)]">
-              <div className="absolute right-5 top-5 font-serif text-sm italic text-[#9a8d7b]">— {page} —</div>
-              <h3 className="pr-16 font-serif text-3xl font-semibold">{title}</h3>
-              <p className="mt-4 text-base leading-8 text-[#695f54]">{body}</p>
+        <div className="mx-auto mt-10 max-w-5xl space-y-5">
+          {lukasStorySnippets.map(({ page, title, body, image, imageAlt }) => (
+            <article key={page} className="grid overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_20px_60px_-52px_rgba(31,26,22,0.35)] md:grid-cols-[0.92fr_1fr]">
+              <img
+                src={image}
+                alt={imageAlt}
+                className="aspect-[4/3] h-full w-full object-cover object-[50%_35%] md:aspect-auto"
+                loading="lazy"
+              />
+              <div className="relative p-7">
+                <div className="absolute right-5 top-5 font-serif text-sm italic text-[#9a8d7b]">— {page} —</div>
+                <h3 className="pr-16 font-serif text-3xl font-semibold">{title}</h3>
+                <p className="mt-4 text-base leading-8 text-[#695f54]">{body}</p>
+              </div>
             </article>
           ))}
         </div>
