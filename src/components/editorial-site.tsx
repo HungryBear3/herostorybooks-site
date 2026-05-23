@@ -43,20 +43,20 @@ const tiers: Tier[] = [
 
 const sampleBooks = [
   {
-    tag: 'WATERCOLOR DINOSAUR COVER',
-    title: 'A Dinosaur Adventure Cover',
+    tag: 'REAL BOOK COVER',
+    title: 'Lukas, King of the Dinosaurs',
     star: 'the child',
     tone: 'hardcover',
-    image: '/assets/lukas-watercolor-dino-cover.jpg',
-    copy: 'A watercolor dinosaur cover proof — example of the personalized cover direction, with no real customer details on the artwork.',
+    image: '/assets/hsb-lukas-print-front-cover.jpg',
+    copy: 'The real cover proof from the Dino/Lukas book, shown as an example of the finished keepsake direction.',
   },
   {
-    tag: 'DINOSAUR STORY ART',
-    title: 'Bedtime With Dinosaurs',
+    tag: 'INTERIOR PAGE',
+    title: 'The Two Sides of Lukas',
     star: 'the child',
     tone: 'softcover',
-    image: '/assets/lukas-dino-bedtime-proof.jpg',
-    copy: 'A bedtime spread from the proof set — the child reading the book while a friendly dinosaur dream takes shape above the lamp. Illustration only, no story text overlaid.',
+    image: '/assets/hsb-lukas-print-story-16.jpg',
+    copy: 'A real interior page from the proofed book, matching the Dino story text on this sample page.',
   },
   {
     tag: 'INTERIOR PROOF',
@@ -674,37 +674,37 @@ export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Sample" title="A peek inside a personalized proof book." sub="This page uses watercolor proof art from the Lukas book work as a sample: one child, one story, one consistent watercolor direction. Real customer details aren't shown on the artwork. Digital buyers receive the same proof-first book as a PDF after approval." centered />
+        <SectionHeader eyebrow="Sample" title="A peek inside a personalized proof book." sub="This page uses real proof images from the Lukas King of the Dinosaurs book: one child, one story, and the same proof-first process every order receives before final delivery or print." centered />
         <div className="grid items-start gap-8 md:grid-cols-[0.9fr_1.1fr]">
           <div className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
             <div className="mx-auto max-w-[320px] [perspective:1200px]">
               <div className="relative origin-left overflow-hidden rounded-xl bg-[#fff8ec] shadow-2xl ring-1 ring-[#d8c6a2] [transform:rotateY(-10deg)_rotateZ(-1deg)]">
                 <img
-                  src="/assets/lukas-watercolor-dino-cover.jpg"
-                  alt="Watercolor dinosaur cover proof — child with a friendly T-Rex"
-                  className="aspect-[4/5] h-full w-full object-cover object-[30%_55%]"
+                  src="/assets/hsb-lukas-print-front-cover.jpg"
+                  alt="Real Lukas dinosaur book front cover proof"
+                  className="aspect-[4/5] h-full w-full object-cover object-[50%_48%]"
                 />
                 <div className="absolute inset-y-0 left-0 w-7 bg-gradient-to-r from-black/18 to-transparent" aria-hidden="true" />
                 <div className="absolute inset-y-0 right-0 w-4 bg-white/30" aria-hidden="true" />
               </div>
             </div>
-            <p className="mt-5 text-center text-xs leading-5 text-[#695f54]">A watercolor dinosaur cover proof, displayed as a book-style mockup. Every new order still receives its own proof and approval pass.</p>
+            <p className="mt-5 text-center text-xs leading-5 text-[#695f54]">A real front-cover proof, displayed as a book-style mockup. Every new order still receives its own proof and approval pass.</p>
           </div>
           <div className="space-y-5">
             <figure className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-3 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
               <img
-                src="/assets/lukas-dino-bedtime-proof.jpg"
-                alt="Bedtime illustration proof — child reading the book with a dinosaur dream above the lamp"
-                className="aspect-[4/3] w-full rounded-xl object-cover object-[50%_30%]"
+                src="/assets/hsb-lukas-print-cover-wrap.jpg"
+                alt="Real Lukas dinosaur book full cover wrap proof"
+                className="aspect-[16/10] w-full rounded-xl object-cover object-[50%_45%]"
                 loading="lazy"
               />
               <figcaption className="mt-3 px-2 text-center text-xs leading-5 text-[#695f54]">
-                A bedtime illustration proof from the watercolor direction. Illustration only — no real customer details shown on the artwork.
+                The real cover-wrap proof from the Dino/Lukas book, shown here so the sample page matches the story below.
               </figcaption>
             </figure>
             <div className="grid gap-4 sm:grid-cols-3">
               {[
-                ['/assets/hsb-lukas-print-story-07.jpg', 'Interior page from a real Lukas-book order — dinosaur story page'],
+                ['/assets/hsb-lukas-print-dedication.jpg', 'Dedication page from the real Lukas dinosaur book proof'],
                 ['/assets/hsb-lukas-print-story-16.jpg', 'Interior page from a real Lukas-book order — two sides of the hero'],
                 ['/assets/hsb-lukas-print-story-21.jpg', 'Interior page from a real Lukas-book order — story spread'],
               ].map(([src, alt]) => (
