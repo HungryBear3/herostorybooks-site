@@ -483,7 +483,7 @@ function SampleCard({ tag, title, copy, tone, image }: (typeof sampleBooks)[numb
 
 function PrivacyBand() {
   return (
-    <section className="mx-auto max-w-6xl px-5 py-16 md:px-8">
+    <section className="mx-auto max-w-6xl px-5 pt-12 pb-5 md:px-8 md:pt-16 md:pb-6">
       <div className="grid gap-5 rounded-3xl border border-[#d8c6a2] bg-[#f5ead2] p-7 md:grid-cols-3 md:p-10">
         {[
           ['Private by default', 'Your photo and details are used only to make the book. We never sell them or use them to train AI.'],
@@ -524,7 +524,7 @@ function ReviewsSection() {
 
 function PricingPreviewSection() {
   return (
-    <section id="pricing" className="bg-[#fff8ec]/45 py-20">
+    <section id="pricing" className="bg-[#fff8ec]/45 pt-6 pb-20 md:pt-8 md:pb-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
         <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Same hand-edited story and full-color illustrations in all formats. Physical books include US shipping." centered />
         <TierCards />
