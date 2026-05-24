@@ -40,22 +40,22 @@ const OCCASIONS = STORY_OCCASIONS;
 // FORMATS — display copy aligned to the editorial landing tone:
 // no emoji-as-icon; proof-first promise (digital proof → parent approval
 // → final PDF / print). Prices match src/lib/orders.ts FORMAT_META
-// priceCents (1900 / 3900 / 6400) and src/lib/pricing.ts. Update all
+// priceCents (1499 / 4499 / 6499) and src/lib/pricing.ts. Update all
 // three together if backend pricing changes.
 const FORMATS = [
   {
     id: 'digital',
     label: 'Digital',
-    price: '$19',
-    priceNum: 19,
+    price: '$14.99',
+    priceNum: 14.99,
     delivery: 'Digital proof first, then final PDF after approval',
     deliveryDetail: 'Proofs usually ready within 2 business days · Read on any device · Print at home',
   },
   {
     id: 'classic',
     label: 'Classic',
-    price: '$39',
-    priceNum: 39,
+    price: '$44.99',
+    priceNum: 44.99,
     badge: 'Most Popular',
     delivery: 'Softcover ships 5–7 business days after proof approval',
     deliveryDetail: 'Digital proof first; final PDF included after you approve',
@@ -63,8 +63,8 @@ const FORMATS = [
   {
     id: 'premium',
     label: 'Premium',
-    price: '$64',
-    priceNum: 64,
+    price: '$64.99',
+    priceNum: 64.99,
     delivery: 'Hardcover ships 5–7 business days after proof approval',
     deliveryDetail: 'Digital proof first; final PDF included after you approve',
   },

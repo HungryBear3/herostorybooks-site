@@ -312,9 +312,9 @@ interface CreateOrderOptions {
 }
 
 const FORMAT_META: Record<BookFormat, { label: string; priceCents: number }> = {
-  digital: { label: 'Digital instant', priceCents: 1900 },
-  classic: { label: 'Classic softcover', priceCents: 3900 },
-  premium: { label: 'Premium hardcover', priceCents: 6400 },
+  digital: { label: 'Digital PDF', priceCents: 1499 },
+  classic: { label: 'Classic softcover', priceCents: 4499 },
+  premium: { label: 'Premium hardcover', priceCents: 6499 },
 };
 
 /**

@@ -16,7 +16,7 @@ type Tier = {
 };
 
 // Canonical pricing — matches src/lib/orders.ts FORMAT_META.priceCents
-// (1900 / 3900 / 6400) and src/lib/pricing.ts PUBLIC_PRICING_PLANS.
+// (1499 / 4499 / 6499) and src/lib/pricing.ts PUBLIC_PRICING_PLANS.
 // If backend priceCents change, update this list AND lib/pricing.ts in
 // the same commit so the customer-facing display never diverges from
 // what Stripe actually charges.
@@ -24,14 +24,14 @@ const tiers: Tier[] = [
   {
     id: 'digital',
     name: 'Digital PDF',
-    price: 19,
+    price: 14.99,
     sub: 'Proof first, then high-resolution PDF',
     blurb: 'We email a digital proof first, usually within 2 business days. Once you approve, you receive the final high-resolution PDF to print at home, share, or read on any screen. No printing or shipping step.',
   },
   {
     id: 'softcover',
     name: 'Classic softcover',
-    price: 39,
+    price: 44.99,
     sub: '8.5″ × 8.5″ · perfect-bound',
     blurb: 'Full-color matte pages, perfect-bound spine, and a keepsake feel without the hardcover price.',
     badge: 'Most popular',
@@ -40,7 +40,7 @@ const tiers: Tier[] = [
   {
     id: 'hardcover',
     name: 'Premium hardcover',
-    price: 64,
+    price: 64.99,
     sub: '8.5″ × 8.5″ · keepsake gift finish',
     blurb: 'Premium full-color pages, sturdy case binding, and a gift-ready finish for grandparents and big occasions.',
   },
@@ -397,7 +397,7 @@ function HeroSection() {
             </div>
           )}
           <p className="mt-5 text-sm italic text-[#695f54]">
-            <b className="not-italic text-[#1f1a16]">Digital $19</b> · <b className="not-italic text-[#1f1a16]">Softcover $39</b> · <b className="not-italic text-[#1f1a16]">Hardcover $64</b>
+            <b className="not-italic text-[#1f1a16]">Digital $14.99</b> · <b className="not-italic text-[#1f1a16]">Softcover $44.99</b> · <b className="not-italic text-[#1f1a16]">Hardcover $64.99</b>
             <span className="block text-sm not-italic font-semibold text-[#a64c4c]">US shipping included on printed books</span>
           </p>
         </div>
@@ -683,7 +683,7 @@ export function EditorialPricingPage() {
   return (
     <EditorialPageShell active="pricing">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Digital $19, Classic softcover $39, Premium hardcover $64. US shipping included for printed books. Digital proofs are usually ready within 2 business days; printed books ship 5–7 business days after approval." centered />
+        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Digital $14.99, Classic softcover $44.99, Premium hardcover $64.99. US shipping included for printed books. Digital proofs are usually ready within 2 business days; printed books ship 5–7 business days after approval." centered />
         <TierCards />
         <div className="mt-12 overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec]">
           <div className="grid grid-cols-[1.3fr_repeat(3,0.8fr)] border-b border-[#d8c6a2] bg-[#f5ead2] text-sm font-semibold text-[#1f1a16]">
