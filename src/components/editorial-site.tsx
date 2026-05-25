@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { NamePreview } from '@/components/name-preview';
 import { AnalyticsPageView } from '@/components/analytics-page-view';
-import { getFathersDayCountdown, type FathersDayCountdown } from '@/lib/fathers-day';
+import { getFathersDayCountdown, FATHERS_DAY_OFFER, type FathersDayCountdown } from '@/lib/fathers-day';
 
 type TierId = 'digital' | 'softcover' | 'hardcover';
 
@@ -16,7 +16,7 @@ type Tier = {
 };
 
 // Canonical pricing — matches src/lib/orders.ts FORMAT_META.priceCents
-// (1900 / 3900 / 6400) and src/lib/pricing.ts PUBLIC_PRICING_PLANS.
+// (1499 / 4499 / 6499) and src/lib/pricing.ts PUBLIC_PRICING_PLANS.
 // If backend priceCents change, update this list AND lib/pricing.ts in
 // the same commit so the customer-facing display never diverges from
 // what Stripe actually charges.
@@ -24,14 +24,14 @@ const tiers: Tier[] = [
   {
     id: 'digital',
     name: 'Digital PDF',
-    price: 19,
+    price: 14.99,
     sub: 'Proof first, then high-resolution PDF',
     blurb: 'We email a digital proof first, usually within 2 business days. Once you approve, you receive the final high-resolution PDF to print at home, share, or read on any screen. No printing or shipping step.',
   },
   {
     id: 'softcover',
     name: 'Classic softcover',
-    price: 39,
+    price: 44.99,
     sub: '8.5″ × 8.5″ · perfect-bound',
     blurb: 'Full-color matte pages, perfect-bound spine, and a keepsake feel without the hardcover price.',
     badge: 'Most popular',
@@ -40,7 +40,7 @@ const tiers: Tier[] = [
   {
     id: 'hardcover',
     name: 'Premium hardcover',
-    price: 64,
+    price: 64.99,
     sub: '8.5″ × 8.5″ · keepsake gift finish',
     blurb: 'Premium full-color pages, sturdy case binding, and a gift-ready finish for grandparents and big occasions.',
   },
@@ -131,6 +131,7 @@ const faqs: Array<[string, string]> = [
   ['Do I approve it before printing? Can I request changes?', 'Yes — and always. Physical books are not printed until you approve the digital proof. Reply to the proof email with any changes: story wording, photo placement, dedication, character details, scene tone. Revisions before approval are included, not an upsell.'],
   ['How long does it take from order to delivery?', 'Digital proofs are usually ready within 2 business days. After you approve, digital PDFs are delivered the same day; printed books ship 5–7 business days after approval, then US delivery is typically 3–5 days. We don’t guarantee specific holiday-delivery dates because carriers can vary.'],
   ['Will it arrive in time for a birthday or Father’s Day?', 'Most US orders that approve their proof at least 9–12 days before the date arrive in time, but we don’t promise specific dates — shipping carriers vary. If timing is tight, the Digital PDF is a reliable fallback you can print at home or share instantly.'],
+  ['Which option is safest for a Father’s Day gift?', 'The Digital PDF. Once you approve the proof, it’s delivered the same day with no printing or shipping step, so there’s no carrier timing risk — you can print it at home or share it instantly. A printed softcover or hardcover is an optional upgrade that ships after approval; arrival depends on the order-by date and your carrier, so we don’t promise a printed book will arrive by Father’s Day.'],
   ['Can I send it as a gift or surprise someone?', 'Yes. Add a dedication and gift message at checkout. The proof email goes to whoever you list as the buyer, not the recipient, so the surprise stays intact.'],
   ['What if my child doesn’t like the proof?', 'Reply to the proof email with what to change — a different scene, a softer dinosaur, a recolored sweater, whatever. Revisions before approval are free. We don’t print until you say go.'],
   ['What is the refund policy for digital orders?', 'Digital orders are fully refundable up until you approve the proof. Once you approve and we deliver the high-resolution PDF, the digital order is final.'],
@@ -352,7 +353,7 @@ function HeroSection() {
             Your child becomes <em className="font-normal italic text-[#a64c4c]">the hero</em> of the story.
           </h1>
           <p className="mt-7 max-w-xl text-lg leading-8 text-[#695f54] md:text-xl">
-            Create a personalized keepsake storybook from your child&apos;s photo, interests, and family details. AI-assisted illustration and hand-reviewed story edits come together in a proof you approve before anything prints.
+            Create a personalized keepsake storybook from your child&apos;s photo, interests, and family details. AI-assisted illustration and hand-reviewed story edits come together in a full digital proof you approve before anything prints.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <PrimaryCta href="/checkout" size="lg">Start your book</PrimaryCta>
@@ -364,7 +365,7 @@ function HeroSection() {
             </div>
           )}
           <p className="mt-5 text-sm italic text-[#695f54]">
-            <b className="not-italic text-[#1f1a16]">Digital $19</b> · <b className="not-italic text-[#1f1a16]">Softcover $39</b> · <b className="not-italic text-[#1f1a16]">Hardcover $64</b>
+            <b className="not-italic text-[#1f1a16]">Digital $14.99</b> · <b className="not-italic text-[#1f1a16]">Softcover $44.99</b> · <b className="not-italic text-[#1f1a16]">Hardcover $64.99</b>
             <span className="block text-sm not-italic font-semibold text-[#a64c4c]">US shipping included on printed books</span>
           </p>
         </div>
@@ -438,8 +439,9 @@ function BookFace({ title, star, tag }: { title: string; star: string; tag: stri
 
 function TrustStrip() {
   const items = [
-    'Proof approval before any printing',
+    'Full digital proof before any printing',
     'Revisions included before approval',
+    'Human story and art review',
     'US shipping included on printed books',
     'Your photos stay private — never used to train AI',
     'Stripe-secured checkout',
@@ -598,9 +600,15 @@ function SeasonalCallout() {
     <section className="mx-auto max-w-6xl px-5 py-16 md:px-8">
       <div className="grid items-center gap-8 rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-7 md:grid-cols-[1fr_0.8fr] md:p-10">
         <div>
-          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">Father&apos;s Day gift</div>
-          <h2 className="font-serif text-4xl font-medium leading-tight md:text-5xl">A gift Dad will actually keep.</h2>
-          <p className="mt-4 text-base leading-7 text-[#695f54]">Choose Father&apos;s Day at checkout and we&apos;ll shape the story around your child&apos;s favorite memories with Dad — camping, building, bedtime stories, backyard adventures, or the little rituals only your family knows.</p>
+          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">{FATHERS_DAY_OFFER.eyebrow}</div>
+          <h2 className="font-serif text-4xl font-medium leading-tight md:text-5xl">{FATHERS_DAY_OFFER.headline}</h2>
+          <p className="mt-4 text-base leading-7 text-[#695f54]">{FATHERS_DAY_OFFER.digitalLead}</p>
+          <p className="mt-3 text-sm leading-6 text-[#695f54]">{FATHERS_DAY_OFFER.printOptional}</p>
+          <p className="mt-3 text-sm font-medium leading-6 text-[#1f1a16]">{FATHERS_DAY_OFFER.proofNote}</p>
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <PrimaryCta href={FATHERS_DAY_OFFER.ctaHref} size="md">{FATHERS_DAY_OFFER.ctaLabel}</PrimaryCta>
+            <GhostCta href="/pricing">Compare digital &amp; print</GhostCta>
+          </div>
           {fathersDay.tier !== 'past-event' && (
             <div className="mt-5">
               <FathersDayBadge countdown={fathersDay} />
@@ -609,8 +617,8 @@ function SeasonalCallout() {
         </div>
         <div className="rounded-2xl bg-[#f5ead2] p-6 text-center">
           <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Gift timing</div>
-          <h3 className="font-serif text-3xl">Proof first, print after approval.</h3>
-          <p className="mt-3 text-sm leading-6 text-[#695f54]">Digital proofs are usually ready within 2 business days. Printed books ship 5–7 business days after you approve.</p>
+          <h3 className="font-serif text-3xl">Digital is instant. Print is optional.</h3>
+          <p className="mt-3 text-sm leading-6 text-[#695f54]">Approve your proof (usually within 2 business days) and the Digital PDF arrives the same day — no shipping. Printed books ship 5–7 business days after approval, so order early if you want one in hand for Father&apos;s Day.</p>
         </div>
       </div>
     </section>
@@ -650,7 +658,7 @@ export function EditorialPricingPage() {
   return (
     <EditorialPageShell active="pricing">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Digital $19, Classic softcover $39, Premium hardcover $64. US shipping included for printed books. Digital proofs are usually ready within 2 business days; printed books ship 5–7 business days after approval." centered />
+        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Digital $14.99, Classic softcover $44.99, Premium hardcover $64.99. US shipping included for printed books. Digital proofs are usually ready within 2 business days; printed books ship 5–7 business days after approval." centered />
         <TierCards />
         <div className="mt-12 overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec]">
           <div className="grid grid-cols-[1.3fr_repeat(3,0.8fr)] border-b border-[#d8c6a2] bg-[#f5ead2] text-sm font-semibold text-[#1f1a16]">
