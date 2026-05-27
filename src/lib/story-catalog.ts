@@ -24,6 +24,15 @@ export const STORY_OCCASIONS: StoryOccasion[] = [
 
 export const STORY_THEMES: StoryTheme[] = [
   {
+    id: 'custom-voice-story',
+    name: 'Custom Story',
+    description: 'Built from your voice note, family details, and story ideas',
+    emoji: '🎙️',
+    href: '/checkout',
+    coverImage: '/assets/lukas-watercolor-adventure-page.jpg',
+    accent: 'from-amber-900 via-rose-700 to-yellow-500',
+  },
+  {
     id: 'brave-explorer',
     name: 'Brave Explorer',
     description: 'Jungle adventure & discovery',

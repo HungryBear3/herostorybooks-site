@@ -280,6 +280,11 @@ test('checkout source blocks submit when voice attached without consent', () => 
   );
 });
 
+test('checkout source auto-selects the custom story direction when a voice file is attached first', () => {
+  assert.match(CHECKOUT_SRC, /custom-voice-story/);
+  assert.match(CHECKOUT_SRC, /theme:\s*file && !prev\.theme \? "custom-voice-story" : prev\.theme/);
+});
+
 // ── VoiceRecorderSection source: no auto-mic, consent inline, no cloning copy ─
 
 const VOICE_UI_SRC = readFileSync('src/components/checkout/VoiceRecorderSection.tsx', 'utf8');

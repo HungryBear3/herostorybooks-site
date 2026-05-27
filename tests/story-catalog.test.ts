@@ -45,6 +45,14 @@ test('catalog surfaces the evergreen Dragon Quest and Royal Adventure options', 
   assert.equal(royal?.coverImage, '/assets/royal-regen-candidates-v7/cover-v7.png');
 });
 
+test('catalog includes a custom voice-led story direction for checkout', () => {
+  const custom = STORY_THEMES.find((theme) => theme.id === 'custom-voice-story');
+  assert.ok(custom, 'custom voice-led story direction must exist');
+  assert.match(custom!.name, /Custom Story/i);
+  assert.match(custom!.description, /voice note|story ideas|family details/i);
+  assert.equal(custom!.href, '/checkout');
+});
+
 test('featured catalog now includes the expanded evergreen lineup', () => {
   assert.deepEqual(
     FEATURED_STORY_THEMES.map((theme) => theme.id),

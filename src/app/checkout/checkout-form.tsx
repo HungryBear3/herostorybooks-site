@@ -16,6 +16,7 @@ import { track } from "@/lib/analytics";
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const LAUNCH_THEME_IDS = new Set([
+  "custom-voice-story",
   "brave-explorer",
   "space-voyager",
   "ocean-dreams",
@@ -1512,6 +1513,7 @@ export function CheckoutForm() {
                 onVoiceChange={(file, previewUrl, source) =>
                   setForm((prev) => ({
                     ...prev,
+                    theme: file && !prev.theme ? "custom-voice-story" : prev.theme,
                     voiceFile: file,
                     voicePreviewUrl: previewUrl,
                     voiceSource: source,
