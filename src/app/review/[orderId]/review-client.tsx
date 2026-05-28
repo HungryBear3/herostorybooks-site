@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 
 import type { PageArtifact } from '@/lib/orders';
 import { InlineProofPreview } from './inline-proof-preview';
@@ -31,11 +32,45 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [proofAck, setProofAck] = useState<boolean>(Boolean(initial.proofReviewedAt));
   const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
 
+  const pageCount = snapshot.pageArtifacts.length;
   const selected = snapshot.pageArtifacts[selectedIdx];
+  const canGoPrevious = selectedIdx > 0;
+  const canGoNext = selectedIdx < pageCount - 1;
   const acceptedCount = snapshot.pageArtifacts.filter((p) => p.accepted).length;
   const allAccepted =
-    snapshot.pageArtifacts.length > 0 &&
-    acceptedCount === snapshot.pageArtifacts.length;
+    pageCount > 0 &&
+    acceptedCount === pageCount;
+
+  const goToPreviousPage = useCallback(() => {
+    setSelectedIdx((idx) => Math.max(0, idx - 1));
+  }, []);
+
+  const goToNextPage = useCallback(() => {
+    setSelectedIdx((idx) => Math.min(Math.max(0, pageCount - 1), idx + 1));
+  }, [pageCount]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target;
+      const tagName = target instanceof HTMLElement ? target.tagName : '';
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT')
+      ) {
+        return;
+      }
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        goToPreviousPage();
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        goToNextPage();
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [goToNextPage, goToPreviousPage]);
 
   async function regenerate() {
     if (!selected) return;
@@ -180,13 +215,34 @@ No image yet
         {selected && (
           <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-serif text-xl text-[#10263d]">
-                Page {selected.pageIndex + 1}
-              </h2>
-              <span className="text-xs text-gray-500">
-                Regenerated {selected.regenerateCount}{' '}
-                {selected.regenerateCount === 1 ? 'time' : 'times'}
-              </span>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-500" aria-live="polite">
+                  Page {selectedIdx + 1} of {pageCount}
+                </p>
+                <h2 className="font-serif text-xl text-[#10263d]">
+                  Page {selected.pageIndex + 1}
+                </h2>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={goToPreviousPage}
+                  disabled={!canGoPrevious}
+                  aria-label="Review previous page"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 text-[#10263d] transition hover:border-[#c9a227] hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  onClick={goToNextPage}
+                  disabled={!canGoNext}
+                  aria-label="Review next page"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 text-[#10263d] transition hover:border-[#c9a227] hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <ChevronRight className="h-5 w-5" aria-hidden="true" />
+                </button>
+              </div>
             </div>
 
             <div className="mb-4 overflow-hidden rounded-xl border border-gray-200 bg-gray-50">
@@ -202,6 +258,30 @@ No image yet
                   Image still rendering. Refresh in a moment.
                 </div>
               )}
+            </div>
+
+            <div className="sticky bottom-3 z-10 mb-4 flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white/95 p-2 shadow-sm backdrop-blur sm:static sm:bg-transparent sm:p-0 sm:shadow-none sm:backdrop-blur-none">
+              <button
+                type="button"
+                onClick={goToPreviousPage}
+                disabled={!canGoPrevious}
+                className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-[#10263d] disabled:cursor-not-allowed disabled:opacity-35 sm:flex-none"
+              >
+                <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                Previous
+              </button>
+              <span className="shrink-0 text-xs font-semibold text-gray-500">
+                {selectedIdx + 1} / {pageCount}
+              </span>
+              <button
+                type="button"
+                onClick={goToNextPage}
+                disabled={!canGoNext}
+                className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-[#10263d] disabled:cursor-not-allowed disabled:opacity-35 sm:flex-none"
+              >
+                Next
+                <ChevronRight className="h-4 w-4" aria-hidden="true" />
+              </button>
             </div>
 
             <p className="mb-3 text-sm text-gray-700">{selected.storyText}</p>
