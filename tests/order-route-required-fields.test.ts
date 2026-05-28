@@ -85,3 +85,10 @@ test('server contract: /api/order POST imports + calls missingRequiredField', ()
   assert.match(src, /missingFieldErrorCode\(/);
   assert.match(src, /childPronouns/);
 });
+
+test('checkout contract: form sends childPronouns required by /api/order', () => {
+  const src = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  assert.match(src, /childPronouns:\s*string/);
+  assert.match(src, /payload\.set\(["']childPronouns["'],\s*form\.childPronouns\)/);
+  assert.match(src, /Boolean\(form\.childPronouns\)/);
+});

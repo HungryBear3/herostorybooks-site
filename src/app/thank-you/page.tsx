@@ -90,7 +90,7 @@ function SuccessView({
               <p className="font-semibold text-[var(--forest)]">Confirmation + digital-first delivery</p>
               <p className="text-gray-500">
                 {email ? `A confirmation was sent to ${email}. ` : ''}
-                Digital PDFs arrive in about 15 minutes, and print orders get a digital preview first before they go to print.
+                Digital proofs are usually ready within 2 business days; final PDFs and print production follow after approval.
               </p>
             </div>
           </div>

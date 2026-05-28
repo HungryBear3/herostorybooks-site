@@ -27,6 +27,8 @@ const tiers: Tier[] = [
     price: 14.99,
     sub: 'Proof first, then high-resolution PDF',
     blurb: 'We email a digital proof first, usually within 2 business days. Once you approve, you receive the final high-resolution PDF to print at home, share, or read on any screen. No printing or shipping step.',
+    badge: "Father's Day pick",
+    featured: true,
   },
   {
     id: 'softcover',
@@ -34,8 +36,6 @@ const tiers: Tier[] = [
     price: 44.99,
     sub: '8.5″ × 8.5″ · perfect-bound',
     blurb: 'Full-color matte pages, perfect-bound spine, and a keepsake feel without the hardcover price.',
-    badge: 'Most popular',
-    featured: true,
   },
   {
     id: 'hardcover',
@@ -127,11 +127,12 @@ const lukasStorySnippets = [
 ];
 
 const faqs: Array<[string, string]> = [
-  ['How personalized is the book?', 'Every book uses your child’s name, age, interests, dedication, and photo/character notes. We make the child the hero of the story instead of dropping their name into a generic template.'],
+  ['How personalized is the book?', 'Fully customizable. Every book can use your child’s name, age, interests, dedication, photo/character notes, and an optional 30-second voice note so the story can reflect their own ideas and phrases. We make the child the hero of the story instead of dropping their name into a generic template.'],
   ['Do I approve it before printing? Can I request changes?', 'Yes — and always. Physical books are not printed until you approve the digital proof. Reply to the proof email with any changes: story wording, photo placement, dedication, character details, scene tone. Revisions before approval are included, not an upsell.'],
   ['How long does it take from order to delivery?', 'Digital proofs are usually ready within 2 business days. After you approve, digital PDFs are delivered the same day; printed books ship 5–7 business days after approval, then US delivery is typically 3–5 days. We don’t guarantee specific holiday-delivery dates because carriers can vary.'],
   ['Will it arrive in time for a birthday or Father’s Day?', 'Most US orders that approve their proof at least 9–12 days before the date arrive in time, but we don’t promise specific dates — shipping carriers vary. If timing is tight, the Digital PDF is a reliable fallback you can print at home or share instantly.'],
   ['Which option is safest for a Father’s Day gift?', 'The Digital PDF. Once you approve the proof, it’s delivered the same day with no printing or shipping step, so there’s no carrier timing risk — you can print it at home or share it instantly. A printed softcover or hardcover is an optional upgrade that ships after approval; arrival depends on the order-by date and your carrier, so we don’t promise a printed book will arrive by Father’s Day.'],
+  ['What if my photo isn’t ready by Jun 5 — can I still order?', 'Yes. Place the order any time; the proof clock starts when we receive your photo. Digital orders aren’t time-locked because there’s no shipping step — you can approve and download as soon as the proof is ready.'],
   ['Can I send it as a gift or surprise someone?', 'Yes. Add a dedication and gift message at checkout. The proof email goes to whoever you list as the buyer, not the recipient, so the surprise stays intact.'],
   ['What if my child doesn’t like the proof?', 'Reply to the proof email with what to change — a different scene, a softer dinosaur, a recolored sweater, whatever. Revisions before approval are free. We don’t print until you say go.'],
   ['What is the refund policy for digital orders?', 'Digital orders are fully refundable up until you approve the proof. Once you approve and we deliver the high-resolution PDF, the digital order is final.'],
@@ -142,7 +143,7 @@ const faqs: Array<[string, string]> = [
 ];
 
 const comparisonRows = [
-  ['24-page personalized story', true, true, true],
+  ['32-page personalized book', true, true, true],
   ['Full-color illustrated spreads', true, true, true],
   ['Digital proof before print', true, true, true],
   ['US shipping included', false, true, true],
@@ -215,10 +216,11 @@ function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' })
 
   return (
     <header className="sticky top-0 z-50 border-b border-[#dfd2b8] bg-[#f8f0dd]/95 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-4 md:px-8">
-        <Link href="/" className="flex items-center gap-3 font-serif text-base font-semibold uppercase tracking-[0.14em] text-[#1f1a16] md:text-lg">
-          <span className="h-2 w-2 rounded-full bg-[#a64c4c] shadow-[0_0_0_4px_rgba(166,76,76,0.14)]" />
-          HeroStoryBooks
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-4 min-[375px]:gap-4 min-[375px]:px-5 md:px-8">
+        <Link href="/" className="flex min-w-0 items-center gap-2 font-serif text-sm font-semibold uppercase tracking-[0.1em] text-[#1f1a16] min-[375px]:gap-3 min-[375px]:text-base min-[375px]:tracking-[0.14em] md:text-lg">
+          <span className="h-2 w-2 shrink-0 rounded-full bg-[#a64c4c] shadow-[0_0_0_4px_rgba(166,76,76,0.14)]" />
+          <span className="hidden min-[375px]:inline">HeroStoryBooks</span>
+          <span className="inline min-[375px]:hidden">HSB</span>
         </Link>
         <nav className="hidden items-center gap-8 md:flex">
           <Link href="/#how" className={linkClass('home')}>How it works</Link>
@@ -227,7 +229,7 @@ function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' })
           <Link href="/#faq" className="text-sm font-medium text-[#695f54] transition hover:text-[#a64c4c]">FAQ</Link>
           <PrimaryCta href="/checkout" size="sm">Start your book</PrimaryCta>
         </nav>
-        <div className="flex items-center gap-2 md:hidden">
+        <div className="flex shrink-0 items-center gap-2 md:hidden">
           <Link href="/checkout" className="rounded-full bg-[#1f1a16] px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#fff8ec] shadow-sm">
             Start
           </Link>
@@ -274,7 +276,7 @@ function EditorialFooter() {
             Personalized children&apos;s books, made from your child&apos;s photo, interests, and family story. Approved by you before we print.
           </p>
         </div>
-        <FooterLinks title="Product" items={[['How it works', '/#how'], ['See a sample', '/samples'], ['Pricing', '/pricing'], ['Start your book', '/checkout']]} />
+        <FooterLinks title="Product" items={[['How it works', '/#how'], ['See a sample', '/samples'], ['Pricing', '/pricing'], ['About', '/about'], ['Start your book', '/checkout']]} />
         <FooterLinks title="Help" items={[['FAQ', '/#faq'], ['support@herostorybooks.com', 'mailto:support@herostorybooks.com'], ['Privacy', '/privacy'], ['Terms', '/terms']]} />
       </div>
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 border-t border-[#dfd2b8] px-5 py-5 text-xs text-[#695f54] md:px-8">
@@ -468,7 +470,7 @@ function SectionHeader({ eyebrow, title, sub, centered = false }: { eyebrow: str
 function HowItWorksSection() {
   const steps = [
     ['1', 'Tell us about your child', 'Their name, one photo, and a few details — age, interests, anything special. Voice note optional.'],
-    ['2', 'We craft a 24-page story', 'Your child becomes the hero through AI-assisted illustration, hand-reviewed writing, and a dedication page if you want one.'],
+    ['2', 'We craft a 32-page book', 'Your child becomes the hero through 24 illustrated story pages, hand-reviewed writing, and keepsake front and back matter.'],
     ['3', 'You approve, then we print', 'We email a full digital proof. Nothing prints until you approve. Revisions are free.'],
   ];
   return (
@@ -580,12 +582,12 @@ function TierCards() {
 
 function TierCard({ tier }: { tier: Tier }) {
   return (
-    <article className={cx('relative rounded-2xl border bg-[#fff8ec] p-7 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]', tier.featured ? 'border-[#a64c4c] ring-4 ring-[#a64c4c]/10' : 'border-[#d8c6a2]')}>
+    <article className={cx('relative min-w-0 rounded-2xl border bg-[#fff8ec] p-6 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)] min-[375px]:p-7', tier.featured ? 'border-[#a64c4c] ring-4 ring-[#a64c4c]/10' : 'border-[#d8c6a2]')}>
       {tier.badge && <div className="absolute right-5 top-5 rounded-full bg-[#a64c4c] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-white">{tier.badge}</div>}
-      <h3 className="pr-28 font-serif text-3xl font-semibold">{tier.name}</h3>
+      <h3 className={cx('font-serif text-3xl font-semibold', tier.badge && 'pr-24 min-[375px]:pr-28')}>{tier.name}</h3>
       <p className="mt-2 text-sm text-[#695f54]">{tier.sub}</p>
       <div className="my-7 flex items-end gap-1">
-        <span className="font-serif text-6xl leading-none">${tier.price}</span>
+        <span className="font-serif text-5xl leading-none min-[375px]:text-6xl">${tier.price}</span>
         <span className="pb-2 text-sm text-[#695f54]">/ book</span>
       </div>
       <p className="min-h-20 text-sm leading-6 text-[#695f54]">{tier.blurb}</p>
@@ -617,7 +619,7 @@ function SeasonalCallout() {
         </div>
         <div className="rounded-2xl bg-[#f5ead2] p-6 text-center">
           <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Gift timing</div>
-          <h3 className="font-serif text-3xl">Digital is instant. Print is optional.</h3>
+          <h3 className="font-serif text-3xl">Digital is fastest. Print is optional.</h3>
           <p className="mt-3 text-sm leading-6 text-[#695f54]">Approve your proof (usually within 2 business days) and the Digital PDF arrives the same day — no shipping. Printed books ship 5–7 business days after approval, so order early if you want one in hand for Father&apos;s Day.</p>
         </div>
       </div>
@@ -660,12 +662,12 @@ export function EditorialPricingPage() {
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
         <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Digital $14.99, Classic softcover $44.99, Premium hardcover $64.99. US shipping included for printed books. Digital proofs are usually ready within 2 business days; printed books ship 5–7 business days after approval." centered />
         <TierCards />
-        <div className="mt-12 overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec]">
-          <div className="grid grid-cols-[1.3fr_repeat(3,0.8fr)] border-b border-[#d8c6a2] bg-[#f5ead2] text-sm font-semibold text-[#1f1a16]">
+        <div className="mt-12 overflow-x-auto rounded-2xl border border-[#d8c6a2] bg-[#fff8ec]">
+          <div className="grid min-w-[560px] grid-cols-[1.3fr_repeat(3,0.8fr)] border-b border-[#d8c6a2] bg-[#f5ead2] text-sm font-semibold text-[#1f1a16]">
             <div className="p-4">Feature</div><div className="p-4 text-center">Digital</div><div className="p-4 text-center">Softcover</div><div className="p-4 text-center">Hardcover</div>
           </div>
           {comparisonRows.map(([feature, digital, softcover, hardcover]) => (
-            <div key={String(feature)} className="grid grid-cols-[1.3fr_repeat(3,0.8fr)] border-b border-[#eadfc7] text-sm last:border-b-0">
+            <div key={String(feature)} className="grid min-w-[560px] grid-cols-[1.3fr_repeat(3,0.8fr)] border-b border-[#eadfc7] text-sm last:border-b-0">
               <div className="p-4 text-[#1f1a16]">{feature}</div>
               {[digital, softcover, hardcover].map((v, idx) => <div key={idx} className="p-4 text-center text-[#695f54]">{v === true ? '✓' : v === false ? '—' : v}</div>)}
             </div>
@@ -673,6 +675,83 @@ export function EditorialPricingPage() {
         </div>
       </section>
       <FinalCta />
+    </EditorialPageShell>
+  );
+}
+
+export function EditorialFathersDayPage() {
+  const fathersDay = getFathersDayCountdown();
+  return (
+    <EditorialPageShell>
+      <section className="relative overflow-hidden">
+        <div className="absolute inset-0 opacity-60 [background:radial-gradient(circle_at_20%_10%,#fff4d6_0,transparent_32%),radial-gradient(circle_at_80%_0,#ead8b8_0,transparent_28%)]" />
+        <div className="relative mx-auto grid max-w-6xl items-center gap-10 px-5 py-16 md:grid-cols-[1fr_0.9fr] md:px-8 md:py-24">
+          <div>
+            <div className="mb-5 inline-flex rounded-full border border-[#d8c6a2] bg-[#fff8ec]/65 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.22em] text-[#695f54]">
+              Father&apos;s Day gift
+            </div>
+            <h1 className="max-w-3xl font-serif text-[clamp(3rem,7vw,6.8rem)] font-medium leading-[0.88] tracking-[-0.04em] text-[#1f1a16]">
+              A story from them, ready for Dad.
+            </h1>
+            <p className="mt-7 max-w-xl text-lg leading-8 text-[#695f54] md:text-xl">
+              Start with your child&apos;s photo, interests, and an optional 30-second voice note. We turn it into a personalized proof book you approve before anything prints.
+            </p>
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+              <PrimaryCta href={FATHERS_DAY_OFFER.ctaHref} size="lg">
+                Start the Father&apos;s Day book
+              </PrimaryCta>
+              <GhostCta href="/samples">See the proof sample</GhostCta>
+            </div>
+            {fathersDay.tier !== 'past-event' && (
+              <div className="mt-4">
+                <FathersDayBadge countdown={fathersDay} />
+              </div>
+            )}
+          </div>
+          <div className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-5 shadow-[0_24px_70px_-58px_rgba(36,25,20,0.65)]">
+            <img
+              src="/assets/lukas-watercolor-dino-cover.jpg"
+              alt="Watercolor personalized dinosaur proof cover"
+              className="aspect-[4/5] w-full rounded-2xl object-cover object-[30%_55%]"
+            />
+            <p className="mt-4 text-sm leading-6 text-[#695f54]">
+              Digital PDF is the safest Father&apos;s Day route: proof first, then same-day delivery after approval. Printed softcover and hardcover books are optional upgrades that ship after proof approval.
+            </p>
+          </div>
+        </div>
+      </section>
+      <SeasonalCallout />
+      <SamplePreviewSection />
+      <FaqSection />
+      <FinalCta />
+    </EditorialPageShell>
+  );
+}
+
+export function EditorialAboutPage() {
+  return (
+    <EditorialPageShell>
+      <section className="mx-auto max-w-4xl px-5 py-16 md:px-8 md:py-24">
+        <div className="mb-4 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">About HeroStoryBooks</div>
+        <h1 className="font-serif text-5xl font-medium leading-tight text-[#1f1a16] md:text-7xl">A small team making proof-first keepsake books.</h1>
+        <div className="mt-8 space-y-5 text-base leading-8 text-[#695f54]">
+          <p>
+            HeroStoryBooks is built by a small independent team in California. We make personalized children&apos;s books for adults buying gifts for children: parents, grandparents, relatives, and family friends.
+          </p>
+          <p>
+            The core promise is simple: you never blindly send a custom book to print. Every order starts with the child&apos;s name, photo, story details, and optional voice note, then we prepare a digital proof for review before any physical copy is printed.
+          </p>
+          <p>
+            We use AI-assisted illustration as a production tool, but the order is still reviewed by people before fulfillment. Uploaded child photos and optional voice notes are used only to create and support the requested order; they are not sold, used to train AI models, or used for voice cloning.
+          </p>
+        </div>
+        <div className="mt-10 rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-6">
+          <h2 className="font-serif text-2xl font-semibold text-[#1f1a16]">Questions before ordering?</h2>
+          <p className="mt-2 text-sm leading-6 text-[#695f54]">
+            Email <a className="font-semibold text-[#a64c4c]" href="mailto:support@herostorybooks.com">support@herostorybooks.com</a>. We&apos;d rather answer a timing, photo, or proof question before you pay than leave you guessing.
+          </p>
+        </div>
+      </section>
     </EditorialPageShell>
   );
 }

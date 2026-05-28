@@ -111,3 +111,30 @@ export interface StoryMeta {
    *  the original error message that triggered the fallback. Truncated. */
   fallbackError?: string | null;
 }
+
+/**
+ * Persisted result of transcribing an optional, consented child-voice note
+ * (the NEXT_PUBLIC_HSB_VOICE_BETA feature). Written once during checkout when
+ * HSB_VOICE_TRANSCRIPTION_ENABLED is on; never overwritten.
+ *
+ * IMPORTANT: the audio is used ONLY for text transcription + story inspiration.
+ * It is never used for voice cloning, generated speech, imitation, or published
+ * audio. `transcript` is a safely truncated copy of the raw transcript;
+ * `inspiration` is a short, bounded summary that is safe to feed into story
+ * generation. On failure, `transcript`/`inspiration` are null and `error`
+ * carries a truncated diagnostic — transcription failure must never block
+ * order creation or payment.
+ */
+export interface VoiceTranscriptMeta {
+  /** Safely truncated raw transcript, or null if transcription failed. */
+  transcript: string | null;
+  /** Short bounded "voice inspiration" summary fed into story generation,
+   *  or null if transcription failed / produced nothing usable. */
+  inspiration: string | null;
+  /** Transcription model used (e.g. 'gpt-4o-mini-transcribe'). */
+  model: string | null;
+  /** ISO timestamp the transcription was attempted. */
+  transcribedAt: string;
+  /** Truncated failure diagnostic when transcription failed; null on success. */
+  error: string | null;
+}

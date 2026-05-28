@@ -32,7 +32,14 @@ const MOCK_PDF = Buffer.from('%PDF-1.4 mock');
 
 const PASS_DEPS: FulfillmentDeps = {
   generateStory: async () => MOCK_STORY,
-  generateImages: async (prompts) => prompts.map(() => null),
+  // Returns plausible per-page URLs. Returning null here used to be the
+  // historical placeholder (the PDF builder silently substituted blanks),
+  // but after the 2026-05-15 partial-image-failure patch, any null URL
+  // in image results is correctly classified as a generation failure and
+  // halts at failed_manual_review — the very behavior change Rex's proof
+  // rerun motivated. Orchestration assertions in this suite still hold;
+  // only the fixture URLs changed.
+  generateImages: async (prompts) => prompts.map((_p, i) => `https://cdn.example.com/p${i}.png`),
   buildPdf: async () => MOCK_PDF,
   buildPrintInteriorPdf: async () => Buffer.from('%PDF-1.4 mock-interior'),
   buildPrintCoverPdf: () => Buffer.from('%PDF-1.4 mock-cover'),
@@ -49,6 +56,8 @@ function makeTmpDir() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-fulfill-'));
   process.env.HSB_ORDER_STORE_DIR = dir;
   delete process.env.BLOB_READ_WRITE_TOKEN;
+  delete process.env.HSB_RESEND_API_KEY;
+  delete process.env.RESEND_API_KEY;
   return dir;
 }
 
@@ -368,7 +377,8 @@ test('payment pending cannot produce complete fulfillment (readback gate)', asyn
     const counting: FulfillmentDeps = {
       ...PASS_DEPS,
       generateStory: async () => { storyCalls++; return MOCK_STORY; },
-      generateImages: async (prompts) => { imageCalls++; return prompts.map(() => null); },
+      // Plausible URLs — see PASS_DEPS comment re: 2026-05-15 partial-image-failure patch.
+      generateImages: async (prompts) => { imageCalls++; return prompts.map((_p, i) => `https://cdn.example.com/p${i}.png`); },
       buildPdf: async () => { pdfCalls++; return MOCK_PDF; },
       submitPrint: async () => { submitPrintCalls++; return { jobId: 'never' }; },
       sleep: async () => {}, // make readback retries instant in tests
@@ -443,7 +453,8 @@ test('digital fulfillment: duplicate triggerFulfillment is idempotent (no double
     const counting: FulfillmentDeps = {
       ...PASS_DEPS,
       generateStory: async () => { storyCalls++; return MOCK_STORY; },
-      generateImages: async (prompts) => { imageCalls++; return prompts.map(() => null); },
+      // Plausible URLs — see PASS_DEPS comment re: 2026-05-15 partial-image-failure patch.
+      generateImages: async (prompts) => { imageCalls++; return prompts.map((_p, i) => `https://cdn.example.com/p${i}.png`); },
       buildPdf: async () => { pdfCalls++; return MOCK_PDF; },
       submitPrint: async () => { submitPrintCalls++; return { jobId: 'never' }; },
     };

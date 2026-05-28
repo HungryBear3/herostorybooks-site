@@ -1,5 +1,9 @@
 # Direct Gemini/Google image + prose routing
 
+> **Deprecated for HSB image generation as of 2026-05-19.**
+>
+> Do not use Gemini / Nano Banana for HeroStoryBooks image production or fallback routing. The current image-flow decision is FLUX.2 [pro] via fal.ai multi-reference first, with PuLID + FLUX.1 dev via fal only as fallback if the eval fails. See [`../image-flow-decision.md`](../image-flow-decision.md) and [`flux2-photo-eval.md`](flux2-photo-eval.md). Prose routing may still be evaluated separately, but image routing here is historical only.
+
 ## What this covers
 
 How HeroStoryBooks selects between the **direct Google Generative Language

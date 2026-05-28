@@ -2,6 +2,21 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 const RECORDED_FILE_NAME = 'child-voice-note.webm';
+const VOICE_UPLOAD_ACCEPT_ATTR = [
+  'audio/*',
+  '.m4a',
+  '.mp3',
+  '.wav',
+  '.webm',
+  '.ogg',
+  '.oga',
+  '.aac',
+  '.caf',
+  '.aif',
+  '.aiff',
+  '.flac',
+  '.mp4',
+].join(',');
 const VOICE_PROMPTS = [
   'What adventure should you go on?',
   'What do you love most right now?',
@@ -152,8 +167,23 @@ export function VoiceRecorderSection({
           </span>
         </div>
         <p className="text-sm text-gray-500 mt-1">
-          Record 30–60 seconds of your child answering a fun prompt, or upload an audio file.
-          We&apos;ll use it to personalize the story — <strong>not</strong> to clone their voice.
+          Optional: record a 30-second story idea — your child describing the adventure
+          they&apos;d love — or upload an audio file. It&apos;s a sweet way to make a
+          Father&apos;s Day book feel like it came from them. We use it only to help
+          personalize the writing.
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          We do <strong>not</strong> clone your child&apos;s voice, and the recording is{' '}
+          <strong>never published</strong> or shared — it just inspires the words on the page.
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          Used only to help our writer match the story&apos;s voice — we never share it.
+          Want it removed? Email support@herostorybooks.com and we&apos;ll delete it.
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          Voice notes are in beta. To avoid losing a special recording if checkout hits an
+          unexpected error, you can record it first in Voice Memos or another recorder, then
+          upload the saved file here.
         </p>
       </div>
 
@@ -197,7 +227,7 @@ export function VoiceRecorderSection({
             <input
               ref={fileInputRef}
               type="file"
-              accept="audio/*"
+              accept={VOICE_UPLOAD_ACCEPT_ATTR}
               className="hidden"
               onChange={handleUpload}
             />
@@ -223,9 +253,19 @@ export function VoiceRecorderSection({
       {voicePreviewUrl && (
         <div className="space-y-2">
           <audio controls src={voicePreviewUrl} className="w-full" data-testid="voice-preview" />
+          {voiceFile && (
+            <a
+              href={voicePreviewUrl}
+              download={voiceFile.name || 'hero-story-voice-note.webm'}
+              className="inline-flex text-sm font-semibold text-forest underline decoration-deep-gold/60 underline-offset-4 hover:text-deep-gold"
+            >
+              Download recording
+            </a>
+          )}
           <p className="text-xs text-gray-500">
             {voiceSource === 'recorded' ? 'Recorded just now.' : 'Uploaded from your device.'}{' '}
-            Not happy with it? Tap <strong>Remove recording</strong> and try again.
+            Save it before leaving this page if you want to reuse it. Not happy with it? Tap{' '}
+            <strong>Remove recording</strong> and try again.
           </p>
         </div>
       )}
@@ -242,7 +282,7 @@ export function VoiceRecorderSection({
           <span>
             I&apos;m the parent/guardian and consent to HeroStoryBooks using this recording
             only to personalize this order. I understand it will <strong>not</strong> be used
-            for voice cloning.
+            for voice cloning and will <strong>not</strong> be published or shared.
           </span>
         </label>
       )}

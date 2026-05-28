@@ -8,8 +8,8 @@ test('public pricing plans match live checkout tiers and published route', () =>
     PUBLIC_PRICING_PLANS.map((plan) => [plan.id, plan.price]),
     [
       ['digital', '$14.99'],
-      ['classic', '$39.99'],
-      ['premium', '$59.99'],
+      ['classic', '$44.99'],
+      ['premium', '$64.99'],
     ],
   );
 });
@@ -46,11 +46,11 @@ test('print plans promise preview approval before printing', () => {
   }
 });
 
-test('digital plan carries an anchor price after the discount drop', () => {
+test('digital plan uses the current published launch price without stale discount anchoring', () => {
   const digital = PUBLIC_PRICING_PLANS.find((plan) => plan.id === 'digital');
   assert.ok(digital);
   assert.equal(digital!.price, '$14.99');
-  assert.equal(digital!.anchorPrice, '$19.99');
+  assert.equal(digital!.anchorPrice, undefined);
 });
 
 test('premium plan is a hardcover keepsake edition without extra-copy bundle language', () => {

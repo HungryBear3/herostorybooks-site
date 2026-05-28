@@ -29,8 +29,9 @@ test('print preview promise clearly says approval happens before printing', () =
 });
 
 test('photo upload help supports gift buyers who want to start before finding a photo', () => {
-  assert.match(PHOTO_UPLOAD_HELP, /start now/i);
-  assert.match(PHOTO_UPLOAD_HELP, /add a photo later/i);
+  assert.match(PHOTO_UPLOAD_HELP, /required before production starts/i);
+  assert.match(PHOTO_UPLOAD_HELP, /place the order now/i);
+  assert.match(PHOTO_UPLOAD_HELP, /add the photo later/i);
   assert.match(PHOTO_UPLOAD_HELP, /automatically reduced/i);
 });
 

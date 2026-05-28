@@ -7,7 +7,9 @@ import {
   MAX_VOICE_BYTES,
   OrderPersistenceError,
   persistOrder,
+  sanitizeFamilyCharacters,
   uploadOrderPhoto,
+  uploadOrderSupportingPhoto,
   uploadOrderVoice,
 } from '@/lib/orders';
 import {
@@ -15,8 +17,11 @@ import {
   missingRequiredField,
 } from '@/lib/checkout-flow';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
+import { transcribeVoiceNote } from '@/lib/voice-transcription';
+import type { VoiceTranscriptMeta } from '@/lib/fulfillment-types';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
+import { getReferralCodeFromCookieHeader, sanitizeReferralCode } from '@/lib/referrals';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -26,7 +31,7 @@ function getStripe() {
   return new Stripe(getRequiredStripeSecretKey());
 }
 
-const VOICE_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|flac|mp4)$/i;
+const VOICE_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i;
 
 function isAcceptedVoiceFile(file: File): boolean {
   if (file.type && file.type.startsWith('audio/')) return true;
@@ -77,6 +82,9 @@ export async function POST(request: Request) {
     const bookFormat = String(form.get('bookFormat') || 'classic').trim();
     const theme = String(form.get('theme') || '').trim();
     const childPronouns = String(form.get('childPronouns') || '').trim();
+    const referralCode =
+      sanitizeReferralCode(form.get('referralCode')) ??
+      getReferralCodeFromCookieHeader(request.headers.get('cookie'));
 
     // Structured appearance fields ride along inside the JSON
     // appearanceOptions blob from the form (kept as-is for backward
@@ -143,6 +151,7 @@ export async function POST(request: Request) {
       );
     }
 
+    const familyCharactersRaw = String(form.get('familyCharacters') || '');
     const draftOrder = createOrderRecord({
       childName,
       childAge: String(form.get('childAge') || ''),
@@ -151,12 +160,14 @@ export async function POST(request: Request) {
       occasion: String(form.get('occasion') || ''),
       giftMessage: String(form.get('giftMessage') || ''),
       characterNotes: String(form.get('characterNotes') || ''),
+      familyCharacters: familyCharactersRaw,
       childPronouns: childPronouns === 'he/him' || childPronouns === 'she/her' || childPronouns === 'they/them' ? childPronouns as 'he/him' | 'she/her' | 'they/them' : '',
       appearanceOptions: appearanceRaw,
       bookFormat,
       email,
       photoFileName: form.get('photo') instanceof File ? (form.get('photo') as File).name : null,
       voiceFileName: hasVoiceUpload ? (voiceRaw as File).name : null,
+      referralCode,
     });
 
     const photo = form.get('photo');
@@ -189,6 +200,50 @@ export async function POST(request: Request) {
       }
     }
 
+    const familyCharacters = sanitizeFamilyCharacters(familyCharactersRaw);
+    const familyCharactersWithPhotos = [];
+    for (const [index, character] of familyCharacters.entries()) {
+      const familyPhoto = form.get(`familyCharacterPhoto_${index}`);
+      if (!(familyPhoto instanceof File) || familyPhoto.size <= 0) {
+        familyCharactersWithPhotos.push(character);
+        continue;
+      }
+      try {
+        const uploaded = await uploadOrderSupportingPhoto(draftOrder.id, index, familyPhoto);
+        familyCharactersWithPhotos.push({
+          ...character,
+          photoFileName: familyPhoto.name,
+          photoBlobPath: uploaded?.pathname ?? null,
+          photoBlobUrl: uploaded?.url ?? null,
+        });
+      } catch (error) {
+        if (error instanceof OrderPersistenceError) {
+          console.error(
+            `[order] ABORT BEFORE STRIPE: supporting photo persistence failed for ${draftOrder.id}: ${error.message}`,
+            error.cause,
+          );
+          return NextResponse.json(
+            {
+              error:
+                'We could not securely save one of your family or pet photos. Please retry — no charge was made.',
+              code: 'supporting_photo_persist_failed',
+            },
+            { status: 503 },
+          );
+        }
+        console.error(
+          `[order] supporting photo upload failed for ${draftOrder.id}; continuing without that photo`,
+          error,
+        );
+        familyCharactersWithPhotos.push({
+          ...character,
+          photoFileName: familyPhoto.name,
+          photoBlobPath: null,
+          photoBlobUrl: null,
+        });
+      }
+    }
+
     let voiceBlobPath: string | null = null;
     let voiceBlobUrl: string | null = null;
     let voiceConsentAt: string | null = null;
@@ -210,16 +265,46 @@ export async function POST(request: Request) {
             error.cause,
           );
           return NextResponse.json(
-            { error: 'We could not securely save your voice recording. Please retry — no charge was made.' },
+            {
+              error:
+                'We could not securely save your voice recording, so we stopped before payment. No charge was made and the recording was not saved — please download it from the checkout page and try again.',
+              code: 'voice_persist_failed',
+            },
             { status: 503 },
           );
         }
         console.error(`[order] voice upload failed for ${draftOrder.id}; aborting`, error);
         return NextResponse.json(
-          { error: 'We could not securely save your voice recording. Please retry — no charge was made.' },
+          {
+            error:
+              'We could not securely save your voice recording, so we stopped before payment. No charge was made and the recording was not saved — please download it from the checkout page and try again.',
+            code: 'voice_persist_failed',
+          },
           { status: 503 },
         );
       }
+    }
+
+    // Optional, feature-flagged voice transcription. We transcribe the File we
+    // still hold in this request (after the upload succeeded) so we don't have
+    // to re-fetch the blob bytes later. This is a no-op unless
+    // HSB_VOICE_TRANSCRIPTION_ENABLED is on AND OPENAI_API_KEY is set; with the
+    // flag off it returns null and adds zero latency.
+    //
+    // LATENCY TRADEOFF: when the flag is ON this runs synchronously before the
+    // Stripe Checkout Session, adding the transcription round-trip to checkout.
+    // For a 30–60s clip on gpt-4o-mini-transcribe that is typically a few
+    // seconds, which we accept while the feature is beta + low-volume. If it
+    // ever needs to come off the checkout critical path, move this call into
+    // fulfillment (transcribe from voiceBlobUrl after payment) instead.
+    //
+    // Transcription failure must NEVER block payment: transcribeVoiceNote
+    // catches its own errors and returns a record with `error` set, which we
+    // persist as a failure marker and continue. Only an unstorable voice FILE
+    // (handled above) aborts before Stripe.
+    let voiceTranscript: VoiceTranscriptMeta | null = null;
+    if (hasVoiceUpload && voiceBlobPath) {
+      voiceTranscript = await transcribeVoiceNote(voiceRaw as File);
     }
 
     // Persist the order record durably. If this throws OrderPersistenceError
@@ -229,12 +314,14 @@ export async function POST(request: Request) {
     try {
       order = await persistOrder({
         ...draftOrder,
+        familyCharacters: familyCharactersWithPhotos,
         photoBlobPath,
         photoBlobUrl,
         voiceBlobPath,
         voiceBlobUrl,
         voiceConsentAt,
         voiceSource: hasVoiceUpload ? voiceSource : null,
+        voiceTranscript,
       });
     } catch (error) {
       if (error instanceof OrderPersistenceError) {
@@ -268,7 +355,10 @@ export async function POST(request: Request) {
       mode: 'payment',
       customer_email: order.email,
       client_reference_id: order.id,
-      metadata: { orderId: order.id },
+      metadata: {
+        orderId: order.id,
+        ...(order.referralCode ? { referralCode: order.referralCode } : {}),
+      },
       line_items: [
         {
           price_data: {

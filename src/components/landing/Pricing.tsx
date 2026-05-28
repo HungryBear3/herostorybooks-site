@@ -10,50 +10,48 @@ const fadeUp = {
 
 const plans = [
   {
-    id: 'starter',
-    title: 'Starter',
-    price: '$29.99',
-    description: 'Digital PDF only',
+    id: 'digital',
+    title: 'Digital PDF',
+    price: '$14.99',
+    description: 'Digital proof first, then high-resolution PDF',
     features: [
-      'Personalized PDF storybook',
+      'Personalized digital storybook PDF',
       'Read on any device',
-      'Print at home',
-      'AI-generated illustrations',
-      'Delivered in ~15 minutes',
+      'Print at home anytime',
+      'Digital proof usually ready within 2 business days',
     ],
-    popular: false,
-    cta: 'Get Digital Copy',
+    popular: true,
+    badge: 'Father’s Day Pick',
+    cta: 'Choose Digital',
   },
   {
     id: 'classic',
-    title: 'Classic',
-    price: '$49.99',
-    description: 'Softcover printed book',
+    title: 'Classic softcover',
+    price: '$44.99',
+    description: 'Softcover keepsake with digital preview',
     features: [
-      'Premium softcover book',
-      'Professional printing',
-      'Ships in 5-7 business days',
-      'AI-generated illustrations',
-      'Includes digital PDF',
+      'Premium softcover printed book',
+      'Free shipping included for US orders',
+      'Digital preview approval before print',
+      'Digital PDF included',
     ],
-    popular: true,
-    badge: 'Most Popular',
-    cta: 'Order Classic',
+    popular: false,
+    cta: 'Choose Classic',
   },
   {
     id: 'premium',
-    title: 'Premium',
-    price: '$79.99',
-    description: 'Hardcover + digital + extras',
+    title: 'Premium hardcover',
+    price: '$64.99',
+    description: 'Hardcover keepsake edition',
     features: [
-      'Premium hardcover book',
-      'Museum-quality printing',
-      'Ships in 5-7 business days',
-      'Includes digital PDF',
-      '2 extra softcover copies',
+      'Beautiful hardcover printed book',
+      'Free shipping included for US orders',
+      'Digital preview approval before print',
+      'Digital PDF included',
+      'Best for special gifts and keepsakes',
     ],
     popular: false,
-    cta: 'Go Premium',
+    cta: 'Choose Premium',
   },
 ];
 
@@ -77,7 +75,6 @@ export function Pricing() {
           </p>
         </motion.div>
 
-        {/* Mother's Day Callout */}
         <motion.div
           initial="hidden"
           whileInView="visible"
@@ -87,9 +84,9 @@ export function Pricing() {
         >
           <div
             className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold"
-            style={{ backgroundColor: 'rgba(212,175,55,0.12)', color: '#1F3A5F', border: '1px solid rgba(212,175,55,0.4)' }}
+            style={{ backgroundColor: 'rgba(166,76,76,0.10)', color: '#1f1a16', border: '1px solid rgba(166,76,76,0.25)' }}
           >
-            Use <strong className="font-mono mx-1">MOM20</strong> for 20% off — offer expires April 30, 2026!
+            Proof approval included before print · Free shipping included for US orders on physical books
           </div>
         </motion.div>
 
@@ -162,7 +159,7 @@ export function Pricing() {
 
                 {/* CTA */}
                 <Link
-                  href={`/order?tier=${plan.id}`}
+                  href={`/checkout?tier=${plan.id}`}
                   className="block w-full text-center py-3.5 rounded-xl font-semibold text-base transition-all duration-300 hover:scale-105"
                   style={
                     plan.popular
@@ -185,7 +182,7 @@ export function Pricing() {
           variants={fadeUp}
           className="text-center text-sm text-gray-500 mt-10"
         >
-          100% satisfaction guarantee · Full refund within 7 days · No questions asked
+          Digital proof before print · Secure Stripe checkout · Support at support@herostorybooks.com
         </motion.p>
       </div>
     </section>

@@ -165,6 +165,119 @@ async function runStoryGeneration(
   return generateStoryWithMeta(order);
 }
 
+/**
+ * Per-page image-generation failure, captured from a `GeneratedImageResult`
+ * whose `imageUrl` is null. Used to:
+ *   - persist actionable diagnostics into the order's
+ *     `fulfillmentLastError` field, and
+ *   - decide whether the fulfillment can proceed to PDF build.
+ */
+export interface PageGenerationFailure {
+  /** 0-indexed page within the story plan. */
+  pageIndex: number;
+  /** 1-indexed page number for human-readable diagnostics. */
+  pageNum: number;
+  provider: string | null;
+  model: string | null;
+  /** Short, classified error type ("http_4xx", "http_5xx", "timeout",
+   *  "no_url", "other"). Drops the original message into a small enum
+   *  the operator can scan. */
+  errorClass: string;
+  /** Original truncated error string from the provider, if present. */
+  error: string | null;
+}
+
+const HTTP_STATUS_PATTERN = /\b(?:http[ _-]?)?([45]\d{2})\b/i;
+const TIMEOUT_PATTERN = /\b(?:timed?\s*out|abort(?:ed|error)?|deadline exceeded)\b/i;
+
+function classifyImageGenError(error: string | null | undefined): string {
+  const msg = (error ?? '').trim();
+  if (!msg) return 'no_url';
+  if (TIMEOUT_PATTERN.test(msg)) return 'timeout';
+  const m = HTTP_STATUS_PATTERN.exec(msg);
+  if (m) {
+    const code = Number(m[1]);
+    if (code >= 400 && code < 500) return `http_4xx`;
+    if (code >= 500) return `http_5xx`;
+  }
+  return 'other';
+}
+
+/**
+ * Error classes that indicate a structured, provider-side failure worth
+ * halting the fulfillment for. These are the cases the 2026-05-15 Gemini
+ * proof rerun produced (Rex saw `http_4xx` on pages 17–22).
+ *
+ * Excluded on purpose:
+ *   - 'no_url'  : null URL with no error info — historically used by test
+ *                 fixtures and the legacy generateImages shim
+ *                 (`error: 'no image url returned'` was tightened to this
+ *                 class). Letting these through preserves the existing
+ *                 silent-substitution path the codebase already chose
+ *                 elsewhere (`Do not silently substitute … unless current
+ *                 code already explicitly does so`).
+ *   - 'other'   : unstructured error string we cannot map to a known
+ *                 failure mode; same reasoning as above. If a real
+ *                 provider failure surfaces here, the classifier should
+ *                 be extended rather than this gate widened.
+ */
+const HALTING_FAILURE_CLASSES = new Set<string>(['http_4xx', 'http_5xx', 'timeout']);
+
+/**
+ * Inspect per-page image results and return any pages whose generation
+ * failed in a way that should HALT fulfillment (structured 4xx/5xx/
+ * timeout from the provider). Exported so admin tooling and tests can
+ * call the same classifier.
+ *
+ * Pages with null URL but unstructured/missing error info do NOT halt
+ * here — see HALTING_FAILURE_CLASSES.
+ */
+export function detectFailedPages(
+  imageResults: ReadonlyArray<GeneratedImageResult>,
+): PageGenerationFailure[] {
+  const out: PageGenerationFailure[] = [];
+  for (let i = 0; i < imageResults.length; i += 1) {
+    const r = imageResults[i]!;
+    if (r.imageUrl && !r.error) continue;
+    const errorClass = classifyImageGenError(r.error ?? null);
+    if (!HALTING_FAILURE_CLASSES.has(errorClass)) continue;
+    out.push({
+      pageIndex: i,
+      pageNum: i + 1,
+      provider: r.provider ?? null,
+      model: r.model ?? null,
+      errorClass,
+      error: r.error ? r.error.slice(0, 200) : null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Build a single-line operator-readable summary of failed pages, safe to
+ * persist into fulfillmentLastError. Names failed page numbers + a
+ * compact per-error-class breakdown.
+ *
+ * Example output:
+ *   "image generation failed for 6 of 24 pages: pages 17,18,19,20,21,22; gemini http_4xx ×6"
+ */
+export function summarizeFailedPages(
+  failures: ReadonlyArray<PageGenerationFailure>,
+  totalPages: number,
+): string {
+  if (failures.length === 0) return '';
+  const pageList = failures.map((f) => f.pageNum).join(',');
+  const byKey = new Map<string, number>();
+  for (const f of failures) {
+    const key = `${f.provider ?? 'unknown'} ${f.errorClass}`;
+    byKey.set(key, (byKey.get(key) ?? 0) + 1);
+  }
+  const breakdown = Array.from(byKey.entries())
+    .map(([k, n]) => `${k} ×${n}`)
+    .join(', ');
+  return `image generation failed for ${failures.length} of ${totalPages} pages: pages ${pageList}; ${breakdown}`;
+}
+
 async function runImageGeneration(
   imagePrompts: string[],
   order: OrderRecord,
@@ -188,11 +301,13 @@ async function runImageGeneration(
   }
   // Real default path: try photo-conditioned FAL when we have a photo URL,
   // else text-only. Fallback chain inside generatePageImage handles the rest.
-  // TODO(voice-beta): when order.voiceBlobUrl is present and a server-flagged
-  // transcription path is wired up (HSB_VOICE_TRANSCRIPTION_ENABLED), call the
-  // transcription provider here, extract reviewed personalization signals, and feed
-  // them into the story planner — NOT into voice cloning. Until then the audio
-  // remains optional source material only.
+  //
+  // Voice beta: the consented voice note is transcribed at checkout
+  // (HSB_VOICE_TRANSCRIPTION_ENABLED) into order.voiceTranscript, and its
+  // bounded `inspiration` summary flows into STORY PROSE via the story
+  // generator's voiceInspirationBlock — NOT into image generation and NEVER
+  // into voice cloning. Image generation here stays photo/text conditioned
+  // only; the audio is not used as an image conditioning signal.
   const referenceImageUrl = getOrderPhotoUrl(order);
   return generateStoryImageResults(imagePrompts, { referenceImageUrl });
 }
@@ -334,6 +449,28 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // carried forward to survive stale blob-readback (see comment above).
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
 
+  // Partial-failure gate (added after Rex 2026-05-15 rerun: Gemini per-page
+  // http_4xx on pages 17–22 of 24). When ANY page failed image generation,
+  // do NOT build a PDF the customer would see with missing/blank pages.
+  // Persist partial pageArtifacts (already includes provider/model/error
+  // per page) + storyMeta + a structured lastError; move the order to
+  // failed_manual_review so operator review picks it up. Return cleanly
+  // so runWithRetry does NOT retry — image-gen partial failures are not
+  // safely retryable without per-page resume, and a whole-run retry would
+  // also throw away the successful pages.
+  const failedPages = detectFailedPages(imageResults);
+  if (failedPages.length > 0) {
+    const summary = summarizeFailedPages(failedPages, story.pages.length);
+    console.error(`[fulfillment] orderId=${order.id} ${summary}`);
+    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+      fulfillmentStatus: 'failed_manual_review',
+      pageArtifacts: seededPageArtifacts,
+      storyMeta,
+      fulfillmentLastError: summary.slice(0, 500),
+    }));
+    return;
+  }
+
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
   // Include cover image (first imageUrl) + per-page images
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
@@ -465,6 +602,23 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     };
   });
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
+
+  // Print path mirrors the digital partial-failure gate: if any page
+  // failed image generation we must NOT build a proof PDF (and therefore
+  // must NOT proceed toward Lulu submission later). Persist partial
+  // evidence + failed_manual_review + structured lastError, then return.
+  const failedPages = detectFailedPages(imageResults);
+  if (failedPages.length > 0) {
+    const summary = summarizeFailedPages(failedPages, story.pages.length);
+    console.error(`[fulfillment] orderId=${order.id} ${summary}`);
+    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+      fulfillmentStatus: 'failed_manual_review',
+      pageArtifacts: seededPageArtifacts,
+      storyMeta,
+      fulfillmentLastError: summary.slice(0, 500),
+    }));
+    return;
+  }
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];

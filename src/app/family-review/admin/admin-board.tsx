@@ -246,16 +246,22 @@ function samplesReadyForParent(submission: FamilyReviewSubmission): boolean {
   return submission.samples.length >= 3 && submission.status === 'samples_ready';
 }
 
-function buildParentSampleEmail(submission: FamilyReviewSubmission, reviewUrl: string) {
+export function buildParentSampleEmail(submission: FamilyReviewSubmission, reviewUrl: string) {
   const child = submission.child.firstName;
   const subject = `${child} Hero Story Books samples are ready`;
   const body = [
     `Hi ${submission.parent.name.split(/\s+/)[0] || 'there'},`,
     '',
-    `We have ${child}'s Hero Story Books sample illustrations ready for review:`,
+    `We have ${child}'s Hero Story Books sample illustrations ready for review.`,
+    '',
+    'Review link:',
     reviewUrl,
     '',
+    'If the link does not open automatically, copy and paste the full URL above into your browser.',
+    '',
     'When you open the link, you can view the samples, save any images you like, and leave quick feedback on likeness and gift quality.',
+    '',
+    'The longer gift-book version is designed as a sequential adventure story, with the child appearing throughout the printed narrative.',
     '',
     'Thank you for helping us test the family preview.',
     '',

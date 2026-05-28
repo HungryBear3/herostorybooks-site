@@ -16,7 +16,7 @@ const faqs = [
   {
     question: 'How long does delivery take?',
     answer:
-      'Digital PDFs are delivered by email in approximately 15 minutes. Printed softcover and hardcover books are professionally printed and ship in 5-7 business days via standard shipping. Expedited options are available at checkout.',
+      'Digital PDFs are delivered after you approve your proof, usually the same day. Printed softcover and hardcover books are professionally printed after approval and ship in 5-7 business days via standard shipping.',
   },
   {
     question: 'Can I customize the story theme?',
@@ -29,9 +29,9 @@ const faqs = [
       'We offer a full 100% refund within 7 days of purchase, no questions asked. For printed books, we also offer a free reprint if there are any quality issues.',
   },
   {
-    question: 'Is this good for a Mother\'s Day gift?',
+    question: 'Is this good for a Father\'s Day gift?',
     answer:
-      "Absolutely! It's one of our most popular gifts. Order by April 25, 2026 to guarantee delivery by Mother's Day. Use code MOM20 for 20% off. We also offer beautiful gift wrapping and a personalized message card.",
+      "Absolutely. Personalized books make great birthday, holiday, graduation, and grandparent gifts. Physical books include a digital proof before printing so you can approve the keepsake first.",
   },
 ];
 

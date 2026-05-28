@@ -60,12 +60,12 @@ async function seedOrder(
 }
 
 const successProvider: ImageProvider = {
-  name: 'openai',
+  name: 'gemini',
   async generate({ prompt }) {
     return {
       imageUrl: 'https://example.com/regenerated.png',
-      provider: 'openai',
-      model: 'gpt-image-1',
+      provider: 'gemini',
+      model: 'gemini-2.5-flash-image-preview',
       promptUsed: prompt,
       latencyMs: 1,
       error: null,

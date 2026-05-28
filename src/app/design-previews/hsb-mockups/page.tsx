@@ -50,6 +50,12 @@ export default function HsbMockupPreviewPage() {
             >
               Back to live homepage
             </a>
+            <a
+              href="/design-previews/hsb-trust-section"
+              className="inline-flex h-11 items-center justify-center rounded-md bg-[#1f1810] px-4 text-sm font-semibold text-white transition hover:bg-[#3a2f22]"
+            >
+              Review extracted trust section
+            </a>
           </div>
         </header>
 

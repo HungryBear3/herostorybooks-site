@@ -18,7 +18,7 @@ export interface OrderStatusView {
   isFailed: boolean;
   needsAction: boolean;
   primaryAction?: { label: string; href: string; kind: 'download' | 'view' | 'approve' };
-  secondaryAction?: { label: string; href: string };
+  secondaryAction?: { label: string; href: string; kind?: 'download' | 'view' | 'approve' };
   tracking?: { number?: string; url?: string; shippedAt?: string };
   timeline: TimelineStep[];
   supportBlurb: string;
@@ -150,11 +150,24 @@ function enrichPrint(
     view.subhead = 'Review your proof and approve it so we can send it to print.';
     view.tone = 'action';
     view.needsAction = true;
-    view.primaryAction = {
-      label: 'View Proof',
-      href: order.storyArtifactUrl,
-      kind: 'view',
-    };
+    if (order.proofApprovalToken) {
+      view.primaryAction = {
+        label: `Review & Approve ${order.childName}'s Book`,
+        href: `/review/${encodeURIComponent(order.id)}?token=${encodeURIComponent(order.proofApprovalToken)}`,
+        kind: 'approve',
+      };
+      view.secondaryAction = {
+        label: 'View proof PDF only',
+        href: order.storyArtifactUrl,
+        kind: 'view',
+      };
+    } else {
+      view.primaryAction = {
+        label: 'View Proof',
+        href: order.storyArtifactUrl,
+        kind: 'view',
+      };
+    }
   } else if (fulfillment === 'building_pdf') {
     view.headline = `Finalizing ${order.childName}'s proof`;
     view.subhead = 'Binding the proof PDF. You will get an email to approve it soon.';

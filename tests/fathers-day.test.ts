@@ -76,7 +76,7 @@ test('honest copy: never promises specific delivery', () => {
 });
 
 test('offer copy leads digital-first', () => {
-  // Digital must be the lead pick, framed as instant / no shipping risk.
+  // Digital must be the lead pick, framed as same-day-after-approval / no shipping risk.
   assert.match(FATHERS_DAY_OFFER.digitalLead, /Digital PDF/);
   assert.match(FATHERS_DAY_OFFER.digitalLead, /no printing or shipping/i);
   assert.match(FATHERS_DAY_OFFER.digitalLead, /no carrier timing risk/i);

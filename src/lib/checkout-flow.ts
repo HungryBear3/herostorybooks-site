@@ -11,7 +11,7 @@ export const PRINT_PREVIEW_PROMISE =
   'Print books include a digital preview first, so you can approve everything before it prints.';
 
 export const PHOTO_UPLOAD_HELP =
-  'No photo yet? Start now and add a photo later before you place the order. Large phone photos are automatically reduced when we can.';
+  "A clear, well-lit photo of your child is required before production starts because it guides the personalized illustrations. Don't have one handy? You can still place the order now and add the photo later; we won't begin the proof until we have one. Large phone photos are automatically reduced when we can.";
 
 // ── Required-field gating for checkout submit ────────────────────────────────
 //

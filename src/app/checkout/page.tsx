@@ -7,22 +7,22 @@ export const dynamic = 'force-dynamic';
 
 function CheckoutPaused() {
   return (
-    <main className="min-h-screen bg-cream px-4 py-10">
+    <main className="min-h-screen bg-[#f8f0dd] px-4 py-10 text-[#1f1a16]">
       <div className="container mx-auto max-w-2xl">
         <div className="mb-8 flex items-center justify-between">
-          <Link href="/" className="text-sm text-gray-500 transition hover:text-forest">
+          <Link href="/" className="text-sm text-gray-500 transition hover:text-[#1f1a16]">
             ← Back
           </Link>
-          <span className="font-serif text-lg font-bold text-forest">HeroStoryBooks ✨</span>
+          <span className="font-serif text-lg font-bold uppercase tracking-[0.14em] text-[#1f1a16]">HeroStoryBooks</span>
           <div className="w-12" />
         </div>
 
-        <section className="rounded-3xl border-2 border-deep-gold/25 bg-white p-8 text-center shadow-lg md:p-12">
+        <section className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-8 text-center shadow-lg md:p-12">
           <div className="mb-4 text-6xl">🛠️</div>
-          <p className="mb-3 text-xs font-bold uppercase tracking-[0.22em] text-deep-gold">
+          <p className="mb-3 text-xs font-bold uppercase tracking-[0.22em] text-[#a64c4c]">
             Checkout paused
           </p>
-          <h1 className="mb-4 font-serif text-4xl text-forest md:text-5xl">
+          <h1 className="mb-4 font-serif text-4xl text-[#1f1a16] md:text-5xl">
             We&apos;re tuning the story magic
           </h1>
           <p className="mx-auto mb-6 max-w-xl text-lg leading-8 text-gray-700">
@@ -34,13 +34,13 @@ function CheckoutPaused() {
           <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
             <Link
               href="/samples"
-              className="rounded-xl border-2 border-deep-gold px-5 py-3 font-bold text-forest transition hover:bg-deep-gold/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-deep-gold"
+              className="rounded-xl border border-[#a64c4c] px-5 py-3 font-bold text-[#1f1a16] transition hover:bg-[#a64c4c]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a64c4c]"
             >
               View sample stories
             </Link>
             <a
               href="mailto:support@herostorybooks.com"
-              className="rounded-xl bg-deep-gold px-5 py-3 font-bold text-white shadow-md transition hover:bg-deep-gold/90"
+              className="rounded-xl bg-[#1f1a16] px-5 py-3 font-bold text-white shadow-md transition hover:bg-[#1f1a16]/90"
             >
               Contact support
             </a>
