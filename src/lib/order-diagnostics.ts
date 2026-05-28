@@ -7,6 +7,7 @@ import type { OrderRecord, ReviewAuditEvent } from './orders.ts';
 import { isPrintFormat } from './orders.ts';
 import { ArtDirectionPacketSchema } from './art-direction-schemas.ts';
 import { validateStoryboardCompleteness, type StoryboardValidationIssue } from './storyboard-validator.ts';
+import { evaluateProofSubmissionGate } from './proof-submission-gate.ts';
 
 export type DiagnosticSeverity = 'ok' | 'info' | 'warn' | 'fail';
 
@@ -133,6 +134,12 @@ export interface OrderDiagnostics {
     orderStatus: string;
     attempts: number;
     lastError: string | null;
+  };
+  proofGate: {
+    gated: boolean;
+    allowed: boolean;
+    overrideApplied: boolean;
+    reasons: string[];
   };
   print: {
     printJobId: string | null;
@@ -484,6 +491,7 @@ function buildArtDirectionDiagnostics(order: OrderRecord): ArtDirectionDiagnosti
 export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
   const isPrint = isPrintFormat(order.bookFormat);
   const fulfillment = order.fulfillmentStatus ?? 'not_started';
+  const proofGate = evaluateProofSubmissionGate(order);
   const isFailed = fulfillment === 'failed_manual_review';
   const isPaid = order.paymentStatus === 'paid';
   const proofReady = fulfillment === 'proof_ready' && Boolean(order.storyArtifactUrl);
@@ -611,6 +619,12 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       orderStatus: order.status,
       attempts: order.fulfillmentAttempts ?? 0,
       lastError: order.fulfillmentLastError ?? null,
+    },
+    proofGate: {
+      gated: proofGate.gated,
+      allowed: proofGate.allowed,
+      overrideApplied: proofGate.overrideApplied,
+      reasons: proofGate.reasons.map((reason) => reason.code),
     },
     print: {
       printJobId: order.printJobId ?? null,
@@ -747,6 +761,20 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
   }
 
   // Proof presence
+  if (d.proofGate.gated) {
+    checks.push({
+      id: 'proof-release-gate',
+      label: d.proofGate.allowed
+        ? d.proofGate.overrideApplied
+          ? 'Proof release gate passed by recorded override'
+          : 'Proof release gate passed'
+        : 'Proof release gate blocked',
+      severity: d.proofGate.allowed ? (d.proofGate.overrideApplied ? 'warn' : 'ok') : 'fail',
+      detail: d.proofGate.reasons.length > 0
+        ? `Reasons: ${d.proofGate.reasons.join(', ')}`
+        : 'Custom-order story, storyboard, and art-direction checks passed.',
+    });
+  }
   if (d.paidOrderOpsIssue) {
     checks.push({
       id: 'paid-artifact',
@@ -815,6 +843,11 @@ export function formatDiagnosticsSummary(d: OrderDiagnostics): string {
   lines.push(`Created ${d.identity.createdAt} · Updated ${d.identity.updatedAt}`);
   lines.push(`Payment: ${d.payment.status}${d.payment.stripeSessionId ? ` (${d.payment.stripeSessionId})` : ''}`);
   lines.push(`Fulfillment: ${d.fulfillment.fulfillmentStatus} · Order: ${d.fulfillment.orderStatus} · Attempts: ${d.fulfillment.attempts}${d.fulfillment.lastError ? ` · LastError: ${d.fulfillment.lastError}` : ''}`);
+  lines.push(
+    `Proof gate: gated=${d.proofGate.gated ? 'yes' : 'no'} allowed=${d.proofGate.allowed ? 'yes' : 'no'}` +
+      ` override=${d.proofGate.overrideApplied ? 'yes' : 'no'}` +
+      `${d.proofGate.reasons.length ? ` reasons=${d.proofGate.reasons.join(',')}` : ''}`,
+  );
   lines.push(`Photo: blobPath=${d.photo.blobPath ?? 'none'} fileName=${d.photo.fileName ?? 'none'}`);
   lines.push(
     `Story: source=${d.story.source ?? 'unknown'} model=${d.story.model ?? 'unknown'}` +

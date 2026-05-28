@@ -14,6 +14,7 @@ import {
 import { createOrderRecord, persistOrder, getOrder, updateFulfillmentState } from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 import type { StoryContent, StoryMeta } from '../src/lib/fulfillment-types.ts';
+import { lukasDinoArtDirectionFixture } from './fixtures/art-direction/lukas-dino-valid.ts';
 
 // ── Shared test fixtures ──────────────────────────────────────────────────────
 
@@ -324,6 +325,78 @@ test('template-only print order may still reach proof_ready after template_after
     assert.equal(after?.storyMeta?.source, 'template_after_openai_failure');
     assert.ok(after?.proofApprovalToken);
     assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('custom print order with model story and complete art-direction passes proof release gate', async () => {
+  const dir = makeTmpDir();
+  try {
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStoryWithMeta: async () => ({
+        story: MOCK_STORY,
+        meta: {
+          source: 'openai_page_prose',
+          model: 'gpt-4o-mini',
+          generatedAt: '2026-05-28T20:00:00.000Z',
+          fallbackError: null,
+        },
+      }),
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      theme: 'custom-voice-story',
+      lesson: 'Dad always comes home',
+      artDirectionPacket: lukasDinoArtDirectionFixture,
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.status, 'preview_ready');
+    assert.ok(after?.proofApprovalToken);
+    assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('custom print order with model story but missing art-direction blocks proof_ready', async () => {
+  const dir = makeTmpDir();
+  try {
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStoryWithMeta: async () => ({
+        story: MOCK_STORY,
+        meta: {
+          source: 'openai_page_prose',
+          model: 'gpt-4o-mini',
+          generatedAt: '2026-05-28T20:00:00.000Z',
+          fallbackError: null,
+        },
+      }),
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      theme: 'custom-voice-story',
+      lesson: 'Dad always comes home',
+      artDirectionPacket: null,
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'failed_manual_review');
+    assert.equal(after?.status, 'order_received');
+    assert.ok(!after?.proofApprovalToken, 'gate-blocked order must not expose proof token');
+    assert.ok(!after?.storyArtifactUrl, 'gate-blocked order must not expose proof PDF');
+    assert.match(after?.fulfillmentLastError ?? '', /art_direction_packet_missing/);
+    assert.ok(after?.auditEvents?.some((event) => event.type === 'proof_release_blocked'));
   } finally {
     cleanupTmpDir(dir);
   }

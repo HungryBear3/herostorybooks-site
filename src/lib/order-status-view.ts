@@ -1,5 +1,6 @@
 import type { OrderRecord } from './orders.ts';
 import { isPrintFormat } from './orders.ts';
+import { evaluateProofSubmissionGate } from './proof-submission-gate.ts';
 
 export type TimelineStepState = 'done' | 'active' | 'pending' | 'failed';
 
@@ -146,6 +147,14 @@ function enrichPrint(
     view.subhead = 'Thanks for approving. We are queuing the job with our print partner.';
     view.tone = 'neutral';
   } else if (fulfillment === 'proof_ready' && order.storyArtifactUrl) {
+    const proofGate = evaluateProofSubmissionGate(order);
+    if (!proofGate.allowed) {
+      view.headline = `${order.childName}'s proof is being reviewed`;
+      view.subhead = 'Our team is checking the story and art direction before sending it to you.';
+      view.tone = 'neutral';
+      view.needsAction = false;
+      return view;
+    }
     view.headline = `${order.childName}'s proof is ready for review`;
     view.subhead = 'Review your proof and approve it so we can send it to print.';
     view.tone = 'action';

@@ -12,10 +12,12 @@ import type { GeneratedImageResult } from './image-generator.ts';
 import { buildPdf, buildPrintCoverPdf, buildPrintInteriorPdf, getPrintInteriorPageCount } from './pdf-builder.ts';
 import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';
 import { sendDigitalDeliveryEmail, sendProofReadyEmail, sendLifecycleEmail, sendOperatorFailureAlert } from './order-email.ts';
-
-const CUSTOM_STORY_THEME_ID = 'custom-voice-story';
-const STANDARD_LESSON_IDS = new Set(['courage', 'kindness', 'friendship', 'creativity', 'perseverance']);
-const STANDARD_OCCASION_IDS = new Set(['birthday', 'holiday', 'just-because', 'welcome-baby']);
+import {
+  evaluateProofSubmissionGate,
+  formatProofSubmissionGateReasons,
+  isCustomProofGatedOrder,
+  isValidProofReleaseOverride,
+} from './proof-submission-gate.ts';
 
 // ── Per-page artifact selection (proof rebuild) ───────────────────────────────
 
@@ -89,27 +91,14 @@ function paidFulfillmentPatch(order: OrderRecord, patch: Partial<OrderRecord>): 
   };
 }
 
-function hasCustomLessonOrOccasion(order: OrderRecord): boolean {
-  const lesson = (order.lesson ?? '').trim();
-  if (lesson && !STANDARD_LESSON_IDS.has(lesson)) return true;
-
-  const occasion = (order.occasion ?? '').trim();
-  if (occasion && !STANDARD_OCCASION_IDS.has(occasion)) return true;
-
-  return false;
-}
-
 export function isCustomStoryFallbackGuardedOrder(order: OrderRecord): boolean {
-  return (
-    order.theme === CUSTOM_STORY_THEME_ID ||
-    Boolean(order.voiceFileName || order.voiceBlobPath || order.voiceBlobUrl || order.voiceConsentAt || order.voiceSource) ||
-    Boolean(order.voiceTranscript?.transcript || order.voiceTranscript?.inspiration) ||
-    hasCustomLessonOrOccasion(order)
-  );
+  return isCustomProofGatedOrder(order);
 }
 
 function shouldFailClosedForStoryFallback(order: OrderRecord, storyMeta: StoryWithMeta['meta']): boolean {
-  return storyMeta.source === 'template_after_openai_failure' && isCustomStoryFallbackGuardedOrder(order);
+  return storyMeta.source === 'template_after_openai_failure' &&
+    isCustomStoryFallbackGuardedOrder(order) &&
+    !isValidProofReleaseOverride(order);
 }
 
 async function failClosedForCustomStoryFallback(order: OrderRecord, storyMeta: StoryWithMeta['meta']): Promise<void> {
@@ -165,6 +154,32 @@ function buildProofGeneratedAuditEvent(order: OrderRecord, pageCount: number) {
       pageCount,
     },
   };
+}
+
+async function blockProofReleaseForGate(
+  order: OrderRecord,
+  storyMeta: StoryWithMeta['meta'],
+  gateReasons: ReturnType<typeof evaluateProofSubmissionGate>['reasons'],
+): Promise<void> {
+  const summary = `proof release gate blocked: ${formatProofSubmissionGateReasons(gateReasons)}`;
+  console.error(`[fulfillment] orderId=${order.id} ${summary}`);
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    fulfillmentStatus: 'failed_manual_review',
+    storyMeta,
+    fulfillmentAttempts: 0,
+    fulfillmentLastError: summary.slice(0, 500),
+    auditEvents: [
+      ...(order.auditEvents ?? []),
+      {
+        at: new Date().toISOString(),
+        type: 'proof_release_blocked',
+        reason: 'proof_submission_gate',
+        meta: {
+          reasonCodes: formatProofSubmissionGateReasons(gateReasons),
+        },
+      },
+    ],
+  }));
 }
 
 /**
@@ -688,6 +703,17 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // PDF build), so we just re-use it in the final state write below.
 
   const proofGeneratedEvent = buildProofGeneratedAuditEvent(order, seededPageArtifacts.length);
+  const gateOrder: OrderRecord = {
+    ...order,
+    pageArtifacts: seededPageArtifacts,
+    storyMeta,
+    auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
+  };
+  const proofGate = evaluateProofSubmissionGate(gateOrder, { storyMeta });
+  if (!proofGate.allowed) {
+    await blockProofReleaseForGate(order, storyMeta, proofGate.reasons);
+    return;
+  }
   // storyMeta included explicitly so the proof_ready merge is
   // deterministic regardless of blob-read freshness.
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {

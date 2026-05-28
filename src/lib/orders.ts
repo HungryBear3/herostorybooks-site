@@ -99,6 +99,8 @@ export interface PageVersionEntry {
 export type ReviewAuditEventType =
   | 'proof_generated'
   | 'proof_rebuilt'
+  | 'proof_release_blocked'
+  | 'proof_release_override_recorded'
   | 'proof_review_acknowledged'
   | 'page_regenerated'
   | 'page_accepted'
@@ -118,6 +120,23 @@ export interface ReviewAuditEvent {
   reason?: string | null;
   /** Free-form, sanitized metadata. Keep small. */
   meta?: Record<string, string | number | boolean | null> | null;
+}
+
+export interface ProofReleaseOverride {
+  /** ISO timestamp this override/spot-check was recorded. */
+  recordedAt: string;
+  /** Bounded internal operator identifier, not customer-facing. */
+  recordedBy: string;
+  /** Short reason explaining why automated checks were insufficient. */
+  reason: string;
+  /** Scope of the override. */
+  scope:
+    | 'story_source'
+    | 'art_direction'
+    | 'story_source_and_art_direction'
+    | 'full_proof_release';
+  /** Optional ISO expiry for temporary launch overrides. */
+  expiresAt?: string | null;
 }
 
 export interface PageArtifact {
@@ -186,6 +205,9 @@ export interface OrderRecord extends OrderInput {
   artDirectionGeneratedAt?: string | null;
   artDirectionHumanReviewStatus?: 'not_started' | 'needs_review' | 'approved' | 'rejected' | string | null;
   artDirectionHumanReviewNotes?: string | null;
+  /** Internal-only proof release override. Honored only when accompanied by a
+   * matching proof_release_override_recorded audit event. */
+  proofReleaseOverride?: ProofReleaseOverride | null;
   printInteriorArtifactUrl?: string | null;
   printInteriorMd5?: string | null;
   printInteriorPageCount?: number | null;

@@ -46,6 +46,10 @@ import {
   type StoryWithMeta,
 } from './story-generator.ts';
 import type { StoryContent } from './fulfillment-types.ts';
+import {
+  evaluateProofSubmissionGate,
+  formatProofSubmissionGateReasons,
+} from './proof-submission-gate.ts';
 
 export type RebuildRefusalReason =
   | 'order_not_found'
@@ -54,7 +58,8 @@ export type RebuildRefusalReason =
   | 'already_submitted_to_lulu'
   | 'already_in_production'
   | 'already_shipped'
-  | 'order_refunded';
+  | 'order_refunded'
+  | 'proof_release_gate_blocked';
 
 export interface RebuildPlan {
   orderId: string;
@@ -285,6 +290,20 @@ export async function rebuildPrintOrder(
   const interiorPageCount = getPrintInteriorPageCount(story, order);
 
   const proofApprovalToken = crypto.randomBytes(24).toString('hex');
+
+  const gateOrder: OrderRecord = {
+    ...order,
+    storyMeta,
+    pageArtifacts: newPageArtifacts,
+  };
+  const proofGate = evaluateProofSubmissionGate(gateOrder, { storyMeta, now });
+  if (!proofGate.allowed) {
+    return {
+      ok: false,
+      reason: 'proof_release_gate_blocked',
+      detail: formatProofSubmissionGateReasons(proofGate.reasons),
+    };
+  }
 
   // Persist the full rebuild as a single read-modify-write so partial
   // intermediate state doesn't leak. We deliberately go through

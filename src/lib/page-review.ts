@@ -15,6 +15,7 @@ import { generatePageImage, type ImageProvider } from './image-generator.ts';
 import { buildRegeneratePrompt } from './image-prompt-builder.ts';
 import { rebuildProofFromPageArtifacts } from './fulfillment.ts';
 import { sendRegenManualReviewAlert } from './order-email.ts';
+import { evaluateProofSubmissionGate } from './proof-submission-gate.ts';
 
 // Soft internal thresholds (runbook): warn at 3, manual review at 5.
 export const REGEN_WARNING_THRESHOLD = 3;
@@ -597,6 +598,10 @@ export async function getReviewSnapshot(
   if (!order.pageArtifacts || order.pageArtifacts.length === 0) return null;
   if (!hasReviewAccess(order, input)) return null;
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
+  if (isPrint && order.fulfillmentStatus === 'proof_ready') {
+    const proofGate = evaluateProofSubmissionGate(order);
+    if (!proofGate.allowed) return null;
+  }
   return {
     orderId: order.id,
     childName: order.childName,
