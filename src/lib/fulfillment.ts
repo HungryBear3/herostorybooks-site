@@ -13,6 +13,10 @@ import { buildPdf, buildPrintCoverPdf, buildPrintInteriorPdf, getPrintInteriorPa
 import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';
 import { sendDigitalDeliveryEmail, sendProofReadyEmail, sendLifecycleEmail, sendOperatorFailureAlert } from './order-email.ts';
 
+const CUSTOM_STORY_THEME_ID = 'custom-voice-story';
+const STANDARD_LESSON_IDS = new Set(['courage', 'kindness', 'friendship', 'creativity', 'perseverance']);
+const STANDARD_OCCASION_IDS = new Set(['birthday', 'holiday', 'just-because', 'welcome-baby']);
+
 // ── Per-page artifact selection (proof rebuild) ───────────────────────────────
 
 /**
@@ -83,6 +87,40 @@ function paidFulfillmentPatch(order: OrderRecord, patch: Partial<OrderRecord>): 
     ...(order.stripeSessionId ? { stripeSessionId: order.stripeSessionId } : {}),
     ...(order.shippingAddress ? { shippingAddress: order.shippingAddress } : {}),
   };
+}
+
+function hasCustomLessonOrOccasion(order: OrderRecord): boolean {
+  const lesson = (order.lesson ?? '').trim();
+  if (lesson && !STANDARD_LESSON_IDS.has(lesson)) return true;
+
+  const occasion = (order.occasion ?? '').trim();
+  if (occasion && !STANDARD_OCCASION_IDS.has(occasion)) return true;
+
+  return false;
+}
+
+export function isCustomStoryFallbackGuardedOrder(order: OrderRecord): boolean {
+  return (
+    order.theme === CUSTOM_STORY_THEME_ID ||
+    Boolean(order.voiceFileName || order.voiceBlobPath || order.voiceBlobUrl || order.voiceConsentAt || order.voiceSource) ||
+    Boolean(order.voiceTranscript?.transcript || order.voiceTranscript?.inspiration) ||
+    hasCustomLessonOrOccasion(order)
+  );
+}
+
+function shouldFailClosedForStoryFallback(order: OrderRecord, storyMeta: StoryWithMeta['meta']): boolean {
+  return storyMeta.source === 'template_after_openai_failure' && isCustomStoryFallbackGuardedOrder(order);
+}
+
+async function failClosedForCustomStoryFallback(order: OrderRecord, storyMeta: StoryWithMeta['meta']): Promise<void> {
+  const reason = 'custom story generation fell back to template_after_openai_failure; manual review required before customer proof';
+  console.error(`[fulfillment] orderId=${order.id} ${reason}`);
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    fulfillmentStatus: 'failed_manual_review',
+    storyMeta,
+    fulfillmentAttempts: 0,
+    fulfillmentLastError: reason,
+  }));
 }
 
 // ── Default implementations ───────────────────────────────────────────────────
@@ -368,6 +406,10 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // Persist storyMeta as soon as it's known so diagnostics can answer
   // "which story path ran?" even before image gen completes.
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta }));
+  if (shouldFailClosedForStoryFallback(order, storyMeta)) {
+    await failClosedForCustomStoryFallback(order, storyMeta);
+    return;
+  }
 
   // Every subsequent updateFulfillmentState in this function is a
   // read-modify-write against blob. If the blob read returns a slightly
@@ -537,6 +579,10 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta }));
+  if (shouldFailClosedForStoryFallback(order, storyMeta)) {
+    await failClosedForCustomStoryFallback(order, storyMeta);
+    return;
+  }
 
   // Mirror of the digital path: carry storyMeta forward in every later
   // patch so a stale blob-read cannot drop it during the proof_ready

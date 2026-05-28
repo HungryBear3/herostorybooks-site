@@ -13,7 +13,7 @@ import {
 } from '../src/lib/fulfillment.ts';
 import { createOrderRecord, persistOrder, getOrder, updateFulfillmentState } from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
-import type { StoryContent } from '../src/lib/fulfillment-types.ts';
+import type { StoryContent, StoryMeta } from '../src/lib/fulfillment-types.ts';
 
 // ── Shared test fixtures ──────────────────────────────────────────────────────
 
@@ -29,6 +29,13 @@ const MOCK_STORY: StoryContent = {
 };
 
 const MOCK_PDF = Buffer.from('%PDF-1.4 mock');
+
+const FALLBACK_STORY_META: StoryMeta = {
+  source: 'template_after_openai_failure',
+  model: 'template:Adventure',
+  generatedAt: '2026-05-28T15:20:00.000Z',
+  fallbackError: 'fetch failed',
+};
 
 const PASS_DEPS: FulfillmentDeps = {
   generateStory: async () => MOCK_STORY,
@@ -220,6 +227,103 @@ test('paid print order reaches proof_ready and gets proofApprovalToken', async (
     assert.equal(after?.printInteriorMd5, '9438d3bf30c74a06e6be381d2632a06e');
     assert.equal(after?.printInteriorPageCount, 32);
     assert.equal(after?.printTitle, MOCK_STORY.title);
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('custom voice/story print order with template_after_openai_failure fails closed before proof_ready', async () => {
+  const dir = makeTmpDir();
+  try {
+    let buildPdfCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStoryWithMeta: async () => ({ story: MOCK_STORY, meta: FALLBACK_STORY_META }),
+      buildPdf: async () => {
+        buildPdfCalls += 1;
+        return MOCK_PDF;
+      },
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      theme: 'custom-voice-story',
+      voiceFileName: 'family-story.txt',
+      voiceBlobPath: 'orders/test/voice-family-story.txt',
+      voiceConsentAt: '2026-05-28T15:00:00.000Z',
+      voiceSource: 'uploaded',
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'failed_manual_review');
+    assert.equal(after?.status, 'order_received');
+    assert.equal(after?.storyMeta?.source, 'template_after_openai_failure');
+    assert.match(after?.fulfillmentLastError ?? '', /manual review required/);
+    assert.ok(!after?.proofApprovalToken, 'fallback-blocked print order must not expose approval token');
+    assert.ok(!after?.storyArtifactUrl, 'fallback-blocked print order must not persist proof PDF');
+    assert.equal(buildPdfCalls, 0, 'fallback-blocked print order must stop before PDF build');
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('custom story digital order with template_after_openai_failure fails closed before preview_ready', async () => {
+  const dir = makeTmpDir();
+  try {
+    let buildPdfCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStoryWithMeta: async () => ({ story: MOCK_STORY, meta: FALLBACK_STORY_META }),
+      buildPdf: async () => {
+        buildPdfCalls += 1;
+        return MOCK_PDF;
+      },
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'digital',
+      theme: 'custom-voice-story',
+      lesson: 'Dad always comes home',
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'failed_manual_review');
+    assert.equal(after?.status, 'order_received');
+    assert.equal(after?.storyMeta?.fallbackError, 'fetch failed');
+    assert.ok(!after?.storyArtifactUrl, 'fallback-blocked digital order must not persist customer PDF');
+    assert.equal(buildPdfCalls, 0, 'fallback-blocked digital order must stop before PDF build');
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('template-only print order may still reach proof_ready after template_after_openai_failure', async () => {
+  const dir = makeTmpDir();
+  try {
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStoryWithMeta: async () => ({ story: MOCK_STORY, meta: FALLBACK_STORY_META }),
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      theme: 'dinosaur-discovery',
+      lesson: 'courage',
+      occasion: 'birthday',
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.status, 'preview_ready');
+    assert.equal(after?.storyMeta?.source, 'template_after_openai_failure');
+    assert.ok(after?.proofApprovalToken);
+    assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
   } finally {
     cleanupTmpDir(dir);
   }
