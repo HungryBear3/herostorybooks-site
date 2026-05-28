@@ -230,9 +230,9 @@ function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' })
           <PrimaryCta href="/checkout" size="sm">Start your book</PrimaryCta>
         </nav>
         <div className="flex shrink-0 items-center gap-2 md:hidden">
-          <Link href="/checkout" className="rounded-full bg-[#1f1a16] px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#fff8ec] shadow-sm">
+          <a href="/checkout" className="rounded-full bg-[#1f1a16] px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#fff8ec] shadow-sm">
             Start
-          </Link>
+          </a>
           <details className="group relative">
             <summary
               className="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-full border border-[#dfd2b8] bg-[#fff8ec] text-[#1f1a16] shadow-sm marker:hidden"
@@ -247,13 +247,23 @@ function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' })
             </summary>
             <div className="absolute right-0 top-12 w-56 overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#fff8ec] p-2 shadow-[0_18px_45px_-24px_rgba(31,26,22,0.5)]">
               {mobileLinks.map(([label, href]) => (
-                <Link
-                  key={label}
-                  href={href}
-                  className="block rounded-xl px-4 py-3 text-sm font-semibold text-[#1f1a16] transition hover:bg-[#f1dfbd]"
-                >
-                  {label}
-                </Link>
+                href.startsWith('/checkout') ? (
+                  <a
+                    key={label}
+                    href={href}
+                    className="block rounded-xl px-4 py-3 text-sm font-semibold text-[#1f1a16] transition hover:bg-[#f1dfbd]"
+                  >
+                    {label}
+                  </a>
+                ) : (
+                  <Link
+                    key={label}
+                    href={href}
+                    className="block rounded-xl px-4 py-3 text-sm font-semibold text-[#1f1a16] transition hover:bg-[#f1dfbd]"
+                  >
+                    {label}
+                  </Link>
+                )
               ))}
             </div>
           </details>
@@ -293,7 +303,7 @@ function FooterLinks({ title, items }: { title: string; items: Array<[string, st
       <h3 className="mb-3 font-serif text-lg font-semibold text-[#1f1a16]">{title}</h3>
       <ul className="space-y-2 text-sm text-[#695f54]">
         {items.map(([label, href]) => (
-          <li key={label}><Link href={href} className="hover:text-[#a64c4c]">{label}</Link></li>
+          <li key={label}>{href.startsWith('/checkout') ? <a href={href} className="hover:text-[#a64c4c]">{label}</a> : <Link href={href} className="hover:text-[#a64c4c]">{label}</Link>}</li>
         ))}
       </ul>
     </div>
@@ -302,7 +312,7 @@ function FooterLinks({ title, items }: { title: string; items: Array<[string, st
 
 function PrimaryCta({ href, children, size = 'md' }: { href: string; children: React.ReactNode; size?: 'sm' | 'md' | 'lg' }) {
   return (
-    <Link
+    <a
       href={href}
       className={cx(
         'inline-flex items-center justify-center rounded-full bg-[#1f1a16] font-semibold uppercase tracking-[0.14em] text-[#fff8ec] shadow-[0_10px_25px_-18px_rgba(31,26,22,0.6)] transition hover:-translate-y-0.5 hover:bg-[#332a22]',
@@ -312,7 +322,7 @@ function PrimaryCta({ href, children, size = 'md' }: { href: string; children: R
       )}
     >
       {children}
-    </Link>
+    </a>
   );
 }
 
@@ -650,7 +660,7 @@ function FinalCta() {
         <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#e2c889]">Ready when you are</div>
         <h2 className="font-serif text-4xl font-medium leading-tight md:text-6xl">Start with a name and a photo. We&apos;ll handle the story.</h2>
         <p className="mx-auto mt-5 max-w-2xl text-base leading-7 text-[#e7dcc8]">Create the first version now, approve the proof later, and turn it into a digital book, softcover, or hardcover keepsake.</p>
-        <div className="mt-8"><Link href="/checkout" className="inline-flex rounded-full bg-[#fff8ec] px-8 py-4 text-sm font-semibold uppercase tracking-[0.14em] text-[#1f1a16]">Start your book</Link></div>
+        <div className="mt-8"><a href="/checkout" className="inline-flex rounded-full bg-[#fff8ec] px-8 py-4 text-sm font-semibold uppercase tracking-[0.14em] text-[#1f1a16]">Start your book</a></div>
       </div>
     </section>
   );

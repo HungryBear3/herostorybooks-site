@@ -1,7 +1,6 @@
 "use client";
 
 import { useId, useState, type ReactNode } from "react";
-import Link from "next/link";
 import { track } from "@/lib/analytics";
 
 /**
@@ -130,13 +129,13 @@ export function NamePreview() {
           </div>
 
           <div className="mt-8 text-center">
-            <Link
+            <a
               href={checkoutHref}
               onClick={handleCtaClick}
               className="inline-block rounded-full bg-[#1f1a16] px-8 py-3.5 text-base font-semibold text-[#fff8ec] shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#332a22] hover:shadow-md"
             >
               Start {displayName}&apos;s dinosaur book
-            </Link>
+            </a>
             <p className="mt-3 text-xs text-[#695f54]">
               You&apos;ll review a personalized preview before any printing.
             </p>
