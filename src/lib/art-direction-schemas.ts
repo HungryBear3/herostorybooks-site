@@ -232,6 +232,7 @@ export const ArtDirectionPacketSchema = z.object({
 });
 
 export type StyleBible = z.infer<typeof StyleBibleSchema>;
+export type ArtDirectionStoryBeat = z.infer<typeof ArtDirectionStoryBeatSchema>;
 export type CharacterSheet = z.infer<typeof CharacterSheetSchema>;
 export type StoryboardEntry = z.infer<typeof StoryboardEntrySchema>;
 export type Storyboard = z.infer<typeof StoryboardSchema>;
