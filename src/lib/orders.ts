@@ -1210,8 +1210,13 @@ function patchRequiresPaidOrder(patch: FulfillmentPatch): boolean {
 export async function updateFulfillmentState(
   orderId: string,
   patch: FulfillmentPatch,
+  existingOrder?: OrderRecord,
 ): Promise<OrderRecord | null> {
-  const existing = await getOrder(orderId);
+  // If the caller already holds a freshly-written record for this order, use it
+  // directly. A second getOrder() here can return a stale blob snapshot and
+  // spread it over fields that were just written (e.g. pageArtifacts after
+  // regen). Guard the exported helper against accidental cross-order reuse.
+  const existing = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
   if (!existing) return null;
 
   const effectivePaymentStatus = patch.paymentStatus ?? existing.paymentStatus;
@@ -1240,8 +1245,14 @@ export async function updateFulfillmentState(
 export async function appendAuditEvent(
   orderId: string,
   event: Omit<ReviewAuditEvent, 'at'> & { at?: string },
+  existingOrder?: OrderRecord,
 ): Promise<OrderRecord | null> {
-  const existing = await getOrder(orderId);
+  // Use the caller's already-written record when available for this order. A
+  // fresh getOrder() here can return a stale blob snapshot and overwrite newer
+  // pageArtifacts (the production regen-clobber bug: appendAuditEvent re-read
+  // stale state after updateFulfillmentState had already persisted the regen'd
+  // artifacts). Guard the exported helper against accidental cross-order reuse.
+  const existing = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
   if (!existing) return null;
   const entry: ReviewAuditEvent = {
     at: event.at ?? new Date().toISOString(),

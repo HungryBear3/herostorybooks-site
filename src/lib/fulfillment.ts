@@ -762,8 +762,13 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
 export async function rebuildProofFromPageArtifacts(
   orderId: string,
   deps: FulfillmentDeps = {},
-): Promise<{ ok: boolean; proofUrl?: string; error?: string }> {
-  const order = await getOrder(orderId);
+  existingOrder?: import('./orders.ts').OrderRecord,
+): Promise<{ ok: boolean; proofUrl?: string; error?: string; updatedOrder?: import('./orders.ts').OrderRecord }> {
+  // Use the caller's freshly-written record when available for this order. An
+  // internal getOrder() can return a stale blob snapshot — see stale-read
+  // comment on updateFulfillmentState and appendAuditEvent. Guard against
+  // accidental cross-order reuse because this helper is exported.
+  const order = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
   if (!order) return { ok: false, error: 'Order not found' };
   if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
     return { ok: false, error: 'Order has no page artifacts to rebuild from' };
@@ -806,11 +811,18 @@ export async function rebuildProofFromPageArtifacts(
   // approveWholeBook reads proofReviewedAt BEFORE calling this rebuild, so
   // its in-progress happy path is unaffected — the clear only impacts
   // subsequent approval attempts.
-  await updateFulfillmentState(order.id, {
+  //
+  // Stale-read guard: pass `order` (the record we just used for the rebuild)
+  // as existingOrder so updateFulfillmentState's internal getOrder() doesn't
+  // return a stale snapshot. Also carry pageArtifacts explicitly in the patch
+  // so that even if updateFulfillmentState falls back to a fresh getOrder(), a
+  // stale snapshot cannot clobber the pageArtifacts the preceding regen wrote.
+  const afterRebuild = await updateFulfillmentState(order.id, {
     storyArtifactUrl: proofUrl,
     proofReviewedAt: null,
-  });
-  return { ok: true, proofUrl };
+    pageArtifacts: order.pageArtifacts,
+  }, order);
+  return { ok: true, proofUrl, updatedOrder: afterRebuild ?? undefined };
 }
 
 export interface TriggerFulfillmentOptions {

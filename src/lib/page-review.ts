@@ -203,12 +203,15 @@ export async function regeneratePage(
     return { ok: false, status: 400, error: error ?? 'regenerate_failed' };
   }
 
-  await updateFulfillmentState(order.id, {
+  // Thread the just-written record through so the subsequent appendAuditEvent
+  // and rebuildProof calls don't re-read a stale blob snapshot that would
+  // overwrite pageArtifacts back to the pre-regen state (production bug).
+  const savedOrder = await updateFulfillmentState(order.id, {
     pageArtifacts: updatedArtifacts,
     reviewStatus: 'customer_changes_requested',
   });
 
-  await appendAuditEvent(order.id, {
+  const afterRegenAudit = await appendAuditEvent(order.id, {
     type: 'page_regenerated',
     pageIndex: input.pageIndex,
     reason: result.imageUrl ? null : (result.error ?? 'image_generation_failed'),
@@ -219,7 +222,7 @@ export async function regeneratePage(
       success: Boolean(result.imageUrl),
       tags: tags.join(',') || '',
     },
-  });
+  }, savedOrder ?? undefined);
 
   if (!result.imageUrl) {
     return {
@@ -238,21 +241,32 @@ export async function regeneratePage(
   if (!deps.skipProofRebuild) {
     try {
       const rebuild = deps.rebuildProof ?? rebuildProofFromPageArtifacts;
-      const rb = await rebuild(order.id);
+      // Pass afterRegenAudit so rebuildProof can use the fresh post-regen record
+      // rather than doing another getOrder() that might return stale state.
+      const rb = await rebuild(order.id, {}, afterRegenAudit ?? undefined);
       if (rb.ok) {
         proofRefreshed = true;
       } else {
         proofRefreshError = rb.error ?? 'proof_rebuild_failed';
       }
+      // Thread rb.updatedOrder (when available) so appendAuditEvent doesn't
+      // re-read and overwrite the storyArtifactUrl/proofReviewedAt the rebuild
+      // just persisted.
+      await appendAuditEvent(order.id, {
+        type: 'proof_rebuilt',
+        pageIndex: input.pageIndex,
+        reason: proofRefreshError ?? null,
+        meta: { triggeredBy: 'page_regenerated', success: proofRefreshed },
+      }, rb.updatedOrder ?? undefined);
     } catch (err) {
       proofRefreshError = err instanceof Error ? err.message : String(err);
+      await appendAuditEvent(order.id, {
+        type: 'proof_rebuilt',
+        pageIndex: input.pageIndex,
+        reason: proofRefreshError,
+        meta: { triggeredBy: 'page_regenerated', success: false },
+      }, afterRegenAudit ?? savedOrder ?? undefined);
     }
-    await appendAuditEvent(order.id, {
-      type: 'proof_rebuilt',
-      pageIndex: input.pageIndex,
-      reason: proofRefreshError ?? null,
-      meta: { triggeredBy: 'page_regenerated', success: proofRefreshed },
-    });
   }
 
   // One-shot operator alert when this regeneration crosses the manual-review threshold.
@@ -299,8 +313,10 @@ export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
   // it here would short-circuit the ack/approve gate and cause approveWholeBook
   // to return `already_approved` for customers who never completed the
   // intended full-approval path.
-  await updateFulfillmentState(order.id, { pageArtifacts: artifacts });
+  const savedOrder = await updateFulfillmentState(order.id, { pageArtifacts: artifacts });
 
+  // Thread savedOrder so appendAuditEvent doesn't re-read stale blob state
+  // and clobber the accepted pageArtifacts we just wrote (production clobber bug).
   await appendAuditEvent(order.id, {
     type: 'page_accepted',
     pageIndex: input.pageIndex,
@@ -309,7 +325,7 @@ export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
       totalPages: artifacts.length,
       regenerateCountAtAccept: page.regenerateCount,
     },
-  });
+  }, savedOrder ?? undefined);
 
   return { ok: true, status: 200, page };
 }
@@ -400,7 +416,7 @@ export async function approveWholeBook(
 
   // Rebuild the proof from accepted/current artifacts.
   const rebuild = deps.rebuildProof ?? rebuildProofFromPageArtifacts;
-  const rb = await rebuild(orderId);
+  const rb = await rebuild(orderId, {}, order);
   if (!rb.ok) {
     await appendAuditEvent(orderId, {
       type: 'whole_book_approval_rejected',
@@ -409,20 +425,24 @@ export async function approveWholeBook(
     });
     return { ok: false, status: 502, error: rb.error ?? 'proof_rebuild_failed' };
   }
-  await appendAuditEvent(orderId, {
+  const afterProofRebuiltAudit = await appendAuditEvent(orderId, {
     type: 'proof_rebuilt',
     reason: null,
     meta: { triggeredBy: 'whole_book_approved', success: true },
-  });
+  }, rb.updatedOrder ?? undefined);
 
-  await updateFulfillmentState(orderId, { reviewStatus: 'approved' });
+  const approvedOrder = await updateFulfillmentState(
+    orderId,
+    { reviewStatus: 'approved' },
+    afterProofRebuiltAudit ?? rb.updatedOrder ?? undefined,
+  );
   await appendAuditEvent(orderId, {
     type: 'whole_book_approved',
     meta: {
       bookFormat: order.bookFormat,
       proofUrl: rb.proofUrl ?? null,
     },
-  });
+  }, approvedOrder ?? undefined);
 
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
   if (!isPrint) {
@@ -495,11 +515,11 @@ export async function acknowledgeProofReview(
     return { ok: true, status: 200, proofReviewedAt: order.proofReviewedAt };
   }
   const ts = now.toISOString();
-  await updateFulfillmentState(orderId, { proofReviewedAt: ts });
+  const savedOrder = await updateFulfillmentState(orderId, { proofReviewedAt: ts });
   await appendAuditEvent(orderId, {
     at: ts,
     type: 'proof_review_acknowledged',
-  });
+  }, savedOrder ?? undefined);
   return { ok: true, status: 200, proofReviewedAt: ts };
 }
 
