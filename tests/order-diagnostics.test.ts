@@ -12,6 +12,7 @@ import {
   classifyPaidOrderOpsIssue,
   formatDiagnosticsSummary,
 } from '../src/lib/order-diagnostics.ts';
+import { lukasDinoArtDirectionFixture } from './fixtures/art-direction/lukas-dino-valid.ts';
 
 function pageFixture(i: number, overrides: Partial<PageArtifact> = {}): PageArtifact {
   return {
@@ -129,6 +130,80 @@ test('diagnostics: story source/input summarizes custom lesson and inspiration u
   assert.match(text, /upload=yes/);
   assert.match(text, /file=story-ideas\.pdf/);
   assert.match(text, /transcript=stored/);
+});
+
+test('diagnostics: absent art-direction packet is neutral and bounded', () => {
+  const d = buildOrderDiagnostics(makeOrder({ paymentStatus: 'paid' }));
+
+  assert.equal(d.artDirection.status, 'absent');
+  assert.equal(d.artDirection.packetPresent, false);
+  assert.equal(d.artDirection.storyboard.validationStatus, 'not_available');
+  const c = d.checks.find((check) => check.id === 'art-direction');
+  assert.equal(c?.severity, 'info');
+  assert.match(c?.label ?? '', /not generated/i);
+
+  const text = formatDiagnosticsSummary(d);
+  assert.match(text, /Art direction: status=absent/);
+  assert.doesNotMatch(text, /undefined|null null/);
+});
+
+test('diagnostics: present art-direction packet summarizes style, characters, storyboard, and continuity', () => {
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    artDirectionPacket: lukasDinoArtDirectionFixture,
+    artDirectionGeneratedAt: '2026-05-28T21:00:00.000Z',
+    artDirectionHumanReviewStatus: 'approved',
+    artDirectionHumanReviewNotes: 'Operator spot check passed.',
+  }));
+
+  assert.equal(d.artDirection.status, 'present');
+  assert.equal(d.artDirection.schemaValid, true);
+  assert.equal(d.artDirection.styleBible?.targetIllustrationStyle, 'watercolor_classic');
+  assert.equal(d.artDirection.styleBible?.approvedBy, 'operator_abigail');
+  assert.equal(d.artDirection.characterSheets.count, 2);
+  assert.equal(d.artDirection.characterSheets.approvedCount, 2);
+  assert.deepEqual(d.artDirection.characterSheets.roles, ['hero', 'companion']);
+  assert.equal(d.artDirection.storyboard.validationStatus, 'complete');
+  assert.equal(d.artDirection.storyboard.errorCount, 0);
+  assert.equal(d.artDirection.continuity.pagesWithContinuityCallback, 24);
+  assert.ok(d.artDirection.continuity.uniqueRecurringObjectCount > 0);
+
+  const c = d.checks.find((check) => check.id === 'art-direction');
+  assert.equal(c?.severity, 'ok');
+
+  const text = formatDiagnosticsSummary(d);
+  assert.match(text, /Art direction: status=present schema=valid storyboard=complete style=watercolor_classic/);
+  assert.match(text, /characters=2\/2 approved/);
+  assert.match(text, /Art direction review: status=approved styleApprovedBy=operator_abigail/);
+});
+
+test('diagnostics: invalid art-direction packet reports bounded schema and storyboard issues', () => {
+  const invalid = structuredClone(lukasDinoArtDirectionFixture) as any;
+  delete invalid.style_bible.versioning.approved_by;
+  delete invalid.storyboard.entries[1].continuity_callback;
+  invalid.storyboard.entries[3].required_recurring_objects = [];
+
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    artDirectionPacket: invalid,
+  }));
+
+  assert.equal(d.artDirection.status, 'invalid');
+  assert.equal(d.artDirection.schemaValid, false);
+  assert.ok(d.artDirection.schemaErrors.length > 0);
+  assert.equal(d.artDirection.storyboard.validationStatus, 'incomplete');
+  assert.ok(d.artDirection.storyboard.errorCount > 0);
+  assert.ok(d.artDirection.storyboard.errors.length <= 8);
+  assert.ok(d.artDirection.schemaErrors.length <= 8);
+  assert.ok(d.artDirection.storyboard.errors.some((issue) => issue.code === 'missing_continuity_callback'));
+
+  const c = d.checks.find((check) => check.id === 'art-direction');
+  assert.equal(c?.severity, 'warn');
+
+  const text = formatDiagnosticsSummary(d);
+  assert.match(text, /Art direction: status=invalid schema=invalid storyboard=incomplete/);
+  assert.match(text, /art-direction schema_invalid/);
+  assert.doesNotMatch(text, /photo_lukas_parent_ref_1/);
 });
 
 test('diagnostics: paid + not_started + no artifact is an ops attention item', () => {

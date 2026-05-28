@@ -142,6 +142,88 @@ export default async function AdminOrderDetail({ params }: Props) {
           )}
         </Section>
 
+        <Section title="Art direction">
+          <Row
+            label="Packet"
+            value={
+              diagnostics.artDirection.status === 'absent'
+                ? 'not yet generated'
+                : diagnostics.artDirection.status
+            }
+            tone={diagnostics.artDirection.status === 'invalid' ? 'bad' : diagnostics.artDirection.status === 'present' ? 'good' : 'neutral'}
+          />
+          <Row
+            label="Storyboard"
+            value={diagnostics.artDirection.storyboard.validationStatus}
+            tone={diagnostics.artDirection.storyboard.validationStatus === 'complete' ? 'good' : diagnostics.artDirection.storyboard.validationStatus === 'incomplete' ? 'bad' : 'neutral'}
+          />
+          <Row label="Generated" value={diagnostics.artDirection.generatedAt ?? '—'} />
+          <Row label="Human review" value={diagnostics.artDirection.humanReviewStatus ?? '—'} />
+          {diagnostics.artDirection.humanReviewNotes && (
+            <Row label="Review notes" value={diagnostics.artDirection.humanReviewNotes} />
+          )}
+
+          {diagnostics.artDirection.styleBible ? (
+            <>
+              <Row label="Style" value={`${diagnostics.artDirection.styleBible.targetIllustrationStyle ?? '—'} · ${diagnostics.artDirection.styleBible.renderingLevel ?? '—'}`} />
+              <Row label="Style template" value={diagnostics.artDirection.styleBible.templateId ?? '—'} mono />
+              <Row label="Style approved" value={`${diagnostics.artDirection.styleBible.approvedBy ?? '—'} · ${diagnostics.artDirection.styleBible.approvedAt ?? '—'}`} />
+              <Row label="Palette / prohibited" value={`${diagnostics.artDirection.styleBible.paletteColorCount} colors · ${diagnostics.artDirection.styleBible.prohibitedCount} prohibited terms`} />
+              <Row label="Continuity motifs" value={
+                diagnostics.artDirection.styleBible.continuityMotifs.length > 0
+                  ? diagnostics.artDirection.styleBible.continuityMotifs.join(', ')
+                  : '—'
+              } />
+            </>
+          ) : (
+            <Row label="Style bible" value="not available" />
+          )}
+
+          <Row
+            label="Character sheets"
+            value={`${diagnostics.artDirection.characterSheets.approvedCount}/${diagnostics.artDirection.characterSheets.count} approved · roles: ${diagnostics.artDirection.characterSheets.roles.join(', ') || '—'}`}
+          />
+          {diagnostics.artDirection.characterSheets.summaries.length > 0 && (
+            <div className="mt-3 rounded-lg border border-gray-100 overflow-hidden">
+              {diagnostics.artDirection.characterSheets.summaries.map((sheet, index) => (
+                <div key={`${sheet.id ?? index}`} className="grid grid-cols-2 gap-2 border-t first:border-t-0 border-gray-100 px-3 py-2 text-xs">
+                  <span className="text-gray-500">{sheet.name ?? sheet.id ?? 'Character'}</span>
+                  <span className="text-right text-gray-700">
+                    {sheet.role ?? '—'} · {sheet.approvedBy ? 'approved' : 'not approved'} · traits {sheet.recurringTraitCount}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <Row label="Storyboard entries" value={`${diagnostics.artDirection.storyboard.actualEntries ?? 0} / ${diagnostics.artDirection.storyboard.expectedEntries ?? 24}`} />
+          <Row label="Storyboard issues" value={`${diagnostics.artDirection.storyboard.errorCount} errors · ${diagnostics.artDirection.storyboard.warningCount} warnings`} tone={diagnostics.artDirection.storyboard.errorCount > 0 ? 'bad' : 'neutral'} />
+          <Row label="Continuity counts" value={`${diagnostics.artDirection.continuity.pagesWithContinuityCallback} callbacks · ${diagnostics.artDirection.continuity.uniqueRecurringObjectCount} unique recurring objects`} />
+          {(diagnostics.artDirection.schemaErrors.length > 0 ||
+            diagnostics.artDirection.storyboard.errors.length > 0 ||
+            diagnostics.artDirection.storyboard.warnings.length > 0) && (
+            <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50/60 p-3">
+              <p className="text-[10px] uppercase tracking-wider text-amber-900 mb-2">Validation issues</p>
+              <ul className="space-y-1 text-xs text-amber-950">
+                {[
+                  ...diagnostics.artDirection.schemaErrors,
+                  ...diagnostics.artDirection.storyboard.errors,
+                  ...diagnostics.artDirection.storyboard.warnings,
+                ].slice(0, 8).map((issue, index) => (
+                  <li key={`${issue.code}-${issue.path}-${index}`}>
+                    <span className="font-mono text-[10px]">{issue.code}</span>
+                    {' · '}
+                    <span className="font-mono text-[10px]">{issue.path}</span>
+                    {issue.pageNumber != null && <span> · page {issue.pageNumber}</span>}
+                    {' — '}
+                    <span>{issue.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </Section>
+
         <Section title="Payment">
           <Row label="Status" value={order.paymentStatus} tone={order.paymentStatus === 'paid' ? 'good' : 'neutral'} />
           <Row label="Stripe session" value={order.stripeSessionId ?? '—'} mono />

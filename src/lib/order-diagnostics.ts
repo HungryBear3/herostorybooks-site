@@ -5,6 +5,8 @@
 
 import type { OrderRecord, ReviewAuditEvent } from './orders.ts';
 import { isPrintFormat } from './orders.ts';
+import { ArtDirectionPacketSchema } from './art-direction-schemas.ts';
+import { validateStoryboardCompleteness, type StoryboardValidationIssue } from './storyboard-validator.ts';
 
 export type DiagnosticSeverity = 'ok' | 'info' | 'warn' | 'fail';
 
@@ -89,6 +91,9 @@ export interface OrderDiagnostics {
     inspirationPreview: string | null;
     transcriptError: string | null;
   };
+  /** Read-only art-direction/storyboard visibility for admin/support.
+   *  Bounded summaries only: no raw prompt text, URLs, tokens, or full packet. */
+  artDirection: ArtDirectionDiagnostics;
   artifacts: {
     storyArtifactUrl: string | null;
     pageArtifactCount: number;
@@ -156,6 +161,69 @@ export interface OrderDiagnostics {
   paidOrderOpsIssue: PaidOrderOpsIssue | null;
   /** Ordered list of named checks — the ones that fail are what to escalate on. */
   checks: DiagnosticCheck[];
+}
+
+export interface ArtDirectionDiagnostics {
+  status: 'absent' | 'present' | 'invalid';
+  packetPresent: boolean;
+  schemaValid: boolean | null;
+  generatedAt: string | null;
+  humanReviewStatus: string | null;
+  humanReviewNotes: string | null;
+  styleBible: {
+    bookId: string | null;
+    templateId: string | null;
+    targetIllustrationStyle: string | null;
+    renderingLevel: string | null;
+    paletteColorCount: number;
+    prohibitedCount: number;
+    continuityMotifCount: number;
+    continuityMotifs: string[];
+    approvedBy: string | null;
+    approvedAt: string | null;
+  } | null;
+  characterSheets: {
+    count: number;
+    approvedCount: number;
+    roles: string[];
+    summaries: Array<{
+      id: string | null;
+      name: string | null;
+      role: string | null;
+      approvedBy: string | null;
+      approvedAt: string | null;
+      recurringTraitCount: number;
+      neverChangeCount: number;
+    }>;
+  };
+  storyboard: {
+    validationStatus: 'complete' | 'incomplete' | 'not_available';
+    bookId: string | null;
+    expectedEntries: number | null;
+    actualEntries: number | null;
+    missingPages: number[];
+    duplicatePages: number[];
+    coveredStoryBeats: string[];
+    missingStoryBeats: string[];
+    errors: Array<BoundedArtDirectionIssue>;
+    warnings: Array<BoundedArtDirectionIssue>;
+    errorCount: number;
+    warningCount: number;
+  };
+  continuity: {
+    pagesWithContinuityCallback: number;
+    pagesWithRecurringObjects: number;
+    recurringObjectCount: number;
+    uniqueRecurringObjectCount: number;
+  };
+  schemaErrors: Array<BoundedArtDirectionIssue>;
+}
+
+export interface BoundedArtDirectionIssue {
+  code: string;
+  message: string;
+  path: string;
+  pageNumber?: number;
 }
 
 export const PAID_ARTIFACT_STALE_AFTER_MS = 15 * 60 * 1000;
@@ -235,6 +303,9 @@ export function classifyPaidOrderOpsIssue(
 
 const RECENT_EVENT_LIMIT = 10;
 const INPUT_PREVIEW_LIMIT = 280;
+const ART_DIRECTION_ISSUE_LIMIT = 8;
+const ART_DIRECTION_CHARACTER_LIMIT = 8;
+const ART_DIRECTION_MOTIF_LIMIT = 8;
 
 function cleanPreview(value: string | null | undefined, max = INPUT_PREVIEW_LIMIT): string | null {
   const cleaned = String(value ?? '')
@@ -248,6 +319,166 @@ function cleanPreview(value: string | null | undefined, max = INPUT_PREVIEW_LIMI
 
 function hasText(value: string | null | undefined): boolean {
   return Boolean(cleanPreview(value, 1));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function boundedIssue(issue: StoryboardValidationIssue): BoundedArtDirectionIssue {
+  return {
+    code: issue.code,
+    message: cleanPreview(issue.message, 180) ?? '',
+    path: issue.path,
+    ...(issue.pageNumber !== undefined ? { pageNumber: issue.pageNumber } : {}),
+  };
+}
+
+function countPaletteColors(palette: unknown): number {
+  if (!isRecord(palette)) return 0;
+  return ['primary', 'secondary', 'accent']
+    .map((key) => palette[key])
+    .filter(Array.isArray)
+    .reduce((sum, colors) => sum + colors.length, 0);
+}
+
+function extractPacket(order: OrderRecord): unknown | null {
+  return order.artDirectionPacket ?? null;
+}
+
+function buildArtDirectionDiagnostics(order: OrderRecord): ArtDirectionDiagnostics {
+  const rawPacket = extractPacket(order);
+  if (!rawPacket) {
+    return {
+      status: 'absent',
+      packetPresent: false,
+      schemaValid: null,
+      generatedAt: order.artDirectionGeneratedAt ?? null,
+      humanReviewStatus: order.artDirectionHumanReviewStatus ?? null,
+      humanReviewNotes: cleanPreview(order.artDirectionHumanReviewNotes, 180),
+      styleBible: null,
+      characterSheets: { count: 0, approvedCount: 0, roles: [], summaries: [] },
+      storyboard: {
+        validationStatus: 'not_available',
+        bookId: null,
+        expectedEntries: null,
+        actualEntries: null,
+        missingPages: [],
+        duplicatePages: [],
+        coveredStoryBeats: [],
+        missingStoryBeats: [],
+        errors: [],
+        warnings: [],
+        errorCount: 0,
+        warningCount: 0,
+      },
+      continuity: {
+        pagesWithContinuityCallback: 0,
+        pagesWithRecurringObjects: 0,
+        recurringObjectCount: 0,
+        uniqueRecurringObjectCount: 0,
+      },
+      schemaErrors: [],
+    };
+  }
+
+  const parsed = ArtDirectionPacketSchema.safeParse(rawPacket);
+  const packet = parsed.success ? parsed.data : (isRecord(rawPacket) ? rawPacket : {});
+  const styleBible = isRecord(packet.style_bible) ? packet.style_bible : null;
+  const sheets = Array.isArray(packet.character_sheets)
+    ? packet.character_sheets.filter(isRecord)
+    : [];
+  const storyboard = isRecord(packet.storyboard) ? packet.storyboard : null;
+  const entries = storyboard && Array.isArray(storyboard.entries)
+    ? storyboard.entries.filter(isRecord)
+    : [];
+
+  const validation = order.artDirectionValidation ?? validateStoryboardCompleteness(rawPacket);
+  const recurringObjects = entries.flatMap((entry) =>
+    Array.isArray(entry.required_recurring_objects)
+      ? entry.required_recurring_objects.filter((value) => typeof value === 'string' && value.trim())
+      : [],
+  );
+
+  const schemaErrors = parsed.success ? [] : parsed.error.issues.slice(0, ART_DIRECTION_ISSUE_LIMIT).map((issue) => ({
+    code: 'schema_invalid',
+    message: cleanPreview(issue.message, 180) ?? '',
+    path: issue.path.join('.') || 'artDirectionPacket',
+  }));
+
+  return {
+    status: parsed.success ? 'present' : 'invalid',
+    packetPresent: true,
+    schemaValid: parsed.success,
+    generatedAt: order.artDirectionGeneratedAt ?? null,
+    humanReviewStatus: order.artDirectionHumanReviewStatus ?? null,
+    humanReviewNotes: cleanPreview(order.artDirectionHumanReviewNotes, 180),
+    styleBible: styleBible ? {
+      bookId: typeof styleBible.book_id === 'string' ? styleBible.book_id : null,
+      templateId: typeof styleBible.template_id === 'string' ? styleBible.template_id : null,
+      targetIllustrationStyle: typeof styleBible.target_illustration_style === 'string' ? styleBible.target_illustration_style : null,
+      renderingLevel: typeof styleBible.rendering_level === 'string' ? styleBible.rendering_level : null,
+      paletteColorCount: countPaletteColors(styleBible.palette),
+      prohibitedCount: Array.isArray(styleBible.prohibited) ? styleBible.prohibited.length : 0,
+      continuityMotifCount: Array.isArray(styleBible.continuity_motifs) ? styleBible.continuity_motifs.length : 0,
+      continuityMotifs: Array.isArray(styleBible.continuity_motifs)
+        ? styleBible.continuity_motifs.filter((value): value is string => typeof value === 'string').slice(0, ART_DIRECTION_MOTIF_LIMIT)
+        : [],
+      approvedBy: isRecord(styleBible.versioning) && typeof styleBible.versioning.approved_by === 'string'
+        ? styleBible.versioning.approved_by
+        : null,
+      approvedAt: isRecord(styleBible.versioning) && typeof styleBible.versioning.approved_at === 'string'
+        ? styleBible.versioning.approved_at
+        : null,
+    } : null,
+    characterSheets: {
+      count: sheets.length,
+      approvedCount: sheets.filter((sheet) =>
+        isRecord(sheet.versioning) &&
+        typeof sheet.versioning.approved_by === 'string' &&
+        typeof sheet.versioning.approved_at === 'string',
+      ).length,
+      roles: [...new Set(sheets.map((sheet) => typeof sheet.role === 'string' ? sheet.role : 'unknown'))],
+      summaries: sheets.slice(0, ART_DIRECTION_CHARACTER_LIMIT).map((sheet) => ({
+        id: typeof sheet.character_id === 'string' ? sheet.character_id : null,
+        name: typeof sheet.display_name === 'string' ? sheet.display_name : null,
+        role: typeof sheet.role === 'string' ? sheet.role : null,
+        approvedBy: isRecord(sheet.versioning) && typeof sheet.versioning.approved_by === 'string'
+          ? sheet.versioning.approved_by
+          : null,
+        approvedAt: isRecord(sheet.versioning) && typeof sheet.versioning.approved_at === 'string'
+          ? sheet.versioning.approved_at
+          : null,
+        recurringTraitCount: isRecord(sheet.companion_anchors) && Array.isArray(sheet.companion_anchors.recurring_traits)
+          ? sheet.companion_anchors.recurring_traits.length
+          : 0,
+        neverChangeCount: Array.isArray(sheet.never_change) ? sheet.never_change.length : 0,
+      })),
+    },
+    storyboard: {
+      validationStatus: validation.status,
+      bookId: validation.bookId,
+      expectedEntries: validation.summary.expectedEntries,
+      actualEntries: validation.summary.actualEntries,
+      missingPages: validation.summary.missingPages,
+      duplicatePages: validation.summary.duplicatePages,
+      coveredStoryBeats: validation.summary.coveredStoryBeats,
+      missingStoryBeats: validation.summary.missingStoryBeats,
+      errors: validation.errors.slice(0, ART_DIRECTION_ISSUE_LIMIT).map(boundedIssue),
+      warnings: validation.warnings.slice(0, ART_DIRECTION_ISSUE_LIMIT).map(boundedIssue),
+      errorCount: validation.errors.length,
+      warningCount: validation.warnings.length,
+    },
+    continuity: {
+      pagesWithContinuityCallback: entries.filter((entry) => isRecord(entry.continuity_callback)).length,
+      pagesWithRecurringObjects: entries.filter((entry) =>
+        Array.isArray(entry.required_recurring_objects) && entry.required_recurring_objects.length > 0,
+      ).length,
+      recurringObjectCount: recurringObjects.length,
+      uniqueRecurringObjectCount: new Set(recurringObjects).size,
+    },
+    schemaErrors,
+  };
 }
 
 export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
@@ -341,6 +572,7 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       inspirationPreview: cleanPreview(order.voiceTranscript?.inspiration),
       transcriptError: cleanPreview(order.voiceTranscript?.error, 180),
     },
+    artDirection: buildArtDirectionDiagnostics(order),
     artifacts: {
       storyArtifactUrl: order.storyArtifactUrl ?? null,
       pageArtifactCount: pages.length,
@@ -446,6 +678,31 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
   } else if (d.flags.isPaid && d.artifacts.pageArtifactCount > 0) {
     // Paid order with pages but no recorded story source = legacy / observability gap.
     checks.push({ id: 'story-source', label: 'Story source: unknown (legacy order)', severity: 'info', detail: 'storyMeta not persisted. Order created before generation observability landed.' });
+  }
+
+  // Art direction packet visibility. Read-only: this does not gate
+  // fulfillment/proof state in T6 admin visibility.
+  if (d.artDirection.status === 'absent') {
+    checks.push({
+      id: 'art-direction',
+      label: 'Art direction packet not generated',
+      severity: 'info',
+      detail: 'No style bible / character sheet / storyboard packet is stored on this order yet.',
+    });
+  } else if (d.artDirection.status === 'invalid') {
+    checks.push({
+      id: 'art-direction',
+      label: 'Art direction packet invalid',
+      severity: 'warn',
+      detail: `${d.artDirection.schemaErrors.length} schema issue(s) shown; storyboard status=${d.artDirection.storyboard.validationStatus}.`,
+    });
+  } else {
+    checks.push({
+      id: 'art-direction',
+      label: `Art direction packet present (${d.artDirection.storyboard.validationStatus})`,
+      severity: d.artDirection.storyboard.validationStatus === 'complete' ? 'ok' : 'warn',
+      detail: `${d.artDirection.characterSheets.count} character sheet(s), ${d.artDirection.styleBible?.continuityMotifCount ?? 0} continuity motif(s), ${d.artDirection.continuity.uniqueRecurringObjectCount} unique recurring object(s).`,
+    });
   }
 
   // Photo
@@ -574,6 +831,30 @@ export function formatDiagnosticsSummary(d: OrderDiagnostics): string {
   );
   if (d.storyInput.inspirationPreview) {
     lines.push(`Story inspiration: ${d.storyInput.inspirationPreview}`);
+  }
+  lines.push(
+    `Art direction: status=${d.artDirection.status}` +
+      ` schema=${d.artDirection.schemaValid === null ? 'not_present' : d.artDirection.schemaValid ? 'valid' : 'invalid'}` +
+      ` storyboard=${d.artDirection.storyboard.validationStatus}` +
+      ` style=${d.artDirection.styleBible?.targetIllustrationStyle ?? 'none'}` +
+      ` characters=${d.artDirection.characterSheets.approvedCount}/${d.artDirection.characterSheets.count} approved` +
+      ` motifs=${d.artDirection.styleBible?.continuityMotifCount ?? 0}` +
+      ` recurringObjects=${d.artDirection.continuity.uniqueRecurringObjectCount}` +
+      ` errors=${d.artDirection.storyboard.errorCount}`,
+  );
+  if (d.artDirection.humanReviewStatus || d.artDirection.styleBible?.approvedBy) {
+    lines.push(
+      `Art direction review: status=${d.artDirection.humanReviewStatus ?? 'none'}` +
+        ` styleApprovedBy=${d.artDirection.styleBible?.approvedBy ?? 'none'}` +
+        ` styleApprovedAt=${d.artDirection.styleBible?.approvedAt ?? 'none'}`,
+    );
+  }
+  for (const issue of [
+    ...d.artDirection.schemaErrors,
+    ...d.artDirection.storyboard.errors,
+    ...d.artDirection.storyboard.warnings,
+  ].slice(0, ART_DIRECTION_ISSUE_LIMIT)) {
+    lines.push(`  art-direction ${issue.code} ${issue.path}: ${issue.message}`);
   }
   lines.push(`Pages: ${d.artifacts.pagesAccepted}/${d.artifacts.pageArtifactCount} accepted · ${d.artifacts.pagesWithoutImage} missing image · ${d.artifacts.totalRegenerations} regenerations`);
   lines.push(

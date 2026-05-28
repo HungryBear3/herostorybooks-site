@@ -175,6 +175,17 @@ export interface OrderRecord extends OrderInput {
    *  template_after_openai_failure). Set once during fulfillment, never
    *  overwritten. Optional for backward compatibility with older orders. */
   storyMeta?: import('./fulfillment-types.ts').StoryMeta | null;
+  /** Optional read-only art-direction packet persisted by the art-direction
+   *  pipeline. Admin diagnostics may display bounded summaries from it, but
+   *  fulfillment/proof state must not depend on this field until the gated
+   *  state-machine work lands. */
+  artDirectionPacket?: import('./art-direction-schemas.ts').ArtDirectionPacket | unknown | null;
+  /** Optional persisted storyboard validation from the art-direction pipeline.
+   *  Diagnostics recompute when absent so legacy orders remain readable. */
+  artDirectionValidation?: import('./storyboard-validator.ts').StoryboardValidation | null;
+  artDirectionGeneratedAt?: string | null;
+  artDirectionHumanReviewStatus?: 'not_started' | 'needs_review' | 'approved' | 'rejected' | string | null;
+  artDirectionHumanReviewNotes?: string | null;
   printInteriorArtifactUrl?: string | null;
   printInteriorMd5?: string | null;
   printInteriorPageCount?: number | null;
