@@ -61,6 +61,34 @@ export interface OrderDiagnostics {
     generatedAt: string | null;
     fallbackError: string | null;
   };
+  /** Admin/support-visible source material captured at checkout. This is
+   *  metadata and bounded text only; blob URLs/invite tokens are intentionally
+   *  not exposed here. */
+  storyInput: {
+    hasCustomText: boolean;
+    hasTheme: boolean;
+    theme: string | null;
+    hasLesson: boolean;
+    lesson: string | null;
+    hasOccasion: boolean;
+    occasion: string | null;
+    hasGiftMessage: boolean;
+    giftMessagePreview: string | null;
+    hasCharacterNotes: boolean;
+    characterNotesPreview: string | null;
+    hasVoiceOrUpload: boolean;
+    voiceSource: string | null;
+    voiceFileName: string | null;
+    voiceBlobPath: string | null;
+    voiceConsentAt: string | null;
+    transcriptStatus: 'none' | 'stored' | 'failed';
+    transcriptModel: string | null;
+    transcriptChars: number | null;
+    transcriptPreview: string | null;
+    inspirationChars: number | null;
+    inspirationPreview: string | null;
+    transcriptError: string | null;
+  };
   artifacts: {
     storyArtifactUrl: string | null;
     pageArtifactCount: number;
@@ -206,6 +234,21 @@ export function classifyPaidOrderOpsIssue(
 }
 
 const RECENT_EVENT_LIMIT = 10;
+const INPUT_PREVIEW_LIMIT = 280;
+
+function cleanPreview(value: string | null | undefined, max = INPUT_PREVIEW_LIMIT): string | null {
+  const cleaned = String(value ?? '')
+    .replace(/[\x00-\x1F\x7F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return null;
+  if (cleaned.length <= max) return cleaned;
+  return `${cleaned.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function hasText(value: string | null | undefined): boolean {
+  return Boolean(cleanPreview(value, 1));
+}
 
 export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
   const isPrint = isPrintFormat(order.bookFormat);
@@ -263,6 +306,40 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       model: order.storyMeta?.model ?? null,
       generatedAt: order.storyMeta?.generatedAt ?? null,
       fallbackError: order.storyMeta?.fallbackError ?? null,
+    },
+    storyInput: {
+      hasCustomText: [
+        order.lesson,
+        order.occasion,
+        order.giftMessage,
+        order.characterNotes,
+      ].some(hasText),
+      hasTheme: hasText(order.theme),
+      theme: cleanPreview(order.theme, 120),
+      hasLesson: hasText(order.lesson),
+      lesson: cleanPreview(order.lesson),
+      hasOccasion: hasText(order.occasion),
+      occasion: cleanPreview(order.occasion, 160),
+      hasGiftMessage: hasText(order.giftMessage),
+      giftMessagePreview: cleanPreview(order.giftMessage),
+      hasCharacterNotes: hasText(order.characterNotes),
+      characterNotesPreview: cleanPreview(order.characterNotes),
+      hasVoiceOrUpload: Boolean(order.voiceFileName || order.voiceBlobPath || order.voiceTranscript),
+      voiceSource: order.voiceSource ?? null,
+      voiceFileName: order.voiceFileName ?? null,
+      voiceBlobPath: order.voiceBlobPath ?? null,
+      voiceConsentAt: order.voiceConsentAt ?? null,
+      transcriptStatus: order.voiceTranscript?.error
+        ? 'failed'
+        : order.voiceTranscript
+        ? 'stored'
+        : 'none',
+      transcriptModel: order.voiceTranscript?.model ?? null,
+      transcriptChars: order.voiceTranscript?.transcript?.length ?? null,
+      transcriptPreview: cleanPreview(order.voiceTranscript?.transcript),
+      inspirationChars: order.voiceTranscript?.inspiration?.length ?? null,
+      inspirationPreview: cleanPreview(order.voiceTranscript?.inspiration),
+      transcriptError: cleanPreview(order.voiceTranscript?.error, 180),
     },
     artifacts: {
       storyArtifactUrl: order.storyArtifactUrl ?? null,
@@ -350,8 +427,13 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
   }
 
   // Story source observability
-  if (d.story.source === 'openai_chat') {
-    checks.push({ id: 'story-source', label: `Story source: openai_chat (${d.story.model ?? 'unknown'})`, severity: 'ok', detail: 'Model-generated story.' });
+  if (
+    d.story.source === 'openai_chat' ||
+    d.story.source === 'openai_page_prose' ||
+    d.story.source === 'ollama_page_prose' ||
+    d.story.source === 'gemini_page_prose'
+  ) {
+    checks.push({ id: 'story-source', label: `Story source: ${d.story.source} (${d.story.model ?? 'unknown'})`, severity: 'ok', detail: 'Model-generated story.' });
   } else if (d.story.source === 'template') {
     checks.push({ id: 'story-source', label: `Story source: template (${d.story.model ?? 'unknown'})`, severity: 'info', detail: 'Deterministic template fallback (no OPENAI_API_KEY or template-only path).' });
   } else if (d.story.source === 'template_after_openai_failure') {
@@ -482,6 +564,17 @@ export function formatDiagnosticsSummary(d: OrderDiagnostics): string {
       `${d.story.generatedAt ? ` generatedAt=${d.story.generatedAt}` : ''}` +
       `${d.story.fallbackError ? ` fallbackError="${d.story.fallbackError}"` : ''}`,
   );
+  lines.push(
+    `Story input: theme=${d.storyInput.theme ?? 'none'} lesson=${d.storyInput.lesson ?? 'none'}` +
+      ` customText=${d.storyInput.hasCustomText ? 'yes' : 'no'}` +
+      ` upload=${d.storyInput.hasVoiceOrUpload ? 'yes' : 'no'}` +
+      `${d.storyInput.voiceSource ? ` source=${d.storyInput.voiceSource}` : ''}` +
+      `${d.storyInput.voiceFileName ? ` file=${d.storyInput.voiceFileName}` : ''}` +
+      ` transcript=${d.storyInput.transcriptStatus}`,
+  );
+  if (d.storyInput.inspirationPreview) {
+    lines.push(`Story inspiration: ${d.storyInput.inspirationPreview}`);
+  }
   lines.push(`Pages: ${d.artifacts.pagesAccepted}/${d.artifacts.pageArtifactCount} accepted · ${d.artifacts.pagesWithoutImage} missing image · ${d.artifacts.totalRegenerations} regenerations`);
   lines.push(
     `Conditioning: ${d.artifacts.pagesPhotoConditioned} photo-edit · ${d.artifacts.pagesTextOnly} text-only · ${d.artifacts.pagesUnknownConditioning} unknown`,

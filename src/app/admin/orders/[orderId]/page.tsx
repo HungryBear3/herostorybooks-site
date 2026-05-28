@@ -103,6 +103,45 @@ export default async function AdminOrderDetail({ params }: Props) {
           <Row label="Updated" value={order.updatedAt} />
         </Section>
 
+        <Section title="Story source + input">
+          <Row label="Story source" value={diagnostics.story.source ?? 'unknown'} tone={diagnostics.story.source === 'template_after_openai_failure' ? 'bad' : 'neutral'} />
+          <Row label="Story model" value={diagnostics.story.model ?? '—'} mono />
+          <Row label="Story generated" value={diagnostics.story.generatedAt ?? '—'} />
+          {diagnostics.story.fallbackError && (
+            <Row label="Fallback reason" value={diagnostics.story.fallbackError} tone="bad" />
+          )}
+          <Row label="Custom story selected" value={diagnostics.storyInput.theme === 'custom-voice-story' ? 'yes' : 'no'} />
+          <Row label="Custom text present" value={diagnostics.storyInput.hasCustomText ? 'yes' : 'no'} />
+          <Row label="Story direction" value={diagnostics.storyInput.theme ?? '—'} />
+          <Row label="Custom story lesson" value={diagnostics.storyInput.lesson ?? '—'} />
+          <Row label="Occasion" value={diagnostics.storyInput.occasion ?? '—'} />
+          <Row label="Gift message" value={diagnostics.storyInput.giftMessagePreview ?? '—'} />
+          <Row label="Character notes" value={diagnostics.storyInput.characterNotesPreview ?? '—'} />
+          <Row label="Inspiration upload present" value={diagnostics.storyInput.hasVoiceOrUpload ? 'yes' : 'no'} />
+          {diagnostics.storyInput.hasVoiceOrUpload && (
+            <>
+              <Row label="Upload source" value={diagnostics.storyInput.voiceSource ?? 'uploaded/unknown'} />
+              <Row label="Upload file" value={diagnostics.storyInput.voiceFileName ?? '—'} />
+              <Row label="Upload blob path" value={diagnostics.storyInput.voiceBlobPath ?? '—'} mono />
+              <Row label="Consent recorded" value={diagnostics.storyInput.voiceConsentAt ?? '—'} />
+              <Row label="Transcript status" value={diagnostics.storyInput.transcriptStatus} tone={diagnostics.storyInput.transcriptStatus === 'failed' ? 'bad' : 'neutral'} />
+              <Row label="Transcript model" value={diagnostics.storyInput.transcriptModel ?? '—'} mono />
+              <Row label="Story inspiration" value={diagnostics.storyInput.inspirationPreview ?? '—'} />
+              <Row
+                label="Transcript preview"
+                value={
+                  diagnostics.storyInput.transcriptPreview
+                    ? `${diagnostics.storyInput.transcriptPreview}${diagnostics.storyInput.transcriptChars != null ? ` (${diagnostics.storyInput.transcriptChars} chars)` : ''}`
+                    : '—'
+                }
+              />
+              {diagnostics.storyInput.transcriptError && (
+                <Row label="Transcript error" value={diagnostics.storyInput.transcriptError} tone="bad" />
+              )}
+            </>
+          )}
+        </Section>
+
         <Section title="Payment">
           <Row label="Status" value={order.paymentStatus} tone={order.paymentStatus === 'paid' ? 'good' : 'neutral'} />
           <Row label="Stripe session" value={order.stripeSessionId ?? '—'} mono />

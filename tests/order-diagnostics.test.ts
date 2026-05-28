@@ -85,6 +85,52 @@ test('diagnostics: failed_manual_review surfaces fail check with last error', ()
   assert.equal(d.flags.isFailed, true);
 });
 
+test('diagnostics: story source/input summarizes custom lesson and inspiration upload metadata', () => {
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    theme: 'custom-voice-story',
+    lesson: 'Always tell the truth, even when it is hard.',
+    occasion: 'Father\'s Day',
+    giftMessage: 'For Dad, with love.',
+    characterNotes: 'Luna loves dinosaurs and bedtime jokes.',
+    storyMeta: {
+      source: 'template_after_openai_failure',
+      model: 'template:custom-voice-story',
+      generatedAt: '2026-05-28T18:00:00Z',
+      fallbackError: 'OpenAI story fetch failed',
+    },
+    voiceFileName: 'story-ideas.pdf',
+    voiceBlobPath: 'orders/ord_diag_1/voice/story-ideas.pdf',
+    voiceSource: 'uploaded',
+    voiceConsentAt: '2026-05-28T17:55:00Z',
+    voiceTranscript: {
+      transcript: 'Luna wants a dinosaur adventure with her dad.',
+      inspiration: 'Use a dinosaur adventure with Dad as the emotional center.',
+      model: 'gpt-4o-mini-transcribe',
+      transcribedAt: '2026-05-28T17:56:00Z',
+      error: null,
+    },
+  }));
+
+  assert.equal(d.story.source, 'template_after_openai_failure');
+  assert.equal(d.story.fallbackError, 'OpenAI story fetch failed');
+  assert.equal(d.storyInput.hasCustomText, true);
+  assert.equal(d.storyInput.lesson, 'Always tell the truth, even when it is hard.');
+  assert.equal(d.storyInput.hasVoiceOrUpload, true);
+  assert.equal(d.storyInput.voiceFileName, 'story-ideas.pdf');
+  assert.equal(d.storyInput.voiceBlobPath, 'orders/ord_diag_1/voice/story-ideas.pdf');
+  assert.equal(d.storyInput.transcriptStatus, 'stored');
+  assert.match(d.storyInput.inspirationPreview ?? '', /dinosaur adventure/);
+
+  const text = formatDiagnosticsSummary(d);
+  assert.match(text, /Story: source=template_after_openai_failure/);
+  assert.match(text, /fallbackError="OpenAI story fetch failed"/);
+  assert.match(text, /Story input: .*lesson=Always tell the truth/);
+  assert.match(text, /upload=yes/);
+  assert.match(text, /file=story-ideas\.pdf/);
+  assert.match(text, /transcript=stored/);
+});
+
 test('diagnostics: paid + not_started + no artifact is an ops attention item', () => {
   const d = buildOrderDiagnostics(makeOrder({
     paymentStatus: 'paid',
