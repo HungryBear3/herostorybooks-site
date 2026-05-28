@@ -2,12 +2,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 const RECORDED_FILE_NAME = 'child-voice-note.webm';
-const VOICE_UPLOAD_ACCEPT_ATTR = [
+const VOICE_AUDIO_UPLOAD_ACCEPT_ATTR = [
   'audio/*',
-  'text/plain',
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.m4a',
   '.mp3',
   '.wav',
@@ -20,6 +16,12 @@ const VOICE_UPLOAD_ACCEPT_ATTR = [
   '.aiff',
   '.flac',
   '.mp4',
+].join(',');
+const VOICE_DOCUMENT_UPLOAD_ACCEPT_ATTR = [
+  'text/plain',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.txt',
   '.pdf',
   '.doc',
@@ -79,7 +81,8 @@ export function VoiceRecorderSection({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const audioFileInputRef = useRef<HTMLInputElement | null>(null);
+  const documentFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Always release the mic + revoke the preview URL on unmount.
   useEffect(() => {
@@ -118,6 +121,7 @@ export function VoiceRecorderSection({
         const previewUrl = URL.createObjectURL(blob);
         if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
         onVoiceChange(file, previewUrl, 'recorded');
+        setRecorderError(null);
         stopStream();
         setIsRecording(false);
       });
@@ -149,6 +153,7 @@ export function VoiceRecorderSection({
       const previewUrl = URL.createObjectURL(file);
       if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
       onVoiceChange(file, previewUrl, 'uploaded');
+      setRecorderError(null);
       // Reset the input so re-selecting the same file fires onChange again.
       event.target.value = '';
     },
@@ -216,7 +221,7 @@ export function VoiceRecorderSection({
             onClick={handleRecord}
             className="px-4 py-2 rounded-full border-2 border-deep-gold bg-deep-gold text-white font-semibold text-sm hover:bg-deep-gold/90 transition"
           >
-            ● Record
+            Record audio
           </button>
         )}
         {isRecording && (
@@ -232,15 +237,29 @@ export function VoiceRecorderSection({
           <>
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => audioFileInputRef.current?.click()}
               className="px-4 py-2 rounded-full border-2 border-gray-200 text-forest font-semibold text-sm hover:border-deep-gold transition"
             >
-              Upload text / document
+              Upload audio file
             </button>
             <input
-              ref={fileInputRef}
+              ref={audioFileInputRef}
               type="file"
-              accept={VOICE_UPLOAD_ACCEPT_ATTR}
+              accept={VOICE_AUDIO_UPLOAD_ACCEPT_ATTR}
+              className="hidden"
+              onChange={handleUpload}
+            />
+            <button
+              type="button"
+              onClick={() => documentFileInputRef.current?.click()}
+              className="px-4 py-2 rounded-full border-2 border-gray-200 text-forest font-semibold text-sm hover:border-deep-gold transition"
+            >
+              Upload text/document
+            </button>
+            <input
+              ref={documentFileInputRef}
+              type="file"
+              accept={VOICE_DOCUMENT_UPLOAD_ACCEPT_ATTR}
               className="hidden"
               onChange={handleUpload}
             />
@@ -256,6 +275,14 @@ export function VoiceRecorderSection({
           </button>
         )}
       </div>
+
+      {!voiceFile && !isRecording && (
+        <p className="text-xs text-gray-500">
+          Use <strong>Record audio</strong> for a new voice note, <strong>Upload audio file</strong>{' '}
+          for a saved recording, or <strong>Upload text/document</strong> for text, PDF, or Word
+          notes.
+        </p>
+      )}
 
       {recorderError && (
         <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">

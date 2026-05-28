@@ -100,10 +100,12 @@ const FORMATS = [
   },
 ];
 
+const DEFAULT_BOOK_FORMAT = "digital";
 const TOTAL_BOOK_PAGE_COUNT = 32;
 const ILLUSTRATED_STORY_PAGE_COUNT = 24;
 
 const SUPPORTING_CHARACTER_LIMIT = 4;
+const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings";
 const SUPPORTING_CHARACTER_PRESETS = [
   { role: "dad", label: "Dad", relationshipLabel: "Dad", pronouns: "Dad", isGiftRecipient: true },
   { role: "mom", label: "Mom", relationshipLabel: "Mom", pronouns: "Mom", isGiftRecipient: false },
@@ -184,7 +186,7 @@ const emptyForm: FormState = {
   skinTone: "",
   hairStyle: "",
   eyewear: "",
-  bookFormat: "",
+  bookFormat: DEFAULT_BOOK_FORMAT,
   email: "",
   voiceFile: null,
   voicePreviewUrl: null,
@@ -265,6 +267,22 @@ function readNamePreviewHandoff(): { childName: string; direction: string } | nu
   }
 }
 
+function normalizeBookFormat(value: unknown): string {
+  return typeof value === "string" && FORMATS.some((fmt) => fmt.id === value)
+    ? value
+    : "";
+}
+
+function normalizeSavedFamilyCharacters(
+  characters: SupportingCharacter[] | undefined,
+): SupportingCharacter[] | undefined {
+  if (!Array.isArray(characters)) return characters;
+  return characters.map((character) => ({
+    ...character,
+    notes: character.notes === PET_NOTES_PLACEHOLDER ? "" : character.notes,
+  }));
+}
+
 function checkoutReferralCode(): string {
   const fromUrl = new URLSearchParams(window.location.search).get("ref");
   const fromCookie = document.cookie
@@ -305,10 +323,14 @@ export function CheckoutForm() {
     const childNameFromHandoff = namePreviewHandoff?.childName ?? "";
     const directionFromUrl = params.get("direction") || namePreviewHandoff?.direction || "";
     const themeFromDirection = themeIdFromDirection(directionFromUrl);
-    const nextFormat =
-      formatFromUrl && FORMATS.some((fmt) => fmt.id === formatFromUrl)
-        ? formatFromUrl
-        : "";
+    const nextFormat = normalizeBookFormat(formatFromUrl);
+    const savedWithDefaults = saved
+      ? {
+          ...saved,
+          bookFormat: normalizeBookFormat(saved.bookFormat) || DEFAULT_BOOK_FORMAT,
+          familyCharacters: normalizeSavedFamilyCharacters(saved.familyCharacters),
+        }
+      : null;
     const childNamePrefill = childNameFromHandoff || childNameFromUrl;
     const queryPrefill: Partial<FormState> = {
       ...(nextFormat ? { bookFormat: nextFormat } : {}),
@@ -316,9 +338,9 @@ export function CheckoutForm() {
       ...(themeFromDirection ? { theme: themeFromDirection } : {}),
     };
 
-    if (saved && (saved.childName || saved.theme)) {
+    if (savedWithDefaults && (savedWithDefaults.childName || savedWithDefaults.theme)) {
       setShowRecovery(true);
-      setForm((prev) => ({ ...prev, ...saved, ...queryPrefill }));
+      setForm((prev) => ({ ...prev, ...savedWithDefaults, ...queryPrefill }));
     } else if (nextFormat || childNamePrefill || themeFromDirection) {
       setForm((prev) => ({ ...prev, ...queryPrefill }));
     }
@@ -394,7 +416,7 @@ export function CheckoutForm() {
             name: "",
             relationshipLabel: preset.relationshipLabel,
             pronouns: preset.pronouns,
-            notes: preset.role === "pet" ? "Breed, color, size, personality, or markings" : "",
+            notes: "",
             isGiftRecipient: preset.isGiftRecipient,
             appearsInStory: true,
             photoFile: null,
@@ -1083,6 +1105,9 @@ export function CheckoutForm() {
                         <div>
                           <p className="text-sm font-bold text-[#1f1a16]">
                             Supporting character {index + 1}
+                            {character.name || character.relationshipLabel
+                              ? `: ${character.name || character.relationshipLabel}`
+                              : ""}
                           </p>
                           <p className="text-xs leading-5 text-[#8a7b6a]">
                             Use notes for pets: breed, color, markings, size,
@@ -1174,7 +1199,11 @@ export function CheckoutForm() {
                             notes: e.target.value,
                           })
                         }
-                        placeholder="Personality, favorite activity, pet markings, nickname, inside joke, or how this character should show up in the story..."
+                        placeholder={
+                          character.role === "pet"
+                            ? PET_NOTES_PLACEHOLDER
+                            : "Personality, favorite activity, nickname, inside joke, or how this character should show up in the story..."
+                        }
                         rows={2}
                         maxLength={180}
                         className="mt-1.5 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
@@ -1188,6 +1217,9 @@ export function CheckoutForm() {
                           <div>
                             <p className="text-sm font-semibold text-[#1f1a16]">
                               Reference photo
+                              {character.name || character.relationshipLabel
+                                ? ` for ${character.name || character.relationshipLabel}`
+                                : ""}
                             </p>
                             <p className="text-xs leading-5 text-[#8a7b6a]">
                               Optional, for Dad, Mom, grandparents, siblings, or pets.
@@ -1710,7 +1742,7 @@ export function CheckoutForm() {
                 if (!form.skinTone) missing.push('skin tone');
                 if (!form.hairStyle) missing.push('hair');
                 if (VOICE_BETA_ENABLED && form.voiceFile != null && !form.voiceConsent) {
-                  missing.push('voice consent');
+                  missing.push('story inspiration consent');
                 }
                 return (
                   <p className="rounded-xl border border-deep-gold/40 bg-deep-gold/10 px-3 py-2 text-center text-xs font-medium text-navy">

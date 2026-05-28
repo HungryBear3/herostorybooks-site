@@ -99,3 +99,12 @@ test('checkout form sends per-character family photo attachments', () => {
   assert.match(src, /familyCharacterPhoto_\$\{index\}/);
   assert.match(src, /photoFileName:\s*character\.photoFile\?\.name/);
 });
+
+test('checkout form keeps pet detail guidance as placeholder text, not submitted notes', () => {
+  const src = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  assert.match(src, /const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings"/);
+  assert.match(src, /notes: ""/);
+  assert.match(src, /notes: character\.notes === PET_NOTES_PLACEHOLDER \? "" : character\.notes/);
+  assert.match(src, /Reference photo/);
+  assert.match(src, /for \$\{character\.name \|\| character\.relationshipLabel\}/);
+});

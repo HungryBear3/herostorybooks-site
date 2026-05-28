@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   CHECKOUT_SECTION_ORDER,
@@ -11,6 +12,8 @@ import {
   missingFieldPrompt,
   currentCheckoutStep,
 } from '../src/lib/checkout-flow.ts';
+
+const CHECKOUT_FORM_SRC = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
 
 test('checkout flow leads with story and hero details before photo upload', () => {
   assert.deepEqual(CHECKOUT_SECTION_ORDER, [
@@ -33,6 +36,12 @@ test('photo upload help supports gift buyers who want to start before finding a 
   assert.match(PHOTO_UPLOAD_HELP, /place the order now/i);
   assert.match(PHOTO_UPLOAD_HELP, /add the photo later/i);
   assert.match(PHOTO_UPLOAD_HELP, /automatically reduced/i);
+});
+
+test('checkout defaults to the digital format so Start Order is not blocked by an unselected format', () => {
+  assert.match(CHECKOUT_FORM_SRC, /const DEFAULT_BOOK_FORMAT = "digital"/);
+  assert.match(CHECKOUT_FORM_SRC, /bookFormat: DEFAULT_BOOK_FORMAT/);
+  assert.match(CHECKOUT_FORM_SRC, /bookFormat: normalizeBookFormat\(saved\.bookFormat\) \|\| DEFAULT_BOOK_FORMAT/);
 });
 
 // ── Required adventure + submit gating ───────────────────────────────────────

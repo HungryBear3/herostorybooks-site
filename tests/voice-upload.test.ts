@@ -324,14 +324,25 @@ test('voice section warns beta users they can upload saved notes/documents', () 
 });
 
 test('voice upload picker explicitly allows common audio and document extensions', () => {
-  assert.match(VOICE_UI_SRC, /VOICE_UPLOAD_ACCEPT_ATTR/);
+  assert.match(VOICE_UI_SRC, /VOICE_AUDIO_UPLOAD_ACCEPT_ATTR/);
+  assert.match(VOICE_UI_SRC, /VOICE_DOCUMENT_UPLOAD_ACCEPT_ATTR/);
   for (const extension of ['.m4a', '.mp3', '.wav', '.caf', '.aif', '.aiff']) {
     assert.match(VOICE_UI_SRC, new RegExp(extension.replace('.', '\\.')));
   }
   for (const extension of ['.txt', '.pdf', '.doc', '.docx']) {
     assert.match(VOICE_UI_SRC, new RegExp(extension.replace('.', '\\.')));
   }
-  assert.match(VOICE_UI_SRC, /Upload text \/ document/);
+  assert.match(VOICE_UI_SRC, /Record audio/);
+  assert.match(VOICE_UI_SRC, /Upload audio file/);
+  assert.match(VOICE_UI_SRC, /Upload text\/document/);
+  assert.match(VOICE_UI_SRC, /for text, PDF, or Word/);
+});
+
+test('voice section clears stale microphone errors after a successful file attachment', () => {
+  const uploadHandler = /const handleUpload = useCallback\([\s\S]*?setRecorderError\(null\);[\s\S]*?event\.target\.value = '';/;
+  const recordStopHandler = /recorder\.addEventListener\('stop', \(\) => \{[\s\S]*?onVoiceChange\(file, previewUrl, 'recorded'\);[\s\S]*?setRecorderError\(null\);/;
+  assert.match(VOICE_UI_SRC, uploadHandler);
+  assert.match(VOICE_UI_SRC, recordStopHandler);
 });
 
 test('voice section releases mic tracks on stop AND on unmount', () => {
