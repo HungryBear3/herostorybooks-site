@@ -31,11 +31,19 @@ function getStripe() {
   return new Stripe(getRequiredStripeSecretKey());
 }
 
-const VOICE_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i;
+const AUDIO_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i;
+const INSPIRATION_DOC_EXT_RE = /\.(txt|pdf|doc|docx)$/i;
 
-function isAcceptedVoiceFile(file: File): boolean {
+function isAudioInspirationFile(file: File): boolean {
   if (file.type && file.type.startsWith('audio/')) return true;
-  if (file.name && VOICE_EXT_RE.test(file.name)) return true;
+  if (file.name && AUDIO_EXT_RE.test(file.name)) return true;
+  return false;
+}
+
+function isAcceptedInspirationFile(file: File): boolean {
+  if (isAudioInspirationFile(file)) return true;
+  if (['text/plain', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type)) return true;
+  if (file.name && INSPIRATION_DOC_EXT_RE.test(file.name)) return true;
   return false;
 }
 
@@ -121,9 +129,9 @@ export async function POST(request: Request) {
       }
 
       const voiceFile = voiceRaw as File;
-      if (!isAcceptedVoiceFile(voiceFile)) {
+      if (!isAcceptedInspirationFile(voiceFile)) {
         return NextResponse.json(
-          { error: 'Voice attachment must be an audio file.', code: 'voice_invalid_type' },
+          { error: 'Story inspiration attachment must be an audio, text, PDF, or Word document.', code: 'voice_invalid_type' },
           { status: 400 },
         );
       }
@@ -303,7 +311,7 @@ export async function POST(request: Request) {
     // persist as a failure marker and continue. Only an unstorable voice FILE
     // (handled above) aborts before Stripe.
     let voiceTranscript: VoiceTranscriptMeta | null = null;
-    if (hasVoiceUpload && voiceBlobPath) {
+    if (hasVoiceUpload && voiceBlobPath && isAudioInspirationFile(voiceRaw as File)) {
       voiceTranscript = await transcribeVoiceNote(voiceRaw as File);
     }
 

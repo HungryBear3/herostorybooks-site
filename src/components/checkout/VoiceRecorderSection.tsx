@@ -4,6 +4,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 const RECORDED_FILE_NAME = 'child-voice-note.webm';
 const VOICE_UPLOAD_ACCEPT_ATTR = [
   'audio/*',
+  'text/plain',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.m4a',
   '.mp3',
   '.wav',
@@ -16,6 +20,10 @@ const VOICE_UPLOAD_ACCEPT_ATTR = [
   '.aiff',
   '.flac',
   '.mp4',
+  '.txt',
+  '.pdf',
+  '.doc',
+  '.docx',
 ].join(',');
 const VOICE_PROMPTS = [
   'What adventure should you go on?',
@@ -153,6 +161,12 @@ export function VoiceRecorderSection({
     onConsentChange(false);
   }, [onConsentChange, onVoiceChange, voicePreviewUrl]);
 
+  const attachedFileIsAudio = Boolean(
+    voiceFile &&
+      (voiceFile.type.startsWith('audio/') ||
+        /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i.test(voiceFile.name)),
+  );
+
   return (
     <section
       className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4"
@@ -168,7 +182,7 @@ export function VoiceRecorderSection({
         </div>
         <p className="text-sm text-gray-500 mt-1">
           Optional: record a 30-second story idea — your child describing the adventure
-          they&apos;d love — or upload an audio file. It&apos;s a sweet way to make a
+          they&apos;d love — or upload a note, PDF, Word doc, or audio file. It&apos;s a sweet way to make a
           Father&apos;s Day book feel like it came from them. We use it only to help
           personalize the writing.
         </p>
@@ -181,9 +195,8 @@ export function VoiceRecorderSection({
           Want it removed? Email support@herostorybooks.com and we&apos;ll delete it.
         </p>
         <p className="text-xs text-gray-500 mt-1">
-          Voice notes are in beta. To avoid losing a special recording if checkout hits an
-          unexpected error, you can record it first in Voice Memos or another recorder, then
-          upload the saved file here.
+          Notes and uploads are in beta. To avoid losing something special if checkout hits an
+          unexpected error, save it first on your device, then upload the saved file here.
         </p>
       </div>
 
@@ -222,7 +235,7 @@ export function VoiceRecorderSection({
               onClick={() => fileInputRef.current?.click()}
               className="px-4 py-2 rounded-full border-2 border-gray-200 text-forest font-semibold text-sm hover:border-deep-gold transition"
             >
-              Upload audio file
+              Upload text / document
             </button>
             <input
               ref={fileInputRef}
@@ -239,7 +252,7 @@ export function VoiceRecorderSection({
             onClick={handleRemove}
             className="px-4 py-2 rounded-full border-2 border-gray-200 text-gray-700 font-semibold text-sm hover:border-red-300 hover:text-red-600 transition"
           >
-            Remove recording
+            Remove file
           </button>
         )}
       </div>
@@ -252,20 +265,26 @@ export function VoiceRecorderSection({
 
       {voicePreviewUrl && (
         <div className="space-y-2">
-          <audio controls src={voicePreviewUrl} className="w-full" data-testid="voice-preview" />
+          {attachedFileIsAudio ? (
+            <audio controls src={voicePreviewUrl} className="w-full" data-testid="voice-preview" />
+          ) : voiceFile ? (
+            <div className="rounded-xl border border-deep-gold/20 bg-deep-gold/5 px-4 py-3 text-sm text-forest">
+              Attached inspiration file: <strong>{voiceFile.name}</strong>
+            </div>
+          ) : null}
           {voiceFile && (
             <a
               href={voicePreviewUrl}
               download={voiceFile.name || 'hero-story-voice-note.webm'}
               className="inline-flex text-sm font-semibold text-forest underline decoration-deep-gold/60 underline-offset-4 hover:text-deep-gold"
             >
-              Download recording
+              Download file
             </a>
           )}
           <p className="text-xs text-gray-500">
             {voiceSource === 'recorded' ? 'Recorded just now.' : 'Uploaded from your device.'}{' '}
             Save it before leaving this page if you want to reuse it. Not happy with it? Tap{' '}
-            <strong>Remove recording</strong> and try again.
+            <strong>Remove file</strong> and try again.
           </p>
         </div>
       )}
@@ -280,7 +299,7 @@ export function VoiceRecorderSection({
             data-testid="voice-consent"
           />
           <span>
-            I&apos;m the parent/guardian and consent to HeroStoryBooks using this recording
+            I&apos;m the parent/guardian and consent to HeroStoryBooks using this recording or document
             only to personalize this order. I understand it will <strong>not</strong> be used
             for voice cloning and will <strong>not</strong> be published or shared.
           </span>

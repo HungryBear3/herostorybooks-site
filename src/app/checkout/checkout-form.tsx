@@ -100,11 +100,8 @@ const FORMATS = [
   },
 ];
 
-const STORY_PAGE_COUNT_BY_FORMAT: Record<string, number> = {
-  digital: 32,
-  classic: 32,
-  premium: 32,
-};
+const TOTAL_BOOK_PAGE_COUNT = 32;
+const ILLUSTRATED_STORY_PAGE_COUNT = 24;
 
 const SUPPORTING_CHARACTER_LIMIT = 4;
 const SUPPORTING_CHARACTER_PRESETS = [
@@ -439,7 +436,8 @@ export function CheckoutForm() {
   const heroName = form.childName || "Your child";
   const printFormat = selectedFormat?.label ?? "Choose a format";
   const totalPrice = selectedFormat ? selectedFormat.price : "—";
-  const storyPageCount = STORY_PAGE_COUNT_BY_FORMAT[form.bookFormat] ?? 24;
+  const bookPageCount = TOTAL_BOOK_PAGE_COUNT;
+  const illustratedStoryPageCount = ILLUSTRATED_STORY_PAGE_COUNT;
   const coverTitle = selectedTheme
     ? `${heroName}'s ${selectedTheme.label}`
     : "Your Wonderful Story";
@@ -1558,10 +1556,10 @@ export function CheckoutForm() {
                   </div>
                   <div>
                     <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
-                      Pages
+                      Book pages
                     </dt>
                     <dd className="mt-1 font-semibold text-[#241914]">
-                      {storyPageCount}
+                      {bookPageCount} total · {illustratedStoryPageCount} illustrated
                     </dd>
                   </div>
                   <div>
@@ -1620,7 +1618,10 @@ export function CheckoutForm() {
                   <div className="flex justify-between gap-3">
                       <span>Book pages</span>
                     <span className="font-semibold text-[#241914]">
-                      {storyPageCount}
+                      {bookPageCount} total
+                      <span className="ml-1 font-normal text-[#6e6154]">
+                        ({illustratedStoryPageCount} illustrated story pages)
+                      </span>
                     </span>
                   </div>
                   {form.familyCharacters.length > 0 && (

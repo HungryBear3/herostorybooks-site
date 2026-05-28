@@ -161,6 +161,16 @@ test('order route returns voice_consent_required when audio present without cons
 
 test('order route validates voice mime/extension (voice_invalid_type)', () => {
   assert.match(ROUTE_SRC, /voice_invalid_type/);
+  assert.match(ROUTE_SRC, /isAcceptedInspirationFile/);
+});
+
+test('order route accepts text/PDF/Word inspiration uploads but transcribes audio only', () => {
+  assert.match(ROUTE_SRC, /INSPIRATION_DOC_EXT_RE/);
+  for (const extension of ['txt', 'pdf', 'doc', 'docx']) {
+    assert.match(ROUTE_SRC, new RegExp(extension));
+  }
+  assert.match(ROUTE_SRC, /isAudioInspirationFile\(voiceRaw as File\)/);
+  assert.match(ROUTE_SRC, /transcribeVoiceNote/);
 });
 
 test('order route enforces the 15 MB cap (voice_too_large)', () => {
@@ -301,23 +311,27 @@ test('voice section copy explicitly disclaims voice cloning', () => {
   assert.match(VOICE_UI_SRC, /not.*clone/i);
 });
 
-test('voice section lets families download a recording before leaving checkout', () => {
+test('voice section lets families download an inspiration file before leaving checkout', () => {
   assert.match(VOICE_UI_SRC, /download=\{voiceFile\.name \|\| 'hero-story-voice-note\.webm'\}/);
-  assert.match(VOICE_UI_SRC, /Download recording/);
+  assert.match(VOICE_UI_SRC, /Download file/);
   assert.match(VOICE_UI_SRC, /Save it before leaving this page/);
 });
 
-test('voice section warns beta users they can record locally and upload a saved file', () => {
-  assert.match(VOICE_UI_SRC, /Voice notes are in beta/);
-  assert.match(VOICE_UI_SRC, /record it first in Voice Memos or another recorder/);
+test('voice section warns beta users they can upload saved notes/documents', () => {
+  assert.match(VOICE_UI_SRC, /Notes and uploads are in beta/);
+  assert.match(VOICE_UI_SRC, /save it first on your device/);
   assert.match(VOICE_UI_SRC, /upload the saved file here/);
 });
 
-test('voice upload picker explicitly allows common saved audio extensions', () => {
+test('voice upload picker explicitly allows common audio and document extensions', () => {
   assert.match(VOICE_UI_SRC, /VOICE_UPLOAD_ACCEPT_ATTR/);
   for (const extension of ['.m4a', '.mp3', '.wav', '.caf', '.aif', '.aiff']) {
     assert.match(VOICE_UI_SRC, new RegExp(extension.replace('.', '\\.')));
   }
+  for (const extension of ['.txt', '.pdf', '.doc', '.docx']) {
+    assert.match(VOICE_UI_SRC, new RegExp(extension.replace('.', '\\.')));
+  }
+  assert.match(VOICE_UI_SRC, /Upload text \/ document/);
 });
 
 test('voice section releases mic tracks on stop AND on unmount', () => {
