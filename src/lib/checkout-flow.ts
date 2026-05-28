@@ -17,8 +17,10 @@ export const PHOTO_UPLOAD_HELP =
 //
 // Launch spec requires explicit values for: theme (adventure), childName,
 // email, skinTone, hairStyle. "Prefer AI to decide" is not allowed for
-// skin tone or hair on launch orders. Both UI and the /api/order server
-// route validate against this same shape so the contract cannot drift.
+// skin tone or hair on launch orders. Pronouns are deliberately not required
+// on the buyer path; prose can infer/fallback server-side without asking.
+// Both UI and the /api/order server route validate against this same shape so
+// the contract cannot drift.
 
 export interface CheckoutRequiredFields {
   theme: string;
@@ -26,7 +28,6 @@ export interface CheckoutRequiredFields {
   email: string;
   skinTone: string;
   hairStyle: string;
-  childPronouns: string;
 }
 
 export type MissingCheckoutField =
@@ -35,7 +36,6 @@ export type MissingCheckoutField =
   | 'email'
   | 'skin_tone'
   | 'hair_style'
-  | 'pronouns'
   | null;
 
 export interface CheckoutStepState extends CheckoutRequiredFields {
@@ -58,7 +58,6 @@ export function missingRequiredField(fields: CheckoutRequiredFields): MissingChe
   if (!fields.email.trim()) return 'email';
   if (!fields.skinTone.trim()) return 'skin_tone';
   if (!fields.hairStyle.trim()) return 'hair_style';
-  if (!fields.childPronouns.trim()) return 'pronouns';
   return null;
 }
 
@@ -78,8 +77,6 @@ export function missingFieldPrompt(missing: MissingCheckoutField): string | null
       return 'Select a skin tone so the artwork matches your child better.';
     case 'hair_style':
       return 'Select a hair style so the artwork matches your child better.';
-    case 'pronouns':
-      return 'Select whether the hero is a boy or a girl so the story uses the right pronouns.';
     default:
       return null;
   }
@@ -97,7 +94,7 @@ export function currentCheckoutStep(fields: CheckoutStepState): CurrentCheckoutS
 
   if (!fields.theme) return { current: 'Adventure', completedCount: 0, totalCount: 5 };
   if (!fields.childName.trim()) return { current: 'Hero', completedCount: 1, totalCount: 5 };
-  if (!looksLikeEmail(fields.email) || !fields.skinTone.trim() || !fields.hairStyle.trim() || !fields.childPronouns.trim()) {
+  if (!looksLikeEmail(fields.email) || !fields.skinTone.trim() || !fields.hairStyle.trim()) {
     return { current: 'Hero', completedCount: 1, totalCount: 5 };
   }
   if (!fields.photoReady) return { current: 'Photo', completedCount: 4, totalCount: 5 };
@@ -113,7 +110,6 @@ export function missingFieldErrorCode(missing: MissingCheckoutField): string | n
     case 'email':      return 'email_required';
     case 'skin_tone':  return 'skin_tone_required';
     case 'hair_style': return 'hair_style_required';
-    case 'pronouns':   return 'pronouns_required';
     default:           return null;
   }
 }

@@ -136,7 +136,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const missing = missingRequiredField({ theme, childName, email, skinTone, hairStyle, childPronouns });
+    const missing = missingRequiredField({ theme, childName, email, skinTone, hairStyle });
     if (missing !== null || !isValidEmail(email)) {
       const code = missing ? missingFieldErrorCode(missing) : 'email_invalid';
       return NextResponse.json(

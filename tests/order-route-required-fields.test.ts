@@ -24,7 +24,6 @@ const FULL: CheckoutRequiredFields = {
   email: 'a@b.com',
   skinTone: 'medium',
   hairStyle: 'curly',
-  childPronouns: 'she/her',
 };
 
 test('server contract: missing theme → theme_required', () => {
@@ -45,10 +44,10 @@ test('server contract: missing hairStyle → hair_style_required', () => {
   assert.equal(missingFieldErrorCode(m), 'hair_style_required');
 });
 
-test('server contract: missing childPronouns → pronouns_required', () => {
-  const m = missingRequiredField({ ...FULL, childPronouns: '' });
-  assert.equal(m, 'pronouns');
-  assert.equal(missingFieldErrorCode(m), 'pronouns_required');
+test('server contract: childPronouns is not required', () => {
+  const m = missingRequiredField(FULL);
+  assert.equal(m, null);
+  assert.equal(missingFieldErrorCode(m), null);
 });
 
 test('server contract: full happy path returns null + null code', () => {
@@ -69,7 +68,6 @@ test('server contract: skinTone supplied as JSON appearanceOptions blob (route a
     email: 'a@b.com',
     skinTone: parsed.skinTone,
     hairStyle: parsed.hairStyle,
-    childPronouns: 'she/her',
   });
   assert.equal(m, null);
 });
@@ -83,12 +81,18 @@ test('server contract: /api/order POST imports + calls missingRequiredField', ()
   assert.match(src, /from\s+['"]@\/lib\/checkout-flow['"]/);
   assert.match(src, /missingRequiredField\(/);
   assert.match(src, /missingFieldErrorCode\(/);
-  assert.match(src, /childPronouns/);
 });
 
-test('checkout contract: form sends childPronouns required by /api/order', () => {
+test('checkout contract: form keeps custom lesson + occasion fields and does not require visible pronouns', () => {
   const src = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
-  assert.match(src, /childPronouns:\s*string/);
-  assert.match(src, /payload\.set\(["']childPronouns["'],\s*form\.childPronouns\)/);
-  assert.match(src, /Boolean\(form\.childPronouns\)/);
+  assert.match(src, /htmlFor="customLesson"/);
+  assert.match(src, /Custom story lesson/);
+  assert.match(src, /htmlFor="customOccasion"/);
+  assert.match(src, /Custom occasion/);
+  assert.doesNotMatch(src, /Hero pronouns/);
+  assert.doesNotMatch(src, /Select pronouns/);
+  assert.doesNotMatch(src, /Pronouns \/ wording/);
+  assert.doesNotMatch(src, /he\/him, she\/her/);
+  assert.doesNotMatch(src, /payload\.set\(["']childPronouns["']/);
+  assert.doesNotMatch(src, /Boolean\(form\.childPronouns\)/);
 });

@@ -108,11 +108,11 @@ const STORY_PAGE_COUNT_BY_FORMAT: Record<string, number> = {
 
 const SUPPORTING_CHARACTER_LIMIT = 4;
 const SUPPORTING_CHARACTER_PRESETS = [
-  { role: "dad", label: "Dad", relationshipLabel: "Dad", pronouns: "he/him", isGiftRecipient: true },
-  { role: "mom", label: "Mom", relationshipLabel: "Mom", pronouns: "she/her", isGiftRecipient: false },
+  { role: "dad", label: "Dad", relationshipLabel: "Dad", pronouns: "Dad", isGiftRecipient: true },
+  { role: "mom", label: "Mom", relationshipLabel: "Mom", pronouns: "Mom", isGiftRecipient: false },
   { role: "sibling", label: "Sibling", relationshipLabel: "sibling", pronouns: "", isGiftRecipient: false },
   { role: "grandparent", label: "Grandparent", relationshipLabel: "grandparent", pronouns: "", isGiftRecipient: false },
-  { role: "pet", label: "Dog / pet", relationshipLabel: "family dog", pronouns: "it/its", isGiftRecipient: false },
+  { role: "pet", label: "Dog / pet", relationshipLabel: "family dog", pronouns: "family dog", isGiftRecipient: false },
 ] as const;
 
 const CHECKOUT_PHOTO_ACCEPT_ATTR = "image/*";
@@ -149,7 +149,6 @@ interface FormState {
   giftMessage: string;
   characterNotes: string;
   familyCharacters: SupportingCharacter[];
-  childPronouns: string;
   skinTone: string;
   hairStyle: string;
   eyewear: string;
@@ -185,7 +184,6 @@ const emptyForm: FormState = {
   giftMessage: "",
   characterNotes: "",
   familyCharacters: [],
-  childPronouns: "",
   skinTone: "",
   hairStyle: "",
   eyewear: "",
@@ -212,7 +210,6 @@ function saveProgress(form: FormState) {
         giftMessage: form.giftMessage,
         characterNotes: form.characterNotes,
         familyCharacters: form.familyCharacters,
-        childPronouns: form.childPronouns,
         skinTone: form.skinTone,
         hairStyle: form.hairStyle,
         eyewear: form.eyewear,
@@ -353,7 +350,6 @@ export function CheckoutForm() {
     form.giftMessage,
     form.characterNotes,
     form.familyCharacters,
-    form.childPronouns,
     form.skinTone,
     form.hairStyle,
     form.eyewear,
@@ -455,7 +451,6 @@ export function CheckoutForm() {
     Boolean(form.childName) &&
     Boolean(form.bookFormat) &&
     Boolean(form.email) &&
-    Boolean(form.childPronouns) &&
     Boolean(form.skinTone) &&
     Boolean(form.hairStyle) &&
     (!VOICE_BETA_ENABLED || form.voiceFile == null || form.voiceConsent);
@@ -571,7 +566,6 @@ export function CheckoutForm() {
           payload.set(`familyCharacterPhoto_${index}`, character.photoFile);
         }
       });
-      payload.set("childPronouns", form.childPronouns);
       payload.set(
         "appearanceOptions",
         JSON.stringify({
@@ -873,7 +867,7 @@ export function CheckoutForm() {
                   htmlFor="customLesson"
                   className="mt-4 block text-xs font-semibold uppercase tracking-[0.16em] text-[#8a7663]"
                 >
-                  Or write your own
+                  Custom story lesson
                 </label>
                 <input
                   id="customLesson"
@@ -921,7 +915,7 @@ export function CheckoutForm() {
                   htmlFor="customOccasion"
                   className="mt-4 block text-xs font-semibold uppercase tracking-[0.16em] text-[#8a7663]"
                 >
-                  Or write your own
+                  Custom occasion
                 </label>
                 <input
                   id="customOccasion"
@@ -981,22 +975,6 @@ export function CheckoutForm() {
                 </p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
-                    Hero pronouns <span className="text-[#a64c4c]">(required)</span>
-                  </label>
-                  <select
-                    value={form.childPronouns}
-                    onChange={(e) => set("childPronouns", e.target.value)}
-                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
-                    required
-                  >
-                    <option value="">Select pronouns</option>
-                    <option value="he/him">He / him</option>
-                    <option value="she/her">She / her</option>
-                    <option value="they/them">They / them</option>
-                  </select>
-                </div>
                 <div>
                   <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
                     Skin tone <span className="text-[#a64c4c]">(required)</span>
@@ -1159,7 +1137,7 @@ export function CheckoutForm() {
                         </div>
                         <div>
                           <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
-                            Pronouns / wording
+                            Story wording
                           </label>
                           <input
                             type="text"
@@ -1169,7 +1147,7 @@ export function CheckoutForm() {
                                 pronouns: e.target.value,
                               })
                             }
-                            placeholder="he/him, she/her, they/them, it/its"
+                            placeholder="Dad, Mom, big brother, Grandma, family dog"
                             maxLength={32}
                             className="w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
                           />
@@ -1728,7 +1706,6 @@ export function CheckoutForm() {
                 if (!form.childName) missing.push("child's name");
                 if (!form.bookFormat) missing.push('format');
                 if (!form.email) missing.push('email');
-                if (!form.childPronouns) missing.push('pronouns');
                 if (!form.skinTone) missing.push('skin tone');
                 if (!form.hairStyle) missing.push('hair');
                 if (VOICE_BETA_ENABLED && form.voiceFile != null && !form.voiceConsent) {
