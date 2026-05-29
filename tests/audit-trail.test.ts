@@ -66,6 +66,13 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_audit_test')
     storyArtifactUrl: 'https://example.com/proof.pdf',
     proofApprovalToken: 'tok_xyz',
     fulfillmentStatus: 'proof_ready',
+    shippingAddress: {
+      line1: '100 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
     pageArtifacts: [
       pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
       pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),

@@ -43,8 +43,10 @@ test('review client supports desktop arrow-key navigation without hijacking form
 
 test('review navigation keeps existing review actions wired to the selected page', () => {
   const src = source();
-  assert.match(src, /body: JSON\.stringify\(\{ pageIndex: selected\.pageIndex, feedback \}\)/);
-  assert.match(src, /body: JSON\.stringify\(\{ pageIndex: selected\.pageIndex \}\)/);
-  assert.match(src, /Regenerate this page/);
-  assert.match(src, /Accept this page/);
+  assert.match(src, /action: 'request_changes'/);
+  assert.match(src, /pageIndex: selected\.pageIndex/);
+  assert.match(src, /note: feedback/);
+  assert.match(src, /action: 'approve_page'/);
+  assert.match(src, /Request changes/);
+  assert.match(src, /Approve this page/);
 });

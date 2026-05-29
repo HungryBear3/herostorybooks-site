@@ -72,6 +72,26 @@ export type ReviewStatus =
   | 'customer_changes_requested'
   | 'approved';
 
+export type CustomerPageReviewStatus =
+  | 'pending'
+  | 'approved'
+  | 'changes_requested'
+  | 'resolved';
+
+export type ChangeLifecycleStatus =
+  | 'triage'
+  | 'illustrator'
+  | 'qa'
+  | 'ready_for_customer'
+  | 'resolved';
+
+export interface CustomerRequestedChange {
+  requestedAt: string;
+  note: string;
+  lifecycleStatus: ChangeLifecycleStatus;
+  updatedAt?: string | null;
+}
+
 export interface PageFeedbackEntry {
   createdAt: string;
   rawText: string;
@@ -104,6 +124,7 @@ export type ReviewAuditEventType =
   | 'proof_review_acknowledged'
   | 'page_regenerated'
   | 'page_accepted'
+  | 'page_changes_requested'
   | 'whole_book_approved'
   | 'whole_book_approval_rejected'
   | 'refund_issued'
@@ -158,6 +179,12 @@ export interface PageArtifact {
   generationConditioning?: 'text_only' | 'photo_edit' | null;
   regenerateCount: number;
   accepted: boolean;
+  /** Customer-facing review state for this page/spread. Optional so older
+   *  proof artifacts continue to load unchanged. */
+  customerReviewStatus?: CustomerPageReviewStatus | null;
+  /** Latest customer-requested change note. This records review intent only;
+   *  it does not trigger image providers or fulfillment by itself. */
+  customerRequestedChange?: CustomerRequestedChange | null;
   feedbackHistory: PageFeedbackEntry[];
   versionHistory: PageVersionEntry[];
   /** Optional picture-book text layout persisted on newer generated/rebuilt pages.

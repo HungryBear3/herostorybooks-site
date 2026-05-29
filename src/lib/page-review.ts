@@ -51,6 +51,19 @@ export interface AcceptResult {
   error?: string;
 }
 
+export interface RequestChangesInput {
+  orderId: string;
+  pageIndex: number;
+  note: string;
+}
+
+export interface RequestChangesResult {
+  ok: boolean;
+  status: 200 | 400 | 404 | 409;
+  page?: PageArtifact;
+  error?: string;
+}
+
 // ── Pure helpers (testable without prisma/blob) ──────────────────────────────
 
 export function applyAcceptPage(
@@ -68,6 +81,45 @@ export function applyAcceptPage(
     ...current,
     accepted: true,
     acceptedImageUrl: current.currentImageUrl,
+    customerReviewStatus: 'approved',
+    customerRequestedChange: null,
+  };
+  return { artifacts: next, page: next[idx] };
+}
+
+export function applyRequestPageChanges(
+  artifacts: PageArtifact[],
+  pageIndex: number,
+  rawNote: string,
+  now: string,
+): { artifacts: PageArtifact[]; page?: PageArtifact; error?: string } {
+  const idx = artifacts.findIndex((p) => p.pageIndex === pageIndex);
+  if (idx === -1) return { artifacts, error: 'page_not_found' };
+  const note = rawNote.replace(/[\x00-\x1F\x7F]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+  if (!note) return { artifacts, error: 'change_note_required' };
+
+  const current = artifacts[idx];
+  const feedbackEntry: PageFeedbackEntry = {
+    createdAt: now,
+    rawText: note,
+    tags: [],
+    providerTried: null,
+    resultImageUrl: current.currentImageUrl ?? null,
+    success: true,
+  };
+  const next = artifacts.slice();
+  next[idx] = {
+    ...current,
+    accepted: false,
+    acceptedImageUrl: null,
+    customerReviewStatus: 'changes_requested',
+    customerRequestedChange: {
+      requestedAt: now,
+      note,
+      lifecycleStatus: current.customerRequestedChange?.lifecycleStatus ?? 'triage',
+      updatedAt: now,
+    },
+    feedbackHistory: [...current.feedbackHistory, feedbackEntry],
   };
   return { artifacts: next, page: next[idx] };
 }
@@ -331,6 +383,48 @@ export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
   return { ok: true, status: 200, page };
 }
 
+export async function requestPageChanges(
+  input: RequestChangesInput,
+  now: Date = new Date(),
+): Promise<RequestChangesResult> {
+  const order = await getOrder(input.orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  if (order.reviewStatus === 'approved') {
+    return { ok: false, status: 409, error: 'Order is already approved' };
+  }
+  if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
+    return { ok: false, status: 409, error: 'Page review not yet ready for this order' };
+  }
+
+  const ts = now.toISOString();
+  const { artifacts, page, error } = applyRequestPageChanges(
+    order.pageArtifacts,
+    input.pageIndex,
+    input.note,
+    ts,
+  );
+  if (error || !page) {
+    const status = error === 'change_note_required' ? 400 : 400;
+    return { ok: false, status, error: error ?? 'request_changes_failed' };
+  }
+
+  const savedOrder = await updateFulfillmentState(order.id, {
+    pageArtifacts: artifacts,
+    reviewStatus: 'customer_changes_requested',
+    proofReviewedAt: null,
+  });
+  await appendAuditEvent(order.id, {
+    type: 'page_changes_requested',
+    pageIndex: input.pageIndex,
+    meta: {
+      lifecycleStatus: page.customerRequestedChange?.lifecycleStatus ?? 'triage',
+      noteLength: page.customerRequestedChange?.note.length ?? 0,
+    },
+  }, savedOrder ?? undefined);
+
+  return { ok: true, status: 200, page };
+}
+
 // ── Approve whole book ───────────────────────────────────────────────────────
 
 export interface ApproveWholeBookResult {
@@ -412,6 +506,19 @@ export async function approveWholeBook(
       status: 409,
       error:
         'Proof acknowledgment required — confirm you reviewed the full proof PDF before approving',
+    };
+  }
+  const proofGate = evaluateProofSubmissionGate(order);
+  if (!proofGate.allowed) {
+    await appendAuditEvent(orderId, {
+      type: 'whole_book_approval_rejected',
+      reason: 'proof_release_gate_blocked',
+      meta: { reasons: proofGate.reasons.map((reason) => reason.code).join(',') },
+    });
+    return {
+      ok: false,
+      status: 409,
+      error: `Proof release gate blocked: ${proofGate.reasons.map((reason) => reason.code).join(', ')}`,
     };
   }
 
@@ -558,6 +665,34 @@ export function evaluateApproveGate(args: {
   return null;
 }
 
+export function hasOpenRequestedChanges(order: Pick<OrderRecord, 'reviewStatus' | 'pageArtifacts'>): boolean {
+  if (order.reviewStatus === 'customer_changes_requested') return true;
+  return Boolean(order.pageArtifacts?.some((page) =>
+    page.customerReviewStatus === 'changes_requested' &&
+    page.customerRequestedChange?.lifecycleStatus !== 'resolved',
+  ));
+}
+
+export function shouldPauseCustomerReviewNudges(order: Pick<OrderRecord, 'reviewStatus' | 'pageArtifacts'>): boolean {
+  return hasOpenRequestedChanges(order);
+}
+
+export function deliveryTrustCopy(bookFormat: OrderRecord['bookFormat']): string {
+  if (bookFormat === 'digital') {
+    return 'Nothing is delivered until you give the final go-ahead.';
+  }
+  if (bookFormat === 'classic' || bookFormat === 'premium') {
+    return 'Nothing is sent to print until you give the final go-ahead.';
+  }
+  return 'Nothing is delivered or sent to print until you give the final go-ahead.';
+}
+
+export function deliveryModeFor(bookFormat: OrderRecord['bookFormat']): 'digital' | 'print' | 'combo' {
+  if (bookFormat === 'digital') return 'digital';
+  if (bookFormat === 'classic' || bookFormat === 'premium') return 'print';
+  return 'combo';
+}
+
 export interface ReviewAccessInput {
   /** Token from /review/<orderId>?token=... links. Required for print orders
    *  once a proofApprovalToken exists, so a bare order id is not enough to
@@ -578,6 +713,10 @@ export interface ReviewSnapshot {
   bookFormat: OrderRecord['bookFormat'];
   /** Persisted server-side ack timestamp; null until the customer ticks it. */
   proofReviewedAt: string | null;
+  deliveryMode: 'digital' | 'print' | 'combo';
+  trustCopy: string;
+  openRequestedChangesCount: number;
+  customerNudgesPaused: boolean;
 }
 
 export function hasReviewAccess(order: OrderRecord, input: ReviewAccessInput = {}): boolean {
@@ -611,5 +750,12 @@ export async function getReviewSnapshot(
     isPrint,
     bookFormat: order.bookFormat,
     proofReviewedAt: order.proofReviewedAt ?? null,
+    deliveryMode: deliveryModeFor(order.bookFormat),
+    trustCopy: deliveryTrustCopy(order.bookFormat),
+    openRequestedChangesCount: (order.pageArtifacts ?? []).filter((page) =>
+      page.customerReviewStatus === 'changes_requested' &&
+      page.customerRequestedChange?.lifecycleStatus !== 'resolved',
+    ).length,
+    customerNudgesPaused: shouldPauseCustomerReviewNudges(order),
   };
 }

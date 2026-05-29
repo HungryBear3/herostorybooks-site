@@ -285,15 +285,20 @@ export default async function AdminOrderDetail({ params }: Props) {
                     {p.generationProvider && (
                       <span className="text-gray-500">last: {p.generationProvider}/{p.generationModel ?? '—'}</span>
                     )}
+                    {p.customerReviewStatus === 'changes_requested' && (
+                      <span className="inline-block px-2 py-0.5 rounded-full bg-amber-100 text-amber-900">customer changes</span>
+                    )}
                   </summary>
-                  <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <div className="mt-2 grid gap-3 sm:grid-cols-3">
                     <div>
                       <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Current image</p>
-                      {p.currentImageUrl ? (
+                      {p.currentImageUrl ? (<>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={p.currentImageUrl} alt={`Current page ${p.pageIndex + 1}`} className="mb-1 h-28 w-full rounded border border-gray-100 object-cover" />
                         <a href={p.currentImageUrl} target="_blank" rel="noopener" className="text-forest underline break-all">
                           {p.currentImageUrl}
                         </a>
-                      ) : <span className="text-gray-400">—</span>}
+                      </>) : <span className="text-gray-400">—</span>}
                       {p.acceptedImageUrl && p.acceptedImageUrl !== p.currentImageUrl && (
                         <p className="mt-1 text-gray-500">accepted: <a className="underline break-all" href={p.acceptedImageUrl} target="_blank" rel="noopener">{p.acceptedImageUrl}</a></p>
                       )}
@@ -301,6 +306,16 @@ export default async function AdminOrderDetail({ params }: Props) {
                     <div>
                       <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Story text</p>
                       <p className="text-gray-700 line-clamp-4">{p.storyText}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Requested change</p>
+                      {p.customerRequestedChange ? (
+                        <div className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-950">
+                          <p className="font-semibold">{p.customerRequestedChange.lifecycleStatus.replace(/_/g, ' ')}</p>
+                          <p className="mt-1">{p.customerRequestedChange.note}</p>
+                          <p className="mt-1 text-[10px] text-amber-800">{new Date(p.customerRequestedChange.requestedAt).toLocaleString()}</p>
+                        </div>
+                      ) : <span className="text-gray-400">—</span>}
                     </div>
                   </div>
                   {p.feedbackHistory.length > 0 && (
@@ -319,6 +334,26 @@ export default async function AdminOrderDetail({ params }: Props) {
                   {p.versionHistory.length > 0 && (
                     <div className="mt-3">
                       <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Version history ({p.versionHistory.length})</p>
+                      <div className="mb-2 grid gap-2 sm:grid-cols-2">
+                        {p.versionHistory.slice(-2).map((v, i, versions) => (
+                          <div key={`${v.createdAt}-${i}`} className="rounded border border-gray-100 bg-gray-50 p-2">
+                            <p className="mb-1 text-[10px] uppercase tracking-wider text-gray-400">
+                              {versions.length === 1 || i === versions.length - 1 ? 'Current render' : 'Prior render'}
+                            </p>
+                            {v.imageUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={v.imageUrl} alt={`Render ${i + 1} for page ${p.pageIndex + 1}`} className="h-32 w-full rounded object-cover" />
+                            ) : (
+                              <div className="flex h-32 items-center justify-center rounded bg-white text-gray-400">no image</div>
+                            )}
+                            {v.referencePhotoUrl && (
+                              <a href={v.referencePhotoUrl} target="_blank" rel="noopener" className="mt-1 block truncate text-forest underline">
+                                reference/photo/context
+                              </a>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                       <ul className="space-y-1 font-mono text-[10px] text-gray-600">
                         {p.versionHistory.map((v, i) => (
                           <li key={i} className="break-all">
