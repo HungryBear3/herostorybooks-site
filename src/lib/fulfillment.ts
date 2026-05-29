@@ -18,6 +18,11 @@ import {
   isCustomProofGatedOrder,
   isValidProofReleaseOverride,
 } from './proof-submission-gate.ts';
+import {
+  buildArtDirectionPacketFromStory,
+  type ArtDirectionPacketBuildInput,
+  type ArtDirectionPacketBuildResult,
+} from './art-direction-packet-builder.ts';
 
 // ── Per-page artifact selection (proof rebuild) ───────────────────────────────
 
@@ -72,6 +77,12 @@ export interface FulfillmentDeps {
    * PageArtifact. When this is set it takes precedence over generateImages.
    */
   generateImageResults?: (prompts: string[], order: OrderRecord) => Promise<GeneratedImageResult[]>;
+  /**
+   * Optional local/provider-injected art-direction packet builder. The default
+   * fulfillment path does not call an art-direction provider; tests/local
+   * harnesses inject this to prove story -> storyboard wiring safely.
+   */
+  buildArtDirectionPacket?: (input: ArtDirectionPacketBuildInput) => Promise<ArtDirectionPacketBuildResult | null>;
   buildPdf?: (story: StoryContent, order: OrderRecord, urls: (string | null)[]) => Promise<Buffer>;
   buildPrintInteriorPdf?: (story: StoryContent, order: OrderRecord, urls: (string | null)[]) => Promise<Buffer>;
   buildPrintCoverPdf?: (widthPoints: number, heightPoints: number, title: string, order: OrderRecord) => Buffer;
@@ -365,6 +376,27 @@ async function runImageGeneration(
   return generateStoryImageResults(imagePrompts, { referenceImageUrl });
 }
 
+async function buildArtDirectionPatch(
+  order: OrderRecord,
+  story: StoryContent,
+  storyMeta: StoryWithMeta['meta'],
+  deps: FulfillmentDeps,
+): Promise<Partial<OrderRecord>> {
+  const result = deps.buildArtDirectionPacket
+    ? await deps.buildArtDirectionPacket({ order, story, storyMeta })
+    : await buildArtDirectionPacketFromStory({ order, story, storyMeta });
+
+  if (!result) return {};
+
+  return {
+    artDirectionPacket: result.packet,
+    artDirectionValidation: result.validation,
+    artDirectionGeneratedAt: result.generatedAt,
+    artDirectionHumanReviewStatus: result.humanReviewStatus,
+    artDirectionHumanReviewNotes: result.humanReviewNotes,
+  };
+}
+
 // ── Retry wrapper ─────────────────────────────────────────────────────────────
 
 async function runWithRetry(
@@ -418,9 +450,10 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
+  const artDirectionPatch = await buildArtDirectionPatch(order, story, storyMeta, deps);
   // Persist storyMeta as soon as it's known so diagnostics can answer
   // "which story path ran?" even before image gen completes.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta, ...artDirectionPatch }));
   if (shouldFailClosedForStoryFallback(order, storyMeta)) {
     await failClosedForCustomStoryFallback(order, storyMeta);
     return;
@@ -436,7 +469,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // blob-read freshness. Defense-in-depth: also carry it through
   // delivery_email_failed so an email-side failure cannot drop it
   // either.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta, ...artDirectionPatch }));
   // Build per-page prompts that LEAD with the frozen character anchor + identity
   // section + continuity rules + quality constraints. Initial generation now
   // goes through buildPagePrompt so it gets the same identity scaffolding the
@@ -504,7 +537,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // function dies before the proof PDF is built. The final updateFulfillmentState
   // below re-writes the same array (idempotent) plus the proof URL. storyMeta
   // carried forward to survive stale blob-readback (see comment above).
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta, ...artDirectionPatch }));
 
   // Partial-failure gate (added after Rex 2026-05-15 rerun: Gemini per-page
   // http_4xx on pages 17–22 of 24). When ANY page failed image generation,
@@ -523,12 +556,13 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
       fulfillmentStatus: 'failed_manual_review',
       pageArtifacts: seededPageArtifacts,
       storyMeta,
+      ...artDirectionPatch,
       fulfillmentLastError: summary.slice(0, 500),
     }));
     return;
   }
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta, ...artDirectionPatch }));
   // Include cover image (first imageUrl) + per-page images
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
   const pdfBuffer = await _buildPdf(story, order, allUrls);
@@ -549,6 +583,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     storyArtifactUrl: pdfUrl,
     pageArtifacts: seededPageArtifacts,
     storyMeta,
+    ...artDirectionPatch,
     reviewStatus: 'in_review',
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
@@ -579,6 +614,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
       storyArtifactUrl: pdfUrl,
       pageArtifacts: seededPageArtifacts,
       storyMeta,
+      ...artDirectionPatch,
     }));
   }
 }
@@ -593,7 +629,8 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta }));
+  const artDirectionPatch = await buildArtDirectionPatch(order, story, storyMeta, deps);
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta, ...artDirectionPatch }));
   if (shouldFailClosedForStoryFallback(order, storyMeta)) {
     await failClosedForCustomStoryFallback(order, storyMeta);
     return;
@@ -604,7 +641,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // write. The 2026-05-15 Gemini preview proof test reproduced the
   // dropped-storyMeta failure on the digital path; same risk applies
   // here.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta, ...artDirectionPatch }));
   // Same identity-anchored prompt construction as the digital path — keeps the
   // same child consistent across all pages of the print book.
   const characterAnchor = story.characterDescription ?? null;
@@ -662,7 +699,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
         : [],
     };
   });
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta, ...artDirectionPatch }));
 
   // Print path mirrors the digital partial-failure gate: if any page
   // failed image generation we must NOT build a proof PDF (and therefore
@@ -676,12 +713,13 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
       fulfillmentStatus: 'failed_manual_review',
       pageArtifacts: seededPageArtifacts,
       storyMeta,
+      ...artDirectionPatch,
       fulfillmentLastError: summary.slice(0, 500),
     }));
     return;
   }
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta, ...artDirectionPatch }));
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
   const previewBuffer = await _buildPdf(story, order, allUrls);
   const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
@@ -707,6 +745,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     ...order,
     pageArtifacts: seededPageArtifacts,
     storyMeta,
+    ...artDirectionPatch,
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   };
   const proofGate = evaluateProofSubmissionGate(gateOrder, { storyMeta });
@@ -728,6 +767,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     printCoverMd5: null,
     pageArtifacts: seededPageArtifacts,
     storyMeta,
+    ...artDirectionPatch,
     reviewStatus: 'in_review',
     proofApprovalToken,
     fulfillmentAttempts: 0,
@@ -755,6 +795,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
       printInteriorArtifactUrl: interiorUrl,
       pageArtifacts: seededPageArtifacts,
       storyMeta,
+      ...artDirectionPatch,
     }));
   }
 }
