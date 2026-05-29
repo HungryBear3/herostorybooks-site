@@ -36,7 +36,17 @@ function makeOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
     { childName: 'Luna', bookFormat: 'classic', email: 'a@b.com' },
     { id: 'ord_diag_1', now: '2026-04-27T10:00:00Z' },
   );
-  return { ...base, ...overrides };
+  return {
+    ...base,
+    shippingAddress: {
+      line1: '123 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
+    ...overrides,
+  };
 }
 
 test('diagnostics: payment pending → warn', () => {
@@ -276,6 +286,36 @@ test('diagnostics: print order approved with no print job id → warn', () => {
   const c = d.checks.find((c) => c.id === 'print-job');
   assert.equal(c?.severity, 'warn');
   assert.equal(d.flags.approved, true);
+});
+
+test('diagnostics: print order missing shipping fails readiness with reason', () => {
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    bookFormat: 'classic',
+    shippingAddress: null,
+  }));
+
+  assert.equal(d.print.hasShippingAddress, false);
+  assert.ok(d.proofGate.reasons.includes('shipping_address_missing'));
+  const shipping = d.checks.find((c) => c.id === 'shipping-address');
+  assert.equal(shipping?.severity, 'fail');
+
+  const text = formatDiagnosticsSummary(d);
+  assert.match(text, /shippingAddress=no/);
+  assert.match(text, /shipping_address_missing/);
+});
+
+test('diagnostics: digital order missing shipping has no shipping failure', () => {
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    bookFormat: 'digital',
+    formatLabel: 'Digital PDF',
+    shippingAddress: null,
+  }));
+
+  assert.equal(d.identity.isPrint, false);
+  assert.equal(d.proofGate.reasons.includes('shipping_address_missing'), false);
+  assert.equal(d.checks.find((c) => c.id === 'shipping-address'), undefined);
 });
 
 test('diagnostics: shipped order is happy-path ok', () => {

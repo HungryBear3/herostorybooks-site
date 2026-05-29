@@ -84,7 +84,6 @@ test('webhook source: payment write is awaited before responding (must commit be
 test('webhook source: extracts shipping from Checkout Session collected_information fallback', () => {
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
   assert.match(src, /extractCheckoutShipping\(session\)/);
-  assert.doesNotMatch(src, /customer_details\?\.address/);
 });
 
 test('extractCheckoutShipping: falls back to collected_information.shipping_details when direct shipping_details is absent', () => {
@@ -140,6 +139,49 @@ test('extractCheckoutShipping: prefers direct shipping_details over collected_in
 
   assert.equal(shipping?.line1, '1 Primary St');
   assert.equal(shipping?.zip, '60201');
+});
+
+test('extractCheckoutShipping: falls back to customer_details address when Stripe shipping fields are absent', () => {
+  const shipping = extractCheckoutShipping({
+    shipping_details: null,
+    collected_information: null,
+    customer_details: {
+      address: {
+        line1: '7 Billing Fallback Rd',
+        city: 'Chicago',
+        state: 'IL',
+        postal_code: '60602',
+        country: 'US',
+      },
+    },
+  });
+
+  assert.deepEqual(shipping, {
+    line1: '7 Billing Fallback Rd',
+    line2: null,
+    city: 'Chicago',
+    state: 'IL',
+    zip: '60602',
+    country: 'US',
+  });
+});
+
+test('extractCheckoutShipping: rejects incomplete addresses', () => {
+  const shipping = extractCheckoutShipping({
+    collected_information: {
+      shipping_details: {
+        address: {
+          line1: '42 Story Lane',
+          city: 'Chicago',
+          state: null,
+          postal_code: '60601',
+          country: 'US',
+        },
+      },
+    },
+  });
+
+  assert.equal(shipping, undefined);
 });
 
 test('webhook source: refuses to resurrect a refunded order on replay', () => {

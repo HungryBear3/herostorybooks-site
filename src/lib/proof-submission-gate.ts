@@ -1,5 +1,5 @@
 import { ArtDirectionPacketSchema } from './art-direction-schemas.ts';
-import type { OrderRecord, ProofReleaseOverride, ReviewAuditEvent } from './orders.ts';
+import { isPrintFormat, type OrderRecord, type ProofReleaseOverride, type ReviewAuditEvent } from './orders.ts';
 import type { StoryMeta } from './fulfillment-types.ts';
 import { STORY_OCCASIONS } from './story-catalog.ts';
 import { validateStoryboardCompleteness } from './storyboard-validator.ts';
@@ -16,6 +16,7 @@ export type ProofSubmissionGateReasonCode =
   | 'art_direction_packet_missing'
   | 'art_direction_packet_invalid'
   | 'storyboard_incomplete'
+  | 'shipping_address_missing'
   | 'human_override_invalid';
 
 export interface ProofSubmissionGateReason {
@@ -47,6 +48,17 @@ export function isCustomProofGatedOrder(order: OrderRecord): boolean {
     Boolean(order.voiceFileName || order.voiceBlobPath || order.voiceBlobUrl || order.voiceConsentAt || order.voiceSource) ||
     Boolean(order.voiceTranscript?.transcript || order.voiceTranscript?.inspiration) ||
     hasCustomLessonOrOccasion(order)
+  );
+}
+
+export function hasUsableShippingAddress(order: OrderRecord): boolean {
+  const addr = order.shippingAddress;
+  return Boolean(
+    addr?.line1?.trim() &&
+    addr.city?.trim() &&
+    addr.state?.trim() &&
+    addr.zip?.trim() &&
+    addr.country?.trim(),
   );
 }
 
@@ -88,52 +100,63 @@ export function evaluateProofSubmissionGate(
 ): ProofSubmissionGateResult {
   const storyMeta = options.storyMeta ?? order.storyMeta ?? null;
   const now = options.now ?? new Date();
-  const gated = isCustomProofGatedOrder(order);
+  const customGated = isCustomProofGatedOrder(order);
+  const shippingGated = isPrintFormat(order.bookFormat) && !hasUsableShippingAddress(order);
+  const gated = customGated || shippingGated;
   if (!gated) {
     return { allowed: true, gated: false, reasons: [], overrideApplied: false };
   }
 
   const reasons: ProofSubmissionGateReason[] = [];
 
-  if (!storyMeta?.source) {
+  if (shippingGated) {
     reasons.push({
-      code: 'custom_story_source_missing',
-      message: 'Custom order is missing persisted story source metadata.',
-    });
-  } else if (storyMeta.source === 'template') {
-    reasons.push({
-      code: 'custom_story_template_source',
-      message: 'Custom order used deterministic template story source.',
-      detail: `source=${storyMeta.source} model=${storyMeta.model}`,
-    });
-  } else if (storyMeta.source === 'template_after_openai_failure') {
-    reasons.push({
-      code: 'custom_story_template_fallback',
-      message: 'Custom order fell back to template_after_openai_failure.',
-      detail: storyMeta.fallbackError ?? undefined,
+      code: 'shipping_address_missing',
+      message: 'Print order is missing a usable shipping address.',
     });
   }
 
-  const packetResult = ArtDirectionPacketSchema.safeParse(order.artDirectionPacket);
-  if (!order.artDirectionPacket) {
-    reasons.push({
-      code: 'art_direction_packet_missing',
-      message: 'Custom order is missing art-direction/storyboard packet.',
-    });
-  } else if (!packetResult.success) {
-    reasons.push({
-      code: 'art_direction_packet_invalid',
-      message: 'Custom order art-direction packet does not match schema.',
-      detail: packetResult.error.issues.slice(0, 3).map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
-    });
-  } else {
-    const validation = validateStoryboardCompleteness(packetResult.data);
-    if (validation.status !== 'complete') {
+  if (customGated) {
+    if (!storyMeta?.source) {
       reasons.push({
-        code: 'storyboard_incomplete',
-        message: 'Custom order storyboard is incomplete.',
-        detail: validation.errors.slice(0, 3).map((issue) => `${issue.code}:${issue.path}`).join('; '),
+        code: 'custom_story_source_missing',
+        message: 'Custom order is missing persisted story source metadata.',
       });
+    } else if (storyMeta.source === 'template') {
+      reasons.push({
+        code: 'custom_story_template_source',
+        message: 'Custom order used deterministic template story source.',
+        detail: `source=${storyMeta.source} model=${storyMeta.model}`,
+      });
+    } else if (storyMeta.source === 'template_after_openai_failure') {
+      reasons.push({
+        code: 'custom_story_template_fallback',
+        message: 'Custom order fell back to template_after_openai_failure.',
+        detail: storyMeta.fallbackError ?? undefined,
+      });
+    }
+
+    const packetResult = ArtDirectionPacketSchema.safeParse(order.artDirectionPacket);
+    if (!order.artDirectionPacket) {
+      reasons.push({
+        code: 'art_direction_packet_missing',
+        message: 'Custom order is missing art-direction/storyboard packet.',
+      });
+    } else if (!packetResult.success) {
+      reasons.push({
+        code: 'art_direction_packet_invalid',
+        message: 'Custom order art-direction packet does not match schema.',
+        detail: packetResult.error.issues.slice(0, 3).map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
+      });
+    } else {
+      const validation = validateStoryboardCompleteness(packetResult.data);
+      if (validation.status !== 'complete') {
+        reasons.push({
+          code: 'storyboard_incomplete',
+          message: 'Custom order storyboard is incomplete.',
+          detail: validation.errors.slice(0, 3).map((issue) => `${issue.code}:${issue.path}`).join('; '),
+        });
+      }
     }
   }
 
@@ -141,7 +164,7 @@ export function evaluateProofSubmissionGate(
     return { allowed: true, gated: true, reasons: [], overrideApplied: false };
   }
 
-  if (isValidProofReleaseOverride(order, now)) {
+  if (!shippingGated && isValidProofReleaseOverride(order, now)) {
     return { allowed: true, gated: true, reasons, overrideApplied: true };
   }
 

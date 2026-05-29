@@ -106,6 +106,13 @@ function syntheticVoiceOrder(overrides: Partial<OrderRecord> = {}): OrderRecord 
     fulfillmentStatus: 'not_started',
     status: 'order_received',
     storyMeta: VOICE_STORY_META,
+    shippingAddress: {
+      line1: '100 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
     artDirectionPacket: null,
     artDirectionValidation: null,
     artDirectionGeneratedAt: null,
@@ -391,6 +398,7 @@ test('voice story regen local harness: submitted-order-shaped fallback remains b
     assert.equal(diagnostics.artDirection.status, 'absent');
     assert.equal(diagnostics.proofGate.allowed, false);
     assert.deepEqual(diagnostics.proofGate.reasons, [
+      'shipping_address_missing',
       'custom_story_template_fallback',
       'art_direction_packet_missing',
     ]);
@@ -401,6 +409,7 @@ test('voice story regen local harness: submitted-order-shaped fallback remains b
     assert.match(summary, /Proof gate: gated=yes allowed=no/);
     assert.match(summary, /custom_story_template_fallback/);
     assert.match(summary, /art_direction_packet_missing/);
+    assert.match(summary, /shipping_address_missing/);
 
     const review = await getReviewSnapshot(blockedOrder.id, {
       reviewToken: 'tok_local_blocked_submitted_shape',

@@ -7,7 +7,7 @@ import type { OrderRecord, ReviewAuditEvent } from './orders.ts';
 import { isPrintFormat } from './orders.ts';
 import { ArtDirectionPacketSchema } from './art-direction-schemas.ts';
 import { validateStoryboardCompleteness, type StoryboardValidationIssue } from './storyboard-validator.ts';
-import { evaluateProofSubmissionGate } from './proof-submission-gate.ts';
+import { evaluateProofSubmissionGate, hasUsableShippingAddress } from './proof-submission-gate.ts';
 
 export type DiagnosticSeverity = 'ok' | 'info' | 'warn' | 'fail';
 
@@ -632,7 +632,7 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       trackingNumber: order.trackingNumber ?? null,
       trackingUrl: order.trackingUrl ?? null,
       shippedAt: order.shippedAt ?? null,
-      hasShippingAddress: Boolean(order.shippingAddress),
+      hasShippingAddress: hasUsableShippingAddress(order),
     },
     flags: {
       isPaid,
@@ -816,8 +816,8 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
     }
     if (d.flags.shipped) {
       checks.push({ id: 'shipped', label: 'Shipped', severity: 'ok', detail: `tracking=${d.print.trackingNumber ?? '(none stored)'} at ${d.print.shippedAt}` });
-    } else if (d.flags.approved && !d.print.hasShippingAddress) {
-      checks.push({ id: 'shipping-address', label: 'No shipping address', severity: 'fail', detail: 'Approved print order with no shippingAddress — will block fulfillment.' });
+    } else if (!d.print.hasShippingAddress) {
+      checks.push({ id: 'shipping-address', label: 'No usable shipping address', severity: 'fail', detail: 'Print order is missing shippingAddress before proof release / print submission.' });
     }
   }
 
@@ -904,7 +904,7 @@ export function formatDiagnosticsSummary(d: OrderDiagnostics): string {
   lines.push(`Proof: ${d.artifacts.storyArtifactUrl ?? 'none'}`);
   lines.push(`Review: status=${d.review.reviewStatus} acknowledged=${d.review.proofReviewedAt ?? 'no'} approved=${d.review.proofApprovedAt ?? 'no'}`);
   if (d.identity.isPrint) {
-    lines.push(`Print: jobId=${d.print.printJobId ?? 'none'} jobStatus=${d.print.printJobStatus ?? 'none'} tracking=${d.print.trackingNumber ?? 'none'} shippedAt=${d.print.shippedAt ?? 'no'}`);
+    lines.push(`Print: shippingAddress=${d.print.hasShippingAddress ? 'yes' : 'no'} jobId=${d.print.printJobId ?? 'none'} jobStatus=${d.print.printJobStatus ?? 'none'} tracking=${d.print.trackingNumber ?? 'none'} shippedAt=${d.print.shippedAt ?? 'no'}`);
   }
   const failing = d.checks.filter((c) => c.severity === 'fail');
   const warning = d.checks.filter((c) => c.severity === 'warn');

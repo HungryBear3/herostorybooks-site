@@ -18,13 +18,20 @@ export interface StripeCheckoutSessionWithShipping {
       address?: StripeAddress | null;
     } | null;
   } | null;
+  customer_details?: {
+    address?: StripeAddress | null;
+  } | null;
 }
 
 export function extractCheckoutShipping(
   session: StripeCheckoutSessionWithShipping,
 ): ShippingAddress | undefined {
-  const addr = session.shipping_details?.address ?? session.collected_information?.shipping_details?.address;
+  const addr =
+    session.shipping_details?.address ??
+    session.collected_information?.shipping_details?.address ??
+    session.customer_details?.address;
   if (!addr) return undefined;
+  if (!addr.line1 || !addr.city || !addr.state || !addr.postal_code || !addr.country) return undefined;
   return {
     line1: addr.line1 ?? '',
     line2: addr.line2 ?? null,

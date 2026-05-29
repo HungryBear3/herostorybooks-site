@@ -82,7 +82,17 @@ async function makeOrder(
     { childName: 'Luna', bookFormat: 'digital', email: 'luna@example.com' },
     { id: `ord_${Math.random().toString(36).slice(2, 10)}`, now: '2026-04-23T10:00:00Z' },
   );
-  const order: OrderRecord = { ...base, ...overrides };
+  const order: OrderRecord = {
+    ...base,
+    shippingAddress: {
+      line1: '100 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
+    ...overrides,
+  };
   await persistOrder(order);
   return order;
 }

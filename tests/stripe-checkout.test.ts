@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   createOrderRecord,
@@ -151,4 +152,13 @@ test('digital order with paid payment does not trigger print fulfillment', () =>
   };
   const canFulfill = order.paymentStatus === 'paid' && isPrintFormat(order.bookFormat);
   assert.equal(canFulfill, false);
+});
+
+test('order route source: print checkout asks Stripe to collect shipping, digital stays conditional', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const printIdx = src.indexOf('isPrintFormat(order.bookFormat)');
+  const shippingIdx = src.indexOf('shipping_address_collection');
+  assert.ok(printIdx > -1, 'route must branch on print format');
+  assert.ok(shippingIdx > printIdx, 'shipping collection must be inside the print-format Checkout branch');
+  assert.match(src, /allowed_countries:\s*\[\s*'US'/);
 });

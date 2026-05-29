@@ -33,6 +33,13 @@ function makeOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
     theme: 'custom-voice-story',
     storyMeta: MODEL_STORY_META,
     artDirectionPacket: lukasDinoArtDirectionFixture,
+    shippingAddress: {
+      line1: '100 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
     ...overrides,
   };
 }
@@ -71,6 +78,26 @@ test('proof submission gate: valid custom story and art-direction packet pass', 
   const result = evaluateProofSubmissionGate(makeOrder());
 
   assert.equal(isCustomProofGatedOrder(makeOrder()), true);
+  assert.equal(result.gated, true);
+  assert.equal(result.allowed, true);
+  assert.deepEqual(result.reasons, []);
+});
+
+test('proof submission gate: print order missing shipping blocks proof release', () => {
+  const result = evaluateProofSubmissionGate(makeOrder({ shippingAddress: null }));
+
+  assert.equal(result.gated, true);
+  assert.equal(result.allowed, false);
+  assert.ok(result.reasons.some((reason) => reason.code === 'shipping_address_missing'));
+});
+
+test('proof submission gate: digital order missing shipping does not block proof release', () => {
+  const result = evaluateProofSubmissionGate(makeOrder({
+    bookFormat: 'digital',
+    formatLabel: 'Digital PDF',
+    shippingAddress: null,
+  }));
+
   assert.equal(result.gated, true);
   assert.equal(result.allowed, true);
   assert.deepEqual(result.reasons, []);

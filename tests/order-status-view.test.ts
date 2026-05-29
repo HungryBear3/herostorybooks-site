@@ -10,7 +10,17 @@ function makeOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
     { childName: 'Luna', bookFormat: 'digital', email: 'luna@example.com' },
     { id: 'ord_status_test', now: '2026-04-23T10:00:00Z' },
   );
-  return { ...base, ...overrides };
+  return {
+    ...base,
+    shippingAddress: {
+      line1: '100 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
+    ...overrides,
+  };
 }
 
 // ── Pending / unpaid ──────────────────────────────────────────────────────────
