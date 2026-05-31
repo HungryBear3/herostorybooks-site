@@ -81,6 +81,8 @@ async function makeDigitalOrder(
     ...base,
     paymentStatus: 'paid',
     stripeSessionId: 'cs_test_storymeta',
+    qaPassAt: '2026-05-31T20:00:00.000Z',
+    qaPassBy: 'admin',
     ...overrides,
   };
   await persistOrder(order);
@@ -101,6 +103,8 @@ async function makePrintOrder(
     ...base,
     paymentStatus: 'paid',
     stripeSessionId: 'cs_test_storymeta_print',
+    qaPassAt: '2026-05-31T20:00:00.000Z',
+    qaPassBy: 'admin',
     shippingAddress: {
       line1: '1 Test Way',
       city: 'Springfield',

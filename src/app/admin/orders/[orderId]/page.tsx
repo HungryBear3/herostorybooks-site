@@ -233,6 +233,8 @@ export default async function AdminOrderDetail({ params }: Props) {
           <Row label="Fulfillment status" value={order.fulfillmentStatus ?? 'not_started'}
                tone={order.fulfillmentStatus === 'failed_manual_review' ? 'bad' : order.fulfillmentStatus === 'complete' ? 'good' : 'neutral'} />
           <Row label="Order status" value={order.status} />
+          <Row label="QA pass at" value={order.qaPassAt ?? '—'} />
+          <Row label="QA pass by" value={order.qaPassBy ?? '—'} />
           <Row label="Attempts" value={String(order.fulfillmentAttempts ?? 0)} />
           {order.fulfillmentLastError && <Row label="Last error" value={order.fulfillmentLastError} tone="bad" />}
           <Row label="Artifact" value={order.storyArtifactUrl ?? '—'}
@@ -402,8 +404,11 @@ export default async function AdminOrderDetail({ params }: Props) {
           fulfillmentStatus={order.fulfillmentStatus ?? 'not_started'}
           alreadyShipped={order.status === 'shipped'}
           hasProof={Boolean(order.storyArtifactUrl && order.proofApprovalToken)}
+          hasArtifact={Boolean(order.storyArtifactUrl)}
           isFailed={order.fulfillmentStatus === 'failed_manual_review'}
           paymentPaid={order.paymentStatus === 'paid'}
+          qaPassAt={order.qaPassAt ?? ''}
+          qaPassBy={order.qaPassBy ?? ''}
           currentTrackingNumber={order.trackingNumber ?? ''}
           currentTrackingUrl={order.trackingUrl ?? ''}
         />

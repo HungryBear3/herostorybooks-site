@@ -122,7 +122,10 @@ test('digital delivery email failure preserves artifacts and records delivery_em
     cleanupTmpDir(dir);
   });
 
-  const order = await makeDigitalOrder();
+  const order = await makeDigitalOrder({
+    qaPassAt: '2026-05-31T20:00:00.000Z',
+    qaPassBy: 'admin',
+  });
   const result = await triggerFulfillment(order.id, PASS_DEPS_WITHOUT_EMAIL);
   assert.equal(result.status, 'started');
 
@@ -172,6 +175,8 @@ test('retryOrderFulfillment after delivery_email_failed resends email — does N
     fulfillmentStatus: 'delivery_email_failed',
     storyArtifactUrl: 'https://cdn.example.com/ord/luna-storybook.pdf',
     fulfillmentLastError: 'delivery_email_failed: ...',
+    qaPassAt: '2026-05-31T20:00:00.000Z',
+    qaPassBy: 'admin',
   });
 
   // Counter on a story generator we should never reach.
@@ -215,6 +220,8 @@ test('resendDigitalDelivery resends the email for a digital order that already h
   const order = await makeDigitalOrder({
     fulfillmentStatus: 'delivery_email_failed',
     storyArtifactUrl: 'https://cdn.example.com/ord/x-storybook.pdf',
+    qaPassAt: '2026-05-31T20:00:00.000Z',
+    qaPassBy: 'admin',
   });
 
   const result = await resendDigitalDelivery(order.id);

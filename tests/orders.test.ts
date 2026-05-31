@@ -53,7 +53,7 @@ test('createOrderRecord persists sanitized referral codes for partner attributio
   assert.equal(invalid.referralCode, null);
 });
 
-test('buildDeliveryExpectation keeps digital-first reassurance for print formats', () => {
+test('buildDeliveryExpectation keeps proof-first reassurance for print formats', () => {
   assert.equal(buildDeliveryExpectation('digital'), 'Digital proof usually ready within 2 business days; final PDF delivered after approval.');
   assert.match(
     buildDeliveryExpectation('classic'),

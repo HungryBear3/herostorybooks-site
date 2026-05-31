@@ -121,6 +121,7 @@ export type ReviewAuditEventType =
   | 'proof_rebuilt'
   | 'proof_release_blocked'
   | 'proof_release_override_recorded'
+  | 'qa_pass_recorded'
   | 'proof_review_acknowledged'
   | 'page_regenerated'
   | 'page_accepted'
@@ -241,6 +242,11 @@ export interface OrderRecord extends OrderInput {
   printCoverArtifactUrl?: string | null;
   printCoverMd5?: string | null;
   printTitle?: string | null;
+  /** Positive internal human QA pass required before proof/digital delivery
+   *  is sent to the customer. Set by a later admin-only QA route/UI. */
+  qaPassAt?: string | null;
+  /** Bounded internal operator identifier that recorded qaPassAt. */
+  qaPassBy?: string | null;
   proofApprovalToken?: string | null;
   proofApprovedAt?: string | null;
   /** ISO timestamp the customer ticked the "I reviewed the full proof PDF"
@@ -1218,6 +1224,8 @@ type FulfillmentPatch = Partial<Pick<
   | 'printCoverArtifactUrl'
   | 'printCoverMd5'
   | 'printTitle'
+  | 'qaPassAt'
+  | 'qaPassBy'
   | 'proofApprovalToken'
   | 'proofApprovedAt'
   | 'proofReviewedAt'

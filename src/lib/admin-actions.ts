@@ -1,4 +1,5 @@
 import Stripe from 'stripe';
+import crypto from 'node:crypto';
 
 import { getOptionalStripeSecretKey } from './stripe-env.ts';
 
@@ -16,6 +17,43 @@ export type ActionResult =
 
 export type RetryResult = ActionResult;
 
+export interface QaPassChecklist {
+  storyReviewed?: boolean;
+  imagesReviewed?: boolean;
+  proofArtifactReviewed?: boolean;
+  customerSafe?: boolean;
+  noPrintRelease?: boolean;
+}
+
+export interface QaPassInput {
+  qaPassBy?: string;
+  checklist?: QaPassChecklist;
+}
+
+export interface QaPassDeps {
+  now?: () => string;
+  createProofToken?: () => string;
+  getBaseUrl?: () => string;
+  sendDigitalDeliveryEmail?: typeof sendDigitalDeliveryEmail;
+  sendProofReadyEmail?: typeof sendProofReadyEmail;
+}
+
+const REQUIRED_QA_CHECKS: Array<keyof QaPassChecklist> = [
+  'storyReviewed',
+  'imagesReviewed',
+  'proofArtifactReviewed',
+  'customerSafe',
+  'noPrintRelease',
+];
+
+function missingQaChecks(checklist: QaPassChecklist | undefined): string[] {
+  return REQUIRED_QA_CHECKS.filter((key) => checklist?.[key] !== true);
+}
+
+function defaultBaseUrl(): string {
+  return process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'http://localhost:3000';
+}
+
 // ── Retry ─────────────────────────────────────────────────────────────────────
 
 export async function retryOrderFulfillment(orderId: string): Promise<ActionResult> {
@@ -31,6 +69,9 @@ export async function retryOrderFulfillment(orderId: string): Promise<ActionResu
   // not_started and regenerate. That would re-pay for the entire image
   // pipeline for a book that's already correct. Resend just the email.
   if (order.fulfillmentStatus === 'delivery_email_failed') {
+    if (!order.qaPassAt) {
+      return { ok: false, status: 409, error: 'Cannot resend customer email before QA pass' };
+    }
     const isDigital = order.bookFormat === 'digital';
     if (isDigital && order.storyArtifactUrl) {
       try {
@@ -116,6 +157,9 @@ export async function resendDigitalDelivery(orderId: string): Promise<ActionResu
   if (!order.storyArtifactUrl) {
     return { ok: false, status: 409, error: 'No digital artifact URL to resend' };
   }
+  if (!order.qaPassAt) {
+    return { ok: false, status: 409, error: 'Cannot resend customer email before QA pass' };
+  }
   try {
     await sendDigitalDeliveryEmail(order, { pdfUrl: order.storyArtifactUrl });
     await updateFulfillmentState(orderId, {
@@ -132,6 +176,109 @@ export async function resendDigitalDelivery(orderId: string): Promise<ActionResu
       ok: false,
       status: 502,
       error: `Delivery email failed: ${message.slice(0, 240)}`,
+    };
+  }
+}
+
+// ── QA pass / customer release ────────────────────────────────────────────────
+
+export async function releaseOrderAfterQa(
+  orderId: string,
+  input: QaPassInput,
+  deps: QaPassDeps = {},
+): Promise<ActionResult> {
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  if (order.paymentStatus !== 'paid') {
+    return { ok: false, status: 400, error: 'Cannot release: payment not confirmed' };
+  }
+  if (order.fulfillmentStatus !== 'awaiting_qa') {
+    return { ok: false, status: 409, error: `Order is in state ${order.fulfillmentStatus ?? 'not_started'}` };
+  }
+  if (!order.storyArtifactUrl) {
+    return { ok: false, status: 409, error: 'No proof/digital artifact URL to release' };
+  }
+
+  const missing = missingQaChecks(input.checklist);
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      status: 400,
+      error: `QA checklist incomplete: ${missing.join(', ')}`,
+    };
+  }
+
+  const qaPassAt = deps.now ? deps.now() : new Date().toISOString();
+  const qaPassBy = (input.qaPassBy ?? 'admin').trim().slice(0, 120) || 'admin';
+  const isDigital = order.bookFormat === 'digital';
+  const sendDigital = deps.sendDigitalDeliveryEmail ?? sendDigitalDeliveryEmail;
+  const sendProof = deps.sendProofReadyEmail ?? sendProofReadyEmail;
+  const proofApprovalToken = isDigital
+    ? null
+    : (order.proofApprovalToken || (deps.createProofToken ? deps.createProofToken() : crypto.randomBytes(24).toString('hex')));
+
+  const updated = await updateFulfillmentState(order.id, {
+    qaPassAt,
+    qaPassBy,
+    fulfillmentStatus: isDigital ? 'complete' : 'proof_ready',
+    status: 'preview_ready',
+    fulfillmentLastError: null,
+    ...(isDigital ? {} : { proofApprovalToken }),
+  });
+  if (!updated) return { ok: false, status: 404, error: 'Order not found' };
+
+  try {
+    if (isDigital) {
+      await sendDigital(updated, { pdfUrl: order.storyArtifactUrl });
+      await appendAuditEvent(order.id, {
+        type: 'qa_pass_recorded',
+        meta: {
+          qaPassBy,
+          bookFormat: order.bookFormat,
+          releasedEmail: true,
+          printReleased: false,
+        },
+      }, updated);
+      return { ok: true, detail: 'QA passed; digital delivery email sent' };
+    }
+
+    const baseUrl = (deps.getBaseUrl ?? defaultBaseUrl)().replace(/\/$/, '');
+    const reviewUrl = `${baseUrl}/review/${order.id}?token=${proofApprovalToken}`;
+    await sendProof(updated, { proofUrl: order.storyArtifactUrl, reviewUrl });
+    await appendAuditEvent(order.id, {
+      type: 'qa_pass_recorded',
+      meta: {
+        qaPassBy,
+        bookFormat: order.bookFormat,
+        releasedEmail: true,
+        printReleased: false,
+      },
+    }, updated);
+    return { ok: true, detail: 'QA passed; proof-ready email sent' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const failed = await updateFulfillmentState(order.id, {
+      fulfillmentStatus: 'delivery_email_failed',
+      fulfillmentLastError: `delivery_email_failed (qa release): ${message.slice(0, 500)}`,
+      qaPassAt,
+      qaPassBy,
+      ...(isDigital ? {} : { proofApprovalToken }),
+    });
+    if (failed) {
+      await appendAuditEvent(order.id, {
+        type: 'qa_pass_recorded',
+        meta: {
+          qaPassBy,
+          bookFormat: order.bookFormat,
+          releasedEmail: false,
+          printReleased: false,
+        },
+      }, failed);
+    }
+    return {
+      ok: false,
+      status: 502,
+      error: `QA pass saved, but customer email failed: ${message.slice(0, 240)}`,
     };
   }
 }
@@ -194,6 +341,9 @@ export async function resendProofEmail(
   if (!order.storyArtifactUrl || !order.proofApprovalToken) {
     return { ok: false, status: 409, error: 'No proof ready to resend' };
   }
+  if (!order.qaPassAt) {
+    return { ok: false, status: 409, error: 'Cannot resend proof email before QA pass' };
+  }
   if (order.fulfillmentStatus !== 'proof_ready') {
     return { ok: false, status: 409, error: `Proof is in state ${order.fulfillmentStatus}` };
   }
@@ -210,6 +360,9 @@ export async function manuallyApproveProof(orderId: string): Promise<ActionResul
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
   if (order.fulfillmentStatus !== 'proof_ready') {
     return { ok: false, status: 409, error: `Proof is in state ${order.fulfillmentStatus}` };
+  }
+  if (!order.qaPassAt) {
+    return { ok: false, status: 409, error: 'Cannot manually approve print before QA pass' };
   }
   if (!order.proofApprovalToken) {
     return { ok: false, status: 409, error: 'No approval token on order' };

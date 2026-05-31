@@ -26,23 +26,24 @@ const tiers: Tier[] = [
     name: 'Digital PDF',
     price: 14.99,
     sub: '32-page proof first, then high-resolution PDF',
-    blurb: 'We email a 32-page digital proof first, usually within 2 business days. It includes 24 illustrated story pages plus keepsake front and back matter. Once you approve, you receive the final high-resolution PDF to print at home, share, or read on any screen. No printing or shipping step.',
-    badge: "Father's Day pick",
-    featured: true,
+    blurb: 'We email a 32-page digital proof first, usually within 2 business days. It includes 24 illustrated story pages plus keepsake front and back matter. Once you approve, you receive the final high-resolution PDF to read on any screen or print at home.',
   },
   {
     id: 'softcover',
     name: 'Classic softcover',
     price: 44.99,
     sub: '32-page 8.5″ × 8.5″ · perfect-bound',
-    blurb: 'Full-color matte pages, perfect-bound spine, and a keepsake feel without the hardcover price. The interior includes 24 illustrated story pages plus keepsake front and back matter.',
+    blurb: 'A real printed keepsake with full-color matte pages, perfect-bound spine, and digital proof review before print. The interior includes 24 illustrated story pages plus keepsake front and back matter.',
+    badge: 'Popular gift',
+    featured: true,
   },
   {
     id: 'hardcover',
     name: 'Premium hardcover',
     price: 64.99,
     sub: '32-page 8.5″ × 8.5″ · keepsake gift finish',
-    blurb: 'Premium full-color pages, sturdy case binding, and a gift-ready finish for grandparents and big occasions. The interior includes 24 illustrated story pages plus keepsake front and back matter.',
+    blurb: 'Premium full-color pages, sturdy case binding, and a gift-ready finish for dads, grandpas, and big keepsake moments. The interior includes 24 illustrated story pages plus keepsake front and back matter.',
+    badge: 'Most gifted',
   },
 ];
 
@@ -129,9 +130,9 @@ const lukasStorySnippets = [
 const faqs: Array<[string, string]> = [
   ['How personalized is the book?', 'Fully customizable. Every book can use your child’s name, age, interests, dedication, photo/character notes, and an optional 30-second voice note so the story can reflect their own ideas and phrases. We make the child the hero of the story instead of dropping their name into a generic template.'],
   ['Do I approve it before printing? Can I request changes?', 'Yes — and always. Physical books are not printed until you approve the digital proof. Reply to the proof email with any changes: story wording, photo placement, dedication, character details, scene tone. Revisions before approval are included, not an upsell.'],
-  ['How long does it take from order to delivery?', 'Digital proofs are usually ready within 2 business days. After you approve, digital PDFs are delivered the same day; printed books ship 5–7 business days after approval, then US delivery is typically 3–5 days. We don’t guarantee specific holiday-delivery dates because carriers can vary.'],
-  ['Will it arrive in time for a birthday or Father’s Day?', 'Most US orders that approve their proof at least 9–12 days before the date arrive in time, but we don’t promise specific dates — shipping carriers vary. If timing is tight, the Digital PDF is a reliable fallback you can print at home or share instantly.'],
-  ['Which option is safest for a Father’s Day gift?', 'The Digital PDF. Once you approve the proof, it’s delivered the same day with no printing or shipping step, so there’s no carrier timing risk — you can print it at home or share it instantly. A printed softcover or hardcover is an optional upgrade that ships after approval; arrival depends on the order-by date and your carrier, so we don’t promise a printed book will arrive by Father’s Day.'],
+  ['How long does it take from order to delivery?', 'Digital proofs are usually ready within 2 business days. Once you approve, digital PDFs are delivered after approval; printed books ship 5–7 business days after approval, then US delivery is typically 3–5 days. We don’t guarantee specific holiday-delivery dates because carriers can vary.'],
+  ['Will it arrive in time for a birthday or Father’s Day?', 'Order early for the best print timing. Most US orders that approve their proof at least 9–12 days before the date have the best chance to arrive in time, but we don’t promise specific dates because carriers vary. If timing is tight, the Digital PDF is the safest fallback.'],
+  ['Which option is safest for a Father’s Day gift?', 'Early in the season, softcover and hardcover are the strongest keepsake gifts. Close to Father’s Day, choose digital so there is something to open on the day, with print available after approval.'],
   ['What if my photo isn’t ready by Jun 5 — can I still order?', 'Yes. Place the order any time; the proof clock starts when we receive your photo. Digital orders aren’t time-locked because there’s no shipping step — you can approve and download as soon as the proof is ready.'],
   ['Can I send it as a gift or surprise someone?', 'Yes. Add a dedication and gift message at checkout. The proof email goes to whoever you list as the buyer, not the recipient, so the surprise stays intact.'],
   ['What if my child doesn’t like the proof?', 'Reply to the proof email with what to change — a different scene, a softer dinosaur, a recolored sweater, whatever. Revisions before approval are free. We don’t print until you say go.'],
@@ -365,7 +366,7 @@ function HeroSection() {
             Your child becomes <em className="font-normal italic text-[#a64c4c]">the hero</em> of the story.
           </h1>
           <p className="mt-7 max-w-xl text-lg leading-8 text-[#695f54] md:text-xl">
-            Create a personalized keepsake storybook from your child&apos;s photo, interests, and family details. AI-assisted illustration and hand-reviewed story edits come together in a full digital proof you approve before anything prints.
+            Create a personalized keepsake storybook from your child&apos;s photo, interests, and family details. You see the full proof first, ask for changes if needed, and we only print once you approve.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <PrimaryCta href="/checkout" size="lg">Start your book</PrimaryCta>
@@ -455,7 +456,7 @@ function TrustStrip() {
     'Revisions included before approval',
     'Human story and art review',
     'US shipping included on printed books',
-    'Your photos stay private — never used to train AI',
+    'Your photos stay private and used only for your order',
     'Stripe-secured checkout',
   ];
   return (
@@ -534,7 +535,7 @@ function PrivacyBand() {
     <section className="mx-auto max-w-6xl px-5 pt-12 pb-5 md:px-8 md:pt-16 md:pb-6">
       <div className="grid gap-5 rounded-3xl border border-[#d8c6a2] bg-[#f5ead2] p-7 md:grid-cols-3 md:p-10">
         {[
-          ['Private by default', 'Your photo and details are used only to make the book. We never sell them or use them to train AI.'],
+          ['Private by default', 'Your photo and details are used only to make and support your order. We never sell them.'],
           ['Proof before print', 'You see the story and art first. We only print once you approve.'],
           ['Small-team care', 'If the photo, name, or story tone feels wrong, we fix it before fulfillment.'],
         ].map(([title, body]) => (
@@ -574,7 +575,7 @@ function PricingPreviewSection() {
   return (
     <section id="pricing" className="bg-[#fff8ec]/45 pt-6 pb-20 md:pt-8 md:pb-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
-        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Same hand-edited story and full-color illustrations in all formats. Physical books include US shipping." centered />
+        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Digital for easy reading, softcover for a real book to hold, hardcover for the keepsake shelf. Every printed book is proof-approved before print." centered />
         <TierCards />
         <div className="mt-8 text-center"><GhostCta href="/pricing">Compare all options</GhostCta></div>
       </div>
@@ -629,8 +630,8 @@ function SeasonalCallout() {
         </div>
         <div className="rounded-2xl bg-[#f5ead2] p-6 text-center">
           <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Gift timing</div>
-          <h3 className="font-serif text-3xl">Digital is fastest. Print is optional.</h3>
-          <p className="mt-3 text-sm leading-6 text-[#695f54]">Approve your proof (usually within 2 business days) and the Digital PDF arrives the same day — no shipping. Printed books ship 5–7 business days after approval, so order early if you want one in hand for Father&apos;s Day.</p>
+          <h3 className="font-serif text-3xl">Print is the keepsake. Digital is the safety valve.</h3>
+          <p className="mt-3 text-sm leading-6 text-[#695f54]">Proofs are usually ready within 2 business days. Printed books ship 5–7 business days after approval, so order early if you want one in hand for Father&apos;s Day. If timing is tight, digital gives Dad something meaningful to open on the day.</p>
         </div>
       </div>
     </section>
@@ -701,10 +702,10 @@ export function EditorialFathersDayPage() {
               Father&apos;s Day gift
             </div>
             <h1 className="max-w-3xl font-serif text-[clamp(3rem,7vw,6.8rem)] font-medium leading-[0.88] tracking-[-0.04em] text-[#1f1a16]">
-              A story from them, ready for Dad.
+              Give Dad a story only your family could tell.
             </h1>
             <p className="mt-7 max-w-xl text-lg leading-8 text-[#695f54] md:text-xl">
-              Start with your child&apos;s photo, interests, and an optional 30-second voice note. We turn it into a personalized proof book you approve before anything prints.
+              Start with your child&apos;s photo, interests, and the little family details Dad will recognize. We turn them into a personalized proof book you approve before anything prints.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <PrimaryCta href={FATHERS_DAY_OFFER.ctaHref} size="lg">
@@ -725,7 +726,7 @@ export function EditorialFathersDayPage() {
               className="aspect-[4/5] w-full rounded-2xl object-cover object-[30%_55%]"
             />
             <p className="mt-4 text-sm leading-6 text-[#695f54]">
-              Digital PDF is the safest Father&apos;s Day route: proof first, then same-day delivery after approval. Printed softcover and hardcover books are optional upgrades that ship after proof approval.
+              Printed softcover and hardcover books are the keepsake gifts when ordered early. If timing gets tight, digital gives Dad something meaningful to open on the day while print can follow after approval.
             </p>
           </div>
         </div>
@@ -752,7 +753,7 @@ export function EditorialAboutPage() {
             The core promise is simple: you never blindly send a custom book to print. Every order starts with the child&apos;s name, photo, story details, and optional voice note, then we prepare a digital proof for review before any physical copy is printed.
           </p>
           <p>
-            We use AI-assisted illustration as a production tool, but the order is still reviewed by people before fulfillment. Uploaded child photos and optional voice notes are used only to create and support the requested order; they are not sold, used to train AI models, or used for voice cloning.
+            Every customer-facing proof is reviewed by people before fulfillment. Uploaded child photos and optional voice notes are used only to create and support the requested order; they are not sold, reused for unrelated projects, or used for voice cloning.
           </p>
         </div>
         <div className="mt-10 rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-6">

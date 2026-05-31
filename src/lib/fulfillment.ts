@@ -11,7 +11,12 @@ import { generateStoryImageResults } from './image-generator.ts';
 import type { GeneratedImageResult } from './image-generator.ts';
 import { buildPdf, buildPrintCoverPdf, buildPrintInteriorPdf, getPrintInteriorPageCount } from './pdf-builder.ts';
 import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';
-import { sendLifecycleEmail, sendOperatorFailureAlert } from './order-email.ts';
+import {
+  sendDigitalDeliveryEmail as defaultSendDigitalDeliveryEmail,
+  sendLifecycleEmail,
+  sendOperatorFailureAlert,
+  sendProofReadyEmail as defaultSendProofReadyEmail,
+} from './order-email.ts';
 import {
   evaluateProofSubmissionGate,
   formatProofSubmissionGateReasons,
@@ -89,8 +94,14 @@ export interface FulfillmentDeps {
   calculateCoverDimensions?: (order: OrderRecord, interiorPageCount: number) => Promise<{ widthPt: number; heightPt: number }>;
   uploadArtifact?: (orderId: string, buffer: Buffer, filename: string) => Promise<string>;
   submitPrint?: (order: OrderRecord) => Promise<{ jobId: string }>;
+  sendDigitalDeliveryEmail?: (order: OrderRecord, options: { pdfUrl: string }) => Promise<unknown>;
+  sendProofReadyEmail?: (order: OrderRecord, options: { reviewUrl: string; proofUrl: string }) => Promise<unknown>;
   sleep?: (ms: number) => Promise<void>;
   getBaseUrl?: () => string;
+}
+
+function hasQaPass(order: OrderRecord): boolean {
+  return Boolean(order.qaPassAt);
 }
 
 function paidFulfillmentPatch(order: OrderRecord, patch: Partial<OrderRecord>): Partial<OrderRecord> {
@@ -446,6 +457,7 @@ async function runWithRetry(
 async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps): Promise<void> {
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
+  const _sendDigitalDeliveryEmail = deps.sendDigitalDeliveryEmail ?? defaultSendDigitalDeliveryEmail;
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
@@ -576,8 +588,9 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // storyMeta=null because (a) storyMeta was written in a separate prior
   // patch, and (b) a stale blob-read in this final write merged-in over
   // the storyMeta field. Explicit inclusion makes the merge deterministic.
+  const qaPassed = hasQaPass(order);
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
-    fulfillmentStatus: 'awaiting_qa',
+    fulfillmentStatus: qaPassed ? 'complete' : 'awaiting_qa',
     status: 'preview_ready',
     storyArtifactUrl: pdfUrl,
     pageArtifacts: seededPageArtifacts,
@@ -589,9 +602,30 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   }));
 
-  // The automatic fulfillment path stops here. A later positive-QA release
-  // path may send the customer email, but generation itself must only persist
-  // the reviewable artifact and wait for an operator decision.
+  if (!qaPassed) {
+    // The automatic fulfillment path stops here. A later positive-QA release
+    // path may send the customer email, but generation itself must only persist
+    // the reviewable artifact and wait for an operator decision.
+    return;
+  }
+
+  // Positive human QA was already recorded on this order, so the legacy
+  // digital-delivery email path may continue. If email delivery fails, keep
+  // generated artifacts intact and let admin recover with an email-only resend.
+  try {
+    await _sendDigitalDeliveryEmail(order, { pdfUrl });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[fulfillment] delivery email failed for ${order.id}: ${message}`);
+    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+      fulfillmentStatus: 'delivery_email_failed',
+      fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+      storyArtifactUrl: pdfUrl,
+      pageArtifacts: seededPageArtifacts,
+      storyMeta,
+      ...artDirectionPatch,
+    }));
+  }
 }
 
 // ── Print fulfillment ─────────────────────────────────────────────────────────
@@ -600,6 +634,8 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _buildPrintInteriorPdf = deps.buildPrintInteriorPdf ?? buildPrintInteriorPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
+  const _sendProofReadyEmail = deps.sendProofReadyEmail ?? defaultSendProofReadyEmail;
+  const _getBaseUrl = deps.getBaseUrl ?? defaultGetBaseUrl;
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
@@ -704,6 +740,12 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
 
   const interiorPageCount = getPrintInteriorPageCount(story, order);
 
+  const qaPassed = hasQaPass(order);
+  const proofApprovalToken = qaPassed ? crypto.randomBytes(24).toString('hex') : null;
+  const reviewUrl = qaPassed
+    ? `${_getBaseUrl()}/review/${order.id}?token=${proofApprovalToken}`
+    : null;
+
   // seededPageArtifacts was already computed and persisted earlier (before
   // PDF build), so we just re-use it in the final state write below.
 
@@ -723,7 +765,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // storyMeta included explicitly so the proof_ready merge is
   // deterministic regardless of blob-read freshness.
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
-    fulfillmentStatus: 'awaiting_qa',
+    fulfillmentStatus: qaPassed ? 'proof_ready' : 'awaiting_qa',
     status: 'preview_ready',
     storyArtifactUrl: proofUrl,
     printInteriorArtifactUrl: interiorUrl,
@@ -736,14 +778,33 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     storyMeta,
     ...artDirectionPatch,
     reviewStatus: 'in_review',
-    proofApprovalToken: null,
+    proofApprovalToken,
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   }));
 
-  // Hold print proofs behind positive internal QA. The release path that
-  // follows QA should create the proof token and send the proof-ready email.
+  if (!qaPassed) {
+    // Hold print proofs behind positive internal QA. The release path that
+    // follows QA should create the proof token and send the proof-ready email.
+    return;
+  }
+
+  try {
+    await _sendProofReadyEmail(order, { reviewUrl: reviewUrl!, proofUrl });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[fulfillment] proof-ready email failed for ${order.id}: ${message}`);
+    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+      fulfillmentStatus: 'delivery_email_failed',
+      fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+      storyArtifactUrl: proofUrl,
+      printInteriorArtifactUrl: interiorUrl,
+      pageArtifacts: seededPageArtifacts,
+      storyMeta,
+      ...artDirectionPatch,
+    }));
+  }
 }
 
 // ── Print production (post-approval) ──────────────────────────────────────────

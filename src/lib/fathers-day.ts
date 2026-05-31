@@ -110,7 +110,7 @@ export function getFathersDayCountdown(
       // Past print-safe window but Father's Day not yet — pivot to digital.
       badgeCopy =
         `Print window for Father's Day has tightened — the Digital PDF ` +
-        `(${fathersDayLabel}) is still a safe gift you can share instantly`;
+        `(${fathersDayLabel}) is still the safest way to have something to open`;
       break;
     case 'past-event':
     default:
@@ -130,31 +130,29 @@ export function getFathersDayCountdown(
 }
 
 /**
- * Digital-first Father's Day offer copy.
+ * Father's Day offer copy.
  *
- * The Digital PDF is the lead Father's Day gift: it is delivered the same
- * day a proof is approved, with no print or shipping step, so there is no
- * carrier timing risk. Printed books stay available as an OPTIONAL upgrade,
- * but their arrival depends on the order-by date and the carrier, so we
- * never claim a printed book will arrive by Father's Day.
+ * Printed books are the lead keepsake while the print window is open. The
+ * Digital PDF is the late-window safety valve: useful when timing is tight,
+ * but not framed as a lower-quality consolation prize.
  *
  * Centralized here (rather than inline JSX) so the positioning is pure,
  * importable, and pinned by tests. Copy rules — mirrored in
  * tests/fathers-day.test.ts:
- *   - Lead with digital / instant / no shipping risk.
- *   - Frame print as optional and timing-dependent.
+ *   - Lead with keepsake + proof-before-print trust while print is viable.
+ *   - Frame digital as a timing safety valve.
  *   - Never guarantee delivery; never promise a printed book by Father's Day.
  *   - No likeness guarantees.
  */
 export const FATHERS_DAY_OFFER = {
   eyebrow: "Father's Day gift",
-  headline: "A Father's Day gift with no shipping risk.",
+  headline: "Give Dad a story only your family could tell.",
   digitalLead:
-    "The Digital PDF is the safest Father's Day pick. We email your proof first (usually within 2 business days); once you approve, the high-resolution book is delivered the same day — no printing or shipping, so no carrier timing risk. Print it at home, read it on any screen, or share it instantly.",
+    "Start with a personalized proof book starring your child and the dad or grandpa they love. You review the full proof first, ask for changes if needed, and we only print once you approve.",
   printOptional:
-    "Want a printed keepsake too? Add a softcover or hardcover as an optional upgrade. Printed books ship after proof approval, and arrival depends on the order-by date and your carrier, so we don't promise a printed book will arrive by Father's Day.",
+    "Order early if you want a printed keepsake for Father's Day. If timing gets tight, choose digital so there is still something meaningful to open on the day, with print available after approval.",
   proofNote:
-    'Every order includes a full digital proof before anything prints, human story and art review, and no blind hardcover order.',
-  ctaLabel: 'Start the digital book',
-  ctaHref: '/checkout?format=digital',
+    'Proofs are usually ready within 2 business days. No printed book is sent to production until you approve the proof.',
+  ctaLabel: "Create Dad's book",
+  ctaHref: '/checkout',
 } as const;

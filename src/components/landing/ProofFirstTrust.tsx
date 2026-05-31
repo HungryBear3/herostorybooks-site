@@ -44,7 +44,7 @@ const proofArtifacts = [
 const trustFacts = [
   ['Proof before print', 'You review the whole book before a physical copy is made.'],
   ['Revisions included', 'Story wording, scene details, and art notes can be fixed before approval.'],
-  ['Private photos', 'Photos are used to make and support the order, not sold or used to train AI.'],
+  ['Private photos', 'Photos are used to make and support the order, not sold or reused for unrelated projects.'],
   ['Stripe checkout', 'Payment is handled securely through Stripe.'],
 ] as const;
 

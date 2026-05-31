@@ -18,24 +18,24 @@ const plans = [
       'Personalized digital storybook PDF',
       'Read on any device',
       'Print at home anytime',
-      'Digital proof usually ready within 2 business days',
+      'Safest late-window Father’s Day option',
     ],
-    popular: true,
-    badge: 'Father’s Day Pick',
+    popular: false,
     cta: 'Choose Digital',
   },
   {
     id: 'classic',
     title: 'Classic softcover',
     price: '$44.99',
-    description: 'Softcover keepsake with digital preview',
+    description: 'Softcover keepsake with proof review',
     features: [
       'Premium softcover printed book',
       'Free shipping included for US orders',
       'Digital preview approval before print',
       'Digital PDF included',
     ],
-    popular: false,
+    popular: true,
+    badge: 'Popular Gift',
     cta: 'Choose Classic',
   },
   {
@@ -48,7 +48,7 @@ const plans = [
       'Free shipping included for US orders',
       'Digital preview approval before print',
       'Digital PDF included',
-      'Best for special gifts and keepsakes',
+      'Most gifted keepsake finish',
     ],
     popular: false,
     cta: 'Choose Premium',
@@ -86,7 +86,7 @@ export function Pricing() {
             className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold"
             style={{ backgroundColor: 'rgba(166,76,76,0.10)', color: '#1f1a16', border: '1px solid rgba(166,76,76,0.25)' }}
           >
-            Proof approval included before print · Free shipping included for US orders on physical books
+            Proof approval before print · Free shipping included for US orders on physical books
           </div>
         </motion.div>
 

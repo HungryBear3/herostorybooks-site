@@ -9,8 +9,11 @@ type Props = {
   fulfillmentStatus: string;
   alreadyShipped: boolean;
   hasProof: boolean;
+  hasArtifact: boolean;
   isFailed: boolean;
   paymentPaid: boolean;
+  qaPassAt: string;
+  qaPassBy: string;
   currentTrackingNumber: string;
   currentTrackingUrl: string;
 };
@@ -22,6 +25,13 @@ export default function OrderDetailActions(props: Props) {
   const [err, setErr] = useState<string | null>(null);
   const [tn, setTn] = useState(props.currentTrackingNumber);
   const [tu, setTu] = useState(props.currentTrackingUrl);
+  const [qa, setQa] = useState({
+    storyReviewed: false,
+    imagesReviewed: false,
+    proofArtifactReviewed: false,
+    customerSafe: false,
+    noPrintRelease: false,
+  });
 
   async function call(action: string, path: string, body?: unknown, confirmMsg?: string) {
     if (confirmMsg && !confirm(confirmMsg)) return;
@@ -80,6 +90,48 @@ export default function OrderDetailActions(props: Props) {
           </>
         )}
       </div>
+
+      {props.fulfillmentStatus === 'awaiting_qa' && props.paymentPaid && props.hasArtifact && (
+        <div className="pt-4 border-t border-gray-100 space-y-3">
+          <div>
+            <p className="text-xs uppercase tracking-wider text-gray-500">QA release</p>
+            <p className="mt-1 text-xs text-gray-500">
+              Records positive human QA, then sends the customer proof/digital email. Print release stays separate.
+            </p>
+          </div>
+          <div className="grid gap-2 text-xs text-gray-700 sm:grid-cols-2">
+            {[
+              ['storyReviewed', 'Story reviewed'],
+              ['imagesReviewed', 'Images reviewed'],
+              ['proofArtifactReviewed', 'PDF/proof artifact reviewed'],
+              ['customerSafe', 'Safe for customer release'],
+              ['noPrintRelease', 'No print release side effect'],
+            ].map(([key, label]) => (
+              <label key={key} className="flex items-center gap-2 rounded border border-gray-100 px-2 py-1.5">
+                <input
+                  type="checkbox"
+                  checked={qa[key as keyof typeof qa]}
+                  onChange={(e) => setQa((prev) => ({ ...prev, [key]: e.target.checked }))}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+          <button disabled={busy !== null}
+                  onClick={() => call('qa-pass', `/api/admin/orders/${props.orderId}/qa-pass`,
+                    { qaPassBy: 'admin', checklist: qa },
+                    `Approve ${props.orderId} for customer proof/digital release? This sends the customer email but does not release print.`)}
+                  className="px-3 py-2 text-xs rounded-md font-semibold bg-forest text-white disabled:opacity-50">
+            {busy === 'qa-pass' ? 'Releasing…' : 'Approve for customer proof release'}
+          </button>
+        </div>
+      )}
+
+      {props.qaPassAt && (
+        <p className="text-xs text-forest bg-forest/10 rounded px-3 py-2">
+          QA passed by {props.qaPassBy || 'admin'} at {props.qaPassAt}.
+        </p>
+      )}
 
       {props.isPrint && !props.alreadyShipped && (
         <div className="pt-4 border-t border-gray-100 space-y-3">

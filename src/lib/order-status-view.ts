@@ -90,7 +90,7 @@ function enrichDigital(
 
   if (fulfillment === 'awaiting_qa' && order.storyArtifactUrl) {
     view.headline = `${order.childName}'s storybook is being reviewed`;
-    view.subhead = 'Your personalized PDF has been generated. Our team is checking it before delivery.';
+    view.subhead = 'Your book is being personalized and hand-reviewed before we send your proof.';
     view.tone = 'neutral';
   } else if (fulfillment === 'complete' && order.storyArtifactUrl) {
     view.headline = `${order.childName}'s storybook is ready`;
@@ -152,7 +152,7 @@ function enrichPrint(
     view.tone = 'neutral';
   } else if (fulfillment === 'awaiting_qa' && order.storyArtifactUrl) {
     view.headline = `${order.childName}'s proof is being reviewed`;
-    view.subhead = 'Your proof has been generated. Our team is checking the story, images, and print files before sending it to you.';
+    view.subhead = 'Your book is being personalized and hand-reviewed before we send your proof.';
     view.tone = 'neutral';
     view.needsAction = false;
   } else if (fulfillment === 'proof_ready' && order.storyArtifactUrl) {
@@ -227,7 +227,7 @@ function buildDigitalTimeline(order: OrderRecord): TimelineStep[] {
       'Will start once payment is confirmed.', creatingState),
     step('ready', 'Ready to download',
       readyState === 'done' ? 'Your PDF is ready. Check your email.' :
-      readyState === 'active' ? 'Our team is checking the PDF before delivery.' :
+      readyState === 'active' ? 'Your book is being personalized and hand-reviewed before we send your proof.' :
       'We will email your PDF and surface a download button here.', readyState),
   ];
 }
@@ -264,7 +264,7 @@ function buildPrintTimeline(order: OrderRecord): TimelineStep[] {
       'Will start once payment is confirmed.', creatingState),
     step('proof', 'Proof approval',
       proofState === 'done' ? 'Proof approved — moving to print.' :
-      f === 'awaiting_qa' ? 'Our team is checking your proof before sending it for review.' :
+      f === 'awaiting_qa' ? 'Your book is being personalized and hand-reviewed before we send your proof.' :
       proofState === 'active' ? 'Your proof is ready to review and approve.' :
       'We will email a digital proof for you to approve before printing.', proofState),
     step('production', 'In production',

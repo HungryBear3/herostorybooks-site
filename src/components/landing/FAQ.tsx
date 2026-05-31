@@ -4,9 +4,9 @@ import { motion } from 'framer-motion';
 
 const faqs = [
   {
-    question: 'How does the AI personalization work?',
+    question: 'How does the personalization work?',
     answer:
-      'Our AI analyzes the photo you upload and generates custom illustrations that look like your child. It then weaves their name, interests, and details throughout the story to create a truly unique book.',
+      'You share a child photo, their name, interests, and the family details that matter. We use those details to create a personalized storybook proof, then review it by hand before anything is released.',
   },
   {
     question: 'What photos work best?',
@@ -16,7 +16,7 @@ const faqs = [
   {
     question: 'How long does delivery take?',
     answer:
-      'Digital PDFs are delivered after you approve your proof, usually the same day. Printed softcover and hardcover books are professionally printed after approval and ship in 5-7 business days via standard shipping.',
+      'Digital PDFs are delivered after you approve your proof. Printed softcover and hardcover books are professionally printed after approval and ship in 5-7 business days via standard shipping.',
   },
   {
     question: 'Can I customize the story theme?',
@@ -26,7 +26,7 @@ const faqs = [
   {
     question: "What's your refund policy?",
     answer:
-      'We offer a full 100% refund within 7 days of purchase, no questions asked. For printed books, we also offer a free reprint if there are any quality issues.',
+      'We want the proof to be right before anything prints. If something is not right with your order, contact us and we will work with you to make it good under the current policy.',
   },
   {
     question: 'Is this good for a Father\'s Day gift?',

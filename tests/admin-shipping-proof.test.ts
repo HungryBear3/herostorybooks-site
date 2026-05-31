@@ -10,6 +10,7 @@ import {
   markOrderShipped,
   resendProofEmail,
   manuallyApproveProof,
+  releaseOrderAfterQa,
   applyLuluStatusUpdate,
 } from '../src/lib/admin-actions.ts';
 
@@ -122,10 +123,114 @@ test('resendProofEmail: proof_ready state → ok (email skipped without key)', a
       fulfillmentStatus: 'proof_ready',
       storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
       proofApprovalToken: 'tok_abc',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
     }, 'ord_proof_ready');
 
     const r = await resendProofEmail('ord_proof_ready', 'https://h.com');
     assert.equal(r.ok, true);
+  } finally { cleanup(dir); }
+});
+
+// ── releaseOrderAfterQa ──────────────────────────────────────────────────────
+
+const COMPLETE_CHECKLIST = {
+  storyReviewed: true,
+  imagesReviewed: true,
+  proofArtifactReviewed: true,
+  customerSafe: true,
+  noPrintRelease: true,
+};
+
+test('releaseOrderAfterQa: rejects incomplete checklist', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'awaiting_qa',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+    }, 'ord_qa_incomplete');
+
+    const r = await releaseOrderAfterQa('ord_qa_incomplete', {
+      qaPassBy: 'ops',
+      checklist: { storyReviewed: true },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 400);
+
+    const after = await getOrder('ord_qa_incomplete');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
+    assert.equal(after?.qaPassAt, undefined);
+  } finally { cleanup(dir); }
+});
+
+test('releaseOrderAfterQa: digital awaiting_qa records QA and sends delivery email', async () => {
+  const dir = makeTmp();
+  try {
+    let emailCalls = 0;
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'awaiting_qa',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+    }, 'ord_qa_digital');
+
+    const r = await releaseOrderAfterQa('ord_qa_digital', {
+      qaPassBy: 'ops@example.com',
+      checklist: COMPLETE_CHECKLIST,
+    }, {
+      now: () => '2026-05-31T21:00:00.000Z',
+      sendDigitalDeliveryEmail: async (_order, options) => {
+        emailCalls += 1;
+        assert.equal(options.pdfUrl, 'https://cdn.example.com/book.pdf');
+      },
+    });
+
+    assert.equal(r.ok, true);
+    assert.equal(emailCalls, 1);
+    const after = await getOrder('ord_qa_digital');
+    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.qaPassAt, '2026-05-31T21:00:00.000Z');
+    assert.equal(after?.qaPassBy, 'ops@example.com');
+    assert.equal(after?.auditEvents?.at(-1)?.type, 'qa_pass_recorded');
+  } finally { cleanup(dir); }
+});
+
+test('releaseOrderAfterQa: print awaiting_qa creates token and sends proof email without print release', async () => {
+  const dir = makeTmp();
+  try {
+    let emailCalls = 0;
+    await seed({
+      bookFormat: 'classic',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'awaiting_qa',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+    }, 'ord_qa_print');
+
+    const r = await releaseOrderAfterQa('ord_qa_print', {
+      qaPassBy: 'ops',
+      checklist: COMPLETE_CHECKLIST,
+    }, {
+      now: () => '2026-05-31T21:05:00.000Z',
+      createProofToken: () => 'tok_qa_release',
+      getBaseUrl: () => 'https://herostorybooks.com',
+      sendProofReadyEmail: async (_order, options) => {
+        emailCalls += 1;
+        assert.equal(options.proofUrl, 'https://cdn.example.com/proof.pdf');
+        assert.equal(options.reviewUrl, 'https://herostorybooks.com/review/ord_qa_print?token=tok_qa_release');
+      },
+    });
+
+    assert.equal(r.ok, true);
+    assert.equal(emailCalls, 1);
+    const after = await getOrder('ord_qa_print');
+    assert.equal(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.status, 'preview_ready');
+    assert.equal(after?.proofApprovalToken, 'tok_qa_release');
+    assert.equal(after?.printJobId, undefined);
+    assert.equal(after?.printJobStatus, undefined);
+    assert.equal(after?.qaPassAt, '2026-05-31T21:05:00.000Z');
   } finally { cleanup(dir); }
 });
 

@@ -75,19 +75,18 @@ test('honest copy: never promises specific delivery', () => {
   }
 });
 
-test('offer copy leads digital-first', () => {
-  // Digital must be the lead pick, framed as same-day-after-approval / no shipping risk.
-  assert.match(FATHERS_DAY_OFFER.digitalLead, /Digital PDF/);
-  assert.match(FATHERS_DAY_OFFER.digitalLead, /no printing or shipping/i);
-  assert.match(FATHERS_DAY_OFFER.digitalLead, /no carrier timing risk/i);
-  // CTA routes straight to the digital format at checkout.
-  assert.match(FATHERS_DAY_OFFER.ctaHref, /format=digital/);
+test('offer copy leads proof-first keepsake positioning', () => {
+  // Print remains the keepsake hero while the safe order window is open.
+  assert.match(FATHERS_DAY_OFFER.headline, /story only your family/i);
+  assert.match(FATHERS_DAY_OFFER.digitalLead, /personalized proof book/i);
+  assert.match(FATHERS_DAY_OFFER.digitalLead, /proof/i);
+  assert.match(FATHERS_DAY_OFFER.ctaHref, /checkout/);
 });
 
-test('offer frames print as optional and never promised by Father\'s Day', () => {
-  assert.match(FATHERS_DAY_OFFER.printOptional, /optional/i);
-  // Must explicitly decline to promise a printed book by the holiday.
-  assert.match(FATHERS_DAY_OFFER.printOptional, /don'?t promise/i);
+test('offer frames digital as late-window safety valve', () => {
+  assert.match(FATHERS_DAY_OFFER.printOptional, /Order early/i);
+  assert.match(FATHERS_DAY_OFFER.printOptional, /timing gets tight/i);
+  assert.match(FATHERS_DAY_OFFER.printOptional, /digital/i);
 });
 
 test('offer copy avoids guarantees and likeness promises', () => {

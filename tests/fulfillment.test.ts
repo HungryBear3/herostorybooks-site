@@ -195,6 +195,57 @@ test('paid digital order reaches awaiting_qa with storyArtifactUrl set', async (
   }
 });
 
+test('paid digital order without qaPassAt does not send digital delivery email', async () => {
+  const dir = makeTmpDir();
+  try {
+    let emailCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      sendDigitalDeliveryEmail: async () => { emailCalls += 1; },
+    };
+    const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital', qaPassAt: null }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
+    assert.equal(emailCalls, 0, 'digital delivery email must not send without QA pass');
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('paid digital order with qaPassAt sends digital delivery email after artifact persistence', async () => {
+  const dir = makeTmpDir();
+  try {
+    let emailCalls = 0;
+    let emailedPdfUrl = '';
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      sendDigitalDeliveryEmail: async (_order, options) => {
+        emailCalls += 1;
+        emailedPdfUrl = options.pdfUrl;
+      },
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'digital',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'qa-operator',
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.status, 'preview_ready');
+    assert.equal(emailCalls, 1, 'digital delivery email should send after QA pass');
+    assert.equal(emailedPdfUrl, after?.storyArtifactUrl);
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
 test('digital fulfillment final write preserves proof audit event and page artifacts together', async () => {
   const dir = makeTmpDir();
   try {
@@ -224,9 +275,13 @@ test('digital fulfillment does not set proofApprovalToken', async () => {
 
 test('source-level: automatic fulfillment does not send customer emails before QA release', () => {
   const src = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(src, /sendDigitalDeliveryEmail/);
-  assert.doesNotMatch(src, /sendProofReadyEmail/);
-  assert.match(src, /fulfillmentStatus:\s*'awaiting_qa'/);
+  assert.match(src, /hasQaPass\(order\)/);
+  assert.match(src, /if \(!qaPassed\)/);
+  assert.match(src, /awaiting_qa/);
+  assert.match(src, /sendDigitalDeliveryEmail/);
+  assert.match(src, /sendProofReadyEmail/);
+  assert.match(src, /fulfillmentStatus:\s*qaPassed\s*\?\s*'complete'\s*:\s*'awaiting_qa'/);
+  assert.match(src, /fulfillmentStatus:\s*qaPassed\s*\?\s*'proof_ready'\s*:\s*'awaiting_qa'/);
 });
 
 // ── Print fulfillment — proof flow ────────────────────────────────────────────
@@ -245,6 +300,62 @@ test('paid print order reaches awaiting_qa without proofApprovalToken', async ()
     assert.equal(after?.printInteriorMd5, '9438d3bf30c74a06e6be381d2632a06e');
     assert.equal(after?.printInteriorPageCount, 32);
     assert.equal(after?.printTitle, MOCK_STORY.title);
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('paid print order without qaPassAt does not send proof-ready email', async () => {
+  const dir = makeTmpDir();
+  try {
+    let emailCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      sendProofReadyEmail: async () => { emailCalls += 1; },
+    };
+    const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'classic', qaPassAt: null }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
+    assert.ok(!after?.proofApprovalToken);
+    assert.equal(emailCalls, 0, 'proof-ready email must not send without QA pass');
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('paid print order with qaPassAt reaches proof_ready and sends proof-ready email', async () => {
+  const dir = makeTmpDir();
+  try {
+    let emailCalls = 0;
+    let emailedReviewUrl = '';
+    let emailedProofUrl = '';
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      sendProofReadyEmail: async (_order, options) => {
+        emailCalls += 1;
+        emailedReviewUrl = options.reviewUrl;
+        emailedProofUrl = options.proofUrl;
+      },
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'qa-operator',
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.status, 'preview_ready');
+    assert.ok(after?.proofApprovalToken, 'QA-passed print proof should expose review token');
+    assert.equal(emailCalls, 1, 'proof-ready email should send after QA pass');
+    assert.match(emailedReviewUrl, new RegExp(`/review/${order.id}\\?token=`));
+    assert.equal(emailedProofUrl, after?.storyArtifactUrl);
   } finally {
     cleanupTmpDir(dir);
   }

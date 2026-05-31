@@ -72,9 +72,11 @@ test('digital order: awaiting_qa with artifact → neutral review state and no d
   );
   assert.equal(view.tone, 'neutral');
   assert.match(view.headline, /reviewed/i);
+  assert.equal(view.subhead, 'Your book is being personalized and hand-reviewed before we send your proof.');
   assert.equal(view.primaryAction, undefined);
   const ready = view.timeline.find(s => s.id === 'ready');
   assert.equal(ready?.state, 'active');
+  assert.equal(ready?.description, 'Your book is being personalized and hand-reviewed before we send your proof.');
 });
 
 test('digital order in-progress: generating_images → active creating step', () => {
@@ -145,11 +147,12 @@ test('print order: awaiting_qa with proof artifact → neutral review state and 
     }),
   );
   assert.equal(view.tone, 'neutral');
+  assert.equal(view.subhead, 'Your book is being personalized and hand-reviewed before we send your proof.');
   assert.equal(view.needsAction, false);
   assert.equal(view.primaryAction, undefined);
   const proof = view.timeline.find(s => s.id === 'proof');
   assert.equal(proof?.state, 'active');
-  assert.match(proof?.description ?? '', /checking/i);
+  assert.equal(proof?.description, 'Your book is being personalized and hand-reviewed before we send your proof.');
 });
 
 test('print order: in production → success tone, proof done, production active', () => {

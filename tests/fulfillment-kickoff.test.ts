@@ -224,14 +224,18 @@ test('scheduler-5: source-level — direct fulfillmentStatus=complete writes are
   // caught immediately.
   const src = readFileSync('src/lib/fulfillment.ts', 'utf8');
   const completeAssignments = src.match(/fulfillmentStatus:\s*['"]complete['"]/g) ?? [];
-  // The two known fulfillment-pipeline sites: runDigitalFulfillment final
-  // write, runPrintFulfillment final write.
-  assert.ok(completeAssignments.length >= 2, `expected at least 2 fulfillmentStatus=complete writes in fulfillment.ts, got ${completeAssignments.length}`);
-  assert.ok(completeAssignments.length <= 2, `if a NEW completion path is added to fulfillment.ts, audit it before changing this assertion (got ${completeAssignments.length})`);
+  // The known fulfillment-pipeline site: QA-passed digital fulfillment final
+  // write. Print fulfillment now reaches proof_ready, not complete.
+  assert.equal(
+    completeAssignments.length,
+    1,
+    `if a NEW completion path is added to fulfillment.ts, audit it before changing this assertion (got ${completeAssignments.length})`,
+  );
 
-  // admin-actions.ts has TWO legitimate completion writes — both recover
+  // admin-actions.ts has two direct completion writes that recover
   // an order from fulfillmentStatus='delivery_email_failed' after a
-  // successful re-send of the customer email:
+  // successful re-send of the customer email. The QA-pass path uses an
+  // audited digital-vs-print ternary asserted below:
   //   1. retryOrderFulfillment short-circuit (smart retry)
   //   2. resendDigitalDelivery direct admin handle
   // Any additional `fulfillmentStatus: 'complete'` write here MUST be
@@ -242,8 +246,9 @@ test('scheduler-5: source-level — direct fulfillmentStatus=complete writes are
   assert.equal(
     adminCompleteAssignments.length,
     2,
-    `admin-actions.ts is allowed exactly 2 fulfillmentStatus=complete writes (delivery_email_failed → complete recovery), got ${adminCompleteAssignments.length}`,
+    `admin-actions.ts is allowed exactly 2 direct fulfillmentStatus=complete writes, got ${adminCompleteAssignments.length}`,
   );
+  assert.match(adminSrc, /releaseOrderAfterQa[\s\S]+fulfillmentStatus:\s*isDigital\s*\?\s*'complete'\s*:\s*'proof_ready'/);
 
   const ordersSrc = readFileSync('src/lib/orders.ts', 'utf8');
   assert.doesNotMatch(ordersSrc, /fulfillmentStatus:\s*['"]complete['"]/);
