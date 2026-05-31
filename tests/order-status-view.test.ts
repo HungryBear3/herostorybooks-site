@@ -61,6 +61,22 @@ test('digital order: complete with artifact → download CTA + success tone', ()
   assert.equal(ready?.state, 'done');
 });
 
+test('digital order: awaiting_qa with artifact → neutral review state and no download CTA', () => {
+  const view = buildOrderStatusView(
+    makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'digital',
+      fulfillmentStatus: 'awaiting_qa',
+      storyArtifactUrl: 'https://cdn.example.com/luna-storybook.pdf',
+    }),
+  );
+  assert.equal(view.tone, 'neutral');
+  assert.match(view.headline, /reviewed/i);
+  assert.equal(view.primaryAction, undefined);
+  const ready = view.timeline.find(s => s.id === 'ready');
+  assert.equal(ready?.state, 'active');
+});
+
 test('digital order in-progress: generating_images → active creating step', () => {
   const view = buildOrderStatusView(
     makeOrder({
@@ -117,6 +133,23 @@ test('print order: proof_ready with token → review approval CTA, not bare PDF'
   assert.equal(view.primaryAction?.href, '/review/ord_review_cta?token=tok_review_123');
   assert.match(view.primaryAction?.label ?? '', /review/i);
   assert.equal(view.secondaryAction?.href, 'https://cdn.example.com/luna-proof.pdf');
+});
+
+test('print order: awaiting_qa with proof artifact → neutral review state and no approval CTA', () => {
+  const view = buildOrderStatusView(
+    makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      fulfillmentStatus: 'awaiting_qa',
+      storyArtifactUrl: 'https://cdn.example.com/luna-proof.pdf',
+    }),
+  );
+  assert.equal(view.tone, 'neutral');
+  assert.equal(view.needsAction, false);
+  assert.equal(view.primaryAction, undefined);
+  const proof = view.timeline.find(s => s.id === 'proof');
+  assert.equal(proof?.state, 'active');
+  assert.match(proof?.description ?? '', /checking/i);
 });
 
 test('print order: in production → success tone, proof done, production active', () => {

@@ -88,7 +88,11 @@ function enrichDigital(
 ): OrderStatusView {
   view.timeline = buildDigitalTimeline(order);
 
-  if (fulfillment === 'complete' && order.storyArtifactUrl) {
+  if (fulfillment === 'awaiting_qa' && order.storyArtifactUrl) {
+    view.headline = `${order.childName}'s storybook is being reviewed`;
+    view.subhead = 'Your personalized PDF has been generated. Our team is checking it before delivery.';
+    view.tone = 'neutral';
+  } else if (fulfillment === 'complete' && order.storyArtifactUrl) {
     view.headline = `${order.childName}'s storybook is ready`;
     view.subhead = 'Your personalized PDF is waiting — check your email or download it below.';
     view.tone = 'success';
@@ -146,6 +150,11 @@ function enrichPrint(
     view.headline = 'Proof approved — preparing print submission';
     view.subhead = 'Thanks for approving. We are queuing the job with our print partner.';
     view.tone = 'neutral';
+  } else if (fulfillment === 'awaiting_qa' && order.storyArtifactUrl) {
+    view.headline = `${order.childName}'s proof is being reviewed`;
+    view.subhead = 'Your proof has been generated. Our team is checking the story, images, and print files before sending it to you.';
+    view.tone = 'neutral';
+    view.needsAction = false;
   } else if (fulfillment === 'proof_ready' && order.storyArtifactUrl) {
     const proofGate = evaluateProofSubmissionGate(order);
     if (!proofGate.allowed) {
@@ -202,8 +211,9 @@ function buildDigitalTimeline(order: OrderRecord): TimelineStep[] {
   const creatingState: TimelineStepState =
     f === 'complete' ? 'done' :
     f === 'generating_story' || f === 'generating_images' || f === 'building_pdf' ? 'active' :
+    f === 'awaiting_qa' ? 'done' :
     payment === 'paid' ? 'active' : 'pending';
-  const readyState: TimelineStepState = f === 'complete' ? 'done' : 'pending';
+  const readyState: TimelineStepState = f === 'complete' ? 'done' : f === 'awaiting_qa' ? 'active' : 'pending';
 
   return [
     step('received', 'Order received', 'We saved your order details.', 'done'),
@@ -217,6 +227,7 @@ function buildDigitalTimeline(order: OrderRecord): TimelineStep[] {
       'Will start once payment is confirmed.', creatingState),
     step('ready', 'Ready to download',
       readyState === 'done' ? 'Your PDF is ready. Check your email.' :
+      readyState === 'active' ? 'Our team is checking the PDF before delivery.' :
       'We will email your PDF and surface a download button here.', readyState),
   ];
 }
@@ -228,12 +239,12 @@ function buildPrintTimeline(order: OrderRecord): TimelineStep[] {
 
   const paymentState: TimelineStepState = payment === 'paid' ? 'done' : payment === 'failed' ? 'failed' : 'active';
 
-  const creatingDone = f === 'proof_ready' || f === 'proof_approved' || f === 'submitting_to_print' || f === 'complete';
+  const creatingDone = f === 'awaiting_qa' || f === 'proof_ready' || f === 'proof_approved' || f === 'submitting_to_print' || f === 'complete';
   const creatingActive = f === 'generating_story' || f === 'generating_images' || f === 'building_pdf';
   const creatingState: TimelineStepState = creatingDone ? 'done' : creatingActive ? 'active' : payment === 'paid' ? 'active' : 'pending';
 
   const proofDone = f === 'proof_approved' || f === 'submitting_to_print' || f === 'complete';
-  const proofState: TimelineStepState = proofDone ? 'done' : f === 'proof_ready' ? 'active' : 'pending';
+  const proofState: TimelineStepState = proofDone ? 'done' : f === 'proof_ready' ? 'active' : f === 'awaiting_qa' ? 'active' : 'pending';
 
   const productionDone = s === 'shipped';
   const productionActive = f === 'submitting_to_print' || s === 'print_in_production';
@@ -253,6 +264,7 @@ function buildPrintTimeline(order: OrderRecord): TimelineStep[] {
       'Will start once payment is confirmed.', creatingState),
     step('proof', 'Proof approval',
       proofState === 'done' ? 'Proof approved — moving to print.' :
+      f === 'awaiting_qa' ? 'Our team is checking your proof before sending it for review.' :
       proofState === 'active' ? 'Your proof is ready to review and approve.' :
       'We will email a digital proof for you to approve before printing.', proofState),
     step('production', 'In production',

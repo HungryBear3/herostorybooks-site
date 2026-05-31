@@ -3,6 +3,13 @@ export type FulfillmentStatus =
   | 'generating_story'
   | 'generating_images'
   | 'building_pdf'
+  /**
+   * Customer-facing artifacts have been generated and persisted under a paid
+   * order, but are held behind an internal positive-QA gate. The customer proof
+   * or digital delivery email must not be sent from the automatic fulfillment
+   * path while an order is in this state.
+   */
+  | 'awaiting_qa'
   | 'proof_ready'
   | 'proof_approved'
   | 'submitting_to_print'

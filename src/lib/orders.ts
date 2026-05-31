@@ -1245,6 +1245,7 @@ const PAYMENT_GATED_FULFILLMENT_STATUSES: FulfillmentStatus[] = [
   'generating_story',
   'generating_images',
   'building_pdf',
+  'awaiting_qa',
   'proof_ready',
   'proof_approved',
   'submitting_to_print',

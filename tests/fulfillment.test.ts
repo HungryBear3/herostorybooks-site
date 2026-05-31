@@ -181,13 +181,13 @@ test('updateFulfillmentState: paid webhook stamp is preserved with fulfillment w
 
 // ── Digital fulfillment ───────────────────────────────────────────────────────
 
-test('paid digital order reaches complete with storyArtifactUrl set', async () => {
+test('paid digital order reaches awaiting_qa with storyArtifactUrl set', async () => {
   const dir = makeTmpDir();
   try {
     const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital' }, dir);
     await triggerFulfillment(order.id, PASS_DEPS);
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
     assert.equal(after?.status, 'preview_ready');
     assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
   } finally {
@@ -222,17 +222,24 @@ test('digital fulfillment does not set proofApprovalToken', async () => {
   }
 });
 
+test('source-level: automatic fulfillment does not send customer emails before QA release', () => {
+  const src = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(src, /sendDigitalDeliveryEmail/);
+  assert.doesNotMatch(src, /sendProofReadyEmail/);
+  assert.match(src, /fulfillmentStatus:\s*'awaiting_qa'/);
+});
+
 // ── Print fulfillment — proof flow ────────────────────────────────────────────
 
-test('paid print order reaches proof_ready and gets proofApprovalToken', async () => {
+test('paid print order reaches awaiting_qa without proofApprovalToken', async () => {
   const dir = makeTmpDir();
   try {
     const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'classic' }, dir);
     await triggerFulfillment(order.id, PASS_DEPS);
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
     assert.equal(after?.status, 'preview_ready');
-    assert.ok(after?.proofApprovalToken, 'print order should have a proofApprovalToken');
+    assert.ok(!after?.proofApprovalToken, 'print order must not expose a proof token before QA release');
     assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
     assert.ok(after?.printInteriorArtifactUrl?.includes('-interior.pdf'));
     assert.equal(after?.printInteriorMd5, '9438d3bf30c74a06e6be381d2632a06e');
@@ -312,7 +319,7 @@ test('custom story digital order with template_after_openai_failure fails closed
   }
 });
 
-test('template-only print order may still reach proof_ready after template_after_openai_failure', async () => {
+test('template-only print order may still generate artifacts but waits for QA after template_after_openai_failure', async () => {
   const dir = makeTmpDir();
   try {
     const deps: FulfillmentDeps = {
@@ -330,17 +337,17 @@ test('template-only print order may still reach proof_ready after template_after
     await triggerFulfillment(order.id, deps);
 
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
     assert.equal(after?.status, 'preview_ready');
     assert.equal(after?.storyMeta?.source, 'template_after_openai_failure');
-    assert.ok(after?.proofApprovalToken);
+    assert.ok(!after?.proofApprovalToken);
     assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
   } finally {
     cleanupTmpDir(dir);
   }
 });
 
-test('custom print order with model story and complete art-direction passes proof release gate', async () => {
+test('custom print order with model story and complete art-direction generates artifacts and waits for QA', async () => {
   const dir = makeTmpDir();
   try {
     const deps: FulfillmentDeps = {
@@ -366,9 +373,9 @@ test('custom print order with model story and complete art-direction passes proo
     await triggerFulfillment(order.id, deps);
 
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
     assert.equal(after?.status, 'preview_ready');
-    assert.ok(after?.proofApprovalToken);
+    assert.ok(!after?.proofApprovalToken);
     assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
   } finally {
     cleanupTmpDir(dir);
@@ -496,8 +503,8 @@ test('single failure followed by success resolves correctly', async () => {
     const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital' }, dir);
     await triggerFulfillment(order.id, flakyDeps);
     const after = await getOrder(order.id);
-    // With only 1 failure, retry should succeed
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    // With only 1 failure, retry should succeed and hold for QA.
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
   } finally {
     cleanupTmpDir(dir);
   }
@@ -594,7 +601,7 @@ test('payment pending cannot produce complete fulfillment (readback gate)', asyn
   } finally { cleanupTmpDir(dir); }
 });
 
-test('paid update + queued kickoff: confirmed-paid persistence drives fulfillment to complete', async () => {
+test('paid update + queued kickoff: confirmed-paid persistence drives fulfillment to awaiting_qa', async () => {
   const dir = makeTmpDir();
   try {
     const order = await makeOrder(
@@ -603,7 +610,7 @@ test('paid update + queued kickoff: confirmed-paid persistence drives fulfillmen
     );
     await triggerFulfillment(order.id, PASS_DEPS);
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
     assert.equal(after?.paymentStatus, 'paid', 'paymentStatus must remain paid through fulfillment');
     assert.equal(after?.stripeSessionId, 'cs_test_paid_kickoff', 'stripeSessionId must persist through fulfillment');
     assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
@@ -625,7 +632,7 @@ test('digital fulfillment never calls submitPrint — Lulu must not be triggered
     await triggerFulfillment(order.id, luluTrap);
     assert.equal(submitPrintCalls, 0, 'submitPrint must NOT be called for digital orders');
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
     assert.ok(!after?.printJobId, 'digital order must not carry a print job id');
   } finally { cleanupTmpDir(dir); }
 });
@@ -647,13 +654,13 @@ test('digital fulfillment: duplicate triggerFulfillment is idempotent (no double
     };
     const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital' }, dir);
 
-    // First call — should kick off and complete.
+    // First call — should kick off and generate artifacts awaiting QA.
     await triggerFulfillment(order.id, counting);
     assert.equal(storyCalls, 1);
     assert.equal(imageCalls, 1);
     assert.equal(pdfCalls, 1);
 
-    // Replay — fulfillmentStatus is now 'complete'; trigger must skip.
+    // Replay — fulfillmentStatus is now 'awaiting_qa'; trigger must skip.
     await triggerFulfillment(order.id, counting);
     assert.equal(storyCalls, 1, 'story generation must not run twice');
     assert.equal(imageCalls, 1, 'image generation must not run twice');
@@ -704,7 +711,7 @@ test('triggerFulfillment returns started on a paid order', async () => {
     const result = await triggerFulfillment(order.id, PASS_DEPS);
     assert.equal(result.status, 'started');
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
   } finally { cleanupTmpDir(dir); }
 });
 

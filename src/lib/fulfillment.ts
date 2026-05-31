@@ -11,7 +11,7 @@ import { generateStoryImageResults } from './image-generator.ts';
 import type { GeneratedImageResult } from './image-generator.ts';
 import { buildPdf, buildPrintCoverPdf, buildPrintInteriorPdf, getPrintInteriorPageCount } from './pdf-builder.ts';
 import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';
-import { sendDigitalDeliveryEmail, sendProofReadyEmail, sendLifecycleEmail, sendOperatorFailureAlert } from './order-email.ts';
+import { sendLifecycleEmail, sendOperatorFailureAlert } from './order-email.ts';
 import {
   evaluateProofSubmissionGate,
   formatProofSubmissionGateReasons,
@@ -446,7 +446,6 @@ async function runWithRetry(
 async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps): Promise<void> {
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
-  const _getBaseUrl = deps.getBaseUrl ?? defaultGetBaseUrl;
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
@@ -572,13 +571,13 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   const pdfUrl = await _upload(order.id, pdfBuffer, filename);
 
   const proofGeneratedEvent = buildProofGeneratedAuditEvent(order, seededPageArtifacts.length);
-  // CRITICAL: include storyMeta explicitly in the final 'complete' patch.
+  // CRITICAL: include storyMeta explicitly in the final customer-artifact patch.
   // The 2026-05-15 Gemini preview proof test showed final persisted
   // storyMeta=null because (a) storyMeta was written in a separate prior
   // patch, and (b) a stale blob-read in this final write merged-in over
   // the storyMeta field. Explicit inclusion makes the merge deterministic.
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
-    fulfillmentStatus: 'complete',
+    fulfillmentStatus: 'awaiting_qa',
     status: 'preview_ready',
     storyArtifactUrl: pdfUrl,
     pageArtifacts: seededPageArtifacts,
@@ -590,33 +589,9 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   }));
 
-  // Delivery email runs AFTER the artifacts are durably persisted at
-  // fulfillmentStatus='complete'. If the email fails (e.g. Resend domain
-  // not verified), we record `delivery_email_failed` and keep
-  // `storyArtifactUrl` intact. We deliberately do NOT re-throw — that
-  // would push the whole order to `failed_manual_review` via runWithRetry
-  // and trigger a wasted regeneration of the story + images for an order
-  // whose PDF is already correct. Admin's `retryOrderFulfillment` knows
-  // how to recover by resending just the email.
-  try {
-    await sendDigitalDeliveryEmail(order, { pdfUrl });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[fulfillment] delivery email failed for ${order.id}: ${message}`);
-    // Preserve artifacts + storyMeta + pageArtifacts explicitly on the
-    // email-failure path. Email failure must never drop persisted proof
-    // state (this was the regression class the original
-    // fulfillment-email-failure tests were written to lock down — extend
-    // it to cover storyMeta here too).
-    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
-      fulfillmentStatus: 'delivery_email_failed',
-      fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
-      storyArtifactUrl: pdfUrl,
-      pageArtifacts: seededPageArtifacts,
-      storyMeta,
-      ...artDirectionPatch,
-    }));
-  }
+  // The automatic fulfillment path stops here. A later positive-QA release
+  // path may send the customer email, but generation itself must only persist
+  // the reviewable artifact and wait for an operator decision.
 }
 
 // ── Print fulfillment ─────────────────────────────────────────────────────────
@@ -625,7 +600,6 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _buildPrintInteriorPdf = deps.buildPrintInteriorPdf ?? buildPrintInteriorPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
-  const _getBaseUrl = deps.getBaseUrl ?? defaultGetBaseUrl;
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
@@ -728,13 +702,6 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   const proofUrl = await _upload(order.id, previewBuffer, `${safeSlug}-proof.pdf`);
   const interiorUrl = await _upload(order.id, interiorBuffer, `${safeSlug}-interior.pdf`);
 
-  const proofApprovalToken = crypto.randomBytes(24).toString('hex');
-  const baseUrl = _getBaseUrl();
-  // Primary CTA — the review surface drives per-page accept, proof ack, and the
-  // server-gated whole-book approval. The legacy /api/order/<id>/approve-proof
-  // endpoint still exists for backward compatibility but is no longer surfaced
-  // to customers.
-  const reviewUrl = `${baseUrl}/review/${order.id}?token=${proofApprovalToken}`;
   const interiorPageCount = getPrintInteriorPageCount(story, order);
 
   // seededPageArtifacts was already computed and persisted earlier (before
@@ -756,7 +723,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // storyMeta included explicitly so the proof_ready merge is
   // deterministic regardless of blob-read freshness.
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
-    fulfillmentStatus: 'proof_ready',
+    fulfillmentStatus: 'awaiting_qa',
     status: 'preview_ready',
     storyArtifactUrl: proofUrl,
     printInteriorArtifactUrl: interiorUrl,
@@ -769,35 +736,14 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     storyMeta,
     ...artDirectionPatch,
     reviewStatus: 'in_review',
-    proofApprovalToken,
+    proofApprovalToken: null,
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   }));
 
-  // Mirror of the digital path: proof artifacts are durably persisted at
-  // fulfillmentStatus='proof_ready'. If the proof-ready email fails we
-  // record `delivery_email_failed` (preserving the artifacts) instead of
-  // bubbling up to runWithRetry, which would burn retry attempts on
-  // already-correct PDFs and eventually move the order to
-  // `failed_manual_review`. Admin can resend the proof email separately.
-  try {
-    await sendProofReadyEmail(order, { reviewUrl, proofUrl });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[fulfillment] proof-ready email failed for ${order.id}: ${message}`);
-    // Email failure must not drop the proof artifacts or storyMeta —
-    // admin's email-only resend path depends on them being present.
-    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
-      fulfillmentStatus: 'delivery_email_failed',
-      fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
-      storyArtifactUrl: proofUrl,
-      printInteriorArtifactUrl: interiorUrl,
-      pageArtifacts: seededPageArtifacts,
-      storyMeta,
-      ...artDirectionPatch,
-    }));
-  }
+  // Hold print proofs behind positive internal QA. The release path that
+  // follows QA should create the proof token and send the proof-ready email.
 }
 
 // ── Print production (post-approval) ──────────────────────────────────────────
@@ -1061,7 +1007,7 @@ export async function triggerFulfillment(
 
   // fulfillmentStatus state machine:
   //   - undefined / 'not_started' / 'failed_manual_review' → eligible to (re)start
-  //   - 'complete' → already-done (idempotent skip)
+  //   - 'complete' / 'awaiting_qa' → already-generated (idempotent skip)
   //   - 'delivery_email_failed' → artifacts already exist; full pipeline
   //       re-run would burn money on a regenerated story. Treat as
   //       skipped_already_complete so callers (e.g. webhook re-deliveries)
@@ -1071,8 +1017,8 @@ export async function triggerFulfillment(
   //     'building_pdf', 'proof_ready', 'proof_approved',
   //     'submitting_to_print', 'print_in_production') → in-progress skip
   const cur = order.fulfillmentStatus;
-  if (cur === 'complete') {
-    console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=complete — skipping (idempotent)`);
+  if (cur === 'complete' || cur === 'awaiting_qa') {
+    console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=${cur} — skipping (idempotent)`);
     return { status: 'skipped_already_complete', fulfillmentStatus: cur };
   }
   if (cur === 'delivery_email_failed') {
