@@ -1293,7 +1293,7 @@ export function CheckoutForm() {
               {showFathersDayReminder && (
                 <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
                   <strong>Father&apos;s Day order-by date: {fathersDay.safeOrderDateLabel}.</strong>{" "}
-                  Digital arrives same-day after proof approval; printed books depend on proof timing and carrier delivery.
+                  Digital gives Dad something meaningful to open after proof approval; printed books depend on proof timing and carrier delivery.
                 </div>
               )}
               <div className="space-y-3">
@@ -1385,8 +1385,8 @@ export function CheckoutForm() {
                   Add a photo when you&apos;re ready
                 </h2>
                 <p className="text-sm text-[#695f54]">
-                  We use the photo as a reference for AI-assisted illustration,
-                  then hand-review the proof before anything prints.
+                  We use the photo as a reference for your child&apos;s illustrated
+                  character, then hand-review the proof before anything prints.
                 </p>
               </div>
               <div className="rounded-2xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-4 py-3 text-sm text-[#1f1a16]">
@@ -1507,7 +1507,7 @@ export function CheckoutForm() {
               )}
 
               <p className="text-xs text-center text-[#8a7b6a]">
-                🔒 Photos processed securely · Never used to train AI · Add it
+                🔒 Photos processed securely · Used only for your order · Add it
                 later if you need to
               </p>
             </section>

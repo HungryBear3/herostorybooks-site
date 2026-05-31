@@ -7,6 +7,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   getFathersDayCountdown,
@@ -100,4 +101,23 @@ test('offer copy avoids guarantees and likeness promises', () => {
     assert.doesNotMatch(f, /guarantee|guaranteed|definitely|certain/i);
     assert.doesNotMatch(f, /exact likeness|perfect likeness|looks exactly like/i);
   }
+});
+
+test('public Father\'s Day page metadata stays proof-first', () => {
+  const source = readFileSync('src/app/fathers-day/page.tsx', 'utf8');
+
+  assert.match(source, /proof book/i);
+  assert.match(source, /Review every page first/i);
+  assert.doesNotMatch(source, /Digital PDF is the safest Father.s Day route/i);
+  assert.doesNotMatch(source, /guaranteed|same-day/i);
+});
+
+test('checkout Father\'s Day and photo copy avoids speed and AI marketing language', () => {
+  const source = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+
+  assert.match(source, /meaningful to open after proof approval/i);
+  assert.match(source, /Used only for your order/i);
+  assert.doesNotMatch(source, /same-day/i);
+  assert.doesNotMatch(source, /AI-assisted illustration/i);
+  assert.doesNotMatch(source, /train AI/i);
 });

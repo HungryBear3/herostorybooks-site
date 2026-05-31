@@ -41,8 +41,8 @@ test('print plans promise preview approval before printing', () => {
   const printPlans = PUBLIC_PRICING_PLANS.filter((plan) => plan.id !== 'digital');
   assert.equal(printPlans.length, 2);
   for (const plan of printPlans) {
-    assert.match(plan.promise, /preview/i);
-    assert.match(plan.promise, /before it prints/i);
+    assert.match(plan.promise, /proof/i);
+    assert.match(plan.promise, /before (it )?prints/i);
   }
 });
 
@@ -59,6 +59,6 @@ test('premium plan is a hardcover keepsake edition without extra-copy bundle lan
   assert.match(premium!.description, /hardcover keepsake edition/i);
   assert.ok(premium!.features.some((feature) => /hardcover printed book/i.test(feature)));
   assert.ok(premium!.features.some((feature) => /digital pdf included/i.test(feature)));
-  assert.ok(premium!.features.some((feature) => /special gifts and keepsakes/i.test(feature)));
+  assert.ok(premium!.features.some((feature) => /gifted keepsake/i.test(feature)));
   assert.ok(premium!.features.every((feature) => !/extra softcover copies|extra copies/i.test(feature)));
 });

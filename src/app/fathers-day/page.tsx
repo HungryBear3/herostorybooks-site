@@ -13,7 +13,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: 'A Father’s Day storybook from them',
     description:
-      'Start a personalized proof book for Dad. Digital PDF is the safest Father’s Day route; printed books are optional after approval.',
+      'Start a personalized proof book for Dad. Review every page first, then approve digital or print when it feels right.',
     url: `${siteOrigin}/fathers-day`,
     images: [
       {
