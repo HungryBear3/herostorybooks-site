@@ -55,6 +55,9 @@ export default async function AdminCapacityPage({ searchParams }: PageProps) {
             <a className="rounded-md border border-gray-200 bg-white px-3 py-1.5 font-semibold text-forest" href="/admin/qa-room">
               QA Room
             </a>
+            <a className="rounded-md border border-gray-200 bg-white px-3 py-1.5 font-semibold text-forest" href="/admin/kill-switches">
+              Kill Switches
+            </a>
           </nav>
         </header>
 

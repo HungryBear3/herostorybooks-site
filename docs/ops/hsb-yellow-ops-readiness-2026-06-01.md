@@ -26,11 +26,14 @@ HSB can move from RED/HOLD to YELLOW only after:
 
 ## Kill Switches
 
-- Checkout pause: set `HSB_CHECKOUT_PAUSED=true`.
-- Print action hold: do not run owner print-go; keep orders at `proof_approved`.
-- Customer proof hold: do not run QA pass; keep orders at `awaiting_qa`.
-- Marketing hold: stop paid traffic, creator/gifting pushes, and new social CTAs.
-- Provider hold: disable any route that lacks explicit route/provenance evidence or partner SLA confidence.
+Admin console: `/admin/kill-switches`.
+
+- KS-1 checkout pause: enforced through `/api/order` before form parsing, upload, or Stripe Checkout session creation. The legacy env pause `HSB_CHECKOUT_PAUSED=true` still works separately.
+- KS-2 proof release hold: enforced through `releaseOrderAfterQa` before customer proof/digital email and before release state advance.
+- KS-3 owner print-go hold: enforced through `recordOwnerPrintGo` / `submitPrintAfterOwnerGo` before the durable owner print-go lock and before print submission.
+- KS-4 marketing hold: manual/status-only; stop paid traffic, creator/gifting pushes, and new social CTAs.
+- KS-5 provider hold: manual/status-only; generation routing still relies on route/provenance policy guards rather than one global provider toggle.
+- KS-6 print-provider hold: enforced through `submitPrintAfterOwnerGo` and `runPrintProduction` before Lulu/RPI provider submission.
 
 ## Required Owners
 
@@ -51,15 +54,17 @@ HSB can move from RED/HOLD to YELLOW only after:
 
 ## Manual Controls Not Yet Replaced By Console
 
-- KS-1 through KS-6 are documented split controls, not a single operator console.
+- KS-1, KS-2, KS-3, and KS-6 are implemented as enforced kill-switches in the admin console.
+- KS-4 marketing hold and KS-5 provider hold are visible manual/status-only controls because no single marketing or generation-provider integration boundary exists in this app.
 - Resend bounce monitoring is not implemented in this candidate.
-- For internal-only YELLOW-CANDIDATE, these are accepted as manual risks only if Alexy explicitly approves the G5 run with manual inbox/Resend/dashboard checks.
-- Before external paid traffic or creator/gifting traffic, implement KS console and bounce monitoring or record a separate explicit risk acceptance.
+- For internal-only YELLOW-CANDIDATE, Resend bounce monitoring remains a manual risk only if Alexy explicitly approves the G5 run with manual inbox/Resend/dashboard checks.
+- Before external paid traffic or creator/gifting traffic, implement bounce monitoring or record a separate explicit risk acceptance.
 
 ## Daily Checks While YELLOW
 
 Run at least once each business day and before any traffic push:
 
+- `/admin/kill-switches`: confirm KS-1/KS-2/KS-3/KS-6 enforced holds are clear or intentionally active; confirm KS-4/KS-5 manual holds match current traffic/provider posture.
 - `/admin/capacity`: paid today, QA in-flight, oldest proof age, median time-to-proof, revision round-trips, QA defect rate, print ack delay.
 - `/admin/qa-room`: no route/provenance blockers, no template fallback customer release, no unauthenticated QA action.
 - `/admin/orders`: all paid orders have clear status and latest audit event.

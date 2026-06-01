@@ -1552,6 +1552,8 @@ test('admin owner-go console: structured refusal-state block keyed by failureCod
     'CUSTOMER_APPROVAL_REQUIRED',
     'QA_NOT_PASSED',
     'OWNER_BY_REQUIRED',
+    'OWNER_PRINT_GO_HELD',
+    'PRINT_PROVIDER_HELD',
     'PAYMENT_NOT_CONFIRMED',
     'REFUNDED',
     'ORDER_NOT_FOUND',

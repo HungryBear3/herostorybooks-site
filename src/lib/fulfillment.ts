@@ -33,6 +33,7 @@ import {
   evaluatePrintGuard,
   evaluateReleaseGuard,
 } from './generation-manifest.ts';
+import { isKillSwitchActive, killSwitchRefusal } from './ops-kill-switches.ts';
 import { appendAuditEvent } from './orders.ts';
 
 // ── Per-page artifact selection (proof rebuild) ───────────────────────────────
@@ -1025,6 +1026,17 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
     );
   }
 
+  if (await isKillSwitchActive('print_provider_hold')) {
+    await appendAuditEvent(order.id, {
+      type: 'print_submission_blocked',
+      reason: 'PRINT_PROVIDER_HELD',
+      meta: {
+        source: 'runPrintProduction',
+      },
+    });
+    throw new Error(killSwitchRefusal('print_provider_hold', 'Print-provider hold'));
+  }
+
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'submitting_to_print' }));
 
   let hydratedOrder = order;
@@ -1373,6 +1385,8 @@ export type OwnerPrintGoFailureCode =
   | 'ALREADY_SUBMITTED'
   | 'ALREADY_SHIPPED'
   | 'OWNER_BY_REQUIRED'
+  | 'OWNER_PRINT_GO_HELD'
+  | 'PRINT_PROVIDER_HELD'
   | 'RACE_LOST'
   | 'PERSIST_FAILED';
 
@@ -1426,6 +1440,13 @@ export async function submitPrintAfterOwnerGo(
   if (!order) {
     return { ok: false, failureCode: 'ORDER_NOT_FOUND', error: 'Order not found' };
   }
+  if (await isKillSwitchActive('owner_print_go_hold')) {
+    return {
+      ok: false,
+      failureCode: 'OWNER_PRINT_GO_HELD',
+      error: killSwitchRefusal('owner_print_go_hold', 'Owner print-go hold'),
+    };
+  }
   if (order.paymentStatus !== 'paid') {
     return {
       ok: false,
@@ -1477,6 +1498,13 @@ export async function submitPrintAfterOwnerGo(
       ok: false,
       failureCode: 'WRONG_FULFILLMENT_STATUS',
       error: `Cannot record owner go: fulfillmentStatus=${order.fulfillmentStatus}`,
+    };
+  }
+  if (await isKillSwitchActive('print_provider_hold')) {
+    return {
+      ok: false,
+      failureCode: 'PRINT_PROVIDER_HELD',
+      error: killSwitchRefusal('print_provider_hold', 'Print-provider hold'),
     };
   }
 

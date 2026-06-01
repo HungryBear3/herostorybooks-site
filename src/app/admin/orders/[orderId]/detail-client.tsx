@@ -82,6 +82,16 @@ const OWNER_GO_REFUSAL_COPY: Record<
     safeState:
       'No print submission occurred. Type a non-empty operator id and retry.',
   },
+  OWNER_PRINT_GO_HELD: {
+    title: 'Owner print-go hold is active',
+    safeState:
+      'No print submission occurred. The kill-switch hold refused before the owner-go lock was written.',
+  },
+  PRINT_PROVIDER_HELD: {
+    title: 'Print-provider hold is active',
+    safeState:
+      'No print submission occurred. The kill-switch hold refused before any Lulu/RPI provider call.',
+  },
   PAYMENT_NOT_CONFIRMED: {
     title: 'Payment not confirmed',
     safeState: 'No print submission occurred. Payment must be paid first.',
