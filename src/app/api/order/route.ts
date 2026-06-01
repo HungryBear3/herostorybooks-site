@@ -367,6 +367,7 @@ export async function POST(request: Request) {
         orderId: order.id,
         ...(order.referralCode ? { referralCode: order.referralCode } : {}),
       },
+      allow_promotion_codes: true,
       line_items: [
         {
           price_data: {

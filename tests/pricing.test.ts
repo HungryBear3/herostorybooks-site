@@ -58,7 +58,7 @@ test('premium plan is a hardcover keepsake edition without extra-copy bundle lan
   assert.ok(premium);
   assert.match(premium!.description, /hardcover keepsake edition/i);
   assert.ok(premium!.features.some((feature) => /hardcover printed book/i.test(feature)));
-  assert.ok(premium!.features.some((feature) => /digital pdf included/i.test(feature)));
+  assert.ok(premium!.features.some((feature) => /proof approval before print/i.test(feature)));
   assert.ok(premium!.features.some((feature) => /gifted keepsake/i.test(feature)));
   assert.ok(premium!.features.every((feature) => !/extra softcover copies|extra copies/i.test(feature)));
 });

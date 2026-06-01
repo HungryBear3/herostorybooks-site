@@ -15,9 +15,9 @@ const values = [
     description: "Child's name, photo, and details woven into every page.",
   },
   {
-    icon: '⚡',
-    title: 'Fast & Easy',
-    description: 'Create a custom storybook in just 10 minutes.',
+    icon: '✓',
+    title: 'Proof First',
+    description: 'Review the full book and request changes before anything prints.',
   },
   {
     icon: '🎁',

@@ -20,10 +20,10 @@ function CheckoutPaused() {
         <section className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-8 text-center shadow-lg md:p-12">
           <div className="mb-4 text-6xl">🛠️</div>
           <p className="mb-3 text-xs font-bold uppercase tracking-[0.22em] text-[#a64c4c]">
-            Checkout paused
+            Queue full for today
           </p>
           <h1 className="mb-4 font-serif text-4xl text-[#1f1a16] md:text-5xl">
-            We&apos;re tuning the story magic
+            We&apos;ll reopen tomorrow
           </h1>
           <p className="mx-auto mb-6 max-w-xl text-lg leading-8 text-gray-700">
             {CHECKOUT_PAUSED_MESSAGE}

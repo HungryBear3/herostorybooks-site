@@ -57,10 +57,10 @@ test('buildDeliveryExpectation keeps proof-first reassurance for print formats',
   assert.equal(buildDeliveryExpectation('digital'), 'Digital proof usually ready within 2 business days; final PDF delivered after approval.');
   assert.match(
     buildDeliveryExpectation('classic'),
-    /Softcover ships in 5–7 business days.*Digital preview arrives first/i,
+    /Softcover ships 5–7 business days after proof approval.*Digital preview arrives first/i,
   );
   assert.match(
     buildDeliveryExpectation('premium'),
-    /Hardcover ships in 5–7 business days.*Digital preview arrives first/i,
+    /Hardcover ships 5–7 business days after proof approval.*Digital preview arrives first/i,
   );
 });

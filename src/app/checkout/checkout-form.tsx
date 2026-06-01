@@ -84,9 +84,9 @@ const FORMATS = [
     icon: "Softcover",
     price: "$44.99",
     priceNum: 44.99,
-    delivery: "Softcover ships in 5–7 business days",
+    delivery: "Softcover ships 5–7 business days after proof approval",
     deliveryDetail:
-      "32-page softcover · Free shipping included for US orders · Digital PDF included",
+      "32-page softcover · Free US shipping · You approve the proof before print",
   },
   {
     id: "premium",
@@ -94,9 +94,9 @@ const FORMATS = [
     icon: "Hardcover",
     price: "$64.99",
     priceNum: 64.99,
-    delivery: "Hardcover ships in 5–7 business days",
+    delivery: "Hardcover ships 5–7 business days after proof approval",
     deliveryDetail:
-      "32-page premium hardcover · Free shipping included for US orders · Digital PDF included",
+      "32-page premium hardcover · Free US shipping · You approve the proof before print",
   },
 ];
 
@@ -671,8 +671,8 @@ export function CheckoutForm() {
           <p className="text-[#695f54] mb-2">
             We saved your details for{" "}
             {form.childName
-              ? `${form.childName}'s magical story`
-              : "your magical story"}
+              ? `${form.childName}'s custom story`
+              : "your custom story"}
             . You&apos;ll finish at Stripe — your book starts once payment
             is complete.
           </p>
@@ -1466,7 +1466,7 @@ export function CheckoutForm() {
                     <span>✅</span>
                     <span className="font-medium">{form.photoFile?.name}</span>
                     <span className="text-[#35564d] text-xs ml-auto">
-                      Ready for magic
+                      Ready for proof
                     </span>
                   </div>
                 </div>

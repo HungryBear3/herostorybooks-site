@@ -27,7 +27,7 @@ export function HowItWorks() {
         >
           <h2 className="font-serif text-4xl md:text-5xl text-forest mb-4">How It Works</h2>
           <p className="text-gray-700 text-lg max-w-2xl mx-auto">
-            Follow these simple steps to create your magical storybook
+            Follow these simple steps to create and approve your custom storybook
           </p>
         </motion.div>
 

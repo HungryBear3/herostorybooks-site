@@ -58,9 +58,30 @@ Before production deploy:
    - admin order detail renders QA action for an `awaiting_qa` fixture only
 7. No live Stripe order, production order edit, webhook replay, Lulu/RPI call, or customer email test unless explicitly approved separately.
 
+## Father's Day Capacity Rule
+
+Warm launch should stay manually capped until proof QA and print fulfillment have several clean days of evidence.
+
+- **Hard ceiling:** 10 paid orders per day.
+- **Daily target:** 8 paid orders per day.
+- **Slowdown triggers:** in-flight QA queue above 6, median time-to-proof above 36 hours, or any single revision exceeding 2 round-trips.
+- **Slowdown action:** back off traffic, remove any express/timing implication from active copy, and hold non-essential changes.
+- **Pause triggers:** 10 paid orders in a day, QA defect rate above 20% across the latest 5 orders, Lulu/RPI acknowledgment delayed more than 24 hours, or any Stripe dispute/chargeback.
+- **Pause action:** set `HSB_CHECKOUT_PAUSED=true` so `/checkout` and `/api/order` stop new orders and show the queue-full notice.
+- **Post-June-5 rule:** print is closed by default. Keep digital-first copy live; enable print only with Alexy's explicit go and fresh print-partner SLA evidence for that order window.
+
+## Review Findings Resolved Locally
+
+- Price set is `Digital $14.99 / Classic $44.99 / Premium $64.99`; checkout/pricing/order records now align to that set.
+- Old 15-minute, AI-likeness, satisfaction-guarantee, and selectable Mother's Day checkout copy are blocked by regression tests.
+- Premium no longer claims extra-copy bundle language in pricing tests.
+- Print timing now says 5-7 business days after proof approval.
+- The checkout pause surface now says the queue is full and reopens tomorrow.
+- "Digital included with every print order" is intentionally not used until final digital delivery for print buyers is confirmed or implemented.
+
 ## Remaining Business Decisions
 
-- Set daily order cap: recommended 8/day until QA throughput proves clean.
+- Confirm the manual operator for the daily order count and `HSB_CHECKOUT_PAUSED` toggle.
 - Set print cutoff: recommended Friday, June 5, 2026 unless RPI/Lulu lead-time evidence improves.
-- Decide if digital-included-with-print copy is live-product true before saying it publicly.
+- Decide if final digital edition included with print is live-product true before saying it publicly.
 - Approve first 3 social assets before any post.

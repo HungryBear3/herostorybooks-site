@@ -77,7 +77,7 @@ test('buildOrderConfirmationEmail includes the promised order details and suppor
   assert.match(email.html, /support@herostorybooks.com/);
   assert.match(email.html, /digital preview.*before it prints/i);
   assert.match(email.text, /Premium/);
-  assert.match(email.text, /Hardcover ships in 5–7 business days/i);
+  assert.match(email.text, /Hardcover ships 5–7 business days after proof approval/i);
   assert.match(email.text, /support@herostorybooks.com/);
 });
 

@@ -16,7 +16,7 @@ const faqs = [
   {
     question: 'How long does delivery take?',
     answer:
-      'Digital PDFs are delivered after you approve your proof. Printed softcover and hardcover books are professionally printed after approval and ship in 5-7 business days via standard shipping.',
+      'We email your full digital proof, usually within 2 business days. Digital PDFs are delivered after you approve your proof. Printed softcover and hardcover books are professionally printed after approval and ship in 5–7 business days via standard shipping.',
   },
   {
     question: 'Can I customize the story theme?',
@@ -26,12 +26,22 @@ const faqs = [
   {
     question: "What's your refund policy?",
     answer:
-      'We want the proof to be right before anything prints. If something is not right with your order, contact us and we will work with you to make it good under the current policy.',
+      'Payment holds your spot in the queue. Digital orders are refundable until you approve the proof; print orders are refundable until you approve for print.',
   },
   {
     question: 'Is this good for a Father\'s Day gift?',
     answer:
-      "Absolutely. Personalized books make great birthday, holiday, graduation, and grandparent gifts. Physical books include a digital proof before printing so you can approve the keepsake first.",
+      "Order by Jun 5 for the best chance at Father's Day. Carriers vary, so we don't guarantee dates. If timing is tight, choose Digital PDF so there is still something meaningful to open.",
+  },
+  {
+    question: 'Will it actually look like my kid?',
+    answer:
+      "You see the full proof first. If the likeness isn't right, reply with changes — revisions are free, and nothing prints until you approve.",
+  },
+  {
+    question: 'Is my photo safe?',
+    answer:
+      'Used only to make your book and support your order. Not sold, not used to train models, and not shared.',
   },
 ];
 

@@ -117,7 +117,32 @@ test('checkout Father\'s Day and photo copy avoids speed and AI marketing langua
 
   assert.match(source, /meaningful to open after proof approval/i);
   assert.match(source, /Used only for your order/i);
+  assert.doesNotMatch(source, /\$29\.99|\$49\.99|\$79\.99/i);
+  assert.doesNotMatch(source, /15 minutes|~15/i);
+  assert.doesNotMatch(source, /Digital PDF included/i);
+  assert.doesNotMatch(source, /Mother.s Day Memory Book/i);
   assert.doesNotMatch(source, /same-day/i);
+  assert.doesNotMatch(source, /AI places|Real AI output/i);
   assert.doesNotMatch(source, /AI-assisted illustration/i);
+  assert.doesNotMatch(source, /satisfaction guarantee/i);
   assert.doesNotMatch(source, /train AI/i);
+});
+
+test('public print pricing avoids unsupported included-digital promise', () => {
+  const pricing = readFileSync('src/lib/pricing.ts', 'utf8');
+  const landingPricing = readFileSync('src/components/landing/Pricing.tsx', 'utf8');
+  const editorial = readFileSync('src/components/editorial-site.tsx', 'utf8');
+  const checkout = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  const landingFaq = readFileSync('src/components/landing/FAQ.tsx', 'utf8');
+  const valueProp = readFileSync('src/components/landing/ValueProposition.tsx', 'utf8');
+  const howItWorks = readFileSync('src/components/landing/HowItWorks.tsx', 'utf8');
+
+  for (const source of [pricing, landingPricing, editorial, checkout, landingFaq, valueProp, howItWorks]) {
+    assert.doesNotMatch(source, /Digital PDF included/i);
+    assert.doesNotMatch(source, /included digital edition/i);
+    assert.doesNotMatch(source, /PDF by email|15 minutes|just 10 minutes/i);
+    assert.doesNotMatch(source, /satisfaction guarantee|7-day satisfaction/i);
+    assert.doesNotMatch(source, /Ready for magic|magical story/i);
+    assert.doesNotMatch(source, /best chance to arrive/i);
+  }
 });

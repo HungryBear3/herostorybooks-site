@@ -652,10 +652,10 @@ export function buildDeliveryExpectation(bookFormat: string): string {
   }
 
   if (format === 'premium') {
-    return 'Hardcover ships in 5–7 business days — free shipping included. Digital preview arrives first so you can approve before it prints.';
+    return 'Hardcover ships 5–7 business days after proof approval — free shipping included. Digital preview arrives first so you can approve before it prints.';
   }
 
-  return 'Softcover ships in 5–7 business days — free shipping included. Digital preview arrives first so you can approve before it prints.';
+  return 'Softcover ships 5–7 business days after proof approval — free shipping included. Digital preview arrives first so you can approve before it prints.';
 }
 
 export function createOrderRecord(input: OrderInput, options: CreateOrderOptions = {}): OrderRecord {

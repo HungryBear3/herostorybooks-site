@@ -55,7 +55,7 @@ const DUMMY_ORDER: OrderRecord = {
   paymentStatus: 'pending',
   stripeSessionId: null,
   shippingAddress: null,
-  deliveryExpectation: 'Softcover ships in 5–7 business days',
+  deliveryExpectation: 'Softcover ships 5–7 business days after proof approval',
   createdAt: '2026-04-21T10:00:00Z',
   updatedAt: '2026-04-21T10:00:00Z',
 };
@@ -161,4 +161,9 @@ test('order route source: print checkout asks Stripe to collect shipping, digita
   assert.ok(printIdx > -1, 'route must branch on print format');
   assert.ok(shippingIdx > printIdx, 'shipping collection must be inside the print-format Checkout branch');
   assert.match(src, /allowed_countries:\s*\[\s*'US'/);
+});
+
+test('order route source: Stripe Checkout accepts promotion codes', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  assert.match(src, /allow_promotion_codes:\s*true/);
 });

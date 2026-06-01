@@ -39,5 +39,6 @@ test('order route checks pause before parsing form data or creating Stripe check
   assert.match(src, /CHECKOUT_PAUSED_MESSAGE/);
   assert.match(src, /CHECKOUT_PAUSED_CODE/);
   assert.equal(CHECKOUT_PAUSED_CODE, 'checkout_paused');
-  assert.match(CHECKOUT_PAUSED_MESSAGE, /Checkout is temporarily paused/);
+  assert.match(CHECKOUT_PAUSED_MESSAGE, /proof-review queue is full/i);
+  assert.match(CHECKOUT_PAUSED_MESSAGE, /check back tomorrow/i);
 });
