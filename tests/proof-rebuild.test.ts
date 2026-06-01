@@ -46,6 +46,20 @@ test('rebuildProofFromPageArtifacts: passes accepted/current URLs to PDF builder
     const order: OrderRecord = {
       ...base,
       paymentStatus: 'paid',
+      generationRouteDecision: {
+        route: 'api_disabled_template',
+        source: 'template',
+        model: 'template:Adventure',
+        decidedAt: '2026-06-01T12:00:00.000Z',
+        releasable: true,
+      },
+      auditEvents: [
+        {
+          at: '2026-06-01T12:00:00.000Z',
+          type: 'route_decision_recorded',
+          meta: { route: 'api_disabled_template', source: 'template', model: 'template:Adventure', releasable: true },
+        },
+      ],
       pageArtifacts: [
         pageFixture(0, {
           accepted: true,

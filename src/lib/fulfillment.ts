@@ -3,7 +3,7 @@ import { put } from '@vercel/blob';
 
 import { acquireOwnerPrintGoIntentLock, getOrder, getOrderPhotoUrl, isPrintFormat, updateFulfillmentState, withBlobNamespace } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
-import type { OrderRecord } from './orders.ts';
+import type { GenerationRouteDecision, OrderRecord, ReviewAuditEvent } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
 import { generateStory, generateStoryWithMeta } from './story-generator.ts';
 import type { StoryWithMeta } from './story-generator.ts';
@@ -181,6 +181,51 @@ function buildProofGeneratedAuditEvent(order: OrderRecord, pageCount: number) {
       bookFormat: order.bookFormat,
       pageCount,
     },
+  };
+}
+
+function buildGenerationRouteDecision(order: OrderRecord, storyMeta: StoryWithMeta['meta']): GenerationRouteDecision {
+  const route: GenerationRouteDecision['route'] = storyMeta.source === 'template_after_openai_failure'
+    ? 'template_fallback'
+    : storyMeta.source === 'template'
+      ? 'api_disabled_template'
+      : 'model_story';
+  const fallbackHeld = shouldFailClosedForStoryFallback(order, storyMeta);
+  return {
+    route,
+    source: storyMeta.source,
+    model: storyMeta.model,
+    decidedAt: storyMeta.generatedAt,
+    releasable: !fallbackHeld,
+    fallbackError: storyMeta.fallbackError ?? null,
+    reason: fallbackHeld ? 'custom_story_template_fallback_requires_manual_review' : null,
+  };
+}
+
+function buildRouteDecisionAuditEvent(decision: GenerationRouteDecision): ReviewAuditEvent {
+  return {
+    at: decision.decidedAt,
+    type: 'route_decision_recorded',
+    meta: {
+      route: decision.route,
+      source: decision.source,
+      model: decision.model,
+      releasable: decision.releasable,
+      fallbackError: decision.fallbackError ?? null,
+      reason: decision.reason ?? null,
+    },
+  };
+}
+
+function buildRouteDecisionPatch(
+  order: OrderRecord,
+  storyMeta: StoryWithMeta['meta'],
+): { generationRouteDecision: GenerationRouteDecision; auditEvents: ReviewAuditEvent[] } {
+  const generationRouteDecision = buildGenerationRouteDecision(order, storyMeta);
+  const routeDecisionEvent = buildRouteDecisionAuditEvent(generationRouteDecision);
+  return {
+    generationRouteDecision,
+    auditEvents: [...(order.auditEvents ?? []), routeDecisionEvent],
   };
 }
 
@@ -481,9 +526,13 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
   const artDirectionPatch = await buildArtDirectionPatch(order, story, storyMeta, deps);
-  // Persist storyMeta as soon as it's known so diagnostics can answer
-  // "which story path ran?" even before image gen completes.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta, ...artDirectionPatch }));
+  // Persist route/provenance as soon as story generation returns and before
+  // any image/PDF artifact can become releasable. This is G1's fail-closed
+  // marker: later artifact writes require both generationRouteDecision and a
+  // matching route_decision_recorded audit event.
+  const routePatch = buildRouteDecisionPatch(order, storyMeta);
+  const routeCarryPatch = { generationRouteDecision: routePatch.generationRouteDecision };
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta, ...routePatch, ...artDirectionPatch }));
   if (shouldFailClosedForStoryFallback(order, storyMeta)) {
     await failClosedForCustomStoryFallback(order, storyMeta);
     return;
@@ -494,12 +543,12 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // stale snapshot (taken before the storyMeta write fully landed), the
   // patch merge drops storyMeta — which is exactly what the 2026-05-15
   // Gemini preview proof test reproduced (final persisted storyMeta was
-  // null even though it was written here). Carry storyMeta forward in
-  // every later patch so the merge is deterministic regardless of
+  // null even though it was written here). Carry storyMeta + route decision forward
+  // in every later patch so the merge is deterministic regardless of
   // blob-read freshness. Defense-in-depth: also carry it through
   // delivery_email_failed so an email-side failure cannot drop it
   // either.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta, ...artDirectionPatch }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta, ...routeCarryPatch, ...artDirectionPatch }));
   // Build per-page prompts that LEAD with the frozen character anchor + identity
   // section + continuity rules + quality constraints. Initial generation now
   // goes through buildPagePrompt so it gets the same identity scaffolding the
@@ -567,7 +616,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // function dies before the proof PDF is built. The final updateFulfillmentState
   // below re-writes the same array (idempotent) plus the proof URL. storyMeta
   // carried forward to survive stale blob-readback (see comment above).
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta, ...artDirectionPatch }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta, ...routeCarryPatch, ...artDirectionPatch }));
 
   // Partial-failure gate (added after Rex 2026-05-15 rerun: Gemini per-page
   // http_4xx on pages 17–22 of 24). When ANY page failed image generation,
@@ -586,13 +635,14 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
       fulfillmentStatus: 'failed_manual_review',
       pageArtifacts: seededPageArtifacts,
       storyMeta,
+      ...routeCarryPatch,
       ...artDirectionPatch,
       fulfillmentLastError: summary.slice(0, 500),
     }));
     return;
   }
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta, ...artDirectionPatch }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta, ...routeCarryPatch, ...artDirectionPatch }));
   // Include cover image (first imageUrl) + per-page images
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
   const pdfBuffer = await _buildPdf(story, order, allUrls);
@@ -614,11 +664,12 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     storyArtifactUrl: pdfUrl,
     pageArtifacts: seededPageArtifacts,
     storyMeta,
+    ...routeCarryPatch,
     ...artDirectionPatch,
     reviewStatus: 'in_review',
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
-    auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
+    auditEvents: [...routePatch.auditEvents, proofGeneratedEvent],
   }));
 
   if (!qaPassed) {
@@ -686,7 +737,9 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
       storyArtifactUrl: pdfUrl,
       pageArtifacts: seededPageArtifacts,
       storyMeta,
+      ...routeCarryPatch,
       ...artDirectionPatch,
+      auditEvents: [...routePatch.auditEvents, proofGeneratedEvent],
     }));
   }
 }
@@ -703,7 +756,9 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
   const artDirectionPatch = await buildArtDirectionPatch(order, story, storyMeta, deps);
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta, ...artDirectionPatch }));
+  const routePatch = buildRouteDecisionPatch(order, storyMeta);
+  const routeCarryPatch = { generationRouteDecision: routePatch.generationRouteDecision };
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta, ...routePatch, ...artDirectionPatch }));
   if (shouldFailClosedForStoryFallback(order, storyMeta)) {
     await failClosedForCustomStoryFallback(order, storyMeta);
     return;
@@ -714,7 +769,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // write. The 2026-05-15 Gemini preview proof test reproduced the
   // dropped-storyMeta failure on the digital path; same risk applies
   // here.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta, ...artDirectionPatch }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta, ...routeCarryPatch, ...artDirectionPatch }));
   // Same identity-anchored prompt construction as the digital path — keeps the
   // same child consistent across all pages of the print book.
   const characterAnchor = story.characterDescription ?? null;
@@ -772,7 +827,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
         : [],
     };
   });
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta, ...artDirectionPatch }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta, ...routeCarryPatch, ...artDirectionPatch }));
 
   // Print path mirrors the digital partial-failure gate: if any page
   // failed image generation we must NOT build a proof PDF (and therefore
@@ -786,13 +841,14 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
       fulfillmentStatus: 'failed_manual_review',
       pageArtifacts: seededPageArtifacts,
       storyMeta,
+      ...routeCarryPatch,
       ...artDirectionPatch,
       fulfillmentLastError: summary.slice(0, 500),
     }));
     return;
   }
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta, ...artDirectionPatch }));
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta, ...routeCarryPatch, ...artDirectionPatch }));
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
   const previewBuffer = await _buildPdf(story, order, allUrls);
   const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
@@ -817,8 +873,9 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     ...order,
     pageArtifacts: seededPageArtifacts,
     storyMeta,
+    ...routeCarryPatch,
     ...artDirectionPatch,
-    auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
+    auditEvents: [...routePatch.auditEvents, proofGeneratedEvent],
   };
   const proofGate = evaluateProofSubmissionGate(gateOrder, { storyMeta });
   if (!proofGate.allowed) {
@@ -839,12 +896,13 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     printCoverMd5: null,
     pageArtifacts: seededPageArtifacts,
     storyMeta,
+    ...routeCarryPatch,
     ...artDirectionPatch,
     reviewStatus: 'in_review',
     proofApprovalToken,
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
-    auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
+    auditEvents: [...routePatch.auditEvents, proofGeneratedEvent],
   }));
 
   if (!qaPassed) {
@@ -904,7 +962,9 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
       printInteriorArtifactUrl: interiorUrl,
       pageArtifacts: seededPageArtifacts,
       storyMeta,
+      ...routeCarryPatch,
       ...artDirectionPatch,
+      auditEvents: [...routePatch.auditEvents, proofGeneratedEvent],
     }));
   }
 }

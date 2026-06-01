@@ -83,6 +83,33 @@ async function makeOrder(
     { childName: 'Luna', bookFormat: 'digital', email: 'luna@example.com' },
     { id: `ord_${Math.random().toString(36).slice(2, 10)}`, now: '2026-04-23T10:00:00Z' },
   );
+  const routeSeed = overrides.storyArtifactUrl && !overrides.generationRouteDecision
+    ? {
+        generationRouteDecision: {
+          route: 'manual_safe' as const,
+          source: 'manual' as const,
+          model: 'abby:manual-subscription',
+          decidedAt: '2026-05-31T19:00:00.000Z',
+          releasable: true,
+          fallbackError: null,
+          reason: null,
+        },
+        auditEvents: [
+          {
+            at: '2026-05-31T19:00:00.000Z',
+            type: 'route_decision_recorded' as const,
+            meta: {
+              route: 'manual_safe',
+              source: 'manual',
+              model: 'abby:manual-subscription',
+              releasable: true,
+              fallbackError: null,
+              reason: null,
+            },
+          },
+        ],
+      }
+    : {};
   const order: OrderRecord = {
     ...base,
     theme: 'dinosaur-discovery',
@@ -121,6 +148,7 @@ async function makeOrder(
         versionHistory: [],
       },
     ],
+    ...routeSeed,
     ...overrides,
   };
   await persistOrder(order);
@@ -188,6 +216,84 @@ test('updateFulfillmentState: refuses fulfillment/artifact advancement for unpai
   } finally { cleanupTmpDir(dir); }
 });
 
+test('G1 gate: releasable proof artifact writes require persisted route decision and route_decision_recorded audit', async () => {
+  const dir = makeTmpDir();
+  try {
+    const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital' }, dir);
+
+    await assert.rejects(
+      () => updateFulfillmentState(order.id, {
+        fulfillmentStatus: 'complete',
+        status: 'preview_ready',
+        storyArtifactUrl: 'https://cdn.example.com/no-route.pdf',
+      }),
+      /route decision/i,
+    );
+
+    await assert.rejects(
+      () => updateFulfillmentState(order.id, {
+        fulfillmentStatus: 'complete',
+        status: 'preview_ready',
+        storyArtifactUrl: 'https://cdn.example.com/no-route-audit.pdf',
+        generationRouteDecision: {
+          route: 'api_disabled_template',
+          source: 'template',
+          model: 'template:Adventure',
+          decidedAt: '2026-06-01T12:00:00.000Z',
+          releasable: true,
+        },
+      } as Partial<OrderRecord>),
+      /route_decision_recorded/i,
+    );
+
+    const updated = await updateFulfillmentState(order.id, {
+      fulfillmentStatus: 'complete',
+      status: 'preview_ready',
+      storyArtifactUrl: 'https://cdn.example.com/recorded-route.pdf',
+      generationRouteDecision: {
+        route: 'api_disabled_template',
+        source: 'template',
+        model: 'template:Adventure',
+        decidedAt: '2026-06-01T12:00:00.000Z',
+        releasable: true,
+      },
+      auditEvents: [
+        {
+          at: '2026-06-01T12:00:00.000Z',
+          type: 'route_decision_recorded',
+          meta: { route: 'api_disabled_template', source: 'template', model: 'template:Adventure', releasable: true },
+        },
+      ],
+    } as Partial<OrderRecord>);
+
+    assert.equal(updated?.storyArtifactUrl, 'https://cdn.example.com/recorded-route.pdf');
+    assert.equal((updated as OrderRecord & { generationRouteDecision?: { route?: string } })?.generationRouteDecision?.route, 'api_disabled_template');
+  } finally { cleanupTmpDir(dir); }
+});
+
+test('G1 gate: fulfillment persists route decision before artifact upload can make proof releasable', async () => {
+  const dir = makeTmpDir();
+  try {
+    const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital' }, dir);
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      uploadArtifact: async (orderId, _buffer, filename) => {
+        const beforeUpload = await getOrder(orderId);
+        assert.equal((beforeUpload as OrderRecord & { generationRouteDecision?: { route?: string } })?.generationRouteDecision?.route, 'model_story');
+        assert.ok(beforeUpload?.auditEvents?.some((event) => event.type === 'route_decision_recorded'), 'route_decision_recorded audit must exist before artifact upload');
+        return `https://cdn.example.com/${orderId}/${filename}`;
+      },
+    };
+
+    await triggerFulfillment(order.id, deps);
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
+    assert.equal((after as OrderRecord & { generationRouteDecision?: { route?: string } })?.generationRouteDecision?.route, 'model_story');
+    assert.ok(after?.auditEvents?.some((event) => event.type === 'route_decision_recorded'));
+    assert.ok(after?.auditEvents?.some((event) => event.type === 'proof_generated'));
+  } finally { cleanupTmpDir(dir); }
+});
+
 test('updateFulfillmentState: paid webhook stamp is preserved with fulfillment writes', async () => {
   const dir = makeTmpDir();
   try {
@@ -199,6 +305,20 @@ test('updateFulfillmentState: paid webhook stamp is preserved with fulfillment w
       fulfillmentStatus: 'complete',
       status: 'preview_ready',
       storyArtifactUrl: 'https://cdn.example.com/paid.pdf',
+      generationRouteDecision: {
+        route: 'api_disabled_template',
+        source: 'template',
+        model: 'template:Adventure',
+        decidedAt: '2026-06-01T12:00:00.000Z',
+        releasable: true,
+      },
+      auditEvents: [
+        {
+          at: '2026-06-01T12:00:00.000Z',
+          type: 'route_decision_recorded',
+          meta: { route: 'api_disabled_template', source: 'template', model: 'template:Adventure', releasable: true },
+        },
+      ],
     });
 
     const after = await getOrder(order.id);
@@ -284,7 +404,8 @@ test('digital fulfillment final write preserves proof audit event and page artif
     const after = await getOrder(order.id);
     assert.equal(after?.pageArtifacts?.length, MOCK_STORY.pages.length);
     assert.equal(after?.auditEvents?.filter((e) => e.type === 'proof_generated').length, 1);
-    assert.equal(after?.auditEvents?.[0]?.meta?.pageCount, MOCK_STORY.pages.length);
+    const proofEvent = after?.auditEvents?.find((e) => e.type === 'proof_generated');
+    assert.equal(proofEvent?.meta?.pageCount, MOCK_STORY.pages.length);
     assert.ok(after?.storyArtifactUrl?.includes('.pdf'));
   } finally {
     cleanupTmpDir(dir);
@@ -569,6 +690,20 @@ test('print order cannot enter print_in_production without proof approval', asyn
       fulfillmentStatus: 'proof_ready',
       storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
       proofApprovalToken: 'valid-token-abc',
+      generationRouteDecision: {
+        route: 'api_disabled_template',
+        source: 'template',
+        model: 'template:Adventure',
+        decidedAt: '2026-06-01T12:00:00.000Z',
+        releasable: true,
+      },
+      auditEvents: [
+        {
+          at: '2026-06-01T12:00:00.000Z',
+          type: 'route_decision_recorded',
+          meta: { route: 'api_disabled_template', source: 'template', model: 'template:Adventure', releasable: true },
+        },
+      ],
     }, dir);
 
     // Attempting to approve with wrong token should fail
@@ -637,6 +772,20 @@ test('Rex G3: valid customer token approves proof but does NOT submit to print (
       ],
       qaPassAt: '2026-05-31T20:30:00.000Z',
       qaPassBy: 'ops',
+      generationRouteDecision: {
+        route: 'api_disabled_template',
+        source: 'template',
+        model: 'template:Adventure',
+        decidedAt: '2026-06-01T12:00:00.000Z',
+        releasable: true,
+      },
+      auditEvents: [
+        {
+          at: '2026-06-01T12:00:00.000Z',
+          type: 'route_decision_recorded',
+          meta: { route: 'api_disabled_template', source: 'template', model: 'template:Adventure', releasable: true },
+        },
+      ],
     }, dir);
 
     const result = await approvePrintProof(order.id, 'valid-token-abc', depsWithCountedPrint);

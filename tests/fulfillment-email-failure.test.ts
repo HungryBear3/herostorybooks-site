@@ -57,6 +57,24 @@ async function makeDigitalOrder(
     { childName: 'Luna', bookFormat: 'digital', email: 'luna@example.com' },
     { id: `ord_${Math.random().toString(36).slice(2, 10)}`, now: '2026-05-12T10:00:00Z' },
   );
+  const routeSeed = overrides.storyArtifactUrl && !overrides.generationRouteDecision
+    ? {
+        generationRouteDecision: {
+          route: 'api_disabled_template' as const,
+          source: 'template' as const,
+          model: 'template:Adventure',
+          decidedAt: '2026-06-01T12:00:00.000Z',
+          releasable: true,
+        },
+        auditEvents: [
+          {
+            at: '2026-06-01T12:00:00.000Z',
+            type: 'route_decision_recorded' as const,
+            meta: { route: 'api_disabled_template', source: 'template', model: 'template:Adventure', releasable: true },
+          },
+        ],
+      }
+    : {};
   const order: OrderRecord = {
     ...base,
     paymentStatus: 'paid',
@@ -89,6 +107,7 @@ async function makeDigitalOrder(
         versionHistory: [],
       },
     ],
+    ...routeSeed,
     ...overrides,
   };
   await persistOrder(order);
@@ -166,6 +185,15 @@ test('digital delivery email failure preserves artifacts and records delivery_em
     `Expected storyArtifactUrl to be persisted, got ${persisted!.storyArtifactUrl}`,
   );
   assert.equal(persisted!.pageArtifacts?.length, MOCK_STORY.pages.length);
+  assert.equal(persisted!.generationRouteDecision?.route, 'model_story');
+  assert.ok(
+    persisted!.auditEvents?.some((event) => event.type === 'route_decision_recorded'),
+    'route decision audit event must survive delivery email failure',
+  );
+  assert.ok(
+    persisted!.auditEvents?.some((event) => event.type === 'proof_generated'),
+    'proof generated audit event must survive delivery email failure',
+  );
   // Last error must be descriptive and mention the actionable hint.
   assert.match(
     persisted!.fulfillmentLastError ?? '',

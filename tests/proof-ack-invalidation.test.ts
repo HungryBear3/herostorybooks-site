@@ -76,7 +76,20 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_ack_inv'): P
       pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
     ],
     reviewStatus: 'in_review',
-    auditEvents: [],
+    generationRouteDecision: {
+      route: 'api_disabled_template',
+      source: 'template',
+      model: 'template:Adventure',
+      decidedAt: '2026-06-01T12:00:00.000Z',
+      releasable: true,
+    },
+    auditEvents: [
+      {
+        at: '2026-06-01T12:00:00.000Z',
+        type: 'route_decision_recorded',
+        meta: { route: 'api_disabled_template', source: 'template', model: 'template:Adventure', releasable: true },
+      },
+    ],
     ...overrides,
   };
   await persistOrder(order);

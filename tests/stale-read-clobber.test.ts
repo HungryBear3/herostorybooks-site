@@ -80,12 +80,33 @@ async function seedOrder(id: string, overrides: Partial<OrderRecord> = {}): Prom
     { childName: 'Luna', bookFormat: 'digital', email: 'luna@example.com' },
     { id, now: '2026-05-28T18:00:00Z' },
   );
+  const generationRouteDecision = {
+    route: 'api_disabled_template' as const,
+    source: 'template' as const,
+    model: 'template:Adventure',
+    decidedAt: '2026-05-28T18:00:00Z',
+    releasable: true,
+    fallbackError: null,
+    reason: null,
+  };
   const order: OrderRecord = {
     ...base,
     paymentStatus: 'paid',
     reviewStatus: 'in_review',
     pageArtifacts: [pageFixture(0), pageFixture(1), pageFixture(2)],
-    auditEvents: [],
+    generationRouteDecision,
+    auditEvents: [
+      {
+        at: generationRouteDecision.decidedAt,
+        type: 'route_decision_recorded',
+        meta: {
+          route: generationRouteDecision.route,
+          source: generationRouteDecision.source,
+          model: generationRouteDecision.model,
+          releasable: generationRouteDecision.releasable,
+        },
+      },
+    ],
     ...overrides,
   };
   await persistOrder(order);

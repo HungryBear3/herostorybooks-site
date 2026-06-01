@@ -2,9 +2,9 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { get, list, put } from '@vercel/blob';
 
-import type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
+import type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import { sanitizeReferralCode } from './referral-code.ts';
-export type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta };
+export type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
 export type BookFormat = 'digital' | 'classic' | 'premium';
@@ -117,6 +117,7 @@ export interface PageVersionEntry {
 }
 
 export type ReviewAuditEventType =
+  | 'route_decision_recorded'
   | 'proof_generated'
   | 'proof_rebuilt'
   | 'proof_release_blocked'
@@ -163,6 +164,23 @@ export interface ReviewAuditEvent {
   reason?: string | null;
   /** Free-form, sanitized metadata. Keep small. */
   meta?: Record<string, string | number | boolean | null> | null;
+}
+
+export type GenerationRoute =
+  | 'model_story'
+  | 'api_disabled_template'
+  | 'template_fallback'
+  | 'manual_safe';
+
+export interface GenerationRouteDecision {
+  route: GenerationRoute;
+  source: StorySource;
+  model: string;
+  decidedAt: string;
+  /** False means the route is intentionally held for manual review. */
+  releasable: boolean;
+  fallbackError?: string | null;
+  reason?: string | null;
 }
 
 export interface ProofReleaseOverride {
@@ -265,6 +283,10 @@ export interface OrderRecord extends OrderInput {
    *  template_after_openai_failure). Set once during fulfillment, never
    *  overwritten. Optional for backward compatibility with older orders. */
   storyMeta?: import('./fulfillment-types.ts').StoryMeta | null;
+  /** Explicit G1 route/provenance decision recorded before proof artifacts can
+   *  become customer-releasable. Required alongside a route_decision_recorded
+   *  audit event for storyArtifactUrl/proofApprovalToken writes. */
+  generationRouteDecision?: GenerationRouteDecision | null;
   /** Optional read-only art-direction packet persisted by the art-direction
    *  pipeline. Admin diagnostics may display bounded summaries from it, but
    *  fulfillment/proof state must not depend on this field until the gated
@@ -1397,6 +1419,7 @@ type FulfillmentPatch = Partial<Pick<
   | 'fulfillmentLastError'
   | 'storyArtifactUrl'
   | 'storyMeta'
+  | 'generationRouteDecision'
   | 'printInteriorArtifactUrl'
   | 'printInteriorMd5'
   | 'printInteriorPageCount'
@@ -1474,6 +1497,45 @@ function patchRequiresPaidOrder(patch: FulfillmentPatch): boolean {
   return false;
 }
 
+function hasMatchingRouteDecisionAudit(order: OrderRecord, decision: GenerationRouteDecision): boolean {
+  return (order.auditEvents ?? []).some((event) =>
+    event.type === 'route_decision_recorded' &&
+    event.at === decision.decidedAt &&
+    event.meta?.route === decision.route &&
+    event.meta?.source === decision.source &&
+    event.meta?.model === decision.model &&
+    event.meta?.releasable === decision.releasable,
+  );
+}
+
+function patchMakesProofArtifactReleasable(patch: FulfillmentPatch, updated: OrderRecord): boolean {
+  if (patch.storyArtifactUrl !== undefined && Boolean(updated.storyArtifactUrl)) return true;
+  if (patch.proofApprovalToken !== undefined && Boolean(updated.proofApprovalToken)) return true;
+  if (patch.status === 'preview_ready' && Boolean(updated.storyArtifactUrl)) return true;
+  if (
+    (patch.fulfillmentStatus === 'complete' ||
+      patch.fulfillmentStatus === 'proof_ready' ||
+      patch.fulfillmentStatus === 'delivery_email_failed') &&
+    Boolean(updated.storyArtifactUrl)
+  ) return true;
+  return false;
+}
+
+function assertRouteDecisionAllowsProofRelease(orderId: string, patch: FulfillmentPatch, updated: OrderRecord): void {
+  if (!patchMakesProofArtifactReleasable(patch, updated)) return;
+
+  const decision = updated.generationRouteDecision;
+  if (!decision) {
+    throw new Error(`[orders] Refusing proof artifact release for ${orderId}: generation route decision missing`);
+  }
+  if (!decision.releasable) {
+    throw new Error(`[orders] Refusing proof artifact release for ${orderId}: generation route decision is not releasable`);
+  }
+  if (!hasMatchingRouteDecisionAudit(updated, decision)) {
+    throw new Error(`[orders] Refusing proof artifact release for ${orderId}: route_decision_recorded audit missing`);
+  }
+}
+
 export async function updateFulfillmentState(
   orderId: string,
   patch: FulfillmentPatch,
@@ -1498,6 +1560,8 @@ export async function updateFulfillmentState(
     ...patch,
     updatedAt: new Date().toISOString(),
   };
+
+  assertRouteDecisionAllowsProofRelease(orderId, patch, updated);
 
   await persistOrder(updated);
   return updated;

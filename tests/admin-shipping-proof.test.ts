@@ -169,6 +169,29 @@ function policyReadyOverrides(): Partial<OrderRecord> {
       generatedAt: '2026-05-31T19:00:00.000Z',
       fallbackError: null,
     },
+    generationRouteDecision: {
+      route: 'manual_safe',
+      source: 'manual',
+      model: 'abby:manual-subscription',
+      decidedAt: '2026-05-31T19:00:00.000Z',
+      releasable: true,
+      fallbackError: null,
+      reason: null,
+    },
+    auditEvents: [
+      {
+        at: '2026-05-31T19:00:00.000Z',
+        type: 'route_decision_recorded',
+        meta: {
+          route: 'manual_safe',
+          source: 'manual',
+          model: 'abby:manual-subscription',
+          releasable: true,
+          fallbackError: null,
+          reason: null,
+        },
+      },
+    ],
     pageArtifacts: [
       {
         pageIndex: 0,
