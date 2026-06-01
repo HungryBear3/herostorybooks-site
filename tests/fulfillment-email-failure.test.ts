@@ -222,10 +222,40 @@ test('resendDigitalDelivery resends the email for a digital order that already h
     storyArtifactUrl: 'https://cdn.example.com/ord/x-storybook.pdf',
     qaPassAt: '2026-05-31T20:00:00.000Z',
     qaPassBy: 'admin',
+    qaStatus: 'passed',
+    qaReviewer: 'admin',
+    // Generation Operating Policy §5 — resend re-runs the manifest guard.
+    // Provide the policy-default manual route + photo + theme so the
+    // structural guard passes.
+    theme: 'dinosaur-discovery',
+    photoBlobUrl: 'https://example.com/photos/luna.jpg',
+    photoBlobPath: 'orders/test/photo.jpg',
+    photoFileName: 'luna.jpg',
+    storyMeta: {
+      source: 'manual',
+      model: 'abby:manual-subscription',
+      generatedAt: '2026-05-31T19:00:00.000Z',
+      fallbackError: null,
+    },
+    pageArtifacts: [
+      {
+        pageIndex: 0,
+        storyText: 'page 1',
+        basePrompt: 'p1',
+        currentImageUrl: 'https://example.com/p1.png',
+        generationProvider: 'manual',
+        generationModel: 'abby:manual-subscription',
+        generationConditioning: 'photo_edit',
+        regenerateCount: 0,
+        accepted: false,
+        feedbackHistory: [],
+        versionHistory: [],
+      },
+    ],
   });
 
   const result = await resendDigitalDelivery(order.id);
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, true, !result.ok ? result.error : '');
 
   const persisted = await getOrder(order.id);
   assert.equal(persisted!.fulfillmentStatus, 'complete');

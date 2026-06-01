@@ -239,3 +239,68 @@ test('dailyCommandBoard: four buckets, non-empty', () => {
   assert.ok(b.afternoon.length >= 3);
   assert.ok(b.endOfDay.length >= 3);
 });
+
+// ── Follow-up regression (post-42d03e6 UI-deadlock fix) ──────────────────────
+
+test('QA Room: structurally valid awaiting-QA order reports policyReleaseGuard.ok=true (operator can release once checklist completes)', () => {
+  // Order is policy-clean but not yet QA-passed. Before the fix, the
+  // UI ran the FULL release guard and got QA_NOT_PASSED, deadlocking
+  // release. analyzeOrderQa now uses evaluateReleaseGuardStructural.
+  const order = baseOrder({
+    fulfillmentStatus: 'awaiting_qa',
+    qaPassAt: undefined,
+    qaPassBy: undefined,
+    storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+    storyMeta: {
+      source: 'manual',
+      model: 'abby:manual-subscription',
+      generatedAt: '2026-05-31T20:00:00.000Z',
+      fallbackError: null,
+    },
+    pageArtifacts: [
+      {
+        pageIndex: 0,
+        storyText: 'page 1',
+        basePrompt: 'p1',
+        currentImageUrl: 'https://cdn.example.com/p1.png',
+        accepted: false,
+        regenerateCount: 0,
+        feedbackHistory: [],
+        versionHistory: [],
+        generationProvider: 'manual',
+        generationModel: 'abby:manual-subscription',
+        generationConditioning: 'photo_edit',
+      },
+    ],
+    photoBlobUrl: 'https://example.com/luna.jpg',
+    photoBlobPath: 'orders/luna/photo.jpg',
+    photoFileName: 'luna.jpg',
+    theme: 'dinosaur-discovery',
+  });
+  const a = analyzeOrderQa(order);
+  assert.equal(a.awaitingQa, true);
+  assert.equal(a.qaPassed, false);
+  assert.equal(
+    a.policyReleaseGuard.ok,
+    true,
+    `structural guard should permit; got ${a.policyReleaseGuard.failureCode} (${a.policyReleaseGuard.message})`,
+  );
+});
+
+test('QA Room: policy-blocked awaiting-QA order reports policyReleaseGuard.ok=false (template story)', () => {
+  const order = baseOrder({
+    fulfillmentStatus: 'awaiting_qa',
+    qaPassAt: undefined,
+    qaPassBy: undefined,
+    storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+    storyMeta: {
+      source: 'template_after_openai_failure',
+      model: 'template:Quest',
+      generatedAt: '2026-05-31T20:00:00.000Z',
+      fallbackError: 'fetch failed',
+    },
+  });
+  const a = analyzeOrderQa(order);
+  assert.equal(a.policyReleaseGuard.ok, false);
+  assert.equal(a.policyReleaseGuard.failureCode, 'TEMPLATE_STORY_BLOCKED');
+});

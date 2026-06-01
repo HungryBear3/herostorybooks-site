@@ -237,6 +237,23 @@ export async function resendDigitalDelivery(orderId: string): Promise<ActionResu
   if (!order.qaPassAt) {
     return { ok: false, status: 409, error: 'Cannot resend customer email before QA pass' };
   }
+  // Generation Operating Policy §5 — re-run the manifest guard before
+  // touching the customer email. The order may have drifted into a
+  // policy-blocked state since the original QA pass (e.g. a later page-
+  // regenerate that introduced a fixture asset, or a config flag flip).
+  const guard = evaluateReleaseGuard(order);
+  if (!guard.ok) {
+    await appendAuditEvent(order.id, {
+      type: 'proof_release_failed',
+      reason: guard.failureCode ?? 'UNKNOWN',
+      meta: { ...describeFailureForAudit(guard), source: 'resendDigitalDelivery' },
+    });
+    return {
+      ok: false,
+      status: 409,
+      error: `${guard.failureCode ?? 'POLICY_BLOCKED'}: ${guard.message ?? 'release guard refused resend'}`,
+    };
+  }
   try {
     await sendDigitalDeliveryEmail(order, { pdfUrl: order.storyArtifactUrl });
     await updateFulfillmentState(orderId, {
@@ -473,6 +490,22 @@ export async function resendProofEmail(
   }
   if (order.fulfillmentStatus !== 'proof_ready') {
     return { ok: false, status: 409, error: `Proof is in state ${order.fulfillmentStatus}` };
+  }
+  // Generation Operating Policy §5 — re-run the manifest guard before
+  // touching the customer email. State may have drifted since the
+  // original release (later page-regenerate, config flip, etc.).
+  const guard = evaluateReleaseGuard(order);
+  if (!guard.ok) {
+    await appendAuditEvent(order.id, {
+      type: 'proof_release_failed',
+      reason: guard.failureCode ?? 'UNKNOWN',
+      meta: { ...describeFailureForAudit(guard), source: 'resendProofEmail' },
+    });
+    return {
+      ok: false,
+      status: 409,
+      error: `${guard.failureCode ?? 'POLICY_BLOCKED'}: ${guard.message ?? 'release guard refused resend'}`,
+    };
   }
 
   const reviewUrl = `${baseUrl.replace(/\/$/, '')}/review/${order.id}?token=${order.proofApprovalToken}`;

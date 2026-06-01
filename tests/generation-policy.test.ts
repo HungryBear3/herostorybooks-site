@@ -259,10 +259,26 @@ test('pageProviderToRoute maps known providers', () => {
   assert.equal(pageProviderToRoute(null), null);
 });
 
-test('storySourceToRoute maps known sources', () => {
+test('storySourceToRoute maps policy-allow-list sources only', () => {
+  assert.equal(storySourceToRoute('manual'), 'OPENAI_MANUAL');
   assert.equal(storySourceToRoute('openai_chat'), 'OPENAI_API');
-  assert.equal(storySourceToRoute('gemini_page_prose'), 'FAL');
+  assert.equal(storySourceToRoute('openai_page_prose'), 'OPENAI_API');
   assert.equal(storySourceToRoute('template'), 'TEMPLATE_FIXTURE');
   assert.equal(storySourceToRoute('template_after_openai_failure'), 'TEMPLATE_FIXTURE');
+  // gemini_page_prose / ollama_page_prose are NOT on the v1 policy
+  // allow-list. They must return null so the release guard refuses with
+  // MISSING_LINEAGE/PROVIDER_ROUTE_BLOCKED rather than routing through
+  // the generic emergency-approval branch.
+  assert.equal(storySourceToRoute('gemini_page_prose'), null);
+  assert.equal(storySourceToRoute('ollama_page_prose'), null);
   assert.equal(storySourceToRoute(null), null);
+});
+
+test('pageProviderToRoute returns null for unmapped/unknown providers (blocks via MISSING_LINEAGE)', () => {
+  // Per policy: unknown providers must NOT pass via generic emergency
+  // approval. Returning null makes the release guard refuse with
+  // MISSING_LINEAGE.
+  assert.equal(pageProviderToRoute('gemini'), null);
+  assert.equal(pageProviderToRoute('midjourney'), null);
+  assert.equal(pageProviderToRoute('some-future-provider'), null);
 });

@@ -34,11 +34,13 @@ import { createHash } from 'node:crypto';
 import type { OrderRecord, PageArtifact, ReviewAuditEvent } from './orders.ts';
 import type { StoryMeta } from './fulfillment-types.ts';
 import {
+  evaluatePaidRouteAllowance,
   type GenerationPolicyConfig,
   type GenerationRoute,
   loadGenerationPolicyConfig,
   pageProviderToRoute,
   storySourceToRoute,
+  type PaidRouteContext,
 } from './generation-policy.ts';
 
 export type ReleaseFailureCode =
@@ -145,23 +147,54 @@ export interface PrintGuardResult {
   underlyingReleaseFailure?: ReleaseFailureCode;
 }
 
-const ALLOWED_NON_EMERGENCY_PROVIDERS: ReadonlySet<string> = new Set([
-  'openai',
-  'openai_manual',
-  'manual',
-  'abby',
-]);
 const FIXTURE_ASSET_SOURCES: ReadonlySet<string> = new Set([
   'fixture',
   'sample',
   'internal',
 ]);
 
+function paidRouteCtxFromOrder(order: OrderRecord): PaidRouteContext {
+  return {
+    emergencyApprovedBy: order.emergencyApprovedBy ?? null,
+    emergencyApprovalRef: order.emergencyApprovalRef ?? null,
+    apiAuthorizedBy: order.apiAuthorizedBy ?? null,
+    apiAuthorizedAt: order.apiAuthorizedAt ?? null,
+  };
+}
+
+/**
+ * Translate the policy-layer allowance failure code into the release-
+ * guard's named ReleaseFailureCode so callers see a single vocabulary.
+ */
+function mapAllowanceFailureToReleaseCode(
+  code:
+    | 'BLOCKED_TEMPLATE_PAID'
+    | 'BLOCKED_FAL_NO_APPROVAL'
+    | 'BLOCKED_FAL_FLAG_OFF'
+    | 'BLOCKED_API_FLAG_OFF'
+    | 'BLOCKED_API_AUTHORIZATION_MISSING'
+    | 'BLOCKED_UNKNOWN_REQUEST',
+): ReleaseFailureCode {
+  if (code === 'BLOCKED_TEMPLATE_PAID') return 'TEMPLATE_STORY_BLOCKED';
+  if (code === 'BLOCKED_FAL_NO_APPROVAL' || code === 'BLOCKED_API_AUTHORIZATION_MISSING') {
+    return 'EMERGENCY_APPROVAL_MISSING';
+  }
+  if (code === 'BLOCKED_FAL_FLAG_OFF' || code === 'BLOCKED_API_FLAG_OFF') {
+    return 'PROVIDER_ROUTE_BLOCKED';
+  }
+  return 'PROVIDER_ROUTE_BLOCKED';
+}
+
 function isPaidOrder(order: OrderRecord): boolean {
   return order.paymentStatus === 'paid' && !order.refundedAt;
 }
 
-function buildManifestPage(page: PageArtifact, paid: boolean): ManifestPage {
+function buildManifestPage(
+  page: PageArtifact,
+  paid: boolean,
+  ctx: PaidRouteContext,
+  config: GenerationPolicyConfig,
+): ManifestPage {
   const pageId = page.pageId ?? `page_${page.pageIndex}`;
   const provider = page.generationProvider ?? null;
   const model = page.generationModel ?? null;
@@ -178,11 +211,21 @@ function buildManifestPage(page: PageArtifact, paid: boolean): ManifestPage {
     } else if (FIXTURE_ASSET_SOURCES.has(assetSource)) {
       routeAllowed = false;
       routeFailureCode = 'FIXTURE_ASSET_BLOCKED';
-    } else if (!ALLOWED_NON_EMERGENCY_PROVIDERS.has(provider.toLowerCase())) {
-      // Any non-OpenAI provider requires emergency approval — order-level
-      // check elsewhere. Mark route as conditional here.
-      routeAllowed = false;
-      routeFailureCode = 'EMERGENCY_APPROVAL_MISSING';
+    } else {
+      const route = pageProviderToRoute(provider);
+      if (!route) {
+        // Unmapped provider string: NOT in the v1 policy. Per policy,
+        // unknown providers must block as MISSING_LINEAGE/PROVIDER_ROUTE_
+        // BLOCKED — they MUST NOT pass via generic emergency approval.
+        routeAllowed = false;
+        routeFailureCode = 'MISSING_LINEAGE';
+      } else {
+        const allowance = evaluatePaidRouteAllowance(route, ctx, config);
+        if (!allowance.allowed) {
+          routeAllowed = false;
+          routeFailureCode = mapAllowanceFailureToReleaseCode(allowance.failureCode!);
+        }
+      }
     }
   }
   return {
@@ -200,7 +243,12 @@ function buildManifestPage(page: PageArtifact, paid: boolean): ManifestPage {
   };
 }
 
-function buildManifestStory(storyMeta: StoryMeta | null | undefined, paid: boolean): ManifestStory {
+function buildManifestStory(
+  storyMeta: StoryMeta | null | undefined,
+  paid: boolean,
+  ctx: PaidRouteContext,
+  config: GenerationPolicyConfig,
+): ManifestStory {
   const source = storyMeta?.source ?? null;
   const provider = storyMeta?.storyProvider ?? storySourceFamily(source);
   const model = storyMeta?.storyModel ?? storyMeta?.model ?? null;
@@ -217,6 +265,22 @@ function buildManifestStory(storyMeta: StoryMeta | null | undefined, paid: boole
     } else if (source === 'template' || source === 'template_after_openai_failure') {
       routeAllowed = false;
       routeFailureCode = 'TEMPLATE_STORY_BLOCKED';
+    } else {
+      const route = storySourceToRoute(source);
+      if (!route) {
+        // Story sources like `gemini_page_prose` / `ollama_page_prose` /
+        // unknown values are NOT on the v1 policy allow-list and MUST NOT
+        // pass via emergency approval. Per policy: block as PROVIDER_
+        // ROUTE_BLOCKED.
+        routeAllowed = false;
+        routeFailureCode = 'PROVIDER_ROUTE_BLOCKED';
+      } else {
+        const allowance = evaluatePaidRouteAllowance(route, ctx, config);
+        if (!allowance.allowed) {
+          routeAllowed = false;
+          routeFailureCode = mapAllowanceFailureToReleaseCode(allowance.failureCode!);
+        }
+      }
     }
   }
   return {
@@ -288,12 +352,21 @@ function sortKeys(value: unknown): unknown {
 /**
  * Build a JSON-serializable manifest from an order. Uses existing fields
  * + the additive Generation Operating Policy fields. Does not mutate.
+ *
+ * The policy config is loaded once per call and threaded through page /
+ * story route checks so `evaluatePaidRouteAllowance` is the single
+ * source of truth for what routes paid orders are permitted to use.
  */
-export function buildManifest(order: OrderRecord): OrderManifest {
+export function buildManifest(
+  order: OrderRecord,
+  opts: { config?: GenerationPolicyConfig } = {},
+): OrderManifest {
   const paid = isPaidOrder(order);
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
-  const pages = (order.pageArtifacts ?? []).map((p) => buildManifestPage(p, paid));
-  const story = buildManifestStory(order.storyMeta ?? null, paid);
+  const config = opts.config ?? loadGenerationPolicyConfig();
+  const ctx = paidRouteCtxFromOrder(order);
+  const pages = (order.pageArtifacts ?? []).map((p) => buildManifestPage(p, paid, ctx, config));
+  const story = buildManifestStory(order.storyMeta ?? null, paid, ctx, config);
   const personalizationInputsPresent = inferPersonalizationInputs(order);
   const sourcePhotoPresent = inferSourcePhotoPresent(order);
   const qaStatus: OrderManifest['qaStatus'] =
@@ -388,19 +461,21 @@ export function validateManifest(manifest: OrderManifest): ManifestValidation {
 }
 
 /**
- * Evaluate the customer-release guard. Returns a single named failure code
- * or ok=true. Caller should append a `proof_release_failed` audit event on
- * failure (per policy §11).
+ * Structural / pre-QA portion of the release guard. Validates everything
+ * EXCEPT the qaStatus/qaReviewer requirement, so the QA Production Room
+ * can use it to preview whether an awaiting-QA order is releasable once
+ * the operator finishes the checklist.
+ *
+ * Use this for UI/preview only. The final server release path MUST run
+ * `evaluateReleaseGuard` after synthesizing the post-QA state.
  */
-export function evaluateReleaseGuard(
+export function evaluateReleaseGuardStructural(
   order: OrderRecord,
   opts: { config?: GenerationPolicyConfig } = {},
 ): ReleaseGuardResult {
-  const manifest = buildManifest(order);
-  const config = opts.config; // unused at present; reserved for future per-config tightening
+  const config = opts.config ?? loadGenerationPolicyConfig();
+  const manifest = buildManifest(order, { config });
 
-  // Payment + artifact preconditions (also covered by releaseOrderAfterQa,
-  // but checked here so the guard is reusable from any boundary).
   if (!manifest.paid) {
     return {
       ok: false,
@@ -417,7 +492,6 @@ export function evaluateReleaseGuard(
       manifest,
     };
   }
-
   // Story-level: template fallback never ships to a paying customer.
   if (!manifest.story.routeAllowed) {
     return {
@@ -427,8 +501,7 @@ export function evaluateReleaseGuard(
       manifest,
     };
   }
-
-  // Per-page lineage + asset source.
+  // Per-page lineage + asset source + route policy.
   for (const p of manifest.pages) {
     if (p.imageProvider == null) {
       return {
@@ -447,27 +520,45 @@ export function evaluateReleaseGuard(
       };
     }
     if (!p.routeAllowed) {
-      // Emergency provider on a page without order-level approval fields.
-      if (
-        p.routeFailureCode === 'EMERGENCY_APPROVAL_MISSING' &&
-        manifest.emergencyOverrideUsed &&
-        manifest.emergencyApprovedBy &&
-        manifest.emergencyApprovalRef
-      ) {
-        // Order-level approval present — page provider permitted under
-        // emergency route. Continue.
-        continue;
-      }
       return {
         ok: false,
         failureCode: p.routeFailureCode ?? 'PROVIDER_ROUTE_BLOCKED',
-        message: `Page ${p.pageId} provider ${p.imageProvider} requires emergency approval (set emergencyApprovedBy + emergencyApprovalRef)`,
+        message: `Page ${p.pageId} provider ${p.imageProvider} blocked by policy (${p.routeFailureCode ?? 'PROVIDER_ROUTE_BLOCKED'})`,
         manifest,
       };
     }
   }
+  // Manifest completeness — final structural gate.
+  if (!manifest.complete) {
+    const validation = validateManifest(manifest);
+    return {
+      ok: false,
+      failureCode: 'MANIFEST_INCOMPLETE',
+      message: `Manifest incomplete: ${validation.issues.join('; ')}`,
+      manifest,
+    };
+  }
+  return { ok: true, manifest };
+}
 
-  // QA gate.
+/**
+ * Full customer-release guard. Runs the structural guard, then layers on
+ * the QA-pass requirement. Returns a single named failure code or ok=true.
+ * Caller should append a `proof_release_failed` audit event on failure
+ * (per policy §11).
+ *
+ * `releaseOrderAfterQa` calls this with a synthesized post-pass guardOrder
+ * so the QA portion is satisfied at the boundary where the qaPass write
+ * is about to land. Other callers (resend paths, print pre-check) call
+ * this against the persisted order.
+ */
+export function evaluateReleaseGuard(
+  order: OrderRecord,
+  opts: { config?: GenerationPolicyConfig } = {},
+): ReleaseGuardResult {
+  const structural = evaluateReleaseGuardStructural(order, opts);
+  if (!structural.ok) return structural;
+  const manifest = structural.manifest;
   if (manifest.qaStatus !== 'passed') {
     return {
       ok: false,
@@ -484,19 +575,6 @@ export function evaluateReleaseGuard(
       manifest,
     };
   }
-
-  // Manifest completeness — final structural gate.
-  if (!manifest.complete) {
-    const validation = validateManifest(manifest);
-    return {
-      ok: false,
-      failureCode: 'MANIFEST_INCOMPLETE',
-      message: `Manifest incomplete: ${validation.issues.join('; ')}`,
-      manifest,
-    };
-  }
-
-  void config; // referenced for the future-tightening hook
   return { ok: true, manifest };
 }
 

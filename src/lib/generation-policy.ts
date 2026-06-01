@@ -35,6 +35,12 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+// Statically-imported tracked defaults. Importing the JSON directly
+// makes the policy config statically traceable for Turbopack/NFT and
+// removes the need for `fs.readFileSync(process.cwd() + ...)` at runtime.
+// Tests still override via `opts.readJson`.
+import TRACKED_POLICY from '../../data/policies/generation-route.json' with { type: 'json' };
+
 export type GenerationRoute =
   | 'OPENAI_MANUAL'
   | 'OPENAI_API'
@@ -127,23 +133,32 @@ function isProductionEnv(): boolean {
 export function loadGenerationPolicyConfig(
   opts: { configPath?: string; readJson?: (path: string) => unknown } = {},
 ): GenerationPolicyConfig {
+  // Primary source: the statically-imported TRACKED_POLICY JSON.
+  // `opts.readJson` is honored only as a test seam — production code
+  // never opts in. `opts.configPath` is preserved for backward
+  // compatibility but is only consulted when `readJson` is also passed.
   const path = opts.configPath ?? POLICY_CONFIG_PATH;
-  let raw: unknown;
-  try {
-    if (opts.readJson) {
+  let raw: unknown = TRACKED_POLICY;
+  if (opts.readJson) {
+    try {
       raw = opts.readJson(path);
-    } else if (existsSync(path)) {
-      raw = JSON.parse(readFileSync(path, 'utf-8'));
-    } else {
+    } catch (err) {
+      if (isProductionEnv()) {
+        throw new Error(
+          `[generation-policy] Test seam readJson threw in production env: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       raw = {};
     }
-  } catch (err) {
-    if (isProductionEnv()) {
-      throw new Error(
-        `[generation-policy] Cannot load tracked policy from ${path}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+  }
+  // `existsSync` is retained as a defensive read in case the bundler
+  // omitted the JSON; in practice the static import keeps this no-op.
+  if (!opts.readJson && existsSync(path)) {
+    try {
+      raw = JSON.parse(readFileSync(path, 'utf-8'));
+    } catch {
+      // fall back to TRACKED_POLICY (already assigned)
     }
-    raw = {};
   }
   const r = (raw ?? {}) as Partial<GenerationPolicyConfig>;
   const merged: GenerationPolicyConfig = {
@@ -327,36 +342,140 @@ export function chooseGenerationRoute(
 }
 
 /**
+ * Per-order context the release guard hands to `evaluatePaidRouteAllowance`.
+ * Mirrors the bounded approval fields on OrderRecord so the same logic
+ * `chooseGenerationRoute` uses at decision time also runs at release-time
+ * verification.
+ */
+export interface PaidRouteContext {
+  emergencyApprovedBy?: string | null;
+  emergencyApprovalRef?: string | null;
+  apiAuthorizedBy?: string | null;
+  apiAuthorizedAt?: string | null;
+}
+
+export interface RouteAllowance {
+  allowed: boolean;
+  failureCode?:
+    | 'BLOCKED_TEMPLATE_PAID'
+    | 'BLOCKED_FAL_NO_APPROVAL'
+    | 'BLOCKED_FAL_FLAG_OFF'
+    | 'BLOCKED_API_FLAG_OFF'
+    | 'BLOCKED_API_AUTHORIZATION_MISSING'
+    | 'BLOCKED_UNKNOWN_REQUEST';
+  reason?: string;
+}
+
+/**
+ * The single shared policy check both `chooseGenerationRoute` (decision-
+ * time) and `evaluateReleaseGuard` (release-time) consult. Verifies that
+ * a given route family is currently allowed for a paid order, given the
+ * order-level context (emergency / API authorization fields) and the
+ * runtime config flags.
+ */
+export function evaluatePaidRouteAllowance(
+  route: GenerationRoute,
+  ctx: PaidRouteContext,
+  config: GenerationPolicyConfig,
+): RouteAllowance {
+  if (route === 'OPENAI_MANUAL') {
+    return { allowed: true };
+  }
+  if (route === 'TEMPLATE_FIXTURE') {
+    return {
+      allowed: false,
+      failureCode: 'BLOCKED_TEMPLATE_PAID',
+      reason: 'Template / fixture prose blocked for paid orders by policy §2',
+    };
+  }
+  if (route === 'FAL' || route === 'SEEDREAM') {
+    if (!config.emergencyImageRoute) {
+      return {
+        allowed: false,
+        failureCode: 'BLOCKED_FAL_FLAG_OFF',
+        reason: `${route} requires emergencyImageRoute=true in tracked config`,
+      };
+    }
+    const approvedBy = (ctx.emergencyApprovedBy ?? '').trim();
+    const approvalRef = (ctx.emergencyApprovalRef ?? '').trim();
+    if (!approvedBy || !approvalRef) {
+      return {
+        allowed: false,
+        failureCode: 'BLOCKED_FAL_NO_APPROVAL',
+        reason: `${route} requires order-level emergencyApprovedBy + emergencyApprovalRef`,
+      };
+    }
+    return { allowed: true };
+  }
+  if (route === 'OPENAI_API') {
+    if (!config.apiFallbackEnabled) {
+      return {
+        allowed: false,
+        failureCode: 'BLOCKED_API_FLAG_OFF',
+        reason: 'OPENAI_API requires apiFallbackEnabled=true in tracked config',
+      };
+    }
+    const authorizedBy = (ctx.apiAuthorizedBy ?? '').trim();
+    const authorizedAt = (ctx.apiAuthorizedAt ?? '').trim();
+    if (!authorizedBy || !authorizedAt) {
+      return {
+        allowed: false,
+        failureCode: 'BLOCKED_API_AUTHORIZATION_MISSING',
+        reason: 'OPENAI_API requires order-level apiAuthorizedBy + apiAuthorizedAt (per-day/batch authorization)',
+      };
+    }
+    return { allowed: true };
+  }
+  return {
+    allowed: false,
+    failureCode: 'BLOCKED_UNKNOWN_REQUEST',
+    reason: `Unknown route ${String(route)}`,
+  };
+}
+
+/**
  * Map an existing PageArtifact `generationProvider` value to the policy
- * route family for downstream guards. Returns null if the provider is
- * unknown or absent (which itself blocks release per MISSING_LINEAGE).
+ * route family for downstream guards. Returns `null` for any unknown or
+ * unmapped value — the release guard treats that as `MISSING_LINEAGE`,
+ * which is the policy-mandated behavior (unknown providers MUST NOT
+ * pass through the generic emergency-approval branch).
  */
 export function pageProviderToRoute(
   generationProvider: string | null | undefined,
 ): GenerationRoute | null {
   if (!generationProvider) return null;
   const p = generationProvider.toLowerCase();
+  if (p === 'manual' || p === 'openai_manual' || p === 'abby') return 'OPENAI_MANUAL';
   if (p === 'openai') return 'OPENAI_API';
   if (p === 'fal' || p === 'fal_edit' || p === 'fal-edit') return 'FAL';
   if (p === 'seedream' || p === 'seedream_edit') return 'SEEDREAM';
-  if (p === 'gemini') return 'FAL'; // gemini outside the v1 allow-list; treat as emergency for guard purposes
   if (p === 'template' || p === 'template_fixture' || p === 'fixture') return 'TEMPLATE_FIXTURE';
-  if (p === 'manual' || p === 'openai_manual' || p === 'abby') return 'OPENAI_MANUAL';
+  // gemini and any other unmapped value: NOT on the v1 policy allow-list.
+  // Returning null forces the release guard to refuse with MISSING_LINEAGE
+  // rather than silently treating the page as "emergency route eligible".
   return null;
 }
 
 /**
- * Map a story source enum value to the policy route family.
+ * Map a story source enum value to the policy route family. Per policy
+ * §7 ("no template/generic prose") and §2 (route allow-list), gemini /
+ * ollama / template sources are not on the allow-list for paid orders
+ * and must block. `'manual'` covers the Abby subscription workflow.
+ *
+ * Returns `null` for any unmapped value — the release guard refuses
+ * with MISSING_LINEAGE or PROVIDER_ROUTE_BLOCKED rather than silently
+ * routing through the emergency-approval branch.
  */
 export function storySourceToRoute(
   storySource: string | null | undefined,
 ): GenerationRoute | null {
   if (!storySource) return null;
   const s = storySource.toLowerCase();
+  if (s === 'manual') return 'OPENAI_MANUAL';
   if (s === 'openai_chat' || s === 'openai_page_prose') return 'OPENAI_API';
-  if (s === 'ollama_page_prose') return 'OPENAI_API';
-  if (s === 'gemini_page_prose') return 'FAL';
   if (s === 'template' || s === 'template_fixture') return 'TEMPLATE_FIXTURE';
   if (s === 'template_after_openai_failure') return 'TEMPLATE_FIXTURE';
+  // gemini_page_prose / ollama_page_prose / unknown: not on the v1
+  // policy allow-list. Returning null blocks release.
   return null;
 }

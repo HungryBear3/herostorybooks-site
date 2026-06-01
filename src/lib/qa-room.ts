@@ -20,7 +20,7 @@ import {
 import { buildOrderStatusView } from './order-status-view.ts';
 import {
   buildManifest,
-  evaluateReleaseGuard,
+  evaluateReleaseGuardStructural,
   type OrderManifest,
   type ReleaseFailureCode,
 } from './generation-manifest.ts';
@@ -186,11 +186,15 @@ export function analyzeOrderQa(
   const customerVisibleHeadline = view.headline;
   const customerVisibleStatus = view.subhead;
 
-  // Generation Operating Policy projection — manifest + release guard so
-  // the UI can refuse to render a green release control on any order
-  // that would fail the live qa-pass route.
+  // Generation Operating Policy projection — STRUCTURAL release guard
+  // (everything except qaStatus=passed). The QA Room UI uses this to
+  // tell the operator whether finishing the checklist will let them
+  // release. The full release guard (which requires qaStatus=passed)
+  // would always report QA_NOT_PASSED here and deadlock the UI; that
+  // version runs server-side inside `releaseOrderAfterQa` against a
+  // synthesized post-pass order.
   const policyManifest = buildManifest(order);
-  const guardResult = evaluateReleaseGuard(order);
+  const guardResult = evaluateReleaseGuardStructural(order);
   const policyReleaseGuard = {
     ok: guardResult.ok,
     failureCode: guardResult.failureCode,

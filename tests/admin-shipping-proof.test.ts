@@ -125,10 +125,16 @@ test('resendProofEmail: proof_ready state → ok (email skipped without key)', a
       proofApprovalToken: 'tok_abc',
       qaPassAt: '2026-05-31T20:00:00.000Z',
       qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      // Generation Operating Policy §5 — resend now re-runs the manifest
+      // guard, so the order must look policy-clean before any email goes.
+      ...policyReadyOverrides(),
+      shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
     }, 'ord_proof_ready');
 
     const r = await resendProofEmail('ord_proof_ready', 'https://h.com');
-    assert.equal(r.ok, true);
+    assert.equal(r.ok, true, !r.ok ? r.error : '');
   } finally { cleanup(dir); }
 });
 
@@ -154,9 +160,12 @@ function policyReadyOverrides(): Partial<OrderRecord> {
     photoBlobUrl: 'https://example.com/photos/luna.jpg',
     photoBlobPath: 'orders/test/photo.jpg',
     photoFileName: 'luna.jpg',
+    // Default to the manual / Abby subscription route per the Generation
+    // Operating Policy. OPENAI_API would require apiFallbackEnabled=true
+    // + per-order apiAuthorizedBy/At, which these tests don't model.
     storyMeta: {
-      source: 'openai_chat',
-      model: 'gpt-4o-mini',
+      source: 'manual',
+      model: 'abby:manual-subscription',
       generatedAt: '2026-05-31T19:00:00.000Z',
       fallbackError: null,
     },
@@ -166,8 +175,8 @@ function policyReadyOverrides(): Partial<OrderRecord> {
         storyText: 'Once upon a time…',
         basePrompt: 'p1',
         currentImageUrl: 'https://example.com/p1.png',
-        generationProvider: 'openai',
-        generationModel: 'gpt-image-1',
+        generationProvider: 'manual',
+        generationModel: 'abby:manual-subscription',
         generationConditioning: 'photo_edit',
         regenerateCount: 0,
         accepted: false,
@@ -507,5 +516,137 @@ test('applyLuluStatusUpdate: unresolvable → 404', async () => {
     const r = await applyLuluStatusUpdate({ data: { status: 'IN_PRODUCTION' } });
     assert.equal(r.ok, false);
     assert.equal(!r.ok && r.status, 404);
+  } finally { cleanup(dir); }
+});
+
+// ── Follow-up regression tests (post-42d03e6 blockers) ────────────────────────
+
+import { resendDigitalDelivery } from '../src/lib/admin-actions.ts';
+
+test('resendDigitalDelivery: refuses unsafe manifest (template fallback story)', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'delivery_email_failed',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...policyReadyOverrides(),
+      storyMeta: {
+        source: 'template_after_openai_failure',
+        model: 'template:Quest',
+        generatedAt: '2026-05-31T20:00:00.000Z',
+        fallbackError: 'fetch failed',
+      },
+    }, 'ord_resend_digital_tpl');
+    const r = await resendDigitalDelivery('ord_resend_digital_tpl');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /TEMPLATE_STORY_BLOCKED/);
+    // No state-flip to complete — manifest guard refused before the email send.
+    const after = await getOrder('ord_resend_digital_tpl');
+    assert.notEqual(after?.fulfillmentStatus, 'complete');
+    // Audit event recorded.
+    assert.ok(
+      (after?.auditEvents ?? []).some(
+        (ev) => ev.type === 'proof_release_failed' && ev.meta?.source === 'resendDigitalDelivery',
+      ),
+      'proof_release_failed audit event must be appended on resend refusal',
+    );
+  } finally { cleanup(dir); }
+});
+
+test('resendDigitalDelivery: refuses unsafe manifest (fixture asset page)', async () => {
+  const dir = makeTmp();
+  try {
+    const overrides = policyReadyOverrides();
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'delivery_email_failed',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...overrides,
+      pageArtifacts: [
+        { ...overrides.pageArtifacts![0]!, assetSource: 'fixture' },
+      ],
+    }, 'ord_resend_digital_fixture');
+    const r = await resendDigitalDelivery('ord_resend_digital_fixture');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /FIXTURE_ASSET_BLOCKED/);
+  } finally { cleanup(dir); }
+});
+
+test('resendProofEmail: refuses unsafe manifest (template fallback story)', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      bookFormat: 'classic',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'proof_ready',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      proofApprovalToken: 'tok_resend',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...policyReadyOverrides(),
+      shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
+      storyMeta: {
+        source: 'template_after_openai_failure',
+        model: 'template:Quest',
+        generatedAt: '2026-05-31T20:00:00.000Z',
+        fallbackError: 'fetch failed',
+      },
+    }, 'ord_resend_proof_tpl');
+    const r = await resendProofEmail('ord_resend_proof_tpl', 'https://h.com');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /TEMPLATE_STORY_BLOCKED/);
+    const after = await getOrder('ord_resend_proof_tpl');
+    assert.ok(
+      (after?.auditEvents ?? []).some(
+        (ev) => ev.type === 'proof_release_failed' && ev.meta?.source === 'resendProofEmail',
+      ),
+    );
+  } finally { cleanup(dir); }
+});
+
+test('resendProofEmail: refuses unsafe manifest (fal_edit page without emergency flag)', async () => {
+  const dir = makeTmp();
+  try {
+    const overrides = policyReadyOverrides();
+    await seed({
+      bookFormat: 'classic',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'proof_ready',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      proofApprovalToken: 'tok_resend_fal',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...overrides,
+      shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
+      pageArtifacts: [
+        { ...overrides.pageArtifacts![0]!, generationProvider: 'fal_edit', generationModel: 'fal-ai/bytedance/seedream/v4/edit' },
+      ],
+      emergencyOverrideUsed: true,
+      emergencyApprovedBy: 'alexy',
+      emergencyApprovalRef: 'fd-emergency-2026-06-19',
+    }, 'ord_resend_proof_fal');
+    // Even with order-level approval, default config emergencyImageRoute=false → PROVIDER_ROUTE_BLOCKED.
+    const r = await resendProofEmail('ord_resend_proof_fal', 'https://h.com');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /PROVIDER_ROUTE_BLOCKED/);
   } finally { cleanup(dir); }
 });

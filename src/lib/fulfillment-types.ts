@@ -115,7 +115,11 @@ export type StorySource =
   | 'ollama_page_prose'
   | 'gemini_page_prose'
   | 'template'
-  | 'template_after_openai_failure';
+  | 'template_after_openai_failure'
+  /** Generation Operating Policy default: Abby / OpenAI manual subscription
+   *  workflow. Operator-authored prose copied in. Distinct from
+   *  `openai_chat` which records an automated chat-completions API call. */
+  | 'manual';
 
 /** Persisted record of how the story for this order was produced. */
 export interface StoryMeta {

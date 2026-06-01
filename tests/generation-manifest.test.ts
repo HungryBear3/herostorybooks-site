@@ -48,8 +48,8 @@ function baseOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
       country: 'US',
     },
     storyMeta: {
-      source: 'openai_chat',
-      model: 'gpt-4o-mini',
+      source: 'manual',
+      model: 'abby:manual-subscription',
       generatedAt: '2026-05-31T20:00:00.000Z',
       fallbackError: null,
     },
@@ -72,8 +72,8 @@ function makePage(overrides: Partial<PageArtifact> = {}): PageArtifact {
     storyText: 'Once upon a time…',
     basePrompt: 'p1',
     currentImageUrl: 'https://example.com/p1.png',
-    generationProvider: 'openai',
-    generationModel: 'gpt-image-1',
+    generationProvider: 'manual',
+    generationModel: 'abby:manual-subscription',
     generationConditioning: 'photo_edit',
     regenerateCount: 0,
     accepted: false,
@@ -198,24 +198,67 @@ test('release guard: storyMeta.source=template (no fallback) → TEMPLATE_STORY_
 });
 
 // ── Emergency provider on a page without order-level approval ───────────────
-test('release guard: page with generationProvider=fal_edit and no emergency approval → EMERGENCY_APPROVAL_MISSING', () => {
+test('release guard: page with generationProvider=fal_edit, flag on, no emergency approval → EMERGENCY_APPROVAL_MISSING', () => {
   const order = baseOrder({
     pageArtifacts: [makePage({ generationProvider: 'fal_edit' })],
   });
-  const r = evaluateReleaseGuard(order);
+  // Flag on but order is missing the per-order approval fields. The
+  // BLOCKED_FAL_NO_APPROVAL policy code maps to EMERGENCY_APPROVAL_MISSING.
+  const r = evaluateReleaseGuard(order, {
+    config: {
+      policyVersion: '2026-05-31',
+      binding: 'test',
+      defaultPaidCustomerRoute: 'OPENAI_MANUAL',
+      apiFallbackEnabled: false,
+      emergencyImageRoute: true,
+      allowTemplateFallbackForPaid: false,
+      orderIntakeOpen: true,
+      digitalFirstMode: true,
+      printCtaEnabled: true,
+    },
+  });
   assert.equal(r.ok, false);
   assert.equal(r.failureCode, 'EMERGENCY_APPROVAL_MISSING');
 });
 
-test('release guard: page with fal_edit AND order-level emergency approval → permitted', () => {
+test('release guard: page with fal_edit and emergency approval but emergencyImageRoute=false → PROVIDER_ROUTE_BLOCKED', () => {
   const order = baseOrder({
     pageArtifacts: [makePage({ generationProvider: 'fal_edit' })],
     emergencyOverrideUsed: true,
     emergencyApprovedBy: 'alexy',
     emergencyApprovalRef: 'fd-emergency-2026-06-19',
   });
+  // Default config has emergencyImageRoute=false. The flag check fires
+  // even though the order has approval fields. This proves the flag is
+  // an independent layer.
   const r = evaluateReleaseGuard(order);
-  assert.equal(r.ok, true);
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'PROVIDER_ROUTE_BLOCKED');
+});
+
+test('release guard: page with fal_edit AND order-level emergency approval AND emergencyImageRoute=true → permitted', () => {
+  const order = baseOrder({
+    pageArtifacts: [makePage({ generationProvider: 'fal_edit' })],
+    emergencyOverrideUsed: true,
+    emergencyApprovedBy: 'alexy',
+    emergencyApprovalRef: 'fd-emergency-2026-06-19',
+  });
+  // emergencyImageRoute must be on at the policy layer AND order must carry
+  // the approval fields. Both gates are required.
+  const r = evaluateReleaseGuard(order, {
+    config: {
+      policyVersion: '2026-05-31',
+      binding: 'test',
+      defaultPaidCustomerRoute: 'OPENAI_MANUAL',
+      apiFallbackEnabled: false,
+      emergencyImageRoute: true,
+      allowTemplateFallbackForPaid: false,
+      orderIntakeOpen: true,
+      digitalFirstMode: true,
+      printCtaEnabled: true,
+    },
+  });
+  assert.equal(r.ok, true, r.message);
 });
 
 // ── Personalization / source-photo enforcement ──────────────────────────────
@@ -337,4 +380,209 @@ test('print guard: wrong fulfillmentStatus → PRINT_STATE_INVALID', () => {
   const r = evaluatePrintGuard(order);
   assert.equal(r.ok, false);
   assert.equal(r.failureCode, 'PRINT_STATE_INVALID');
+});
+
+// ── Follow-up regression tests (post-42d03e6 blockers) ─────────────────────
+
+import {
+  evaluateReleaseGuardStructural,
+} from '../src/lib/generation-manifest.ts';
+
+const PERMISSIVE_API = {
+  policyVersion: '2026-05-31',
+  binding: 'test',
+  defaultPaidCustomerRoute: 'OPENAI_MANUAL' as const,
+  apiFallbackEnabled: true,
+  emergencyImageRoute: false,
+  allowTemplateFallbackForPaid: false,
+  orderIntakeOpen: true,
+  digitalFirstMode: true,
+  printCtaEnabled: true,
+};
+
+const PERMISSIVE_EMERGENCY = { ...PERMISSIVE_API, apiFallbackEnabled: false, emergencyImageRoute: true };
+
+test('structural release guard: awaiting-QA order without QA pass STILL ok if structure is valid (UI deadlock fix)', () => {
+  const order = baseOrder({
+    fulfillmentStatus: 'awaiting_qa',
+    qaPassAt: null,
+    qaPassBy: null,
+    qaStatus: 'pending',
+    qaReviewer: null,
+  });
+  // Full guard would block on QA_NOT_PASSED. Structural guard reflects
+  // the post-checklist preview state and returns ok.
+  const structural = evaluateReleaseGuardStructural(order);
+  assert.equal(structural.ok, true, structural.message);
+  // Full guard still requires QA pass.
+  const full = evaluateReleaseGuard(order);
+  assert.equal(full.ok, false);
+  assert.equal(full.failureCode, 'QA_NOT_PASSED');
+});
+
+test('release guard: OPENAI_API page provider blocked when apiFallbackEnabled=false', () => {
+  // default config has apiFallbackEnabled=false.
+  const order = baseOrder({
+    pageArtifacts: [makePage({ generationProvider: 'openai' })],
+  });
+  const r = evaluateReleaseGuard(order);
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'PROVIDER_ROUTE_BLOCKED');
+});
+
+test('release guard: OPENAI_API page provider blocked when flag on but no per-order apiAuthorizedBy/At', () => {
+  const order = baseOrder({
+    pageArtifacts: [makePage({ generationProvider: 'openai' })],
+  });
+  const r = evaluateReleaseGuard(order, { config: PERMISSIVE_API });
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'EMERGENCY_APPROVAL_MISSING');
+});
+
+test('release guard: OPENAI_API page provider permitted when flag on + per-order authorization set', () => {
+  const order = baseOrder({
+    pageArtifacts: [makePage({ generationProvider: 'openai' })],
+    apiAuthorizedBy: 'alexy',
+    apiAuthorizedAt: '2026-06-19T18:00:00.000Z',
+  });
+  const r = evaluateReleaseGuard(order, { config: PERMISSIVE_API });
+  assert.equal(r.ok, true, r.message);
+});
+
+test('release guard: FAL page blocked when emergencyImageRoute=false even with order emergency fields', () => {
+  const order = baseOrder({
+    pageArtifacts: [makePage({ generationProvider: 'fal_edit' })],
+    emergencyOverrideUsed: true,
+    emergencyApprovedBy: 'alexy',
+    emergencyApprovalRef: 'fd-emergency-2026-06-19',
+  });
+  // Default config has emergencyImageRoute=false.
+  const r = evaluateReleaseGuard(order);
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'PROVIDER_ROUTE_BLOCKED');
+});
+
+test('release guard: SEEDREAM page blocked when emergencyImageRoute=false even with order emergency fields', () => {
+  const order = baseOrder({
+    pageArtifacts: [makePage({ generationProvider: 'seedream_edit' })],
+    emergencyOverrideUsed: true,
+    emergencyApprovedBy: 'alexy',
+    emergencyApprovalRef: 'fd-emergency-2026-06-19',
+  });
+  const r = evaluateReleaseGuard(order);
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'PROVIDER_ROUTE_BLOCKED');
+});
+
+test('release guard: unknown page provider blocked even WITH emergency approval fields (MISSING_LINEAGE)', () => {
+  const order = baseOrder({
+    pageArtifacts: [makePage({ generationProvider: 'midjourney' as 'manual' })],
+    emergencyOverrideUsed: true,
+    emergencyApprovedBy: 'alexy',
+    emergencyApprovalRef: 'fd-emergency-2026-06-19',
+  });
+  // Even with emergency fields populated + emergencyImageRoute flag on,
+  // an unmapped provider must NOT pass through the emergency branch.
+  const r = evaluateReleaseGuard(order, { config: PERMISSIVE_EMERGENCY });
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'MISSING_LINEAGE');
+});
+
+test('release guard: gemini_page_prose story source blocked unless explicitly permitted (PROVIDER_ROUTE_BLOCKED)', () => {
+  const order = baseOrder({
+    storyMeta: {
+      source: 'gemini_page_prose',
+      model: 'gemini-1.5-pro',
+      generatedAt: '2026-05-31T20:00:00.000Z',
+      fallbackError: null,
+    },
+  });
+  const r = evaluateReleaseGuard(order, { config: PERMISSIVE_EMERGENCY });
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'PROVIDER_ROUTE_BLOCKED');
+});
+
+test('release guard: ollama_page_prose story source blocked unless explicitly permitted (PROVIDER_ROUTE_BLOCKED)', () => {
+  const order = baseOrder({
+    storyMeta: {
+      source: 'ollama_page_prose',
+      model: 'llama3.1:8b',
+      generatedAt: '2026-05-31T20:00:00.000Z',
+      fallbackError: null,
+    },
+  });
+  const r = evaluateReleaseGuard(order, { config: PERMISSIVE_EMERGENCY });
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'PROVIDER_ROUTE_BLOCKED');
+});
+
+test('release guard: openai_chat story source blocked without apiFallbackEnabled', () => {
+  const order = baseOrder({
+    storyMeta: {
+      source: 'openai_chat',
+      model: 'gpt-4o-mini',
+      generatedAt: '2026-05-31T20:00:00.000Z',
+      fallbackError: null,
+    },
+  });
+  // Default config has apiFallbackEnabled=false → openai_chat blocked.
+  const r = evaluateReleaseGuard(order);
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'PROVIDER_ROUTE_BLOCKED');
+});
+
+test('release guard: openai_chat story source permitted with apiFallbackEnabled + per-order authorization', () => {
+  const order = baseOrder({
+    storyMeta: {
+      source: 'openai_chat',
+      model: 'gpt-4o-mini',
+      generatedAt: '2026-05-31T20:00:00.000Z',
+      fallbackError: null,
+    },
+    apiAuthorizedBy: 'alexy',
+    apiAuthorizedAt: '2026-06-19T18:00:00.000Z',
+  });
+  const r = evaluateReleaseGuard(order, { config: PERMISSIVE_API });
+  assert.equal(r.ok, true, r.message);
+});
+
+test('final server release still blocks template_after_openai_failure even with QA passed', () => {
+  const order = baseOrder({
+    storyMeta: {
+      source: 'template_after_openai_failure',
+      model: 'template:Quest',
+      generatedAt: '2026-05-31T20:00:00.000Z',
+      fallbackError: 'fetch failed',
+    },
+    qaPassAt: '2026-05-31T21:00:00.000Z',
+    qaStatus: 'passed',
+    qaReviewer: 'ops',
+  });
+  const r = evaluateReleaseGuard(order);
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'TEMPLATE_STORY_BLOCKED');
+});
+
+test('final server release still blocks missing lineage even with QA passed', () => {
+  const order = baseOrder({
+    pageArtifacts: [makePage({ generationProvider: null })],
+    qaPassAt: '2026-05-31T21:00:00.000Z',
+    qaStatus: 'passed',
+    qaReviewer: 'ops',
+  });
+  const r = evaluateReleaseGuard(order);
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'MISSING_LINEAGE');
+});
+
+test('final server release still blocks fixture asset even with QA passed', () => {
+  const order = baseOrder({
+    pageArtifacts: [makePage({ assetSource: 'fixture' })],
+    qaPassAt: '2026-05-31T21:00:00.000Z',
+    qaStatus: 'passed',
+    qaReviewer: 'ops',
+  });
+  const r = evaluateReleaseGuard(order);
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'FIXTURE_ASSET_BLOCKED');
 });

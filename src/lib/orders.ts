@@ -96,7 +96,7 @@ export interface PageFeedbackEntry {
   createdAt: string;
   rawText: string;
   tags: string[];
-  providerTried?: 'openai' | 'fal' | 'fal_edit' | 'gemini' | null;
+  providerTried?: 'manual' | 'openai' | 'fal' | 'fal_edit' | 'gemini' | 'seedream' | 'seedream_edit' | null;
   resultImageUrl?: string | null;
   success: boolean;
 }
@@ -104,7 +104,7 @@ export interface PageFeedbackEntry {
 export interface PageVersionEntry {
   createdAt: string;
   imageUrl: string | null;
-  provider: 'openai' | 'fal' | 'fal_edit' | 'gemini';
+  provider: 'manual' | 'openai' | 'fal' | 'fal_edit' | 'gemini' | 'seedream' | 'seedream_edit';
   model: string;
   promptUsed: string;
   /** Whether this version came from a text-only or photo-conditioned call.
@@ -194,7 +194,11 @@ export interface PageArtifact {
   characterAnchor?: string | null;
   currentImageUrl: string | null;
   acceptedImageUrl?: string | null;
-  generationProvider?: 'openai' | 'fal' | 'fal_edit' | 'gemini' | null;
+  /** Generation Operating Policy: `'manual'` covers the Abby / OpenAI
+   *  manual-subscription workflow that is the default paid route. Other
+   *  values are recorded as observed; the release guard maps them to
+   *  policy routes and refuses anything outside the allow-list. */
+  generationProvider?: 'manual' | 'openai' | 'fal' | 'fal_edit' | 'gemini' | 'seedream' | 'seedream_edit' | null;
   generationModel?: string | null;
   /** Whether the CURRENT image on this page used text-only or photo-conditioned
    *  generation. Refreshed every regenerate. Null when no image yet. */
@@ -315,6 +319,14 @@ export interface OrderRecord extends OrderInput {
   /** Short reference (ticket id / Slack permalink / RFC#) describing why
    *  the emergency override was authorized. */
   emergencyApprovalRef?: string | null;
+  /** Bounded identifier of the person who authorized OPENAI_API fallback
+   *  for this order (per policy §2: API fallback requires explicit
+   *  authorization beyond the global apiFallbackEnabled flag). */
+  apiAuthorizedBy?: string | null;
+  /** ISO timestamp the API-fallback authorization was recorded. Release
+   *  guard requires this when a page or story was produced via
+   *  OPENAI_API. */
+  apiAuthorizedAt?: string | null;
   /** Set to true at intake when a customer photo upload was persisted. */
   sourcePhotoPresent?: boolean | null;
   /** Set to true when personalization inputs (childName + theme/lesson/
@@ -1315,6 +1327,8 @@ type FulfillmentPatch = Partial<Pick<
   | 'emergencyOverrideUsed'
   | 'emergencyApprovedBy'
   | 'emergencyApprovalRef'
+  | 'apiAuthorizedBy'
+  | 'apiAuthorizedAt'
   | 'sourcePhotoPresent'
   | 'personalizationInputsPresent'
   | 'manifestComplete'
