@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { getOptionalStripeSecretKey } from './stripe-env.ts';
 
 import { appendAuditEvent, getOrder, updateFulfillmentState, updateOrderStatus, type OrderRecord } from './orders.ts';
-import { triggerFulfillment, approvePrintProof } from './fulfillment.ts';
+import { triggerFulfillment, approvePrintProof, submitPrintAfterOwnerGo } from './fulfillment.ts';
 import {
   sendProofReadyEmail,
   sendLifecycleEmail,
@@ -555,6 +555,17 @@ export async function resendProofEmail(
 
 // ── Manual proof approval (ops override) ──────────────────────────────────────
 
+/**
+ * Admin override that approves the proof on the customer's behalf.
+ *
+ * NOTE per Rex G3: this records ONLY the customer-approval half (sets
+ * `proof_approved` + `proofApprovedAt`/`printApprovedAt`). It does NOT
+ * submit to print. Operator must additionally call
+ * `recordOwnerPrintGo(orderId, ownerBy)` to authorize and execute print
+ * submission. This decoupling exists because customer approval alone —
+ * whether by the customer themselves or by ops on their behalf — must
+ * not trigger automated print per the Generation Operating Policy §6.
+ */
 export async function manuallyApproveProof(orderId: string): Promise<ActionResult> {
   const order = await getOrder(orderId);
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
@@ -568,12 +579,46 @@ export async function manuallyApproveProof(orderId: string): Promise<ActionResul
     return { ok: false, status: 409, error: 'No approval token on order' };
   }
 
-  // Reuse the same code path as the customer approval — pass the stored token.
+  // Reuse the same code path as the customer approval — pass the stored
+  // token. This advances state to `proof_approved` ONLY; it does NOT
+  // call runPrintProduction. Operator's next step is recordOwnerPrintGo.
   const result = await approvePrintProof(order.id, order.proofApprovalToken);
   if (!result.ok) {
     return { ok: false, status: 409, error: result.error ?? 'Approval failed' };
   }
-  return { ok: true, detail: 'Proof manually approved' };
+  return {
+    ok: true,
+    detail: 'Proof manually approved — proof_approved. Call recordOwnerPrintGo to submit print.',
+  };
+}
+
+/**
+ * Operator/owner records explicit print go and triggers `submitPrint`.
+ * This is the ONLY admin path that ultimately reaches Lulu/RPI. Customer
+ * approval — direct or via `manuallyApproveProof` — is necessary but
+ * NOT sufficient.
+ *
+ * Server-side checks (delegated to `submitPrintAfterOwnerGo`):
+ *  - paymentStatus paid + not refunded
+ *  - qaPassAt set
+ *  - customer approval timestamp present
+ *  - fulfillmentStatus === 'proof_approved'
+ *  - ownerBy is non-empty
+ *
+ * Side effect: persists `ownerPrintGoAt` + `ownerPrintGoBy`, then
+ * runs print production. Print guard inside runPrintProduction will
+ * still re-validate the manifest, QA, and lineage before invoking
+ * the submitPrint dep.
+ */
+export async function recordOwnerPrintGo(
+  orderId: string,
+  ownerBy: string,
+): Promise<ActionResult> {
+  const result = await submitPrintAfterOwnerGo(orderId, ownerBy);
+  if (result.ok === true) {
+    return { ok: true, detail: 'Owner print-go recorded; print submission attempted.' };
+  }
+  return { ok: false, status: 409, error: result.error ?? 'Owner print-go refused' };
 }
 
 // ── Pre-print Stripe refund ──────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   triggerFulfillment,
   approvePrintProof,
+  submitPrintAfterOwnerGo,
   backoffMs,
   MAX_RETRIES,
   type FulfillmentDeps,
@@ -583,9 +584,21 @@ test('print order cannot enter print_in_production without proof approval', asyn
   }
 });
 
-test('valid token approves proof, creates cover artifact, and triggers print production', async () => {
+test('Rex G3: valid customer token approves proof but does NOT submit to print (owner go required)', async () => {
+  // Rex G3 requirement: customer approval alone must not invoke
+  // submitPrint. After approvePrintProof, the order is at proof_approved
+  // with timestamps recorded; no print job is created.
   const dir = makeTmpDir();
   try {
+    let submitPrintCalls = 0;
+    const depsWithCountedPrint: FulfillmentDeps = {
+      ...PASS_DEPS,
+      submitPrint: async () => {
+        submitPrintCalls += 1;
+        return { jobId: 'lulu-should-not-fire' };
+      },
+    };
+
     const order = await makeOrder({
       paymentStatus: 'paid',
       bookFormat: 'classic',
@@ -597,9 +610,6 @@ test('valid token approves proof, creates cover artifact, and triggers print pro
       printInteriorPageCount: 32,
       printTitle: MOCK_STORY.title,
       proofApprovalToken: 'valid-token-abc',
-      // Generation Operating Policy §6 — print guard now re-runs the
-      // release guard, which requires storyMeta + page lineage + photo +
-      // personalization + QA pass. Seed the order so the policy passes.
       theme: 'dinosaur-discovery',
       photoBlobUrl: 'https://example.com/photos/luna.jpg',
       photoBlobPath: 'orders/test/photo.jpg',
@@ -629,16 +639,206 @@ test('valid token approves proof, creates cover artifact, and triggers print pro
       qaPassBy: 'ops',
     }, dir);
 
-    const result = await approvePrintProof(order.id, 'valid-token-abc', PASS_DEPS);
+    const result = await approvePrintProof(order.id, 'valid-token-abc', depsWithCountedPrint);
     assert.equal(result.ok, true, result.error);
+
+    const after = await getOrder(order.id);
+    // Customer approval recorded:
+    assert.equal(after?.fulfillmentStatus, 'proof_approved');
+    assert.ok(after?.proofApprovedAt, 'proofApprovedAt should be set after customer approval');
+    assert.ok(after?.printApprovedAt, 'printApprovedAt should be set after customer approval');
+    // But owner-go NOT recorded and print NOT submitted:
+    assert.equal(after?.ownerPrintGoAt, undefined, 'ownerPrintGoAt must NOT be set by customer approval');
+    assert.equal(after?.printJobId, undefined, 'printJobId must NOT be set before owner go');
+    assert.equal(after?.status, 'preview_ready', 'order.status must not advance to print_in_production');
+    assert.equal(submitPrintCalls, 0, 'submitPrint must not be invoked by customer approval alone');
+    assert.equal(after?.printCoverArtifactUrl ?? null, null, 'print cover must not be generated before owner go');
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('Rex G3: owner go AFTER customer approval submits to print (two-phase happy path)', async () => {
+  // Customer approval → owner records explicit go → print submission
+  // fires through the standard runPrintProduction path.
+  const dir = makeTmpDir();
+  try {
+    let submitPrintCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      submitPrint: async () => {
+        submitPrintCalls += 1;
+        return { jobId: 'lulu-job-go-001' };
+      },
+    };
+
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      fulfillmentStatus: 'proof_ready',
+      status: 'preview_ready',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      printInteriorArtifactUrl: 'https://cdn.example.com/interior.pdf',
+      printInteriorMd5: 'INTERIORMD5',
+      printInteriorPageCount: 32,
+      printTitle: MOCK_STORY.title,
+      proofApprovalToken: 'valid-token-go',
+      theme: 'dinosaur-discovery',
+      photoBlobUrl: 'https://example.com/photos/luna.jpg',
+      photoBlobPath: 'orders/test/photo.jpg',
+      photoFileName: 'luna.jpg',
+      storyMeta: {
+        source: 'manual',
+        model: 'abby:manual-subscription',
+        generatedAt: '2026-05-31T20:00:00.000Z',
+        fallbackError: null,
+      },
+      pageArtifacts: [
+        {
+          pageIndex: 0,
+          storyText: 'Once upon a time…',
+          basePrompt: 'p1',
+          currentImageUrl: 'https://example.com/p1.png',
+          generationProvider: 'manual',
+          generationModel: 'abby:manual-subscription',
+          generationConditioning: 'photo_edit',
+          regenerateCount: 0,
+          accepted: false,
+          feedbackHistory: [],
+          versionHistory: [],
+        },
+      ],
+      qaPassAt: '2026-05-31T20:30:00.000Z',
+      qaPassBy: 'ops',
+    }, dir);
+
+    // Phase 1: customer approves → no print.
+    const customerApprove = await approvePrintProof(order.id, 'valid-token-go', deps);
+    assert.equal(customerApprove.ok, true);
+    assert.equal(submitPrintCalls, 0, 'no submitPrint after customer approval');
+
+    // Phase 2: operator records owner go → print fires.
+    const ownerGo = await submitPrintAfterOwnerGo(order.id, 'ops@example.com', deps);
+    assert.equal(ownerGo.ok, true, ownerGo.error);
+    assert.equal(submitPrintCalls, 1, 'submitPrint must fire exactly once after owner go');
 
     const after = await getOrder(order.id);
     assert.equal(after?.fulfillmentStatus, 'complete');
     assert.equal(after?.status, 'print_in_production');
-    assert.ok(after?.printJobId, 'printJobId should be set after successful submission');
-    assert.ok(after?.proofApprovedAt, 'proofApprovedAt should be set');
+    assert.ok(after?.ownerPrintGoAt, 'ownerPrintGoAt must be persisted');
+    assert.equal(after?.ownerPrintGoBy, 'ops@example.com');
+    assert.ok(after?.printJobId, 'printJobId set after submission');
     assert.ok(after?.printCoverArtifactUrl?.includes('-cover.pdf'));
-    assert.equal(after?.printCoverMd5, 'e274f158f3728fcf5ae211c63af31db8');
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('Rex G3: submitPrintAfterOwnerGo refuses without prior customer approval', async () => {
+  const dir = makeTmpDir();
+  try {
+    let submitPrintCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      submitPrint: async () => { submitPrintCalls += 1; return { jobId: 'should-not-run' }; },
+    };
+
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      fulfillmentStatus: 'proof_ready',
+      status: 'preview_ready',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      printInteriorArtifactUrl: 'https://cdn.example.com/interior.pdf',
+      printInteriorMd5: 'INTERIORMD5',
+      printInteriorPageCount: 32,
+      printTitle: MOCK_STORY.title,
+      proofApprovalToken: 'tok-no-approval',
+      qaPassAt: '2026-05-31T20:30:00.000Z',
+      qaPassBy: 'ops',
+    }, dir);
+
+    // Operator tries to record owner-go without the customer having
+    // approved. Must refuse.
+    const r = await submitPrintAfterOwnerGo(order.id, 'ops@example.com', deps);
+    assert.equal(r.ok, false);
+    assert.match(r.error ?? '', /customer approval|proof_approved|state/i);
+    assert.equal(submitPrintCalls, 0);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.ownerPrintGoAt, undefined);
+    assert.equal(after?.printJobId, undefined);
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('Rex G3: print path uses mocked submitPrint only — no unmocked HTTP escapes', async (t) => {
+  // Belt-and-suspenders: assert no fetch call escapes the mocked
+  // submitPrint dep during the two-phase happy path. If any HTTP request
+  // tries to leave the test (toward Lulu/RPI/anywhere), the stub counts
+  // it and the test fails.
+  const originalFetch = globalThis.fetch;
+  let unmockedFetchCalls = 0;
+  globalThis.fetch = (async () => {
+    unmockedFetchCalls += 1;
+    return new Response('blocked', { status: 599 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const dir = makeTmpDir();
+  try {
+    let submitPrintCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      submitPrint: async () => { submitPrintCalls += 1; return { jobId: 'lulu-mocked-only' }; },
+    };
+
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'premium',
+      fulfillmentStatus: 'proof_ready',
+      status: 'preview_ready',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      printInteriorArtifactUrl: 'https://cdn.example.com/interior.pdf',
+      printInteriorMd5: 'INTERIORMD5',
+      printInteriorPageCount: 32,
+      printTitle: MOCK_STORY.title,
+      proofApprovalToken: 'tok-no-net',
+      theme: 'dinosaur-discovery',
+      photoBlobUrl: 'https://example.com/photos/luna.jpg',
+      photoBlobPath: 'orders/test/photo.jpg',
+      photoFileName: 'luna.jpg',
+      storyMeta: {
+        source: 'manual',
+        model: 'abby:manual-subscription',
+        generatedAt: '2026-05-31T20:00:00.000Z',
+        fallbackError: null,
+      },
+      pageArtifacts: [
+        {
+          pageIndex: 0,
+          storyText: 'Once upon a time…',
+          basePrompt: 'p1',
+          currentImageUrl: 'https://example.com/p1.png',
+          generationProvider: 'manual',
+          generationModel: 'abby:manual-subscription',
+          generationConditioning: 'photo_edit',
+          regenerateCount: 0,
+          accepted: false,
+          feedbackHistory: [],
+          versionHistory: [],
+        },
+      ],
+      qaPassAt: '2026-05-31T20:30:00.000Z',
+      qaPassBy: 'ops',
+    }, dir);
+
+    await approvePrintProof(order.id, 'tok-no-net', deps);
+    await submitPrintAfterOwnerGo(order.id, 'ops@example.com', deps);
+
+    assert.equal(submitPrintCalls, 1, 'mocked submitPrint must be called exactly once');
+    assert.equal(unmockedFetchCalls, 0, 'no unmocked HTTP transport may escape the test');
   } finally {
     cleanupTmpDir(dir);
   }

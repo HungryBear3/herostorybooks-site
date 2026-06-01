@@ -57,6 +57,7 @@ export type ReleaseFailureCode =
 
 export type PrintFailureCode =
   | 'CUSTOMER_APPROVAL_REQUIRED'
+  | 'OWNER_GO_REQUIRED'
   | 'PRINT_QA_GUARD_FAILED'
   | 'PRINT_MANIFEST_INVALID'
   | 'PRINT_LINEAGE_INVALID'
@@ -601,6 +602,19 @@ export function evaluatePrintGuard(order: OrderRecord): PrintGuardResult {
       ok: false,
       failureCode: 'CUSTOMER_APPROVAL_REQUIRED',
       message: 'Cannot submit print: customer approval timestamp missing (printApprovedAt/proofApprovedAt)',
+      manifest,
+    };
+  }
+  // Per Rex G3: customer approval alone MUST NOT trigger print. An
+  // explicit owner/operator go is required AFTER customer approval. This
+  // is a separate persisted field (ownerPrintGoAt) set only by the
+  // dedicated admin action (recordOwnerPrintGo), not by the customer's
+  // /review approval click.
+  if (!order.ownerPrintGoAt) {
+    return {
+      ok: false,
+      failureCode: 'OWNER_GO_REQUIRED',
+      message: 'Cannot submit print: ownerPrintGoAt missing — operator must record explicit print go/no-go after customer approval',
       manifest,
     };
   }

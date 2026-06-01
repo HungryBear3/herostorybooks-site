@@ -304,10 +304,18 @@ export interface OrderRecord extends OrderInput {
    *  releaseOrderAfterQa. Distinct from qaPassAt (the gate decision). */
   customerProofReleasedAt?: string | null;
   /** ISO timestamp customer approval was recorded; aliases proofApprovedAt
-   *  for the print guard. */
+   *  for the print guard. Customer-approval timestamp is NOT sufficient on
+   *  its own to authorize print submission — see ownerPrintGoAt. */
   printApprovedAt?: string | null;
   /** ISO timestamp print submission to Lulu succeeded. */
   printSubmittedAt?: string | null;
+  /** ISO timestamp an operator/owner gave explicit print go/no-go go.
+   *  Required by the print guard: customer approval alone MUST NOT cause
+   *  submitPrint to be invoked. Per Rex G3 audit: "approved-without-
+   *  owner-go is blocked." */
+  ownerPrintGoAt?: string | null;
+  /** Bounded operator identifier that recorded ownerPrintGoAt. */
+  ownerPrintGoBy?: string | null;
   /** True when ops decided an order needs manual intervention before
    *  release. Set by operators; never auto-cleared. */
   manualInterventionRequired?: boolean | null;
@@ -1323,6 +1331,8 @@ type FulfillmentPatch = Partial<Pick<
   | 'customerProofReleasedAt'
   | 'printApprovedAt'
   | 'printSubmittedAt'
+  | 'ownerPrintGoAt'
+  | 'ownerPrintGoBy'
   | 'manualInterventionRequired'
   | 'emergencyOverrideUsed'
   | 'emergencyApprovedBy'

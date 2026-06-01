@@ -308,6 +308,22 @@ test('validateManifest: empty pageArtifacts reports specific issue', () => {
   assert.ok(v.issues.some((i) => i.includes('no page artifacts')));
 });
 
+// ── Rex G3: owner go required AFTER customer approval ──────────────────────
+test('print guard: customer approved but ownerPrintGoAt missing → OWNER_GO_REQUIRED', () => {
+  // Order has customer approval + everything else clean, but the operator
+  // has NOT recorded an explicit print go. submitPrint must not fire.
+  const order = baseOrder({
+    fulfillmentStatus: 'proof_approved',
+    proofApprovedAt: '2026-05-31T22:00:00.000Z',
+    printApprovedAt: '2026-05-31T22:00:00.000Z',
+    // ownerPrintGoAt deliberately absent
+  });
+  const r = evaluatePrintGuard(order);
+  assert.equal(r.ok, false);
+  assert.equal(r.failureCode, 'OWNER_GO_REQUIRED');
+  assert.match(r.message ?? '', /operator must record explicit print go/i);
+});
+
 // ── Required test 9: print without customer approval ────────────────────────
 test('print guard: missing proofApprovedAt → CUSTOMER_APPROVAL_REQUIRED', () => {
   const order = baseOrder({
@@ -326,6 +342,8 @@ test('print guard: customer approved but page has fixture asset → PRINT_LINEAG
     fulfillmentStatus: 'proof_approved',
     proofApprovedAt: '2026-05-31T22:00:00.000Z',
     printApprovedAt: '2026-05-31T22:00:00.000Z',
+    ownerPrintGoAt: '2026-05-31T22:05:00.000Z',
+    ownerPrintGoBy: 'ops',
     pageArtifacts: [makePage({ assetSource: 'fixture' })],
   });
   const r = evaluatePrintGuard(order);
@@ -339,6 +357,8 @@ test('print guard: customer approved but page missing lineage → PRINT_LINEAGE_
     fulfillmentStatus: 'proof_approved',
     proofApprovedAt: '2026-05-31T22:00:00.000Z',
     printApprovedAt: '2026-05-31T22:00:00.000Z',
+    ownerPrintGoAt: '2026-05-31T22:05:00.000Z',
+    ownerPrintGoBy: 'ops',
     pageArtifacts: [makePage({ generationProvider: null })],
   });
   const r = evaluatePrintGuard(order);
@@ -352,6 +372,8 @@ test('print guard: customer approved but qaStatus=blocked → PRINT_QA_GUARD_FAI
     fulfillmentStatus: 'proof_approved',
     proofApprovedAt: '2026-05-31T22:00:00.000Z',
     printApprovedAt: '2026-05-31T22:00:00.000Z',
+    ownerPrintGoAt: '2026-05-31T22:05:00.000Z',
+    ownerPrintGoBy: 'ops',
     qaStatus: 'blocked',
     qaReviewer: 'ops',
     qaPassAt: null,
@@ -366,6 +388,8 @@ test('print guard: happy path → ok', () => {
     fulfillmentStatus: 'proof_approved',
     proofApprovedAt: '2026-05-31T22:00:00.000Z',
     printApprovedAt: '2026-05-31T22:00:00.000Z',
+    ownerPrintGoAt: '2026-05-31T22:05:00.000Z',
+    ownerPrintGoBy: 'ops',
   });
   const r = evaluatePrintGuard(order);
   assert.equal(r.ok, true, r.message ?? '');
@@ -376,6 +400,8 @@ test('print guard: wrong fulfillmentStatus → PRINT_STATE_INVALID', () => {
     fulfillmentStatus: 'awaiting_qa',
     proofApprovedAt: '2026-05-31T22:00:00.000Z',
     printApprovedAt: '2026-05-31T22:00:00.000Z',
+    ownerPrintGoAt: '2026-05-31T22:05:00.000Z',
+    ownerPrintGoBy: 'ops',
   });
   const r = evaluatePrintGuard(order);
   assert.equal(r.ok, false);

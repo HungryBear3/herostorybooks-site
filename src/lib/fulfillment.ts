@@ -1228,11 +1228,27 @@ export async function triggerFulfillment(
 
 /**
  * Called when customer clicks the approval link in their proof email.
+ *
+ * IMPORTANT (Rex G3): customer approval alone MUST NOT submit to print.
+ * This function records the customer approval (proof_approved state +
+ * proofApprovedAt + printApprovedAt) and stops. Print submission requires
+ * a SEPARATE operator/owner go via `recordOwnerPrintGo` in
+ * `admin-actions.ts`, which is the only path that calls
+ * `runPrintProduction`. The two-stage flow exists because Rex's audit
+ * explicitly forbids automated print on proof-ready or customer approval
+ * alone — see docs/policies/2026-05-31-hsb-generation-operating-policy.md
+ * §6 and the Rex red→yellow gate audit doc.
+ *
+ * Backward-compat: deps param is preserved for callers (and tests) that
+ * still pass it. It is no longer consumed here — the print path is owned
+ * by `recordOwnerPrintGo`. Tests that previously asserted print job
+ * submission after this call now need to additionally call
+ * `recordOwnerPrintGo` to drive the order to complete.
  */
 export async function approvePrintProof(
   orderId: string,
   token: string,
-  deps: FulfillmentDeps = {},
+  _deps: FulfillmentDeps = {},
 ): Promise<{ ok: boolean; error?: string }> {
   const order = await getOrder(orderId);
   if (!order) return { ok: false, error: 'Order not found' };
@@ -1249,14 +1265,6 @@ export async function approvePrintProof(
     return { ok: false, error: `Proof is in state ${order.fulfillmentStatus} — cannot approve` };
   }
 
-  // Use the authoritative in-memory record returned by updateFulfillmentState
-  // rather than doing a second getOrder reload. The two-step variant could
-  // produce a stale snapshot (read-after-write inconsistency on the blob
-  // backend) where runPrintProduction's gate observed fulfillmentStatus=
-  // 'proof_ready' and refused — which then burned all retry attempts and
-  // pushed the order to failed_manual_review even though approval had
-  // already persisted. updateFulfillmentState returns the post-write state
-  // it just persisted; using it directly closes that race.
   const approvedAt = new Date().toISOString();
   const updatedOrder = await updateFulfillmentState(orderId, {
     fulfillmentStatus: 'proof_approved',
@@ -1265,11 +1273,61 @@ export async function approvePrintProof(
   });
   if (!updatedOrder) return { ok: false, error: 'Failed to update order state' };
 
-  await runWithRetry(
-    orderId,
-    () => runPrintProduction(updatedOrder, deps),
-    deps,
-  );
+  // INTENTIONALLY DO NOT call runPrintProduction here. Customer approval
+  // moves the order to `proof_approved` and stops. Operator must call
+  // `recordOwnerPrintGo(orderId, ownerBy)` to actually submit to print.
+  void _deps; // preserved for caller-side compatibility; unused
 
+  return { ok: true };
+}
+
+/**
+ * Operator/owner explicit go to submit a customer-approved order to
+ * print. Exported so admin-actions can call it; the dependency split
+ * keeps runPrintProduction internal to this module.
+ *
+ * Preconditions:
+ *  - Order exists.
+ *  - paymentStatus === 'paid' (and not refunded).
+ *  - QA pass recorded (`qaPassAt`).
+ *  - Customer has approved (`printApprovedAt` / `proofApprovedAt` set).
+ *  - fulfillmentStatus is `proof_approved` (the only valid transition
+ *    point for owner-go).
+ *  - Caller supplies a non-empty `ownerBy` operator identifier.
+ *
+ * Side effect: persists `ownerPrintGoAt` + `ownerPrintGoBy`, then runs
+ * `runPrintProduction` via the standard runWithRetry wrapper.
+ */
+export async function submitPrintAfterOwnerGo(
+  orderId: string,
+  ownerBy: string,
+  deps: FulfillmentDeps = {},
+): Promise<{ ok: boolean; error?: string }> {
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, error: 'Order not found' };
+  if (order.paymentStatus !== 'paid') {
+    return { ok: false, error: `paymentStatus=${order.paymentStatus} — cannot submit print` };
+  }
+  if (order.refundedAt) return { ok: false, error: 'Refunded — cannot submit print' };
+  if (!order.qaPassAt) {
+    return { ok: false, error: 'Cannot record owner go before QA pass' };
+  }
+  if (!order.printApprovedAt && !order.proofApprovedAt) {
+    return { ok: false, error: 'Cannot record owner go before customer approval (printApprovedAt missing)' };
+  }
+  if (order.fulfillmentStatus !== 'proof_approved') {
+    return { ok: false, error: `Cannot record owner go: fulfillmentStatus=${order.fulfillmentStatus}` };
+  }
+  const trimmed = (ownerBy ?? '').trim().slice(0, 120);
+  if (!trimmed) return { ok: false, error: 'ownerBy required' };
+
+  const goAt = new Date().toISOString();
+  const updatedOrder = await updateFulfillmentState(orderId, {
+    ownerPrintGoAt: goAt,
+    ownerPrintGoBy: trimmed,
+  });
+  if (!updatedOrder) return { ok: false, error: 'Failed to persist owner go' };
+
+  await runWithRetry(orderId, () => runPrintProduction(updatedOrder, deps), deps);
   return { ok: true };
 }
