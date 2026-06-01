@@ -618,7 +618,20 @@ export async function recordOwnerPrintGo(
   if (result.ok === true) {
     return { ok: true, detail: 'Owner print-go recorded; print submission attempted.' };
   }
-  return { ok: false, status: 409, error: result.error ?? 'Owner print-go refused' };
+  // Map the acquisition path's named failure codes to clean HTTP
+  // statuses. 400 for input-shape problems the caller can fix
+  // (OWNER_BY_REQUIRED), 404 for unknown order, 409 for everything
+  // else (already-acquired, wrong state, race lost, etc.).
+  const code = result.failureCode;
+  const status: 400 | 404 | 409 =
+    code === 'OWNER_BY_REQUIRED' ? 400 :
+    code === 'ORDER_NOT_FOUND' ? 404 :
+    409;
+  return {
+    ok: false,
+    status,
+    error: result.error ?? 'Owner print-go refused',
+  };
 }
 
 // ── Pre-print Stripe refund ──────────────────────────────────────────────────

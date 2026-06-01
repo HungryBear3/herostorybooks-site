@@ -1298,36 +1298,157 @@ export async function approvePrintProof(
  * Side effect: persists `ownerPrintGoAt` + `ownerPrintGoBy`, then runs
  * `runPrintProduction` via the standard runWithRetry wrapper.
  */
+/**
+ * Named refusal codes from the acquisition path. Callers (route +
+ * admin-actions wrapper) translate these into HTTP status codes.
+ */
+export type OwnerPrintGoFailureCode =
+  | 'ORDER_NOT_FOUND'
+  | 'PAYMENT_NOT_CONFIRMED'
+  | 'REFUNDED'
+  | 'QA_NOT_PASSED'
+  | 'CUSTOMER_APPROVAL_REQUIRED'
+  | 'WRONG_FULFILLMENT_STATUS'
+  | 'ALREADY_OWNER_GO'
+  | 'ALREADY_SUBMITTED'
+  | 'ALREADY_SHIPPED'
+  | 'OWNER_BY_REQUIRED'
+  | 'RACE_LOST'
+  | 'PERSIST_FAILED';
+
+export interface SubmitPrintAfterOwnerGoDeps extends FulfillmentDeps {
+  /** Test seam — inject a deterministic lock token. Production code
+   *  uses `crypto.randomBytes(16).toString('hex')`. */
+  generateLockToken?: () => string;
+}
+
+/**
+ * Operator/owner explicit go to submit a customer-approved order to
+ * print. Exported so admin-actions can call it.
+ *
+ * Concurrency model (G3 follow-up to 66302c4):
+ *
+ *  Persistence is last-write-wins read-modify-write (filesystem +
+ *  Vercel Blob, no native CAS). Two concurrent admin POSTs could both
+ *  read pre-go state and both proceed to submitPrint without a guard.
+ *  This function acquires an exclusive lock token before any external
+ *  print side effect:
+ *
+ *    1. Read order; validate eligibility (returns named refusal codes,
+ *       including idempotent ones for already-owner-go / already-submitted
+ *       / already-shipped).
+ *    2. Generate a per-attempt `lockToken` (16-byte hex by default;
+ *       overridable via `deps.generateLockToken` for tests).
+ *    3. Write the acquisition patch — transitions
+ *       `fulfillmentStatus: proof_approved → submitting_to_print` AND
+ *       sets `ownerPrintGoAt` / `ownerPrintGoBy` / `ownerPrintGoLockToken`.
+ *    4. Re-read the order from the store. If the persisted
+ *       `ownerPrintGoLockToken` matches the token we wrote, this
+ *       request holds the lock. Otherwise another request acquired
+ *       first — refuse with `RACE_LOST` and DO NOT call submitPrint.
+ *    5. Only the lock holder runs `runPrintProduction`, which in turn
+ *       calls the mocked-in-tests `submitPrint`.
+ *
+ *  Result: even with parallel callers, at most one acquires the lock
+ *  and at most one submitPrint invocation can occur.
+ */
 export async function submitPrintAfterOwnerGo(
   orderId: string,
   ownerBy: string,
-  deps: FulfillmentDeps = {},
-): Promise<{ ok: boolean; error?: string }> {
-  const order = await getOrder(orderId);
-  if (!order) return { ok: false, error: 'Order not found' };
-  if (order.paymentStatus !== 'paid') {
-    return { ok: false, error: `paymentStatus=${order.paymentStatus} — cannot submit print` };
+  deps: SubmitPrintAfterOwnerGoDeps = {},
+): Promise<{ ok: boolean; error?: string; failureCode?: OwnerPrintGoFailureCode }> {
+  const trimmed = (ownerBy ?? '').trim().slice(0, 120);
+  if (!trimmed) {
+    return { ok: false, failureCode: 'OWNER_BY_REQUIRED', error: 'ownerBy required' };
   }
-  if (order.refundedAt) return { ok: false, error: 'Refunded — cannot submit print' };
+
+  const order = await getOrder(orderId);
+  if (!order) {
+    return { ok: false, failureCode: 'ORDER_NOT_FOUND', error: 'Order not found' };
+  }
+  if (order.paymentStatus !== 'paid') {
+    return {
+      ok: false,
+      failureCode: 'PAYMENT_NOT_CONFIRMED',
+      error: `paymentStatus=${order.paymentStatus} — cannot submit print`,
+    };
+  }
+  if (order.refundedAt) {
+    return { ok: false, failureCode: 'REFUNDED', error: 'Refunded — cannot submit print' };
+  }
   if (!order.qaPassAt) {
-    return { ok: false, error: 'Cannot record owner go before QA pass' };
+    return {
+      ok: false,
+      failureCode: 'QA_NOT_PASSED',
+      error: 'Cannot record owner go before QA pass',
+    };
   }
   if (!order.printApprovedAt && !order.proofApprovedAt) {
-    return { ok: false, error: 'Cannot record owner go before customer approval (printApprovedAt missing)' };
+    return {
+      ok: false,
+      failureCode: 'CUSTOMER_APPROVAL_REQUIRED',
+      error: 'Cannot record owner go before customer approval (printApprovedAt missing)',
+    };
+  }
+  // Idempotent refusals (do NOT clear/overwrite existing acquisition).
+  if (order.status === 'shipped') {
+    return {
+      ok: false,
+      failureCode: 'ALREADY_SHIPPED',
+      error: 'Order already shipped — owner go is a no-op',
+    };
+  }
+  if (order.printJobId) {
+    return {
+      ok: false,
+      failureCode: 'ALREADY_SUBMITTED',
+      error: `Print already submitted (printJobId=${order.printJobId}); owner go is a no-op`,
+    };
+  }
+  if (order.ownerPrintGoAt) {
+    return {
+      ok: false,
+      failureCode: 'ALREADY_OWNER_GO',
+      error: `Owner go already recorded at ${order.ownerPrintGoAt} by ${order.ownerPrintGoBy ?? 'unknown'}`,
+    };
   }
   if (order.fulfillmentStatus !== 'proof_approved') {
-    return { ok: false, error: `Cannot record owner go: fulfillmentStatus=${order.fulfillmentStatus}` };
+    return {
+      ok: false,
+      failureCode: 'WRONG_FULFILLMENT_STATUS',
+      error: `Cannot record owner go: fulfillmentStatus=${order.fulfillmentStatus}`,
+    };
   }
-  const trimmed = (ownerBy ?? '').trim().slice(0, 120);
-  if (!trimmed) return { ok: false, error: 'ownerBy required' };
 
+  // Acquire lock. The token is the canonical race-loss signal; we ALSO
+  // transition fulfillmentStatus to `submitting_to_print` as the visible
+  // state lock so any subsequent owner-go attempt early-exits at the
+  // WRONG_FULFILLMENT_STATUS check above.
+  const lockToken = (deps.generateLockToken ?? (() => crypto.randomBytes(16).toString('hex')))();
   const goAt = new Date().toISOString();
   const updatedOrder = await updateFulfillmentState(orderId, {
+    fulfillmentStatus: 'submitting_to_print',
     ownerPrintGoAt: goAt,
     ownerPrintGoBy: trimmed,
+    ownerPrintGoLockToken: lockToken,
   });
-  if (!updatedOrder) return { ok: false, error: 'Failed to persist owner go' };
+  if (!updatedOrder) {
+    return { ok: false, failureCode: 'PERSIST_FAILED', error: 'Failed to persist owner go' };
+  }
 
-  await runWithRetry(orderId, () => runPrintProduction(updatedOrder, deps), deps);
+  // CAS readback. Re-read the persisted record; if our token survived,
+  // we hold the lock. If a concurrent writer overwrote us, refuse with
+  // RACE_LOST and DO NOT call submitPrint. The other request will run
+  // print under its own lock.
+  const verify = await getOrder(orderId);
+  if (!verify || verify.ownerPrintGoLockToken !== lockToken) {
+    return {
+      ok: false,
+      failureCode: 'RACE_LOST',
+      error: `Owner go race lost — another acquirer holds the lock (current token=${verify?.ownerPrintGoLockToken ?? 'null'})`,
+    };
+  }
+
+  await runWithRetry(orderId, () => runPrintProduction(verify, deps), deps);
   return { ok: true };
 }

@@ -316,6 +316,13 @@ export interface OrderRecord extends OrderInput {
   ownerPrintGoAt?: string | null;
   /** Bounded operator identifier that recorded ownerPrintGoAt. */
   ownerPrintGoBy?: string | null;
+  /** Per-attempt random nonce written at owner-go acquisition. Used as a
+   *  CAS-via-readback signal: after writing the lock, the acquirer
+   *  re-reads the record; only the request whose token survives the
+   *  read holds the lock and is permitted to call submitPrint. This
+   *  protects against two concurrent admin POSTs both reading pre-go
+   *  state, both writing, and both proceeding to Lulu/RPI. */
+  ownerPrintGoLockToken?: string | null;
   /** True when ops decided an order needs manual intervention before
    *  release. Set by operators; never auto-cleared. */
   manualInterventionRequired?: boolean | null;
@@ -1333,6 +1340,7 @@ type FulfillmentPatch = Partial<Pick<
   | 'printSubmittedAt'
   | 'ownerPrintGoAt'
   | 'ownerPrintGoBy'
+  | 'ownerPrintGoLockToken'
   | 'manualInterventionRequired'
   | 'emergencyOverrideUsed'
   | 'emergencyApprovedBy'
