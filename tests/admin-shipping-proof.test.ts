@@ -1014,7 +1014,7 @@ test('admin /print-go route: source guarantees admin auth check before recordOwn
     'isAdminAuthedFromRequest must be checked before recordOwnerPrintGo is called');
 });
 
-test('admin owner-go UI: detail-client.tsx renders the two-step gate (ack checkbox + confirm dialog) and explicit "customer approval is not enough" copy', async () => {
+test('admin owner-go UI: detail-client.tsx renders the multi-step gate (open-modal + ack + PRINT GO phrase) and explicit "customer approval is not enough" copy', async () => {
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(
     new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
@@ -1023,17 +1023,28 @@ test('admin owner-go UI: detail-client.tsx renders the two-step gate (ack checkb
   // 1. Owner-go panel exists.
   assert.match(src, /data-testid="owner-print-go-panel"/);
   // 2. Explicit "customer approval is not enough" copy is rendered (no
-  //    operator can misread the affordance as customer-driven).
-  assert.match(src, /[Cc]ustomer approval is not enough/);
-  // 3. Two-step gate: an explicit ack checkbox plus a confirm() dialog.
+  //    operator can misread the affordance as customer-driven). Must
+  //    appear both in the panel intro AND in the confirmation modal.
+  const customerApprovalHits = src.match(/[Cc]ustomer approval is not enough/g) ?? [];
+  assert.ok(
+    customerApprovalHits.length >= 2,
+    `expected "customer approval is not enough" in both panel + modal, found ${customerApprovalHits.length} occurrence(s)`,
+  );
+  // 3. Multi-step gate: open-modal button → ack checkbox + PRINT GO
+  //    phrase inside the modal (no window.confirm on this path).
+  assert.match(src, /data-testid="owner-print-go-open-modal"/);
+  assert.match(src, /data-testid="owner-print-go-modal"/);
   assert.match(src, /data-testid="owner-print-go-ack"/);
+  assert.match(src, /data-testid="owner-print-go-phrase"/);
   assert.match(src, /ownerGoAck/);
-  assert.match(src, /confirm\(/);
-  assert.match(src, /Confirm: record owner print go/);
-  // 4. The submit button calls the admin print-go route, not Lulu/RPI directly.
+  // 4. The submit handler posts to the admin print-go route, not Lulu/RPI directly.
   assert.match(src, /\/api\/admin\/orders\/\$\{props\.orderId\}\/print-go/);
-  // 5. Submit button is gated on both eligibility and the ack checkbox.
-  assert.match(src, /disabled=\{!eligible \|\| !ownerGoAck/);
+  // 5. Submit inside the modal is gated on eligibility AND ack AND
+  //    non-blank ownerBy AND the typed phrase being exactly `PRINT GO`.
+  assert.match(
+    src,
+    /disabled=\{[\s\S]*?!eligible[\s\S]*?!ownerGoAck[\s\S]*?!ownerByOk[\s\S]*?ownerGoPhrase\s*!==\s*['"]PRINT GO['"]/,
+  );
 });
 
 test('admin owner-go UI: blocker reasons are surfaced when ineligible', async () => {
@@ -1415,4 +1426,197 @@ test('submitPrintAfterOwnerGo: deterministic race-loss simulation via injected g
     const after = await getOrder('ord_g3_det_race');
     assert.ok(after?.ownerPrintGoLockToken === 'tok-A' || after?.ownerPrintGoLockToken === 'tok-B');
   } finally { cleanup(dir); }
+});
+
+// ── G3 owner-print-go: CD v2 console uplift ────────────────────────────────
+//
+// These tests pin the design-handoff console (modal + PRINT GO phrase +
+// eligibility tile grid + structured refusal-state rendering + SLA
+// non-promise copy) into source. React can't mount under node:test, so
+// the UI shape is asserted via source-level regex on the detail-client
+// and page files. The admin-actions failureCode plumbing is exercised
+// directly against the action boundary.
+
+test('admin owner-go console: page.tsx auth-gates BEFORE rendering OrderDetailActions', async () => {
+  // Source ordering invariant: auth refusal/redirect must appear before
+  // any <OrderDetailActions ... /> JSX so an unauthenticated visitor
+  // never reaches the owner-go panel even if the action panel itself
+  // changes shape.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/page.tsx', import.meta.url),
+    'utf8',
+  );
+  const authIdx = src.indexOf('isAdminAuthedFromCookie');
+  const adminKeyIdx = src.indexOf('getConfiguredAdminKey');
+  const actionsIdx = src.indexOf('<OrderDetailActions');
+  assert.ok(authIdx > -1 && actionsIdx > -1, 'auth check + actions render present');
+  assert.ok(adminKeyIdx > -1 && adminKeyIdx < actionsIdx, 'configured-key check precedes actions');
+  assert.ok(authIdx < actionsIdx, 'cookie auth check precedes actions render');
+  // A `Sign in first.` or equivalent refusal must short-circuit before
+  // the actions JSX (cheap proxy: the unauthed branch returns JSX with
+  // 'Sign in' copy ABOVE the OrderDetailActions site).
+  assert.match(src, /Sign in/);
+});
+
+test('admin owner-go console: detail-client renders 6-row eligibility tile grid with each blocker', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // Each eligibility row is rendered with a stable data-testid so the
+  // operator (and tests) can identify which precondition is failing.
+  assert.match(src, /data-testid="owner-print-go-tile-payment"/);
+  assert.match(src, /data-testid="owner-print-go-tile-qa"/);
+  assert.match(src, /data-testid="owner-print-go-tile-customer-approval"/);
+  assert.match(src, /data-testid="owner-print-go-tile-fulfillment-status"/);
+  assert.match(src, /data-testid="owner-print-go-tile-no-prior-owner-go"/);
+  assert.match(src, /data-testid="owner-print-go-tile-no-prior-print-job"/);
+});
+
+test('admin owner-go console: detail-client shows no-auto-print proof copy', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // The console must visibly assert that no automatic print submission
+  // has occurred — even after customer approval. This guards against
+  // future copy drift that could imply auto-print.
+  assert.match(src, /no automatic print submission/i);
+  // And restate that owner-go is the only path that calls Lulu/RPI.
+  assert.match(src, /only path that calls Lulu/i);
+});
+
+test('admin owner-go console: detail-client uses best-chance SLA copy and contains NO guaranteed-date promise', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // Positive: best-chance / best chance phrasing per SLA decision doc.
+  assert.match(src, /best[- ]chance/i);
+  // Negative: no date-specific Father's Day promise or guarantee language.
+  // The full UI source (including comments) must not contain these tokens
+  // so an operator can never see a date promise inline.
+  assert.doesNotMatch(src, /\bguarantee/i);
+  assert.doesNotMatch(src, /father.?s day/i);
+  assert.doesNotMatch(src, /\bJune\b/);
+  assert.doesNotMatch(src, /\bJun\b/);
+});
+
+test('admin owner-go console: modal replaces window.confirm and requires PRINT GO phrase + ack + non-blank ownerBy', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // The new console mounts an in-component modal instead of calling
+  // window.confirm() for owner-print-go. Other actions in this client
+  // (mark-shipped, qa-pass, retry) may still use confirm(), but the
+  // owner-go flow specifically must go through the modal.
+  assert.match(src, /data-testid="owner-print-go-modal"/);
+  // The modal exposes the typed-phrase input.
+  assert.match(src, /data-testid="owner-print-go-phrase"/);
+  // The explicit phrase appears in user-visible label copy.
+  assert.match(src, /PRINT GO/);
+  // The modal's submit is gated on phrase equality, ack checkbox,
+  // non-blank trimmed ownerBy, and eligibility.
+  assert.match(src, /ownerGoPhrase\s*===\s*['"]PRINT GO['"]/);
+  assert.match(src, /ownerGoAck/);
+  assert.match(src, /ownerGoBy\.trim\(\)/);
+  // Open-modal button is itself gated on eligibility so an ineligible
+  // operator can never reach the phrase step.
+  assert.match(src, /data-testid="owner-print-go-open-modal"/);
+});
+
+test('admin owner-go console: structured refusal-state block keyed by failureCode renders safe-state copy', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // The refusal block has a stable testid so tests can find it.
+  assert.match(src, /data-testid="owner-print-go-refusal"/);
+  // The UI maps each failureCode to explicit safe-state copy. We don't
+  // pin exact wording, but every code that can be returned to the UI
+  // must appear in the source so operators see a labeled tile rather
+  // than a raw error string.
+  for (const code of [
+    'RACE_LOST',
+    'ALREADY_OWNER_GO',
+    'ALREADY_SUBMITTED',
+    'ALREADY_SHIPPED',
+    'WRONG_FULFILLMENT_STATUS',
+    'CUSTOMER_APPROVAL_REQUIRED',
+    'QA_NOT_PASSED',
+    'OWNER_BY_REQUIRED',
+    'PAYMENT_NOT_CONFIRMED',
+    'REFUNDED',
+    'ORDER_NOT_FOUND',
+    'PERSIST_FAILED',
+  ]) {
+    assert.match(src, new RegExp(code), `failureCode "${code}" not handled in refusal map`);
+  }
+  // The refusal block must surface the no-side-effect guarantee for the
+  // race/already-acquired family so the operator sees that no print
+  // submission occurred.
+  assert.match(src, /no print submission/i);
+});
+
+test('admin owner-go console: customer approval alone does NOT enable submit (eligibility requires !alreadyOwnerWent && !alreadySubmitted)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // Eligibility composition: customerApproved is necessary but not
+  // sufficient; the panel must also require correct fulfillment state
+  // AND absence of prior owner-go AND absence of prior printJobId.
+  assert.match(src, /customerApproved/);
+  assert.match(src, /!alreadyOwnerWent/);
+  assert.match(src, /!alreadySubmitted/);
+  // And the open-modal button must be `disabled` when not eligible so
+  // a customer-approved-but-already-submitted order can't be re-submitted.
+  assert.match(src, /disabled=\{!eligible/);
+});
+
+test('recordOwnerPrintGo (admin-actions) returns failureCode on the failure result, route bubbles it into JSON', async () => {
+  const dir = makeTmp();
+  try {
+    // Trigger OWNER_BY_REQUIRED at the admin-actions boundary and
+    // assert the machine-readable code is on the returned object (not
+    // just baked into an error string). The route uses this verbatim.
+    await makePrintProofApprovedOrder('ord_g3_failurecode_admin');
+    const { recordOwnerPrintGo: recordOwnerPrintGoAdmin } = await import('../src/lib/admin-actions.ts');
+    const r = await recordOwnerPrintGoAdmin('ord_g3_failurecode_admin', '   ');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 400);
+    assert.equal(!r.ok && r.failureCode, 'OWNER_BY_REQUIRED');
+
+    // Also trigger ALREADY_OWNER_GO so the 409 family is covered.
+    await makePrintProofApprovedOrder('ord_g3_failurecode_owner_go', {
+      ownerPrintGoAt: '2026-05-31T22:00:00.000Z',
+      ownerPrintGoBy: 'opsA',
+    });
+    const r2 = await recordOwnerPrintGoAdmin('ord_g3_failurecode_owner_go', 'opsB');
+    assert.equal(r2.ok, false);
+    assert.equal(!r2.ok && r2.status, 409);
+    assert.equal(!r2.ok && r2.failureCode, 'ALREADY_OWNER_GO');
+  } finally { cleanup(dir); }
+});
+
+test('print-go route source: failureCode is included in the error JSON body', async () => {
+  // Source-level guarantee that the route forwards failureCode so the
+  // admin UI can render structured refusal-state tiles. The existing
+  // `error` string is preserved for older clients.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/api/admin/orders/[orderId]/print-go/route.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(src, /failureCode: result\.failureCode \?\? null/);
+  // And the error string must still be in the body (additive change).
+  assert.match(src, /error: result\.error/);
 });

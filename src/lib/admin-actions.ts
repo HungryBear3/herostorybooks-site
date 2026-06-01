@@ -18,7 +18,17 @@ import {
 
 export type ActionResult =
   | { ok: true; detail?: string }
-  | { ok: false; status: 400 | 404 | 409 | 502 | 503; error: string };
+  | {
+      ok: false;
+      status: 400 | 404 | 409 | 502 | 503;
+      error: string;
+      /** Optional machine-readable refusal code. Currently set by
+       *  `recordOwnerPrintGo` so the admin UI can render structured
+       *  safe-state copy (e.g. RACE_LOST, ALREADY_OWNER_GO,
+       *  ALREADY_SUBMITTED) without substring-matching `error`. Other
+       *  actions may omit this; UIs must tolerate it being absent. */
+      failureCode?: string;
+    };
 
 export type RetryResult = ActionResult;
 
@@ -647,6 +657,10 @@ export async function recordOwnerPrintGo(
     ok: false,
     status,
     error: result.error ?? 'Owner print-go refused',
+    // Surface the machine-readable refusal code so the admin UI can
+    // render structured safe-state copy (RACE_LOST / ALREADY_OWNER_GO /
+    // ALREADY_SUBMITTED / etc.) without parsing `error` strings.
+    failureCode: code,
   };
 }
 

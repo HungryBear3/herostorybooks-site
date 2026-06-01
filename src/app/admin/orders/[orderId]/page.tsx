@@ -414,6 +414,7 @@ export default async function AdminOrderDetail({ params }: Props) {
           ownerPrintGoAt={order.ownerPrintGoAt ?? ''}
           ownerPrintGoBy={order.ownerPrintGoBy ?? ''}
           printJobId={order.printJobId ?? ''}
+          printJobStatus={order.printJobStatus ?? ''}
           currentTrackingNumber={order.trackingNumber ?? ''}
           currentTrackingUrl={order.trackingUrl ?? ''}
         />

@@ -66,5 +66,17 @@ export async function POST(
   if (result.ok === true) {
     return NextResponse.json({ ok: true, detail: result.detail });
   }
-  return NextResponse.json({ error: result.error }, { status: result.status });
+  return NextResponse.json(
+    {
+      error: result.error,
+      // Additive: machine-readable refusal code (e.g. RACE_LOST,
+      // ALREADY_OWNER_GO, ALREADY_SUBMITTED). The admin Owner Print Go
+      // Console keys structured safe-state copy off this so it can
+      // render "no print submission occurred" tiles without parsing
+      // free-form `error` strings. Older clients that ignore the field
+      // are unaffected; the `error` string is preserved verbatim.
+      failureCode: result.failureCode ?? null,
+    },
+    { status: result.status },
+  );
 }
