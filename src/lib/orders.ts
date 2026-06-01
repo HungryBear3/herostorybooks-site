@@ -130,7 +130,28 @@ export type ReviewAuditEventType =
   | 'whole_book_approval_rejected'
   | 'refund_issued'
   | 'refund_refused'
-  | 'internal_disposition_marked';
+  | 'internal_disposition_marked'
+  // ── Generation Operating Policy (additive) ────────────────────────────────
+  /** Recorded every time chooseGenerationRoute returns a decision for a paid
+   *  order. Captures route + reason + authorizer/approver fields. */
+  | 'route_decision_recorded'
+  /** Recorded when a fallback (api or emergency) is attempted, regardless of
+   *  whether the gate ultimately permitted it. */
+  | 'route_fallback_attempted'
+  /** Recorded when an emergency override (fal/Seedream on a paid order) is
+   *  permitted; always accompanied by route_decision_recorded with the same
+   *  route. */
+  | 'emergency_override_recorded'
+  /** Recorded when the QA gate evaluates a checklist + manifest decision —
+   *  pass, fail, or blocked. */
+  | 'qa_gate_evaluated'
+  /** Recorded when releaseOrderAfterQa refuses to send the customer email
+   *  because of a Generation Operating Policy guard failure. */
+  | 'proof_release_failed'
+  /** Recorded when print submission refuses to call submitPrintJob because
+   *  the policy guard failed (missing customer approval, manifest invalid,
+   *  lineage broken). */
+  | 'print_submission_blocked';
 
 export interface ReviewAuditEvent {
   /** ISO timestamp the event was recorded. */
@@ -203,6 +224,24 @@ export interface PageArtifact {
   /** ISO timestamp the operator last touched this page in the review
    *  grid. Helpful for spotting stale reviews. Optional. */
   reviewedAt?: string | null;
+  // ── Generation Operating Policy per-page provenance (additive) ────────────
+  /** Stable per-page identifier, defaults to `page_${pageIndex}`. Optional;
+   *  derived at manifest build time when absent. */
+  pageId?: string | null;
+  /** Whether the current image came from a policy-fallback path. Distinct
+   *  from `generationProvider` (which records which API was hit). Optional. */
+  imageFallbackUsed?: boolean | null;
+  /** Short, sanitized reason for the image fallback if one occurred. */
+  imageFallbackReason?: string | null;
+  /** Where the page asset originated. 'live' = real generation; 'fixture'/
+   *  'sample'/'internal' = non-customer-facing content that MUST block
+   *  proof release for paid/gifted/creator orders. Defaults to 'live' when
+   *  absent (legacy orders predate this field). */
+  assetSource?: 'live' | 'fixture' | 'sample' | 'internal' | string | null;
+  /** Operator-set likeness rating or boolean flag — does the rendered child
+   *  resemble the uploaded photo? Free-form for now; checklist items in the
+   *  QA UI populate this. */
+  likenessScoreOrFlag?: string | number | boolean | null;
 }
 
 export interface OrderRecord extends OrderInput {
@@ -247,6 +286,46 @@ export interface OrderRecord extends OrderInput {
   qaPassAt?: string | null;
   /** Bounded internal operator identifier that recorded qaPassAt. */
   qaPassBy?: string | null;
+  // ── Generation Operating Policy order-level fields (additive) ─────────────
+  /** Three-valued QA state per policy §4. Mostly derived from qaPassAt /
+   *  qaBlockedReason at read time; persisted only when an operator explicitly
+   *  sets 'blocked' to surface a structural failure. */
+  qaStatus?: 'pending' | 'passed' | 'blocked' | null;
+  /** Bounded internal operator identifier that recorded qaStatus. Aliases
+   *  qaPassBy when qaStatus='passed'. */
+  qaReviewer?: string | null;
+  /** When qaStatus='blocked', short sanitized reason for ops review. */
+  qaBlockedReason?: string | null;
+  /** ISO timestamp the customer-facing proof email was actually sent by
+   *  releaseOrderAfterQa. Distinct from qaPassAt (the gate decision). */
+  customerProofReleasedAt?: string | null;
+  /** ISO timestamp customer approval was recorded; aliases proofApprovedAt
+   *  for the print guard. */
+  printApprovedAt?: string | null;
+  /** ISO timestamp print submission to Lulu succeeded. */
+  printSubmittedAt?: string | null;
+  /** True when ops decided an order needs manual intervention before
+   *  release. Set by operators; never auto-cleared. */
+  manualInterventionRequired?: boolean | null;
+  /** True when ops invoked the emergency fal/Seedream route. */
+  emergencyOverrideUsed?: boolean | null;
+  /** Bounded identifier of the person who approved the emergency override
+   *  (per policy §2: must accompany any fal/Seedream paid-order route). */
+  emergencyApprovedBy?: string | null;
+  /** Short reference (ticket id / Slack permalink / RFC#) describing why
+   *  the emergency override was authorized. */
+  emergencyApprovalRef?: string | null;
+  /** Set to true at intake when a customer photo upload was persisted. */
+  sourcePhotoPresent?: boolean | null;
+  /** Set to true when personalization inputs (childName + theme/lesson/
+   *  voice transcript) are present and sufficient. */
+  personalizationInputsPresent?: boolean | null;
+  /** Result of validateManifest at last release attempt — true iff every
+   *  required field was present. */
+  manifestComplete?: boolean | null;
+  /** Optional deterministic hash of the canonical manifest fields. Computed
+   *  at release time when feasible; left null otherwise (documented TODO). */
+  manifestHash?: string | null;
   proofApprovalToken?: string | null;
   proofApprovedAt?: string | null;
   /** ISO timestamp the customer ticked the "I reviewed the full proof PDF"
@@ -1226,6 +1305,20 @@ type FulfillmentPatch = Partial<Pick<
   | 'printTitle'
   | 'qaPassAt'
   | 'qaPassBy'
+  | 'qaStatus'
+  | 'qaReviewer'
+  | 'qaBlockedReason'
+  | 'customerProofReleasedAt'
+  | 'printApprovedAt'
+  | 'printSubmittedAt'
+  | 'manualInterventionRequired'
+  | 'emergencyOverrideUsed'
+  | 'emergencyApprovedBy'
+  | 'emergencyApprovalRef'
+  | 'sourcePhotoPresent'
+  | 'personalizationInputsPresent'
+  | 'manifestComplete'
+  | 'manifestHash'
   | 'proofApprovalToken'
   | 'proofApprovedAt'
   | 'proofReviewedAt'

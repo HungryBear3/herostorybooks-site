@@ -1,0 +1,19 @@
+{
+  "$schema": "../../src/lib/generation-policy.schema.json",
+  "policyVersion": "2026-05-31",
+  "binding": "Father's Day launch through 2026-06-21",
+  "notes": [
+    "Tracked policy defaults; production refuses any combination that weakens these.",
+    "Env overrides may shift dev/preview, but src/lib/generation-policy.ts ignores",
+    "env overrides for the dangerous flags when NODE_ENV='production' or VERCEL_ENV='production'.",
+    "Per-order emergency overrides (emergencyApprovedBy + emergencyApprovalRef) are required",
+    "for fal/Seedream even when emergencyImageRoute is enabled."
+  ],
+  "defaultPaidCustomerRoute": "OPENAI_MANUAL",
+  "apiFallbackEnabled": false,
+  "emergencyImageRoute": false,
+  "allowTemplateFallbackForPaid": false,
+  "orderIntakeOpen": true,
+  "digitalFirstMode": true,
+  "printCtaEnabled": true
+}

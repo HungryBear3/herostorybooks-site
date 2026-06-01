@@ -568,6 +568,36 @@ test('valid token approves proof, creates cover artifact, and triggers print pro
       printInteriorPageCount: 32,
       printTitle: MOCK_STORY.title,
       proofApprovalToken: 'valid-token-abc',
+      // Generation Operating Policy §6 — print guard now re-runs the
+      // release guard, which requires storyMeta + page lineage + photo +
+      // personalization + QA pass. Seed the order so the policy passes.
+      theme: 'dinosaur-discovery',
+      photoBlobUrl: 'https://example.com/photos/luna.jpg',
+      photoBlobPath: 'orders/test/photo.jpg',
+      photoFileName: 'luna.jpg',
+      storyMeta: {
+        source: 'openai_chat',
+        model: 'gpt-4o-mini',
+        generatedAt: '2026-05-31T20:00:00.000Z',
+        fallbackError: null,
+      },
+      pageArtifacts: [
+        {
+          pageIndex: 0,
+          storyText: 'Once upon a time…',
+          basePrompt: 'p1',
+          currentImageUrl: 'https://example.com/p1.png',
+          generationProvider: 'openai',
+          generationModel: 'gpt-image-1',
+          generationConditioning: 'photo_edit',
+          regenerateCount: 0,
+          accepted: false,
+          feedbackHistory: [],
+          versionHistory: [],
+        },
+      ],
+      qaPassAt: '2026-05-31T20:30:00.000Z',
+      qaPassBy: 'ops',
     }, dir);
 
     const result = await approvePrintProof(order.id, 'valid-token-abc', PASS_DEPS);

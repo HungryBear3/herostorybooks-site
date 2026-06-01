@@ -28,6 +28,11 @@ import {
   type ArtDirectionPacketBuildInput,
   type ArtDirectionPacketBuildResult,
 } from './art-direction-packet-builder.ts';
+import {
+  describeFailureForAudit,
+  evaluatePrintGuard,
+} from './generation-manifest.ts';
+import { appendAuditEvent } from './orders.ts';
 
 // ── Per-page artifact selection (proof rebuild) ───────────────────────────────
 
@@ -842,6 +847,27 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
     throw new Error('Missing print interior artifacts — cannot submit to print without interior PDF metadata');
   }
 
+  // Generation Operating Policy §6 — independent print-submission guard.
+  // Re-runs the release guard against the current order state to catch
+  // any drift since proof_approved (e.g. a later page-regenerate that
+  // introduced a fixture asset or missing lineage). MUST fire BEFORE
+  // updateFulfillmentState('submitting_to_print') so a refusal does not
+  // leave the order stuck mid-state.
+  const printGuard = evaluatePrintGuard(order);
+  if (!printGuard.ok) {
+    await appendAuditEvent(order.id, {
+      type: 'print_submission_blocked',
+      reason: printGuard.failureCode ?? 'UNKNOWN',
+      meta: {
+        ...describeFailureForAudit(printGuard),
+        underlyingReleaseFailure: printGuard.underlyingReleaseFailure ?? null,
+      },
+    });
+    throw new Error(
+      `${printGuard.failureCode ?? 'PRINT_QA_GUARD_FAILED'}: ${printGuard.message ?? 'print guard refused'}`,
+    );
+  }
+
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'submitting_to_print' }));
 
   let hydratedOrder = order;
@@ -862,6 +888,7 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
     fulfillmentStatus: 'complete',
     status: 'print_in_production',
     printJobId: result.jobId,
+    printSubmittedAt: new Date().toISOString(),
     fulfillmentLastError: null,
   }));
 
@@ -1133,9 +1160,11 @@ export async function approvePrintProof(
   // pushed the order to failed_manual_review even though approval had
   // already persisted. updateFulfillmentState returns the post-write state
   // it just persisted; using it directly closes that race.
+  const approvedAt = new Date().toISOString();
   const updatedOrder = await updateFulfillmentState(orderId, {
     fulfillmentStatus: 'proof_approved',
-    proofApprovedAt: new Date().toISOString(),
+    proofApprovedAt: approvedAt,
+    printApprovedAt: approvedAt,
   });
   if (!updatedOrder) return { ok: false, error: 'Failed to update order state' };
 

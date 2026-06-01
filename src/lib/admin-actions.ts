@@ -10,6 +10,11 @@ import {
   sendLifecycleEmail,
   sendDigitalDeliveryEmail,
 } from './order-email.ts';
+import {
+  describeFailureForAudit,
+  evaluateReleaseGuard,
+  type ReleaseFailureCode,
+} from './generation-manifest.ts';
 
 export type ActionResult =
   | { ok: true; detail?: string }
@@ -17,12 +22,42 @@ export type ActionResult =
 
 export type RetryResult = ActionResult;
 
+/**
+ * 12-item canonical QA checklist per Generation Operating Policy §7.
+ *
+ * The legacy 5-field checklist (storyReviewed / imagesReviewed /
+ * proofArtifactReviewed / customerSafe / noPrintRelease) is preserved as
+ * optional aliases so existing API callers continue to work, but the new
+ * 12-item set is what `missingQaChecks` requires for a server-side QA pass.
+ *
+ * Backward-compat mapping (each legacy field requires the matching new ones):
+ *  - storyReviewed       → storyPersonalizationQuality + noTemplateOrGenericProse
+ *  - imagesReviewed      → imageConsistency + childLikenessSafety + noBrokenImages
+ *  - proofArtifactReviewed → mobileProofPageCheck + emailReviewLinkCheck +
+ *                            noMissingPages
+ *  - customerSafe        → familyDetailsCorrectness + noFixtureArtifacts
+ *  - noPrintRelease      → printOrDigitalSuitability + noProviderFallbackMismatch
+ */
 export interface QaPassChecklist {
+  // ── Legacy 5-item aliases (still accepted; expand to the new items below) ─
   storyReviewed?: boolean;
   imagesReviewed?: boolean;
   proofArtifactReviewed?: boolean;
   customerSafe?: boolean;
   noPrintRelease?: boolean;
+  // ── Canonical 12-item Generation Operating Policy checklist ──────────────
+  storyPersonalizationQuality?: boolean;
+  familyDetailsCorrectness?: boolean;
+  noTemplateOrGenericProse?: boolean;
+  imageConsistency?: boolean;
+  childLikenessSafety?: boolean;
+  noMissingPages?: boolean;
+  noBrokenImages?: boolean;
+  noFixtureArtifacts?: boolean;
+  noProviderFallbackMismatch?: boolean;
+  printOrDigitalSuitability?: boolean;
+  mobileProofPageCheck?: boolean;
+  emailReviewLinkCheck?: boolean;
 }
 
 export interface QaPassInput {
@@ -38,16 +73,58 @@ export interface QaPassDeps {
   sendProofReadyEmail?: typeof sendProofReadyEmail;
 }
 
-const REQUIRED_QA_CHECKS: Array<keyof QaPassChecklist> = [
-  'storyReviewed',
-  'imagesReviewed',
-  'proofArtifactReviewed',
-  'customerSafe',
-  'noPrintRelease',
+/** Canonical 12 items required for qaStatus='passed' per policy §7. */
+const CANONICAL_QA_CHECKS: Array<keyof QaPassChecklist> = [
+  'storyPersonalizationQuality',
+  'familyDetailsCorrectness',
+  'noTemplateOrGenericProse',
+  'imageConsistency',
+  'childLikenessSafety',
+  'noMissingPages',
+  'noBrokenImages',
+  'noFixtureArtifacts',
+  'noProviderFallbackMismatch',
+  'printOrDigitalSuitability',
+  'mobileProofPageCheck',
+  'emailReviewLinkCheck',
 ];
 
+/**
+ * Expand legacy 5-item checklist into the canonical 12-item set when
+ * callers haven't supplied the new fields yet. Any explicit boolean in
+ * the new set overrides the expansion.
+ */
+function expandLegacyChecklist(checklist: QaPassChecklist | undefined): QaPassChecklist {
+  if (!checklist) return {};
+  const out: QaPassChecklist = { ...checklist };
+  if (checklist.storyReviewed === true) {
+    out.storyPersonalizationQuality ??= true;
+    out.noTemplateOrGenericProse ??= true;
+  }
+  if (checklist.imagesReviewed === true) {
+    out.imageConsistency ??= true;
+    out.childLikenessSafety ??= true;
+    out.noBrokenImages ??= true;
+  }
+  if (checklist.proofArtifactReviewed === true) {
+    out.mobileProofPageCheck ??= true;
+    out.emailReviewLinkCheck ??= true;
+    out.noMissingPages ??= true;
+  }
+  if (checklist.customerSafe === true) {
+    out.familyDetailsCorrectness ??= true;
+    out.noFixtureArtifacts ??= true;
+  }
+  if (checklist.noPrintRelease === true) {
+    out.printOrDigitalSuitability ??= true;
+    out.noProviderFallbackMismatch ??= true;
+  }
+  return out;
+}
+
 function missingQaChecks(checklist: QaPassChecklist | undefined): string[] {
-  return REQUIRED_QA_CHECKS.filter((key) => checklist?.[key] !== true);
+  const expanded = expandLegacyChecklist(checklist);
+  return CANONICAL_QA_CHECKS.filter((key) => expanded[key] !== true);
 }
 
 function defaultBaseUrl(): string {
@@ -225,6 +302,36 @@ export async function releaseOrderAfterQa(
 
   const qaPassAt = deps.now ? deps.now() : new Date().toISOString();
   const qaPassBy = (input.qaPassBy ?? 'admin').trim().slice(0, 120) || 'admin';
+
+  // Generation Operating Policy §5 — final release guard. Synthesize the
+  // post-write order, run the guard against it, and refuse without writing
+  // if any policy check fails. This catches conditions the checklist
+  // can't (template story / fixture asset / missing lineage / emergency
+  // approval missing / provider-route blocked) and produces named error
+  // codes per the policy doc.
+  const guardOrder: OrderRecord = {
+    ...order,
+    qaPassAt,
+    qaPassBy,
+    qaStatus: 'passed',
+    qaReviewer: qaPassBy,
+  };
+  const guard = evaluateReleaseGuard(guardOrder);
+  if (!guard.ok) {
+    await appendAuditEvent(order.id, {
+      type: 'proof_release_failed',
+      reason: guard.failureCode ?? 'UNKNOWN',
+      meta: {
+        ...describeFailureForAudit(guard),
+        qaPassBy,
+      },
+    });
+    return {
+      ok: false,
+      status: 409,
+      error: `${guard.failureCode ?? 'POLICY_BLOCKED'}: ${guard.message ?? 'release guard refused'}`,
+    };
+  }
   const isDigital = order.bookFormat === 'digital';
   const sendDigital = deps.sendDigitalDeliveryEmail ?? sendDigitalDeliveryEmail;
   const sendProof = deps.sendProofReadyEmail ?? sendProofReadyEmail;
@@ -235,6 +342,11 @@ export async function releaseOrderAfterQa(
   const updated = await updateFulfillmentState(order.id, {
     qaPassAt,
     qaPassBy,
+    qaStatus: 'passed',
+    qaReviewer: qaPassBy,
+    customerProofReleasedAt: qaPassAt,
+    manifestComplete: true,
+    manifestHash: guard.manifest.manifestHash ?? null,
     fulfillmentStatus: isDigital ? 'complete' : 'proof_ready',
     status: 'preview_ready',
     fulfillmentLastError: null,

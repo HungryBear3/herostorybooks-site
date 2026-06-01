@@ -37,12 +37,24 @@ const FILTER_LABELS: Record<QueueFilter, string> = {
   all: 'All',
 };
 
+/**
+ * Generation Operating Policy §7 — canonical 12-item QA checklist.
+ * Server-side `releaseOrderAfterQa` requires all 12 (or the legacy 5-item
+ * aliases that expand to them) before a customer email is sent.
+ */
 const REQUIRED_CHECKS = [
-  { key: 'storyReviewed', label: 'Story reviewed (no template-fallback prose ships to customer)' },
-  { key: 'imagesReviewed', label: 'Images reviewed (likeness, family/pet, text-safe)' },
-  { key: 'proofArtifactReviewed', label: 'Full proof PDF reviewed end-to-end' },
-  { key: 'customerSafe', label: 'Safe for customer release' },
-  { key: 'noPrintRelease', label: 'Confirm: this does NOT release print' },
+  { key: 'storyPersonalizationQuality', label: 'Story personalization quality' },
+  { key: 'familyDetailsCorrectness', label: 'Family / details correctness' },
+  { key: 'noTemplateOrGenericProse', label: 'No template / generic prose' },
+  { key: 'imageConsistency', label: 'Image consistency across pages' },
+  { key: 'childLikenessSafety', label: 'Child likeness + safety' },
+  { key: 'noMissingPages', label: 'No missing pages' },
+  { key: 'noBrokenImages', label: 'No broken images' },
+  { key: 'noFixtureArtifacts', label: 'No fixture / sample / internal artifacts' },
+  { key: 'noProviderFallbackMismatch', label: 'No provider / fallback mismatch' },
+  { key: 'printOrDigitalSuitability', label: 'Print / digital suitability' },
+  { key: 'mobileProofPageCheck', label: 'Mobile proof page check' },
+  { key: 'emailReviewLinkCheck', label: 'Email / review link check' },
 ] as const;
 
 type QaCheckKey = (typeof REQUIRED_CHECKS)[number]['key'];
@@ -438,6 +450,10 @@ function StatusPills({ a }: { a: QaOrderAnalysis }) {
       {a.qaPassed && <Pill tone="green">QA passed</Pill>}
       {a.awaitingQa && !a.qaPassed && <Pill tone="amber">awaiting QA</Pill>}
       {a.storyOrigin.isFallback && <Pill tone="red">template fallback</Pill>}
+      {a.policyReleaseGuard && !a.policyReleaseGuard.ok && !a.qaPassed && (
+        <Pill tone="red">policy: {a.policyReleaseGuard.failureCode ?? 'BLOCKED'}</Pill>
+      )}
+      {a.policyManifest?.emergencyOverrideUsed && <Pill tone="amber">emergency override</Pill>}
       {a.printGoNoGoState === 'awaiting_print_go' && <Pill tone="amber">print go/no-go</Pill>}
       {a.printGoNoGoState === 'shipped' && <Pill tone="green">shipped</Pill>}
     </div>
@@ -514,6 +530,7 @@ function DetailView({
         <OrderSummaryCard a={selected} />
         <BlockerCard a={selected} />
         <ProvenanceCard a={selected} />
+        <PolicyGuardCard a={selected} />
         <CustomerPreviewCard a={selected} />
       </div>
       <div className="flex flex-col gap-4">
@@ -664,6 +681,61 @@ function ProvenanceCard({ a }: { a: QaOrderAnalysis }) {
   );
 }
 
+function PolicyGuardCard({ a }: { a: QaOrderAnalysis }) {
+  const m = a.policyManifest;
+  const g = a.policyReleaseGuard;
+  const tone = g.ok
+    ? 'border-forest/30 bg-forest/5 text-forest'
+    : 'border-coral/40 bg-coral/5 text-coral-dark';
+  return (
+    <article className={`rounded-xl border p-4 space-y-3 ${tone}`}>
+      <header className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="font-serif text-base font-semibold">Generation Operating Policy guard</h3>
+        <span className="text-[10px] uppercase tracking-wider opacity-80">
+          §5 release · §6 print
+        </span>
+      </header>
+      <p className="text-xs">
+        {g.ok ? (
+          <>Release-guard passes. The qa-pass route will accept this order if the 12-item checklist is complete.</>
+        ) : (
+          <>
+            <span className="font-mono">{g.failureCode ?? 'BLOCKED'}</span> · {g.message ?? 'see manifest for details'}
+          </>
+        )}
+      </p>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] sm:grid-cols-3">
+        <Field label="Manifest complete" value={m.complete ? 'yes' : 'NO'} />
+        <Field label="QA status" value={m.qaStatus} />
+        <Field label="QA reviewer" value={m.qaReviewer ?? '—'} />
+        <Field label="Story route allowed" value={m.story.routeAllowed ? 'yes' : 'NO'} />
+        <Field label="Story fallback used" value={m.story.storyFallbackUsed ? 'YES' : 'no'} />
+        <Field label="Story provider" value={m.story.storyProvider ?? '—'} />
+        <Field label="Emergency override" value={m.emergencyOverrideUsed ? `yes (${m.emergencyApprovedBy ?? '—'})` : 'no'} />
+        <Field label="Source photo" value={m.sourcePhotoPresent ? 'yes' : 'NO'} />
+        <Field label="Personalization" value={m.personalizationInputsPresent ? 'yes' : 'NO'} />
+        <Field label="Pages" value={`${m.pages.length} (${m.pages.filter((p) => p.routeAllowed).length} allowed)`} />
+        <Field label="Customer released at" value={m.customerProofReleasedAt ?? '—'} />
+        <Field label="Manifest hash" value={m.manifestHash ? `${m.manifestHash.slice(0, 10)}…` : 'TODO'} />
+      </div>
+      {m.pages.some((p) => !p.routeAllowed || p.assetSource !== 'live') && (
+        <details className="text-[11px]">
+          <summary className="cursor-pointer">Per-page risk detail</summary>
+          <ul className="mt-1 space-y-1 list-disc pl-4">
+            {m.pages.map((p) => (
+              <li key={p.pageId}>
+                <span className="font-mono">{p.pageId}</span> · provider={p.imageProvider ?? '—'} ·
+                assetSource={p.assetSource}
+                {p.routeAllowed ? '' : ` · ${p.routeFailureCode ?? 'BLOCKED'}`}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </article>
+  );
+}
+
 function CustomerPreviewCard({ a }: { a: QaOrderAnalysis }) {
   const safeHeadline = a.customerVisibleHeadline.trim();
   const safeSub = a.customerVisibleStatus.trim();
@@ -706,11 +778,18 @@ function ActionPanel({
   onAfterAction: () => void;
 }) {
   const [checks, setChecks] = useState<Record<QaCheckKey, boolean>>({
-    storyReviewed: false,
-    imagesReviewed: false,
-    proofArtifactReviewed: false,
-    customerSafe: false,
-    noPrintRelease: false,
+    storyPersonalizationQuality: false,
+    familyDetailsCorrectness: false,
+    noTemplateOrGenericProse: false,
+    imageConsistency: false,
+    childLikenessSafety: false,
+    noMissingPages: false,
+    noBrokenImages: false,
+    noFixtureArtifacts: false,
+    noProviderFallbackMismatch: false,
+    printOrDigitalSuitability: false,
+    mobileProofPageCheck: false,
+    emailReviewLinkCheck: false,
   });
   const [qaPassBy, setQaPassBy] = useState('admin');
   const [busy, setBusy] = useState<string | null>(null);
@@ -718,8 +797,17 @@ function ActionPanel({
   const [err, setErr] = useState<string | null>(null);
 
   const allChecked = REQUIRED_CHECKS.every((c) => checks[c.key]);
+  // Generation Operating Policy §5 — even with the checklist ticked, the
+  // server-side guard re-runs against the manifest. Mirror the same gate
+  // client-side so the button can't suggest a release that will be refused.
+  const policyGuardOk = a.policyReleaseGuard?.ok ?? false;
   const releaseEnabled =
-    a.canQaPass && allChecked && !posture.gateDown && posture.gateState === 'live' && !a.qaPassed;
+    a.canQaPass &&
+    allChecked &&
+    policyGuardOk &&
+    !posture.gateDown &&
+    posture.gateState === 'live' &&
+    !a.qaPassed;
 
   const reasonsDisabled: string[] = [];
   if (a.qaPassed) reasonsDisabled.push('QA already passed — no further release action.');
@@ -729,7 +817,12 @@ function ActionPanel({
   if (a.blockers.some((b) => b.severity === 'block')) reasonsDisabled.push('Hard blockers present — resolve first.');
   if (a.isPrint && !a.shippingPresentIfRequired) reasonsDisabled.push('Print order missing shipping address.');
   if (posture.gateDown) reasonsDisabled.push('Gate is down — releases halted.');
-  if (!allChecked) reasonsDisabled.push('Complete the QA checklist before releasing.');
+  if (!allChecked) reasonsDisabled.push('Complete the 12-item QA checklist before releasing.');
+  if (!policyGuardOk) {
+    reasonsDisabled.push(
+      `Generation Operating Policy guard: ${a.policyReleaseGuard?.failureCode ?? 'BLOCKED'} — ${a.policyReleaseGuard?.message ?? 'see Policy guard card'}`,
+    );
+  }
 
   async function runQaPass() {
     if (!releaseEnabled) return;

@@ -18,6 +18,12 @@ import {
   type ProofSubmissionGateReason,
 } from './proof-submission-gate.ts';
 import { buildOrderStatusView } from './order-status-view.ts';
+import {
+  buildManifest,
+  evaluateReleaseGuard,
+  type OrderManifest,
+  type ReleaseFailureCode,
+} from './generation-manifest.ts';
 
 export type PostureLevel = 'GREEN' | 'YELLOW' | 'RED';
 export type GateState = 'live' | 'unknown' | 'down';
@@ -94,6 +100,17 @@ export interface QaOrderAnalysis {
   /** ISO timestamp the order entered awaiting_qa, falling back to updatedAt
    *  / createdAt when no transition event was recorded. Used by sla age. */
   awaitingSince: string | null;
+  // ── Generation Operating Policy projection (additive) ────────────────────
+  /** Manifest summary the QA Room renders in the detail panel. Computed
+   *  from existing OrderRecord fields; never mutates the order. */
+  policyManifest: OrderManifest;
+  /** Result of the release-guard run against the manifest. UI flips
+   *  release controls / risk tags based on this. */
+  policyReleaseGuard: {
+    ok: boolean;
+    failureCode?: ReleaseFailureCode;
+    message?: string;
+  };
 }
 
 export interface Posture {
@@ -169,6 +186,17 @@ export function analyzeOrderQa(
   const customerVisibleHeadline = view.headline;
   const customerVisibleStatus = view.subhead;
 
+  // Generation Operating Policy projection — manifest + release guard so
+  // the UI can refuse to render a green release control on any order
+  // that would fail the live qa-pass route.
+  const policyManifest = buildManifest(order);
+  const guardResult = evaluateReleaseGuard(order);
+  const policyReleaseGuard = {
+    ok: guardResult.ok,
+    failureCode: guardResult.failureCode,
+    message: guardResult.message,
+  };
+
   const canQaPass =
     awaitingQa &&
     order.paymentStatus === 'paid' &&
@@ -214,6 +242,8 @@ export function analyzeOrderQa(
     printGoNoGoState,
     auditEventsCount: order.auditEvents?.length ?? 0,
     awaitingSince,
+    policyManifest,
+    policyReleaseGuard,
   };
 }
 

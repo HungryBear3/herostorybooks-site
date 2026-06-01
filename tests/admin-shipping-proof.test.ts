@@ -142,6 +142,42 @@ const COMPLETE_CHECKLIST = {
   noPrintRelease: true,
 };
 
+/**
+ * Minimum order overrides required by the Generation Operating Policy
+ * release guard: non-fallback storyMeta, at least one page with a
+ * non-fixture provider, source photo + personalization inputs present.
+ * Tests that exercise the happy-path release must merge this in.
+ */
+function policyReadyOverrides(): Partial<OrderRecord> {
+  return {
+    theme: 'dinosaur-discovery',
+    photoBlobUrl: 'https://example.com/photos/luna.jpg',
+    photoBlobPath: 'orders/test/photo.jpg',
+    photoFileName: 'luna.jpg',
+    storyMeta: {
+      source: 'openai_chat',
+      model: 'gpt-4o-mini',
+      generatedAt: '2026-05-31T19:00:00.000Z',
+      fallbackError: null,
+    },
+    pageArtifacts: [
+      {
+        pageIndex: 0,
+        storyText: 'Once upon a time…',
+        basePrompt: 'p1',
+        currentImageUrl: 'https://example.com/p1.png',
+        generationProvider: 'openai',
+        generationModel: 'gpt-image-1',
+        generationConditioning: 'photo_edit',
+        regenerateCount: 0,
+        accepted: false,
+        feedbackHistory: [],
+        versionHistory: [],
+      },
+    ],
+  };
+}
+
 test('releaseOrderAfterQa: rejects incomplete checklist', async () => {
   const dir = makeTmp();
   try {
@@ -174,6 +210,7 @@ test('releaseOrderAfterQa: digital awaiting_qa records QA and sends delivery ema
       paymentStatus: 'paid',
       fulfillmentStatus: 'awaiting_qa',
       storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      ...policyReadyOverrides(),
     }, 'ord_qa_digital');
 
     const r = await releaseOrderAfterQa('ord_qa_digital', {
@@ -206,6 +243,8 @@ test('releaseOrderAfterQa: print awaiting_qa creates token and sends proof email
       paymentStatus: 'paid',
       fulfillmentStatus: 'awaiting_qa',
       storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      ...policyReadyOverrides(),
+      shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
     }, 'ord_qa_print');
 
     const r = await releaseOrderAfterQa('ord_qa_print', {
@@ -332,12 +371,7 @@ test('releaseOrderAfterQa: allows normal QA pass when storyMeta source is non-fa
       paymentStatus: 'paid',
       fulfillmentStatus: 'awaiting_qa',
       storyArtifactUrl: 'https://cdn.example.com/book.pdf',
-      storyMeta: {
-        source: 'openai_chat',
-        model: 'gpt-4o-mini',
-        generatedAt: '2026-05-31T20:00:00.000Z',
-        fallbackError: null,
-      },
+      ...policyReadyOverrides(),
     }, 'ord_qa_chat_ok');
 
     const r = await releaseOrderAfterQa('ord_qa_chat_ok', {

@@ -10,6 +10,17 @@ export type FulfillmentStatus =
    * path while an order is in this state.
    */
   | 'awaiting_qa'
+  /**
+   * Generation Operating Policy gate caught a structural blocker that
+   * prevents customer release (template story prose, fixture asset on a
+   * paid order, missing provider lineage, missing emergency-approval
+   * payload for a fal/Seedream paid route, etc.). Distinct from
+   * `failed_manual_review` (which covers non-QA generation failures)
+   * and from `awaiting_qa` (the normal positive-pass queue). Recovery
+   * requires operator intervention: rework the offending artifact OR
+   * record an explicit emergency-approval payload.
+   */
+  | 'qa_blocked'
   | 'proof_ready'
   | 'proof_approved'
   | 'submitting_to_print'
@@ -117,6 +128,30 @@ export interface StoryMeta {
   /** When source includes a fallback (e.g. template_after_openai_failure),
    *  the original error message that triggered the fallback. Truncated. */
   fallbackError?: string | null;
+  // ── Generation Operating Policy attempt-level provenance (additive) ────────
+  /** Canonical provider name for the policy guard. Mirrors `source` family but
+   *  in the policy vocabulary: 'openai_chat'/'openai_page_prose' → 'openai',
+   *  'gemini_page_prose' → 'gemini', 'template*' → 'template'. Optional;
+   *  derived at manifest build time when absent. */
+  storyProvider?: 'openai' | 'gemini' | 'ollama' | 'template' | string | null;
+  /** Mirrors `model` to satisfy policy schema; optional alias. */
+  storyModel?: string | null;
+  /** True iff source === 'template_after_openai_failure'. Cached for
+   *  manifest-time checks that don't want to re-parse the source enum. */
+  storyFallbackUsed?: boolean | null;
+  /** Short, sanitized reason for fallback (e.g. 'fetch failed'). Optional;
+   *  may alias `fallbackError`. */
+  storyFallbackReason?: string | null;
+  /** Operator/system that generated the story attempt: e.g. 'fulfillment',
+   *  'manual:abby', 'rex:emergency'. Optional. */
+  generatedBy?: string | null;
+  /** Identifier for the prompt revision used to generate the story (e.g. a
+   *  git SHA or a tracked template version). Optional. */
+  promptRevisionId?: string | null;
+  /** Outcome of the attempt. 'success' for normal flow; 'fallback' when a
+   *  template was substituted; 'rejected' when policy refused the artifact;
+   *  'needs_review' when the operator must inspect. Optional. */
+  attemptResult?: 'success' | 'fallback' | 'rejected' | 'needs_review' | string | null;
 }
 
 /**
