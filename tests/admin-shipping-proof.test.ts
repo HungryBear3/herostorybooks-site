@@ -234,6 +234,128 @@ test('releaseOrderAfterQa: print awaiting_qa creates token and sends proof email
   } finally { cleanup(dir); }
 });
 
+test('releaseOrderAfterQa: rejects template_after_openai_failure for digital — no email, no state advance', async () => {
+  const dir = makeTmp();
+  try {
+    let digitalEmailCalls = 0;
+    let proofEmailCalls = 0;
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'awaiting_qa',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      storyMeta: {
+        source: 'template_after_openai_failure',
+        model: 'template:Quest',
+        generatedAt: '2026-05-31T20:00:00.000Z',
+        fallbackError: 'fetch failed',
+      },
+    }, 'ord_qa_tpl_digital');
+
+    const r = await releaseOrderAfterQa('ord_qa_tpl_digital', {
+      qaPassBy: 'ops@example.com',
+      checklist: COMPLETE_CHECKLIST,
+    }, {
+      now: () => '2026-05-31T22:00:00.000Z',
+      sendDigitalDeliveryEmail: async () => { digitalEmailCalls += 1; },
+      sendProofReadyEmail: async () => { proofEmailCalls += 1; },
+    });
+
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /template fallback/);
+
+    // No customer email sent.
+    assert.equal(digitalEmailCalls, 0);
+    assert.equal(proofEmailCalls, 0);
+
+    // State did NOT advance.
+    const after = await getOrder('ord_qa_tpl_digital');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
+    assert.notEqual(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.qaPassAt, undefined);
+    assert.equal(after?.qaPassBy, undefined);
+    // No qa_pass_recorded audit event written.
+    assert.equal(
+      (after?.auditEvents ?? []).some((ev) => ev.type === 'qa_pass_recorded'),
+      false,
+    );
+  } finally { cleanup(dir); }
+});
+
+test('releaseOrderAfterQa: rejects template_after_openai_failure for print — no email, no proof_ready, no token', async () => {
+  const dir = makeTmp();
+  try {
+    let proofEmailCalls = 0;
+    await seed({
+      bookFormat: 'classic',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'awaiting_qa',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      storyMeta: {
+        source: 'template_after_openai_failure',
+        model: 'template:Quest',
+        generatedAt: '2026-05-31T20:00:00.000Z',
+        fallbackError: 'fetch failed',
+      },
+    }, 'ord_qa_tpl_print');
+
+    const r = await releaseOrderAfterQa('ord_qa_tpl_print', {
+      qaPassBy: 'ops@example.com',
+      checklist: COMPLETE_CHECKLIST,
+    }, {
+      now: () => '2026-05-31T22:05:00.000Z',
+      createProofToken: () => 'tok_should_not_be_minted',
+      sendProofReadyEmail: async () => { proofEmailCalls += 1; },
+    });
+
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /template fallback/);
+
+    assert.equal(proofEmailCalls, 0);
+
+    const after = await getOrder('ord_qa_tpl_print');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
+    assert.notEqual(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.qaPassAt, undefined);
+    assert.equal(after?.proofApprovalToken, undefined);
+  } finally { cleanup(dir); }
+});
+
+test('releaseOrderAfterQa: allows normal QA pass when storyMeta source is non-fallback', async () => {
+  const dir = makeTmp();
+  try {
+    let emailCalls = 0;
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'awaiting_qa',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      storyMeta: {
+        source: 'openai_chat',
+        model: 'gpt-4o-mini',
+        generatedAt: '2026-05-31T20:00:00.000Z',
+        fallbackError: null,
+      },
+    }, 'ord_qa_chat_ok');
+
+    const r = await releaseOrderAfterQa('ord_qa_chat_ok', {
+      qaPassBy: 'ops@example.com',
+      checklist: COMPLETE_CHECKLIST,
+    }, {
+      now: () => '2026-05-31T22:10:00.000Z',
+      sendDigitalDeliveryEmail: async () => { emailCalls += 1; },
+    });
+
+    assert.equal(r.ok, true);
+    assert.equal(emailCalls, 1);
+    const after = await getOrder('ord_qa_chat_ok');
+    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.qaPassAt, '2026-05-31T22:10:00.000Z');
+  } finally { cleanup(dir); }
+});
+
 // ── manuallyApproveProof ──────────────────────────────────────────────────────
 
 test('manuallyApproveProof: rejects order not in proof_ready state', async () => {

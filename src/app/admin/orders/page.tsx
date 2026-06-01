@@ -43,7 +43,12 @@ export default async function AdminOrdersPage({ searchParams }: PageProps) {
         <header className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <h1 className="font-serif text-3xl font-bold text-forest">Orders · Ops</h1>
-            <p className="text-sm text-gray-500">Internal only · {orders.length} orders loaded</p>
+            <p className="text-sm text-gray-500">
+              Internal only · {orders.length} orders loaded ·{' '}
+              <a href="/admin/qa-room" className="text-forest underline hover:no-underline">
+                QA Production Room ↗
+              </a>
+            </p>
           </div>
           <div className="flex gap-3 text-xs">
             <Stat label="Paid" value={stats.paid} />

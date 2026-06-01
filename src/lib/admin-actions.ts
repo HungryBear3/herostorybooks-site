@@ -198,6 +198,21 @@ export async function releaseOrderAfterQa(
   if (!order.storyArtifactUrl) {
     return { ok: false, status: 409, error: 'No proof/digital artifact URL to release' };
   }
+  // Hard server-side block: story prose that fell back to a deterministic
+  // template after the model failed must NEVER auto-ship to a paying
+  // customer. The QA Room UI already disables the release button for this
+  // case, but a second-line check here ensures any direct API caller —
+  // including a stale browser tab or future code path that hasn't read the
+  // dashboard's gating — cannot bypass. No override is honored from this
+  // endpoint by design; an owner-approved override path would land as a
+  // separate, explicitly tested change.
+  if (order.storyMeta?.source === 'template_after_openai_failure') {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Cannot release: story used template fallback and requires owner/manual override',
+    };
+  }
 
   const missing = missingQaChecks(input.checklist);
   if (missing.length > 0) {
