@@ -313,3 +313,163 @@ test('triggerFulfillment skips delivery_email_failed instead of regenerating', a
 
   assert.equal(result.status, 'skipped_already_complete');
 });
+
+// ── G2 stale-read clobber regressions — qa_blocked refusal MUST survive audit append ─
+
+test('runDigitalFulfillment: auto-send guard refusal with template-fallback storyMeta → final persisted state is qa_blocked + qaBlockedReason set + audit event written (no stale-blob clobber)', async (t) => {
+  const dir = makeTmpDir();
+  t.after(() => cleanupTmpDir(dir));
+
+  // Order has qaPassAt set (so the auto-send branch is reached) but the
+  // injected storyMeta is template_after_openai_failure — release guard
+  // MUST refuse. The qa_blocked write must survive the subsequent
+  // appendAuditEvent call (Rex stale-blob clobber regression).
+  const order = await makeDigitalOrder({
+    fulfillmentStatus: 'not_started',
+    qaPassAt: '2026-06-01T10:00:00.000Z',
+    qaPassBy: 'admin',
+  });
+
+  let emailCalls = 0;
+  const deps: FulfillmentDeps = {
+    generateStoryWithMeta: async () => ({
+      story: MOCK_STORY,
+      meta: {
+        source: 'template_after_openai_failure',
+        model: 'template:Quest',
+        generatedAt: '2026-06-01T10:00:00.000Z',
+        fallbackError: 'fetch failed',
+      },
+    }),
+    generateImages: async (prompts) => prompts.map((_, i) => `https://img.example.com/p${i}.png`),
+    buildPdf: async () => MOCK_PDF,
+    uploadArtifact: async (orderId, _buf, filename) =>
+      `https://cdn.example.com/${orderId}/${filename}`,
+    sendDigitalDeliveryEmail: async () => { emailCalls += 1; },
+    sleep: async () => {},
+    getBaseUrl: () => 'https://test.herostorybooks.com',
+  };
+
+  await triggerFulfillment(order.id, deps);
+  const persisted = await getOrder(order.id);
+
+  // CRITICAL: the qa_blocked write MUST persist through the audit
+  // append. Before the fix this could be clobbered by appendAuditEvent's
+  // stale getOrder().
+  assert.equal(persisted!.fulfillmentStatus, 'qa_blocked',
+    `expected qa_blocked, got ${persisted!.fulfillmentStatus} — audit append clobbered the refusal write`);
+  assert.equal(persisted!.qaStatus, 'blocked');
+  assert.match(persisted!.qaBlockedReason ?? '', /TEMPLATE_STORY_BLOCKED/);
+  assert.match(persisted!.fulfillmentLastError ?? '', /release_guard_refused/);
+  // No customer email sent.
+  assert.equal(emailCalls, 0);
+  // Audit event recorded with the correct source tag.
+  assert.ok(
+    (persisted!.auditEvents ?? []).some(
+      (ev) => ev.type === 'proof_release_failed' &&
+        ev.meta?.source === 'runDigitalFulfillment:auto_send_guard',
+    ),
+    'proof_release_failed audit event with auto_send_guard source must be present',
+  );
+});
+
+test('runPrintFulfillment: auto-send guard refusal with template-fallback storyMeta → final persisted state is qa_blocked + qaBlockedReason set + audit event written (no stale-blob clobber)', async (t) => {
+  const dir = makeTmpDir();
+  t.after(() => cleanupTmpDir(dir));
+
+  const order = await makeDigitalOrder({
+    bookFormat: 'classic',
+    formatLabel: 'Classic softcover',
+    priceCents: 4499,
+    shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
+    fulfillmentStatus: 'not_started',
+    qaPassAt: '2026-06-01T10:00:00.000Z',
+    qaPassBy: 'admin',
+  });
+
+  let proofEmailCalls = 0;
+  const deps: FulfillmentDeps = {
+    generateStoryWithMeta: async () => ({
+      story: MOCK_STORY,
+      meta: {
+        source: 'template_after_openai_failure',
+        model: 'template:Quest',
+        generatedAt: '2026-06-01T10:00:00.000Z',
+        fallbackError: 'fetch failed',
+      },
+    }),
+    generateImages: async (prompts) => prompts.map((_, i) => `https://img.example.com/p${i}.png`),
+    buildPdf: async () => MOCK_PDF,
+    buildPrintInteriorPdf: async () => Buffer.from('%PDF-1.4 mock-interior'),
+    uploadArtifact: async (orderId, _buf, filename) =>
+      `https://cdn.example.com/${orderId}/${filename}`,
+    sendProofReadyEmail: async () => { proofEmailCalls += 1; },
+    sleep: async () => {},
+    getBaseUrl: () => 'https://test.herostorybooks.com',
+  };
+
+  await triggerFulfillment(order.id, deps);
+  const persisted = await getOrder(order.id);
+
+  assert.equal(persisted!.fulfillmentStatus, 'qa_blocked',
+    `expected qa_blocked, got ${persisted!.fulfillmentStatus} — audit append clobbered the refusal write`);
+  assert.equal(persisted!.qaStatus, 'blocked');
+  assert.match(persisted!.qaBlockedReason ?? '', /TEMPLATE_STORY_BLOCKED/);
+  assert.equal(proofEmailCalls, 0);
+  assert.ok(
+    (persisted!.auditEvents ?? []).some(
+      (ev) => ev.type === 'proof_release_failed' &&
+        ev.meta?.source === 'runPrintFulfillment:auto_send_guard',
+    ),
+    'proof_release_failed audit event with auto_send_guard source must be present (print)',
+  );
+});
+
+test('runDigitalFulfillment: auto-send guard refusal does NOT send customer email even with qaPassAt set (no transports invoked)', async (t) => {
+  const dir = makeTmpDir();
+  t.after(() => cleanupTmpDir(dir));
+
+  // Belt-and-suspenders: explicitly assert no email/fetch transport
+  // was invoked when the guard refused. Uses a stub fetch that throws
+  // if ANY HTTP call escapes the mocked deps.
+  const originalFetch = globalThis.fetch;
+  let unmockedFetchCalls = 0;
+  globalThis.fetch = (async (...args: unknown[]) => {
+    unmockedFetchCalls += 1;
+    return new Response('blocked', { status: 599 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const order = await makeDigitalOrder({
+    fulfillmentStatus: 'not_started',
+    qaPassAt: '2026-06-01T10:00:00.000Z',
+    qaPassBy: 'admin',
+  });
+
+  let emailCalls = 0;
+  const deps: FulfillmentDeps = {
+    generateStoryWithMeta: async () => ({
+      story: MOCK_STORY,
+      meta: {
+        source: 'gemini_page_prose', // not on policy allow-list → blocks
+        model: 'gemini:gemini-2.5-flash',
+        generatedAt: '2026-06-01T10:00:00.000Z',
+        fallbackError: null,
+      },
+    }),
+    generateImages: async (prompts) => prompts.map((_, i) => `https://img.example.com/p${i}.png`),
+    buildPdf: async () => MOCK_PDF,
+    uploadArtifact: async (orderId, _buf, filename) =>
+      `https://cdn.example.com/${orderId}/${filename}`,
+    sendDigitalDeliveryEmail: async () => { emailCalls += 1; },
+    sleep: async () => {},
+    getBaseUrl: () => 'https://test.herostorybooks.com',
+  };
+
+  await triggerFulfillment(order.id, deps);
+  const persisted = await getOrder(order.id);
+
+  assert.equal(persisted!.fulfillmentStatus, 'qa_blocked');
+  assert.equal(emailCalls, 0, 'sendDigitalDeliveryEmail must not be invoked when guard refuses');
+  assert.equal(unmockedFetchCalls, 0, 'no unmocked HTTP transport must escape');
+});

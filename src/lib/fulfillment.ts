@@ -645,7 +645,13 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     console.error(
       `[fulfillment] release guard refused auto-send for ${order.id}: ${releaseGuard.failureCode ?? 'UNKNOWN'} ${releaseGuard.message ?? ''}`,
     );
-    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    // CRITICAL: capture the just-written record and thread it through
+    // appendAuditEvent. Without the hint, appendAuditEvent does a fresh
+    // getOrder() that can return a stale blob snapshot and clobber the
+    // qa_blocked status we just wrote (same regression class Rex flagged
+    // on 2026-05-15 for storyMeta). The qa_blocked refusal is the
+    // safety-critical write; it MUST survive the audit append.
+    const blocked = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'qa_blocked',
       qaStatus: 'blocked',
       qaBlockedReason: `${releaseGuard.failureCode ?? 'POLICY_BLOCKED'}: ${(releaseGuard.message ?? '').slice(0, 480)}`,
@@ -662,7 +668,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
         ...describeFailureForAudit(releaseGuard),
         source: 'runDigitalFulfillment:auto_send_guard',
       },
-    });
+    }, blocked ?? undefined);
     return;
   }
 
@@ -862,7 +868,9 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     console.error(
       `[fulfillment] release guard refused proof-send for ${order.id}: ${printReleaseGuard.failureCode ?? 'UNKNOWN'} ${printReleaseGuard.message ?? ''}`,
     );
-    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    // Capture the qa_blocked write and thread it as the appendAuditEvent
+    // hint — same stale-blob clobber rationale as the digital path.
+    const blocked = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'qa_blocked',
       qaStatus: 'blocked',
       qaBlockedReason: `${printReleaseGuard.failureCode ?? 'POLICY_BLOCKED'}: ${(printReleaseGuard.message ?? '').slice(0, 480)}`,
@@ -880,7 +888,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
         ...describeFailureForAudit(printReleaseGuard),
         source: 'runPrintFulfillment:auto_send_guard',
       },
-    });
+    }, blocked ?? undefined);
     return;
   }
 
