@@ -1,6 +1,6 @@
 # HSB YELLOW Ops Readiness Checklist - 2026-06-01
 
-Status: docs-only readiness packet for the `f56eeee` RED-to-YELLOW candidate. No production deploy, order mutation, customer communication, Stripe/Lulu/RPI action, or print action was performed.
+Status: docs-only readiness packet for the `3011b52` RED-to-YELLOW candidate. Rex successor audit and print-path decision are recorded in `docs/reviews/rex-hsb-successor-gate-audit-2026-06-01-3011b52.md` and `docs/ops/hsb-print-path-sla-decision-2026-06-01.md`. No production deploy, order mutation, customer communication, Stripe/Lulu/RPI action, or print action was performed.
 
 ## YELLOW Entry Rule
 
@@ -10,7 +10,7 @@ HSB can move from RED/HOLD to YELLOW only after:
 - G2 stale-read audit handling remains accepted.
 - G3 owner print-go is integrated and verified with a durable create-only lock.
 - G5 paid owner-test runbook is accepted.
-- This ops checklist has named owners and active kill-switch access.
+- This ops checklist has named owners and active kill-switch access or an explicit manual-risk acceptance for the internal-only window.
 - Opus/adversarial review finds no hidden launch blockers or the blockers are resolved.
 - Alexy gives production deploy/go-no-go.
 
@@ -34,12 +34,27 @@ HSB can move from RED/HOLD to YELLOW only after:
 
 ## Required Owners
 
-- Daily cap owner: Alexy or named operator.
-- QA operator: named person completing the proof checklist.
-- Support inbox owner: named person checking `support@herostorybooks.com`.
-- Refund/revision owner: named person deciding whether the customer gets revision, refund, or hold.
-- Print-go owner: named operator whose id is recorded in `ownerPrintGoBy`.
+- Daily cap owner: Rex runs read-only morning/evening capacity checks; Alexy owns final pause/resume decisions; Abigail records candidate posture and escalates anomalies.
+- QA operator: Alexy for any real paid G5 unless he explicitly delegates; `qaPassBy` / `qaReviewer` must record the actual operator id.
+- Support inbox owner: Alexy primary for `support@herostorybooks.com`; Abigail/Rex may perform read-only daily checks and summarize blockers when authorized.
+- Refund/revision owner: Alexy final business decision; Abigail/Rex prepare read-only evidence packets and recommended dispositions.
+- Print-go owner: Alexy primary; `ownerPrintGoBy` must record the named operator id. Abigail/Rex may not trigger print-go without explicit per-order approval.
+- Banner/cutoff operator: Alexy final decision-maker. Abigail/Rex may set or monitor a 2026-06-06 00:00 CDT reminder, but current approved public posture is no date-specific print cutoff and no deploy/copy flip without explicit go/no-go.
 - Incident owner: Abigail/Rex for internal triage, with Alexy as final business go/no-go.
+
+## Father’s Day Week SLA
+
+- Support inbox check: at least morning and afternoon CDT during any approved G5/internal traffic window.
+- Proof/revision/refund/payment issues: escalate to Alexy the same business day; during an active G5 run, target under 4 business hours.
+- Capacity check: before any traffic push and after any paid order.
+- Banner/cutoff check: on 2026-06-06, verify public copy remains non-date-specific unless a written partner SLA has been attached and Alexy approves a deploy.
+
+## Manual Controls Not Yet Replaced By Console
+
+- KS-1 through KS-6 are documented split controls, not a single operator console.
+- Resend bounce monitoring is not implemented in this candidate.
+- For internal-only YELLOW-CANDIDATE, these are accepted as manual risks only if Alexy explicitly approves the G5 run with manual inbox/Resend/dashboard checks.
+- Before external paid traffic or creator/gifting traffic, implement KS console and bounce monitoring or record a separate explicit risk acceptance.
 
 ## Daily Checks While YELLOW
 
