@@ -409,6 +409,11 @@ export default async function AdminOrderDetail({ params }: Props) {
           paymentPaid={order.paymentStatus === 'paid'}
           qaPassAt={order.qaPassAt ?? ''}
           qaPassBy={order.qaPassBy ?? ''}
+          proofApprovedAt={order.proofApprovedAt ?? ''}
+          printApprovedAt={order.printApprovedAt ?? ''}
+          ownerPrintGoAt={order.ownerPrintGoAt ?? ''}
+          ownerPrintGoBy={order.ownerPrintGoBy ?? ''}
+          printJobId={order.printJobId ?? ''}
           currentTrackingNumber={order.trackingNumber ?? ''}
           currentTrackingUrl={order.trackingUrl ?? ''}
         />

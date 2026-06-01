@@ -874,3 +874,165 @@ test('retryOrderFulfillment: delivery_email_failed print + clean manifest → AL
     assert.equal(after?.fulfillmentLastError, null);
   } finally { cleanup(dir); }
 });
+
+// ── G3 owner-go admin route + source assertions ──────────────────────────────
+
+import { recordOwnerPrintGo } from '../src/lib/admin-actions.ts';
+
+test('recordOwnerPrintGo: refuses when fulfillmentStatus is not proof_approved', async () => {
+  const dir = makeTmp();
+  try {
+    // Order is still at proof_ready — customer has not yet clicked
+    // approve. Operator-go must refuse before any submitPrint call.
+    await seed({
+      bookFormat: 'classic',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'proof_ready',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      proofApprovalToken: 'tok_pending',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...policyReadyOverrides(),
+      shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
+    }, 'ord_g3_pre_customer_approve');
+    const r = await recordOwnerPrintGo('ord_g3_pre_customer_approve', 'ops@example.com');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /customer approval|proof_approved|state/i);
+    const after = await getOrder('ord_g3_pre_customer_approve');
+    assert.equal(after?.ownerPrintGoAt, undefined);
+    assert.equal(after?.printJobId, undefined);
+  } finally { cleanup(dir); }
+});
+
+test('recordOwnerPrintGo: refuses with empty ownerBy', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      bookFormat: 'classic',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'proof_approved',
+      proofApprovedAt: '2026-05-31T22:00:00.000Z',
+      printApprovedAt: '2026-05-31T22:00:00.000Z',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      proofApprovalToken: 'tok_ok',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...policyReadyOverrides(),
+      shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
+    }, 'ord_g3_blank_owner');
+    const r = await recordOwnerPrintGo('ord_g3_blank_owner', '   ');
+    assert.equal(r.ok, false);
+    assert.match(!r.ok ? r.error : '', /ownerBy/i);
+  } finally { cleanup(dir); }
+});
+
+test('admin /print-go route: source guarantees admin auth check before recordOwnerPrintGo', async () => {
+  // Static source assertion — the route must call isAdminAuthedFromRequest
+  // and return 401 before ever invoking recordOwnerPrintGo. We assert the
+  // source shape; the runtime auth helper itself is unit-tested elsewhere.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/api/admin/orders/[orderId]/print-go/route.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(src, /isAdminAuthedFromRequest\(request\)/);
+  assert.match(src, /status:\s*401/);
+  assert.match(src, /recordOwnerPrintGo\(/);
+  // Auth check must appear before the recordOwnerPrintGo call.
+  const authIdx = src.indexOf('isAdminAuthedFromRequest');
+  const callIdx = src.indexOf('recordOwnerPrintGo(');
+  assert.ok(authIdx > -1 && callIdx > -1 && authIdx < callIdx,
+    'isAdminAuthedFromRequest must be checked before recordOwnerPrintGo is called');
+});
+
+test('admin owner-go UI: detail-client.tsx renders the two-step gate (ack checkbox + confirm dialog) and explicit "customer approval is not enough" copy', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // 1. Owner-go panel exists.
+  assert.match(src, /data-testid="owner-print-go-panel"/);
+  // 2. Explicit "customer approval is not enough" copy is rendered (no
+  //    operator can misread the affordance as customer-driven).
+  assert.match(src, /[Cc]ustomer approval is not enough/);
+  // 3. Two-step gate: an explicit ack checkbox plus a confirm() dialog.
+  assert.match(src, /data-testid="owner-print-go-ack"/);
+  assert.match(src, /ownerGoAck/);
+  assert.match(src, /confirm\(/);
+  assert.match(src, /Confirm: record owner print go/);
+  // 4. The submit button calls the admin print-go route, not Lulu/RPI directly.
+  assert.match(src, /\/api\/admin\/orders\/\$\{props\.orderId\}\/print-go/);
+  // 5. Submit button is gated on both eligibility and the ack checkbox.
+  assert.match(src, /disabled=\{!eligible \|\| !ownerGoAck/);
+});
+
+test('admin owner-go UI: blocker reasons are surfaced when ineligible', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // Operator must see WHY the action is disabled.
+  assert.match(src, /data-testid="owner-print-go-blocked-reasons"/);
+  // Each individual blocker reason is enumerated.
+  assert.match(src, /customer has not approved the proof/);
+  assert.match(src, /QA not passed yet/);
+  assert.match(src, /payment not confirmed/);
+  assert.match(src, /owner go already recorded/);
+  assert.match(src, /print already submitted/);
+});
+
+test('no customer-facing source imports recordOwnerPrintGo or submitPrintAfterOwnerGo', async () => {
+  // Sanity check: the customer /review route and any customer-facing page
+  // MUST NOT import the print-go path. Only admin routes / admin UI may.
+  const { readFileSync, readdirSync, statSync } = await import('node:fs');
+  const path = await import('node:path');
+
+  const repoRoot = new URL('../', import.meta.url);
+  const srcDir = new URL('src/', repoRoot);
+
+  function walk(dir: URL, out: string[] = []): string[] {
+    for (const entry of readdirSync(dir)) {
+      const full = path.join(dir.pathname, entry);
+      const st = statSync(full);
+      if (st.isDirectory()) {
+        walk(new URL(`${entry}/`, dir), out);
+      } else if (/\.(ts|tsx)$/.test(entry)) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  const offenders: Array<{ file: string; reason: string }> = [];
+  for (const file of walk(srcDir)) {
+    const rel = file.slice(srcDir.pathname.length);
+    // Only inspect customer-facing surfaces:
+    //   - app/review/** (the customer proof-review surface)
+    //   - app/api/order/** (customer order/approve/regenerate routes)
+    //   - app/api/recovery/** (customer-facing recovery)
+    //   - app/api/webhooks/** (Stripe/Lulu inbound — must not call our
+    //     owner-go from a webhook either)
+    if (
+      !rel.startsWith('app/review/') &&
+      !rel.startsWith('app/api/order/') &&
+      !rel.startsWith('app/api/recovery/') &&
+      !rel.startsWith('app/api/webhooks/')
+    ) continue;
+    const src = readFileSync(file, 'utf8');
+    if (/recordOwnerPrintGo|submitPrintAfterOwnerGo/.test(src)) {
+      offenders.push({ file: rel, reason: 'imports/calls owner-go API from a customer-facing surface' });
+    }
+  }
+  assert.equal(
+    offenders.length,
+    0,
+    `customer-facing surfaces must not reach the owner-go path: ${JSON.stringify(offenders)}`,
+  );
+});
