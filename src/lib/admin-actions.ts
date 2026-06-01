@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 
 import { getOptionalStripeSecretKey } from './stripe-env.ts';
 
-import { appendAuditEvent, getOrder, updateFulfillmentState, updateOrderStatus, type OrderRecord } from './orders.ts';
+import { appendAuditEvent, acquireProofReleaseEmailLock, getOrder, updateFulfillmentState, updateOrderStatus, type OrderRecord } from './orders.ts';
 import { triggerFulfillment, approvePrintProof, submitPrintAfterOwnerGo } from './fulfillment.ts';
 import {
   sendProofReadyEmail,
@@ -69,6 +69,7 @@ export interface QaPassDeps {
   now?: () => string;
   createProofToken?: () => string;
   getBaseUrl?: () => string;
+  acquireProofReleaseEmailLock?: typeof acquireProofReleaseEmailLock;
   sendDigitalDeliveryEmail?: typeof sendDigitalDeliveryEmail;
   sendProofReadyEmail?: typeof sendProofReadyEmail;
 }
@@ -395,6 +396,21 @@ export async function releaseOrderAfterQa(
   const proofApprovalToken = isDigital
     ? null
     : (order.proofApprovalToken || (deps.createProofToken ? deps.createProofToken() : crypto.randomBytes(24).toString('hex')));
+  const manifestHash = guard.manifest.manifestHash ?? null;
+  const releaseLock = await (deps.acquireProofReleaseEmailLock ?? acquireProofReleaseEmailLock)(
+    order.id,
+    manifestHash,
+    crypto.randomBytes(16).toString('hex'),
+    qaPassBy,
+    qaPassAt,
+  );
+  if (!releaseLock.acquired) {
+    return {
+      ok: false,
+      status: 409,
+      error: releaseLock.error ?? 'Proof release email already in progress or sent for this artifact',
+    };
+  }
 
   const updated = await updateFulfillmentState(order.id, {
     qaPassAt,
@@ -403,7 +419,7 @@ export async function releaseOrderAfterQa(
     qaReviewer: qaPassBy,
     customerProofReleasedAt: qaPassAt,
     manifestComplete: true,
-    manifestHash: guard.manifest.manifestHash ?? null,
+    manifestHash,
     fulfillmentStatus: isDigital ? 'complete' : 'proof_ready',
     status: 'preview_ready',
     fulfillmentLastError: null,

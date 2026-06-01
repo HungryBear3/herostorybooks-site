@@ -91,16 +91,6 @@ export const STORY_THEMES: StoryTheme[] = [
     accent: 'from-purple-900 via-indigo-700 to-amber-500',
   },
   {
-    id: 'mothers-day-memory-book',
-    name: 'Mother’s Day Memory Book',
-    description: 'A heartfelt story starring your child, inspired by the love they share with Mom.',
-    emoji: '💐',
-    href: '/checkout',
-    coverImage: '/assets/mothers-day-memory-book.png',
-    accent: 'from-rose-900 via-pink-700 to-amber-400',
-    featuredLabel: 'Mother’s Day',
-  },
-  {
     id: 'fathers-day-adventure-book',
     name: 'Father’s Day Adventure Book',
     description: 'A fun story starring your child, inspired by the adventures and memories they share with Dad.',

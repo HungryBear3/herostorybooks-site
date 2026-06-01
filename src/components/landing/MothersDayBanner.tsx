@@ -5,25 +5,7 @@ import { getFathersDayCountdown } from '@/lib/fathers-day';
 
 function getTimeLeft() {
   const countdown = getFathersDayCountdown();
-  if (countdown.tier === 'digital-only' || countdown.tier === 'past-event') {
-    return {
-      days: 0,
-      hours: 0,
-      minutes: 0,
-      seconds: 0,
-      tier: countdown.tier,
-    };
-  }
-
-  const target = new Date('2026-06-05T23:59:59');
-  const now = new Date();
-  const diff = target.getTime() - now.getTime();
-  if (diff <= 0) return { days: 0, hours: 0, minutes: 0, seconds: 0, tier: countdown.tier };
   return {
-    days: Math.floor(diff / (1000 * 60 * 60 * 24)),
-    hours: Math.floor((diff / (1000 * 60 * 60)) % 24),
-    minutes: Math.floor((diff / (1000 * 60)) % 60),
-    seconds: Math.floor((diff / 1000) % 60),
     tier: countdown.tier,
   };
 }
@@ -51,8 +33,6 @@ export function MothersDayBanner() {
     }
   };
 
-  const pad = (n: number) => String(n).padStart(2, '0');
-
   if (dismissed) return null;
   if (timeLeft.tier === 'past-event') return null;
 
@@ -66,25 +46,10 @@ export function MothersDayBanner() {
       <div className="container mx-auto flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-6 text-sm sm:text-base">
         <span className="font-semibold" style={{ color: '#D4AF37' }}>
           {isDigitalOnly
-            ? 'Print timing is tight: choose Digital PDF for the safest Father’s Day option'
-            : 'Father’s Day proof deadline: order early, approve before print'}{' '}
+            ? 'Digital PDF is the safest Father’s Day option'
+            : 'Printed books are best chance only; approve proof before print'}{' '}
           <strong className="bg-white/10 px-2 py-0.5 rounded font-mono">PROOF</strong>
         </span>
-
-        {!isDigitalOnly && (
-          <div
-            className="flex items-center gap-1 font-mono rounded-lg px-3 py-1"
-            style={{ backgroundColor: 'rgba(212,175,55,0.15)' }}
-          >
-            <span className="font-bold text-white">{pad(timeLeft.days)}d</span>
-            <span className="opacity-50 mx-0.5 text-white">:</span>
-            <span className="font-bold text-white">{pad(timeLeft.hours)}h</span>
-            <span className="opacity-50 mx-0.5 text-white">:</span>
-            <span className="font-bold text-white">{pad(timeLeft.minutes)}m</span>
-            <span className="opacity-50 mx-0.5 text-white">:</span>
-            <span className="font-bold text-white">{pad(timeLeft.seconds)}s</span>
-          </div>
-        )}
 
         <Link
           href={isDigitalOnly ? '/checkout?format=digital' : '/pricing'}

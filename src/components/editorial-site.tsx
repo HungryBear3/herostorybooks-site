@@ -131,9 +131,9 @@ const faqs: Array<[string, string]> = [
   ['How personalized is the book?', 'Fully customizable. Every book can use your child’s name, age, interests, dedication, photo/character notes, and an optional 30-second voice note so the story can reflect their own ideas and phrases. We make the child the hero of the story instead of dropping their name into a generic template.'],
   ['Do I approve it before printing? Can I request changes?', 'Yes — and always. Physical books are not printed until you approve the digital proof. Reply to the proof email with any changes: story wording, photo placement, dedication, character details, scene tone. Revisions before approval are included, not an upsell.'],
   ['How long does it take from order to delivery?', 'Digital proofs are usually ready within 2 business days. Once you approve, digital PDFs are delivered after approval; printed books ship 5–7 business days after approval, then US delivery is typically 3–5 days. We don’t guarantee specific holiday-delivery dates because carriers can vary.'],
-  ['Will it arrive in time for a birthday or Father’s Day?', 'Order early for the best print timing. Most US orders that approve their proof at least 9–12 days before the date have the best chance at the date, but we don’t promise specific dates because carriers vary. If timing is tight, choose the Digital PDF so Dad has something meaningful to open.'],
-  ['Which option is safest for a Father’s Day gift?', 'Early in the season, softcover and hardcover are the strongest keepsake gifts. Close to Father’s Day, choose digital so there is something to open on the day, with print available after approval.'],
-  ['What if my photo isn’t ready by Jun 5 — can I still order?', 'Yes. Place the order any time; the proof clock starts when we receive your photo. Digital orders aren’t time-locked because there’s no shipping step — you can approve and download as soon as the proof is ready.'],
+  ['Will it arrive in time for a birthday or Father’s Day?', 'Digital is the safest time-sensitive gift because there is no shipping step after approval. Printed books are best-chance keepsakes only: production and carrier timing can vary after you approve the proof.'],
+  ['Which option is safest for a Father’s Day gift?', 'Choose Digital PDF if Dad needs something meaningful to open on the day. Softcover can be a best-chance printed keepsake after approval; hardcover should be treated as a follow-up keepsake after Father’s Day unless we have written partner SLA.'],
+  ['What if my photo isn’t ready yet — can I still order?', 'Yes. Place the order any time; the proof clock starts when we receive your photo. Digital orders aren’t time-locked because there’s no shipping step — you can approve and download as soon as the proof is ready.'],
   ['Can I send it as a gift or surprise someone?', 'Yes. Add a dedication and gift message at checkout. The proof email goes to whoever you list as the buyer, not the recipient, so the surprise stays intact.'],
   ['What if my child doesn’t like the proof?', 'Reply to the proof email with what to change — a different scene, a softer dinosaur, a recolored sweater, whatever. Revisions before approval are free. We don’t print until you say go.'],
   ['What is the refund policy for digital orders?', 'Digital orders are fully refundable up until you approve the proof. Once you approve and we deliver the high-resolution PDF, the digital order is final.'],
@@ -630,8 +630,8 @@ function SeasonalCallout() {
         </div>
         <div className="rounded-2xl bg-[#f5ead2] p-6 text-center">
           <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Gift timing</div>
-          <h3 className="font-serif text-3xl">Print is the keepsake. Digital is the safety valve.</h3>
-          <p className="mt-3 text-sm leading-6 text-[#695f54]">Proofs are usually ready within 2 business days. Printed books ship 5–7 business days after approval, so order early if you want one in hand for Father&apos;s Day. If timing is tight, digital gives Dad something meaningful to open on the day.</p>
+          <h3 className="font-serif text-3xl">Digital is safest for the day. Print can follow.</h3>
+          <p className="mt-3 text-sm leading-6 text-[#695f54]">Proofs are usually ready within 2 business days. Printed books ship after proof approval, but print and carrier timing can vary. Choose Digital PDF for the on-day gift; treat softcover as best chance and hardcover as a follow-up keepsake.</p>
         </div>
       </div>
     </section>
@@ -726,7 +726,7 @@ export function EditorialFathersDayPage() {
               className="aspect-[4/5] w-full rounded-2xl object-cover object-[30%_55%]"
             />
             <p className="mt-4 text-sm leading-6 text-[#695f54]">
-              Printed softcover and hardcover books are the keepsake gifts when ordered early. If timing gets tight, digital gives Dad something meaningful to open on the day while print can follow after approval.
+              Digital gives Dad something meaningful to open on the day. Printed books are best-chance keepsakes after proof approval; hardcover should be treated as a follow-up keepsake after Father&apos;s Day unless partner timing is confirmed in writing.
             </p>
           </div>
         </div>

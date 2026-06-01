@@ -151,7 +151,8 @@ export default async function AdminCapacityPage({ searchParams }: PageProps) {
           <h2 className="font-serif text-lg font-semibold text-forest">Operator Notes</h2>
           <ul className="mt-2 list-disc pl-5 text-sm leading-relaxed text-gray-600">
             <li>This page only reads order records through the existing admin order store.</li>
-            <li>Pause action remains manual: set <code className="rounded bg-gray-100 px-1">HSB_CHECKOUT_PAUSED=true</code>.</li>
+            <li>Checkout auto-pauses before Stripe when the daily paid ceiling is already hit.</li>
+            <li>Manual emergency pause remains available: set <code className="rounded bg-gray-100 px-1">HSB_CHECKOUT_PAUSED=true</code>.</li>
             <li>Stripe disputes and external print-provider status should still be checked directly before opening traffic.</li>
           </ul>
         </section>

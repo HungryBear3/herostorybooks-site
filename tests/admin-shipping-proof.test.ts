@@ -305,6 +305,47 @@ test('releaseOrderAfterQa: print awaiting_qa creates token and sends proof email
   } finally { cleanup(dir); }
 });
 
+test('releaseOrderAfterQa: duplicate proof release email lock refuses before state advance or customer email', async () => {
+  const dir = makeTmp();
+  try {
+    let emailCalls = 0;
+    let lockCalls = 0;
+    await seed({
+      bookFormat: 'classic',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'awaiting_qa',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      ...policyReadyOverrides(),
+      shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
+    }, 'ord_qa_release_dup');
+
+    const r = await releaseOrderAfterQa('ord_qa_release_dup', {
+      qaPassBy: 'ops',
+      checklist: COMPLETE_CHECKLIST,
+    }, {
+      now: () => '2026-05-31T21:06:00.000Z',
+      createProofToken: () => 'tok_qa_release_dup',
+      getBaseUrl: () => 'https://herostorybooks.com',
+      acquireProofReleaseEmailLock: async (_orderId, manifestHash) => {
+        lockCalls += 1;
+        assert.equal(typeof manifestHash, 'string');
+        return { acquired: false, error: 'proof release email lock already exists' };
+      },
+      sendProofReadyEmail: async () => { emailCalls += 1; },
+    });
+
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /proof release email lock already exists/);
+    assert.equal(lockCalls, 1);
+    assert.equal(emailCalls, 0, 'duplicate release lock must prevent customer email transport');
+    const after = await getOrder('ord_qa_release_dup');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa');
+    assert.equal(after?.qaPassAt, undefined);
+    assert.equal(after?.proofApprovalToken, undefined);
+  } finally { cleanup(dir); }
+});
+
 test('releaseOrderAfterQa: rejects template_after_openai_failure for digital — no email, no state advance', async () => {
   const dir = makeTmp();
   try {
@@ -1258,6 +1299,24 @@ test('owner-go lock source: durable acquisition uses create-only storage before 
   const submitPrintIdx = fulfillmentSrc.indexOf('runPrintProduction(verify, deps)');
   assert.ok(lockCallIdx > -1 && submitPrintIdx > -1 && lockCallIdx < submitPrintIdx,
     'durable create-only lock must be acquired before any print submission side effect');
+});
+
+test('proof release email source: orderId+manifestHash lock is acquired before customer email transport', async () => {
+  const { readFileSync } = await import('node:fs');
+  const ordersSrc = readFileSync(new URL('../src/lib/orders.ts', import.meta.url), 'utf8');
+  const adminSrc = readFileSync(new URL('../src/lib/admin-actions.ts', import.meta.url), 'utf8');
+  assert.match(ordersSrc, /export async function acquireProofReleaseEmailLock/);
+  assert.match(ordersSrc, /manifestHash/);
+  assert.match(ordersSrc, /allowOverwrite:\s*false/);
+  assert.match(ordersSrc, /flag:\s*'wx'/);
+  const lockCallIdx = adminSrc.indexOf('acquireProofReleaseEmailLock)');
+  const stateUpdateIdx = adminSrc.indexOf('updateFulfillmentState(order.id');
+  const sendDigitalIdx = adminSrc.indexOf('await sendDigital(updated');
+  const sendProofIdx = adminSrc.indexOf('await sendProof(updated');
+  assert.ok(lockCallIdx > -1 && stateUpdateIdx > -1 && lockCallIdx < stateUpdateIdx,
+    'proof release lock must be acquired before customer-visible release state advance');
+  assert.ok(lockCallIdx < sendDigitalIdx && lockCallIdx < sendProofIdx,
+    'proof release lock must be acquired before any customer email transport');
 });
 
 test('submitPrintAfterOwnerGo: two parallel owner-go acquisitions → submitPrint invoked AT MOST ONCE, exactly one printJobId persisted', async () => {

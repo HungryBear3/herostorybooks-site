@@ -5,8 +5,28 @@ import { readFileSync } from 'node:fs';
 import {
   CHECKOUT_PAUSED_CODE,
   CHECKOUT_PAUSED_MESSAGE,
+  isCheckoutCapacityFull,
   isCheckoutPaused,
 } from '../src/lib/checkout-pause.ts';
+import { DAILY_PAID_CEILING } from '../src/lib/capacity-dashboard.ts';
+import type { OrderRecord } from '../src/lib/orders.ts';
+
+function paidOrder(id: string, createdAt = '2026-06-01T15:00:00.000Z'): OrderRecord {
+  return {
+    id,
+    childName: 'Luna',
+    bookFormat: 'classic',
+    formatLabel: 'Classic softcover',
+    priceCents: 4499,
+    status: 'order_received',
+    paymentStatus: 'paid',
+    fulfillmentStatus: 'awaiting_qa',
+    email: 'parent@example.com',
+    deliveryExpectation: 'Proof first',
+    createdAt,
+    updatedAt: createdAt,
+  } as OrderRecord;
+}
 
 test('isCheckoutPaused only enables for true, allowing Vercel env whitespace/case', () => {
   assert.equal(isCheckoutPaused('true'), true);
@@ -14,6 +34,13 @@ test('isCheckoutPaused only enables for true, allowing Vercel env whitespace/cas
   assert.equal(isCheckoutPaused('false'), false);
   assert.equal(isCheckoutPaused(''), false);
   assert.equal(isCheckoutPaused(undefined), false);
+});
+
+test('isCheckoutCapacityFull trips when the daily paid ceiling is already hit', () => {
+  const nine = Array.from({ length: DAILY_PAID_CEILING - 1 }, (_, i) => paidOrder(`ord_nine_${i}`));
+  const ten = Array.from({ length: DAILY_PAID_CEILING }, (_, i) => paidOrder(`ord_ten_${i}`));
+  assert.equal(isCheckoutCapacityFull(nine, new Date('2026-06-01T22:00:00.000Z')), false);
+  assert.equal(isCheckoutCapacityFull(ten, new Date('2026-06-01T22:00:00.000Z')), true);
 });
 
 test('checkout page gates the active form behind the pause flag', () => {
@@ -28,14 +55,20 @@ test('checkout page gates the active form behind the pause flag', () => {
 test('order route checks pause before parsing form data or creating Stripe checkout', () => {
   const src = readFileSync('src/app/api/order/route.ts', 'utf8');
   const pauseIdx = src.indexOf('if (isCheckoutPaused())');
+  const capacityIdx = src.indexOf('if (isCheckoutCapacityFull(await listOrders()))');
   const formIdx = src.indexOf('await request.formData()');
   const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
 
   assert.ok(pauseIdx > -1, 'route must check checkout pause flag');
+  assert.ok(capacityIdx > -1, 'route must check system-side capacity pause');
   assert.ok(formIdx > -1, 'route must parse form data after pause check');
   assert.ok(stripeIdx > -1, 'route must create Stripe checkout after pause check');
   assert.ok(pauseIdx < formIdx, 'pause response must happen before form validation/parsing');
   assert.ok(pauseIdx < stripeIdx, 'pause response must happen before Stripe checkout');
+  assert.ok(capacityIdx < formIdx, 'capacity pause response must happen before form validation/parsing');
+  assert.ok(capacityIdx < stripeIdx, 'capacity pause response must happen before Stripe checkout');
+  assert.match(src, /listOrders/);
+  assert.match(src, /isCheckoutCapacityFull/);
   assert.match(src, /CHECKOUT_PAUSED_MESSAGE/);
   assert.match(src, /CHECKOUT_PAUSED_CODE/);
   assert.equal(CHECKOUT_PAUSED_CODE, 'checkout_paused');

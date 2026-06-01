@@ -1,25 +1,23 @@
 /**
  * Father's Day deadline helper.
  *
- * Used by the homepage hero + the SeasonalCallout block to surface an
- * honest "best chance to arrive in time" badge. Copy must stay
- * non-promising — carriers vary, so we say "order by" / "best chance",
- * never "guaranteed delivery".
+ * Used by the homepage hero + the SeasonalCallout block to surface honest
+ * Father's Day timing. Copy must stay non-promising: carriers and print
+ * partners vary, so we say "best chance" and "digital is safest", never
+ * "guaranteed delivery" or a public cutoff date without written SLA.
  *
  * Constants:
  *   - Father's Day 2026: Sunday, June 21, 2026 (third Sunday of June).
- *   - Last-safe print order date: Friday, June 5, 2026. This leaves a
- *     conservative 5–7 business days for print fulfillment plus 3–5
- *     days of US shipping after proof approval.
+ *   - Conservative softcover print cutoff: Monday, June 1, 2026. This is
+ *     kept for tiering only; public copy must not present it as a promise.
  *
- * If the launch business rule for the last-safe date changes (e.g.
- * shorter print SLA), only `LAST_SAFE_ORDER_DATE` needs updating.
+ * If written partner SLA arrives, update this helper and tests together.
  *
  * Pure module: no DOM, no fetch. Pass `now` for deterministic tests.
  */
 
 export const FATHERS_DAY_2026 = '2026-06-21';
-export const LAST_SAFE_ORDER_DATE_2026 = '2026-06-05';
+export const LAST_SAFE_ORDER_DATE_2026 = '2026-06-01';
 
 export type FathersDayTier =
   | 'comfortable'      // ≥ 10 days until last-safe order date
@@ -34,7 +32,7 @@ export interface FathersDayCountdown {
   daysUntilSafeOrderDate: number;
   /** Days from `now` to Father's Day itself. Negative if past. */
   daysUntilFathersDay: number;
-  /** Human label, e.g. "Thu, Jun 5". */
+  /** Internal conservative cutoff label. Do not display as a public promise. */
   safeOrderDateLabel: string;
   /** Human label, e.g. "Sun, Jun 21". */
   fathersDayLabel: string;
@@ -90,27 +88,25 @@ export function getFathersDayCountdown(
 
   const safeOrderDateLabel = formatLabel(LAST_SAFE_ORDER_DATE_2026);
   const fathersDayLabel = formatLabel(FATHERS_DAY_2026);
-  const dayWord = (n: number) => (Math.abs(n) === 1 ? 'day' : 'days');
-
   let badgeCopy: string;
   switch (tier) {
     case 'comfortable':
     case 'tightening':
       badgeCopy =
-        `Order by ${safeOrderDateLabel} for the best chance at Father's Day — ` +
-        `${daysUntilSafeOrderDate} ${dayWord(daysUntilSafeOrderDate)} left`;
+        `Printed books are best chance only for Father's Day; Digital PDF ` +
+        `is the safest way to have something ready to open`;
       break;
     case 'last-call':
     case 'final-hours':
       badgeCopy =
-        `Last ${daysUntilSafeOrderDate} ${dayWord(daysUntilSafeOrderDate)} to order ` +
-        `for the best chance at Father's Day (by ${safeOrderDateLabel})`;
+        `Print timing is tight for Father's Day; choose Digital PDF for the ` +
+        `safest on-day gift, with print as a follow-up keepsake`;
       break;
     case 'digital-only':
-      // Past print-safe window but Father's Day not yet — pivot to digital.
+      // Past conservative print window but Father's Day not yet — pivot to digital.
       badgeCopy =
-        `Print window for Father's Day has tightened — the Digital PDF ` +
-        `(${fathersDayLabel}) is still the safest way to have something to open`;
+        `For Father's Day timing, Digital PDF is the safest on-day gift; ` +
+        `printed books can follow after proof approval`;
       break;
     case 'past-event':
     default:
@@ -132,15 +128,16 @@ export function getFathersDayCountdown(
 /**
  * Father's Day offer copy.
  *
- * Printed books are the lead keepsake while the print window is open. The
- * Digital PDF is the late-window safety valve: useful when timing is tight,
- * but not framed as a lower-quality consolation prize.
+ * Printed books remain available, but without partner-confirmed SLA they are
+ * framed as best-chance/follow-up keepsakes. The Digital PDF is the on-day
+ * safety valve, not a lower-quality consolation prize.
  *
  * Centralized here (rather than inline JSX) so the positioning is pure,
  * importable, and pinned by tests. Copy rules — mirrored in
  * tests/fathers-day.test.ts:
- *   - Lead with keepsake + proof-before-print trust while print is viable.
- *   - Frame digital as a timing safety valve.
+ *   - Lead with proof-before-print trust.
+ *   - Frame digital as the safest on-day gift.
+ *   - Frame print as best-chance/follow-up unless SLA is written.
  *   - Never guarantee delivery; never promise a printed book by Father's Day.
  *   - No likeness guarantees.
  */
@@ -150,7 +147,7 @@ export const FATHERS_DAY_OFFER = {
   digitalLead:
     "Start with a personalized proof book starring your child and the dad or grandpa they love. You review the full proof first, ask for changes if needed, and we only print once you approve.",
   printOptional:
-    "Order early if you want a printed keepsake for Father's Day. If timing gets tight, choose digital so there is still something meaningful to open on the day, with print available after approval.",
+    "Digital is the safest Father's Day option. Printed books are best-chance keepsakes after proof approval; hardcover should be treated as a follow-up keepsake, not an on-day promise.",
   proofNote:
     'Proofs are usually ready within 2 business days. No printed book is sent to production until you approve the proof.',
   ctaLabel: "Create Dad's book",

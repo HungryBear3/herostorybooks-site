@@ -1292,8 +1292,8 @@ export function CheckoutForm() {
               </h2>
               {showFathersDayReminder && (
                 <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
-                  <strong>Father&apos;s Day order-by date: {fathersDay.safeOrderDateLabel}.</strong>{" "}
-                  Digital gives Dad something meaningful to open after proof approval; printed books depend on proof timing and carrier delivery.
+                  <strong>Father&apos;s Day timing:</strong>{" "}
+                  Digital gives Dad something meaningful to open after proof approval. Printed books are best chance only; hardcover should be treated as a follow-up keepsake unless partner timing is confirmed in writing.
                 </div>
               )}
               <div className="space-y-3">

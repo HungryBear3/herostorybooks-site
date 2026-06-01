@@ -6,6 +6,7 @@ import {
   isPrintFormat,
   MAX_VOICE_BYTES,
   OrderPersistenceError,
+  listOrders,
   persistOrder,
   sanitizeFamilyCharacters,
   uploadOrderPhoto,
@@ -19,7 +20,7 @@ import {
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { transcribeVoiceNote } from '@/lib/voice-transcription';
 import type { VoiceTranscriptMeta } from '@/lib/fulfillment-types';
-import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
+import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutCapacityFull, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 import { getReferralCodeFromCookieHeader, sanitizeReferralCode } from '@/lib/referrals';
 
@@ -75,6 +76,15 @@ function getReturnBaseUrl(request: Request): string {
 export async function POST(request: Request) {
   try {
     if (isCheckoutPaused()) {
+      return NextResponse.json(
+        {
+          error: CHECKOUT_PAUSED_MESSAGE,
+          code: CHECKOUT_PAUSED_CODE,
+        },
+        { status: 503 },
+      );
+    }
+    if (isCheckoutCapacityFull(await listOrders())) {
       return NextResponse.json(
         {
           error: CHECKOUT_PAUSED_MESSAGE,

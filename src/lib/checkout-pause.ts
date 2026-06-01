@@ -1,3 +1,6 @@
+import { buildCapacityDashboardSummary } from './capacity-dashboard.ts';
+import type { OrderRecord } from './orders.ts';
+
 export const CHECKOUT_PAUSED_CODE = 'checkout_paused';
 
 export const CHECKOUT_PAUSED_MESSAGE =
@@ -5,4 +8,9 @@ export const CHECKOUT_PAUSED_MESSAGE =
 
 export function isCheckoutPaused(value = process.env.HSB_CHECKOUT_PAUSED): boolean {
   return typeof value === 'string' && value.trim().toLowerCase() === 'true';
+}
+
+export function isCheckoutCapacityFull(orders: OrderRecord[], now = new Date()): boolean {
+  const summary = buildCapacityDashboardSummary(orders, { now });
+  return summary.paidOrdersToday >= summary.dailyPaidCeiling;
 }

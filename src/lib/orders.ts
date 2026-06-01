@@ -1176,6 +1176,17 @@ function getOwnerPrintGoIntentLockBlobPath(orderId: string) {
   return withBlobNamespace(`orders/${orderId}/owner-print-go.lock`);
 }
 
+function getProofReleaseEmailLockHash(manifestHash: string | null | undefined) {
+  return crypto
+    .createHash('sha256')
+    .update(manifestHash || 'missing-manifest-hash')
+    .digest('hex');
+}
+
+function getProofReleaseEmailLockBlobPath(orderId: string, manifestHash: string | null | undefined) {
+  return withBlobNamespace(`orders/${orderId}/proof-release-email-${getProofReleaseEmailLockHash(manifestHash)}.lock`);
+}
+
 function isCreateOnlyCollision(err: unknown): boolean {
   const anyErr = err as { code?: string; status?: number; message?: string };
   const msg = String(anyErr?.message ?? '').toLowerCase();
@@ -1241,6 +1252,59 @@ export async function acquireOwnerPrintGoIntentLock(
     return { acquired: true };
   } catch (err) {
     if (isCreateOnlyCollision(err)) return { acquired: false, error: 'owner print-go lock already exists' };
+    throw err;
+  }
+}
+
+/**
+ * Durable one-shot idempotency lock for customer proof/digital release email.
+ *
+ * The key is deterministic per orderId + manifestHash, so concurrent admin
+ * QA-release attempts for the same artifact cannot both send customer email.
+ * The lock is intentionally not deleted; a new artifact/manifest gets a new
+ * key, while retries for an already released artifact refuse before transport.
+ */
+export async function acquireProofReleaseEmailLock(
+  orderId: string,
+  manifestHash: string | null | undefined,
+  lockToken: string,
+  releasedBy: string,
+  acquiredAt: string,
+): Promise<{ acquired: boolean; error?: string }> {
+  const payload = JSON.stringify({ orderId, manifestHash: manifestHash ?? null, lockToken, releasedBy, acquiredAt }, null, 2);
+  const token = getBlobToken();
+  const requireDurable = requiresDurablePersistence();
+
+  if (token) {
+    try {
+      await put(getProofReleaseEmailLockBlobPath(orderId, manifestHash), payload, {
+        access: getBlobAccessMode(),
+        allowOverwrite: false,
+        addRandomSuffix: false,
+        contentType: 'application/json',
+        token,
+      });
+      return { acquired: true };
+    } catch (err) {
+      if (isCreateOnlyCollision(err)) return { acquired: false, error: 'proof release email lock already exists' };
+      if (requireDurable) throw err;
+      console.warn(`[orders] proof release email blob lock failed in dev for ${orderId}:`, err);
+      // dev: fall through to filesystem lock below
+    }
+  } else if (requireDurable) {
+    throw new OrderPersistenceError(
+      orderId,
+      'BLOB_READ_WRITE_TOKEN missing in production — cannot durably acquire proof release email lock',
+    );
+  }
+
+  const dir = `${getOrderStoreDir()}/${orderId}`;
+  await mkdir(dir, { recursive: true });
+  try {
+    await writeFile(`${dir}/proof-release-email-${getProofReleaseEmailLockHash(manifestHash)}.lock`, `${payload}\n`, { encoding: 'utf8', flag: 'wx' });
+    return { acquired: true };
+  } catch (err) {
+    if (isCreateOnlyCollision(err)) return { acquired: false, error: 'proof release email lock already exists' };
     throw err;
   }
 }

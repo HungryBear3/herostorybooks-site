@@ -31,7 +31,7 @@ const faqs = [
   {
     question: 'Is this good for a Father\'s Day gift?',
     answer:
-      "Order by Jun 5 for the best chance at Father's Day. Carriers vary, so we don't guarantee dates. If timing is tight, choose Digital PDF so there is still something meaningful to open.",
+      "Digital PDF is the safest Father's Day option because there is no shipping step after approval. Printed books are best-chance keepsakes only; hardcover should be treated as a follow-up gift unless partner timing is confirmed in writing.",
   },
   {
     question: 'Will it actually look like my kid?',

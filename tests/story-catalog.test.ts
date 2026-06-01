@@ -24,14 +24,14 @@ test('story catalog launch occasions stay limited to evergreen gifting moments',
   );
 });
 
-test('story catalog still keeps seasonal gift variants available behind the scenes', () => {
+test('story catalog keeps only active seasonal gift variants available', () => {
   const ids = STORY_THEMES.map((theme) => theme.id);
 
   assert.equal(ids.includes('brave-explorer'), true);
   assert.equal(ids.includes('space-voyager'), true);
   assert.equal(ids.includes('ocean-dreams'), true);
   assert.equal(ids.includes('dinosaur-discovery'), true);
-  assert.equal(ids.includes('mothers-day-memory-book'), true);
+  assert.equal(ids.includes('mothers-day-memory-book'), false);
   assert.equal(ids.includes('fathers-day-adventure-book'), true);
   assert.ok(STORY_THEMES.length >= 6);
 });
@@ -86,18 +86,9 @@ test('featured evergreen stories do not fall back to the old low-quality -gpt co
   }
 });
 
-test('seasonal Mother\'s Day copy is honest about the one-photo experience', () => {
+test('expired Mother\'s Day SKU is not in the public story catalog', () => {
   const mom = STORY_THEMES.find((t) => t.id === 'mothers-day-memory-book');
-  assert.ok(mom, 'mothers-day theme must exist');
-  // Must NOT imply two photos / Mom appearing in the book / shared illustration
-  assert.equal(
-    /two[- ]?photo|both[- ]?photos|mom[’']?s photo|shared illustration|mother and child together/i.test(mom!.description),
-    false,
-    `copy implies two-photo experience: ${mom!.description}`,
-  );
-  // Must position as child-starring, inspired by the bond
-  assert.match(mom!.description, /child|hero|starring/i);
-  assert.match(mom!.description, /mom|mother|love/i);
+  assert.equal(mom, undefined);
 });
 
 test('seasonal Father\'s Day copy is honest about the one-photo experience', () => {
