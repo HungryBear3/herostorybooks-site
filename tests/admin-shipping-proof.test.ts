@@ -1224,6 +1224,19 @@ test('submitPrintAfterOwnerGo: wrong fulfillmentStatus refuses (e.g. submitting_
   } finally { cleanup(dir); }
 });
 
+test('owner-go lock source: durable acquisition uses create-only storage before submitPrint', async () => {
+  const { readFileSync } = await import('node:fs');
+  const ordersSrc = readFileSync(new URL('../src/lib/orders.ts', import.meta.url), 'utf8');
+  const fulfillmentSrc = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
+  assert.match(ordersSrc, /export async function acquireOwnerPrintGoIntentLock/);
+  assert.match(ordersSrc, /allowOverwrite:\s*false/);
+  assert.match(ordersSrc, /flag:\s*'wx'/);
+  const lockCallIdx = fulfillmentSrc.indexOf('acquireOwnerPrintGoIntentLock(');
+  const submitPrintIdx = fulfillmentSrc.indexOf('runPrintProduction(verify, deps)');
+  assert.ok(lockCallIdx > -1 && submitPrintIdx > -1 && lockCallIdx < submitPrintIdx,
+    'durable create-only lock must be acquired before any print submission side effect');
+});
+
 test('submitPrintAfterOwnerGo: two parallel owner-go acquisitions → submitPrint invoked AT MOST ONCE, exactly one printJobId persisted', async () => {
   const dir = makeTmp();
   try {

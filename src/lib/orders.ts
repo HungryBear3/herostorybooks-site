@@ -1150,6 +1150,79 @@ export async function uploadOrderSupportingPhoto(
   );
 }
 
+function getOwnerPrintGoIntentLockBlobPath(orderId: string) {
+  return withBlobNamespace(`orders/${orderId}/owner-print-go.lock`);
+}
+
+function isCreateOnlyCollision(err: unknown): boolean {
+  const anyErr = err as { code?: string; status?: number; message?: string };
+  const msg = String(anyErr?.message ?? '').toLowerCase();
+  return (
+    anyErr?.code === 'EEXIST' ||
+    anyErr?.status === 409 ||
+    msg.includes('already exists') ||
+    msg.includes('conflict') ||
+    msg.includes('would overwrite')
+  );
+}
+
+/**
+ * Durable one-shot intent lock for owner print-go.
+ *
+ * Order JSON is last-write-wins, so writing ownerPrintGoLockToken and reading
+ * it back is not enough to prevent an irreversible double submit: two writers
+ * can both observe their own surviving token before the other write completes.
+ * This lock uses create-only storage before any Lulu/RPI call:
+ *  - Vercel Blob: `allowOverwrite: false` on a deterministic lock key.
+ *  - Local/test FS: `flag: 'wx'` on a deterministic lock file.
+ *
+ * The lock is intentionally not deleted after success. It is an idempotency
+ * marker that makes future owner-go attempts refuse before print submission.
+ */
+export async function acquireOwnerPrintGoIntentLock(
+  orderId: string,
+  lockToken: string,
+  ownerBy: string,
+  acquiredAt: string,
+): Promise<{ acquired: boolean; error?: string }> {
+  const payload = JSON.stringify({ orderId, lockToken, ownerBy, acquiredAt }, null, 2);
+  const token = getBlobToken();
+  const requireDurable = requiresDurablePersistence();
+
+  if (token) {
+    try {
+      await put(getOwnerPrintGoIntentLockBlobPath(orderId), payload, {
+        access: getBlobAccessMode(),
+        allowOverwrite: false,
+        addRandomSuffix: false,
+        contentType: 'application/json',
+        token,
+      });
+      return { acquired: true };
+    } catch (err) {
+      if (isCreateOnlyCollision(err)) return { acquired: false, error: 'owner print-go lock already exists' };
+      if (requireDurable) throw err;
+      console.warn(`[orders] owner print-go blob lock failed in dev for ${orderId}:`, err);
+      // dev: fall through to filesystem lock below
+    }
+  } else if (requireDurable) {
+    throw new OrderPersistenceError(
+      orderId,
+      'BLOB_READ_WRITE_TOKEN missing in production — cannot durably acquire owner print-go lock',
+    );
+  }
+
+  const dir = `${getOrderStoreDir()}/${orderId}`;
+  await mkdir(dir, { recursive: true });
+  try {
+    await writeFile(`${dir}/owner-print-go.lock`, `${payload}\n`, { encoding: 'utf8', flag: 'wx' });
+    return { acquired: true };
+  } catch (err) {
+    if (isCreateOnlyCollision(err)) return { acquired: false, error: 'owner print-go lock already exists' };
+    throw err;
+  }
+}
+
 export async function persistOrder(order: OrderRecord) {
   const token = getBlobToken();
   const serialized = JSON.stringify(order, null, 2);

@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { put } from '@vercel/blob';
 
-import { getOrder, getOrderPhotoUrl, isPrintFormat, updateFulfillmentState, withBlobNamespace } from './orders.ts';
+import { acquireOwnerPrintGoIntentLock, getOrder, getOrderPhotoUrl, isPrintFormat, updateFulfillmentState, withBlobNamespace } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { OrderRecord } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
@@ -1420,12 +1420,21 @@ export async function submitPrintAfterOwnerGo(
     };
   }
 
-  // Acquire lock. The token is the canonical race-loss signal; we ALSO
-  // transition fulfillmentStatus to `submitting_to_print` as the visible
-  // state lock so any subsequent owner-go attempt early-exits at the
-  // WRONG_FULFILLMENT_STATUS check above.
+  // Acquire a durable create-only intent lock before any irreversible print
+  // side effect. The order fields below are the visible state/audit marker;
+  // the lock file/blob is the real cross-request duplicate-submit guard.
   const lockToken = (deps.generateLockToken ?? (() => crypto.randomBytes(16).toString('hex')))();
   const goAt = new Date().toISOString();
+
+  const durableLock = await acquireOwnerPrintGoIntentLock(orderId, lockToken, trimmed, goAt);
+  if (!durableLock.acquired) {
+    return {
+      ok: false,
+      failureCode: 'RACE_LOST',
+      error: durableLock.error ?? 'Owner go race lost — print-go intent lock already exists',
+    };
+  }
+
   const updatedOrder = await updateFulfillmentState(orderId, {
     fulfillmentStatus: 'submitting_to_print',
     ownerPrintGoAt: goAt,
