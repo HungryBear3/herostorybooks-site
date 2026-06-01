@@ -128,7 +128,7 @@ export function applyRegeneratePage(
   artifacts: PageArtifact[],
   pageIndex: number,
   newImageUrl: string | null,
-  provider: 'openai' | 'fal' | 'fal_edit' | 'gemini',
+  provider: 'manual' | 'openai' | 'fal' | 'fal_edit' | 'gemini' | 'seedream' | 'seedream_edit',
   model: string,
   promptUsed: string,
   feedbackEntry: PageFeedbackEntry,

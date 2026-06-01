@@ -151,6 +151,29 @@ export async function retryOrderFulfillment(orderId: string): Promise<ActionResu
     }
     const isDigital = order.bookFormat === 'digital';
     if (isDigital && order.storyArtifactUrl) {
+      // Generation Operating Policy §5 — the delivery_email_failed short-
+      // circuit MUST re-run the release guard before any customer email
+      // goes out. State may have drifted since the original release
+      // attempt (a later page-regenerate could have introduced a fixture
+      // asset; a config flag could have flipped; an admin could have
+      // written qaPassAt without going through the gated path). Refuse
+      // with a named code rather than silently shipping.
+      const guard = evaluateReleaseGuard(order);
+      if (!guard.ok) {
+        await appendAuditEvent(order.id, {
+          type: 'proof_release_failed',
+          reason: guard.failureCode ?? 'UNKNOWN',
+          meta: {
+            ...describeFailureForAudit(guard),
+            source: 'retryOrderFulfillment:delivery_email_failed:digital',
+          },
+        });
+        return {
+          ok: false,
+          status: 409,
+          error: `${guard.failureCode ?? 'POLICY_BLOCKED'}: ${guard.message ?? 'release guard refused retry'}`,
+        };
+      }
       try {
         await sendDigitalDeliveryEmail(order, { pdfUrl: order.storyArtifactUrl });
         await updateFulfillmentState(orderId, {
@@ -171,6 +194,23 @@ export async function retryOrderFulfillment(orderId: string): Promise<ActionResu
       }
     }
     if (!isDigital && order.storyArtifactUrl && order.proofApprovalToken) {
+      // Same defense as the digital branch: re-run the release guard.
+      const guard = evaluateReleaseGuard(order);
+      if (!guard.ok) {
+        await appendAuditEvent(order.id, {
+          type: 'proof_release_failed',
+          reason: guard.failureCode ?? 'UNKNOWN',
+          meta: {
+            ...describeFailureForAudit(guard),
+            source: 'retryOrderFulfillment:delivery_email_failed:print',
+          },
+        });
+        return {
+          ok: false,
+          status: 409,
+          error: `${guard.failureCode ?? 'POLICY_BLOCKED'}: ${guard.message ?? 'release guard refused retry'}`,
+        };
+      }
       const baseUrl = process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'http://localhost:3000';
       const reviewUrl = `${baseUrl}/review/${order.id}?token=${order.proofApprovalToken}`;
       try {

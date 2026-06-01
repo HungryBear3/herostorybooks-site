@@ -1,6 +1,6 @@
 // Shared provider types. Imported by image-generator + per-provider modules.
 
-export type ImageProviderName = 'openai' | 'fal' | 'fal_edit' | 'gemini';
+export type ImageProviderName = 'manual' | 'openai' | 'fal' | 'fal_edit' | 'gemini' | 'seedream' | 'seedream_edit';
 
 /**
  * How a particular generated image was conditioned.

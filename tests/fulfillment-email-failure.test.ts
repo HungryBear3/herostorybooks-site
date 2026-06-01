@@ -61,6 +61,34 @@ async function makeDigitalOrder(
     ...base,
     paymentStatus: 'paid',
     stripeSessionId: 'cs_test_email_fail',
+    // Generation Operating Policy §5 defaults — same rationale as
+    // tests/fulfillment.test.ts makeOrder: the auto-send guard requires
+    // policy-clean state. Override any field to exercise failure paths.
+    theme: 'dinosaur-discovery',
+    photoBlobUrl: 'https://example.com/photos/luna.jpg',
+    photoBlobPath: 'orders/test/photo.jpg',
+    photoFileName: 'luna.jpg',
+    storyMeta: {
+      source: 'manual',
+      model: 'abby:manual-subscription',
+      generatedAt: '2026-05-12T09:00:00.000Z',
+      fallbackError: null,
+    },
+    pageArtifacts: [
+      {
+        pageIndex: 0,
+        storyText: 'Once upon a time…',
+        basePrompt: 'p1',
+        currentImageUrl: 'https://example.com/p1.png',
+        generationProvider: 'manual',
+        generationModel: 'abby:manual-subscription',
+        generationConditioning: 'photo_edit',
+        regenerateCount: 0,
+        accepted: false,
+        feedbackHistory: [],
+        versionHistory: [],
+      },
+    ],
     ...overrides,
   };
   await persistOrder(order);

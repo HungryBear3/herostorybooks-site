@@ -48,9 +48,9 @@ const MOCK_STORY: StoryContent = {
 
 const MOCK_PDF = Buffer.from('%PDF-1.4 mock');
 
-const GEMINI_META: StoryMeta = {
-  source: 'gemini_page_prose',
-  model: 'gemini:gemini-2.5-flash',
+const MANUAL_META: StoryMeta = {
+  source: 'manual',
+  model: 'abby:manual-subscription',
   generatedAt: '2026-05-15T17:00:00.000Z',
   fallbackError: null,
 };
@@ -66,6 +66,15 @@ function cleanupTmpDir(dir: string) {
   rmSync(dir, { recursive: true, force: true });
   delete process.env.HSB_ORDER_STORE_DIR;
 }
+
+// Generation Operating Policy §5 defaults — policy-ready fixtures so the
+// post-QA auto-send release guard passes by default. Tests can override.
+const POLICY_READY: Partial<OrderRecord> = {
+  theme: 'dinosaur-discovery',
+  photoBlobUrl: 'https://example.com/photos/luna.jpg',
+  photoBlobPath: 'orders/test/photo.jpg',
+  photoFileName: 'luna.jpg',
+};
 
 async function makeDigitalOrder(
   overrides: Partial<OrderRecord> = {},
@@ -83,6 +92,7 @@ async function makeDigitalOrder(
     stripeSessionId: 'cs_test_storymeta',
     qaPassAt: '2026-05-31T20:00:00.000Z',
     qaPassBy: 'admin',
+    ...POLICY_READY,
     ...overrides,
   };
   await persistOrder(order);
@@ -112,6 +122,7 @@ async function makePrintOrder(
       zip: '62701',
       country: 'US',
     },
+    ...POLICY_READY,
     ...overrides,
   };
   await persistOrder(order);
@@ -121,7 +132,7 @@ async function makePrintOrder(
 const HAPPY_DEPS_DIGITAL: FulfillmentDeps = {
   generateStoryWithMeta: async () => ({
     story: MOCK_STORY,
-    meta: GEMINI_META,
+    meta: MANUAL_META,
   }),
   generateImages: async (prompts) =>
     prompts.map((_, i) => `https://img.example.com/page${i}.png`),
@@ -139,7 +150,7 @@ const HAPPY_DEPS_PRINT: FulfillmentDeps = {
 
 // ── Digital: storyMeta survives all the way to 'complete' ──────────────────
 
-test('digital fulfillment persists storyMeta.source=gemini_page_prose through final complete state', async (t) => {
+test('digital fulfillment persists storyMeta.source=manual through final complete state', async (t) => {
   const dir = makeTmpDir();
   t.after(() => cleanupTmpDir(dir));
 
@@ -152,17 +163,22 @@ test('digital fulfillment persists storyMeta.source=gemini_page_prose through fi
   assert.equal(persisted!.fulfillmentStatus, 'complete');
   // The exact regression Rex caught:
   assert.ok(persisted!.storyMeta, 'final persisted storyMeta must NOT be null');
-  assert.equal(persisted!.storyMeta!.source, 'gemini_page_prose');
-  assert.equal(persisted!.storyMeta!.model, 'gemini:gemini-2.5-flash');
+  assert.equal(persisted!.storyMeta!.source, 'manual');
+  assert.equal(persisted!.storyMeta!.model, 'abby:manual-subscription');
 });
 
 test('digital fulfillment preserves an injected story meta verbatim through final complete state', async (t) => {
   const dir = makeTmpDir();
   t.after(() => cleanupTmpDir(dir));
 
+  // Originally 'openai_chat'. Under the Generation Operating Policy,
+  // OPENAI_API requires apiFallbackEnabled + per-order apiAuthorizedBy/At
+  // — neither is in scope for this storyMeta-persistence regression.
+  // Keep the test focused on the 2026-05-15 storyMeta-survives-writes
+  // bug by using a policy-clean 'manual' source.
   const injectedMeta: StoryMeta = {
-    source: 'openai_chat',
-    model: 'gpt-4o-mini',
+    source: 'manual',
+    model: 'abby:manual-subscription',
     generatedAt: '2026-05-15T10:00:01.000Z',
     fallbackError: null,
   };
@@ -199,7 +215,7 @@ test('digital fulfillment retains storyMeta after pageArtifacts/PDF state writes
   // PDF must have landed (basic sanity)
   assert.ok(persisted!.storyArtifactUrl?.includes('/luna-storybook.pdf'));
   // The thing the patch is for:
-  assert.equal(persisted!.storyMeta?.source, 'gemini_page_prose');
+  assert.equal(persisted!.storyMeta?.source, 'manual');
 });
 
 // ── Digital: email failure path must not drop storyMeta or pageArtifacts ───
@@ -249,7 +265,7 @@ test('digital delivery_email_failed path preserves storyMeta + storyArtifactUrl 
   assert.ok(persisted);
   assert.equal(persisted!.fulfillmentStatus, 'delivery_email_failed');
   // All three must survive:
-  assert.equal(persisted!.storyMeta?.source, 'gemini_page_prose');
+  assert.equal(persisted!.storyMeta?.source, 'manual');
   assert.ok(
     persisted!.storyArtifactUrl?.includes('/luna-storybook.pdf'),
     'storyArtifactUrl must survive the email-failure write',
@@ -274,7 +290,7 @@ test('print fulfillment persists storyMeta through final proof_ready state', asy
   const persisted = await getOrder(order.id);
   assert.ok(persisted);
   assert.equal(persisted!.fulfillmentStatus, 'proof_ready');
-  assert.equal(persisted!.storyMeta?.source, 'gemini_page_prose');
+  assert.equal(persisted!.storyMeta?.source, 'manual');
   assert.ok(persisted!.storyArtifactUrl?.includes('/luna-proof.pdf'));
   assert.ok(persisted!.printInteriorArtifactUrl?.includes('/luna-interior.pdf'));
 });

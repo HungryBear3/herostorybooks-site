@@ -31,6 +31,7 @@ import {
 import {
   describeFailureForAudit,
   evaluatePrintGuard,
+  evaluateReleaseGuard,
 } from './generation-manifest.ts';
 import { appendAuditEvent } from './orders.ts';
 
@@ -235,8 +236,15 @@ async function runStoryGeneration(
     return {
       story,
       meta: {
-        source: 'template',
-        model: 'test_mock_legacy',
+        // Legacy test-only shim: callers that return bare story content
+        // get tagged as the policy-default manual route. Generation
+        // Operating Policy §2 — paid default is OPENAI_MANUAL; tagging
+        // the shim as 'template' would silently fail the release guard
+        // for every test that uses this seam. Tests that want to
+        // exercise template/openai_chat/gemini paths inject
+        // `generateStoryWithMeta` directly with the explicit source.
+        source: 'manual',
+        model: 'test_mock_legacy_manual',
         generatedAt: new Date().toISOString(),
         fallbackError: null,
       },
@@ -370,8 +378,14 @@ async function runImageGeneration(
     const urls = await deps.generateImages(imagePrompts, order);
     return urls.map((url, i) => ({
       imageUrl: url ?? null,
-      provider: 'fal' as const,
-      model: 'fal-ai/flux/schnell',
+      // Legacy test-only shim: callers that hand back bare URLs get
+      // tagged as the policy-default manual route. Generation Operating
+      // Policy §2 — paid default is OPENAI_MANUAL; tagging the shim as
+      // 'fal' would silently fail the release guard for every test that
+      // uses this seam. Tests that want to exercise the FAL path inject
+      // `generateImageResults` directly with a 'fal'/'seedream' tag.
+      provider: 'manual' as const,
+      model: 'abby:manual-subscription',
       promptUsed: imagePrompts[i] ?? '',
       conditioning: 'text_only' as const,
       referencePhotoUrl: null,
@@ -614,6 +628,44 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     return;
   }
 
+  // Defense-in-depth: even when qaPassAt is already set on the order
+  // record, re-run the full release guard before the auto-send path
+  // dispatches the customer email. This protects against any path that
+  // wrote qaPassAt without going through `releaseOrderAfterQa` (e.g. a
+  // manual blob edit, a stale snapshot, or a future code path that
+  // forgets the gate). On refusal: persist `qa_blocked` with the named
+  // failure code and append a `proof_release_failed` audit event.
+  const releaseGuard = evaluateReleaseGuard({
+    ...order,
+    storyArtifactUrl: pdfUrl,
+    pageArtifacts: seededPageArtifacts,
+    storyMeta,
+  });
+  if (!releaseGuard.ok) {
+    console.error(
+      `[fulfillment] release guard refused auto-send for ${order.id}: ${releaseGuard.failureCode ?? 'UNKNOWN'} ${releaseGuard.message ?? ''}`,
+    );
+    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+      fulfillmentStatus: 'qa_blocked',
+      qaStatus: 'blocked',
+      qaBlockedReason: `${releaseGuard.failureCode ?? 'POLICY_BLOCKED'}: ${(releaseGuard.message ?? '').slice(0, 480)}`,
+      fulfillmentLastError: `release_guard_refused: ${releaseGuard.failureCode ?? 'POLICY_BLOCKED'}`,
+      storyArtifactUrl: pdfUrl,
+      pageArtifacts: seededPageArtifacts,
+      storyMeta,
+      ...artDirectionPatch,
+    }));
+    await appendAuditEvent(order.id, {
+      type: 'proof_release_failed',
+      reason: releaseGuard.failureCode ?? 'UNKNOWN',
+      meta: {
+        ...describeFailureForAudit(releaseGuard),
+        source: 'runDigitalFulfillment:auto_send_guard',
+      },
+    });
+    return;
+  }
+
   // Positive human QA was already recorded on this order, so the legacy
   // digital-delivery email path may continue. If email delivery fails, keep
   // generated artifacts intact and let admin recover with an email-only resend.
@@ -792,6 +844,43 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   if (!qaPassed) {
     // Hold print proofs behind positive internal QA. The release path that
     // follows QA should create the proof token and send the proof-ready email.
+    return;
+  }
+
+  // Defense-in-depth: even when qaPassAt is already set, re-run the
+  // full release guard before sending the proof-ready email. Same
+  // rationale as the digital path — protects against any code that
+  // wrote qaPassAt without going through `releaseOrderAfterQa`.
+  const printReleaseGuard = evaluateReleaseGuard({
+    ...order,
+    storyArtifactUrl: proofUrl,
+    pageArtifacts: seededPageArtifacts,
+    storyMeta,
+    proofApprovalToken,
+  });
+  if (!printReleaseGuard.ok) {
+    console.error(
+      `[fulfillment] release guard refused proof-send for ${order.id}: ${printReleaseGuard.failureCode ?? 'UNKNOWN'} ${printReleaseGuard.message ?? ''}`,
+    );
+    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+      fulfillmentStatus: 'qa_blocked',
+      qaStatus: 'blocked',
+      qaBlockedReason: `${printReleaseGuard.failureCode ?? 'POLICY_BLOCKED'}: ${(printReleaseGuard.message ?? '').slice(0, 480)}`,
+      fulfillmentLastError: `release_guard_refused: ${printReleaseGuard.failureCode ?? 'POLICY_BLOCKED'}`,
+      storyArtifactUrl: proofUrl,
+      printInteriorArtifactUrl: interiorUrl,
+      pageArtifacts: seededPageArtifacts,
+      storyMeta,
+      ...artDirectionPatch,
+    }));
+    await appendAuditEvent(order.id, {
+      type: 'proof_release_failed',
+      reason: printReleaseGuard.failureCode ?? 'UNKNOWN',
+      meta: {
+        ...describeFailureForAudit(printReleaseGuard),
+        source: 'runPrintFulfillment:auto_send_guard',
+      },
+    });
     return;
   }
 

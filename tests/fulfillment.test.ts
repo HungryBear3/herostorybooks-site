@@ -84,6 +84,7 @@ async function makeOrder(
   );
   const order: OrderRecord = {
     ...base,
+    theme: 'dinosaur-discovery',
     shippingAddress: {
       line1: '100 Test St',
       city: 'Chicago',
@@ -91,6 +92,34 @@ async function makeOrder(
       zip: '60601',
       country: 'US',
     },
+    // Generation Operating Policy §5 defaults: the post-QA auto-send
+    // guard re-runs evaluateReleaseGuard, which requires non-template
+    // storyMeta, per-page lineage, source photo, personalization.
+    // Tests can override any of these to exercise the failure paths.
+    photoBlobUrl: 'https://example.com/photos/luna.jpg',
+    photoBlobPath: 'orders/test/photo.jpg',
+    photoFileName: 'luna.jpg',
+    storyMeta: {
+      source: 'manual',
+      model: 'abby:manual-subscription',
+      generatedAt: '2026-05-31T19:00:00.000Z',
+      fallbackError: null,
+    },
+    pageArtifacts: [
+      {
+        pageIndex: 0,
+        storyText: 'Once upon a time…',
+        basePrompt: 'p1',
+        currentImageUrl: 'https://example.com/p1.png',
+        generationProvider: 'manual',
+        generationModel: 'abby:manual-subscription',
+        generationConditioning: 'photo_edit',
+        regenerateCount: 0,
+        accepted: false,
+        feedbackHistory: [],
+        versionHistory: [],
+      },
+    ],
     ...overrides,
   };
   await persistOrder(order);

@@ -318,7 +318,13 @@ test('digital fulfillment: all pages succeed → complete (no false-positive fai
   const order = await makeDigitalOrder();
   await triggerFulfillment(order.id, deps);
   const persisted = await getOrder(order.id);
-  assert.equal(persisted!.fulfillmentStatus, 'complete');
+  // After the QA gate landed, the "no image failure" terminal state for
+  // an order WITHOUT a recorded qaPassAt is 'awaiting_qa' (not
+  // 'complete'). The original assertion captured the failure-gate
+  // regression: when all images succeed, the order MUST NOT get stuck
+  // at 'failed_manual_review'. That property is still proven here.
+  assert.equal(persisted!.fulfillmentStatus, 'awaiting_qa');
+  assert.notEqual(persisted!.fulfillmentStatus, 'failed_manual_review');
   assert.equal(persisted!.storyMeta?.source, 'gemini_page_prose');
   assert.ok(persisted!.storyArtifactUrl);
 });

@@ -650,3 +650,227 @@ test('resendProofEmail: refuses unsafe manifest (fal_edit page without emergency
     assert.match(!r.ok ? r.error : '', /PROVIDER_ROUTE_BLOCKED/);
   } finally { cleanup(dir); }
 });
+
+// ── retryOrderFulfillment: delivery_email_failed retry path MUST run the release guard ─
+
+import { retryOrderFulfillment } from '../src/lib/admin-actions.ts';
+
+test('retryOrderFulfillment: delivery_email_failed digital + template fallback storyMeta → REFUSED, no email, audit recorded', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'delivery_email_failed',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...policyReadyOverrides(),
+      // Override the policyReady storyMeta with a template-fallback source.
+      storyMeta: {
+        source: 'template_after_openai_failure',
+        model: 'template:Quest',
+        generatedAt: '2026-05-31T20:00:00.000Z',
+        fallbackError: 'fetch failed',
+      },
+    }, 'ord_retry_digital_tpl');
+    const r = await retryOrderFulfillment('ord_retry_digital_tpl');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /TEMPLATE_STORY_BLOCKED/);
+    const after = await getOrder('ord_retry_digital_tpl');
+    // No state flip to complete.
+    assert.notEqual(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
+    assert.ok(
+      (after?.auditEvents ?? []).some(
+        (ev) => ev.type === 'proof_release_failed' &&
+          ev.meta?.source === 'retryOrderFulfillment:delivery_email_failed:digital',
+      ),
+      'proof_release_failed audit event must be appended on retry refusal (digital)',
+    );
+  } finally { cleanup(dir); }
+});
+
+test('retryOrderFulfillment: delivery_email_failed print + template fallback → REFUSED, no email, no proof_ready flip', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      bookFormat: 'classic',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'delivery_email_failed',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      proofApprovalToken: 'tok_retry_tpl',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...policyReadyOverrides(),
+      shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
+      storyMeta: {
+        source: 'template_after_openai_failure',
+        model: 'template:Quest',
+        generatedAt: '2026-05-31T20:00:00.000Z',
+        fallbackError: 'fetch failed',
+      },
+    }, 'ord_retry_print_tpl');
+    const r = await retryOrderFulfillment('ord_retry_print_tpl');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /TEMPLATE_STORY_BLOCKED/);
+    const after = await getOrder('ord_retry_print_tpl');
+    assert.notEqual(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
+    assert.ok(
+      (after?.auditEvents ?? []).some(
+        (ev) => ev.type === 'proof_release_failed' &&
+          ev.meta?.source === 'retryOrderFulfillment:delivery_email_failed:print',
+      ),
+    );
+  } finally { cleanup(dir); }
+});
+
+test('retryOrderFulfillment: delivery_email_failed digital + fixture-asset page → REFUSED FIXTURE_ASSET_BLOCKED', async () => {
+  const dir = makeTmp();
+  try {
+    const overrides = policyReadyOverrides();
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'delivery_email_failed',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...overrides,
+      pageArtifacts: [
+        { ...overrides.pageArtifacts![0]!, assetSource: 'fixture' },
+      ],
+    }, 'ord_retry_digital_fixture');
+    const r = await retryOrderFulfillment('ord_retry_digital_fixture');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /FIXTURE_ASSET_BLOCKED/);
+    const after = await getOrder('ord_retry_digital_fixture');
+    assert.notEqual(after?.fulfillmentStatus, 'complete');
+  } finally { cleanup(dir); }
+});
+
+test('retryOrderFulfillment: delivery_email_failed digital + missing-lineage page → REFUSED MISSING_LINEAGE', async () => {
+  const dir = makeTmp();
+  try {
+    const overrides = policyReadyOverrides();
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'delivery_email_failed',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...overrides,
+      pageArtifacts: [
+        { ...overrides.pageArtifacts![0]!, generationProvider: null },
+      ],
+    }, 'ord_retry_digital_lineage');
+    const r = await retryOrderFulfillment('ord_retry_digital_lineage');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /MISSING_LINEAGE/);
+  } finally { cleanup(dir); }
+});
+
+test('retryOrderFulfillment: delivery_email_failed digital + unknown provider → REFUSED MISSING_LINEAGE', async () => {
+  const dir = makeTmp();
+  try {
+    const overrides = policyReadyOverrides();
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'delivery_email_failed',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...overrides,
+      pageArtifacts: [
+        // Unknown provider (not in policy allow-list): must be hard-blocked
+        // even with QA passed.
+        { ...overrides.pageArtifacts![0]!, generationProvider: 'midjourney' as 'manual' },
+      ],
+    }, 'ord_retry_digital_unknown');
+    const r = await retryOrderFulfillment('ord_retry_digital_unknown');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /MISSING_LINEAGE/);
+  } finally { cleanup(dir); }
+});
+
+test('retryOrderFulfillment: delivery_email_failed without qaPassAt → REFUSED pre-guard (existing behavior)', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'delivery_email_failed',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      // No qaPassAt — the pre-guard "cannot resend before QA pass" check fires.
+      ...policyReadyOverrides(),
+    }, 'ord_retry_no_qa');
+    const r = await retryOrderFulfillment('ord_retry_no_qa');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.match(!r.ok ? r.error : '', /before QA pass/);
+  } finally { cleanup(dir); }
+});
+
+test('retryOrderFulfillment: delivery_email_failed digital + clean manifest → ALLOWED, email sent, state advances to complete', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'delivery_email_failed',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...policyReadyOverrides(),
+    }, 'ord_retry_digital_clean');
+    const r = await retryOrderFulfillment('ord_retry_digital_clean');
+    assert.equal(r.ok, true, !r.ok ? r.error : '');
+    const after = await getOrder('ord_retry_digital_clean');
+    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentLastError, null);
+  } finally { cleanup(dir); }
+});
+
+test('retryOrderFulfillment: delivery_email_failed print + clean manifest → ALLOWED, proof email sent, state advances to proof_ready', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      bookFormat: 'classic',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'delivery_email_failed',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      proofApprovalToken: 'tok_retry_clean',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'admin',
+      qaStatus: 'passed',
+      qaReviewer: 'admin',
+      ...policyReadyOverrides(),
+      shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
+    }, 'ord_retry_print_clean');
+    const r = await retryOrderFulfillment('ord_retry_print_clean');
+    assert.equal(r.ok, true, !r.ok ? r.error : '');
+    const after = await getOrder('ord_retry_print_clean');
+    assert.equal(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.fulfillmentLastError, null);
+  } finally { cleanup(dir); }
+});
