@@ -48,6 +48,10 @@ export default async function AdminOrdersPage({ searchParams }: PageProps) {
               <a href="/admin/qa-room" className="text-forest underline hover:no-underline">
                 QA Production Room ↗
               </a>
+              {' · '}
+              <a href="/admin/capacity" className="text-forest underline hover:no-underline">
+                Capacity
+              </a>
             </p>
           </div>
           <div className="flex gap-3 text-xs">

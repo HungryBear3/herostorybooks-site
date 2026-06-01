@@ -138,6 +138,12 @@ function Header({
         <span className="rounded-full border border-border bg-white px-2 py-1 font-mono uppercase tracking-wider">
           Gate: {posture.gateDown ? 'OFFLINE' : posture.gateState === 'live' ? 'Simulated live gate' : 'Unknown'}
         </span>
+        <a
+          href="/admin/capacity"
+          className="rounded-md border border-border bg-white px-3 py-1.5 text-xs font-semibold text-forest hover:bg-cream"
+        >
+          Capacity
+        </a>
         <button
           type="button"
           onClick={onRefresh}
