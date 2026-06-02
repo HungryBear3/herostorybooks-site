@@ -1687,10 +1687,10 @@ test('OwnerPrintGoFailureCode includes PRINT_SUBMIT_FAILED (regression guard)', 
 
 // ── G3 owner-print-go: lock-recovery action ─────────────────────────────────
 
-test('releaseOwnerPrintGoLock: clears stuck failed_manual_review (with lock, no printJobId) → restores proof_approved + appends audit + deletes FS lock', async () => {
+test('releaseOwnerPrintGoLock: can clear STALE failed_manual_review lock after threshold → restores proof_approved + appends audit + deletes FS lock', async () => {
   const dir = makeTmp();
   try {
-    const { releaseOwnerPrintGoLock } = await import('../src/lib/admin-actions.ts');
+    const { releaseOwnerPrintGoLock, OWNER_PRINT_GO_LOCK_STALE_MS } = await import('../src/lib/admin-actions.ts');
     const { existsSync } = await import('node:fs');
 
     // Seed a stuck order: lock acquired, owner-go recorded, print
@@ -1710,8 +1710,21 @@ test('releaseOwnerPrintGoLock: clears stuck failed_manual_review (with lock, no 
     const lockPath = `${dir}/ord_g3_stuck_recover/owner-print-go.lock`;
     assert.equal(existsSync(lockPath), true, 'FS lock file exists pre-recovery');
 
-    // Recover.
-    const r = await releaseOwnerPrintGoLock('ord_g3_stuck_recover', 'opsA');
+    // Fresh-lock guard: an immediate clear is refused because the lock
+    // (ownerPrintGoAt just set by submitPrintAfterOwnerGo) is not stale yet.
+    const fresh = await releaseOwnerPrintGoLock('ord_g3_stuck_recover', 'opsA');
+    assert.equal(fresh.ok, false);
+    assert.equal(!fresh.ok && fresh.failureCode, 'LOCK_NOT_STALE');
+    const stillStuck = await getOrder('ord_g3_stuck_recover');
+    assert.equal(stillStuck?.fulfillmentStatus, 'failed_manual_review', 'fresh refusal must not mutate state');
+    assert.ok(stillStuck?.ownerPrintGoLockToken, 'fresh refusal must not clear the lock');
+
+    // Recover after the lock is past the conservative lease window. (No
+    // provider-dashboard confirmation needed: failed_manual_review is a
+    // concluded attempt, not an in-flight submit.)
+    const r = await releaseOwnerPrintGoLock('ord_g3_stuck_recover', 'opsA', {
+      now: () => Date.now() + OWNER_PRINT_GO_LOCK_STALE_MS + 60_000,
+    });
     assert.equal(r.ok, true);
     assert.match(!r.ok ? '' : (r.detail ?? ''), /restored to proof_approved/);
 
@@ -1816,26 +1829,217 @@ test('releaseOwnerPrintGoLock: unknown order → 404 ORDER_NOT_FOUND', async () 
   } finally { cleanup(dir); }
 });
 
-test('releaseOwnerPrintGoLock: allows release of acquired-but-print-not-yet-attempted (submitting_to_print) state', async () => {
+// ── G3 pre-G5 hardening: in-flight lock recovery must be staleness + ──────────
+//    confirmation gated (Rex re-review blocker #1). The old behavior —
+//    clearing a fresh submitting_to_print lock immediately — could race an
+//    in-flight provider submit into a double print. These pin the new rule.
+
+test('releaseOwnerPrintGoLock: cannot clear a FRESH in-flight submitting_to_print lock (LOCK_NOT_STALE) — no state/lock mutation', async () => {
   const dir = makeTmp();
   try {
-    const { releaseOwnerPrintGoLock } = await import('../src/lib/admin-actions.ts');
-    // Simulate a stuck submitting_to_print with no printJobId. This is
-    // the in-between window — lock acquired, fulfillmentStatus moved
-    // forward, but submitPrint never returned (process crash, network
-    // partition). The order is stuck; recovery must allow clearing.
-    await makePrintProofApprovedOrder('ord_g3_recover_submitting', {
-      ownerPrintGoAt: '2026-05-31T22:00:00.000Z',
+    const { releaseOwnerPrintGoLock, OWNER_PRINT_GO_LOCK_RECOVERY_CONFIRMATION } =
+      await import('../src/lib/admin-actions.ts');
+    // Fresh in-flight lock: ownerPrintGoAt = now. A submit may be in flight,
+    // so recovery must refuse regardless of confirmation.
+    await makePrintProofApprovedOrder('ord_g3_recover_fresh_inflight', {
+      ownerPrintGoAt: new Date().toISOString(),
       ownerPrintGoBy: 'opsA',
-      ownerPrintGoLockToken: 'tok-W',
+      ownerPrintGoLockToken: 'tok-fresh',
       fulfillmentStatus: 'submitting_to_print',
     });
-    const r = await releaseOwnerPrintGoLock('ord_g3_recover_submitting', 'opsB');
-    assert.equal(r.ok, true);
-    const after = await getOrder('ord_g3_recover_submitting');
+    const r = await releaseOwnerPrintGoLock('ord_g3_recover_fresh_inflight', 'opsB', {
+      // Even WITH the confirmation phrase, freshness must block (staleness
+      // is checked before confirmation).
+      confirmation: OWNER_PRINT_GO_LOCK_RECOVERY_CONFIRMATION,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.equal(!r.ok && r.failureCode, 'LOCK_NOT_STALE');
+    const after = await getOrder('ord_g3_recover_fresh_inflight');
+    assert.equal(after?.fulfillmentStatus, 'submitting_to_print', 'state untouched');
+    assert.equal(after?.ownerPrintGoLockToken, 'tok-fresh', 'lock untouched');
+  } finally { cleanup(dir); }
+});
+
+test('releaseOwnerPrintGoLock: STALE submitting_to_print still requires provider-dashboard confirmation, then succeeds WITH it', async () => {
+  const dir = makeTmp();
+  try {
+    const { releaseOwnerPrintGoLock, OWNER_PRINT_GO_LOCK_RECOVERY_CONFIRMATION } =
+      await import('../src/lib/admin-actions.ts');
+    // ownerPrintGoAt is days old → stale under real Date.now().
+    await makePrintProofApprovedOrder('ord_g3_recover_stale_inflight', {
+      ownerPrintGoAt: '2026-05-30T22:00:00.000Z',
+      ownerPrintGoBy: 'opsA',
+      ownerPrintGoLockToken: 'tok-stale',
+      fulfillmentStatus: 'submitting_to_print',
+    });
+    // Stale but no confirmation → refuse (in-flight state).
+    const noConfirm = await releaseOwnerPrintGoLock('ord_g3_recover_stale_inflight', 'opsB');
+    assert.equal(noConfirm.ok, false);
+    assert.equal(!noConfirm.ok && noConfirm.failureCode, 'CONFIRMATION_REQUIRED');
+    const stillStuck = await getOrder('ord_g3_recover_stale_inflight');
+    assert.equal(stillStuck?.fulfillmentStatus, 'submitting_to_print', 'refusal must not mutate state');
+    assert.equal(stillStuck?.ownerPrintGoLockToken, 'tok-stale');
+
+    // Wrong confirmation phrase → still refuse.
+    const wrongConfirm = await releaseOwnerPrintGoLock('ord_g3_recover_stale_inflight', 'opsB', {
+      confirmation: 'yes clear it',
+    });
+    assert.equal(wrongConfirm.ok, false);
+    assert.equal(!wrongConfirm.ok && wrongConfirm.failureCode, 'CONFIRMATION_REQUIRED');
+
+    // Stale + exact confirmation → success.
+    const ok = await releaseOwnerPrintGoLock('ord_g3_recover_stale_inflight', 'opsB', {
+      confirmation: OWNER_PRINT_GO_LOCK_RECOVERY_CONFIRMATION,
+    });
+    assert.equal(ok.ok, true);
+    const after = await getOrder('ord_g3_recover_stale_inflight');
     assert.equal(after?.fulfillmentStatus, 'proof_approved');
     assert.ok(after?.ownerPrintGoLockToken == null, 'lock token cleared');
   } finally { cleanup(dir); }
+});
+
+test('releaseOwnerPrintGoLock: a direct route-shaped call (confirmation supplied) cannot bypass the staleness guard', async () => {
+  const dir = makeTmp();
+  try {
+    const { releaseOwnerPrintGoLock, OWNER_PRINT_GO_LOCK_RECOVERY_CONFIRMATION } =
+      await import('../src/lib/admin-actions.ts');
+    // Exactly the shape the print-go-lock route invokes:
+    //   releaseOwnerPrintGoLock(orderId, ownerBy, { confirmation }).
+    // A direct POST supplying the confirmation phrase must STILL be blocked
+    // by the lease window — the guard lives in the action, not the UI/route.
+    await makePrintProofApprovedOrder('ord_g3_route_bypass', {
+      ownerPrintGoAt: new Date().toISOString(),
+      ownerPrintGoBy: 'opsA',
+      ownerPrintGoLockToken: 'tok-route',
+      fulfillmentStatus: 'submitting_to_print',
+    });
+    const r = await releaseOwnerPrintGoLock('ord_g3_route_bypass', 'opsB', {
+      confirmation: OWNER_PRINT_GO_LOCK_RECOVERY_CONFIRMATION,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.failureCode, 'LOCK_NOT_STALE');
+    const after = await getOrder('ord_g3_route_bypass');
+    assert.equal(after?.ownerPrintGoLockToken, 'tok-route', 'no bypass — lock intact');
+  } finally { cleanup(dir); }
+});
+
+test('print-go-lock route source: forwards confirmation; staleness/confirmation guard lives server-side (not the route)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const routeSrc = readFileSync(
+    new URL('../src/app/api/admin/orders/[orderId]/print-go-lock/route.ts', import.meta.url),
+    'utf8',
+  );
+  // Route parses confirmation from the body and forwards it verbatim.
+  assert.match(routeSrc, /body\.confirmation/);
+  assert.match(routeSrc, /releaseOwnerPrintGoLock\(orderId, ownerBy, \{ confirmation \}\)/);
+  // The rule itself lives in admin-actions (server) — keyed off the lease
+  // window + the in-flight confirmation phrase — so a direct POST or a
+  // future UI change cannot weaken it.
+  const actionsSrc = readFileSync(new URL('../src/lib/admin-actions.ts', import.meta.url), 'utf8');
+  assert.match(actionsSrc, /OWNER_PRINT_GO_LOCK_STALE_MS/);
+  assert.match(actionsSrc, /'LOCK_NOT_STALE'/);
+  assert.match(actionsSrc, /'CONFIRMATION_REQUIRED'/);
+  assert.match(actionsSrc, /fulfillmentStatus === 'submitting_to_print'/);
+});
+
+test('submitPrintAfterOwnerGo: persist failure AFTER lock acquisition releases the durable lock (no unrecoverable orphan)', async () => {
+  const dir = makeTmp();
+  try {
+    const { acquireOwnerPrintGoIntentLock } = await import('../src/lib/orders.ts');
+    let submitPrintCalls = 0;
+    await makePrintProofApprovedOrder('ord_g3_persist_fail');
+    const r = await submitPrintAfterOwnerGo('ord_g3_persist_fail', 'opsA', {
+      // Force the acquisition-state write to fail AFTER the durable lock
+      // was created (acquireOwnerPrintGoIntentLock ran first).
+      persistAcquisition: async () => null,
+      submitPrint: async () => { submitPrintCalls += 1; return { jobId: 'should-not-fire' }; },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.failureCode, 'PERSIST_FAILED');
+    assert.equal(submitPrintCalls, 0, 'no print submission on persist failure');
+
+    // The order-state write never landed, so no owner-go markers persist and
+    // the order is still releasable.
+    const after = await getOrder('ord_g3_persist_fail');
+    assert.ok(after?.ownerPrintGoAt == null, 'ownerPrintGoAt not persisted');
+    assert.ok(after?.ownerPrintGoLockToken == null, 'lock token not persisted');
+    assert.equal(after?.fulfillmentStatus, 'proof_approved', 'order remains in proof_approved');
+
+    // The durable intent lock must have been RELEASED — a fresh acquire
+    // succeeds. Were it orphaned, this returns acquired:false and the order
+    // is unrecoverable (releaseOwnerPrintGoLock keys off the now-empty order
+    // fields → NO_LOCK_TO_RELEASE).
+    const reacquire = await acquireOwnerPrintGoIntentLock(
+      'ord_g3_persist_fail', 'tok-after', 'opsB', new Date().toISOString(),
+    );
+    assert.equal(reacquire.acquired, true, 'durable lock was released, so retry can re-acquire');
+  } finally { cleanup(dir); }
+});
+
+test('releaseOrderAfterQa: blank qaPassBy refused server-side (400) — no state advance, no customer email', async () => {
+  const dir = makeTmp();
+  try {
+    let emailCalls = 0;
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'awaiting_qa',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      ...policyReadyOverrides(),
+    }, 'ord_qa_blank_operator');
+
+    const r = await releaseOrderAfterQa('ord_qa_blank_operator', {
+      qaPassBy: '   ',
+      checklist: COMPLETE_CHECKLIST,
+    }, {
+      now: () => '2026-05-31T21:00:00.000Z',
+      sendDigitalDeliveryEmail: async () => { emailCalls += 1; },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 400);
+    assert.match(!r.ok ? r.error : '', /qaPassBy required/i);
+    assert.equal(emailCalls, 0, 'no customer email on blank-operator refusal');
+    const after = await getOrder('ord_qa_blank_operator');
+    assert.equal(after?.fulfillmentStatus, 'awaiting_qa', 'no state advance');
+    assert.equal(after?.qaPassAt, undefined);
+    assert.equal(after?.qaPassBy, undefined);
+  } finally { cleanup(dir); }
+});
+
+test('releaseOrderAfterQa: missing qaPassBy (undefined) refused — no silent "admin" default', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      fulfillmentStatus: 'awaiting_qa',
+      storyArtifactUrl: 'https://cdn.example.com/book.pdf',
+      ...policyReadyOverrides(),
+    }, 'ord_qa_missing_operator');
+    const r = await releaseOrderAfterQa('ord_qa_missing_operator', {
+      checklist: COMPLETE_CHECKLIST,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 400);
+    assert.match(!r.ok ? r.error : '', /qaPassBy required/i);
+    const after = await getOrder('ord_qa_missing_operator');
+    assert.equal(after?.qaPassBy, undefined);
+  } finally { cleanup(dir); }
+});
+
+test('QA named-operator: no "admin" fallback in server action or QA Room UI source', async () => {
+  const { readFileSync } = await import('node:fs');
+  const actionsSrc = readFileSync(new URL('../src/lib/admin-actions.ts', import.meta.url), 'utf8');
+  // The old `(input.qaPassBy ?? 'admin')... || 'admin'` fallback must be gone.
+  assert.doesNotMatch(actionsSrc, /qaPassBy\s*\?\?\s*'admin'/);
+  assert.doesNotMatch(actionsSrc, /qaPassBy[^\n]*\|\|\s*'admin'/);
+  assert.match(actionsSrc, /qaPassBy required/i);
+  // QA Room UI: empty default, gated submit, no `|| 'admin'` on the POST.
+  const qaRoomSrc = readFileSync(new URL('../src/app/admin/qa-room/qa-room-client.tsx', import.meta.url), 'utf8');
+  assert.match(qaRoomSrc, /const \[qaPassBy, setQaPassBy\] = useState\(''\)/);
+  assert.doesNotMatch(qaRoomSrc, /qaPassBy[^\n]*\|\|\s*'admin'/);
+  assert.match(qaRoomSrc, /qaPassBy\.trim\(\)\.length > 0/);
 });
 
 test('print-go-lock route source: auth check + blank ownerBy refusal precede the action call', async () => {

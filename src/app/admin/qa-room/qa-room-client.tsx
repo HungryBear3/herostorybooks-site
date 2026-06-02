@@ -791,7 +791,7 @@ function ActionPanel({
     mobileProofPageCheck: false,
     emailReviewLinkCheck: false,
   });
-  const [qaPassBy, setQaPassBy] = useState('admin');
+  const [qaPassBy, setQaPassBy] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -807,6 +807,7 @@ function ActionPanel({
     policyGuardOk &&
     !posture.gateDown &&
     posture.gateState === 'live' &&
+    qaPassBy.trim().length > 0 &&
     !a.qaPassed;
 
   const reasonsDisabled: string[] = [];
@@ -818,6 +819,7 @@ function ActionPanel({
   if (a.isPrint && !a.shippingPresentIfRequired) reasonsDisabled.push('Print order missing shipping address.');
   if (posture.gateDown) reasonsDisabled.push('Gate is down — releases halted.');
   if (!allChecked) reasonsDisabled.push('Complete the 12-item QA checklist before releasing.');
+  if (!qaPassBy.trim()) reasonsDisabled.push('Enter the QA operator id (no default "admin").');
   if (!policyGuardOk) {
     reasonsDisabled.push(
       `Generation Operating Policy guard: ${a.policyReleaseGuard?.failureCode ?? 'BLOCKED'} — ${a.policyReleaseGuard?.message ?? 'see Policy guard card'}`,
@@ -833,7 +835,7 @@ function ActionPanel({
       const res = await fetch(`/api/admin/orders/${a.orderId}/qa-pass`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ qaPassBy: qaPassBy.trim() || 'admin', checklist: checks }),
+        body: JSON.stringify({ qaPassBy: qaPassBy.trim(), checklist: checks }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {

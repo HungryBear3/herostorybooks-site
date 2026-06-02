@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { put } from '@vercel/blob';
 
-import { acquireOwnerPrintGoIntentLock, getOrder, getOrderPhotoUrl, isPrintFormat, updateFulfillmentState, withBlobNamespace } from './orders.ts';
+import { acquireOwnerPrintGoIntentLock, getOrder, getOrderPhotoUrl, isPrintFormat, releaseOwnerPrintGoIntentLock, updateFulfillmentState, withBlobNamespace } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { GenerationRouteDecision, OrderRecord, ReviewAuditEvent } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
@@ -1393,6 +1393,11 @@ export interface SubmitPrintAfterOwnerGoDeps extends FulfillmentDeps {
   /** Test seam — inject a deterministic lock token. Production code
    *  uses `crypto.randomBytes(16).toString('hex')`. */
   generateLockToken?: () => string;
+  /** Test seam — inject the acquisition-state writer so a persistence
+   *  failure AFTER the durable intent lock is acquired can be simulated.
+   *  Defaults to `updateFulfillmentState`. Used to prove the durable lock
+   *  is released (not orphaned) when this write fails. */
+  persistAcquisition?: typeof updateFulfillmentState;
 }
 
 /**
@@ -1508,14 +1513,28 @@ export async function submitPrintAfterOwnerGo(
     };
   }
 
-  const updatedOrder = await updateFulfillmentState(orderId, {
+  const persistAcquisition = deps.persistAcquisition ?? updateFulfillmentState;
+  const updatedOrder = await persistAcquisition(orderId, {
     fulfillmentStatus: 'submitting_to_print',
     ownerPrintGoAt: goAt,
     ownerPrintGoBy: trimmed,
     ownerPrintGoLockToken: lockToken,
   });
   if (!updatedOrder) {
-    return { ok: false, failureCode: 'PERSIST_FAILED', error: 'Failed to persist owner go' };
+    // The durable create-only intent lock was acquired just above, but the
+    // order-state write failed — so the order has NO ownerPrintGoAt /
+    // ownerPrintGoLockToken persisted while a durable blob/FS lock exists.
+    // releaseOwnerPrintGoLock decides "is there a lock to release?" from
+    // those order fields, so it would refuse with NO_LOCK_TO_RELEASE and
+    // leave the lock orphaned — every retry then hits RACE_LOST on the
+    // create-only marker (unrecoverable without manual blob/FS surgery).
+    // Release the durable lock now so a clean retry can re-acquire.
+    await releaseOwnerPrintGoIntentLock(orderId);
+    return {
+      ok: false,
+      failureCode: 'PERSIST_FAILED',
+      error: 'Failed to persist owner go; durable intent lock released for retry',
+    };
   }
 
   // CAS readback. Re-read the persisted record; if our token survived,

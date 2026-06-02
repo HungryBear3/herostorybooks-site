@@ -155,6 +155,10 @@ export default function OrderDetailActions(props: Props) {
   const [lockRecoveryOpen, setLockRecoveryOpen] = useState(false);
   const [lockRecoveryBy, setLockRecoveryBy] = useState('');
   const [lockRecoveryAck, setLockRecoveryAck] = useState(false);
+  // Provider-dashboard confirmation phrase. The server only consults this
+  // when the order is in `submitting_to_print` (the in-flight window); the
+  // server is authoritative, this input just lets the operator supply it.
+  const [lockRecoveryConfirm, setLockRecoveryConfirm] = useState('');
   const [lockRecoveryRefusal, setLockRecoveryRefusal] =
     useState<{ failureCode: string | null; error: string } | null>(null);
 
@@ -238,7 +242,10 @@ export default function OrderDetailActions(props: Props) {
       const res = await fetch(`/api/admin/orders/${props.orderId}/print-go-lock`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ownerBy: lockRecoveryBy.trim() }),
+        body: JSON.stringify({
+          ownerBy: lockRecoveryBy.trim(),
+          confirmation: lockRecoveryConfirm.trim(),
+        }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -255,6 +262,7 @@ export default function OrderDetailActions(props: Props) {
         setMsg(data.detail ?? 'Owner print-go lock released.');
         setLockRecoveryOpen(false);
         setLockRecoveryAck(false);
+        setLockRecoveryConfirm('');
         // Clear any prior owner-go refusal — the operator just
         // recovered; that history is in the audit event now.
         setOwnerGoRefusal(null);
@@ -433,6 +441,23 @@ export default function OrderDetailActions(props: Props) {
           (props.fulfillmentStatus === 'submitting_to_print' ||
             props.fulfillmentStatus === 'failed_manual_review');
 
+        // Client-side mirror of the server lease window. The server is
+        // authoritative (LOCK_NOT_STALE), but we also hide the clear-lock
+        // affordance until the lock is stale so the operator isn't even
+        // offered a clear immediately after submitting_to_print begins.
+        const LOCK_STALE_MS = 30 * 60 * 1000;
+        const lockAgeMs = props.ownerPrintGoAt
+          ? Date.now() - Date.parse(props.ownerPrintGoAt)
+          : Number.POSITIVE_INFINITY;
+        const lockIsStale = !(lockAgeMs < LOCK_STALE_MS);
+        // In-flight (submitting_to_print) clears require the provider-
+        // dashboard confirmation phrase, enforced server-side.
+        const recoveryNeedsConfirmation =
+          props.fulfillmentStatus === 'submitting_to_print';
+        const recoveryConfirmOk =
+          !recoveryNeedsConfirmation ||
+          lockRecoveryConfirm.trim() === 'PROVIDER DASHBOARD CHECKED';
+
         // Tile grid rows: each renders an [ok]/[block] chip and the
         // canonical reason copy (kept stable so the older blocker-
         // reasons test still asserts each phrase).
@@ -578,7 +603,17 @@ export default function OrderDetailActions(props: Props) {
                   print job was actually created. If a job exists there, do NOT clear
                   the lock — investigate at the provider first.
                 </p>
-                {!lockRecoveryOpen && (
+                {!lockIsStale && (
+                  <p
+                    data-testid="owner-print-go-lock-recovery-not-stale"
+                    className="rounded border border-amber-200 bg-white px-2 py-1.5 text-[11px] text-amber-800"
+                  >
+                    A print submit may still be in flight. Lock recovery unlocks
+                    once the owner-go lock is at least 30 minutes old. Do not clear
+                    it yet — check the print provider dashboard.
+                  </p>
+                )}
+                {lockIsStale && !lockRecoveryOpen && (
                   <button
                     type="button"
                     disabled={busy !== null}
@@ -592,7 +627,7 @@ export default function OrderDetailActions(props: Props) {
                     Open lock-recovery action
                   </button>
                 )}
-                {lockRecoveryOpen && (
+                {lockIsStale && lockRecoveryOpen && (
                   <div className="space-y-2 rounded border border-amber-200 bg-white p-2">
                     <label className="flex items-start gap-2 text-xs">
                       <input
@@ -620,6 +655,23 @@ export default function OrderDetailActions(props: Props) {
                         className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1 text-xs"
                       />
                     </label>
+                    {recoveryNeedsConfirmation && (
+                      <label className="block text-xs">
+                        Print submit is in flight (<code className="font-mono">submitting_to_print</code>).
+                        After verifying at the provider that NO job exists, type{' '}
+                        <code className="font-mono font-bold">PROVIDER DASHBOARD CHECKED</code> to confirm.
+                        <input
+                          value={lockRecoveryConfirm}
+                          onChange={(e) => setLockRecoveryConfirm(e.target.value)}
+                          maxLength={120}
+                          placeholder="PROVIDER DASHBOARD CHECKED"
+                          data-testid="owner-print-go-lock-recovery-confirmation"
+                          autoComplete="off"
+                          spellCheck={false}
+                          className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1 font-mono text-xs"
+                        />
+                      </label>
+                    )}
                     <div className="flex justify-end gap-2">
                       <button
                         type="button"
@@ -637,6 +689,7 @@ export default function OrderDetailActions(props: Props) {
                         disabled={
                           !lockRecoveryAck ||
                           !lockRecoveryBy.trim() ||
+                          !recoveryConfirmOk ||
                           busy !== null
                         }
                         onClick={submitLockRecovery}

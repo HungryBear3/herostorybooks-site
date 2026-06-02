@@ -46,9 +46,9 @@ export async function POST(
 
   const { orderId } = await context.params;
 
-  let body: { ownerBy?: unknown } = {};
+  let body: { ownerBy?: unknown; confirmation?: unknown } = {};
   try {
-    body = (await request.json()) as { ownerBy?: unknown };
+    body = (await request.json()) as { ownerBy?: unknown; confirmation?: unknown };
   } catch {
     // Body parse failure falls through to the explicit ownerBy check
     // below, which will reject with 400.
@@ -62,7 +62,14 @@ export async function POST(
     );
   }
 
-  const result = await releaseOwnerPrintGoLock(orderId, ownerBy);
+  // Provider-dashboard confirmation phrase. Only consulted server-side when
+  // the order is in `submitting_to_print` (the in-flight window). Forwarded
+  // verbatim so the staleness + confirmation guard lives in one place (the
+  // action), not the route or the UI — a direct POST cannot bypass it.
+  const confirmation =
+    typeof body.confirmation === 'string' ? body.confirmation : undefined;
+
+  const result = await releaseOwnerPrintGoLock(orderId, ownerBy, { confirmation });
   if (result.ok === true) {
     return NextResponse.json({ ok: true, detail: result.detail });
   }

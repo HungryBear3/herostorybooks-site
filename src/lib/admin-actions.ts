@@ -377,7 +377,19 @@ export async function releaseOrderAfterQa(
   }
 
   const qaPassAt = deps.now ? deps.now() : new Date().toISOString();
-  const qaPassBy = (input.qaPassBy ?? 'admin').trim().slice(0, 120) || 'admin';
+  // Named-operator enforcement (pre-G5 hardening). No silent default to
+  // "admin": a blank/whitespace operator id must refuse server-side so the
+  // qaPassBy / qaReviewer audit trail always names a real reviewer. The QA
+  // Room and order-detail UIs disable submit until this is typed, but the
+  // server is the authority — a direct API caller cannot bypass it.
+  const qaPassBy = (input.qaPassBy ?? '').trim().slice(0, 120);
+  if (!qaPassBy) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'qaPassBy required (non-empty operator identifier)',
+    };
+  }
 
   // Generation Operating Policy §5 — final release guard. Synthesize the
   // post-write order, run the guard against it, and refuse without writing
@@ -688,7 +700,27 @@ export type ReleaseOwnerPrintGoLockFailureCode =
   | 'PRINT_ALREADY_SUBMITTED'
   | 'ORDER_ALREADY_IN_PRINT_OR_SHIPPED'
   | 'NO_LOCK_TO_RELEASE'
+  | 'LOCK_NOT_STALE'
+  | 'CONFIRMATION_REQUIRED'
   | 'PERSIST_FAILED';
+
+/**
+ * Conservative lease window for owner-go lock recovery. Recovery refuses to
+ * clear a lock whose `ownerPrintGoAt` is younger than this — a fresh lock may
+ * still front an in-flight provider submit, and clearing it then re-running
+ * owner-go is exactly the double-print hazard the durable lock exists to
+ * prevent. A real Lulu/RPI submit completes in seconds; 30 minutes means
+ * "this is genuinely stuck", not "still working".
+ */
+export const OWNER_PRINT_GO_LOCK_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Provider-dashboard confirmation phrase required to clear a lock while the
+ * order is still in `submitting_to_print` (the genuinely in-flight window).
+ * The operator must verify at the print provider that NO job was created
+ * before typing this. Enforced server-side; the UI cannot weaken it.
+ */
+export const OWNER_PRINT_GO_LOCK_RECOVERY_CONFIRMATION = 'PROVIDER DASHBOARD CHECKED';
 
 /**
  * Clear a stuck owner-print-go intent lock.
@@ -729,6 +761,7 @@ export type ReleaseOwnerPrintGoLockFailureCode =
 export async function releaseOwnerPrintGoLock(
   orderId: string,
   ownerBy: string,
+  opts: { confirmation?: string; now?: () => number } = {},
 ): Promise<ActionResult> {
   const trimmed = (ownerBy ?? '').trim().slice(0, 120);
   if (!trimmed) {
@@ -768,6 +801,43 @@ export async function releaseOwnerPrintGoLock(
       error: 'No owner-print-go lock to release on this order.',
       failureCode: 'NO_LOCK_TO_RELEASE',
     };
+  }
+
+  // Staleness / lease guard (pre-G5 hardening). Recovery must not clear a
+  // lock that may still front an in-flight provider submit. Require
+  // `ownerPrintGoAt` to be older than the conservative lease window before
+  // ANY clear is allowed. If `ownerPrintGoAt` is absent/unparseable the
+  // order-state write never landed (no in-flight submit is tied to a
+  // timestamp), so a token-only orphan is treated as stale and recoverable.
+  const nowMs = (opts.now ?? (() => Date.now()))();
+  const goAtMs = order.ownerPrintGoAt ? Date.parse(order.ownerPrintGoAt) : NaN;
+  const lockAgeMs = Number.isFinite(goAtMs) ? nowMs - goAtMs : Infinity;
+  if (lockAgeMs < OWNER_PRINT_GO_LOCK_STALE_MS) {
+    const ageSec = Math.max(0, Math.round(lockAgeMs / 1000));
+    const minMin = Math.round(OWNER_PRINT_GO_LOCK_STALE_MS / 60000);
+    return {
+      ok: false,
+      status: 409,
+      error: `Refusing release: owner-go lock is only ${ageSec}s old (LOCK_NOT_STALE). A print submit may be in flight. Wait until the lock is at least ${minMin} minutes old and confirm at the print provider dashboard first.`,
+      failureCode: 'LOCK_NOT_STALE',
+    };
+  }
+
+  // In-flight (`submitting_to_print`) is the most dangerous state to clear:
+  // the provider may have accepted the job even though no printJobId was
+  // recorded. Require explicit provider-dashboard confirmation text. This is
+  // checked AFTER staleness so confirmation alone can never bypass the lease
+  // window, and it is enforced HERE so a direct route POST cannot skip it.
+  if (order.fulfillmentStatus === 'submitting_to_print') {
+    const confirmation = (opts.confirmation ?? '').trim();
+    if (confirmation !== OWNER_PRINT_GO_LOCK_RECOVERY_CONFIRMATION) {
+      return {
+        ok: false,
+        status: 409,
+        error: `Refusing release of an in-flight submitting_to_print lock without provider-dashboard confirmation (CONFIRMATION_REQUIRED). Re-submit with confirmation="${OWNER_PRINT_GO_LOCK_RECOVERY_CONFIRMATION}" only after verifying at the print provider that no job was created.`,
+        failureCode: 'CONFIRMATION_REQUIRED',
+      };
+    }
   }
 
   // Clear the durable lock first; only then mutate the order record so
