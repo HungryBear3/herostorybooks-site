@@ -31,7 +31,11 @@ visual-reports/
 # Local ops scratch / smoke-capture evidence (regenerable, not source).
 # Includes ops/logs/<run-id>/ directories produced by ad-hoc
 # public-trust + post-deploy smoke captures.
-ops/
+#
+# Leading slash anchors to the repo root — `ops/` alone was matching
+# `docs/ops/` too, which silently dropped tracked ops runbooks. Always
+# anchor.
+/ops/
 
 # Local sample-art review scratch space (not deploy/repo source)
 public/assets/backups-*/

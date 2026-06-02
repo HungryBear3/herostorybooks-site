@@ -56,9 +56,8 @@ Admin console: `/admin/kill-switches`.
 
 - KS-1, KS-2, KS-3, and KS-6 are implemented as enforced kill-switches in the admin console.
 - KS-4 marketing hold and KS-5 provider hold are visible manual/status-only controls because no single marketing or generation-provider integration boundary exists in this app.
-- Resend bounce monitoring is not implemented in this candidate.
-- For internal-only YELLOW-CANDIDATE, Resend bounce monitoring remains a manual risk only if Alexy explicitly approves the G5 run with manual inbox/Resend/dashboard checks.
-- Before external paid traffic or creator/gifting traffic, implement bounce monitoring or record a separate explicit risk acceptance.
+- Resend bounce monitoring is implemented as a signed-webhook ingestion route + read-only admin monitor at `/admin/email-health`; see `docs/ops/hsb-resend-bounce-monitoring-2026-06-02.md` for the runbook. Production activation requires `RESEND_WEBHOOK_SECRET` in Vercel AND a webhook registered in the Resend dashboard pointing at `/api/webhooks/resend`. Until both are configured, the route refuses with 503 (fail-closed) and the admin page renders an unconfigured-warning banner — an empty event list must NOT be interpreted as healthy delivery.
+- Until the production webhook is configured, the daily manual-risk fallback (Resend dashboard spot-check, recorded in the run log, pause via KS-1 on anomaly) is required and is acceptable only for controlled G5 + internal smoke. Public/creator/gifting traffic requires the webhook to be live first.
 
 ## Daily Checks While YELLOW
 
