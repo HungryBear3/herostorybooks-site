@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "next build",
+    "check:production-env": "node scripts/check-production-env.mjs --env=production",
     "dev": "next dev",
     "launch:hygiene": "node scripts/launch-hygiene-check.mjs",
     "lint": "eslint .",
