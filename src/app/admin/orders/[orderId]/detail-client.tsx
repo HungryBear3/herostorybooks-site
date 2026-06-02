@@ -29,6 +29,21 @@ type Props = {
   currentTrackingUrl: string;
 };
 
+/**
+ * Display marker for an operator id that is missing on a persisted
+ * order record. Used wherever we render `qaPassBy` / `ownerPrintGoBy`
+ * and the audit field is empty: do NOT silently print "admin" (that
+ * invents an identifier and hides the audit gap). Surface the gap
+ * instead so ops can correct it.
+ *
+ * The acquisition + QA-pass paths now refuse blank operator ids
+ * server-side (see admin-actions.ts releaseOrderAfterQa and
+ * submitPrintAfterOwnerGo's OWNER_BY_REQUIRED), so a freshly written
+ * order should never need this. The marker exists for legacy /
+ * pre-hardening records and for defense-in-depth on display.
+ */
+const MISSING_OPERATOR_DISPLAY = '— (missing operator)';
+
 // Owner Print Go Console — structured refusal-state copy.
 //
 // Keyed by the `failureCode` returned by /api/admin/orders/[orderId]/print-go
@@ -370,7 +385,7 @@ export default function OrderDetailActions(props: Props) {
 
       {props.qaPassAt && (
         <p className="text-xs text-forest bg-forest/10 rounded px-3 py-2">
-          QA passed by {props.qaPassBy || 'admin'} at {props.qaPassAt}.
+          QA passed by {props.qaPassBy || MISSING_OPERATOR_DISPLAY} at {props.qaPassAt}.
         </p>
       )}
 
@@ -477,7 +492,9 @@ export default function OrderDetailActions(props: Props) {
             id: 'qa',
             label: 'Admin QA',
             ok: Boolean(props.qaPassAt),
-            reason: props.qaPassAt ? `passed by ${props.qaPassBy || 'admin'}` : 'QA not passed yet',
+            reason: props.qaPassAt
+              ? `passed by ${props.qaPassBy || MISSING_OPERATOR_DISPLAY}`
+              : 'QA not passed yet',
           },
           {
             id: 'customer-approval',
@@ -573,7 +590,7 @@ export default function OrderDetailActions(props: Props) {
 
             {alreadyOwnerWent && (
               <p className="text-xs text-forest bg-forest/10 rounded px-3 py-2">
-                Owner go recorded by {props.ownerPrintGoBy || 'admin'} at {props.ownerPrintGoAt}
+                Owner go recorded by {props.ownerPrintGoBy || MISSING_OPERATOR_DISPLAY} at {props.ownerPrintGoAt}
                 {alreadySubmitted ? ` · printJobId=${props.printJobId}` : ''}.
               </p>
             )}

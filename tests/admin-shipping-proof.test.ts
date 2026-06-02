@@ -2122,6 +2122,48 @@ test('admin owner-go console source: qaPassBy is operator-typed (no hardcoded "a
   assert.match(src, /disabled=\{busy !== null \|\| !qaPassBy\.trim\(\)\}/);
 });
 
+test('admin order detail source: display fallbacks for missing operator render the audit-gap marker, NOT silent "admin"', async () => {
+  // Pre-hardening, three display sites in detail-client.tsx defaulted
+  // missing operator ids to the literal "admin" via `|| 'admin'`:
+  //   - QA passed banner ("QA passed by …")
+  //   - eligibility tile reason ("passed by …")
+  //   - owner-go recorded banner ("Owner go recorded by …")
+  // That invented an audit identifier whenever the persisted field
+  // was empty. The server now refuses blank operator ids on write,
+  // but the display path must also surface the gap honestly so a
+  // legacy / pre-hardening order doesn't look correctly attributed.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // 1. The shared marker constant exists and contains both the
+  //    em-dash convention and explicit "missing operator" copy so
+  //    the gap is visible to operators glancing at the page.
+  assert.match(src, /const MISSING_OPERATOR_DISPLAY = '— \(missing operator\)'/);
+
+  // 2. No display-site expression falls back to `|| 'admin'` or
+  //    `?? 'admin'`. Doc-comments that mention the word "admin" in
+  //    quotes are allowed (they explain why we DON'T do that).
+  assert.doesNotMatch(src, /\|\|\s*['"]admin['"]/);
+  assert.doesNotMatch(src, /\?\?\s*['"]admin['"]/);
+
+  // 3. Each of the three display sites uses the marker.
+  assert.match(
+    src,
+    /QA passed by \{props\.qaPassBy \|\| MISSING_OPERATOR_DISPLAY\} at \{props\.qaPassAt\}/,
+  );
+  assert.match(
+    src,
+    /passed by \$\{props\.qaPassBy \|\| MISSING_OPERATOR_DISPLAY\}/,
+  );
+  assert.match(
+    src,
+    /Owner go recorded by \{props\.ownerPrintGoBy \|\| MISSING_OPERATOR_DISPLAY\} at \{props\.ownerPrintGoAt\}/,
+  );
+});
+
 test('admin owner-go console source: OWNER_GO_REFUSAL_COPY contains PRINT_SUBMIT_FAILED entry with provider-check guidance', async () => {
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(
