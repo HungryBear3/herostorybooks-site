@@ -1,6 +1,6 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
-import { get, list, put } from '@vercel/blob';
+import { del, get, list, put } from '@vercel/blob';
 
 import type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import { sanitizeReferralCode } from './referral-code.ts';
@@ -152,7 +152,13 @@ export type ReviewAuditEventType =
   /** Recorded when print submission refuses to call submitPrintJob because
    *  the policy guard failed (missing customer approval, manifest invalid,
    *  lineage broken). */
-  | 'print_submission_blocked';
+  | 'print_submission_blocked'
+  /** Recorded when `releaseOwnerPrintGoLock` clears a stuck owner-print-go
+   *  intent lock. Meta captures the operator who released it, the prior
+   *  fulfillment status, and the prior owner-go fields so the recovery
+   *  has a permanent audit trail. Always emitted on success — never on
+   *  refusal. */
+  | 'owner_print_go_lock_released';
 
 export interface ReviewAuditEvent {
   /** ISO timestamp the event was recorded. */
@@ -1254,6 +1260,55 @@ export async function acquireOwnerPrintGoIntentLock(
     if (isCreateOnlyCollision(err)) return { acquired: false, error: 'owner print-go lock already exists' };
     throw err;
   }
+}
+
+/**
+ * Recovery path for a stuck owner-print-go acquisition.
+ *
+ * Used by the operator-only recovery action when print submission failed
+ * or the order is stuck in `submitting_to_print` / `failed_manual_review`
+ * with no `printJobId`. Deletes both the blob and the FS lock if
+ * present. ENOENT / 404 are treated as success (idempotent: clearing a
+ * lock that does not exist is fine). All other errors propagate so the
+ * caller surfaces a real failure.
+ *
+ * IMPORTANT: this function only releases the storage-level lock. It is
+ * NOT a generic "undo owner-go" — the caller is responsible for
+ * validating that no `printJobId` exists and that `order.status` is not
+ * `print_in_production` / `shipped` before invoking. See
+ * `releaseOwnerPrintGoLock` in admin-actions.ts.
+ */
+export async function releaseOwnerPrintGoIntentLock(
+  orderId: string,
+): Promise<{ released: boolean }> {
+  const blobToken = getBlobToken();
+  let touchedBlob = false;
+  let touchedFs = false;
+
+  if (blobToken) {
+    try {
+      await del(getOwnerPrintGoIntentLockBlobPath(orderId), { token: blobToken });
+      touchedBlob = true;
+    } catch (err) {
+      // 404 / missing blob: nothing to release; that's fine.
+      const anyErr = err as { status?: number; message?: string };
+      const missing =
+        anyErr?.status === 404 ||
+        String(anyErr?.message ?? '').toLowerCase().includes('not found');
+      if (!missing) throw err;
+    }
+  }
+
+  const fsPath = `${getOrderStoreDir()}/${orderId}/owner-print-go.lock`;
+  try {
+    await unlink(fsPath);
+    touchedFs = true;
+  } catch (err) {
+    const anyErr = err as { code?: string };
+    if (anyErr?.code !== 'ENOENT') throw err;
+  }
+
+  return { released: touchedBlob || touchedFs };
 }
 
 /**

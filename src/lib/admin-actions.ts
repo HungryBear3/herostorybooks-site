@@ -3,7 +3,15 @@ import crypto from 'node:crypto';
 
 import { getOptionalStripeSecretKey } from './stripe-env.ts';
 
-import { appendAuditEvent, acquireProofReleaseEmailLock, getOrder, updateFulfillmentState, updateOrderStatus, type OrderRecord } from './orders.ts';
+import {
+  appendAuditEvent,
+  acquireProofReleaseEmailLock,
+  getOrder,
+  releaseOwnerPrintGoIntentLock,
+  updateFulfillmentState,
+  updateOrderStatus,
+  type OrderRecord,
+} from './orders.ts';
 import { triggerFulfillment, approvePrintProof, submitPrintAfterOwnerGo } from './fulfillment.ts';
 import {
   sendProofReadyEmail,
@@ -646,12 +654,15 @@ export async function recordOwnerPrintGo(
   }
   // Map the acquisition path's named failure codes to clean HTTP
   // statuses. 400 for input-shape problems the caller can fix
-  // (OWNER_BY_REQUIRED), 404 for unknown order, 409 for everything
-  // else (already-acquired, wrong state, race lost, etc.).
+  // (OWNER_BY_REQUIRED), 404 for unknown order, 502 when the upstream
+  // print provider submission itself failed (PRINT_SUBMIT_FAILED), 409
+  // for everything else (already-acquired, wrong state, race lost,
+  // etc.).
   const code = result.failureCode;
-  const status: 400 | 404 | 409 =
+  const status: 400 | 404 | 409 | 502 =
     code === 'OWNER_BY_REQUIRED' ? 400 :
     code === 'ORDER_NOT_FOUND' ? 404 :
+    code === 'PRINT_SUBMIT_FAILED' ? 502 :
     409;
   return {
     ok: false,
@@ -661,6 +672,154 @@ export async function recordOwnerPrintGo(
     // render structured safe-state copy (RACE_LOST / ALREADY_OWNER_GO /
     // ALREADY_SUBMITTED / etc.) without parsing `error` strings.
     failureCode: code,
+  };
+}
+
+// ── Owner print-go lock recovery ──────────────────────────────────────────────
+
+/**
+ * Named refusal codes for `releaseOwnerPrintGoLock`. Kept narrow on
+ * purpose so the admin UI can render structured safe-state copy and
+ * the runbook can enumerate each one.
+ */
+export type ReleaseOwnerPrintGoLockFailureCode =
+  | 'OWNER_BY_REQUIRED'
+  | 'ORDER_NOT_FOUND'
+  | 'PRINT_ALREADY_SUBMITTED'
+  | 'ORDER_ALREADY_IN_PRINT_OR_SHIPPED'
+  | 'NO_LOCK_TO_RELEASE'
+  | 'PERSIST_FAILED';
+
+/**
+ * Clear a stuck owner-print-go intent lock.
+ *
+ * `acquireOwnerPrintGoIntentLock` creates a durable blob/FS lock before
+ * any provider submit so concurrent operator clicks cannot double-submit.
+ * The lock is never deleted on the happy path — that is by design
+ * (a successful print is a permanent state-change marker).
+ *
+ * It is ALSO not deleted on the failure path: if persistence or the
+ * provider submit fails, the order is left with the lock in place and
+ * `submitting_to_print` / `failed_manual_review` state, and the
+ * operator UI showed RACE_LOST on retry. That left the operator with
+ * no recovery path short of manual blob/FS surgery.
+ *
+ * This action provides the safe recovery path. It refuses unless:
+ *   - ownerBy is non-blank (audit trail integrity)
+ *   - order exists
+ *   - `printJobId` is empty (PRINT_ALREADY_SUBMITTED — a real print
+ *     job exists; do not invalidate it)
+ *   - status is not `print_in_production` / `shipped`
+ *     (ORDER_ALREADY_IN_PRINT_OR_SHIPPED)
+ *   - either the lock exists OR `ownerPrintGoAt` is set (otherwise
+ *     NO_LOCK_TO_RELEASE — nothing to recover)
+ *
+ * On success:
+ *   - Deletes the lock blob + FS lock (whichever exists).
+ *   - Clears `ownerPrintGoAt`, `ownerPrintGoBy`, `ownerPrintGoLockToken`.
+ *   - If `fulfillmentStatus` is `submitting_to_print` or
+ *     `failed_manual_review`, reverts to `proof_approved` so a fresh
+ *     owner-go can run after operator investigation.
+ *   - Appends an audit event `owner_print_go_lock_released` so the
+ *     reset is permanently recorded.
+ *
+ * NOT a generic "undo" — does not touch printJobId, qa, or customer
+ * approval. Refunds and shipping are out of scope.
+ */
+export async function releaseOwnerPrintGoLock(
+  orderId: string,
+  ownerBy: string,
+): Promise<ActionResult> {
+  const trimmed = (ownerBy ?? '').trim().slice(0, 120);
+  if (!trimmed) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'ownerBy required (non-empty operator identifier)',
+      failureCode: 'OWNER_BY_REQUIRED',
+    };
+  }
+
+  const order = await getOrder(orderId);
+  if (!order) {
+    return { ok: false, status: 404, error: 'Order not found', failureCode: 'ORDER_NOT_FOUND' };
+  }
+
+  if (order.printJobId) {
+    return {
+      ok: false,
+      status: 409,
+      error: `Refusing release: printJobId=${order.printJobId} already exists (PRINT_ALREADY_SUBMITTED). Do not clear the lock — investigate at the print provider.`,
+      failureCode: 'PRINT_ALREADY_SUBMITTED',
+    };
+  }
+  if (order.status === 'print_in_production' || order.status === 'shipped') {
+    return {
+      ok: false,
+      status: 409,
+      error: `Refusing release: order.status=${order.status} (ORDER_ALREADY_IN_PRINT_OR_SHIPPED).`,
+      failureCode: 'ORDER_ALREADY_IN_PRINT_OR_SHIPPED',
+    };
+  }
+  if (!order.ownerPrintGoAt && !order.ownerPrintGoLockToken) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'No owner-print-go lock to release on this order.',
+      failureCode: 'NO_LOCK_TO_RELEASE',
+    };
+  }
+
+  // Clear the durable lock first; only then mutate the order record so
+  // a transient blob/FS delete failure does not leave the order in a
+  // "lock missing but state thinks it's cleared" inconsistent shape.
+  await releaseOwnerPrintGoIntentLock(orderId);
+
+  // Revert state. Always clear the owner-go markers. If the order was
+  // stuck in submitting_to_print / failed_manual_review (the only
+  // states this recovery action accepts), restore it to proof_approved
+  // so the operator can re-attempt owner-go after investigation. Leave
+  // proof_approved alone if it's already there (defensive — no-op
+  // status transition).
+  const restoredFs =
+    order.fulfillmentStatus === 'submitting_to_print' ||
+    order.fulfillmentStatus === 'failed_manual_review'
+      ? 'proof_approved'
+      : order.fulfillmentStatus;
+
+  const updated = await updateFulfillmentState(orderId, {
+    fulfillmentStatus: restoredFs,
+    ownerPrintGoAt: null,
+    ownerPrintGoBy: null,
+    ownerPrintGoLockToken: null,
+    // Clear the last error so the operator sees a clean recovered
+    // state. The audit event preserves the history.
+    fulfillmentLastError: null,
+  });
+  if (!updated) {
+    return {
+      ok: false,
+      status: 502,
+      error: 'Lock cleared but failed to persist order-state revert',
+      failureCode: 'PERSIST_FAILED',
+    };
+  }
+
+  await appendAuditEvent(orderId, {
+    type: 'owner_print_go_lock_released',
+    meta: {
+      releasedBy: trimmed,
+      priorFulfillmentStatus: order.fulfillmentStatus ?? 'unknown',
+      priorOwnerPrintGoAt: order.ownerPrintGoAt ?? null,
+      priorOwnerPrintGoBy: order.ownerPrintGoBy ?? null,
+      priorOwnerPrintGoLockToken: order.ownerPrintGoLockToken ?? null,
+      priorFulfillmentLastError: order.fulfillmentLastError ?? null,
+    },
+  });
+
+  return {
+    ok: true,
+    detail: `Owner print-go lock released by ${trimmed}; order restored to ${restoredFs ?? 'unchanged'}.`,
   };
 }
 

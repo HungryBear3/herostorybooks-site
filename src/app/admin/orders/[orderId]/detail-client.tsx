@@ -100,6 +100,11 @@ const OWNER_GO_REFUSAL_COPY: Record<
     safeState:
       'No print submission occurred. The lock could not be written; retry or escalate.',
   },
+  PRINT_SUBMIT_FAILED: {
+    title: 'Print provider rejected the submission',
+    safeState:
+      'The print provider returned an error. The order is now in failed_manual_review and the durable lock is still in place. CHECK THE PRINT PROVIDER DASHBOARD FIRST: if a job for this order id exists there, do NOT clear the lock — investigate at the provider. If no job exists, use the "Clear stuck owner-print-go lock" recovery action below to release the lock and retry.',
+  },
 };
 
 export default function OrderDetailActions(props: Props) {
@@ -116,6 +121,12 @@ export default function OrderDetailActions(props: Props) {
     customerSafe: false,
     noPrintRelease: false,
   });
+  // QA-pass operator id. Required (non-blank after trim) so audit
+  // entries (`qaPassBy` / `qaReviewer`) record the actual operator per
+  // docs/ops/hsb-yellow-ops-readiness-2026-06-01.md. No "admin"
+  // default — the field starts empty and the QA-pass button is
+  // disabled until the operator types their identifier.
+  const [qaPassBy, setQaPassBy] = useState('');
   // Owner Print Go Console local UI state. The flow is a deliberate
   // three-step gate: (1) operator opens the modal (only enabled when
   // backend-eligibility tiles all pass), (2) operator ticks the
@@ -123,13 +134,28 @@ export default function OrderDetailActions(props: Props) {
   // `PRINT GO`, (3) operator clicks Submit inside the modal. There is
   // no native window.confirm() on this path — the modal IS the second
   // confirmation surface.
+  //
+  // The operator id default is empty (NOT 'admin'). The route refuses
+  // blank `ownerBy`, but the UI also enforces non-blank up front so
+  // the operator can't fall through with a stale default. Audit per
+  // docs/ops/hsb-yellow-ops-readiness-2026-06-01.md §"Required Owners"
+  // requires the named operator identifier.
   const [ownerGoAck, setOwnerGoAck] = useState(false);
-  const [ownerGoBy, setOwnerGoBy] = useState('admin');
+  const [ownerGoBy, setOwnerGoBy] = useState('');
   const [ownerGoPhrase, setOwnerGoPhrase] = useState('');
   const [ownerGoModalOpen, setOwnerGoModalOpen] = useState(false);
   // Last owner-go refusal: captured separately from generic `err` so we
   // can render structured safe-state copy keyed by failureCode.
   const [ownerGoRefusal, setOwnerGoRefusal] =
+    useState<{ failureCode: string | null; error: string } | null>(null);
+  // Stuck-lock recovery state. Surfaced only when the panel detects
+  // a stuck order (ownerPrintGoAt set, no printJobId, fulfillment in
+  // submitting_to_print / failed_manual_review). Same operator-id
+  // discipline as the owner-go path — no default, must be typed.
+  const [lockRecoveryOpen, setLockRecoveryOpen] = useState(false);
+  const [lockRecoveryBy, setLockRecoveryBy] = useState('');
+  const [lockRecoveryAck, setLockRecoveryAck] = useState(false);
+  const [lockRecoveryRefusal, setLockRecoveryRefusal] =
     useState<{ failureCode: string | null; error: string } | null>(null);
 
   async function call(action: string, path: string, body?: unknown, confirmMsg?: string) {
@@ -189,6 +215,53 @@ export default function OrderDetailActions(props: Props) {
       }
     } catch (e) {
       setOwnerGoRefusal({
+        failureCode: null,
+        error: e instanceof Error ? e.message : 'Request failed',
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Stuck owner-print-go lock recovery. Calls the dedicated recovery
+  // route; server enforces the safety preconditions
+  // (PRINT_ALREADY_SUBMITTED / ORDER_ALREADY_IN_PRINT_OR_SHIPPED /
+  // NO_LOCK_TO_RELEASE). On success: lock cleared, fulfillment
+  // restored to proof_approved, audit appended. UI clears local state
+  // and refreshes the page.
+  async function submitLockRecovery() {
+    setBusy('owner-print-go-lock-release');
+    setMsg(null);
+    setErr(null);
+    setLockRecoveryRefusal(null);
+    try {
+      const res = await fetch(`/api/admin/orders/${props.orderId}/print-go-lock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerBy: lockRecoveryBy.trim() }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        detail?: string;
+        error?: string;
+        failureCode?: string | null;
+      };
+      if (!res.ok) {
+        setLockRecoveryRefusal({
+          failureCode: data.failureCode ?? null,
+          error: data.error ?? `Failed (${res.status})`,
+        });
+      } else {
+        setMsg(data.detail ?? 'Owner print-go lock released.');
+        setLockRecoveryOpen(false);
+        setLockRecoveryAck(false);
+        // Clear any prior owner-go refusal — the operator just
+        // recovered; that history is in the audit event now.
+        setOwnerGoRefusal(null);
+        router.refresh();
+      }
+    } catch (e) {
+      setLockRecoveryRefusal({
         failureCode: null,
         error: e instanceof Error ? e.message : 'Request failed',
       });
@@ -258,11 +331,30 @@ export default function OrderDetailActions(props: Props) {
               </label>
             ))}
           </div>
-          <button disabled={busy !== null}
-                  onClick={() => call('qa-pass', `/api/admin/orders/${props.orderId}/qa-pass`,
-                    { qaPassBy: 'admin', checklist: qa },
-                    `Approve ${props.orderId} for customer proof/digital release? This sends the customer email but does not release print.`)}
-                  className="px-3 py-2 text-xs rounded-md font-semibold bg-forest text-white disabled:opacity-50">
+          <label className="block text-xs text-gray-500">
+            QA operator id (recorded as <code className="font-mono">qaPassBy</code> +{' '}
+            <code className="font-mono">qaReviewer</code> — required, no default)
+            <input
+              value={qaPassBy}
+              onChange={(e) => setQaPassBy(e.target.value)}
+              maxLength={120}
+              placeholder="your operator id"
+              data-testid="qa-pass-by"
+              autoComplete="off"
+              className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1 text-xs"
+            />
+          </label>
+          <button
+            disabled={busy !== null || !qaPassBy.trim()}
+            onClick={() => call(
+              'qa-pass',
+              `/api/admin/orders/${props.orderId}/qa-pass`,
+              { qaPassBy: qaPassBy.trim(), checklist: qa },
+              `Approve ${props.orderId} for customer proof/digital release as ${qaPassBy.trim()}? This sends the customer email but does not release print.`,
+            )}
+            data-testid="qa-pass-submit"
+            className="px-3 py-2 text-xs rounded-md font-semibold bg-forest text-white disabled:opacity-50"
+          >
             {busy === 'qa-pass' ? 'Releasing…' : 'Approve for customer proof release'}
           </button>
         </div>
@@ -328,6 +420,18 @@ export default function OrderDetailActions(props: Props) {
           correctState &&
           !alreadyOwnerWent &&
           !alreadySubmitted;
+
+        // Stuck-lock detection: owner-go was acquired (ownerPrintGoAt
+        // set) but the print submit never completed (no printJobId)
+        // AND the order is in an unrecoverable-without-action state
+        // (submitting_to_print or failed_manual_review). Surfaces the
+        // recovery UI so the operator can clear the durable lock after
+        // verifying at the print provider that no actual job exists.
+        const isStuckLock =
+          alreadyOwnerWent &&
+          !alreadySubmitted &&
+          (props.fulfillmentStatus === 'submitting_to_print' ||
+            props.fulfillmentStatus === 'failed_manual_review');
 
         // Tile grid rows: each renders an [ok]/[block] chip and the
         // canonical reason copy (kept stable so the older blocker-
@@ -447,6 +551,128 @@ export default function OrderDetailActions(props: Props) {
                 Owner go recorded by {props.ownerPrintGoBy || 'admin'} at {props.ownerPrintGoAt}
                 {alreadySubmitted ? ` · printJobId=${props.printJobId}` : ''}.
               </p>
+            )}
+
+            {/* Stuck-lock recovery. Visible only when the order is
+                stuck mid-flow (lock acquired, no printJobId, status in
+                submitting_to_print / failed_manual_review). Server
+                enforces the safety preconditions; this UI just
+                surfaces the affordance + adds explicit operator-side
+                ack copy. */}
+            {isStuckLock && (
+              <div
+                data-testid="owner-print-go-lock-recovery-panel"
+                className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 space-y-2"
+              >
+                <p>
+                  <strong>Stuck owner-print-go lock detected.</strong> Owner go was
+                  acquired but no printJobId was persisted; fulfillment is in{' '}
+                  <code className="font-mono">{props.fulfillmentStatus}</code>.{' '}
+                  {props.printJobStatus
+                    ? `Last print job status: ${props.printJobStatus}.`
+                    : null}
+                </p>
+                <p>
+                  <strong>Before clearing the lock:</strong> open the Lulu (or current
+                  print provider) dashboard, search by this order id, and confirm NO
+                  print job was actually created. If a job exists there, do NOT clear
+                  the lock — investigate at the provider first.
+                </p>
+                {!lockRecoveryOpen && (
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() => {
+                      setLockRecoveryRefusal(null);
+                      setLockRecoveryOpen(true);
+                    }}
+                    data-testid="owner-print-go-lock-recovery-open"
+                    className="px-3 py-1.5 text-xs rounded-md font-semibold bg-amber-700 text-white disabled:opacity-50"
+                  >
+                    Open lock-recovery action
+                  </button>
+                )}
+                {lockRecoveryOpen && (
+                  <div className="space-y-2 rounded border border-amber-200 bg-white p-2">
+                    <label className="flex items-start gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={lockRecoveryAck}
+                        onChange={(e) => setLockRecoveryAck(e.target.checked)}
+                        data-testid="owner-print-go-lock-recovery-ack"
+                      />
+                      <span>
+                        I have checked the print provider dashboard for this order id
+                        and confirmed no real print job exists. I understand clearing
+                        the lock reverts fulfillment to <code className="font-mono">proof_approved</code>{' '}
+                        and a fresh owner-go can be re-attempted.
+                      </span>
+                    </label>
+                    <label className="block text-xs">
+                      Operator id (audit trail)
+                      <input
+                        value={lockRecoveryBy}
+                        onChange={(e) => setLockRecoveryBy(e.target.value)}
+                        maxLength={120}
+                        placeholder="your operator id"
+                        data-testid="owner-print-go-lock-recovery-by"
+                        autoComplete="off"
+                        className="mt-1 w-full border border-gray-200 rounded-md px-2 py-1 text-xs"
+                      />
+                    </label>
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLockRecoveryOpen(false);
+                          setLockRecoveryAck(false);
+                        }}
+                        disabled={busy !== null}
+                        className="px-3 py-1.5 text-xs rounded-md font-semibold border border-gray-300 text-gray-700 disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={
+                          !lockRecoveryAck ||
+                          !lockRecoveryBy.trim() ||
+                          busy !== null
+                        }
+                        onClick={submitLockRecovery}
+                        data-testid="owner-print-go-lock-recovery-submit"
+                        className="px-3 py-1.5 text-xs rounded-md font-semibold bg-amber-700 text-white disabled:opacity-50"
+                      >
+                        {busy === 'owner-print-go-lock-release'
+                          ? 'Releasing…'
+                          : 'Clear stuck owner-print-go lock'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {lockRecoveryRefusal && (
+                  <div
+                    data-testid="owner-print-go-lock-recovery-refusal"
+                    className="rounded border border-coral/40 bg-coral/10 px-2 py-1.5 text-coral-dark space-y-1"
+                  >
+                    <p className="font-semibold">
+                      Lock-recovery refused
+                      {lockRecoveryRefusal.failureCode
+                        ? ` (${lockRecoveryRefusal.failureCode})`
+                        : ''}
+                    </p>
+                    <p className="font-mono text-[10px] opacity-80">
+                      {lockRecoveryRefusal.error}
+                    </p>
+                    {lockRecoveryRefusal.failureCode === 'PRINT_ALREADY_SUBMITTED' && (
+                      <p>
+                        A printJobId exists for this order. Do NOT clear the lock; the
+                        order may already be in production at the provider.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
 
             {!alreadyOwnerWent && !alreadySubmitted && (

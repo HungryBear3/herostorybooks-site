@@ -1374,7 +1374,20 @@ export type OwnerPrintGoFailureCode =
   | 'ALREADY_SHIPPED'
   | 'OWNER_BY_REQUIRED'
   | 'RACE_LOST'
-  | 'PERSIST_FAILED';
+  | 'PERSIST_FAILED'
+  // Returned when runPrintProduction itself (i.e. the Lulu/RPI provider
+  // submit) throws. Previously the owner-go path wrapped runPrintProduction
+  // in `runWithRetry`, which would (a) retry the provider submit up to
+  // MAX_RETRIES times — risking a duplicate physical print job on
+  // ambiguous Lulu errors — and (b) swallow the final failure, so the
+  // route returned ok:true even when print failed. Both behaviors were
+  // unsafe for a paid owner test. The owner-go path now runs
+  // runPrintProduction exactly once and propagates failure as
+  // PRINT_SUBMIT_FAILED. The order is moved to failed_manual_review +
+  // fulfillmentLastError so ops can see the cause; the durable lock
+  // remains in place until an operator clears it via the dedicated
+  // recovery action (see `releaseOwnerPrintGoLock` in admin-actions.ts).
+  | 'PRINT_SUBMIT_FAILED';
 
 export interface SubmitPrintAfterOwnerGoDeps extends FulfillmentDeps {
   /** Test seam — inject a deterministic lock token. Production code
@@ -1518,6 +1531,30 @@ export async function submitPrintAfterOwnerGo(
     };
   }
 
-  await runWithRetry(orderId, () => runPrintProduction(verify, deps), deps);
-  return { ok: true };
+  // Single-attempt provider submit. We do NOT wrap this in runWithRetry:
+  // if Lulu returns a 5xx or the request times out after the job was
+  // actually accepted, a retry would create a SECOND physical print job.
+  // The Lulu POST now also carries an Idempotency-Key (lulu.ts), but
+  // operator intent — not automatic retry — owns the recovery decision.
+  // On failure we surface PRINT_SUBMIT_FAILED, write the order to
+  // failed_manual_review with the error message, and leave the durable
+  // lock in place. The operator clears the lock via the recovery action
+  // after investigating (e.g. checking the Lulu dashboard for whether a
+  // job was actually created).
+  try {
+    await runPrintProduction(verify, deps);
+    return { ok: true };
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[fulfillment] orderId=${orderId} owner-go print submit failed: ${errMsg}`);
+    await updateFulfillmentState(orderId, {
+      fulfillmentStatus: 'failed_manual_review',
+      fulfillmentLastError: `owner_print_go_submit_failed: ${errMsg}`,
+    });
+    return {
+      ok: false,
+      failureCode: 'PRINT_SUBMIT_FAILED',
+      error: `Print submission failed: ${errMsg}`,
+    };
+  }
 }

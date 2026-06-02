@@ -212,6 +212,15 @@ export async function submitPrintJob(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
+      // Server-side idempotency key. Keyed off the HSB order id so that
+      // any retransmission of the same logical request — whether from
+      // an internal retry, a Vercel/edge replay, or operator
+      // double-click — dedupes at Lulu instead of creating a second
+      // physical print job. Lulu's print-jobs API accepts this header;
+      // see the Lulu print API docs. Combined with our removal of
+      // automatic provider-submit retry in `submitPrintAfterOwnerGo`,
+      // this gives us defense-in-depth against duplicate paid prints.
+      'Idempotency-Key': order.id,
     },
     body: JSON.stringify(body),
   });

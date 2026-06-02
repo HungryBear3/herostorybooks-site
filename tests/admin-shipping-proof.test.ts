@@ -1607,6 +1607,359 @@ test('recordOwnerPrintGo (admin-actions) returns failureCode on the failure resu
   } finally { cleanup(dir); }
 });
 
+test('submitPrintAfterOwnerGo: thrown submitPrint causes EXACTLY ONE submitPrint call (no auto-retry), surfaces PRINT_SUBMIT_FAILED, moves order to failed_manual_review with structured lastError', async () => {
+  const dir = makeTmp();
+  try {
+    await makePrintProofApprovedOrder('ord_g3_print_submit_failed');
+    let submitPrintCalls = 0;
+    const deps: SubmitPrintAfterOwnerGoDeps = {
+      submitPrint: async () => {
+        submitPrintCalls += 1;
+        throw new Error('Lulu API error 502: simulated upstream failure');
+      },
+    };
+    const r = await submitPrintAfterOwnerGo('ord_g3_print_submit_failed', 'opsA', deps);
+    assert.equal(r.ok, false);
+    assert.equal(r.failureCode, 'PRINT_SUBMIT_FAILED');
+    assert.match(r.error ?? '', /Lulu API error 502/);
+    assert.equal(
+      submitPrintCalls,
+      1,
+      'submitPrint must be called exactly once — no automatic provider retry is permitted on the owner-go path',
+    );
+    const after = await getOrder('ord_g3_print_submit_failed');
+    // Lock + intent are recorded (so the recovery action can find them
+    // and operator can investigate). No printJobId. Status moved to
+    // failed_manual_review with a structured lastError prefix.
+    assert.ok(after?.ownerPrintGoAt, 'ownerPrintGoAt recorded for audit');
+    assert.ok(after?.ownerPrintGoLockToken, 'lock token recorded');
+    assert.equal(after?.printJobId, undefined, 'no printJobId since print failed');
+    assert.equal(after?.fulfillmentStatus, 'failed_manual_review');
+    assert.match(after?.fulfillmentLastError ?? '', /owner_print_go_submit_failed:/);
+  } finally { cleanup(dir); }
+});
+
+test('recordOwnerPrintGo (admin-actions): PRINT_SUBMIT_FAILED maps to HTTP 502 with failureCode', async () => {
+  const dir = makeTmp();
+  try {
+    await makePrintProofApprovedOrder('ord_g3_print_submit_502');
+    // Direct submitPrintAfterOwnerGo with a throwing submitPrint
+    // exercises the new failure path. We then re-invoke the
+    // admin-actions wrapper to verify the HTTP status mapping is 502
+    // (Bad Gateway — upstream print provider failed).
+    let calls = 0;
+    const deps: SubmitPrintAfterOwnerGoDeps = {
+      submitPrint: async () => { calls += 1; throw new Error('boom'); },
+    };
+    const direct = await submitPrintAfterOwnerGo('ord_g3_print_submit_502', 'opsA', deps);
+    assert.equal(direct.ok, false);
+    assert.equal(direct.failureCode, 'PRINT_SUBMIT_FAILED');
+    assert.equal(calls, 1);
+
+    // admin-actions surface: the route handler calls recordOwnerPrintGo
+    // which delegates to submitPrintAfterOwnerGo WITHOUT injected deps,
+    // so we can't easily test the full route path against a thrown
+    // submitPrint in this file. Instead assert the status-code mapping
+    // function directly: status must be 502 for PRINT_SUBMIT_FAILED.
+    const adminActionsSrc = (await import('node:fs')).readFileSync(
+      new URL('../src/lib/admin-actions.ts', import.meta.url),
+      'utf8',
+    );
+    assert.match(
+      adminActionsSrc,
+      /code === 'PRINT_SUBMIT_FAILED' \? 502/,
+      'admin-actions must map PRINT_SUBMIT_FAILED → 502',
+    );
+  } finally { cleanup(dir); }
+});
+
+test('OwnerPrintGoFailureCode includes PRINT_SUBMIT_FAILED (regression guard)', async () => {
+  // If a future refactor drops PRINT_SUBMIT_FAILED from the union, the
+  // typechecker will catch some misuse — but a string-level test is
+  // cheaper for source-level invariants like "this code must be
+  // declared" and matches the existing pattern in this file.
+  const src = (await import('node:fs')).readFileSync(
+    new URL('../src/lib/fulfillment.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(src, /\| 'PRINT_SUBMIT_FAILED'/);
+});
+
+// ── G3 owner-print-go: lock-recovery action ─────────────────────────────────
+
+test('releaseOwnerPrintGoLock: clears stuck failed_manual_review (with lock, no printJobId) → restores proof_approved + appends audit + deletes FS lock', async () => {
+  const dir = makeTmp();
+  try {
+    const { releaseOwnerPrintGoLock } = await import('../src/lib/admin-actions.ts');
+    const { existsSync } = await import('node:fs');
+
+    // Seed a stuck order: lock acquired, owner-go recorded, print
+    // submit threw, runWithRetry-replacement moved to failed_manual_review.
+    await makePrintProofApprovedOrder('ord_g3_stuck_recover');
+    let calls = 0;
+    const deps: SubmitPrintAfterOwnerGoDeps = {
+      submitPrint: async () => { calls += 1; throw new Error('Lulu 502'); },
+    };
+    const submit = await submitPrintAfterOwnerGo('ord_g3_stuck_recover', 'opsA', deps);
+    assert.equal(submit.ok, false);
+    assert.equal(submit.failureCode, 'PRINT_SUBMIT_FAILED');
+    assert.equal(calls, 1);
+    const stuck = await getOrder('ord_g3_stuck_recover');
+    assert.equal(stuck?.fulfillmentStatus, 'failed_manual_review');
+    assert.ok(stuck?.ownerPrintGoLockToken, 'lock token persisted');
+    const lockPath = `${dir}/ord_g3_stuck_recover/owner-print-go.lock`;
+    assert.equal(existsSync(lockPath), true, 'FS lock file exists pre-recovery');
+
+    // Recover.
+    const r = await releaseOwnerPrintGoLock('ord_g3_stuck_recover', 'opsA');
+    assert.equal(r.ok, true);
+    assert.match(!r.ok ? '' : (r.detail ?? ''), /restored to proof_approved/);
+
+    const recovered = await getOrder('ord_g3_stuck_recover');
+    assert.equal(recovered?.fulfillmentStatus, 'proof_approved');
+    // Cleared fields persist as null after the explicit-null patch (not
+    // undefined). Either is "cleared" semantically; tests should accept
+    // both so a future persistence-layer change (e.g. omitting null on
+    // write) doesn't false-positive.
+    assert.ok(recovered?.ownerPrintGoAt == null, 'ownerPrintGoAt cleared');
+    assert.ok(recovered?.ownerPrintGoBy == null, 'ownerPrintGoBy cleared');
+    assert.ok(recovered?.ownerPrintGoLockToken == null, 'ownerPrintGoLockToken cleared');
+    assert.ok(recovered?.fulfillmentLastError == null, 'fulfillmentLastError cleared');
+    assert.equal(existsSync(lockPath), false, 'FS lock file removed post-recovery');
+    // Audit event records who released the lock + prior state.
+    const audit = recovered?.auditEvents?.find((e) => e.type === 'owner_print_go_lock_released');
+    assert.ok(audit, 'owner_print_go_lock_released audit event must exist');
+    assert.equal(audit?.meta?.releasedBy, 'opsA');
+    assert.equal(audit?.meta?.priorFulfillmentStatus, 'failed_manual_review');
+  } finally { cleanup(dir); }
+});
+
+test('releaseOwnerPrintGoLock: refuses when printJobId exists (PRINT_ALREADY_SUBMITTED) — does NOT touch lock or state', async () => {
+  const dir = makeTmp();
+  try {
+    const { releaseOwnerPrintGoLock } = await import('../src/lib/admin-actions.ts');
+    // A successful print (real printJobId) must NOT be cleared.
+    await makePrintProofApprovedOrder('ord_g3_recover_after_print', {
+      ownerPrintGoAt: '2026-05-31T22:00:00.000Z',
+      ownerPrintGoBy: 'opsA',
+      ownerPrintGoLockToken: 'tok-X',
+      printJobId: 'lulu-12345',
+      fulfillmentStatus: 'complete',
+      status: 'print_in_production',
+    });
+    const r = await releaseOwnerPrintGoLock('ord_g3_recover_after_print', 'opsB');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 409);
+    assert.equal(!r.ok && r.failureCode, 'PRINT_ALREADY_SUBMITTED');
+    assert.match(!r.ok ? r.error : '', /printJobId=lulu-12345/);
+    // Order state untouched.
+    const after = await getOrder('ord_g3_recover_after_print');
+    assert.equal(after?.printJobId, 'lulu-12345');
+    assert.equal(after?.ownerPrintGoLockToken, 'tok-X');
+    assert.equal(after?.fulfillmentStatus, 'complete');
+  } finally { cleanup(dir); }
+});
+
+test('releaseOwnerPrintGoLock: refuses when status is shipped (ORDER_ALREADY_IN_PRINT_OR_SHIPPED)', async () => {
+  const dir = makeTmp();
+  try {
+    const { releaseOwnerPrintGoLock } = await import('../src/lib/admin-actions.ts');
+    await makePrintProofApprovedOrder('ord_g3_recover_shipped', {
+      ownerPrintGoLockToken: 'tok-Y',
+      status: 'shipped',
+      fulfillmentStatus: 'complete',
+    });
+    const r = await releaseOwnerPrintGoLock('ord_g3_recover_shipped', 'opsA');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.failureCode, 'ORDER_ALREADY_IN_PRINT_OR_SHIPPED');
+    assert.equal(!r.ok && r.status, 409);
+  } finally { cleanup(dir); }
+});
+
+test('releaseOwnerPrintGoLock: refuses when nothing to release (NO_LOCK_TO_RELEASE)', async () => {
+  const dir = makeTmp();
+  try {
+    const { releaseOwnerPrintGoLock } = await import('../src/lib/admin-actions.ts');
+    await makePrintProofApprovedOrder('ord_g3_recover_nolock');
+    const r = await releaseOwnerPrintGoLock('ord_g3_recover_nolock', 'opsA');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.failureCode, 'NO_LOCK_TO_RELEASE');
+    assert.equal(!r.ok && r.status, 409);
+  } finally { cleanup(dir); }
+});
+
+test('releaseOwnerPrintGoLock: blank ownerBy → 400 OWNER_BY_REQUIRED', async () => {
+  const dir = makeTmp();
+  try {
+    const { releaseOwnerPrintGoLock } = await import('../src/lib/admin-actions.ts');
+    await makePrintProofApprovedOrder('ord_g3_recover_blank_owner', {
+      ownerPrintGoLockToken: 'tok-Z',
+    });
+    const r = await releaseOwnerPrintGoLock('ord_g3_recover_blank_owner', '   ');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 400);
+    assert.equal(!r.ok && r.failureCode, 'OWNER_BY_REQUIRED');
+    // State must NOT be touched.
+    const after = await getOrder('ord_g3_recover_blank_owner');
+    assert.equal(after?.ownerPrintGoLockToken, 'tok-Z');
+  } finally { cleanup(dir); }
+});
+
+test('releaseOwnerPrintGoLock: unknown order → 404 ORDER_NOT_FOUND', async () => {
+  const dir = makeTmp();
+  try {
+    const { releaseOwnerPrintGoLock } = await import('../src/lib/admin-actions.ts');
+    const r = await releaseOwnerPrintGoLock('ord_ghost_lock', 'opsA');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 404);
+    assert.equal(!r.ok && r.failureCode, 'ORDER_NOT_FOUND');
+  } finally { cleanup(dir); }
+});
+
+test('releaseOwnerPrintGoLock: allows release of acquired-but-print-not-yet-attempted (submitting_to_print) state', async () => {
+  const dir = makeTmp();
+  try {
+    const { releaseOwnerPrintGoLock } = await import('../src/lib/admin-actions.ts');
+    // Simulate a stuck submitting_to_print with no printJobId. This is
+    // the in-between window — lock acquired, fulfillmentStatus moved
+    // forward, but submitPrint never returned (process crash, network
+    // partition). The order is stuck; recovery must allow clearing.
+    await makePrintProofApprovedOrder('ord_g3_recover_submitting', {
+      ownerPrintGoAt: '2026-05-31T22:00:00.000Z',
+      ownerPrintGoBy: 'opsA',
+      ownerPrintGoLockToken: 'tok-W',
+      fulfillmentStatus: 'submitting_to_print',
+    });
+    const r = await releaseOwnerPrintGoLock('ord_g3_recover_submitting', 'opsB');
+    assert.equal(r.ok, true);
+    const after = await getOrder('ord_g3_recover_submitting');
+    assert.equal(after?.fulfillmentStatus, 'proof_approved');
+    assert.ok(after?.ownerPrintGoLockToken == null, 'lock token cleared');
+  } finally { cleanup(dir); }
+});
+
+test('print-go-lock route source: auth check + blank ownerBy refusal precede the action call', async () => {
+  // Source-level invariants for the new recovery route. React can't
+  // mount under node:test and the route pulls next/server, so we grep
+  // the source the same way the print-go route does.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/api/admin/orders/[orderId]/print-go-lock/route.ts', import.meta.url),
+    'utf8',
+  );
+  const authIdx = src.indexOf('isAdminAuthedFromRequest');
+  const unauth401Idx = src.indexOf('status: 401');
+  const blankCheckIdx = src.indexOf('if (!ownerBy)');
+  const callIdx = src.indexOf('releaseOwnerPrintGoLock(');
+  assert.ok(authIdx > -1 && unauth401Idx > -1, 'auth check + 401 return present');
+  assert.ok(authIdx < unauth401Idx, '401 return follows auth check');
+  assert.ok(unauth401Idx < callIdx, '401 precedes recovery call');
+  assert.ok(blankCheckIdx > -1 && blankCheckIdx < callIdx, 'blank ownerBy check precedes recovery call');
+  assert.match(src, /status: 400/);
+  assert.match(src, /ownerBy required/i);
+  assert.match(src, /failureCode: result\.failureCode \?\? null/);
+});
+
+test('submitPrintAfterOwnerGo source: runWithRetry is NOT used to wrap runPrintProduction', async () => {
+  // Defends against a future refactor reintroducing the swallow-and-
+  // retry semantics. The owner-go path must call runPrintProduction
+  // exactly once.
+  const src = (await import('node:fs')).readFileSync(
+    new URL('../src/lib/fulfillment.ts', import.meta.url),
+    'utf8',
+  );
+  const idx = src.indexOf('export async function submitPrintAfterOwnerGo');
+  const end = src.indexOf('\n}\n', idx);
+  assert.ok(idx > -1 && end > idx, 'submitPrintAfterOwnerGo present in source');
+  const body = src.slice(idx, end);
+  assert.doesNotMatch(
+    body,
+    /runWithRetry\s*\(/,
+    'runWithRetry must not wrap runPrintProduction inside submitPrintAfterOwnerGo',
+  );
+  // Positive: single direct call surrounded by try/catch.
+  assert.match(body, /await runPrintProduction\(verify, deps\)/);
+  assert.match(body, /failureCode: 'PRINT_SUBMIT_FAILED'/);
+});
+
+test('admin owner-go console source: ownerGoBy default is empty (no silent "admin" fallback at UI layer)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // The owner-id state must start empty so the operator has to type a
+  // real identifier. The route ALREADY refuses blank, but the UI must
+  // not let an operator click through a stale "admin" default.
+  assert.match(src, /useState\(''\);[\s\S]{0,200}\/\/ Owner Print Go Console local UI state|useState\(''\)[^;]*\);[\s\S]{0,200}\[ownerGoBy/);
+  // Negative: no `useState('admin')` that drives ownerGoBy.
+  // Find every `useState('admin')` site and assert none is the ownerGoBy or
+  // qaPassBy field. We scan the contextual ~120 chars after each match.
+  const ownerSection = src.indexOf('ownerGoBy');
+  assert.ok(ownerSection > -1);
+  const ownerGoByDecl = /const \[ownerGoBy, setOwnerGoBy\] = useState\('([^']*)'\)/.exec(src);
+  assert.ok(ownerGoByDecl, 'ownerGoBy declaration found');
+  assert.equal(ownerGoByDecl?.[1], '', 'ownerGoBy default must be empty, not "admin"');
+});
+
+test('admin owner-go console source: qaPassBy is operator-typed (no hardcoded "admin"); button disabled until non-blank', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // QA pass body must now include the typed operator id, not a literal 'admin'.
+  assert.doesNotMatch(src, /qaPassBy:\s*'admin'/);
+  assert.match(src, /qaPassBy:\s*qaPassBy\.trim\(\)/);
+  // The qaPassBy input has a testid and the submit is gated.
+  assert.match(src, /data-testid="qa-pass-by"/);
+  assert.match(src, /data-testid="qa-pass-submit"/);
+  // Disabled expression includes !qaPassBy.trim()
+  assert.match(src, /disabled=\{busy !== null \|\| !qaPassBy\.trim\(\)\}/);
+});
+
+test('admin owner-go console source: OWNER_GO_REFUSAL_COPY contains PRINT_SUBMIT_FAILED entry with provider-check guidance', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // Refusal copy table must reference the new failure code so the
+  // operator gets structured, safe-state copy on print-provider failure
+  // (rather than a raw error string).
+  assert.match(src, /PRINT_SUBMIT_FAILED:\s*\{/);
+  // Guidance copy must specifically tell the operator to check the
+  // provider dashboard FIRST before clearing the lock.
+  assert.match(src, /PRINT_SUBMIT_FAILED:[\s\S]*?CHECK THE PRINT PROVIDER DASHBOARD/);
+});
+
+test('admin owner-go console source: stuck-lock recovery surface is gated on isStuckLock predicate', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/orders/[orderId]/detail-client.tsx', import.meta.url),
+    'utf8',
+  );
+  // The stuck-lock predicate must require ALL of: ownerPrintGoAt set,
+  // no printJobId, fulfillmentStatus in {submitting_to_print,
+  // failed_manual_review}. Anything looser risks an operator clearing
+  // a healthy lock.
+  assert.match(src, /const isStuckLock =[\s\S]*?alreadyOwnerWent[\s\S]*?!alreadySubmitted[\s\S]*?'submitting_to_print'[\s\S]*?'failed_manual_review'/);
+  // Recovery panel testid + open/ack/submit testids exist and are
+  // wrapped by the {isStuckLock && (...)} render gate.
+  assert.match(src, /\{isStuckLock && \([\s\S]*?data-testid="owner-print-go-lock-recovery-panel"/);
+  assert.match(src, /data-testid="owner-print-go-lock-recovery-open"/);
+  assert.match(src, /data-testid="owner-print-go-lock-recovery-ack"/);
+  assert.match(src, /data-testid="owner-print-go-lock-recovery-by"/);
+  assert.match(src, /data-testid="owner-print-go-lock-recovery-submit"/);
+  // Submit gated on ack + non-blank operator id.
+  assert.match(src, /disabled=\{[\s\S]*?!lockRecoveryAck[\s\S]*?!lockRecoveryBy\.trim\(\)/);
+  // Posts to the dedicated recovery route, not the print-go route.
+  assert.match(src, /\/api\/admin\/orders\/\$\{props\.orderId\}\/print-go-lock/);
+  // Refusal block exists and has provider-warning copy for PRINT_ALREADY_SUBMITTED.
+  assert.match(src, /data-testid="owner-print-go-lock-recovery-refusal"/);
+  assert.match(src, /failureCode === 'PRINT_ALREADY_SUBMITTED'/);
+});
+
 test('print-go route source: failureCode is included in the error JSON body', async () => {
   // Source-level guarantee that the route forwards failureCode so the
   // admin UI can render structured refusal-state tiles. The existing

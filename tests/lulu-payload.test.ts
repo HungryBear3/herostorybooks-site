@@ -71,6 +71,37 @@ test('submitPrintJob sends separate interior and cover payload objects with md5s
   assert.equal(item.title, "Luna's Great Adventure");
 }));
 
+test('submitPrintJob sends Idempotency-Key: <order.id> on the print POST', withCreds(async () => {
+  // Pre-G5 hardening: protect against duplicate physical print jobs when
+  // Lulu returns 5xx / network errors after server-side acceptance. The
+  // operator path no longer retries provider submits automatically (see
+  // submitPrintAfterOwnerGo), but if it ever did, or if Vercel/network
+  // edge logic causes a transparent replay, the Idempotency-Key tells
+  // Lulu to dedupe by order id.
+  let capturedHeaders: Record<string, string> | Headers | undefined;
+  let postCount = 0;
+  const fetchMock = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    if (String(url).includes('openid-connect/token')) {
+      return { ok: true, status: 200, json: async () => TOKEN_RESPONSE, text: async () => '' } as Response;
+    }
+    postCount += 1;
+    capturedHeaders = init?.headers as Record<string, string> | Headers | undefined;
+    return { ok: true, status: 200, json: async () => JOB_RESPONSE, text: async () => '' } as Response;
+  };
+
+  await submitPrintJob(BASE_ORDER, { fetch: fetchMock });
+  assert.equal(postCount, 1);
+  // Headers may be a Headers instance or a plain record depending on
+  // how the call site constructs `init`. Handle both.
+  const headerValue = (() => {
+    if (!capturedHeaders) return undefined;
+    if (capturedHeaders instanceof Headers) return capturedHeaders.get('Idempotency-Key');
+    const rec = capturedHeaders as Record<string, string>;
+    return rec['Idempotency-Key'] ?? rec['idempotency-key'];
+  })();
+  assert.equal(headerValue, BASE_ORDER.id, 'Idempotency-Key must equal the order id');
+}));
+
 test('submitPrintJob fails clearly when print artifacts are missing', withCreds(async () => {
   const brokenOrder: OrderRecord = { ...BASE_ORDER, printCoverArtifactUrl: null };
   await assert.rejects(
