@@ -90,7 +90,15 @@ function getBlobToken(): string | undefined {
 function getStoreDir(): string {
   // Tests use HSB_ORDER_STORE_DIR for the same blob namespace; reuse
   // so tmpdir-per-test fixtures work without a second env var.
-  return process.env.HSB_ORDER_STORE_DIR ?? path.join(process.cwd(), '.data');
+  //
+  // Default is a STATIC RELATIVE path ('.data'). Node resolves it
+  // against the CWD at runtime, but Turbopack's NFT can analyze it
+  // statically — `process.cwd()` would otherwise trigger an
+  // "unexpected file in NFT list" warning and balloon the function
+  // bundle. Production code path is durable Blob storage; this FS
+  // fallback only runs when requiresDurablePersistence() === false
+  // (i.e., dev/test).
+  return process.env.HSB_ORDER_STORE_DIR ?? '.data';
 }
 
 function dayKey(iso: string): string {

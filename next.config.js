@@ -27,6 +27,13 @@ const nextConfig = {
       '.data/**',
       'tmp/**',
       'tmp_*/**',
+      // ops/ holds smoke-capture screenshots + scratch state and is
+      // gitignored at the repo root. The NFT walker doesn't read
+      // .gitignore, so without this exclude its 5+ MB of PNGs were
+      // being copied into EVERY API route bundle (a leaked customer-
+      // facing screenshot would also be a privacy concern). Discovered
+      // during the 2026-06-02 deploy-candidate audit.
+      'ops/**',
       'node_modules/@types/**',
       'node_modules/typescript/**',
       'node_modules/.cache/**',

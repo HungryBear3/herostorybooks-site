@@ -148,10 +148,16 @@ function getKillSwitchBlobPath(): string {
  * `requiresDurablePersistence()` returns false (i.e., dev/test).
  * Production code paths never reach this branch — durable failure
  * throws `KillSwitchDurabilityError` instead.
+ *
+ * The default is a STATIC RELATIVE path (no `process.cwd()`). Node
+ * resolves it against the CWD at runtime, but Turbopack's NFT can
+ * analyze it statically — `process.cwd()` would otherwise scope the
+ * function trace to the whole project root and balloon the bundle.
+ * Tests inject HSB_KILL_SWITCH_STATE_PATH to point at a tmpdir.
  */
 export function killSwitchStatePath(): string {
   return process.env.HSB_KILL_SWITCH_STATE_PATH
-    || path.join(/* turbopackIgnore: true */ process.cwd(), 'ops', 'state', 'hsb-kill-switches.json');
+    || path.join('ops', 'state', 'hsb-kill-switches.json');
 }
 
 function emptyState(): KillSwitchState {
@@ -234,7 +240,11 @@ async function writeStoreToBlob(store: KillSwitchStore): Promise<void> {
 
 async function readStoreFromFs(): Promise<KillSwitchStore> {
   try {
-    const raw = await readFile(killSwitchStatePath(), 'utf8');
+    // turbopackIgnore tells NFT not to walk from this fs call's
+    // dynamic argument into the project tree — the resolved path is
+    // env-var-controlled at runtime and Turbopack's static analyzer
+    // can't see through that.
+    const raw = await readFile(/* turbopackIgnore: true */ killSwitchStatePath(), 'utf8');
     return normalizeStore(JSON.parse(raw));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -246,22 +256,41 @@ async function readStoreFromFs(): Promise<KillSwitchStore> {
 
 async function writeStoreToFs(store: KillSwitchStore): Promise<void> {
   const file = killSwitchStatePath();
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
+  await mkdir(/* turbopackIgnore: true */ path.dirname(file), { recursive: true });
+  await writeFile(/* turbopackIgnore: true */ file, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
 }
 
 async function readStore(): Promise<KillSwitchStore> {
   if (requiresDurablePersistence()) {
     return await readStoreFromBlob();
   }
-  return await readStoreFromFs();
+  // Dev/test FS fallback. The NODE_ENV check below is redundant with
+  // requiresDurablePersistence() at runtime (it also returns true
+  // when NODE_ENV==='production'), but Turbopack's NFT can constant-
+  // fold `process.env.NODE_ENV !== 'production'` in a production
+  // build and statically eliminate the readStoreFromFs() branch.
+  // Without this fold, NFT sees an `fs.readFile` reachable from the
+  // /api/order route bundle and balloons the function trace into
+  // every file at the project root — exactly the "unexpected file
+  // in NFT list" warning Vercel surfaces.
+  if (process.env.NODE_ENV !== 'production') {
+    return await readStoreFromFs();
+  }
+  throw new KillSwitchDurabilityError(
+    'KS state requires durable persistence in production; FS fallback is dev/test only',
+  );
 }
 
 async function writeStore(store: KillSwitchStore): Promise<void> {
   if (requiresDurablePersistence()) {
     return await writeStoreToBlob(store);
   }
-  return await writeStoreToFs(store);
+  if (process.env.NODE_ENV !== 'production') {
+    return await writeStoreToFs(store);
+  }
+  throw new KillSwitchDurabilityError(
+    'KS state requires durable persistence in production; FS fallback is dev/test only',
+  );
 }
 
 export async function getKillSwitchSnapshot(): Promise<KillSwitchSnapshot> {

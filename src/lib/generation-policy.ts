@@ -101,7 +101,15 @@ export interface RouteDecision {
   approvalRef?: string | null;
 }
 
-const POLICY_CONFIG_PATH = join(process.cwd(), 'data', 'policies', 'generation-route.json');
+// Static relative path. Node resolves it against the runtime CWD;
+// avoiding `process.cwd()` here keeps Turbopack's NFT from treating
+// this as a dynamic filesystem reference and ballooning the trace
+// of every route bundle that transitively imports this module (the
+// 2026-06-02 "unexpected file in NFT list" warning surfaced
+// through webhooks/lulu → admin-actions → generation-manifest →
+// here). The resolved file still lands at <project-root>/data/...
+// at runtime.
+const POLICY_CONFIG_PATH = join('data', 'policies', 'generation-route.json');
 
 const CONSERVATIVE_DEFAULTS: GenerationPolicyConfig = {
   policyVersion: '2026-05-31',
