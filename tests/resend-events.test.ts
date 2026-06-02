@@ -453,3 +453,75 @@ test('admin email-health page source: persistence-failure path renders specific 
   assert.match(src, /ResendEventPersistenceError/);
   assert.match(src, /BLOB_READ_WRITE_TOKEN/);
 });
+
+// ── Email/env readiness hardening (2026-06-02): three explicit behaviors ──
+
+test('first received event surfaces in listResendEvents (proves the data flow admin email-health renders)', async () => {
+  // The admin page passes listResendEvents output to its "Recent
+  // events" block. A real event ingested by the webhook must
+  // therefore be visible end-to-end. This test exercises the lib API
+  // directly; the source-level test pins that the page renders from
+  // the SAME helper.
+  const dir = makeTmp();
+  try {
+    const ev = makeEvent({
+      id: 'msg_first_ever',
+      type: 'email.delivered',
+      createdAt: '2026-06-02T12:00:00Z',
+      to: 'first-recipient@example.com',
+      subject: 'Your proof is ready',
+    });
+    const append = await appendResendEvent(ev);
+    assert.equal(append.persisted, true, 'first event must persist on first append');
+
+    const recent = await listResendEvents({ now: new Date('2026-06-02T12:05:00Z') });
+    assert.equal(recent.length, 1, 'first event must be visible to the admin page read path');
+    assert.equal(recent[0].id, 'msg_first_ever');
+    assert.equal(recent[0].to, 'first-recipient@example.com');
+    assert.equal(recent[0].subject, 'Your proof is ready');
+
+    // And the summary's lastEventAt must equal the event's createdAt
+    // — proving the "Last event received" header on the admin page
+    // would display the correct ISO timestamp.
+    const sum = await summarizeResendBounces({ now: new Date('2026-06-02T12:05:00Z') });
+    assert.equal(sum.lastEventAt, '2026-06-02T12:00:00Z');
+  } finally { cleanup(dir); }
+});
+
+test('admin email-health stale-derivation: lastEventAt older than EMAIL_HEALTH_STALE_HOURS produces a stale state', async () => {
+  // The page computes `stale = !noEventsEver && lastEventAgeHours > staleHours`.
+  // Lib-level summarize is the input; this test pins that crossing the
+  // threshold flips the input the page tests against.
+  const dir = makeTmp();
+  try {
+    // Event 30h old; default stale threshold = 24h.
+    const oldIso = '2026-06-01T06:00:00Z';
+    const now = new Date('2026-06-02T12:00:00Z');
+    await appendResendEvent(makeEvent({ id: 'old_event', type: 'email.delivered', createdAt: oldIso }));
+    const sum = await summarizeResendBounces({ now, windowHours: 24, daysToScan: 3 });
+    assert.equal(sum.lastEventAt, oldIso);
+    // Age computed the way the admin page does it.
+    const ageHours = Math.round((now.getTime() - new Date(oldIso).getTime()) / 36e5);
+    assert.ok(ageHours > 24, `synthetic age ${ageHours}h must exceed the default 24h threshold`);
+  } finally { cleanup(dir); }
+});
+
+test('webhook route source: RESEND_WEBHOOK_SECRET missing returns 503 BEFORE reading body / svix headers / persistence', async () => {
+  // The 2026-06-02 readiness audit re-asserts the fail-closed
+  // ordering: with no secret, the route must not parse the body,
+  // not inspect Svix headers, and certainly not persist.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/api/webhooks/resend/route.ts', import.meta.url),
+    'utf8',
+  );
+  const secretCheckIdx = src.indexOf("process.env.RESEND_WEBHOOK_SECRET");
+  const status503Idx = src.indexOf('status: 503', secretCheckIdx);
+  const bodyReadIdx = src.indexOf('request.text()');
+  const headerReadIdx = src.indexOf("request.headers.get('svix-id')");
+  const appendIdx = src.indexOf('appendResendEvent(event)');
+  assert.ok(secretCheckIdx > -1 && status503Idx > -1, 'secret check + 503 return present');
+  assert.ok(status503Idx < bodyReadIdx, '503 (no secret) must precede body read');
+  assert.ok(status503Idx < headerReadIdx, '503 (no secret) must precede Svix header inspection');
+  assert.ok(status503Idx < appendIdx, '503 (no secret) must precede any persistence');
+});

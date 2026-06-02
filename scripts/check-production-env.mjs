@@ -294,6 +294,50 @@ function shapeBlobNamespaceForEnv(targetEnv) {
 
 // ── Inspect ──────────────────────────────────────────────────────────────────
 
+/**
+ * Build the operator next-action text for a given diagnosis. Returned
+ * verbatim in both human and JSON output so a reviewer scanning logs
+ * always sees the exact remediation, not just the failure code.
+ */
+function nextActionFor({ status, name, lookedAt, requiredHere }) {
+  switch (status) {
+    case 'PRESENT':
+      return null;
+    case 'MISSING':
+      return requiredHere
+        ? `Set ${name} in Vercel (Production scope) and re-pull: \`vercel env pull --environment=production .env.production.local\`. Then re-run this checker.`
+        : `Optional. Set ${name} in Vercel if the feature it gates is in use.`;
+    case 'PRESENT_BUT_EMPTY':
+      // This is the Vercel "Encrypted but pulls blank" failure mode:
+      // the env var shows up in the dashboard list (so the dashboard
+      // tag says Encrypted) but the actual stored value is empty, so
+      // `vercel env pull` writes `${VAR}=` and Node sees an empty
+      // string. See docs/runbook for the dashboard fix.
+      return (
+        `Vercel "encrypted but pulls blank" pattern: the var is registered in the dashboard ` +
+        `but the stored value is empty. Fix: \`vercel env rm ${lookedAt ?? name} production\` ` +
+        `(removes the empty entry), then \`vercel env add ${lookedAt ?? name} production\` ` +
+        `(pipe the value via stdin so it never appears in shell history), then ` +
+        `\`vercel env pull --environment=production .env.production.local\` and re-run this checker. ` +
+        `See docs/runbooks/hsb-vercel-env-encrypted-but-blank-2026-06-02.md.`
+      );
+    case 'SHAPE_FAIL':
+      return (
+        `Value is set but failed the shape check. Verify the value in the Vercel dashboard ` +
+        `(do not paste it anywhere). Common causes: copied a test key instead of live, leading/trailing whitespace, ` +
+        `or wrong prefix family. Replace with the correct value, re-pull, re-run.`
+      );
+    case 'PRESENT_DISALLOWED':
+      return (
+        `Variable is present on a scope it must not be present on. ` +
+        `Remove it: \`vercel env rm ${lookedAt ?? name} production\`, re-pull, re-run. ` +
+        `Override only if explicitly approved by ops via HSB_BLOB_NAMESPACE_APPROVED_FOR_PRODUCTION=true.`
+      );
+    default:
+      return `Unknown status; investigate manually.`;
+  }
+}
+
 function inspectOne(spec) {
   const candidateNames = [spec.name, ...spec.aliases];
   let foundName = null;
@@ -307,55 +351,46 @@ function inspectOne(spec) {
   }
   const requiredHere = spec.requiredOn.includes(env);
 
+  const baseResult = (status, observation) => {
+    const r = {
+      name: spec.name,
+      lookedAt: foundName,
+      status,
+      requiredHere,
+      observation,
+      purpose: spec.purpose,
+      nextAction: null,
+    };
+    r.nextAction = nextActionFor(r);
+    return r;
+  };
+
   // PRESENT_DISALLOWED branch (currently only HSB_BLOB_NAMESPACE on prod
   // without the approved-for-production flag).
   if (spec.flagIfPresent && foundName !== null && raw !== undefined && raw.trim().length > 0) {
     const sh = spec.shape((raw ?? '').trim());
-    return {
-      name: spec.name,
-      lookedAt: foundName,
-      status: sh.ok ? 'PRESENT' : 'PRESENT_DISALLOWED',
-      requiredHere,
-      observation: sh.observation,
-      purpose: spec.purpose,
-    };
+    return baseResult(sh.ok ? 'PRESENT' : 'PRESENT_DISALLOWED', sh.observation);
   }
 
   if (foundName === null) {
-    return {
-      name: spec.name,
-      lookedAt: null,
-      status: 'MISSING',
-      requiredHere,
-      observation: requiredHere
-        ? `not set (required on ${env})`
-        : `not set (optional on ${env})`,
-      purpose: spec.purpose,
-    };
+    return baseResult('MISSING', requiredHere
+      ? `not set (required on ${env})`
+      : `not set (optional on ${env})`);
   }
   const trimmed = (raw ?? '').trim();
   if (trimmed.length === 0) {
-    return {
-      name: spec.name,
-      lookedAt: foundName,
-      status: 'PRESENT_BUT_EMPTY',
-      requiredHere,
-      observation:
-        raw === ''
-          ? `set to empty string`
-          : `set to whitespace-only value (raw length ${(raw ?? '').length})`,
-      purpose: spec.purpose,
-    };
+    // Distinguish the Vercel-pulled-blank failure mode from a
+    // whitespace-only value the operator typed. Both resolve to the
+    // same PRESENT_BUT_EMPTY status, but the observation makes the
+    // diagnostic explicit.
+    const observation =
+      raw === ''
+        ? `set to EMPTY STRING — classic "Encrypted in Vercel dashboard but pulls blank" pattern`
+        : `set to whitespace-only value (raw length ${(raw ?? '').length}); .trim() yields empty`;
+    return baseResult('PRESENT_BUT_EMPTY', observation);
   }
   const sh = spec.shape(trimmed);
-  return {
-    name: spec.name,
-    lookedAt: foundName,
-    status: sh.ok ? 'PRESENT' : 'SHAPE_FAIL',
-    requiredHere,
-    observation: sh.observation,
-    purpose: spec.purpose,
-  };
+  return baseResult(sh.ok ? 'PRESENT' : 'SHAPE_FAIL', sh.observation);
 }
 
 const results = checks.map(inspectOne);
@@ -390,15 +425,27 @@ if (json) {
 } else {
   const PAD = 30;
   const STATUS_PAD = 22;
+  // Loud per-status marker so failures cannot be misread when the
+  // operator is scanning a long scrollback. Plain-ASCII alternatives
+  // are used in TTYs that strip emoji.
+  const markerFor = (r) => {
+    if (r.status === 'PRESENT') return '✅ OK    ';
+    if (r.status === 'PRESENT_DISALLOWED') return '❌ FAIL  ';
+    // Required + non-PRESENT = FAIL; optional + non-PRESENT = WARN.
+    if (r.requiredHere) return '❌ FAIL  ';
+    return '⚠️  WARN ';
+  };
   process.stdout.write(`HSB production env activation check — env=${env} — ${new Date().toISOString()}\n`);
   process.stdout.write(`(read-only; no values printed; no Vercel mutation)\n\n`);
   for (const r of results) {
     const reqTag = r.requiredHere ? ' [required]' : ' [optional]';
     const aliasTag = r.lookedAt && r.lookedAt !== r.name ? ` (via alias ${r.lookedAt})` : '';
     process.stdout.write(
-      `${r.name.padEnd(PAD)} ${r.status.padEnd(STATUS_PAD)}${reqTag}${aliasTag}\n` +
-        `  ${r.observation}\n` +
-        `  → ${r.purpose}\n\n`,
+      `${markerFor(r)}${r.name.padEnd(PAD)} ${r.status.padEnd(STATUS_PAD)}${reqTag}${aliasTag}\n` +
+        `   observed: ${r.observation}\n` +
+        `   purpose:  ${r.purpose}\n` +
+        (r.nextAction ? `   next:     ${r.nextAction}\n` : '') +
+        `\n`,
     );
   }
   process.stdout.write(`Failures (required + not PRESENT, or disallowed-on-env): ${failures.length}\n`);
