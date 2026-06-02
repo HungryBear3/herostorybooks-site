@@ -23,6 +23,7 @@ import {
   evaluateReleaseGuard,
   type ReleaseFailureCode,
 } from './generation-manifest.ts';
+import { isKillSwitchActive, killSwitchRefusal } from './ops-kill-switches.ts';
 
 export type ActionResult =
   | { ok: true; detail?: string }
@@ -340,6 +341,15 @@ export async function releaseOrderAfterQa(
   input: QaPassInput,
   deps: QaPassDeps = {},
 ): Promise<ActionResult> {
+  if (await isKillSwitchActive('proof_release_hold')) {
+    return {
+      ok: false,
+      status: 409,
+      error: killSwitchRefusal('proof_release_hold', 'Proof release hold'),
+      failureCode: 'PROOF_RELEASE_HELD',
+    };
+  }
+
   const order = await getOrder(orderId);
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
   if (order.paymentStatus !== 'paid') {
@@ -660,6 +670,15 @@ export async function recordOwnerPrintGo(
   orderId: string,
   ownerBy: string,
 ): Promise<ActionResult> {
+  if (await isKillSwitchActive('owner_print_go_hold')) {
+    return {
+      ok: false,
+      status: 409,
+      error: killSwitchRefusal('owner_print_go_hold', 'Owner print-go hold'),
+      failureCode: 'OWNER_PRINT_GO_HELD',
+    };
+  }
+
   const result = await submitPrintAfterOwnerGo(orderId, ownerBy);
   if (result.ok === true) {
     return { ok: true, detail: 'Owner print-go recorded; print submission attempted.' };
