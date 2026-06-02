@@ -13,6 +13,7 @@ import {
   type FulfillmentDeps,
 } from '../src/lib/fulfillment.ts';
 import { createOrderRecord, persistOrder, getOrder, updateFulfillmentState } from '../src/lib/orders.ts';
+import { updateKillSwitch } from '../src/lib/ops-kill-switches.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 import type { StoryContent, StoryMeta } from '../src/lib/fulfillment-types.ts';
 import { lukasDinoArtDirectionFixture } from './fixtures/art-direction/lukas-dino-valid.ts';
@@ -64,6 +65,7 @@ const PASS_DEPS: FulfillmentDeps = {
 function makeTmpDir() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-fulfill-'));
   process.env.HSB_ORDER_STORE_DIR = dir;
+  process.env.HSB_KILL_SWITCH_STATE_PATH = path.join(dir, 'kill-switches.json');
   delete process.env.BLOB_READ_WRITE_TOKEN;
   delete process.env.HSB_RESEND_API_KEY;
   delete process.env.RESEND_API_KEY;
@@ -73,6 +75,7 @@ function makeTmpDir() {
 function cleanupTmpDir(dir: string) {
   rmSync(dir, { recursive: true, force: true });
   delete process.env.HSB_ORDER_STORE_DIR;
+  delete process.env.HSB_KILL_SWITCH_STATE_PATH;
 }
 
 async function makeOrder(
@@ -396,6 +399,40 @@ test('paid digital order with qaPassAt sends digital delivery email after artifa
   }
 });
 
+test('proof release hold blocks qa-passed digital auto-send before customer email', async () => {
+  const dir = makeTmpDir();
+  try {
+    let emailCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      sendDigitalDeliveryEmail: async () => { emailCalls += 1; },
+    };
+    await updateKillSwitch({
+      id: 'proof_release_hold',
+      active: true,
+      reason: 'pause customer emails during launch gate',
+      updatedBy: 'test-operator',
+      now: '2026-06-02T12:00:00.000Z',
+    });
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'digital',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'qa-operator',
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(emailCalls, 0, 'proof_release_hold must stop digital auto-send before email transport');
+    assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
+    assert.match(after?.fulfillmentLastError ?? '', /KILL_SWITCH_ACTIVE:proof_release_hold/);
+    assert.ok(after?.auditEvents?.some((e) => e.type === 'proof_release_failed' && e.reason === 'PROOF_RELEASE_HELD'));
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
 test('digital fulfillment final write preserves proof audit event and page artifacts together', async () => {
   const dir = makeTmpDir();
   try {
@@ -507,6 +544,40 @@ test('paid print order with qaPassAt reaches proof_ready and sends proof-ready e
     assert.equal(emailCalls, 1, 'proof-ready email should send after QA pass');
     assert.match(emailedReviewUrl, new RegExp(`/review/${order.id}\\?token=`));
     assert.equal(emailedProofUrl, after?.storyArtifactUrl);
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('proof release hold blocks qa-passed print proof auto-send before customer email', async () => {
+  const dir = makeTmpDir();
+  try {
+    let emailCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      sendProofReadyEmail: async () => { emailCalls += 1; },
+    };
+    await updateKillSwitch({
+      id: 'proof_release_hold',
+      active: true,
+      reason: 'pause customer emails during launch gate',
+      updatedBy: 'test-operator',
+      now: '2026-06-02T12:00:00.000Z',
+    });
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      qaPassAt: '2026-05-31T20:00:00.000Z',
+      qaPassBy: 'qa-operator',
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(emailCalls, 0, 'proof_release_hold must stop proof-ready auto-send before email transport');
+    assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
+    assert.match(after?.fulfillmentLastError ?? '', /KILL_SWITCH_ACTIVE:proof_release_hold/);
+    assert.ok(after?.auditEvents?.some((e) => e.type === 'proof_release_failed' && e.reason === 'PROOF_RELEASE_HELD'));
   } finally {
     cleanupTmpDir(dir);
   }

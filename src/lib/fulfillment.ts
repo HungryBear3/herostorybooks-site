@@ -729,6 +729,35 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     return;
   }
 
+  const proofReleaseKs = await enforceKillSwitch('proof_release_hold');
+  if (proofReleaseKs.kind !== 'inactive') {
+    const reason = proofReleaseKs.kind === 'active'
+      ? 'PROOF_RELEASE_HELD'
+      : KILL_SWITCH_STATE_UNAVAILABLE_CODE;
+    const message = proofReleaseKs.kind === 'active'
+      ? 'KILL_SWITCH_ACTIVE:proof_release_hold Proof release hold is active'
+      : killSwitchUnavailableMessage('Proof release hold', proofReleaseKs.reason);
+    console.error(`[fulfillment] proof release hold refused digital auto-send for ${order.id}: ${message}`);
+    const blocked = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+      fulfillmentStatus: 'delivery_email_failed',
+      fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+      storyArtifactUrl: pdfUrl,
+      pageArtifacts: seededPageArtifacts,
+      storyMeta,
+      ...routeCarryPatch,
+      ...artDirectionPatch,
+    }));
+    await appendAuditEvent(order.id, {
+      type: 'proof_release_failed',
+      reason,
+      meta: {
+        source: 'runDigitalFulfillment:proof_release_hold',
+        detail: proofReleaseKs.kind === 'unavailable' ? proofReleaseKs.reason.slice(0, 240) : undefined,
+      },
+    }, blocked ?? undefined);
+    return;
+  }
+
   // Positive human QA was already recorded on this order, so the legacy
   // digital-delivery email path may continue. If email delivery fails, keep
   // generated artifacts intact and let admin recover with an email-only resend.
@@ -951,6 +980,36 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
       meta: {
         ...describeFailureForAudit(printReleaseGuard),
         source: 'runPrintFulfillment:auto_send_guard',
+      },
+    }, blocked ?? undefined);
+    return;
+  }
+
+  const printProofReleaseKs = await enforceKillSwitch('proof_release_hold');
+  if (printProofReleaseKs.kind !== 'inactive') {
+    const reason = printProofReleaseKs.kind === 'active'
+      ? 'PROOF_RELEASE_HELD'
+      : KILL_SWITCH_STATE_UNAVAILABLE_CODE;
+    const message = printProofReleaseKs.kind === 'active'
+      ? 'KILL_SWITCH_ACTIVE:proof_release_hold Proof release hold is active'
+      : killSwitchUnavailableMessage('Proof release hold', printProofReleaseKs.reason);
+    console.error(`[fulfillment] proof release hold refused print proof auto-send for ${order.id}: ${message}`);
+    const blocked = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+      fulfillmentStatus: 'delivery_email_failed',
+      fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+      storyArtifactUrl: proofUrl,
+      printInteriorArtifactUrl: interiorUrl,
+      pageArtifacts: seededPageArtifacts,
+      storyMeta,
+      ...routeCarryPatch,
+      ...artDirectionPatch,
+    }));
+    await appendAuditEvent(order.id, {
+      type: 'proof_release_failed',
+      reason,
+      meta: {
+        source: 'runPrintFulfillment:proof_release_hold',
+        detail: printProofReleaseKs.kind === 'unavailable' ? printProofReleaseKs.reason.slice(0, 240) : undefined,
       },
     }, blocked ?? undefined);
     return;
