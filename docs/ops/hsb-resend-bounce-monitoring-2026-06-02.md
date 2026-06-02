@@ -14,10 +14,18 @@ delivery.
   `email.complained`, `email.delivery_delayed`, `email.opened`,
   `email.clicked`); persisted to day-partitioned JSONL logs (blob in
   prod, FS in dev/test); idempotent on Svix `msg_id`; read helpers
-  scan ≤14 days back.
+  scan ≤14 days back; **post-2026-06-02 hardening**: missing
+  `BLOB_READ_WRITE_TOKEN` in production (or any blob read/write
+  failure) throws `ResendEventPersistenceError` — both read and
+  write paths fail-closed.
 - `src/app/api/webhooks/resend/route.ts` — signed-webhook ingestion.
-  Requires `RESEND_WEBHOOK_SECRET`; verifies `svix-signature` HMAC
-  before any persistence; drops unknown event types with a 200-ack
+  Requires `RESEND_WEBHOOK_SECRET`; **enforces svix-timestamp replay
+  window (default 300s via `RESEND_WEBHOOK_REPLAY_WINDOW_SECONDS`)
+  BEFORE signature verification**; verifies `svix-signature` HMAC
+  before any persistence; **persistence failure returns 503 with
+  `code: PERSISTENCE_FAILED` and `retryable: true` so Svix retries
+  (never silently 200-acks a lost event)**; drops unknown event
+  types with a 200-ack
   (no infinite Svix retries) and never persists them. Performs NO
   outbound network calls.
 - `src/app/admin/email-health/page.tsx` — read-only admin monitor.

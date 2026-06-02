@@ -21,7 +21,7 @@ import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { transcribeVoiceNote } from '@/lib/voice-transcription';
 import type { VoiceTranscriptMeta } from '@/lib/fulfillment-types';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutCapacityFull, isCheckoutPaused } from '@/lib/checkout-pause';
-import { isKillSwitchActive } from '@/lib/ops-kill-switches';
+import { enforceKillSwitch } from '@/lib/ops-kill-switches';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 import { getReferralCodeFromCookieHeader, sanitizeReferralCode } from '@/lib/referrals';
 
@@ -85,12 +85,28 @@ export async function POST(request: Request) {
         { status: 503 },
       );
     }
-    if (await isKillSwitchActive('checkout_pause')) {
+    // KS-1 with fail-closed durable-read semantics. If the durable
+    // store cannot be reached (blob outage / missing token), refuse
+    // the request rather than silently allowing checkout — a kill
+    // switch that can't be read is a kill switch that doesn't exist.
+    const checkoutKs = await enforceKillSwitch('checkout_pause');
+    if (checkoutKs.kind === 'active') {
       return NextResponse.json(
         {
           error: CHECKOUT_PAUSED_MESSAGE,
           code: CHECKOUT_PAUSED_CODE,
           killSwitch: 'checkout_pause',
+        },
+        { status: 503 },
+      );
+    }
+    if (checkoutKs.kind === 'unavailable') {
+      return NextResponse.json(
+        {
+          error: CHECKOUT_PAUSED_MESSAGE,
+          code: CHECKOUT_PAUSED_CODE,
+          killSwitch: 'checkout_pause',
+          killSwitchStateUnavailable: true,
         },
         { status: 503 },
       );

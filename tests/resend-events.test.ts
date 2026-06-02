@@ -315,3 +315,141 @@ test('admin email-health page source: empty state explicitly warns when RESEND_W
   assert.match(src, /RESEND_WEBHOOK_SECRET is not set/);
   assert.match(src, /empty list does NOT mean delivery is healthy/i);
 });
+
+// ── R3: persistence fail-closed ─────────────────────────────────────────────
+
+test('appendResendEvent throws ResendEventPersistenceError in production when BLOB_READ_WRITE_TOKEN is missing', async () => {
+  const dir = makeTmp();
+  process.env.HSB_REQUIRE_DURABLE_PERSISTENCE = 'true';
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    const { ResendEventPersistenceError } = await import('../src/lib/resend-events.ts');
+    const ev = makeEvent({ id: 'msg_r3_prod', type: 'email.bounced' });
+    await assert.rejects(
+      () => appendResendEvent(ev),
+      (err) => err instanceof ResendEventPersistenceError,
+      'append must throw ResendEventPersistenceError in prod with no blob token',
+    );
+  } finally {
+    delete process.env.HSB_REQUIRE_DURABLE_PERSISTENCE;
+    cleanup(dir);
+  }
+});
+
+test('listResendEvents throws ResendEventPersistenceError in production when BLOB_READ_WRITE_TOKEN is missing', async () => {
+  const dir = makeTmp();
+  process.env.HSB_REQUIRE_DURABLE_PERSISTENCE = 'true';
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    const { ResendEventPersistenceError } = await import('../src/lib/resend-events.ts');
+    await assert.rejects(
+      () => listResendEvents({ now: new Date('2026-06-02T12:00:00Z') }),
+      (err) => err instanceof ResendEventPersistenceError,
+      'read must throw ResendEventPersistenceError in prod with no blob token',
+    );
+  } finally {
+    delete process.env.HSB_REQUIRE_DURABLE_PERSISTENCE;
+    cleanup(dir);
+  }
+});
+
+test('resend webhook route source: persistence failure returns 503 (NOT 200) so Svix retries', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/api/webhooks/resend/route.ts', import.meta.url),
+    'utf8',
+  );
+  // The ResendEventPersistenceError catch must short-circuit to 503
+  // with code PERSISTENCE_FAILED and retryable:true, AFTER the
+  // appendResendEvent call (proves the catch wraps the write seam).
+  const appendIdx = src.indexOf('appendResendEvent(event)');
+  const instanceofIdx = src.indexOf('instanceof ResendEventPersistenceError');
+  const status503Idx = src.indexOf('status: 503', instanceofIdx);
+  assert.ok(appendIdx > -1 && instanceofIdx > -1 && status503Idx > -1);
+  assert.ok(appendIdx < instanceofIdx, 'instanceof check (catch branch) must follow the persist call');
+  assert.ok(instanceofIdx < status503Idx, '503 must be returned inside the persistence-error catch');
+  assert.match(src, /code: 'PERSISTENCE_FAILED'/);
+  assert.match(src, /retryable: true/);
+});
+
+// ── R4: Svix replay-window guard ────────────────────────────────────────────
+
+test('resend webhook route source: enforces svix-timestamp replay window BEFORE signature check and persistence', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/api/webhooks/resend/route.ts', import.meta.url),
+    'utf8',
+  );
+  // Stale + future-skew checks both present, BOTH before the
+  // verifySvixSignature call so a stale-but-validly-signed payload
+  // returns the precise STALE_TIMESTAMP / FUTURE_TIMESTAMP code.
+  assert.match(src, /code: 'STALE_TIMESTAMP'/);
+  assert.match(src, /code: 'FUTURE_TIMESTAMP'/);
+  assert.match(src, /code: 'INVALID_TIMESTAMP'/);
+  assert.match(src, /DEFAULT_REPLAY_WINDOW_SECONDS = 300/);
+  const staleIdx = src.indexOf("'STALE_TIMESTAMP'");
+  // Target the CALL site (`if (!verifySvixSignature(...))`), not the
+  // function definition that lives above the POST handler.
+  const verifyCallIdx = src.indexOf('if (!verifySvixSignature(');
+  const appendIdx = src.indexOf('appendResendEvent(event)');
+  assert.ok(staleIdx > -1 && verifyCallIdx > -1 && appendIdx > -1);
+  assert.ok(staleIdx < verifyCallIdx, 'stale-timestamp refusal must precede signature-verification call');
+  assert.ok(staleIdx < appendIdx, 'stale-timestamp refusal must precede persistence');
+  // Override env var documented in code.
+  assert.match(src, /RESEND_WEBHOOK_REPLAY_WINDOW_SECONDS/);
+});
+
+// ── R5: email-health freshness ──────────────────────────────────────────────
+
+test('summarizeResendBounces exposes lastEventAt across the FULL retention scan (ignores window filter)', async () => {
+  const dir = makeTmp();
+  try {
+    const now = new Date('2026-06-02T12:00:00Z');
+    // Event from 4 days ago — outside any 24h window but inside the
+    // 14d retention. lastEventAt must still surface it.
+    await appendResendEvent(makeEvent({ id: 'old', type: 'email.delivered', createdAt: '2026-05-29T08:00:00Z' }));
+    const summary = await summarizeResendBounces({ now, windowHours: 24, daysToScan: 5 });
+    assert.equal(summary.totals['email.delivered'], 0, 'old event must be outside the 24h window');
+    assert.equal(summary.lastEventAt, '2026-05-29T08:00:00Z', 'lastEventAt must surface the older event');
+  } finally { cleanup(dir); }
+});
+
+test('summarizeResendBounces.lastEventAt is null when the retention scan finds nothing', async () => {
+  const dir = makeTmp();
+  try {
+    const summary = await summarizeResendBounces({ now: new Date('2026-06-02T12:00:00Z') });
+    assert.equal(summary.lastEventAt, null);
+  } finally { cleanup(dir); }
+});
+
+test('admin email-health page source: renders lastEventAt + stale + configured-not-verified warnings', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/email-health/page.tsx', import.meta.url),
+    'utf8',
+  );
+  // Header always shows the last received event (or "never").
+  assert.match(src, /data-testid="email-health-last-event-at"/);
+  assert.match(src, /Last event received: never/);
+  // Configured-but-never-verified banner: secret IS set yet
+  // no events ever arrived.
+  assert.match(src, /data-testid="email-health-configured-not-verified"/);
+  assert.match(src, /Configured ≠ verified/);
+  // Stale-window banner: events flowed at some point but the newest
+  // is older than EMAIL_HEALTH_STALE_HOURS.
+  assert.match(src, /data-testid="email-health-stale-warning"/);
+  assert.match(src, /Stale webhook stream/);
+  assert.match(src, /EMAIL_HEALTH_STALE_HOURS/);
+});
+
+test('admin email-health page source: persistence-failure path renders specific block, not generic 500', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(
+    new URL('../src/app/admin/email-health/page.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(src, /data-testid="email-health-persistence-failed"/);
+  assert.match(src, /PERSISTENCE_FAILED/);
+  assert.match(src, /ResendEventPersistenceError/);
+  assert.match(src, /BLOB_READ_WRITE_TOKEN/);
+});

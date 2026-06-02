@@ -1,6 +1,13 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { get, put } from '@vercel/blob';
+
+import {
+  requiresDurablePersistence,
+  withBlobNamespace,
+} from './orders.ts';
+
 export const KILL_SWITCH_REFUSAL_PREFIX = 'KILL_SWITCH_ACTIVE';
 
 export type KillSwitchId =
@@ -53,6 +60,27 @@ interface KillSwitchStore {
   history: KillSwitchEvent[];
 }
 
+/**
+ * Thrown when kill-switch state cannot be durably read or written in a
+ * production-like environment. Callers (admin route + every
+ * `isKillSwitchActive` enforcement seam) MUST surface this as a hard
+ * failure — falling back silently to local FS would yield
+ * per-Vercel-function-instance state divergence and a kill-switch
+ * console that does not actually halt anything.
+ *
+ * The admin API maps this to HTTP 503 with code `DURABILITY_FAILED` so
+ * the UI can render a specific "console non-functional / unsafe"
+ * warning rather than a generic transient 500.
+ */
+export class KillSwitchDurabilityError extends Error {
+  readonly cause?: unknown;
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = 'KillSwitchDurabilityError';
+    this.cause = cause;
+  }
+}
+
 export const KILL_SWITCH_DEFINITIONS: KillSwitchDefinition[] = [
   {
     id: 'checkout_pause',
@@ -65,8 +93,8 @@ export const KILL_SWITCH_DEFINITIONS: KillSwitchDefinition[] = [
     id: 'proof_release_hold',
     label: 'KS-2 Proof release hold',
     mode: 'enforced',
-    summary: 'Blocks QA pass from releasing digital delivery or proof-ready customer email.',
-    enforcement: 'releaseOrderAfterQa refuses before release lock, state advance, or email transport.',
+    summary: 'Blocks every admin path that sends a customer email (QA pass, resend proof, resend digital, retry).',
+    enforcement: 'releaseOrderAfterQa / resendProofEmail / resendDigitalDelivery / retryOrderFulfillment refuse before any email transport.',
   },
   {
     id: 'owner_print_go_hold',
@@ -104,6 +132,23 @@ export function isKillSwitchId(value: unknown): value is KillSwitchId {
   return typeof value === 'string' && IDS.has(value as KillSwitchId);
 }
 
+/**
+ * Blob path for the single shared KS state JSON. One object per
+ * deployment namespace; read-modify-write semantics with
+ * `allowOverwrite: true`. KS toggles are operator-triggered and
+ * audited (the JSON carries a history array), so last-write-wins is
+ * acceptable; no concurrent admin POSTs are expected in practice.
+ */
+function getKillSwitchBlobPath(): string {
+  return withBlobNamespace('ops/state/hsb-kill-switches.json');
+}
+
+/**
+ * Filesystem fallback path. Used ONLY when
+ * `requiresDurablePersistence()` returns false (i.e., dev/test).
+ * Production code paths never reach this branch — durable failure
+ * throws `KillSwitchDurabilityError` instead.
+ */
 export function killSwitchStatePath(): string {
   return process.env.HSB_KILL_SWITCH_STATE_PATH
     || path.join(/* turbopackIgnore: true */ process.cwd(), 'ops', 'state', 'hsb-kill-switches.json');
@@ -113,14 +158,84 @@ function emptyState(): KillSwitchState {
   return { active: false, reason: null, updatedBy: null, updatedAt: null };
 }
 
-async function readStore(): Promise<KillSwitchStore> {
+function normalizeStore(parsed: unknown): KillSwitchStore {
+  const obj = (parsed && typeof parsed === 'object') ? (parsed as Partial<KillSwitchStore>) : {};
+  const states = (obj.states && typeof obj.states === 'object') ? obj.states : {};
+  const history = Array.isArray(obj.history)
+    ? obj.history.filter((event) => event && isKillSwitchId(event.id))
+    : [];
+  return { states, history };
+}
+
+function getBlobToken(): string | undefined {
+  return process.env.BLOB_READ_WRITE_TOKEN;
+}
+
+async function readStoreFromBlob(): Promise<KillSwitchStore> {
+  const token = getBlobToken();
+  if (!token) {
+    throw new KillSwitchDurabilityError(
+      'BLOB_READ_WRITE_TOKEN missing in production — cannot read kill-switch state. KS console is unsafe to use; switches that depend on durable state will not propagate across function instances.',
+    );
+  }
+  try {
+    const result = await get(getKillSwitchBlobPath(), {
+      access: 'public',
+      token,
+      useCache: false,
+    });
+    if (!result || !result.stream) {
+      return { states: {}, history: [] };
+    }
+    const raw = await new Response(result.stream).text();
+    if (!raw.trim()) return { states: {}, history: [] };
+    const parsed = JSON.parse(raw);
+    return normalizeStore(parsed);
+  } catch (err) {
+    const anyErr = err as { status?: number; message?: string };
+    const status = anyErr?.status;
+    const msg = String(anyErr?.message ?? '');
+    // 404 / not-found on first-ever read is fine — we treat it as an
+    // empty store. Any other failure is a real durability problem.
+    if (status === 404 || /not found/i.test(msg)) {
+      return { states: {}, history: [] };
+    }
+    throw new KillSwitchDurabilityError(
+      `Failed to read kill-switch state from blob: ${msg || 'unknown error'}`,
+      err,
+    );
+  }
+}
+
+async function writeStoreToBlob(store: KillSwitchStore): Promise<void> {
+  const token = getBlobToken();
+  if (!token) {
+    throw new KillSwitchDurabilityError(
+      'BLOB_READ_WRITE_TOKEN missing in production — cannot write kill-switch state. Refusing to silently fall back to local FS (would leave per-instance divergent state).',
+    );
+  }
+  const body = `${JSON.stringify(store, null, 2)}\n`;
+  try {
+    await put(getKillSwitchBlobPath(), body, {
+      access: 'public',
+      allowOverwrite: true,
+      addRandomSuffix: false,
+      contentType: 'application/json',
+      token,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new KillSwitchDurabilityError(
+      `Failed to write kill-switch state to blob: ${msg}`,
+      err,
+    );
+  }
+}
+
+async function readStoreFromFs(): Promise<KillSwitchStore> {
   try {
     const raw = await readFile(killSwitchStatePath(), 'utf8');
-    const parsed = JSON.parse(raw) as Partial<KillSwitchStore>;
-    return {
-      states: parsed.states ?? {},
-      history: Array.isArray(parsed.history) ? parsed.history.filter((event) => isKillSwitchId(event.id)) : [],
-    };
+    return normalizeStore(JSON.parse(raw));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return { states: {}, history: [] };
@@ -129,10 +244,24 @@ async function readStore(): Promise<KillSwitchStore> {
   }
 }
 
-async function writeStore(store: KillSwitchStore): Promise<void> {
+async function writeStoreToFs(store: KillSwitchStore): Promise<void> {
   const file = killSwitchStatePath();
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
+}
+
+async function readStore(): Promise<KillSwitchStore> {
+  if (requiresDurablePersistence()) {
+    return await readStoreFromBlob();
+  }
+  return await readStoreFromFs();
+}
+
+async function writeStore(store: KillSwitchStore): Promise<void> {
+  if (requiresDurablePersistence()) {
+    return await writeStoreToBlob(store);
+  }
+  return await writeStoreToFs(store);
 }
 
 export async function getKillSwitchSnapshot(): Promise<KillSwitchSnapshot> {
@@ -181,11 +310,67 @@ export async function updateKillSwitch(input: UpdateKillSwitchInput): Promise<Ki
   return { ...definition, ...nextState };
 }
 
+/**
+ * Read-time check used at every enforcement seam. Surfaces the
+ * durable-read failure to the caller via
+ * `KillSwitchDurabilityError`. Enforcement seams MUST decide how to
+ * respond (the recommended policy is fail-closed — treat unknown
+ * durability state as "switch active" — but the per-seam wiring
+ * decides because the safe interpretation differs between, e.g.,
+ * proof_release_hold and provider_hold).
+ *
+ * The existing seams in admin-actions.ts / fulfillment.ts wrap this
+ * call in try/catch and treat any thrown error as
+ * KILL_SWITCH_STATE_UNAVAILABLE — a refusal — so a durability outage
+ * cannot silently let a customer email or print submit through.
+ */
 export async function isKillSwitchActive(id: KillSwitchId): Promise<boolean> {
   const store = await readStore();
   return store.states[id]?.active === true;
 }
 
+/**
+ * Fail-closed wrapper around `isKillSwitchActive`. Returns a tagged
+ * result so every enforcement seam can distinguish three states:
+ *
+ *   - `{ active: false }`              — switch is off, proceed
+ *   - `{ active: true }`               — switch is on, refuse
+ *   - `{ unavailable: true; reason }`  — durable store is unreachable;
+ *                                        fail closed (treat as refuse),
+ *                                        seam decides which error code
+ *                                        to surface
+ *
+ * Production callers MUST treat `unavailable` as a refusal: silently
+ * proceeding would defeat the entire kill-switch design. The reason
+ * string is bounded so it can land in operator-visible error copy
+ * without leaking storage internals.
+ */
+export type KillSwitchEnforceResult =
+  | { kind: 'inactive' }
+  | { kind: 'active' }
+  | { kind: 'unavailable'; reason: string };
+
+export async function enforceKillSwitch(id: KillSwitchId): Promise<KillSwitchEnforceResult> {
+  try {
+    const active = await isKillSwitchActive(id);
+    return active ? { kind: 'active' } : { kind: 'inactive' };
+  } catch (err) {
+    if (err instanceof KillSwitchDurabilityError) {
+      const reason = err.message.slice(0, 240);
+      console.error(`[ops-kill-switches] durability failure on '${id}': ${reason}`);
+      return { kind: 'unavailable', reason };
+    }
+    throw err;
+  }
+}
+
+export const KILL_SWITCH_STATE_UNAVAILABLE_CODE = 'KILL_SWITCH_STATE_UNAVAILABLE';
+
+export function killSwitchUnavailableMessage(label: string, reason: string): string {
+  return `${KILL_SWITCH_STATE_UNAVAILABLE_CODE}: ${label} state could not be read durably (${reason}). Refusing the request fail-closed.`;
+}
+
 export function killSwitchRefusal(id: KillSwitchId, label: string): string {
+  void id;
   return `${KILL_SWITCH_REFUSAL_PREFIX}: ${label} is active`;
 }

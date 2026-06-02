@@ -149,14 +149,17 @@ test('kill-switch state: activation requires operator and reason, then records h
   }
 });
 
-test('checkout pause kill switch is checked before formData and Stripe setup', async () => {
+test('checkout pause kill switch is checked before formData and Stripe setup AND fails closed on durability error', async () => {
   const src = readFileSync(new URL('../src/app/api/order/route.ts', import.meta.url), 'utf8');
-  const killIdx = src.indexOf("isKillSwitchActive('checkout_pause')");
+  const killIdx = src.indexOf("enforceKillSwitch('checkout_pause')");
   const formIdx = src.indexOf('request.formData()');
   const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
-  assert.ok(killIdx > -1, 'checkout kill switch check must exist');
+  assert.ok(killIdx > -1, 'checkout kill switch check must exist (enforceKillSwitch)');
   assert.ok(killIdx < formIdx, 'checkout kill switch must run before form parsing');
   assert.ok(killIdx < stripeIdx, 'checkout kill switch must run before Stripe session creation');
+  // Fail-closed: durable-read failure must also refuse the request.
+  assert.match(src, /checkoutKs\.kind === 'unavailable'/);
+  assert.match(src, /killSwitchStateUnavailable: true/);
 });
 
 test('proof release hold refuses before customer email or state advance', async () => {
@@ -286,4 +289,199 @@ test('kill-switch UI source avoids guaranteed Father Day or date-specific print 
   assert.doesNotMatch(src, /guarantee|guaranteed|Father'?s Day|Jun(e)?\s+\d/i);
   assert.match(src, /YELLOW-CANDIDATE/);
   assert.match(src, /RED\/HOLD/);
+});
+
+// ── R1 + R6: durable persistence + DURABILITY_FAILED surface ────────────────
+
+test('kill-switch durable read fails closed in production when BLOB_READ_WRITE_TOKEN is missing', async () => {
+  const dir = makeTmp();
+  process.env.HSB_REQUIRE_DURABLE_PERSISTENCE = 'true';
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    const { isKillSwitchActive: ksActive, KillSwitchDurabilityError } =
+      await import('../src/lib/ops-kill-switches.ts');
+    await assert.rejects(
+      () => ksActive('checkout_pause'),
+      (err) => err instanceof KillSwitchDurabilityError,
+      'durable read must throw KillSwitchDurabilityError when no blob token in prod',
+    );
+  } finally {
+    delete process.env.HSB_REQUIRE_DURABLE_PERSISTENCE;
+    cleanup(dir);
+  }
+});
+
+test('kill-switch durable write fails closed in production when BLOB_READ_WRITE_TOKEN is missing', async () => {
+  const dir = makeTmp();
+  process.env.HSB_REQUIRE_DURABLE_PERSISTENCE = 'true';
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    const { updateKillSwitch: update, KillSwitchDurabilityError } =
+      await import('../src/lib/ops-kill-switches.ts');
+    await assert.rejects(
+      () => update({
+        id: 'checkout_pause',
+        active: true,
+        reason: 'durability test',
+        updatedBy: 'ops@example.com',
+      }),
+      (err) => err instanceof KillSwitchDurabilityError,
+      'durable write must throw KillSwitchDurabilityError when no blob token in prod',
+    );
+  } finally {
+    delete process.env.HSB_REQUIRE_DURABLE_PERSISTENCE;
+    cleanup(dir);
+  }
+});
+
+test('enforceKillSwitch surfaces durable failure as { unavailable: true } instead of throwing', async () => {
+  const dir = makeTmp();
+  process.env.HSB_REQUIRE_DURABLE_PERSISTENCE = 'true';
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    const { enforceKillSwitch } = await import('../src/lib/ops-kill-switches.ts');
+    const result = await enforceKillSwitch('checkout_pause');
+    assert.equal(result.kind, 'unavailable', 'enforceKillSwitch must return kind=unavailable in prod with no blob token');
+    if (result.kind === 'unavailable') {
+      assert.match(result.reason, /BLOB_READ_WRITE_TOKEN/);
+    }
+  } finally {
+    delete process.env.HSB_REQUIRE_DURABLE_PERSISTENCE;
+    cleanup(dir);
+  }
+});
+
+test('KS-1 /api/order route source: fail-closed branch refuses checkout when KS state is unavailable', async () => {
+  const src = readFileSync(new URL('../src/app/api/order/route.ts', import.meta.url), 'utf8');
+  // Both the active-switch refusal AND the unavailable-state refusal
+  // must precede form parsing + Stripe.
+  const activeIdx = src.indexOf("checkoutKs.kind === 'active'");
+  const unavailableIdx = src.indexOf("checkoutKs.kind === 'unavailable'");
+  const formIdx = src.indexOf('request.formData()');
+  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
+  assert.ok(activeIdx > -1 && unavailableIdx > -1);
+  assert.ok(activeIdx < formIdx && unavailableIdx < formIdx);
+  assert.ok(activeIdx < stripeIdx && unavailableIdx < stripeIdx);
+  // Body must carry killSwitchStateUnavailable signal for admin UI / logs.
+  assert.match(src, /killSwitchStateUnavailable: true/);
+});
+
+test('KS admin route surfaces DURABILITY_FAILED with operator guidance on durable-store failure', async () => {
+  // Source-level guarantee (route handler can't mount under node:test).
+  const src = readFileSync(new URL('../src/app/api/admin/kill-switches/route.ts', import.meta.url), 'utf8');
+  assert.match(src, /code: DURABILITY_FAILED/);
+  assert.match(src, /KillSwitchDurabilityError/);
+  assert.match(src, /durabilityFailedResponse/);
+  assert.match(src, /operatorGuidance/);
+  assert.match(src, /status: 503/);
+  // Both GET and POST must handle the error type.
+  const getIdx = src.indexOf('export async function GET');
+  const postIdx = src.indexOf('export async function POST');
+  const firstCatchIdx = src.indexOf('KillSwitchDurabilityError', getIdx);
+  const secondCatchIdx = src.indexOf('KillSwitchDurabilityError', postIdx);
+  assert.ok(firstCatchIdx > getIdx && firstCatchIdx < postIdx);
+  assert.ok(secondCatchIdx > postIdx);
+});
+
+test('KS admin page surfaces DURABILITY_FAILED warning instead of toggle UI', async () => {
+  const src = readFileSync(new URL('../src/app/admin/kill-switches/page.tsx', import.meta.url), 'utf8');
+  assert.match(src, /data-testid="kill-switches-durability-failed"/);
+  assert.match(src, /UNSAFE TO USE/);
+  assert.match(src, /DURABILITY_FAILED/);
+  assert.match(src, /HSB_CHECKOUT_PAUSED=true/);
+});
+
+// ── R2: KS-2 leak coverage on every customer-email path ─────────────────────
+
+test('proof_release_hold also blocks resendDigitalDelivery (R2 leak closure)', async () => {
+  const dir = makeTmp();
+  try {
+    await updateKillSwitch({
+      id: 'proof_release_hold',
+      active: true,
+      reason: 'R2 test',
+      updatedBy: 'ops@example.com',
+    });
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      qaPassAt: '2026-06-02T12:00:00.000Z',
+      qaPassBy: 'opsA',
+      qaStatus: 'passed',
+      storyArtifactUrl: 'https://cdn.example.com/digital.pdf',
+      fulfillmentStatus: 'complete',
+    }, 'ord_r2_resend_digital');
+    const { resendDigitalDelivery } = await import('../src/lib/admin-actions.ts');
+    const r = await resendDigitalDelivery('ord_r2_resend_digital');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.failureCode, 'PROOF_RELEASE_HELD');
+    assert.equal(!r.ok && r.status, 409);
+  } finally { cleanup(dir); }
+});
+
+test('proof_release_hold also blocks resendProofEmail (R2 leak closure)', async () => {
+  const dir = makeTmp();
+  try {
+    await updateKillSwitch({
+      id: 'proof_release_hold',
+      active: true,
+      reason: 'R2 test',
+      updatedBy: 'ops@example.com',
+    });
+    await seed({
+      bookFormat: 'classic',
+      paymentStatus: 'paid',
+      qaPassAt: '2026-06-02T12:00:00.000Z',
+      qaPassBy: 'opsA',
+      qaStatus: 'passed',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      proofApprovalToken: 'tok_r2_proof',
+      fulfillmentStatus: 'proof_ready',
+    }, 'ord_r2_resend_proof');
+    const { resendProofEmail } = await import('../src/lib/admin-actions.ts');
+    const r = await resendProofEmail('ord_r2_resend_proof', 'http://localhost:3000');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.failureCode, 'PROOF_RELEASE_HELD');
+  } finally { cleanup(dir); }
+});
+
+test('proof_release_hold also blocks retryOrderFulfillment delivery_email_failed paths (R2 leak closure)', async () => {
+  const dir = makeTmp();
+  try {
+    await updateKillSwitch({
+      id: 'proof_release_hold',
+      active: true,
+      reason: 'R2 test',
+      updatedBy: 'ops@example.com',
+    });
+    await seed({
+      bookFormat: 'digital',
+      paymentStatus: 'paid',
+      qaPassAt: '2026-06-02T12:00:00.000Z',
+      qaPassBy: 'opsA',
+      qaStatus: 'passed',
+      storyArtifactUrl: 'https://cdn.example.com/digital.pdf',
+      fulfillmentStatus: 'delivery_email_failed',
+    }, 'ord_r2_retry_digital');
+    const { retryOrderFulfillment } = await import('../src/lib/admin-actions.ts');
+    const r = await retryOrderFulfillment('ord_r2_retry_digital');
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.failureCode, 'PROOF_RELEASE_HELD');
+  } finally { cleanup(dir); }
+});
+
+test('manuallyApproveProof is intentionally NOT KS-2 gated (no customer email) — docstring records scope', async () => {
+  const src = readFileSync(new URL('../src/lib/admin-actions.ts', import.meta.url), 'utf8');
+  // The action itself must not consult proof_release_hold (no email
+  // side effect); the docstring must explicitly call that out so the
+  // next reader doesn't think it's a leak.
+  const fnIdx = src.indexOf('export async function manuallyApproveProof');
+  const fnEndIdx = src.indexOf('\n}\n', fnIdx);
+  assert.ok(fnIdx > -1 && fnEndIdx > fnIdx);
+  const body = src.slice(fnIdx, fnEndIdx);
+  assert.doesNotMatch(body, /proof_release_hold|refuseIfProofReleaseHeld/);
+  // Docstring above the function must say so.
+  const docStart = src.lastIndexOf('/**', fnIdx);
+  const docBlock = src.slice(docStart, fnIdx);
+  assert.match(docBlock, /KS-2 \/ proof_release_hold is intentionally NOT consulted/i);
 });

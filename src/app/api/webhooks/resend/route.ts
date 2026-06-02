@@ -1,9 +1,31 @@
 import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 
-import { appendResendEvent, normalizeResendWebhook } from '@/lib/resend-events';
+import {
+  appendResendEvent,
+  normalizeResendWebhook,
+  ResendEventPersistenceError,
+} from '@/lib/resend-events';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Svix replay-window guard (R4). Reject events whose
+ * `svix-timestamp` is older than RESEND_WEBHOOK_REPLAY_WINDOW_SECONDS
+ * (default 300 = 5 minutes) or skewed too far into the future
+ * (default 60s clock-drift allowance). Svix recommends this even
+ * though signatures are otherwise sound — it bounds the window in
+ * which a leaked/captured signed payload can be replayed.
+ */
+const DEFAULT_REPLAY_WINDOW_SECONDS = 300;
+const DEFAULT_FUTURE_SKEW_SECONDS = 60;
+
+function getReplayWindowSeconds(): number {
+  const raw = process.env.RESEND_WEBHOOK_REPLAY_WINDOW_SECONDS;
+  if (!raw) return DEFAULT_REPLAY_WINDOW_SECONDS;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_REPLAY_WINDOW_SECONDS;
+}
 
 /**
  * Resend webhook ingestion.
@@ -85,6 +107,40 @@ export async function POST(request: Request) {
   if (!svixId || !svixTimestamp || !svixSignature) {
     return NextResponse.json({ error: 'Missing Svix headers' }, { status: 401 });
   }
+
+  // R4: Svix timestamp replay-window check. Done BEFORE signature
+  // verification so a stale-but-validly-signed payload is rejected
+  // with a precise error code; the signature still has to pass below
+  // before we touch persistence.
+  const tsSeconds = Number.parseInt(svixTimestamp, 10);
+  if (!Number.isFinite(tsSeconds)) {
+    return NextResponse.json(
+      { error: 'Invalid svix-timestamp', code: 'INVALID_TIMESTAMP' },
+      { status: 400 },
+    );
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const windowSeconds = getReplayWindowSeconds();
+  const ageSeconds = nowSeconds - tsSeconds;
+  if (ageSeconds > windowSeconds) {
+    return NextResponse.json(
+      {
+        error: `Stale webhook: svix-timestamp ${ageSeconds}s old, replay window is ${windowSeconds}s`,
+        code: 'STALE_TIMESTAMP',
+      },
+      { status: 401 },
+    );
+  }
+  if (ageSeconds < -DEFAULT_FUTURE_SKEW_SECONDS) {
+    return NextResponse.json(
+      {
+        error: `Future-skewed webhook: svix-timestamp ${-ageSeconds}s in the future`,
+        code: 'FUTURE_TIMESTAMP',
+      },
+      { status: 401 },
+    );
+  }
+
   if (!verifySvixSignature(svixId, svixTimestamp, body, svixSignature, secret)) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
   }
@@ -107,6 +163,26 @@ export async function POST(request: Request) {
     return NextResponse.json({ received: true, persisted: false, dropped: 'unknown_type' });
   }
 
-  const result = await appendResendEvent(event);
-  return NextResponse.json({ received: true, persisted: result.persisted });
+  // R3: persistence failure MUST NOT 200-ack Resend. Returning 503
+  // tells Svix to retry per its standard backoff schedule. Silently
+  // swallowing the error here would lose every event whenever blob
+  // was unreachable while the secret was configured, with Resend's
+  // dashboard showing healthy delivery.
+  try {
+    const result = await appendResendEvent(event);
+    return NextResponse.json({ received: true, persisted: result.persisted });
+  } catch (err) {
+    if (err instanceof ResendEventPersistenceError) {
+      console.error('[resend-webhook] persistence failed; returning 503 so Svix retries', err);
+      return NextResponse.json(
+        {
+          error: err.message,
+          code: 'PERSISTENCE_FAILED',
+          retryable: true,
+        },
+        { status: 503 },
+      );
+    }
+    throw err;
+  }
 }

@@ -33,7 +33,12 @@ import {
   evaluatePrintGuard,
   evaluateReleaseGuard,
 } from './generation-manifest.ts';
-import { isKillSwitchActive, killSwitchRefusal } from './ops-kill-switches.ts';
+import {
+  enforceKillSwitch,
+  KILL_SWITCH_STATE_UNAVAILABLE_CODE,
+  killSwitchRefusal,
+  killSwitchUnavailableMessage,
+} from './ops-kill-switches.ts';
 import { appendAuditEvent } from './orders.ts';
 
 // ── Per-page artifact selection (proof rebuild) ───────────────────────────────
@@ -1026,15 +1031,26 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
     );
   }
 
-  if (await isKillSwitchActive('print_provider_hold')) {
+  // KS-6 with fail-closed durable-read semantics. If the durable
+  // store cannot be read, refuse the print submit — a durable read
+  // failure here means the operator can't reliably hold print
+  // submission, which is far worse than refusing one job.
+  const providerKs = await enforceKillSwitch('print_provider_hold');
+  if (providerKs.kind === 'active') {
     await appendAuditEvent(order.id, {
       type: 'print_submission_blocked',
       reason: 'PRINT_PROVIDER_HELD',
-      meta: {
-        source: 'runPrintProduction',
-      },
+      meta: { source: 'runPrintProduction' },
     });
     throw new Error(killSwitchRefusal('print_provider_hold', 'Print-provider hold'));
+  }
+  if (providerKs.kind === 'unavailable') {
+    await appendAuditEvent(order.id, {
+      type: 'print_submission_blocked',
+      reason: KILL_SWITCH_STATE_UNAVAILABLE_CODE,
+      meta: { source: 'runPrintProduction', detail: providerKs.reason.slice(0, 240) },
+    });
+    throw new Error(killSwitchUnavailableMessage('Print-provider hold', providerKs.reason));
   }
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'submitting_to_print' }));
@@ -1458,11 +1474,19 @@ export async function submitPrintAfterOwnerGo(
   if (!order) {
     return { ok: false, failureCode: 'ORDER_NOT_FOUND', error: 'Order not found' };
   }
-  if (await isKillSwitchActive('owner_print_go_hold')) {
+  const ownerGoKs = await enforceKillSwitch('owner_print_go_hold');
+  if (ownerGoKs.kind === 'active') {
     return {
       ok: false,
       failureCode: 'OWNER_PRINT_GO_HELD',
       error: killSwitchRefusal('owner_print_go_hold', 'Owner print-go hold'),
+    };
+  }
+  if (ownerGoKs.kind === 'unavailable') {
+    return {
+      ok: false,
+      failureCode: 'OWNER_PRINT_GO_HELD',
+      error: killSwitchUnavailableMessage('Owner print-go hold', ownerGoKs.reason),
     };
   }
   if (order.paymentStatus !== 'paid') {
@@ -1518,11 +1542,19 @@ export async function submitPrintAfterOwnerGo(
       error: `Cannot record owner go: fulfillmentStatus=${order.fulfillmentStatus}`,
     };
   }
-  if (await isKillSwitchActive('print_provider_hold')) {
+  const providerKs2 = await enforceKillSwitch('print_provider_hold');
+  if (providerKs2.kind === 'active') {
     return {
       ok: false,
       failureCode: 'PRINT_PROVIDER_HELD',
       error: killSwitchRefusal('print_provider_hold', 'Print-provider hold'),
+    };
+  }
+  if (providerKs2.kind === 'unavailable') {
+    return {
+      ok: false,
+      failureCode: 'PRINT_PROVIDER_HELD',
+      error: killSwitchUnavailableMessage('Print-provider hold', providerKs2.reason),
     };
   }
 

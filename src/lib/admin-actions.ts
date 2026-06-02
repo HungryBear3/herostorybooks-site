@@ -23,7 +23,12 @@ import {
   evaluateReleaseGuard,
   type ReleaseFailureCode,
 } from './generation-manifest.ts';
-import { isKillSwitchActive, killSwitchRefusal } from './ops-kill-switches.ts';
+import {
+  enforceKillSwitch,
+  KILL_SWITCH_STATE_UNAVAILABLE_CODE,
+  killSwitchRefusal,
+  killSwitchUnavailableMessage,
+} from './ops-kill-switches.ts';
 
 export type ActionResult =
   | { ok: true; detail?: string }
@@ -40,6 +45,62 @@ export type ActionResult =
     };
 
 export type RetryResult = ActionResult;
+
+// ── Kill-switch refusal helpers ───────────────────────────────────────────────
+//
+// Every admin path that either sends a customer email OR submits print
+// must consult the relevant kill switch with fail-closed durable-read
+// semantics. The helpers below collapse the three states
+// (off / on / store-unavailable) into a uniform ActionResult so seams
+// stay one-liners and so the "store unavailable → refuse" policy
+// cannot be forgotten at any seam.
+//
+// IMPORTANT: returning `null` means the switch is OFF and the caller
+// may proceed. Returning a non-null ActionResult is ALWAYS a refusal
+// (either active-switch or durability-failure). Callers MUST return it
+// to the API layer without modification.
+
+async function refuseIfProofReleaseHeld(): Promise<ActionResult | null> {
+  const ks = await enforceKillSwitch('proof_release_hold');
+  if (ks.kind === 'active') {
+    return {
+      ok: false,
+      status: 409,
+      error: killSwitchRefusal('proof_release_hold', 'Proof release hold'),
+      failureCode: 'PROOF_RELEASE_HELD',
+    };
+  }
+  if (ks.kind === 'unavailable') {
+    return {
+      ok: false,
+      status: 503,
+      error: killSwitchUnavailableMessage('Proof release hold', ks.reason),
+      failureCode: KILL_SWITCH_STATE_UNAVAILABLE_CODE,
+    };
+  }
+  return null;
+}
+
+async function refuseIfOwnerPrintGoHeld(): Promise<ActionResult | null> {
+  const ks = await enforceKillSwitch('owner_print_go_hold');
+  if (ks.kind === 'active') {
+    return {
+      ok: false,
+      status: 409,
+      error: killSwitchRefusal('owner_print_go_hold', 'Owner print-go hold'),
+      failureCode: 'OWNER_PRINT_GO_HELD',
+    };
+  }
+  if (ks.kind === 'unavailable') {
+    return {
+      ok: false,
+      status: 503,
+      error: killSwitchUnavailableMessage('Owner print-go hold', ks.reason),
+      failureCode: KILL_SWITCH_STATE_UNAVAILABLE_CODE,
+    };
+  }
+  return null;
+}
 
 /**
  * 12-item canonical QA checklist per Generation Operating Policy §7.
@@ -169,6 +230,11 @@ export async function retryOrderFulfillment(orderId: string): Promise<ActionResu
     if (!order.qaPassAt) {
       return { ok: false, status: 409, error: 'Cannot resend customer email before QA pass' };
     }
+    // KS-2 gate. R2 leak closure: both the digital and print branches
+    // below transport customer email, so proof_release_hold must
+    // refuse before either branch runs.
+    const ksRefusal = await refuseIfProofReleaseHeld();
+    if (ksRefusal) return ksRefusal;
     const isDigital = order.bookFormat === 'digital';
     if (isDigital && order.storyArtifactUrl) {
       // Generation Operating Policy §5 — the delivery_email_failed short-
@@ -282,6 +348,13 @@ export async function retryOrderFulfillment(orderId: string): Promise<ActionResu
  * `retryOrderFulfillment` or `resendProofEmail` paths in that case).
  */
 export async function resendDigitalDelivery(orderId: string): Promise<ActionResult> {
+  // KS-2 gate. The original implementation only checked the kill
+  // switch inside releaseOrderAfterQa; the Opus review (R2) flagged
+  // that operators flipping proof_release_hold could still send
+  // customer email via this resend path. Closed here.
+  const ksRefusal = await refuseIfProofReleaseHeld();
+  if (ksRefusal) return ksRefusal;
+
   const order = await getOrder(orderId);
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
   if (order.bookFormat !== 'digital') {
@@ -341,14 +414,8 @@ export async function releaseOrderAfterQa(
   input: QaPassInput,
   deps: QaPassDeps = {},
 ): Promise<ActionResult> {
-  if (await isKillSwitchActive('proof_release_hold')) {
-    return {
-      ok: false,
-      status: 409,
-      error: killSwitchRefusal('proof_release_hold', 'Proof release hold'),
-      failureCode: 'PROOF_RELEASE_HELD',
-    };
-  }
+  const ksRefusal = await refuseIfProofReleaseHeld();
+  if (ksRefusal) return ksRefusal;
 
   const order = await getOrder(orderId);
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
@@ -576,6 +643,11 @@ export async function resendProofEmail(
   orderId: string,
   baseUrl: string,
 ): Promise<ActionResult> {
+  // KS-2 gate. Closes the R2 leak — proof_release_hold must block this
+  // resend path too, not just releaseOrderAfterQa.
+  const ksRefusal = await refuseIfProofReleaseHeld();
+  if (ksRefusal) return ksRefusal;
+
   const order = await getOrder(orderId);
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
   if (!order.storyArtifactUrl || !order.proofApprovalToken) {
@@ -621,6 +693,21 @@ export async function resendProofEmail(
  * submission. This decoupling exists because customer approval alone —
  * whether by the customer themselves or by ops on their behalf — must
  * not trigger automated print per the Generation Operating Policy §6.
+ */
+/**
+ * Manually mark a proof as approved (operator acts on the customer's
+ * behalf because they couldn't or wouldn't click the email link).
+ *
+ * KS-2 / proof_release_hold is intentionally NOT consulted here. This
+ * action advances `fulfillmentStatus` to `proof_approved` and writes
+ * `proofApprovedAt` / `printApprovedAt`; it does NOT transport any
+ * customer email. The customer email had to have already been sent
+ * (the order must be in `proof_ready` and carry a proof token), so
+ * the email-release decision was already gated by KS-2 upstream.
+ *
+ * KS-3 / owner_print_go_hold is NOT consulted here either: this
+ * action does not call runPrintProduction. Operator must follow up
+ * with `recordOwnerPrintGo`, which IS KS-3-gated.
  */
 export async function manuallyApproveProof(orderId: string): Promise<ActionResult> {
   const order = await getOrder(orderId);
@@ -670,14 +757,8 @@ export async function recordOwnerPrintGo(
   orderId: string,
   ownerBy: string,
 ): Promise<ActionResult> {
-  if (await isKillSwitchActive('owner_print_go_hold')) {
-    return {
-      ok: false,
-      status: 409,
-      error: killSwitchRefusal('owner_print_go_hold', 'Owner print-go hold'),
-      failureCode: 'OWNER_PRINT_GO_HELD',
-    };
-  }
+  const ksRefusal = await refuseIfOwnerPrintGoHeld();
+  if (ksRefusal) return ksRefusal;
 
   const result = await submitPrintAfterOwnerGo(orderId, ownerBy);
   if (result.ok === true) {

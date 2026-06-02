@@ -4,8 +4,24 @@ import {
   listResendEvents,
   summarizeResendBounces,
   RESEND_EVENT_TYPES,
+  ResendEventPersistenceError,
   type ResendEventType,
 } from '@/lib/resend-events';
+
+/**
+ * If the last event we ingested is older than this, render a stale
+ * warning. Operators need to know that "0 bounces in the last 24h"
+ * does not mean delivery is healthy when no events of ANY type have
+ * arrived in days. Override with EMAIL_HEALTH_STALE_HOURS if a
+ * different SLA is wanted.
+ */
+const DEFAULT_STALE_HOURS = 24;
+function getStaleHours(): number {
+  const raw = process.env.EMAIL_HEALTH_STALE_HOURS;
+  if (!raw) return DEFAULT_STALE_HOURS;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_STALE_HOURS;
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -51,9 +67,67 @@ export default async function AdminEmailHealthPage({ searchParams }: PageProps) 
     if (!Number.isFinite(n) || n <= 0) return 24;
     return Math.min(n, 24 * 14);
   })();
-  const summary = await summarizeResendBounces({ windowHours });
-  const recent = await listResendEvents({ limit: 50 });
+  // R3 surface: if the durable event log can't be read, render a
+  // specific persistence-failure warning instead of letting the
+  // exception propagate to a generic Next.js error page. An empty
+  // page would also be misleading — the operator MUST see this.
+  let summary: Awaited<ReturnType<typeof summarizeResendBounces>> | null = null;
+  let recent: Awaited<ReturnType<typeof listResendEvents>> = [];
+  let persistenceError: string | null = null;
+  try {
+    summary = await summarizeResendBounces({ windowHours });
+    recent = await listResendEvents({ limit: 50 });
+  } catch (err) {
+    if (err instanceof ResendEventPersistenceError) {
+      persistenceError = err.message;
+    } else {
+      throw err;
+    }
+  }
   const webhookSecretConfigured = Boolean(process.env.RESEND_WEBHOOK_SECRET);
+
+  if (persistenceError || !summary) {
+    const msg = persistenceError ?? 'Resend event log unavailable';
+    return (
+      <div className="min-h-screen bg-cream flex items-center justify-center px-4 py-12">
+        <div
+          data-testid="email-health-persistence-failed"
+          className="max-w-2xl rounded-2xl border-2 border-coral/40 bg-coral/10 p-8 text-coral-dark space-y-3"
+        >
+          <h1 className="font-serif text-2xl font-bold">
+            Email-health monitor is UNAVAILABLE
+          </h1>
+          <p className="text-sm font-semibold">
+            PERSISTENCE_FAILED — the Resend event log could not be read durably.
+          </p>
+          <p className="text-sm leading-6">
+            The webhook ingestion route is configured to fail-closed (503) on
+            persistence errors so Svix retries; but this admin page also
+            cannot render any meaningful state until durable storage is
+            restored. An empty list here is NOT a health signal.
+          </p>
+          <p className="text-xs font-mono break-words opacity-80">{msg}</p>
+          <p className="text-sm leading-6">
+            <strong>Action:</strong> verify <code className="bg-coral/20 px-1 rounded">BLOB_READ_WRITE_TOKEN</code>{' '}
+            and Vercel Blob availability. Fall back to the Resend dashboard for
+            bounce/complaint inspection until resolved.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // R5 freshness derivation. lastEventAt covers the full retention
+  // scan (14d) regardless of the current window filter, so the
+  // operator sees the most recent event ever ingested even when the
+  // trailing window is empty.
+  const staleHours = getStaleHours();
+  const lastEventAt = summary.lastEventAt;
+  const lastEventAgeMs = lastEventAt ? Date.now() - new Date(lastEventAt).getTime() : null;
+  const lastEventAgeHours = lastEventAgeMs !== null ? Math.round(lastEventAgeMs / 36e5) : null;
+  const noEventsEver = lastEventAt === null;
+  const stale =
+    !noEventsEver && lastEventAgeHours !== null && lastEventAgeHours > staleHours;
 
   return (
     <div className="min-h-screen bg-cream px-4 py-8">
@@ -65,8 +139,69 @@ export default async function AdminEmailHealthPage({ searchParams }: PageProps) 
               Read-only Resend webhook monitor — trailing {summary.windowHours}h —{' '}
               <time dateTime={summary.generatedAt}>{summary.generatedAt.slice(0, 19).replace('T', ' ')}Z</time>
             </p>
+            <p
+              data-testid="email-health-last-event-at"
+              className="mt-1 text-xs text-gray-500"
+            >
+              {lastEventAt ? (
+                <>
+                  Last event received:{' '}
+                  <time dateTime={lastEventAt}>{lastEventAt.slice(0, 19).replace('T', ' ')}Z</time>{' '}
+                  ({lastEventAgeHours}h ago)
+                </>
+              ) : (
+                <>Last event received: never (no events in the {14}d retention window).</>
+              )}
+            </p>
           </div>
         </header>
+
+        {/* R5 — "configured but never verified" warning. Distinct
+            from the "secret unset" banner below: secret IS set but
+            no events have ever arrived. Most likely: webhook URL
+            isn't registered in the Resend dashboard, or the dashboard
+            secret doesn't match RESEND_WEBHOOK_SECRET. An empty list
+            in this case is NOT a health signal. */}
+        {webhookSecretConfigured && noEventsEver && (
+          <section
+            data-testid="email-health-configured-not-verified"
+            className="rounded-2xl border-2 border-amber-400 bg-amber-50 px-5 py-4 text-sm text-amber-900 space-y-2"
+          >
+            <p className="font-semibold">
+              Webhook secret is configured but NO events have ever been ingested.
+            </p>
+            <p className="leading-6">
+              Configured ≠ verified. Until the first event arrives, this monitor
+              cannot tell whether delivery is healthy or whether the webhook is
+              simply not wired (URL not registered in Resend, or signature
+              mismatch). Send a test event from the Resend dashboard; the
+              expected response is HTTP 200 with{' '}
+              <code className="font-mono">received: true</code>.
+            </p>
+          </section>
+        )}
+
+        {/* R5 — stale-monitor warning. Events flowed at some point but
+            the newest one is older than EMAIL_HEALTH_STALE_HOURS
+            (default 24h). Possible causes: webhook delivery broken,
+            Svix outage, our endpoint returning 5xx, no real traffic. */}
+        {webhookSecretConfigured && stale && (
+          <section
+            data-testid="email-health-stale-warning"
+            className="rounded-2xl border-2 border-amber-400 bg-amber-50 px-5 py-4 text-sm text-amber-900 space-y-2"
+          >
+            <p className="font-semibold">
+              Stale webhook stream: no event in the last {staleHours}h
+              (most recent was {lastEventAgeHours}h ago).
+            </p>
+            <p className="leading-6">
+              An empty trailing window is NOT a health signal. Either real
+              traffic has stopped (verify in Resend dashboard) or webhook
+              delivery is broken (check Resend dashboard's webhook log for
+              failed deliveries to our endpoint).
+            </p>
+          </section>
+        )}
 
         {!webhookSecretConfigured && (
           <section

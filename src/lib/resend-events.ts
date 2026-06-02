@@ -15,10 +15,28 @@
  * Events older than RETENTION_DAYS are not deleted by this module; ops
  * can prune via a separate scheduled job. Read helpers cap their scan.
  */
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { put as blobPut, list as blobList } from '@vercel/blob';
+
+import { requiresDurablePersistence } from './orders.ts';
+
+/**
+ * Thrown when a Resend webhook event cannot be persisted to durable
+ * storage in a production-like environment. The webhook route MUST
+ * surface this as HTTP 503 so Svix retries — silently 200-acking
+ * while the event was written to ephemeral /tmp would tell Resend the
+ * monitor is healthy when it actually loses events.
+ */
+export class ResendEventPersistenceError extends Error {
+  readonly cause?: unknown;
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = 'ResendEventPersistenceError';
+    this.cause = cause;
+  }
+}
 
 /**
  * Allowlisted Resend event types. Anything outside this set is logged
@@ -129,10 +147,24 @@ async function readDay(day: string): Promise<ResendEvent[]> {
       if (!res.ok) return [];
       const raw = await res.text();
       return parseJsonl(raw);
-    } catch {
-      // Fall through to FS read on transient blob errors so the
-      // monitor stays available even when blob is briefly degraded.
+    } catch (err) {
+      // In production-like environments, a blob read error is a real
+      // signal — don't silently fall through to ephemeral FS. The
+      // admin monitor will surface the read failure as missing
+      // events; the webhook write path enforces durability separately.
+      if (requiresDurablePersistence()) {
+        throw new ResendEventPersistenceError(
+          `Blob read failed for ${blobPathForDay(day)}: ${err instanceof Error ? err.message : String(err)}`,
+          err,
+        );
+      }
+      // Dev/test only: fall through to FS so local development works
+      // without a blob token.
     }
+  } else if (requiresDurablePersistence()) {
+    throw new ResendEventPersistenceError(
+      'BLOB_READ_WRITE_TOKEN missing in production — cannot read Resend event log durably. Refusing to silently read from ephemeral FS.',
+    );
   }
   try {
     const raw = await readFile(fsPathForDay(day), 'utf8');
@@ -166,14 +198,26 @@ async function writeDay(day: string, events: ResendEvent[]): Promise<void> {
   const body = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
   const token = getBlobToken();
   if (token) {
-    await blobPut(blobPathForDay(day), body, {
-      access: 'public',
-      allowOverwrite: true,
-      addRandomSuffix: false,
-      contentType: 'application/jsonl',
-      token,
-    });
-    return;
+    try {
+      await blobPut(blobPathForDay(day), body, {
+        access: 'public',
+        allowOverwrite: true,
+        addRandomSuffix: false,
+        contentType: 'application/jsonl',
+        token,
+      });
+      return;
+    } catch (err) {
+      throw new ResendEventPersistenceError(
+        `Blob write failed for ${blobPathForDay(day)}: ${err instanceof Error ? err.message : String(err)}`,
+        err,
+      );
+    }
+  }
+  if (requiresDurablePersistence()) {
+    throw new ResendEventPersistenceError(
+      'BLOB_READ_WRITE_TOKEN missing in production — cannot write Resend event log durably. Refusing to silently fall back to ephemeral FS (would 200-ack events to Resend that we can never read back).',
+    );
   }
   const file = fsPathForDay(day);
   await mkdir(path.dirname(file), { recursive: true });
@@ -220,6 +264,16 @@ export interface ResendBucketSummary {
   recentBounces: ResendEvent[];
   /** Subset of complaints (spam) for operator attention. */
   recentComplaints: ResendEvent[];
+  /**
+   * ISO timestamp of the newest event in the trailing retention scan,
+   * regardless of type or the window filter. Null when the log is
+   * empty. The admin monitor uses this to detect "secret configured
+   * but webhook never delivered" (always-null) and "events flowed at
+   * some point but stopped recently" (lastEventAt older than a
+   * stale-warning threshold). An empty log must NEVER be silently
+   * read as healthy.
+   */
+  lastEventAt: string | null;
 }
 
 /**
@@ -238,9 +292,16 @@ export async function summarizeResendBounces(
   const totals = Object.fromEntries(RESEND_EVENT_TYPES.map((t) => [t, 0])) as Record<ResendEventType, number>;
   const recentBounces: ResendEvent[] = [];
   const recentComplaints: ResendEvent[] = [];
+  let lastEventAt: string | null = null;
 
   for (const day of ymdRange(now, daysToScan)) {
     for (const ev of await readDay(day)) {
+      // lastEventAt scans the FULL retention range, not the window
+      // filter — operators need to know "we received SOMETHING N
+      // hours ago" even when the trailing-24h totals are all zero.
+      if (lastEventAt === null || ev.createdAt > lastEventAt) {
+        lastEventAt = ev.createdAt;
+      }
       if (ev.createdAt < cutoff) continue;
       totals[ev.type] = (totals[ev.type] ?? 0) + 1;
       if (ev.type === 'email.bounced') recentBounces.push(ev);
@@ -257,6 +318,7 @@ export async function summarizeResendBounces(
     totals,
     recentBounces: recentBounces.slice(0, 25),
     recentComplaints: recentComplaints.slice(0, 25),
+    lastEventAt,
   };
 }
 
