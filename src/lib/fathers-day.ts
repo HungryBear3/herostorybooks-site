@@ -17,7 +17,29 @@
  */
 
 export const FATHERS_DAY_2026 = '2026-06-21';
+/**
+ * Internal conservative print-tiering date. NOT a public promise.
+ * Used by the urgency-badge tier logic only; do not surface to
+ * customers as an "order by" deadline.
+ */
 export const LAST_SAFE_ORDER_DATE_2026 = '2026-06-01';
+/**
+ * Public softcover best-chance window. Surfaced in the per-format
+ * timing block as "Jun 5 best chance" — never as a deadline or
+ * guarantee. Operators approved this date on 2026-06-01 as the
+ * latest softcover order date with a non-trivial chance of arriving
+ * by Father's Day. The print-path SLA decision still requires that
+ * any public copy frame this as best-chance only.
+ */
+export const SOFTCOVER_BEST_CHANCE_DATE_2026 = '2026-06-05';
+/**
+ * Public digital safe-delivery cutoff. Digital orders have no
+ * shipping step, so "by Jun 18" is a defensible statement: the
+ * digital proof-then-delivery loop fits inside the remaining window.
+ * Still framed as a cutoff, not a guarantee, because proof revisions
+ * extend the loop.
+ */
+export const DIGITAL_SAFE_CUTOFF_DATE_2026 = '2026-06-18';
 
 export type FathersDayTier =
   | 'comfortable'      // ≥ 10 days until last-safe order date
@@ -152,4 +174,31 @@ export const FATHERS_DAY_OFFER = {
     'Proofs are usually ready within 2 business days. No printed book is sent to production until you approve the proof.',
   ctaLabel: "Create Dad's book",
   ctaHref: '/checkout',
+  // ── Per-format timing block ────────────────────────────────────────────────
+  //
+  // Required everywhere we render Father's Day timing copy (/, /checkout,
+  // /pricing, /fathers-day). Each format gets its own row so we never
+  // bundle hardcover into a softcover-shaped "order by Jun 5" line.
+  //
+  // Ops rules (binding):
+  //   - No guaranteed Father's Day delivery.
+  //   - Digital safe cutoff Jun 18 — defensible because there is no
+  //     shipping step after approval.
+  //   - Softcover Jun 5 = best-chance only, never a deadline.
+  //   - Hardcover = post-holiday keepsake.
+  //   - Always pair with the shipping-estimates disclaimer and the
+  //     proof-before-print line.
+  //
+  // Source-of-truth dates live in SOFTCOVER_BEST_CHANCE_DATE_2026 /
+  // DIGITAL_SAFE_CUTOFF_DATE_2026 above.
+  digitalTiming:
+    "Digital PDF: order by Jun 18 for safe digital delivery on Father's Day. No shipping step — the only loop is your proof review.",
+  softcoverTiming:
+    "Classic softcover: Jun 5 is the best-chance window for on-day arrival. Not a deadline or guarantee — print and carrier timing can shift after proof approval.",
+  hardcoverTiming:
+    "Premium hardcover: treat as a post-holiday keepsake. Hardcover production runs longer; it will almost always arrive after Father's Day and is best given as a follow-up keepsake.",
+  shippingDisclaimer:
+    "Shipping dates are estimates, not guarantees. Print and carrier windows vary; only the proof-before-print review is in our control.",
+  proofBeforePrint:
+    "Every printed book is proof-approved before print — no book is sent to production until you approve the digital proof.",
 } as const;

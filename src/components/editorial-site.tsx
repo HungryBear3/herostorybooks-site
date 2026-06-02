@@ -611,7 +611,7 @@ function SeasonalCallout() {
   const fathersDay = getFathersDayCountdown();
   return (
     <section className="mx-auto max-w-6xl px-5 py-16 md:px-8">
-      <div className="grid items-center gap-8 rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-7 md:grid-cols-[1fr_0.8fr] md:p-10">
+      <div className="grid items-start gap-8 rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-7 md:grid-cols-[1fr_0.85fr] md:p-10">
         <div>
           <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">{FATHERS_DAY_OFFER.eyebrow}</div>
           <h2 className="font-serif text-4xl font-medium leading-tight md:text-5xl">{FATHERS_DAY_OFFER.headline}</h2>
@@ -628,13 +628,52 @@ function SeasonalCallout() {
             </div>
           )}
         </div>
-        <div className="rounded-2xl bg-[#f5ead2] p-6 text-center">
-          <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Gift timing</div>
-          <h3 className="font-serif text-3xl">Digital is safest for the day. Print can follow.</h3>
-          <p className="mt-3 text-sm leading-6 text-[#695f54]">Proofs are usually ready within 2 business days. Printed books ship after proof approval, but print and carrier timing can vary. Choose Digital PDF for the on-day gift; treat softcover as best chance and hardcover as a follow-up keepsake.</p>
-        </div>
+        <FathersDayTimingBlock />
       </div>
     </section>
+  );
+}
+
+/**
+ * Per-format Father's Day timing block. Single source of truth for the
+ * three landing surfaces (/ via SeasonalCallout, /fathers-day via
+ * SeasonalCallout + EditorialFathersDayPage hero, /pricing via
+ * EditorialPricingPage). Surface-level tests in tests/fathers-day.test.ts
+ * pin that every rendered surface references digitalTiming /
+ * softcoverTiming / hardcoverTiming / shippingDisclaimer so a future
+ * refactor cannot silently drop any row.
+ *
+ * Rules (binding, ops-approved 2026-06-01):
+ *   - No guaranteed Father's Day delivery, anywhere.
+ *   - Digital safe cutoff Jun 18 (no shipping step after approval).
+ *   - Softcover Jun 5 only as "best chance" — never deadline/guarantee.
+ *   - Hardcover framed as post-holiday keepsake.
+ *   - Shipping dates are estimates, not guarantees.
+ *   - Every printed book is proof-approved before print.
+ */
+function FathersDayTimingBlock() {
+  return (
+    <div className="rounded-2xl bg-[#f5ead2] p-6">
+      <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Gift timing by format</div>
+      <ul className="space-y-3 text-sm leading-6 text-[#1f1a16]">
+        <li>
+          <div className="text-xs font-bold uppercase tracking-[0.18em] text-[#705d87]">Digital PDF</div>
+          <p className="mt-0.5 text-[#695f54]">{FATHERS_DAY_OFFER.digitalTiming}</p>
+        </li>
+        <li>
+          <div className="text-xs font-bold uppercase tracking-[0.18em] text-[#b96b5f]">Classic softcover</div>
+          <p className="mt-0.5 text-[#695f54]">{FATHERS_DAY_OFFER.softcoverTiming}</p>
+        </li>
+        <li>
+          <div className="text-xs font-bold uppercase tracking-[0.18em] text-[#5b6047]">Premium hardcover</div>
+          <p className="mt-0.5 text-[#695f54]">{FATHERS_DAY_OFFER.hardcoverTiming}</p>
+        </li>
+      </ul>
+      <p className="mt-4 text-xs leading-5 text-[#695f54]">
+        <strong className="text-[#1f1a16]">{FATHERS_DAY_OFFER.shippingDisclaimer}</strong>
+      </p>
+      <p className="mt-2 text-xs leading-5 text-[#695f54]">{FATHERS_DAY_OFFER.proofBeforePrint}</p>
+    </div>
   );
 }
 
@@ -684,6 +723,13 @@ export function EditorialPricingPage() {
             </div>
           ))}
         </div>
+        {/* Per-format Father's Day timing block. Rendered on /pricing
+            so customers comparing formats see the honest per-format
+            timing before choosing. The same block renders on / and
+            /fathers-day via SeasonalCallout. */}
+        <div className="mt-12 max-w-3xl">
+          <FathersDayTimingBlock />
+        </div>
       </section>
       <FinalCta />
     </EditorialPageShell>
@@ -728,6 +774,9 @@ export function EditorialFathersDayPage() {
             <p className="mt-4 text-sm leading-6 text-[#695f54]">
               Digital gives Dad something meaningful to open on the day. Printed books are best-chance keepsakes after proof approval; hardcover should be treated as a follow-up keepsake after Father&apos;s Day unless partner timing is confirmed in writing.
             </p>
+            <div className="mt-5">
+              <FathersDayTimingBlock />
+            </div>
           </div>
         </div>
       </section>

@@ -10,7 +10,7 @@ import {
   STORY_OCCASIONS,
   STORY_THEMES,
 } from "@/lib/story-catalog";
-import { getFathersDayCountdown } from "@/lib/fathers-day";
+import { getFathersDayCountdown, FATHERS_DAY_OFFER } from "@/lib/fathers-day";
 import { track } from "@/lib/analytics";
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -1291,9 +1291,34 @@ export function CheckoutForm() {
                 Choose your format
               </h2>
               {showFathersDayReminder && (
-                <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
-                  <strong>Father&apos;s Day timing:</strong>{" "}
-                  Digital gives Dad something meaningful to open after proof approval. Printed books are best chance only; hardcover should be treated as a follow-up keepsake unless partner timing is confirmed in writing.
+                <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16] space-y-3">
+                  <div>
+                    <strong>Father&apos;s Day timing — by format:</strong>
+                  </div>
+                  {/* Per-format split. Pulled from FATHERS_DAY_OFFER so
+                      the same wording renders on /, /pricing, and
+                      /fathers-day. Rules: no guaranteed FD delivery;
+                      digital safe cutoff Jun 18; softcover Jun 5 best
+                      chance only; hardcover post-holiday keepsake. */}
+                  <ul className="space-y-2">
+                    <li>
+                      <span className="font-semibold text-[#705d87]">Digital PDF:</span>{" "}
+                      {FATHERS_DAY_OFFER.digitalTiming}
+                    </li>
+                    <li>
+                      <span className="font-semibold text-[#b96b5f]">Classic softcover:</span>{" "}
+                      {FATHERS_DAY_OFFER.softcoverTiming}
+                    </li>
+                    <li>
+                      <span className="font-semibold text-[#5b6047]">Premium hardcover:</span>{" "}
+                      {FATHERS_DAY_OFFER.hardcoverTiming}
+                    </li>
+                  </ul>
+                  <p className="text-xs leading-5 text-[#695f54]">
+                    <strong className="text-[#1f1a16]">{FATHERS_DAY_OFFER.shippingDisclaimer}</strong>
+                    {" "}
+                    {FATHERS_DAY_OFFER.proofBeforePrint}
+                  </p>
                 </div>
               )}
               <div className="space-y-3">
