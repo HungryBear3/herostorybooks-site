@@ -8,18 +8,28 @@
  *
  * Constants:
  *   - Father's Day 2026: Sunday, June 21, 2026 (third Sunday of June).
- *   - Last-safe print order date: Friday, June 5, 2026. This leaves a
- *     conservative 5–7 business days for print fulfillment plus 3–5
- *     days of US shipping after proof approval.
+ *   - Last-safe print order date: Monday, June 1, 2026. This is the
+ *     CONSERVATIVE, defensible cut, worked back from Father's Day with
+ *     room for print fulfillment plus US shipping after proof approval.
+ *     We deliberately do NOT use a more aggressive date (e.g. Jun 5):
+ *     print-by-Father's-Day is not defensible without a partner-confirmed
+ *     print/ship SLA. Once this date is past, the badge pivots to
+ *     digital-only on its own — we never imply a printed book will still
+ *     arrive in time.
+ *   - Digital order-by date: Wednesday, June 17, 2026. Digital is delivered
+ *     the same day a proof is approved (proofs usually within ~2 business
+ *     days), so this is the safe date to still get the Digital PDF for
+ *     Father's Day. No printing, no shipping, no carrier risk.
  *
- * If the launch business rule for the last-safe date changes (e.g.
- * shorter print SLA), only `LAST_SAFE_ORDER_DATE` needs updating.
+ * If the launch business rule for either date changes (e.g. a confirmed
+ * shorter print SLA), only these constants need updating.
  *
  * Pure module: no DOM, no fetch. Pass `now` for deterministic tests.
  */
 
 export const FATHERS_DAY_2026 = '2026-06-21';
-export const LAST_SAFE_ORDER_DATE_2026 = '2026-06-05';
+export const LAST_SAFE_ORDER_DATE_2026 = '2026-06-01';
+export const DIGITAL_ORDER_CUTOFF_2026 = '2026-06-17';
 
 export type FathersDayTier =
   | 'comfortable'      // ≥ 10 days until last-safe order date
@@ -38,6 +48,8 @@ export interface FathersDayCountdown {
   safeOrderDateLabel: string;
   /** Human label, e.g. "Sun, Jun 21". */
   fathersDayLabel: string;
+  /** Human label for the digital order-by date, e.g. "Wed, Jun 17". */
+  digitalOrderByLabel: string;
   /** Urgency tier — drives the badge styling + copy choice. */
   tier: FathersDayTier;
   /**
@@ -90,6 +102,7 @@ export function getFathersDayCountdown(
 
   const safeOrderDateLabel = formatLabel(LAST_SAFE_ORDER_DATE_2026);
   const fathersDayLabel = formatLabel(FATHERS_DAY_2026);
+  const digitalOrderByLabel = formatLabel(DIGITAL_ORDER_CUTOFF_2026);
   const dayWord = (n: number) => (Math.abs(n) === 1 ? 'day' : 'days');
 
   let badgeCopy: string;
@@ -109,8 +122,8 @@ export function getFathersDayCountdown(
     case 'digital-only':
       // Past print-safe window but Father's Day not yet — pivot to digital.
       badgeCopy =
-        `Print window for Father's Day has tightened — the Digital PDF ` +
-        `(${fathersDayLabel}) is still a safe gift you can share instantly`;
+        `Print window for Father's Day (${fathersDayLabel}) has passed — order ` +
+        `the Digital PDF by ${digitalOrderByLabel} for a gift you can share instantly`;
       break;
     case 'past-event':
     default:
@@ -124,6 +137,7 @@ export function getFathersDayCountdown(
     daysUntilFathersDay,
     safeOrderDateLabel,
     fathersDayLabel,
+    digitalOrderByLabel,
     tier,
     badgeCopy,
   };

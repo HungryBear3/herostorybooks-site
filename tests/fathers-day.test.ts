@@ -12,6 +12,7 @@ import {
   getFathersDayCountdown,
   FATHERS_DAY_2026,
   LAST_SAFE_ORDER_DATE_2026,
+  DIGITAL_ORDER_CUTOFF_2026,
   FATHERS_DAY_OFFER,
 } from '../src/lib/fathers-day.ts';
 
@@ -19,15 +20,17 @@ function at(iso: string): Date {
   return new Date(iso + 'T12:00:00Z');
 }
 
-test('constants pinned: Father\'s Day 2026 + last-safe print order date', () => {
+test('constants pinned: conservative last-safe print date + digital cutoff', () => {
   assert.equal(FATHERS_DAY_2026, '2026-06-21');
-  assert.equal(LAST_SAFE_ORDER_DATE_2026, '2026-06-05');
+  // Conservative, defensible print cut — NOT the indefensible Jun 5.
+  assert.equal(LAST_SAFE_ORDER_DATE_2026, '2026-06-01');
+  assert.equal(DIGITAL_ORDER_CUTOFF_2026, '2026-06-17');
 });
 
 test('comfortable tier: well before the safe date', () => {
   const c = getFathersDayCountdown(at('2026-05-18'));
   assert.equal(c.tier, 'comfortable');
-  assert.equal(c.daysUntilSafeOrderDate, 18);
+  assert.equal(c.daysUntilSafeOrderDate, 14);
   assert.equal(c.daysUntilFathersDay, 34);
   assert.match(c.badgeCopy, /Order by/);
   assert.match(c.badgeCopy, /best chance/);
@@ -35,14 +38,14 @@ test('comfortable tier: well before the safe date', () => {
 });
 
 test('tightening tier: 4–9 days out', () => {
-  const c = getFathersDayCountdown(at('2026-05-30'));
+  const c = getFathersDayCountdown(at('2026-05-26'));
   assert.equal(c.tier, 'tightening');
   assert.equal(c.daysUntilSafeOrderDate, 6);
   assert.match(c.badgeCopy, /Order by/);
 });
 
 test('last-call tier: 1–3 days out', () => {
-  const c = getFathersDayCountdown(at('2026-06-03'));
+  const c = getFathersDayCountdown(at('2026-05-30'));
   assert.equal(c.tier, 'last-call');
   assert.equal(c.daysUntilSafeOrderDate, 2);
   assert.match(c.badgeCopy, /Last/);
@@ -50,15 +53,26 @@ test('last-call tier: 1–3 days out', () => {
 });
 
 test('final-hours tier: today is the safe date', () => {
-  const c = getFathersDayCountdown(at('2026-06-05'));
+  const c = getFathersDayCountdown(at('2026-06-01'));
   assert.equal(c.tier, 'final-hours');
   assert.equal(c.daysUntilSafeOrderDate, 0);
+});
+
+test('today (2026-06-02) is already digital-only: no print-by-FD implication', () => {
+  // Live trust-safe state: conservative print cut has passed, so the badge
+  // must pivot to digital and never imply a printed book still makes it.
+  const c = getFathersDayCountdown(at('2026-06-02'));
+  assert.equal(c.tier, 'digital-only');
+  assert.doesNotMatch(c.badgeCopy, /Order by .*best chance/);
 });
 
 test('digital-only tier: past safe date, Father\'s Day not yet', () => {
   const c = getFathersDayCountdown(at('2026-06-10'));
   assert.equal(c.tier, 'digital-only');
   assert.match(c.badgeCopy, /Digital PDF/);
+  // Surfaces the digital order-by date (Jun 17), not a print promise.
+  assert.match(c.badgeCopy, /Jun 17/);
+  assert.equal(c.digitalOrderByLabel, 'Wed, Jun 17');
   assert.doesNotMatch(c.badgeCopy, /guaranteed/i);
 });
 
@@ -69,7 +83,7 @@ test('past-event tier: after Father\'s Day, no badge copy', () => {
 });
 
 test('honest copy: never promises specific delivery', () => {
-  for (const day of ['2026-05-18', '2026-05-30', '2026-06-03', '2026-06-05', '2026-06-10']) {
+  for (const day of ['2026-05-18', '2026-05-26', '2026-05-30', '2026-06-01', '2026-06-02', '2026-06-10']) {
     const c = getFathersDayCountdown(at(day));
     assert.doesNotMatch(c.badgeCopy, /guaranteed|definitely|certain|promise/i);
   }

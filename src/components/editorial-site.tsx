@@ -132,7 +132,7 @@ const faqs: Array<[string, string]> = [
   ['How long does it take from order to delivery?', 'Digital proofs are usually ready within 2 business days. After you approve, digital PDFs are delivered the same day; printed books ship 5–7 business days after approval, then US delivery is typically 3–5 days. We don’t guarantee specific holiday-delivery dates because carriers can vary.'],
   ['Will it arrive in time for a birthday or Father’s Day?', 'Most US orders that approve their proof at least 9–12 days before the date arrive in time, but we don’t promise specific dates — shipping carriers vary. If timing is tight, the Digital PDF is a reliable fallback you can print at home or share instantly.'],
   ['Which option is safest for a Father’s Day gift?', 'The Digital PDF. Once you approve the proof, it’s delivered the same day with no printing or shipping step, so there’s no carrier timing risk — you can print it at home or share it instantly. A printed softcover or hardcover is an optional upgrade that ships after approval; arrival depends on the order-by date and your carrier, so we don’t promise a printed book will arrive by Father’s Day.'],
-  ['What if my photo isn’t ready by Jun 5 — can I still order?', 'Yes. Place the order any time; the proof clock starts when we receive your photo. Digital orders aren’t time-locked because there’s no shipping step — you can approve and download as soon as the proof is ready.'],
+  ['What if my photo isn’t ready yet — can I still order?', 'Yes. Place the order any time; the proof clock starts when we receive your photo. Digital orders aren’t time-locked because there’s no shipping step — you can approve and download as soon as the proof is ready, which makes digital the safer pick when timing is tight.'],
   ['Can I send it as a gift or surprise someone?', 'Yes. Add a dedication and gift message at checkout. The proof email goes to whoever you list as the buyer, not the recipient, so the surprise stays intact.'],
   ['What if my child doesn’t like the proof?', 'Reply to the proof email with what to change — a different scene, a softer dinosaur, a recolored sweater, whatever. Revisions before approval are free. We don’t print until you say go.'],
   ['What is the refund policy for digital orders?', 'Digital orders are fully refundable up until you approve the proof. Once you approve and we deliver the high-resolution PDF, the digital order is final.'],
@@ -630,7 +630,7 @@ function SeasonalCallout() {
         <div className="rounded-2xl bg-[#f5ead2] p-6 text-center">
           <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Gift timing</div>
           <h3 className="font-serif text-3xl">Digital is fastest. Print is optional.</h3>
-          <p className="mt-3 text-sm leading-6 text-[#695f54]">Approve your proof (usually within 2 business days) and the Digital PDF arrives the same day — no shipping. Printed books ship 5–7 business days after approval, so order early if you want one in hand for Father&apos;s Day.</p>
+          <p className="mt-3 text-sm leading-6 text-[#695f54]">Approve your proof (usually within 2 business days) and the Digital PDF arrives the same day — no shipping, so it&apos;s the reliable pick for Father&apos;s Day. Printed softcover and hardcover books are optional keepsakes that ship 5–7 business days after approval, and arrival depends on your carrier, so we don&apos;t promise a printed book by Father&apos;s Day.</p>
         </div>
       </div>
     </section>
