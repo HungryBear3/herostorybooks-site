@@ -153,11 +153,39 @@ const checks = [
     shape: shapeStartsWith('whsec_'),
   },
   {
+    name: 'FAL_KEY',
+    purpose: 'FAL image-generation API key. Without it paid image generation cannot run and fulfillment stalls.',
+    aliases: [],
+    requiredOn: ['production'],
+    // Present + non-empty is the requirement; we deliberately do not enforce a
+    // strict prefix/format to avoid false SHAPE_FAILs across FAL key variants.
+    // Reports length only, never the value.
+    shape: shapeMinLength(8),
+  },
+  {
     name: 'NEXT_PUBLIC_URL',
     purpose: 'Canonical site origin used in emails, review URLs, og:url. MUST be https + no localhost on production.',
     aliases: [],
     requiredOn: ['production'],
     shape: shapeNextPublicUrl,
+  },
+  {
+    name: 'HSB_OWNER_TEST_CHECKOUT_ENABLED',
+    purpose:
+      'Owner-test checkout enable flag (src/lib/owner-test-gate.ts). Required on production for the G5 owner-test: ' +
+      "must be exactly 'true' or checkout stays default-closed.",
+    aliases: [],
+    requiredOn: ['production'],
+    shape: shapeOwnerTestCheckoutEnabled,
+  },
+  {
+    name: 'HSB_OWNER_TEST_EMAILS',
+    purpose:
+      'Owner-test email allowlist (src/lib/owner-test-gate.ts). Required on production for the G5 owner-test: ' +
+      'comma-separated, must contain at least one valid email. Only listed buyers can complete checkout.',
+    aliases: [],
+    requiredOn: ['production'],
+    shape: shapeOwnerTestEmails,
   },
   {
     name: 'HSB_BLOB_NAMESPACE',
@@ -292,6 +320,42 @@ function shapeBlobNamespaceForEnv(targetEnv) {
   };
 }
 
+// Owner-test checkout enable flag. Mirrors src/lib/owner-test-gate.ts:
+// isOwnerTestCheckoutEnabled — only 'true' (case/whitespace tolerant) opens
+// checkout, so the checker must accept exactly what the gate accepts. Anything
+// else (including 'false') is a G5 blocker.
+function shapeOwnerTestCheckoutEnabled(value) {
+  if (value.toLowerCase() === 'true') {
+    return { ok: true, observation: `equals 'true' — owner-test checkout is ENABLED` };
+  }
+  return {
+    ok: false,
+    observation: `must be exactly 'true' to enable owner-test checkout; got a non-'true' value (length ${value.length})`,
+  };
+}
+
+// Owner-test email allowlist. Mirrors src/lib/owner-test-gate.ts parsing:
+// comma-separated, trimmed, lowercased. Requires at least one syntactically
+// valid email. NEVER echoes any address — reports counts only.
+function shapeOwnerTestEmails(value) {
+  const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const entries = value
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => e.length > 0);
+  const valid = entries.filter((e) => emailRe.test(e));
+  if (valid.length >= 1) {
+    return {
+      ok: true,
+      observation: `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}, ${valid.length} valid email(s) (values not shown)`,
+    };
+  }
+  return {
+    ok: false,
+    observation: `0 syntactically valid emails parsed from ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} (values not shown)`,
+  };
+}
+
 // ── Inspect ──────────────────────────────────────────────────────────────────
 
 /**
@@ -338,6 +402,19 @@ function nextActionFor({ status, name, lookedAt, requiredHere }) {
   }
 }
 
+// Mirrors src/lib/stripe-env.ts:sanitizeStripeEnv. The runtime strips literal
+// backslash-n escape sequences and real CR/LF from secrets before using them,
+// so the checker must classify against the SAME normalized value. Without this
+// a value like "\n" (the 2026-06-02 Stripe webhook-secret blocker, stored in
+// Vercel as the literal two characters backslash+n) is misreported as
+// SHAPE_FAIL instead of effectively-empty, and a value with a trailing escape
+// artifact passes silently with no warning.
+function normalizeEnvValue(raw) {
+  const base = (raw ?? '').trim();
+  const normalized = base.replace(/\\n/g, '').replace(/[\r\n]/g, '').trim();
+  return { normalized, strippedEscapes: normalized !== base };
+}
+
 function inspectOne(spec) {
   const candidateNames = [spec.name, ...spec.aliases];
   let foundName = null;
@@ -377,20 +454,31 @@ function inspectOne(spec) {
       ? `not set (required on ${env})`
       : `not set (optional on ${env})`);
   }
-  const trimmed = (raw ?? '').trim();
-  if (trimmed.length === 0) {
-    // Distinguish the Vercel-pulled-blank failure mode from a
-    // whitespace-only value the operator typed. Both resolve to the
-    // same PRESENT_BUT_EMPTY status, but the observation makes the
-    // diagnostic explicit.
+  const { normalized, strippedEscapes } = normalizeEnvValue(raw);
+  if (normalized.length === 0) {
+    // Distinguish three blank failure modes — all PRESENT_BUT_EMPTY, but the
+    // observation makes the diagnostic explicit:
+    //   - raw === ''            : Vercel "encrypted but pulls blank"
+    //   - whitespace / escapes  : value normalizes to empty (e.g. "\n"), which
+    //                             the runtime secret sanitizer treats as unset
     const observation =
       raw === ''
         ? `set to EMPTY STRING — classic "Encrypted in Vercel dashboard but pulls blank" pattern`
-        : `set to whitespace-only value (raw length ${(raw ?? '').length}); .trim() yields empty`;
+        : `set to a value that normalizes to empty (raw length ${(raw ?? '').length}: only whitespace and/or literal \\n / CR-LF escapes) — the runtime secret sanitizer treats this as unset`;
     return baseResult('PRESENT_BUT_EMPTY', observation);
   }
-  const sh = spec.shape(trimmed);
-  return baseResult(sh.ok ? 'PRESENT' : 'SHAPE_FAIL', sh.observation);
+  const sh = spec.shape(normalized);
+  if (!sh.ok) {
+    return baseResult('SHAPE_FAIL', sh.observation);
+  }
+  // Shape-valid AFTER normalization. If the raw value carried literal \n / CR-LF
+  // that the runtime sanitizer strips, the secret still works but the stored
+  // Vercel value is dirty — surface it so the operator can clean it before it
+  // bites a consumer that does not sanitize.
+  const observation = strippedEscapes
+    ? `${sh.observation} — NOTE: raw value contained literal \\n or CR/LF that the runtime sanitizer strips; clean the stored Vercel value`
+    : sh.observation;
+  return baseResult('PRESENT', observation);
 }
 
 const results = checks.map(inspectOne);
