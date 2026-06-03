@@ -28,9 +28,9 @@
     {
       "id": "checkout-email-cta",
       "name": "checkout email/CTA UX",
-      "commit": "236e857",
+      "commit": "948a53b",
       "pr": 35,
-      "note": "Queued for public-volume; NOT required for a single owner-test yet."
+      "note": "Merged into deploy train via PR #35 squash commit 948a53b; informational marker for public-volume readiness."
     }
   ]
 }
