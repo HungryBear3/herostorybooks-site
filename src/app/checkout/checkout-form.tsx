@@ -466,11 +466,15 @@ export function CheckoutForm() {
   const selectedSampleImage = form.photoDataUrl ?? SAMPLE_IMAGES[0];
   const fathersDay = getFathersDayCountdown();
   const showFathersDayReminder = fathersDay.tier !== "past-event";
+  // Email must be a real, deliverable address — not just non-empty. Proof-
+  // before-print delivery depends on it, so a malformed address keeps the CTA
+  // disabled (matches the server's /api/order email validation).
+  const emailLooksValid = looksLikeEmail(form.email);
   const isReadyToPay =
     Boolean(form.theme) &&
     Boolean(form.childName) &&
     Boolean(form.bookFormat) &&
-    Boolean(form.email) &&
+    emailLooksValid &&
     Boolean(form.skinTone) &&
     Boolean(form.hairStyle) &&
     (!VOICE_BETA_ENABLED || form.voiceFile == null || form.voiceConsent);
@@ -1396,8 +1400,26 @@ export function CheckoutForm() {
                 onChange={(e) => set("email", e.target.value)}
                 placeholder="your@email.com"
                 required
-                className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                aria-invalid={form.email.length > 0 && !emailLooksValid}
+                aria-describedby={
+                  form.email.length > 0 && !emailLooksValid ? "email-error" : undefined
+                }
+                className={`w-full px-4 py-3 border-2 rounded-2xl focus:outline-none focus:ring-2 transition text-[#1f1a16] bg-[#fffaf1] ${
+                  form.email.length > 0 && !emailLooksValid
+                    ? "border-[#a64c4c] focus:border-[#a64c4c] focus:ring-[#a64c4c]/30"
+                    : "border-[#dfd2b8] focus:border-[#a64c4c] focus:ring-[#a64c4c]/30"
+                }`}
               />
+              {form.email.length > 0 && !emailLooksValid && (
+                <p
+                  id="email-error"
+                  role="alert"
+                  className="text-sm font-medium text-[#8a2f2f]"
+                >
+                  Enter a valid email address (like name@example.com) so we can
+                  send your proof and book.
+                </p>
+              )}
               <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm text-[#35564d]">
                 ✨ {PRINT_PREVIEW_PROMISE}
               </div>
@@ -1764,13 +1786,18 @@ export function CheckoutForm() {
                 if (!form.childName) missing.push("child's name");
                 if (!form.bookFormat) missing.push('format');
                 if (!form.email) missing.push('email');
+                else if (!emailLooksValid) missing.push('a valid email address');
                 if (!form.skinTone) missing.push('skin tone');
                 if (!form.hairStyle) missing.push('hair');
                 if (VOICE_BETA_ENABLED && form.voiceFile != null && !form.voiceConsent) {
                   missing.push('story inspiration consent');
                 }
                 return (
-                  <p className="rounded-xl border border-deep-gold/40 bg-deep-gold/10 px-3 py-2 text-center text-xs font-medium text-navy">
+                  <p
+                    id="cta-reason"
+                    role="status"
+                    className="rounded-xl border border-deep-gold/50 bg-deep-gold/15 px-3 py-2 text-center text-xs font-semibold text-[#3a2c10]"
+                  >
                     Finish these before continuing: {missing.join(' · ')}
                   </p>
                 );
@@ -1795,10 +1822,17 @@ export function CheckoutForm() {
                   </p>
                 </div>
               )}
+              {/* Disabled state uses a legible muted tan (not opacity-50, which
+                  faded the gold to an illegible "broken"-looking button on the
+                  cream page) and an explicit reason via aria-describedby. */}
               <button
                 type="submit"
                 disabled={isSubmitting || !isReadyToPay}
-                className="w-full rounded-2xl bg-deep-gold py-4 text-lg font-bold text-navy shadow-md transition-all hover:-translate-y-0.5 hover:bg-deep-gold/90 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
+                aria-disabled={isSubmitting || !isReadyToPay}
+                aria-describedby={
+                  !isReadyToPay && !isSubmitting ? "cta-reason" : undefined
+                }
+                className="w-full rounded-2xl bg-deep-gold py-4 text-lg font-bold text-navy shadow-md transition-all hover:-translate-y-0.5 hover:bg-deep-gold/90 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-[#e3d7bf] disabled:text-[#5c5145] disabled:shadow-none"
               >
                 {isSubmitting
                   ? "Processing…"
