@@ -21,6 +21,7 @@ import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { transcribeVoiceNote } from '@/lib/voice-transcription';
 import type { VoiceTranscriptMeta } from '@/lib/fulfillment-types';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutCapacityFull, isCheckoutPaused } from '@/lib/checkout-pause';
+import { OWNER_TEST_GATE_CODE, OWNER_TEST_GATE_MESSAGE, evaluateOwnerTestGate } from '@/lib/owner-test-gate';
 import { enforceKillSwitch } from '@/lib/ops-kill-switches';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 import { getReferralCodeFromCookieHeader, sanitizeReferralCode } from '@/lib/referrals';
@@ -193,6 +194,22 @@ export async function POST(request: Request) {
           code,
         },
         { status: 400 },
+      );
+    }
+
+    // Owner-test gate (DEFAULT-CLOSED). Runs AFTER checkout pause / KS (those
+    // take precedence) and BEFORE any blob writes or Stripe Checkout Session.
+    // Refuses unless BOTH the global enable flag is set AND the buyer email is
+    // allowlisted — prevents accidental public/creator/gifting charges during
+    // the controlled owner-test. The response intentionally does not reveal
+    // the flag state or allowlist contents; the reason is logged internally.
+    const ownerTestGate = evaluateOwnerTestGate(email);
+    if (!ownerTestGate.allowed) {
+      const reason = 'reason' in ownerTestGate ? ownerTestGate.reason : 'unknown';
+      console.warn(`[order] owner-test gate refused checkout: reason=${reason}`);
+      return NextResponse.json(
+        { error: OWNER_TEST_GATE_MESSAGE, code: OWNER_TEST_GATE_CODE },
+        { status: 503 },
       );
     }
 

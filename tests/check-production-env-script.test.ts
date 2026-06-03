@@ -147,3 +147,37 @@ test('HSB_BLOB_NAMESPACE present + HSB_BLOB_NAMESPACE_APPROVED_FOR_PRODUCTION=tr
   assert.match(r.stdout, /✅ OK    HSB_BLOB_NAMESPACE/);
   assert.match(r.stdout, /treated as explicitly approved/);
 });
+
+// ── literal-newline / escape normalization (mirrors src/lib/stripe-env.ts) ───
+
+test('STRIPE_WEBHOOK_SECRET set to a literal "\\n" is PRESENT_BUT_EMPTY (runtime sanitizer treats it as unset)', () => {
+  // The 2026-06-02 blocker: Vercel stored the webhook secret as the literal
+  // two-character string backslash-n. The runtime sanitizer strips it to
+  // empty and fails closed; the checker must classify it the SAME way
+  // (effectively empty) rather than as a misleading SHAPE_FAIL.
+  const r = runChecker(goodEnv({ STRIPE_WEBHOOK_SECRET: '\\n' }));
+  assert.equal(r.status, 1, 'a value that normalizes to empty must fail');
+  assert.match(r.stdout, /❌ FAIL  STRIPE_WEBHOOK_SECRET/);
+  assert.match(r.stdout, /PRESENT_BUT_EMPTY/);
+  assert.match(r.stdout, /normalizes to empty/);
+  // Remediation still points at the env rm/add fix.
+  assert.match(r.stdout, /vercel env rm STRIPE_WEBHOOK_SECRET production/);
+});
+
+test('whitespace + literal escape value normalizes to empty → PRESENT_BUT_EMPTY', () => {
+  const r = runChecker(goodEnv({ STRIPE_WEBHOOK_SECRET: '  \\n  ' }));
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /PRESENT_BUT_EMPTY/);
+  assert.match(r.stdout, /normalizes to empty/);
+});
+
+test('shape-valid value with a trailing literal "\\n" PASSES but is flagged as dirty (no value leak)', () => {
+  // The runtime sanitizer strips the trailing escape, so this is functional —
+  // but the stored value is dirty and should be surfaced so the operator can
+  // clean it before it bites a non-sanitizing consumer.
+  const r = runChecker(goodEnv({ STRIPE_WEBHOOK_SECRET: `whsec_stripe_${MARKER}\\n` }));
+  assert.equal(r.status, 0, 'shape-valid-after-normalization must not fail');
+  assert.match(r.stdout, /✅ OK    STRIPE_WEBHOOK_SECRET/);
+  assert.match(r.stdout, /runtime sanitizer strips/);
+  assert.doesNotMatch(r.stdout, new RegExp(MARKER), 'no synthetic value may leak even when flagging dirty input');
+});

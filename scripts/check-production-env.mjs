@@ -338,6 +338,19 @@ function nextActionFor({ status, name, lookedAt, requiredHere }) {
   }
 }
 
+// Mirrors src/lib/stripe-env.ts:sanitizeStripeEnv. The runtime strips literal
+// backslash-n escape sequences and real CR/LF from secrets before using them,
+// so the checker must classify against the SAME normalized value. Without this
+// a value like "\n" (the 2026-06-02 Stripe webhook-secret blocker, stored in
+// Vercel as the literal two characters backslash+n) is misreported as
+// SHAPE_FAIL instead of effectively-empty, and a value with a trailing escape
+// artifact passes silently with no warning.
+function normalizeEnvValue(raw) {
+  const base = (raw ?? '').trim();
+  const normalized = base.replace(/\\n/g, '').replace(/[\r\n]/g, '').trim();
+  return { normalized, strippedEscapes: normalized !== base };
+}
+
 function inspectOne(spec) {
   const candidateNames = [spec.name, ...spec.aliases];
   let foundName = null;
@@ -377,20 +390,31 @@ function inspectOne(spec) {
       ? `not set (required on ${env})`
       : `not set (optional on ${env})`);
   }
-  const trimmed = (raw ?? '').trim();
-  if (trimmed.length === 0) {
-    // Distinguish the Vercel-pulled-blank failure mode from a
-    // whitespace-only value the operator typed. Both resolve to the
-    // same PRESENT_BUT_EMPTY status, but the observation makes the
-    // diagnostic explicit.
+  const { normalized, strippedEscapes } = normalizeEnvValue(raw);
+  if (normalized.length === 0) {
+    // Distinguish three blank failure modes — all PRESENT_BUT_EMPTY, but the
+    // observation makes the diagnostic explicit:
+    //   - raw === ''            : Vercel "encrypted but pulls blank"
+    //   - whitespace / escapes  : value normalizes to empty (e.g. "\n"), which
+    //                             the runtime secret sanitizer treats as unset
     const observation =
       raw === ''
         ? `set to EMPTY STRING — classic "Encrypted in Vercel dashboard but pulls blank" pattern`
-        : `set to whitespace-only value (raw length ${(raw ?? '').length}); .trim() yields empty`;
+        : `set to a value that normalizes to empty (raw length ${(raw ?? '').length}: only whitespace and/or literal \\n / CR-LF escapes) — the runtime secret sanitizer treats this as unset`;
     return baseResult('PRESENT_BUT_EMPTY', observation);
   }
-  const sh = spec.shape(trimmed);
-  return baseResult(sh.ok ? 'PRESENT' : 'SHAPE_FAIL', sh.observation);
+  const sh = spec.shape(normalized);
+  if (!sh.ok) {
+    return baseResult('SHAPE_FAIL', sh.observation);
+  }
+  // Shape-valid AFTER normalization. If the raw value carried literal \n / CR-LF
+  // that the runtime sanitizer strips, the secret still works but the stored
+  // Vercel value is dirty — surface it so the operator can clean it before it
+  // bites a consumer that does not sanitize.
+  const observation = strippedEscapes
+    ? `${sh.observation} — NOTE: raw value contained literal \\n or CR/LF that the runtime sanitizer strips; clean the stored Vercel value`
+    : sh.observation;
+  return baseResult('PRESENT', observation);
 }
 
 const results = checks.map(inspectOne);
