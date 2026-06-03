@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { get, put } from '@vercel/blob';
+import { list, put } from '@vercel/blob';
 
 import {
   requiresDurablePersistence,
@@ -185,15 +185,21 @@ async function readStoreFromBlob(): Promise<KillSwitchStore> {
     );
   }
   try {
-    const result = await get(getKillSwitchBlobPath(), {
-      access: 'public',
-      token,
-      useCache: false,
-    });
-    if (!result || !result.stream) {
+    const pathname = getKillSwitchBlobPath();
+    const { blobs } = await list({ prefix: pathname, token, limit: 10 });
+    const match = blobs.find((blob) => blob.pathname === pathname);
+    if (!match?.url) {
       return { states: {}, history: [] };
     }
-    const raw = await new Response(result.stream).text();
+    const separator = match.url.includes('?') ? '&' : '?';
+    const response = await fetch(`${match.url}${separator}ts=${Date.now()}`, { cache: 'no-store' });
+    if (response.status === 404) {
+      return { states: {}, history: [] };
+    }
+    if (!response.ok) {
+      throw new Error(`public blob fetch ${response.status} ${response.statusText}`.trim());
+    }
+    const raw = await response.text();
     if (!raw.trim()) return { states: {}, history: [] };
     const parsed = JSON.parse(raw);
     return normalizeStore(parsed);

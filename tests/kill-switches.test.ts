@@ -383,6 +383,17 @@ test('KS admin route surfaces DURABILITY_FAILED with operator guidance on durabl
   assert.ok(secondCatchIdx > postIdx);
 });
 
+test('kill-switch durable read uses list + blob URL fetch, not pathname get()', async () => {
+  const src = readFileSync(new URL('../src/lib/ops-kill-switches.ts', import.meta.url), 'utf8');
+  const readStart = src.indexOf('async function readStoreFromBlob');
+  const readEnd = src.indexOf('async function writeStoreToBlob');
+  assert.ok(readStart > -1 && readEnd > readStart);
+  const readBlock = src.slice(readStart, readEnd);
+  assert.match(readBlock, /await list\(\{ prefix: pathname, token/);
+  assert.match(readBlock, /fetch\(`\$\{match\.url\}/);
+  assert.doesNotMatch(readBlock, /await get\(/);
+});
+
 test('KS admin page surfaces DURABILITY_FAILED warning instead of toggle UI', async () => {
   const src = readFileSync(new URL('../src/app/admin/kill-switches/page.tsx', import.meta.url), 'utf8');
   assert.match(src, /data-testid="kill-switches-durability-failed"/);
