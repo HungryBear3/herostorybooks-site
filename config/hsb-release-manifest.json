@@ -1,0 +1,36 @@
+{
+  "_comment": "HSB live-release manifest. Lists features that are LIVE/known-good and must not be silently reverted by a deploy or apex/www alias move. Read-only guardrail consumed by scripts/predeploy-live-feature-check.mjs: each required feature must be present as a commit ancestor of HEAD (either its requiredCommit or any listed superseding commit). Markers are git commit SHAs. See docs/runbooks/release-hygiene.md.",
+  "deployTrain": "hsb/deploy-candidate-20260602",
+  "requiredLiveFeatures": [
+    {
+      "id": "voice-upload",
+      "name": "voice flag tolerance / voice upload section",
+      "requiredCommit": "3ae3380",
+      "supersededBy": ["36c61c3"],
+      "description": "Checkout voice-upload section + tolerant NEXT_PUBLIC_HSB_VOICE_BETA flag parsing (escaped-newline drift). 36c61c3 re-implements/superseding 3ae3380."
+    },
+    {
+      "id": "analytics-attribution",
+      "name": "analytics attribution",
+      "requiredCommit": "01b4d0c",
+      "supersededBy": ["0d8b92c"],
+      "description": "Vercel analytics attribution hotfix originally on hsb/analytics-attribution-20260602. MUST be back-merged into the deploy train; its omission is the drift this guardrail exists to catch. 0d8b92c is the PR #38 squash merge onto the deploy train."
+    },
+    {
+      "id": "owner-test-gate-g5",
+      "name": "owner-test gate / G5 production checker",
+      "requiredCommit": "c6cec815",
+      "supersededBy": ["ca7d860"],
+      "description": "Default-closed owner-test checkout gate + G5 production env checker (PR #34). ca7d860 is the PR #34 merge commit."
+    }
+  ],
+  "queuedNotRequired": [
+    {
+      "id": "checkout-email-cta",
+      "name": "checkout email/CTA UX",
+      "commit": "948a53b",
+      "pr": 35,
+      "note": "Merged into deploy train via PR #35 squash commit 948a53b; informational marker for public-volume readiness."
+    }
+  ]
+}

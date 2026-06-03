@@ -255,3 +255,58 @@ new admin tool, a new lib/* file in the payment path), add its regex to
 `LAUNCH_SAFETY_PATTERNS` and add a positive-case row to
 `tests/launch-hygiene-check.test.ts`. The guardrail's value is proportional
 to how well its patterns reflect the current launch-safety topology.
+
+## Anti-drift: one deploy train + live-feature manifest
+
+`launch:hygiene` catches *branch contamination*. It does NOT catch the second
+failure shape we hit on 2026-06-03: a deploy candidate that **omits a hotfix**
+and, by being promoted, silently **reverts a known-good live feature**. That
+incident: PR #34 was based on the deploy candidate, which did not include the
+analytics-attribution hotfix from `hsb/analytics-attribution-20260602`; the
+resulting deploy regressed a good voice-upload fix.
+
+Rules in force:
+
+1. **One canonical deploy train.** `hsb/deploy-candidate-20260602` (see
+   `deployTrain` in `config/hsb-release-manifest.json`) is the only branch that
+   promotes to the apex/`www` alias. Feature branches target it via PR.
+2. **Every hotfix is back-merged/cherry-picked into the train immediately.** A
+   fix that lives only on a side branch (e.g. an `analytics-attribution` branch)
+   is a regression waiting to happen the next time the train deploys. Do not let
+   a hotfix sit off-train.
+3. **No apex/`www` alias cutover from ad-hoc branches.** Alias moves come from
+   the train only, after the checks below pass.
+
+### Before any alias cutover — run these (all read-only)
+
+```sh
+# 1. Live-feature ancestry: required shipped features are still present.
+npm run predeploy:live-features                 # manifest: config/hsb-release-manifest.json
+npm run predeploy:live-features -- --json
+
+# 2. Checkout route smoke: if voice beta is on, /checkout still renders voice.
+NEXT_PUBLIC_HSB_VOICE_BETA=true npm run checkout:voice-smoke
+
+# 3. Webhook bad-signature smoke: a tampered Stripe signature must 400, not 200.
+#    (covered by tests/stripe-webhook-*; run the suite or the targeted test)
+node --experimental-strip-types --test tests/webhook*.test.ts tests/stripe*.test.ts
+
+# 4. Custom-domain alias verification: confirm the target deployment is the
+#    intended one BEFORE moving herostorybooks.com / www. See LIVE_HSB.md
+#    "Rollback / recovery rules" — verify headline + nav + /checkout load,
+#    then (and only then) move aliases.
+```
+
+`predeploy:live-features` fails (exit 1) when a required feature in the manifest
+is neither present nor superseded on HEAD, or when HEAD is not descended from the
+deploy train (override with `--allow-off-train` only for a deliberate, reviewed
+promotion). It prints commit SHAs + feature names only — never secrets — and
+performs no git mutations, no network, and no deploy.
+
+### Updating the manifest
+
+When a feature ships and must never silently revert, add it to
+`requiredLiveFeatures` with its `requiredCommit` (and any `supersededBy` commits
+that re-implement it). Park not-yet-required work in `queuedNotRequired` — it is
+reported but never fails the gate. Keep the markers honest: a stale manifest is
+a guardrail that lies.
