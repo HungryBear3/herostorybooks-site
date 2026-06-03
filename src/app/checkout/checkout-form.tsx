@@ -4,6 +4,18 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from "@/lib/checkout-flow";
+import {
+  MAX_PHOTO_BYTES,
+  isHeicLikePhoto,
+  shouldAutoShrinkPhoto,
+  shrinkPhotoForUpload,
+} from "@/lib/photo-upload";
+import {
+  combinedTooLargeMessage,
+  estimateTotalUploadBytes,
+  formatMb,
+  isCombinedUploadTooLarge,
+} from "@/lib/upload-limits";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
 import {
   CHECKOUT_SAMPLE_IMAGES,
@@ -310,6 +322,9 @@ export function CheckoutForm() {
   // dismissed instantly on mobile) and so we can reassure the customer that no
   // charge was made and nothing was saved when submission fails before Stripe.
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Per-upload size/format errors (resize gate). Main photo + per-character.
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [supportingPhotoErrors, setSupportingPhotoErrors] = useState<Record<string, string>>({});
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
@@ -471,11 +486,15 @@ export function CheckoutForm() {
   const selectedSampleImage = form.photoDataUrl ?? SAMPLE_IMAGES[0];
   const fathersDay = getFathersDayCountdown();
   const showFathersDayReminder = fathersDay.tier !== "past-event";
+  // Email must be a real, deliverable address — not just non-empty. Proof-
+  // before-print delivery depends on it, so a malformed address keeps the CTA
+  // disabled (matches the server's /api/order email validation).
+  const emailLooksValid = looksLikeEmail(form.email);
   const isReadyToPay =
     Boolean(form.theme) &&
     Boolean(form.childName) &&
     Boolean(form.bookFormat) &&
-    Boolean(form.email) &&
+    emailLooksValid &&
     Boolean(form.skinTone) &&
     Boolean(form.hairStyle) &&
     (!VOICE_BETA_ENABLED || form.voiceFile == null || form.voiceConsent);
@@ -488,36 +507,84 @@ export function CheckoutForm() {
   ].filter(Boolean).length;
   const progressValue = (completedStepCount / CHECKOUT_STEPS.length) * 100;
 
-  const processPhoto = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setForm((prev) => ({
-        ...prev,
-        photoFile: file,
-        photoDataUrl: e.target?.result as string,
-      }));
-    };
-    reader.readAsDataURL(file);
-  }, []);
+  // Resize JPG/PNG/WebP before storing/submitting; HEIC/HEIF cannot be resized
+  // in-browser, so we keep honest behavior: oversized HEIC (or any non-resizable
+  // file over the per-photo cap) is rejected with a clear message instead of
+  // being silently sent and bounced by Vercel. Returns the prepared (possibly
+  // smaller) File, or null with the error already surfaced.
+  const preparePhotoFile = useCallback(
+    async (file: File, onError: (msg: string) => void): Promise<File | null> => {
+      try {
+        if (shouldAutoShrinkPhoto(file)) {
+          return await shrinkPhotoForUpload(file);
+        }
+        if (file.size > MAX_PHOTO_BYTES) {
+          onError(
+            isHeicLikePhoto(file)
+              ? `This HEIC photo is ${formatMb(file.size)}. We can't shrink HEIC in the browser — please upload a JPG, PNG, or WebP, or a smaller photo (under ${formatMb(MAX_PHOTO_BYTES)}).`
+              : `This photo is ${formatMb(file.size)}, over the ${formatMb(MAX_PHOTO_BYTES)} limit. Please upload a smaller JPG, PNG, or WebP.`,
+          );
+          return null;
+        }
+        return file;
+      } catch {
+        onError(
+          `We couldn't process that photo. Please try a different JPG, PNG, or WebP under ${formatMb(MAX_PHOTO_BYTES)}.`,
+        );
+        return null;
+      }
+    },
+    [],
+  );
 
-  const processSupportingCharacterPhoto = useCallback((id: string, file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setForm((prev) => ({
-        ...prev,
-        familyCharacters: prev.familyCharacters.map((character) =>
-          character.id === id
-            ? {
-                ...character,
-                photoFile: file,
-                photoDataUrl: e.target?.result as string,
-              }
-            : character,
-        ),
-      }));
-    };
-    reader.readAsDataURL(file);
-  }, []);
+  const processPhoto = useCallback(
+    async (file: File) => {
+      setPhotoError(null);
+      const prepared = await preparePhotoFile(file, setPhotoError);
+      if (!prepared) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setForm((prev) => ({
+          ...prev,
+          photoFile: prepared,
+          photoDataUrl: e.target?.result as string,
+        }));
+      };
+      reader.readAsDataURL(prepared);
+    },
+    [preparePhotoFile],
+  );
+
+  const processSupportingCharacterPhoto = useCallback(
+    async (id: string, file: File) => {
+      setSupportingPhotoErrors((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      const prepared = await preparePhotoFile(file, (msg) =>
+        setSupportingPhotoErrors((prev) => ({ ...prev, [id]: msg })),
+      );
+      if (!prepared) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setForm((prev) => ({
+          ...prev,
+          familyCharacters: prev.familyCharacters.map((character) =>
+            character.id === id
+              ? {
+                  ...character,
+                  photoFile: prepared,
+                  photoDataUrl: e.target?.result as string,
+                }
+              : character,
+          ),
+        }));
+      };
+      reader.readAsDataURL(prepared);
+    },
+    [preparePhotoFile],
+  );
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -533,6 +600,25 @@ export function CheckoutForm() {
     e.preventDefault();
     setIsSubmitting(true);
     setSubmitError(null);
+
+    // Combined-payload guard: estimate total attached bytes (main photo +
+    // supporting photos + voice/doc) and block client-side before any network
+    // call if it exceeds the cap. This avoids waiting for Vercel to reject an
+    // oversized multipart request before our /api/order code ever runs. No
+    // charge has been made at this point.
+    const totalUploadBytes = estimateTotalUploadBytes({
+      mainPhotoBytes: form.photoFile?.size ?? 0,
+      supportingPhotoBytes: form.familyCharacters
+        .map((c) => c.photoFile?.size ?? 0)
+        .filter((n) => n > 0),
+      voiceBytes: VOICE_BETA_ENABLED && form.voiceFile ? form.voiceFile.size : 0,
+    });
+    if (isCombinedUploadTooLarge(totalUploadBytes)) {
+      setSubmitError(combinedTooLargeMessage(totalUploadBytes));
+      setIsSubmitting(false);
+      return;
+    }
+
     // Fire BOTH the brief's "purchase_intent" alias and the more literal
     // "order_submit_attempt" so downstream funnels can use either name.
     // Network round-trip + payment success/failure live further along the
@@ -1283,6 +1369,11 @@ export function CheckoutForm() {
                             />
                           </label>
                         )}
+                        {supportingPhotoErrors[character.id] && (
+                          <p role="alert" className="mt-2 text-xs font-medium text-[#8a2f2f]">
+                            {supportingPhotoErrors[character.id]}
+                          </p>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1401,8 +1492,26 @@ export function CheckoutForm() {
                 onChange={(e) => set("email", e.target.value)}
                 placeholder="your@email.com"
                 required
-                className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                aria-invalid={form.email.length > 0 && !emailLooksValid}
+                aria-describedby={
+                  form.email.length > 0 && !emailLooksValid ? "email-error" : undefined
+                }
+                className={`w-full px-4 py-3 border-2 rounded-2xl focus:outline-none focus:ring-2 transition text-[#1f1a16] bg-[#fffaf1] ${
+                  form.email.length > 0 && !emailLooksValid
+                    ? "border-[#a64c4c] focus:border-[#a64c4c] focus:ring-[#a64c4c]/30"
+                    : "border-[#dfd2b8] focus:border-[#a64c4c] focus:ring-[#a64c4c]/30"
+                }`}
               />
+              {form.email.length > 0 && !emailLooksValid && (
+                <p
+                  id="email-error"
+                  role="alert"
+                  className="text-sm font-medium text-[#8a2f2f]"
+                >
+                  Enter a valid email address (like name@example.com) so we can
+                  send your proof and book.
+                </p>
+              )}
               <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm text-[#35564d]">
                 ✨ {PRINT_PREVIEW_PROMISE}
               </div>
@@ -1536,6 +1645,11 @@ export function CheckoutForm() {
                 </div>
               )}
 
+              {photoError && (
+                <p role="alert" className="text-sm font-medium text-[#8a2f2f]">
+                  {photoError}
+                </p>
+              )}
               <p className="text-xs text-center text-[#8a7b6a]">
                 🔒 Photos processed securely · Used only for your order · Add it
                 later if you need to
@@ -1769,13 +1883,18 @@ export function CheckoutForm() {
                 if (!form.childName) missing.push("child's name");
                 if (!form.bookFormat) missing.push('format');
                 if (!form.email) missing.push('email');
+                else if (!emailLooksValid) missing.push('a valid email address');
                 if (!form.skinTone) missing.push('skin tone');
                 if (!form.hairStyle) missing.push('hair');
                 if (VOICE_BETA_ENABLED && form.voiceFile != null && !form.voiceConsent) {
                   missing.push('story inspiration consent');
                 }
                 return (
-                  <p className="rounded-xl border border-deep-gold/40 bg-deep-gold/10 px-3 py-2 text-center text-xs font-medium text-navy">
+                  <p
+                    id="cta-reason"
+                    role="status"
+                    className="rounded-xl border border-deep-gold/50 bg-deep-gold/15 px-3 py-2 text-center text-xs font-semibold text-[#3a2c10]"
+                  >
                     Finish these before continuing: {missing.join(' · ')}
                   </p>
                 );
@@ -1800,10 +1919,17 @@ export function CheckoutForm() {
                   </p>
                 </div>
               )}
+              {/* Disabled state uses a legible muted tan (not opacity-50, which
+                  faded the gold to an illegible "broken"-looking button on the
+                  cream page) and an explicit reason via aria-describedby. */}
               <button
                 type="submit"
                 disabled={isSubmitting || !isReadyToPay}
-                className="w-full rounded-2xl bg-deep-gold py-4 text-lg font-bold text-navy shadow-md transition-all hover:-translate-y-0.5 hover:bg-deep-gold/90 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
+                aria-disabled={isSubmitting || !isReadyToPay}
+                aria-describedby={
+                  !isReadyToPay && !isSubmitting ? "cta-reason" : undefined
+                }
+                className="w-full rounded-2xl bg-deep-gold py-4 text-lg font-bold text-navy shadow-md transition-all hover:-translate-y-0.5 hover:bg-deep-gold/90 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-[#e3d7bf] disabled:text-[#5c5145] disabled:shadow-none"
               >
                 {isSubmitting
                   ? "Processing…"

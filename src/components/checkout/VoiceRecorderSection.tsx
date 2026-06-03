@@ -1,5 +1,6 @@
 'use client';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { isVoiceUploadTooLarge, voiceTooLargeMessage } from '@/lib/upload-limits';
 
 const RECORDED_FILE_NAME = 'child-voice-note.webm';
 const VOICE_AUDIO_UPLOAD_ACCEPT_ATTR = [
@@ -117,6 +118,13 @@ export function VoiceRecorderSection({
       });
       recorder.addEventListener('stop', () => {
         const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        // Guard the rare long recording the same way as uploads.
+        if (isVoiceUploadTooLarge(blob.size)) {
+          setRecorderError(voiceTooLargeMessage(blob.size));
+          stopStream();
+          setIsRecording(false);
+          return;
+        }
         const file = new File([blob], RECORDED_FILE_NAME, { type: blob.type });
         const previewUrl = URL.createObjectURL(blob);
         if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
@@ -150,6 +158,13 @@ export function VoiceRecorderSection({
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       if (!file) return;
+      // Block oversized audio/doc uploads before attaching, so a too-large
+      // inspiration file never rides along into the single /api/order request.
+      if (isVoiceUploadTooLarge(file.size)) {
+        setRecorderError(voiceTooLargeMessage(file.size));
+        event.target.value = '';
+        return;
+      }
       const previewUrl = URL.createObjectURL(file);
       if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
       onVoiceChange(file, previewUrl, 'uploaded');
