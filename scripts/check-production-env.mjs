@@ -153,11 +153,39 @@ const checks = [
     shape: shapeStartsWith('whsec_'),
   },
   {
+    name: 'FAL_KEY',
+    purpose: 'FAL image-generation API key. Without it paid image generation cannot run and fulfillment stalls.',
+    aliases: [],
+    requiredOn: ['production'],
+    // Present + non-empty is the requirement; we deliberately do not enforce a
+    // strict prefix/format to avoid false SHAPE_FAILs across FAL key variants.
+    // Reports length only, never the value.
+    shape: shapeMinLength(8),
+  },
+  {
     name: 'NEXT_PUBLIC_URL',
     purpose: 'Canonical site origin used in emails, review URLs, og:url. MUST be https + no localhost on production.',
     aliases: [],
     requiredOn: ['production'],
     shape: shapeNextPublicUrl,
+  },
+  {
+    name: 'HSB_OWNER_TEST_CHECKOUT_ENABLED',
+    purpose:
+      'Owner-test checkout enable flag (src/lib/owner-test-gate.ts). Required on production for the G5 owner-test: ' +
+      "must be exactly 'true' or checkout stays default-closed.",
+    aliases: [],
+    requiredOn: ['production'],
+    shape: shapeOwnerTestCheckoutEnabled,
+  },
+  {
+    name: 'HSB_OWNER_TEST_EMAILS',
+    purpose:
+      'Owner-test email allowlist (src/lib/owner-test-gate.ts). Required on production for the G5 owner-test: ' +
+      'comma-separated, must contain at least one valid email. Only listed buyers can complete checkout.',
+    aliases: [],
+    requiredOn: ['production'],
+    shape: shapeOwnerTestEmails,
   },
   {
     name: 'HSB_BLOB_NAMESPACE',
@@ -289,6 +317,42 @@ function shapeBlobNamespaceForEnv(targetEnv) {
       return { ok: true, observation: `preview namespace value (length ${value.length})` };
     }
     return { ok: true, observation: `dev namespace value (length ${value.length})` };
+  };
+}
+
+// Owner-test checkout enable flag. Mirrors src/lib/owner-test-gate.ts:
+// isOwnerTestCheckoutEnabled — only 'true' (case/whitespace tolerant) opens
+// checkout, so the checker must accept exactly what the gate accepts. Anything
+// else (including 'false') is a G5 blocker.
+function shapeOwnerTestCheckoutEnabled(value) {
+  if (value.toLowerCase() === 'true') {
+    return { ok: true, observation: `equals 'true' — owner-test checkout is ENABLED` };
+  }
+  return {
+    ok: false,
+    observation: `must be exactly 'true' to enable owner-test checkout; got a non-'true' value (length ${value.length})`,
+  };
+}
+
+// Owner-test email allowlist. Mirrors src/lib/owner-test-gate.ts parsing:
+// comma-separated, trimmed, lowercased. Requires at least one syntactically
+// valid email. NEVER echoes any address — reports counts only.
+function shapeOwnerTestEmails(value) {
+  const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const entries = value
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => e.length > 0);
+  const valid = entries.filter((e) => emailRe.test(e));
+  if (valid.length >= 1) {
+    return {
+      ok: true,
+      observation: `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}, ${valid.length} valid email(s) (values not shown)`,
+    };
+  }
+  return {
+    ok: false,
+    observation: `0 syntactically valid emails parsed from ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} (values not shown)`,
   };
 }
 

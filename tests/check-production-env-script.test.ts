@@ -51,7 +51,10 @@ function goodEnv(overrides: Partial<Record<string, string>> = {}): Record<string
     LULU_CLIENT_SECRET: `lulu-secret-${MARKER}`,
     STRIPE_SECRET_KEY: `sk_live_${MARKER}`,
     STRIPE_WEBHOOK_SECRET: `whsec_stripe_${MARKER}`,
+    FAL_KEY: `fal-key-${MARKER}`,
     NEXT_PUBLIC_URL: 'https://herostorybooks.com',
+    HSB_OWNER_TEST_CHECKOUT_ENABLED: 'true',
+    HSB_OWNER_TEST_EMAILS: 'owner@example.com, second@example.com',
     ...(overrides as Record<string, string>),
   };
 }
@@ -180,4 +183,89 @@ test('shape-valid value with a trailing literal "\\n" PASSES but is flagged as d
   assert.match(r.stdout, /✅ OK    STRIPE_WEBHOOK_SECRET/);
   assert.match(r.stdout, /runtime sanitizer strips/);
   assert.doesNotMatch(r.stdout, new RegExp(MARKER), 'no synthetic value may leak even when flagging dirty input');
+});
+
+// ── owner-test activation vars (validated by checker, status-only) ───────────
+
+test('all-good env (incl. owner-test vars) PASSes and shows both owner-test vars OK', () => {
+  const r = runChecker(goodEnv());
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /✅ OK    HSB_OWNER_TEST_CHECKOUT_ENABLED/);
+  assert.match(r.stdout, /✅ OK    HSB_OWNER_TEST_EMAILS/);
+});
+
+test('HSB_OWNER_TEST_CHECKOUT_ENABLED missing → FAIL MISSING (required for G5)', () => {
+  const env = goodEnv();
+  delete env.HSB_OWNER_TEST_CHECKOUT_ENABLED;
+  const r = runChecker(env);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /❌ FAIL  HSB_OWNER_TEST_CHECKOUT_ENABLED/);
+  assert.match(r.stdout, /MISSING/);
+});
+
+test("HSB_OWNER_TEST_CHECKOUT_ENABLED=false → SHAPE_FAIL (must be exactly 'true')", () => {
+  const r = runChecker(goodEnv({ HSB_OWNER_TEST_CHECKOUT_ENABLED: 'false' }));
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /❌ FAIL  HSB_OWNER_TEST_CHECKOUT_ENABLED/);
+  assert.match(r.stdout, /SHAPE_FAIL/);
+  assert.match(r.stdout, /must be exactly 'true'/);
+});
+
+test('HSB_OWNER_TEST_EMAILS missing → FAIL MISSING', () => {
+  const env = goodEnv();
+  delete env.HSB_OWNER_TEST_EMAILS;
+  const r = runChecker(env);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /❌ FAIL  HSB_OWNER_TEST_EMAILS/);
+  assert.match(r.stdout, /MISSING/);
+});
+
+test('HSB_OWNER_TEST_EMAILS empty → PRESENT_BUT_EMPTY', () => {
+  const r = runChecker(goodEnv({ HSB_OWNER_TEST_EMAILS: '' }));
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /❌ FAIL  HSB_OWNER_TEST_EMAILS/);
+  assert.match(r.stdout, /PRESENT_BUT_EMPTY/);
+});
+
+test('HSB_OWNER_TEST_EMAILS with no valid email → SHAPE_FAIL (0 valid), no values printed', () => {
+  const r = runChecker(goodEnv({ HSB_OWNER_TEST_EMAILS: 'notanemail, also-bad' }));
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /❌ FAIL  HSB_OWNER_TEST_EMAILS/);
+  assert.match(r.stdout, /SHAPE_FAIL/);
+  assert.match(r.stdout, /0 syntactically valid emails/);
+  assert.doesNotMatch(r.stdout, /notanemail/, 'allowlist contents must never be printed');
+});
+
+test('HSB_OWNER_TEST_EMAILS valid list → PRESENT, reports count only (never the addresses)', () => {
+  const r = runChecker(goodEnv({ HSB_OWNER_TEST_EMAILS: 'Owner@HSB.com , second@hsb.com' }));
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /✅ OK    HSB_OWNER_TEST_EMAILS/);
+  assert.match(r.stdout, /2 entries, 2 valid email\(s\) \(values not shown\)/);
+  assert.doesNotMatch(r.stdout, /@hsb\.com/i, 'email addresses must never appear in output');
+});
+
+// ── FAL_KEY (required on production; present + non-empty; value never shown) ──
+
+test('FAL_KEY present → OK (length only, value not printed)', () => {
+  const r = runChecker(goodEnv());
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /✅ OK    FAL_KEY/);
+  assert.match(r.stdout, /length \d+/);
+});
+
+test('FAL_KEY missing → FAIL MISSING (required on production)', () => {
+  const env = goodEnv();
+  delete env.FAL_KEY;
+  const r = runChecker(env);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /❌ FAIL  FAL_KEY/);
+  assert.match(r.stdout, /MISSING/);
+});
+
+test('FAL_KEY empty → PRESENT_BUT_EMPTY, no value leak', () => {
+  const r = runChecker(goodEnv({ FAL_KEY: '' }));
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /❌ FAIL  FAL_KEY/);
+  assert.match(r.stdout, /PRESENT_BUT_EMPTY/);
+  assert.doesNotMatch(r.stdout, new RegExp(MARKER));
 });
