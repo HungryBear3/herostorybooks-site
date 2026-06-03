@@ -4,6 +4,18 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from "@/lib/checkout-flow";
+import {
+  MAX_PHOTO_BYTES,
+  isHeicLikePhoto,
+  shouldAutoShrinkPhoto,
+  shrinkPhotoForUpload,
+} from "@/lib/photo-upload";
+import {
+  combinedTooLargeMessage,
+  estimateTotalUploadBytes,
+  formatMb,
+  isCombinedUploadTooLarge,
+} from "@/lib/upload-limits";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
 import {
   CHECKOUT_SAMPLE_IMAGES,
@@ -310,6 +322,9 @@ export function CheckoutForm() {
   // dismissed instantly on mobile) and so we can reassure the customer that no
   // charge was made and nothing was saved when submission fails before Stripe.
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Per-upload size/format errors (resize gate). Main photo + per-character.
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [supportingPhotoErrors, setSupportingPhotoErrors] = useState<Record<string, string>>({});
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
@@ -488,36 +503,84 @@ export function CheckoutForm() {
   ].filter(Boolean).length;
   const progressValue = (completedStepCount / CHECKOUT_STEPS.length) * 100;
 
-  const processPhoto = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setForm((prev) => ({
-        ...prev,
-        photoFile: file,
-        photoDataUrl: e.target?.result as string,
-      }));
-    };
-    reader.readAsDataURL(file);
-  }, []);
+  // Resize JPG/PNG/WebP before storing/submitting; HEIC/HEIF cannot be resized
+  // in-browser, so we keep honest behavior: oversized HEIC (or any non-resizable
+  // file over the per-photo cap) is rejected with a clear message instead of
+  // being silently sent and bounced by Vercel. Returns the prepared (possibly
+  // smaller) File, or null with the error already surfaced.
+  const preparePhotoFile = useCallback(
+    async (file: File, onError: (msg: string) => void): Promise<File | null> => {
+      try {
+        if (shouldAutoShrinkPhoto(file)) {
+          return await shrinkPhotoForUpload(file);
+        }
+        if (file.size > MAX_PHOTO_BYTES) {
+          onError(
+            isHeicLikePhoto(file)
+              ? `This HEIC photo is ${formatMb(file.size)}. We can't shrink HEIC in the browser — please upload a JPG, PNG, or WebP, or a smaller photo (under ${formatMb(MAX_PHOTO_BYTES)}).`
+              : `This photo is ${formatMb(file.size)}, over the ${formatMb(MAX_PHOTO_BYTES)} limit. Please upload a smaller JPG, PNG, or WebP.`,
+          );
+          return null;
+        }
+        return file;
+      } catch {
+        onError(
+          `We couldn't process that photo. Please try a different JPG, PNG, or WebP under ${formatMb(MAX_PHOTO_BYTES)}.`,
+        );
+        return null;
+      }
+    },
+    [],
+  );
 
-  const processSupportingCharacterPhoto = useCallback((id: string, file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setForm((prev) => ({
-        ...prev,
-        familyCharacters: prev.familyCharacters.map((character) =>
-          character.id === id
-            ? {
-                ...character,
-                photoFile: file,
-                photoDataUrl: e.target?.result as string,
-              }
-            : character,
-        ),
-      }));
-    };
-    reader.readAsDataURL(file);
-  }, []);
+  const processPhoto = useCallback(
+    async (file: File) => {
+      setPhotoError(null);
+      const prepared = await preparePhotoFile(file, setPhotoError);
+      if (!prepared) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setForm((prev) => ({
+          ...prev,
+          photoFile: prepared,
+          photoDataUrl: e.target?.result as string,
+        }));
+      };
+      reader.readAsDataURL(prepared);
+    },
+    [preparePhotoFile],
+  );
+
+  const processSupportingCharacterPhoto = useCallback(
+    async (id: string, file: File) => {
+      setSupportingPhotoErrors((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      const prepared = await preparePhotoFile(file, (msg) =>
+        setSupportingPhotoErrors((prev) => ({ ...prev, [id]: msg })),
+      );
+      if (!prepared) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setForm((prev) => ({
+          ...prev,
+          familyCharacters: prev.familyCharacters.map((character) =>
+            character.id === id
+              ? {
+                  ...character,
+                  photoFile: prepared,
+                  photoDataUrl: e.target?.result as string,
+                }
+              : character,
+          ),
+        }));
+      };
+      reader.readAsDataURL(prepared);
+    },
+    [preparePhotoFile],
+  );
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -533,6 +596,25 @@ export function CheckoutForm() {
     e.preventDefault();
     setIsSubmitting(true);
     setSubmitError(null);
+
+    // Combined-payload guard: estimate total attached bytes (main photo +
+    // supporting photos + voice/doc) and block client-side before any network
+    // call if it exceeds the cap. This avoids waiting for Vercel to reject an
+    // oversized multipart request before our /api/order code ever runs. No
+    // charge has been made at this point.
+    const totalUploadBytes = estimateTotalUploadBytes({
+      mainPhotoBytes: form.photoFile?.size ?? 0,
+      supportingPhotoBytes: form.familyCharacters
+        .map((c) => c.photoFile?.size ?? 0)
+        .filter((n) => n > 0),
+      voiceBytes: VOICE_BETA_ENABLED && form.voiceFile ? form.voiceFile.size : 0,
+    });
+    if (isCombinedUploadTooLarge(totalUploadBytes)) {
+      setSubmitError(combinedTooLargeMessage(totalUploadBytes));
+      setIsSubmitting(false);
+      return;
+    }
+
     // Fire BOTH the brief's "purchase_intent" alias and the more literal
     // "order_submit_attempt" so downstream funnels can use either name.
     // Network round-trip + payment success/failure live further along the
@@ -1283,6 +1365,11 @@ export function CheckoutForm() {
                             />
                           </label>
                         )}
+                        {supportingPhotoErrors[character.id] && (
+                          <p role="alert" className="mt-2 text-xs font-medium text-[#8a2f2f]">
+                            {supportingPhotoErrors[character.id]}
+                          </p>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1536,6 +1623,11 @@ export function CheckoutForm() {
                 </div>
               )}
 
+              {photoError && (
+                <p role="alert" className="text-sm font-medium text-[#8a2f2f]">
+                  {photoError}
+                </p>
+              )}
               <p className="text-xs text-center text-[#8a7b6a]">
                 🔒 Photos processed securely · Used only for your order · Add it
                 later if you need to
