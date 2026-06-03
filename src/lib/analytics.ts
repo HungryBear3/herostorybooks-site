@@ -49,17 +49,19 @@ export function trackCheckoutStart(variant: CoverVariant) {
   trackCoverEvent('checkout_start', { variant });
 }
 
-// ── Generic HSB event layer (vendor-free, pre-traffic instrumentation) ─────
+// ── Generic HSB event layer ────────────────────────────────────────────────
 //
 // Why this lives alongside the cover-variant helpers: the cover-variant ones
-// gate on window.gtag / window.va (Google + Vercel Analytics). We are not
-// shipping either yet — but we want to start tracking conversion events
-// before any paid traffic. So this lower-level layer:
+// gate on window.gtag / window.va (Google + Vercel Analytics). This lower-level
+// layer records every funnel event locally and forwards to Vercel Analytics
+// when the runtime is mounted:
 //
 //   - pushes to `window.dataLayer` (GTM convention; when GTM is wired in
 //     later, every queued event flushes automatically),
 //   - pushes to `window.hsbEvents` (in-memory buffer; inspectable from
 //     DevTools and Playwright tests),
+//   - forwards to Vercel Analytics when `window.va` is present,
+//   - attaches campaign params (`utm_*`, `ref`) from the current URL,
 //   - console-logs in non-production OR when
 //     NEXT_PUBLIC_HSB_ANALYTICS_DEBUG=true,
 //   - silently no-ops on the server,
@@ -84,11 +86,38 @@ export interface HsbEventRecord {
   [k: string]: string | number | boolean | null | undefined;
 }
 
+const campaignParamKeys = [
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_term',
+  'utm_content',
+  'ref',
+] as const;
+
 declare global {
   interface Window {
     dataLayer?: Array<Record<string, unknown>>;
     hsbEvents?: HsbEventRecord[];
   }
+}
+
+function currentCampaignParams(): Partial<Record<(typeof campaignParamKeys)[number], string>> {
+  if (typeof window === 'undefined' || typeof window.location === 'undefined') return {};
+  const params = new URLSearchParams(window.location.search);
+  const campaignParams: Partial<Record<(typeof campaignParamKeys)[number], string>> = {};
+  for (const key of campaignParamKeys) {
+    const value = params.get(key);
+    if (value) campaignParams[key] = value.slice(0, 160);
+  }
+  return campaignParams;
+}
+
+function vercelSafeProps(
+  record: HsbEventRecord,
+): Record<string, string | number | boolean | null | undefined> {
+  const { event: _event, href: _href, ...props } = record;
+  return props;
 }
 
 function hsbAnalyticsIsDev(): boolean {
@@ -112,6 +141,7 @@ export function track(
     href: typeof window.location !== 'undefined' ? window.location.href : undefined,
     pathname:
       typeof window.location !== 'undefined' ? window.location.pathname : undefined,
+    ...currentCampaignParams(),
     ...props,
   };
   try {
@@ -119,6 +149,9 @@ export function track(
     window.dataLayer.push(record);
     window.hsbEvents = window.hsbEvents ?? [];
     window.hsbEvents.push(record);
+    if (typeof window.va === 'function') {
+      window.va('track', event, vercelSafeProps(record));
+    }
   } catch {
     /* never throw from analytics */
   }

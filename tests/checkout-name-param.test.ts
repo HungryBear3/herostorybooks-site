@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 
 const checkoutFormSource = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
 const namePreviewSource = readFileSync('src/components/name-preview.tsx', 'utf8');
+const layoutSource = readFileSync('src/app/layout.tsx', 'utf8');
+const analyticsSource = readFileSync('src/lib/analytics.ts', 'utf8');
 
 test('checkout still supports legacy childName query param for old internal links', () => {
   assert.match(checkoutFormSource, /params\.get\(['"]childName['"]\)/);
@@ -44,7 +46,7 @@ test('checkout parses ?direction= and maps it to a launch story-theme id', () =>
   assert.match(checkoutFormSource, /themeFromDirection \? \{ theme: themeFromDirection \}/);
 });
 
-test('NamePreview + checkout fire vendor-free analytics events', () => {
+test('NamePreview + checkout fire shared analytics events', () => {
   // NamePreview CTA pushes a name_preview_submitted event.
   assert.match(namePreviewSource, /track\(["']name_preview_submitted["']/);
   // Checkout fires start_checkout, format_selected, story_selected, and
@@ -54,4 +56,13 @@ test('NamePreview + checkout fire vendor-free analytics events', () => {
   assert.match(checkoutFormSource, /track\(["']story_selected["']/);
   assert.match(checkoutFormSource, /track\(["']order_submit_attempt["']/);
   assert.match(checkoutFormSource, /track\(["']purchase_intent["']/);
+});
+
+test('HSB mounts Vercel Analytics and forwards campaign params without full href', () => {
+  assert.match(layoutSource, /from ['"]@vercel\/analytics\/next['"]/);
+  assert.match(layoutSource, /<Analytics \/>/);
+  assert.match(analyticsSource, /utm_source/);
+  assert.match(analyticsSource, /utm_campaign/);
+  assert.match(analyticsSource, /window\.va\(['"]track['"], event, vercelSafeProps\(record\)\)/);
+  assert.match(analyticsSource, /href: _href/);
 });
