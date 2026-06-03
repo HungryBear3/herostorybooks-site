@@ -13,8 +13,8 @@
       "id": "analytics-attribution",
       "name": "analytics attribution",
       "requiredCommit": "01b4d0c",
-      "supersededBy": [],
-      "description": "Vercel analytics attribution hotfix originally on hsb/analytics-attribution-20260602. MUST be back-merged into the deploy train; its omission is the drift this guardrail exists to catch."
+      "supersededBy": ["0d8b92c"],
+      "description": "Vercel analytics attribution hotfix originally on hsb/analytics-attribution-20260602. MUST be back-merged into the deploy train; its omission is the drift this guardrail exists to catch. 0d8b92c is the PR #38 squash merge onto the deploy train."
     },
     {
       "id": "owner-test-gate-g5",
