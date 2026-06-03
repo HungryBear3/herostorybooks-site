@@ -109,6 +109,18 @@ test('transcribeVoiceNote is OFF by default → null, no OpenAI call', async () 
   });
 });
 
+test('voice transcription feature flag tolerates Vercel newline drift', async () => {
+  await withEnv({ HSB_VOICE_TRANSCRIPTION_ENABLED: 'true\n' }, async () => {
+    assert.equal(isVoiceTranscriptionEnabled(), true);
+  });
+});
+
+test('voice transcription feature flag tolerates escaped Vercel newline drift', async () => {
+  await withEnv({ HSB_VOICE_TRANSCRIPTION_ENABLED: 'true\\n' }, async () => {
+    assert.equal(isVoiceTranscriptionEnabled(), true);
+  });
+});
+
 test('transcribeVoiceNote: no OpenAI call when key missing (even with flag on + file)', async () => {
   await withEnv({ HSB_VOICE_TRANSCRIPTION_ENABLED: 'true', OPENAI_API_KEY: undefined }, async () => {
     const spy = spyTranscriber('should not run');

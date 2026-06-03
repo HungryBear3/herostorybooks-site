@@ -255,6 +255,8 @@ const CHECKOUT_SRC = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
 
 test('checkout source reads NEXT_PUBLIC_HSB_VOICE_BETA feature flag', () => {
   assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_VOICE_BETA/);
+  assert.match(CHECKOUT_SRC, /envFlagEnabled\(process\.env\.NEXT_PUBLIC_HSB_VOICE_BETA\)/);
+  assert.match(CHECKOUT_SRC, /replace\(\s*\/\\\\n\/g,\s*["']["']\s*\)\.trim\(\)\.toLowerCase\(\) === ["']true["']/);
 });
 
 test('checkout source mounts VoiceRecorderSection ONLY when flag is on', () => {

@@ -159,8 +159,7 @@ function cx(...classes: Array<string | false | undefined>) {
 export function EditorialPageShell({ active, children }: { active?: 'home' | 'sample' | 'pricing'; children: React.ReactNode }) {
   return (
     <main className="min-h-screen bg-[#f8f0dd] text-[#1f1a16]">
-      {/* Fires page_view exactly once per mount. Vendor-free push to
-          window.dataLayer + window.hsbEvents. */}
+      {/* Fires page_view exactly once per mount through the shared analytics layer. */}
       <AnalyticsPageView />
       <EditorialHeader active={active} />
       {children}

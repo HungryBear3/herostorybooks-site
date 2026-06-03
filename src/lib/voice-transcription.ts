@@ -45,8 +45,12 @@ const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f-\u009f]/g;
 const FATHERS_DAY_CUE_RE =
   /\b(dad|dada|daddy|papa|pappa|pop|pops|poppa|father|fathers?\s*day|grandpa|grandad|grampa|grandfather)\b/i;
 
+function envFlagEnabled(value: string | undefined): boolean {
+  return value?.replace(/\\n/g, '').trim().toLowerCase() === 'true';
+}
+
 export function isVoiceTranscriptionEnabled(): boolean {
-  return process.env.HSB_VOICE_TRANSCRIPTION_ENABLED === 'true';
+  return envFlagEnabled(process.env.HSB_VOICE_TRANSCRIPTION_ENABLED);
 }
 
 export function getVoiceTranscriptionModel(): string {

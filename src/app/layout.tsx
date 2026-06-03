@@ -1,6 +1,7 @@
 import './globals.css';
 import { Suspense } from 'react';
 import type { Metadata } from 'next';
+import { Analytics } from '@vercel/analytics/next';
 import { ReferralCapture } from '@/components/referral-capture';
 import { getSiteOrigin, shouldIndexSite } from '@/lib/site-url';
 
@@ -51,6 +52,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <ReferralCapture />
         </Suspense>
         {children}
+        <Analytics />
       </body>
     </html>
   );
