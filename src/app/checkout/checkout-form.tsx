@@ -5,6 +5,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from "@/lib/checkout-flow";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
+import GuidedPhotoCapture from "@/components/checkout/GuidedPhotoCapture";
+import {
+  GUIDED_PHOTO_CAPTURE_VERSION,
+  GUIDED_MAX_FRAMES,
+} from "@/lib/guided-photo-capture";
 import {
   CHECKOUT_SAMPLE_IMAGES,
   STORY_OCCASIONS,
@@ -117,6 +122,8 @@ const SUPPORTING_CHARACTER_PRESETS = [
 const CHECKOUT_PHOTO_ACCEPT_ATTR = "image/*";
 
 const VOICE_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_VOICE_BETA === "true";
+const GUIDED_PHOTO_CAPTURE_ENABLED =
+  process.env.NEXT_PUBLIC_HSB_GUIDED_PHOTO_CAPTURE === "true";
 
 const STORAGE_KEY = "hsb_order_v1";
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
@@ -307,6 +314,9 @@ export function CheckoutForm() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  // Guided photo capture refs (NEXT_PUBLIC_HSB_GUIDED_PHOTO_CAPTURE). Selected
+  // still images + their angle labels, appended to FormData at submit. Never video.
+  const [guidedRefs, setGuidedRefs] = useState<{ files: File[]; labels: string[] }>({ files: [], labels: [] });
   const photoInputRef = useRef<HTMLInputElement>(null);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -600,6 +610,15 @@ export function CheckoutForm() {
       if (referralCode) payload.set("referralCode", referralCode);
       if (form.photoFile) {
         payload.set("photo", form.photoFile);
+      }
+      if (GUIDED_PHOTO_CAPTURE_ENABLED && guidedRefs.files.length > 0) {
+        // Only the parent's approved still images are appended — never video.
+        payload.set("guidedPhotoConsent", "true");
+        payload.set("guidedPhotoCaptureVersion", GUIDED_PHOTO_CAPTURE_VERSION);
+        payload.set("guidedPhotoLabels", JSON.stringify(guidedRefs.labels));
+        guidedRefs.files.slice(0, GUIDED_MAX_FRAMES).forEach((file, index) => {
+          payload.set(`guidedPhoto_${index}`, file);
+        });
       }
       if (VOICE_BETA_ENABLED && form.voiceFile) {
         payload.set("voice", form.voiceFile);
@@ -1427,6 +1446,18 @@ export function CheckoutForm() {
                     Uploaded photo → storybook illustration · hand-reviewed before print
                   </p>
                 </div>
+              )}
+
+              {GUIDED_PHOTO_CAPTURE_ENABLED && (
+                <GuidedPhotoCapture
+                  onComplete={({ files, labels }) => {
+                    setGuidedRefs({ files, labels });
+                    // Promote the first guided still to the main `photo` ONLY when
+                    // the parent hasn't uploaded a primary photo. Otherwise the
+                    // uploaded photo stays primary and guided frames are extra refs.
+                    if (!form.photoFile && files[0]) processPhoto(files[0]);
+                  }}
+                />
               )}
 
               {/* Upload zone / preview */}

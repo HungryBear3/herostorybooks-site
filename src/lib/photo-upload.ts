@@ -99,6 +99,52 @@ async function canvasToFile(canvas: HTMLCanvasElement, type: string, quality: nu
   return new File([blob], `${baseName}.${extension}`, { type, lastModified: Date.now() });
 }
 
+/**
+ * Encode a captured camera still (a canvas frame) into an upload-ready JPG/WebP
+ * File, reusing the same resize ceiling, quality ramp, and size budget as the
+ * mobile file-upload path. Used by Guided Photo Capture so captured stills go
+ * through exactly the same compression as uploaded photos.
+ */
+export async function canvasFrameToUploadFile(
+  source: HTMLCanvasElement,
+  { format = 'image/jpeg', baseName = 'guided-frame' }: { format?: 'image/jpeg' | 'image/webp'; baseName?: string } = {},
+): Promise<File> {
+  const outputType = format === 'image/webp' ? 'image/webp' : 'image/jpeg';
+  const srcWidth = source.width;
+  const srcHeight = source.height;
+
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Canvas unavailable for frame encode');
+  }
+
+  let currentMaxDimension = MAX_RESIZE_DIMENSION;
+  let currentQuality = INITIAL_JPEG_QUALITY;
+  let best: File | null = null;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const { width, height } = scaledDimensions(srcWidth, srcHeight, currentMaxDimension);
+    canvas.width = width;
+    canvas.height = height;
+    context.clearRect(0, 0, width, height);
+    context.drawImage(source, 0, 0, width, height);
+
+    const candidate = await canvasToFile(canvas, outputType, currentQuality, baseName);
+    best = candidate;
+    if (candidate.size <= MAX_PHOTO_BYTES) {
+      return candidate;
+    }
+    currentQuality = Math.max(MIN_JPEG_QUALITY, currentQuality - 0.08);
+    currentMaxDimension = Math.max(900, Math.round(currentMaxDimension * 0.85));
+  }
+
+  if (best && best.size <= MAX_PHOTO_BYTES) {
+    return best;
+  }
+  throw new Error('Captured frame still too large after resize');
+}
+
 export async function shrinkPhotoForUpload(file: File) {
   if (!shouldAutoShrinkPhoto(file)) {
     return file;

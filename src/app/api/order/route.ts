@@ -10,8 +10,11 @@ import {
   sanitizeFamilyCharacters,
   uploadOrderPhoto,
   uploadOrderSupportingPhoto,
+  uploadOrderGuidedReferencePhoto,
   uploadOrderVoice,
+  type GuidedReferencePhotoRecord,
 } from '@/lib/orders';
+import { GUIDED_MAX_FRAMES, sanitizeGuidedLabel } from '@/lib/guided-photo-capture';
 import {
   missingFieldErrorCode,
   missingRequiredField,
@@ -252,6 +255,67 @@ export async function POST(request: Request) {
       }
     }
 
+    // Guided photo capture reference stills (NEXT_PUBLIC_HSB_GUIDED_PHOTO_CAPTURE).
+    // Parsed AFTER the main photo and BEFORE Stripe so a durable-storage failure
+    // aborts before the customer pays — same fail-before-Stripe contract as the
+    // main/supporting photo uploads above. Stills only: the client never appends
+    // video, and we re-check the MIME here as defense in depth.
+    const guidedReferencePhotos: GuidedReferencePhotoRecord[] = [];
+    const guidedConsent = form.get('guidedPhotoConsent') === 'true';
+    if (guidedConsent) {
+      const consentAt = new Date().toISOString();
+      let guidedLabels: string[] = [];
+      const rawLabels = form.get('guidedPhotoLabels');
+      if (typeof rawLabels === 'string' && rawLabels.trim()) {
+        try {
+          const parsed = JSON.parse(rawLabels);
+          if (Array.isArray(parsed)) guidedLabels = parsed.map((l) => String(l));
+        } catch {
+          /* malformed labels -> fall back to index labels below */
+        }
+      }
+      for (let index = 0; index < GUIDED_MAX_FRAMES; index += 1) {
+        const guidedFile = form.get(`guidedPhoto_${index}`);
+        if (!(guidedFile instanceof File) || guidedFile.size <= 0) continue;
+        if (!guidedFile.type.startsWith('image/')) {
+          // Never persist a non-image (e.g. video) as a reference photo.
+          console.warn(`[order] skipping non-image guided ref ${index} for ${draftOrder.id} (${guidedFile.type})`);
+          continue;
+        }
+        const label = sanitizeGuidedLabel(guidedLabels[index] ?? `frame-${index}`);
+        try {
+          const uploaded = await uploadOrderGuidedReferencePhoto(draftOrder.id, index, label, guidedFile);
+          guidedReferencePhotos.push({
+            label,
+            fileName: guidedFile.name,
+            photoBlobPath: uploaded?.pathname ?? null,
+            photoBlobUrl: uploaded?.url ?? null,
+            source: 'guided_capture',
+            consentAt,
+          });
+        } catch (error) {
+          if (error instanceof OrderPersistenceError) {
+            console.error(
+              `[order] ABORT BEFORE STRIPE: guided reference photo persistence failed for ${draftOrder.id}: ${error.message}`,
+              error.cause,
+            );
+            return NextResponse.json(
+              {
+                error:
+                  'We could not securely save one of your reference photos. Please retry — no charge was made.',
+                code: 'guided_ref_persist_failed',
+              },
+              { status: 503 },
+            );
+          }
+          console.error(
+            `[order] guided reference photo upload failed for ${draftOrder.id}; continuing without that ref`,
+            error,
+          );
+        }
+      }
+    }
+
     let voiceBlobPath: string | null = null;
     let voiceBlobUrl: string | null = null;
     let voiceConsentAt: string | null = null;
@@ -325,6 +389,7 @@ export async function POST(request: Request) {
         familyCharacters: familyCharactersWithPhotos,
         photoBlobPath,
         photoBlobUrl,
+        guidedReferencePhotos: guidedReferencePhotos.length ? guidedReferencePhotos : undefined,
         voiceBlobPath,
         voiceBlobUrl,
         voiceConsentAt,

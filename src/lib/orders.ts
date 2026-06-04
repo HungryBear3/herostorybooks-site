@@ -4,6 +4,19 @@ import { get, list, put } from '@vercel/blob';
 
 import type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import { sanitizeReferralCode } from './referral-code.ts';
+import { sanitizeGuidedLabel } from './guided-photo-capture.ts';
+
+/** A durably-stored guided-capture reference photo (still image only, never video). */
+export interface GuidedReferencePhotoRecord {
+  /** Sanitized angle label, e.g. "front" | "left" | "right" | "up" | "smile". */
+  label: string;
+  fileName: string;
+  photoBlobPath: string | null;
+  photoBlobUrl: string | null;
+  source: 'guided_capture';
+  /** ISO timestamp the parent consented to guided capture. */
+  consentAt: string;
+}
 export type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
@@ -262,6 +275,10 @@ export interface OrderRecord extends OrderInput {
   pageArtifacts?: PageArtifact[];
   /** Influencer / partner attribution captured from ?ref= or hsb_ref cookie. */
   referralCode?: string | null;
+  /** Optional guided-capture reference photos (NEXT_PUBLIC_HSB_GUIDED_PHOTO_CAPTURE).
+   *  Temporary illustration reference stills the parent captured + approved.
+   *  Separate from the main `photo`; not consumed by provider routing yet. */
+  guidedReferencePhotos?: GuidedReferencePhotoRecord[];
   /** Append-only audit log of review/approval events. Optional on legacy orders. */
   auditEvents?: ReviewAuditEvent[];
   /** Pre-print refund state. Set when admin issues a Stripe refund for an
@@ -1035,6 +1052,26 @@ export async function uploadOrderSupportingPhoto(
     orderId,
     file,
     (safeName) => `orders/${orderId}/supporting-${safeIndex}-photo-${safeName}`,
+  );
+}
+
+/**
+ * Upload a guided-capture reference still durably. Same fail-before-Stripe
+ * contract as the main/supporting photo uploads: throws OrderPersistenceError
+ * in production-like envs when durable storage is unavailable.
+ */
+export async function uploadOrderGuidedReferencePhoto(
+  orderId: string,
+  index: number,
+  label: string,
+  file: File,
+): Promise<UploadedPhotoRef | null> {
+  const safeIndex = Number.isInteger(index) && index >= 0 ? index : 0;
+  const safeLabel = sanitizeGuidedLabel(label);
+  return uploadOrderPhotoAtPath(
+    orderId,
+    file,
+    (safeName) => `orders/${orderId}/guided-${safeIndex}-${safeLabel}-${safeName}`,
   );
 }
 
