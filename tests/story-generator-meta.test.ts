@@ -11,7 +11,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { generateStoryWithMeta } from '../src/lib/story-generator.ts';
+import {
+  buildPageProseUserPrompt,
+  generateStoryWithMeta,
+  getLockedPageProse,
+} from '../src/lib/story-generator.ts';
+import { planStorybook } from '../src/lib/story-planner.ts';
 import { createOrderRecord, type OrderRecord } from '../src/lib/orders.ts';
 
 function makeOrder(): OrderRecord {
@@ -244,6 +249,64 @@ test('story meta: brave-explorer home sharing page keeps the listening-stone pay
       assert.match(sharingPage.story, /hum|sound|rustl|call|listen/i);
     });
   });
+});
+
+test('story meta: late-page requirements use the current theme payoff instead of jungle/listening-stone defaults', async () => {
+  const order = createOrderRecord(
+    {
+      childName: 'Luna',
+      bookFormat: 'classic',
+      email: 'dragon@example.com',
+      theme: 'dragon-quest',
+      lesson: 'courage',
+      occasion: 'birthday',
+      childPronouns: 'she/her',
+    },
+    { id: 'ord_dragon_payoff_prompt', now: '2026-05-04T14:00:00Z' },
+  );
+  const plan = planStorybook(order, 24);
+  for (const pageNumber of [21, 22, 23]) {
+    const beat = plan.pages[pageNumber - 1]!;
+    const prompt = buildPageProseUserPrompt(order, beat, 24, plan.pages[pageNumber - 2] ?? null);
+    assert.match(prompt, new RegExp(beat.key_object_or_detail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(prompt, /smooth stone|listening stone|jungle/i);
+  }
+});
+
+test('story meta: brave-explorer locked sharing prose uses the order child and current payoff detail', async () => {
+  const order = createOrderRecord(
+    {
+      childName: 'Luna Rivera',
+      bookFormat: 'classic',
+      email: 'luna@example.com',
+      theme: 'brave-explorer',
+      lesson: 'courage',
+      occasion: 'birthday',
+      childPronouns: 'she/her',
+    },
+    { id: 'ord_luna_locked_payoff', now: '2026-05-04T14:00:00Z' },
+  );
+  const plan = planStorybook(order, 24);
+  const locked = getLockedPageProse(order, plan.pages[22]!, 24) ?? '';
+  assert.match(locked, /^Luna\b/);
+  assert.match(locked, /listening stone on the porch rail/i);
+  assert.doesNotMatch(locked, /Lukas|jungle|Kaplun|inside the wrapping|tiny\s+bird/i);
+});
+
+test('story meta: non-explorer themes do not get brave-explorer locked sharing prose', async () => {
+  const order = createOrderRecord(
+    {
+      childName: 'Luna',
+      bookFormat: 'classic',
+      email: 'space@example.com',
+      theme: 'space-voyager',
+      lesson: 'courage',
+      occasion: 'birthday',
+    },
+    { id: 'ord_space_no_locked_payoff', now: '2026-05-04T14:00:00Z' },
+  );
+  const plan = planStorybook(order, 24);
+  assert.equal(getLockedPageProse(order, plan.pages[22]!, 24), null);
 });
 
 test('story meta: explicit HSB_ENABLE_OPENAI_STORY=true + OpenAI 200 OK → source=openai_chat, model=gpt-4o-mini', async () => {

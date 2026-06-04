@@ -523,15 +523,20 @@ QUALITY BAR
 - If another creature or character appears on nearby pages, vary what it does so adjacent pages do not repeat the same watcher beat.`;
 }
 
+function payoffDetailForInstruction(beat: StoryPlanPage): string {
+  return cleanBeatFragment(beat.key_object_or_detail) || 'the discovered clue';
+}
+
 function buildPageSpecificInstruction(beat: StoryPlanPage, pageCount: number): string | null {
+  const payoffDetail = payoffDetailForInstruction(beat);
   if (beat.page === pageCount - 3) {
-    return 'SPECIAL REQUIREMENT: this is the climax payoff page. The child must receive the answer or reward on this page and clearly choose or take the smooth stone before the story turns homeward.';
+    return `SPECIAL REQUIREMENT: this is the climax payoff page. The child must receive the answer or reward on this page. Use the page's key detail (${payoffDetail}) as the concrete payoff; do not substitute any other theme-specific object unless it is already the key detail.`;
   }
   if (beat.page === pageCount - 2) {
-    return 'SPECIAL REQUIREMENT: this is the first homeward-resolution page. Mention the discovered smooth stone or answer clearly so the transition home feels earned.';
+    return `SPECIAL REQUIREMENT: this is the first homeward-resolution page. Mention ${payoffDetail} or the discovered answer clearly so the transition home feels earned; keep the payoff tied to this theme's setting and objects.`;
   }
   if (beat.page === pageCount - 1) {
-    return 'SPECIAL REQUIREMENT: this home-sharing page must pay off the listening stone directly. The family should lean in and hear jungle sounds or the stone hum itself. DO NOT introduce any live bird, animal, creature, egg, nest, or surprise object hidden inside the wrapping.';
+    return `SPECIAL REQUIREMENT: this home-sharing page must pay off ${payoffDetail} directly in the current setting. Let others react to the discovered object or answer already earned by the story. DO NOT introduce any new live bird, animal, creature, egg, nest, or surprise object hidden inside wrapping.`;
   }
   if (beat.page === 4) {
     return 'SPECIAL REQUIREMENT: keep the feather image simple and natural. Avoid awkward syntax like "curious which way feels right."';
@@ -551,9 +556,28 @@ function buildPageSpecificInstruction(beat: StoryPlanPage, pageCount: number): s
   return null;
 }
 
+function payoffReactionLine(detail: string): string {
+  if (/\blistening stone\b|\bstone\b/i.test(detail)) {
+    return `The ${detail} gives a soft hum, carrying back the sounds and courage of the day.`;
+  }
+  if (/\blantern\b|\bember\b|\bruby\b|\bglow\b/i.test(detail)) {
+    return `The ${detail} glows warmer, carrying back the courage of the day.`;
+  }
+  if (/\bpearl\b|\bshell\b|\bconch\b|\bsea\b/i.test(detail)) {
+    return `The ${detail} shines softly, carrying back the hush and courage of the day.`;
+  }
+  if (/\bcrystal\b|\bconstellation\b|\bstar\b|\bmoon\b/i.test(detail)) {
+    return `The ${detail} catches the light, carrying back the wonder and courage of the day.`;
+  }
+  return `The ${detail} feels different now, carrying back the answer and courage of the day.`;
+}
+
 export function getLockedPageProse(order: OrderRecord, beat: StoryPlanPage, pageCount: number): string | null {
   if (order.theme === 'brave-explorer' && beat.page === pageCount - 1) {
-    return 'Lukas places the smooth stone from the jungle on the porch rail. His family gathers around, leaning in to listen. The stone hums softly, echoing the sounds of the day\'s adventure. Everyone gasps as they hear the distant calls of birds and rustling leaves.';
+    const name = firstNameOnly(order);
+    const pronoun = inferPronouns(order) === 'she/her' ? 'she' : inferPronouns(order) === 'he/him' ? 'he' : 'they';
+    const detail = payoffDetailForInstruction(beat);
+    return `${name} sets the ${detail} where everyone can see it. People gather close as ${pronoun} explains what was found and how the hard part changed. ${payoffReactionLine(detail)} No one needs a new surprise; the real wonder is already here.`;
   }
   return null;
 }

@@ -247,10 +247,10 @@ const THEME_TEMPLATES: Record<string, ThemePlanTemplate> = {
       'lantern spark',
       'ruby ember',
       'smoke-warmed stair',
-      'smooth mountain stone',
+      'starlit mountain token',
       'wrapped ruby ember',
       'answering lantern glow',
-      'wrapped smooth stone',
+      'wrapped ruby ember',
       'ruby ember on the hearth',
       'lantern by the window',
     ],
@@ -274,10 +274,10 @@ const THEME_TEMPLATES: Record<string, ThemePlanTemplate> = {
       'protects the lantern spark from a sudden breath of smoke',
       'holds the ruby ember up and sees the hidden answer inside',
       'climbs the smoke-warmed stair as the mountain settles',
-      'chooses one smooth mountain stone from the starlit ledge',
+      'chooses one starlit mountain token from the ledge',
       'wraps the ember safely and starts down the slope',
       'returns to the courtyard with the lantern glowing steady',
-      'walks home with the smooth stone wrapped in both hands',
+      'walks home with the ruby ember wrapped in both hands',
       'shows the ruby ember on the hearth while family leans close',
       'sets the lantern by the bedroom window before sleep',
     ],
@@ -470,7 +470,7 @@ function buildBeatSummary(page: number, pageCount: number, action: string, keyOb
   const lastThreeStart = pageCount - 2;
 
   if (page === pageCount - 3) {
-    return `${action}, then finally hears the answer waiting at the end of the climb and chooses one smooth stone to carry home${presenceTag}.`;
+    return `${action}, then finally hears the answer waiting at the end of the climb and chooses ${keyObject} as the discovery to carry home${presenceTag}.`;
   }
   if (page === lastThreeStart) {
     return `${action}, then turns toward home with ${keyObject} wrapped safely in both hands${presenceTag}.`;
