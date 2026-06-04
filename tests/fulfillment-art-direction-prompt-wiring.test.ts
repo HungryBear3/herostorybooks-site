@@ -132,7 +132,7 @@ test('no art-direction packet -> page prompts use the generic path unchanged', a
   // Generic guardrails still present.
   assert.match(captured[0], /Quality requirements:/);
   const persisted = await getOrder(order.id);
-  assert.equal(persisted!.fulfillmentStatus, 'complete');
+  assert.equal(persisted!.fulfillmentStatus, 'awaiting_qa');
 });
 
 test('art-direction packet -> packet-derived style/character/scene guidance reaches each page prompt', async (t) => {
@@ -171,7 +171,7 @@ test('art-direction packet -> packet-derived style/character/scene guidance reac
   }
 
   const persisted = await getOrder(order.id);
-  assert.equal(persisted!.fulfillmentStatus, 'complete');
+  assert.equal(persisted!.fulfillmentStatus, 'awaiting_qa');
 });
 
 test('packet present but a page has no storyboard entry -> fail closed, no image generation', async (t) => {
