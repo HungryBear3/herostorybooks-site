@@ -4,6 +4,7 @@ import {
   getLaunchHoldSnapshot,
   type LaunchBlocker,
   type LaunchHoldStatus,
+  type PublicLaunchGate,
 } from '@/lib/launch-hold';
 
 export const dynamic = 'force-dynamic';
@@ -66,10 +67,54 @@ export default async function AdminLaunchHoldPage({ searchParams }: PageProps) {
           </p>
         </section>
 
+        <section className="rounded-lg border-2 border-amber-300 bg-amber-50 px-4 py-4">
+          <p className="font-mono text-xs uppercase tracking-wider text-amber-700">Owner-test gate</p>
+          <p className="mt-1 font-serif text-lg font-bold text-amber-800">{snapshot.ownerTest.posture}</p>
+          <p className="mt-2 text-sm text-gray-700">{snapshot.ownerTest.allowed}</p>
+          <p className="mt-1 text-sm text-gray-700">{snapshot.ownerTest.control}</p>
+          <p className="mt-2 rounded-md bg-amber-100 px-3 py-2 text-sm font-semibold text-amber-900">
+            ⚠ {snapshot.ownerTest.notPublic}
+          </p>
+        </section>
+
+        <section>
+          <h2 className="mb-2 font-serif text-xl font-bold text-forest">Required public-launch gates</h2>
+          <div className="space-y-2">
+            {snapshot.gates.map((gate) => (
+              <GateRow key={gate.key} gate={gate} />
+            ))}
+          </div>
+        </section>
+
         <section className="space-y-3">
+          <h2 className="font-serif text-xl font-bold text-forest">Linear-tracked blockers</h2>
           {snapshot.blockers.map((blocker) => (
             <BlockerCard key={blocker.id} blocker={blocker} />
           ))}
+        </section>
+
+        <section className="rounded-lg border-2 border-coral/50 bg-coral/10 px-4 py-4">
+          <p className="font-mono text-xs uppercase tracking-wider text-coral-dark">Do not do (HOLD window)</p>
+          <ul className="mt-2 space-y-1.5 text-sm text-gray-800">
+            {snapshot.doNotDo.map((rule) => (
+              <li key={rule} className="flex gap-2">
+                <span aria-hidden="true" className="font-bold text-coral-dark">✕</span>
+                <span>{rule}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section className="rounded-lg border border-gray-200 bg-white px-4 py-4">
+          <p className="font-mono text-xs uppercase tracking-wider text-gray-500">Evidence &amp; docs</p>
+          <ul className="mt-2 space-y-1 text-sm">
+            {snapshot.evidence.map((doc) => (
+              <li key={doc.path} className="text-gray-700">
+                <code className="rounded bg-gray-100 px-1 text-forest">{doc.path}</code> — {doc.label}
+                {doc.note ? <span className="text-gray-500"> ({doc.note})</span> : null}
+              </li>
+            ))}
+          </ul>
         </section>
 
         <p className="text-center text-[11px] text-gray-400">
@@ -105,6 +150,21 @@ function BlockerCard({ blocker }: { blocker: LaunchBlocker }) {
           </a>
         </dd>
       </dl>
+    </article>
+  );
+}
+
+function GateRow({ gate }: { gate: PublicLaunchGate }) {
+  return (
+    <article className="rounded-lg border border-gray-200 bg-white px-4 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-forest">{gate.label}</h3>
+          <p className="mt-0.5 text-sm text-gray-600">{gate.requirement}</p>
+          <p className="mt-1 text-[11px] text-gray-500">Refs: {gate.references.join(' · ')}</p>
+        </div>
+        <StatusChip status={gate.status} />
+      </div>
     </article>
   );
 }

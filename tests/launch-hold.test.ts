@@ -20,6 +20,9 @@ import {
   getLaunchHoldSnapshot,
   LAUNCH_BLOCKERS,
   PUBLIC_LAUNCH_POSTURE,
+  OWNER_TEST_GATE,
+  PUBLIC_LAUNCH_GATES,
+  DO_NOT_DO,
 } from '../src/lib/launch-hold.ts';
 import { isAdminAuthedFromRequest } from '../src/lib/admin-auth.ts';
 
@@ -61,6 +64,70 @@ test('model never derives status from env vars or secret names', () => {
   assert.doesNotMatch(LIB, /status:\s*['"`](cleared|green|pass|go|ready)['"`]/i);
   // clearedForPublicTraffic is pinned false, never assigned true.
   assert.doesNotMatch(LIB, /clearedForPublicTraffic:\s*true/);
+});
+
+// ── owner-test vs public-launch separation (the core HER-11 goal) ────────────
+
+test('snapshot exposes an owner-test gate that is explicitly NOT public launch', () => {
+  const snap = getLaunchHoldSnapshot(new Date('2026-06-03T00:00:00.000Z'));
+  assert.equal(snap.ownerTest.posture, 'OWNER_TEST_ONLY_BEHIND_GATE');
+  assert.match(snap.ownerTest.notPublic, /NOT public traffic/i);
+  assert.match(snap.ownerTest.notPublic, /NOT public-launch clearance/i);
+  // The owner-test gate names the controlling flags but the model never reads them.
+  assert.match(snap.ownerTest.control, /HSB_OWNER_TEST_CHECKOUT_ENABLED/);
+  assert.match(snap.ownerTest.control, /HSB_OWNER_TEST_EMAILS/);
+});
+
+test('owner-test gate copy is rendered AND clearly separated from public posture on the page', () => {
+  assert.match(PAGE, /Owner-test gate/);
+  assert.match(PAGE, /ownerTest\.notPublic/);
+  // Public posture is still the dominant verdict.
+  assert.match(PAGE, /snapshot\.posture/);
+});
+
+// ── required public-launch gates (the task's blocker enumeration) ─────────────
+
+test('all required public-launch gate categories are present', () => {
+  const keys = PUBLIC_LAUNCH_GATES.map((g) => g.key);
+  for (const k of [
+    'owner-test-packet',
+    'proof-hardcover',
+    'print-sla',
+    'email-health',
+    'public-traffic-approval',
+    'alias-cutover',
+  ]) {
+    assert.ok(keys.includes(k), `missing required gate ${k}`);
+  }
+  const allowed = new Set(['blocked', 'in_progress', 'hold']);
+  for (const g of PUBLIC_LAUNCH_GATES) {
+    assert.ok(allowed.has(g.status), `${g.key} has non-hold status ${g.status}`);
+    assert.ok(g.requirement.length > 0 && g.references.length > 0, `${g.key} incomplete`);
+  }
+  // The gates render on the page.
+  assert.match(PAGE, /Required public-launch gates/);
+  assert.match(PAGE, /snapshot\.gates\.map/);
+});
+
+// ── do-not-do list ───────────────────────────────────────────────────────────
+
+test('do-not-do list covers the required prohibitions and is rendered', () => {
+  const joined = DO_NOT_DO.join(' \n ').toLowerCase();
+  assert.match(joined, /public traffic/);
+  assert.match(joined, /creator|gifting/);
+  assert.match(joined, /posting|scheduling|boosting/);
+  assert.match(joined, /print|provider|payment/);
+  assert.match(joined, /alias|deploy|env/);
+  assert.match(PAGE, /Do not do/i);
+  assert.match(PAGE, /snapshot\.doNotDo\.map/);
+});
+
+test('evidence docs are exposed and rendered', () => {
+  const snap = getLaunchHoldSnapshot(new Date('2026-06-03T00:00:00.000Z'));
+  assert.ok(snap.evidence.length >= 1);
+  assert.ok(snap.evidence.every((d) => d.path && d.label));
+  assert.match(PAGE, /Evidence/);
+  assert.match(PAGE, /snapshot\.evidence\.map/);
 });
 
 // ── (1) auth ──────────────────────────────────────────────────────────────────

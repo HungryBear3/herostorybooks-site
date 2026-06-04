@@ -117,6 +117,124 @@ export const LAUNCH_BLOCKERS: readonly LaunchBlocker[] = [
   },
 ];
 
+/**
+ * Owner-test posture — EDITORIAL and deliberately separate from public launch.
+ * The actual gate is enforced elsewhere (the owner-test checkout gate + order
+ * route). This block exists so an operator can never read "owner-test allowed"
+ * as "public launch ready". It is NOT computed from env — it only states the
+ * posture and names the controlling flags so the distinction is unmissable.
+ */
+export const OWNER_TEST_POSTURE = 'OWNER_TEST_ONLY_BEHIND_GATE' as const;
+
+export interface OwnerTestGateInfo {
+  posture: typeof OWNER_TEST_POSTURE;
+  allowed: string;
+  control: string;
+  notPublic: string;
+}
+
+export const OWNER_TEST_GATE: OwnerTestGateInfo = {
+  posture: OWNER_TEST_POSTURE,
+  allowed:
+    'Controlled owner-test checkout only — an internal/owner email on the allowlist may complete a paid test order.',
+  control:
+    'Default-CLOSED gate: requires both HSB_OWNER_TEST_CHECKOUT_ENABLED=true AND the buyer email present on HSB_OWNER_TEST_EMAILS. With neither set, checkout is closed.',
+  notPublic:
+    'Owner-test access is NOT public traffic and is NOT public-launch clearance. Passing the owner-test gate clears nothing on this board.',
+};
+
+/**
+ * The required public-launch gates, in the operator's own checklist language.
+ * Each cross-references the Linear blocker(s) and/or evidence doc that proves
+ * it. Editorial status only — never auto-green.
+ */
+export type LaunchGateStatus = LaunchHoldStatus;
+export interface PublicLaunchGate {
+  key: string;
+  label: string;
+  requirement: string;
+  status: LaunchGateStatus;
+  references: readonly string[];
+}
+
+export const PUBLIC_LAUNCH_GATES: readonly PublicLaunchGate[] = [
+  {
+    key: 'owner-test-packet',
+    label: 'Controlled paid owner-test artifact packet',
+    requirement: 'A real paid owner-test run captured + human-reviewed (the G5 packet).',
+    status: 'blocked',
+    references: ['HER-5', 'docs/reviews/hsb-g5-owner-test-artifact-packet-skeleton-2026-06-02.md'],
+  },
+  {
+    key: 'proof-hardcover',
+    label: 'Proof quality / current hardcover readiness',
+    requirement: 'Current generated proofs meet quality bar; hardcover format readiness confirmed by a human.',
+    status: 'in_progress',
+    references: ['HER-7'],
+  },
+  {
+    key: 'print-sla',
+    label: 'Public print / fulfillment SLA readiness',
+    requirement: 'Print + shipping turnaround proven against a public-facing SLA (not just one test order).',
+    status: 'blocked',
+    references: ['HER-7'],
+  },
+  {
+    key: 'email-health',
+    label: 'Bounce / email-health monitoring (or recorded manual-risk acceptance)',
+    requirement: 'Live email-health monitoring verified end-to-end, OR a human-recorded acceptance of manual monitoring risk.',
+    status: 'blocked',
+    references: ['HER-6', '/admin/email-health'],
+  },
+  {
+    key: 'public-traffic-approval',
+    label: 'Social / creator / public traffic approval',
+    requirement: 'Explicit Alexy approval to open public/creator/gifting traffic. Absent by default.',
+    status: 'hold',
+    references: ['HER-9', 'HER-11'],
+  },
+  {
+    key: 'alias-cutover',
+    label: 'Explicit production cutover / apex-www alias approval',
+    requirement: 'Separate explicit approval to move the apex/www alias to a public-launch deployment.',
+    status: 'hold',
+    references: ['LIVE_HSB.md', 'HER-9'],
+  },
+];
+
+/**
+ * Hard do-not-do list for the HOLD window. Phrased as plain operator rules.
+ * (Intentionally avoids naming specific provider SDK/call tokens so the
+ * source stays free of mutating-call identifiers — these are rules, not code.)
+ */
+export const DO_NOT_DO: readonly string[] = [
+  'No public traffic — do not open the site or share public links with general visitors.',
+  'No creator or gifting outreach.',
+  'No posting, scheduling, or boosting on any channel.',
+  'No payment, print/fulfillment, or customer-message/provider actions without explicit Alexy approval.',
+  'No production deploy, env change, or apex/www alias move without separate explicit approval.',
+];
+
+export interface EvidenceRef {
+  label: string;
+  path: string;
+  note?: string;
+}
+
+/**
+ * Pointers to where launch evidence lives (or will be captured). Static paths
+ * only — this module reads no files and fetches nothing.
+ */
+export const EVIDENCE_DOCS: readonly EvidenceRef[] = [
+  { label: 'Release hygiene + anti-drift runbook', path: 'docs/runbooks/release-hygiene.md' },
+  { label: 'Canonical live deployment / alias rules', path: 'LIVE_HSB.md' },
+  {
+    label: 'G5 owner-test artifact packet',
+    path: 'docs/reviews/hsb-g5-owner-test-artifact-packet-skeleton-2026-06-02.md',
+    note: 'Captured during the controlled paid owner-test run.',
+  },
+];
+
 export interface LaunchHoldSnapshot {
   posture: typeof PUBLIC_LAUNCH_POSTURE;
   /**
@@ -124,7 +242,11 @@ export interface LaunchHoldSnapshot {
    * launch clearance is a human act recorded in Linear, never inferred here.
    */
   clearedForPublicTraffic: false;
+  ownerTest: OwnerTestGateInfo;
+  gates: readonly PublicLaunchGate[];
   blockers: readonly LaunchBlocker[];
+  doNotDo: readonly string[];
+  evidence: readonly EvidenceRef[];
   openCount: number;
   generatedAt: string;
   note: string;
@@ -139,7 +261,11 @@ export function getLaunchHoldSnapshot(now: Date = new Date()): LaunchHoldSnapsho
   return {
     posture: PUBLIC_LAUNCH_POSTURE,
     clearedForPublicTraffic: false,
+    ownerTest: OWNER_TEST_GATE,
+    gates: PUBLIC_LAUNCH_GATES,
     blockers: LAUNCH_BLOCKERS,
+    doNotDo: DO_NOT_DO,
+    evidence: EVIDENCE_DOCS,
     openCount: LAUNCH_BLOCKERS.length,
     generatedAt: now.toISOString(),
     note:
