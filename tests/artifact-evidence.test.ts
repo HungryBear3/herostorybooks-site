@@ -84,6 +84,30 @@ test('zero artifacts fails', () => {
   assert.ok(r.reasons.some((x) => x.code === 'NO_PAGE_ARTIFACTS'));
 });
 
+test('missing story artifact URL fails closed', () => {
+  const r = evaluateArtifactEvidence(makeOrder({ storyArtifactUrl: null }));
+  assert.equal(r.ok, false);
+  assert.ok(r.reasons.some((x) => x.code === 'NO_STORY_ARTIFACT' && x.severity === 'fail'));
+});
+
+test('full artifact count still fails when exact page index set is incomplete', () => {
+  const pages = goodPages(24);
+  pages[23] = page(24);
+  const r = evaluateArtifactEvidence(makeOrder({ pageArtifacts: pages }));
+  assert.equal(r.ok, false);
+  assert.ok(r.reasons.some((x) => x.code === 'MISSING_PAGE_INDEX' && /out-of-range/.test(x.message)));
+  assert.ok(r.reasons.some((x) => x.code === 'MISSING_PAGE_INDEX' && /23/.test(x.message)));
+});
+
+test('duplicate page index fails closed', () => {
+  const pages = goodPages(24);
+  pages[23] = page(22, { storyText: 'Distinct duplicate-index page prose to avoid repeated-text side effects.' });
+  const r = evaluateArtifactEvidence(makeOrder({ pageArtifacts: pages }));
+  assert.equal(r.ok, false);
+  assert.ok(r.reasons.some((x) => x.code === 'DUPLICATE_PAGE_INDEX'));
+  assert.ok(r.reasons.some((x) => x.code === 'MISSING_PAGE_INDEX' && /23/.test(x.message)));
+});
+
 // ── 3. missing image fails (and acceptedImageUrl counts as usable) ───────────
 
 test('a page with no usable image fails', () => {

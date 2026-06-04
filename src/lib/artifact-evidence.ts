@@ -183,7 +183,7 @@ export function evaluateArtifactEvidence(
   }
 
   if (!order.storyArtifactUrl) {
-    warn('NO_STORY_ARTIFACT', 'no story/proof artifact URL persisted yet');
+    fail('NO_STORY_ARTIFACT', 'no story/proof artifact URL persisted yet');
   }
 
   // ── page count ──
@@ -208,7 +208,7 @@ export function evaluateArtifactEvidence(
   const basePrompts: string[] = [];
 
   for (const p of artifacts) {
-    if (!Number.isInteger(p.pageIndex) || p.pageIndex < 0) badIndex = true;
+    if (!Number.isInteger(p.pageIndex) || p.pageIndex < 0 || p.pageIndex >= expectedPages) badIndex = true;
     else if (seenIndexes.has(p.pageIndex)) dupIndex = true;
     else seenIndexes.add(p.pageIndex);
 
@@ -228,7 +228,15 @@ export function evaluateArtifactEvidence(
     basePrompts.push(normalize(p.basePrompt));
   }
 
-  if (badIndex) fail('MISSING_PAGE_INDEX', 'one or more page artifacts have an invalid page index');
+  const missingExpectedIndexes = Array.from({ length: expectedPages }, (_, i) => i)
+    .filter((i) => !seenIndexes.has(i));
+  if (badIndex) fail('MISSING_PAGE_INDEX', 'one or more page artifacts have an invalid or out-of-range page index');
+  if (missingExpectedIndexes.length > 0) {
+    fail(
+      'MISSING_PAGE_INDEX',
+      `missing expected page index(es): ${missingExpectedIndexes.slice(0, 8).join(', ')}${missingExpectedIndexes.length > 8 ? ', …' : ''}`,
+    );
+  }
   if (dupIndex) fail('DUPLICATE_PAGE_INDEX', 'duplicate page indexes across artifacts');
   if (missingText) fail('MISSING_STORY_TEXT', 'one or more page artifacts have empty story text');
   if (missingImages > 0) {
