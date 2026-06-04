@@ -17,6 +17,8 @@
 // in-request kickoff is a safe no-op.
 
 import type { OrderRecord } from './orders.ts';
+import type { TriggerResult } from './fulfillment.ts';
+import { isAdminAuthedFromRequest } from './admin-auth.ts';
 
 /**
  * fulfillmentStatus values eligible for a durable (re)kickoff. Unset is treated
@@ -64,4 +66,75 @@ export function findFulfillmentBacklog(
   // FIFO: oldest paid-but-stuck order first.
   eligible.sort((a, b) => Date.parse(a.createdAt || '') - Date.parse(b.createdAt || ''));
   return eligible.slice(0, limit);
+}
+
+/**
+ * Fail-closed cron auth for the fulfillment sweep.
+ *
+ * Hardening over the original sweep check: the spoofable `x-vercel-cron` header
+ * and `vercel-cron` user-agent are NO LONGER trusted on their own (any client
+ * can forge them). Authorization now requires one of:
+ *   - `Authorization: Bearer <CRON_SECRET>` — and `CRON_SECRET` must actually be
+ *     configured (the header Vercel Cron sends when CRON_SECRET is set), or
+ *   - a valid operator admin key (`isAdminAuthedFromRequest`) for manual runs.
+ * If `CRON_SECRET` is unset, the cron path cannot authenticate at all — the
+ * sweep fails closed (401) rather than running on a forged request.
+ */
+export function isFulfillmentSweepAuthorized(request: Request): boolean {
+  const secret = process.env.CRON_SECRET;
+  if (secret && secret.length > 0) {
+    if ((request.headers.get('authorization') ?? '') === `Bearer ${secret}`) return true;
+  }
+  return isAdminAuthedFromRequest(request);
+}
+
+export interface SweepDeps {
+  /** Result of cron auth. The sweep does NO work when false. */
+  authorized: boolean;
+  listOrders: () => Promise<OrderRecord[]>;
+  trigger: (orderId: string) => Promise<TriggerResult>;
+  excludeOrderIds?: ReadonlySet<string>;
+  limit?: number;
+  now?: Date;
+  log?: (line: string) => void;
+}
+
+export interface SweepResult {
+  status: number;
+  body: { error?: string; swept?: number; results?: Array<{ orderId: string; status: string }> };
+}
+
+/**
+ * Run the durable fulfillment sweep. Auth is checked BEFORE any work: an
+ * unauthorized call never lists orders or triggers fulfillment. Otherwise it
+ * selects the bounded FIFO backlog and re-runs the idempotent triggerFulfillment.
+ */
+export async function runFulfillmentSweep(deps: SweepDeps): Promise<SweepResult> {
+  const log = deps.log ?? ((line: string) => console.log(line));
+
+  if (!deps.authorized) {
+    log('[cron][fulfillment-sweep] unauthorized — refused before any work');
+    return { status: 401, body: { error: 'Unauthorized' } };
+  }
+
+  const orders = await deps.listOrders();
+  const backlog = findFulfillmentBacklog(orders, {
+    excludeOrderIds: deps.excludeOrderIds,
+    limit: deps.limit,
+    now: deps.now,
+  });
+
+  const results: Array<{ orderId: string; status: string }> = [];
+  for (const order of backlog) {
+    try {
+      const r = await deps.trigger(order.id);
+      results.push({ orderId: order.id, status: r.status });
+      log(`[cron][fulfillment-sweep] ${order.id} -> ${r.status}`);
+    } catch (err) {
+      results.push({ orderId: order.id, status: 'error' });
+      log(`[cron][fulfillment-sweep] ${order.id} threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return { status: 200, body: { swept: backlog.length, results } };
 }
