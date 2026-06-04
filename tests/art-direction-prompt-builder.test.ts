@@ -5,9 +5,19 @@ import {
   ArtDirectionPromptBuilderError,
   buildArtDirectionPromptObject,
 } from '../src/lib/art-direction-prompt-builder.ts';
+import { buildPagePrompt } from '../src/lib/image-prompt-builder.ts';
 import { lukasDinoArtDirectionFixture } from './fixtures/art-direction/lukas-dino-valid.ts';
 
 const page4 = lukasDinoArtDirectionFixture.storyboard.entries[3];
+
+const PROMPT_ORDER = {
+  childName: 'Lukas',
+  childAge: '5',
+  characterNotes: undefined,
+  appearanceOptions: undefined,
+  photoBlobPath: null,
+  theme: 'brave-explorer',
+};
 
 test('art-direction prompt builder is deterministic for the same validated inputs', () => {
   const first = buildArtDirectionPromptObject({
@@ -150,4 +160,73 @@ test('art-direction prompt builder rejects invalid entries and missing reference
     }),
     (error) => error instanceof ArtDirectionPromptBuilderError && error.code === 'missing_referenced_character_sheet',
   );
+});
+
+// ── Slice 3: art-direction prompt object reaches the final page prompt ────────
+
+test('buildPagePrompt without an art-direction object preserves pre-Slice-3 behavior', () => {
+  const prompt = buildPagePrompt({
+    basePrompt: 'Lukas waves on a sunny hill.',
+    storyText: 'Lukas waved at the sun.',
+    order: PROMPT_ORDER,
+    characterAnchor: 'A bright five-year-old named Lukas.',
+  });
+  // No art-direction sections when no packet was supplied.
+  assert.doesNotMatch(prompt, /ART DIRECTION \(authoritative/);
+  assert.doesNotMatch(prompt, /Art-direction negative guardrails/);
+  // Generic scaffolding still present.
+  assert.match(prompt, /Lukas waves on a sunny hill\./);
+  assert.match(prompt, /Quality requirements:/);
+  assert.match(prompt, /No masks\. No superhero styling\./i);
+});
+
+test('buildPagePrompt with an art-direction object injects style, character, page-scene anchors and negatives', () => {
+  const artDirection = buildArtDirectionPromptObject({
+    styleBible: lukasDinoArtDirectionFixture.style_bible,
+    characterSheets: lukasDinoArtDirectionFixture.character_sheets,
+    storyboardEntry: page4,
+  });
+  const prompt = buildPagePrompt({
+    basePrompt: 'Lukas waves on a sunny hill.',
+    storyText: 'Lukas waved at the sun.',
+    order: PROMPT_ORDER,
+    characterAnchor: 'A bright five-year-old named Lukas.',
+    artDirection,
+  });
+
+  // Authoritative art-direction header + global watercolor style bible.
+  assert.match(prompt, /ART DIRECTION \(authoritative — follow exactly\):/);
+  assert.match(prompt, /Style bible watercolor_classic/);
+  // Character anchor (apparent age / hair / face / continuity).
+  assert.match(prompt, /Lukas \(hero\) must stay visually consistent/);
+  assert.match(prompt, /age 5; face round/);
+  // Page-specific scene / safe-zone notes + theme continuity motifs.
+  assert.match(prompt, /Page text context: Lukas and Sprout found wonder waiting on page 4/);
+  assert.match(prompt, /Continuity motifs: red-bandana, yellow-flower, cloth-map/);
+  // Negative constraints from the packet AND the always-on generic guardrails.
+  assert.match(prompt, /Art-direction negative guardrails \(must NOT appear in the image\):/);
+  assert.match(prompt, /- photorealism/);
+  assert.match(prompt, /- no readable text/);
+  // Slice-3 must not drop the required generic guardrails.
+  assert.match(prompt, /No masks\. No superhero styling\./i);
+  assert.match(prompt, /child is fully clothed and age-appropriate/);
+  assert.match(prompt, /Render zero readable lettering anywhere in the image/);
+  // The base story beat is still present and not clobbered.
+  assert.match(prompt, /Lukas waves on a sunny hill\./);
+});
+
+test('buildPagePrompt art-direction injection never leaks raw object/undefined/null tokens', () => {
+  const artDirection = buildArtDirectionPromptObject({
+    styleBible: lukasDinoArtDirectionFixture.style_bible,
+    characterSheets: lukasDinoArtDirectionFixture.character_sheets,
+    storyboardEntry: page4,
+  });
+  const prompt = buildPagePrompt({
+    basePrompt: 'Lukas waves on a sunny hill.',
+    order: PROMPT_ORDER,
+    characterAnchor: 'A bright five-year-old named Lukas.',
+    artDirection,
+  });
+  assert.doesNotMatch(prompt, /\[object Object\]/);
+  assert.doesNotMatch(prompt, /\bundefined\b/);
 });

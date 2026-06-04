@@ -3,6 +3,11 @@ import { put } from '@vercel/blob';
 
 import { acquireOwnerPrintGoIntentLock, getOrder, getOrderPhotoUrl, isPrintFormat, releaseOwnerPrintGoIntentLock, updateFulfillmentState, withBlobNamespace } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
+import {
+  ArtDirectionPromptBuilderError,
+  buildArtDirectionPromptObject,
+} from './art-direction-prompt-builder.ts';
+import type { ArtDirectionPacket } from './art-direction-schemas.ts';
 import type { GenerationRouteDecision, OrderRecord, ReviewAuditEvent } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
 import { generateStory, generateStoryWithMeta } from './story-generator.ts';
@@ -478,6 +483,118 @@ async function buildArtDirectionPatch(
   };
 }
 
+// Single-shape result instead of a discriminated union: this codebase compiles
+// with tsconfig "strict": false (strictNullChecks off), under which true/false
+// literal discriminants do not narrow. `prompts === null` signals fail-closed.
+interface InitialImagePromptResult {
+  prompts: string[] | null;
+  reason: string | null;
+  artDirectionPages: number;
+}
+
+/**
+ * Build the per-page initial image prompts, leading with the frozen character
+ * anchor + identity scaffolding (buildPagePrompt). When the order carries an
+ * art-direction packet, each page's validated StyleBible/CharacterSheet/
+ * StoryboardEntry guidance is converted via buildArtDirectionPromptObject()
+ * and fed into the prompt as an authoritative art-direction section plus
+ * negative guardrails.
+ *
+ * Fail-closed: when a packet is present but a page cannot be art-directed
+ * (no storyboard entry for the page, or the prompt builder rejects the
+ * packet), this returns { ok: false } so the caller moves the order to
+ * failed_manual_review instead of silently shipping a generic prompt for a
+ * paid/custom book. When no packet exists (production default), behavior is
+ * unchanged.
+ *
+ * The returned `reason` is intentionally free of PII, prompt text, photo
+ * URLs, and provider output — page number + error code only.
+ */
+function buildInitialImagePrompts(
+  order: OrderRecord,
+  story: StoryContent,
+  characterAnchor: string | null,
+  packet: ArtDirectionPacket | null,
+): InitialImagePromptResult {
+  const promptOrder = {
+    childName: order.childName,
+    childAge: order.childAge,
+    characterNotes: order.characterNotes,
+    appearanceOptions: order.appearanceOptions,
+    photoBlobPath: order.photoBlobPath ?? null,
+    theme: order.theme,
+  };
+
+  if (!packet) {
+    return {
+      reason: null,
+      artDirectionPages: 0,
+      prompts: story.pages.map((p) =>
+        buildPagePrompt({
+          basePrompt: p.imagePrompt,
+          storyText: p.story,
+          order: promptOrder,
+          characterAnchor,
+          textLayout: p.textLayout,
+        }),
+      ),
+    };
+  }
+
+  const entriesByPage = new Map(packet.storyboard.entries.map((entry) => [entry.page_number, entry]));
+  const prompts: string[] = [];
+  let artDirectionPages = 0;
+  for (let i = 0; i < story.pages.length; i += 1) {
+    const p = story.pages[i]!;
+    const pageNumber = i + 1;
+    const entry = entriesByPage.get(pageNumber);
+    if (!entry) {
+      return { prompts: null, artDirectionPages, reason: `art-direction packet has no storyboard entry for page ${pageNumber}` };
+    }
+    let artDirection;
+    try {
+      artDirection = buildArtDirectionPromptObject({
+        styleBible: packet.style_bible,
+        characterSheets: packet.character_sheets,
+        storyboardEntry: entry,
+      });
+    } catch (err) {
+      const code = err instanceof ArtDirectionPromptBuilderError ? err.code : 'art_direction_prompt_build_failed';
+      return { prompts: null, artDirectionPages, reason: `art-direction prompt build failed for page ${pageNumber}: ${code}` };
+    }
+    prompts.push(
+      buildPagePrompt({
+        basePrompt: p.imagePrompt,
+        storyText: p.story,
+        order: promptOrder,
+        characterAnchor,
+        textLayout: p.textLayout,
+        artDirection,
+      }),
+    );
+    artDirectionPages += 1;
+  }
+  return { prompts, artDirectionPages, reason: null };
+}
+
+async function failClosedForArtDirection(
+  order: OrderRecord,
+  storyMeta: StoryWithMeta['meta'],
+  artDirectionPatch: Partial<OrderRecord>,
+  reason: string,
+): Promise<void> {
+  const summary = `art-direction packet present but unusable for image prompts: ${reason}`;
+  console.error(`[fulfillment] orderId=${order.id} ${summary}`);
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    fulfillmentStatus: 'failed_manual_review',
+    storyMeta,
+    ...artDirectionPatch,
+    artDirectionHumanReviewStatus: 'needs_review',
+    fulfillmentAttempts: 0,
+    fulfillmentLastError: summary.slice(0, 500),
+  }));
+}
+
 // ── Retry wrapper ─────────────────────────────────────────────────────────────
 
 async function runWithRetry(
@@ -558,24 +675,21 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // Build per-page prompts that LEAD with the frozen character anchor + identity
   // section + continuity rules + quality constraints. Initial generation now
   // goes through buildPagePrompt so it gets the same identity scaffolding the
-  // regenerate path has always had.
+  // regenerate path has always had. When an art-direction packet exists, each
+  // page's validated style/character/storyboard guidance is woven in; a packet
+  // that cannot be applied fails closed rather than silently shipping generic.
   const characterAnchor = story.characterDescription ?? null;
-  const imagePrompts = story.pages.map((p) =>
-    buildPagePrompt({
-      basePrompt: p.imagePrompt,
-      storyText: p.story,
-      order: {
-        childName: order.childName,
-        childAge: order.childAge,
-        characterNotes: order.characterNotes,
-        appearanceOptions: order.appearanceOptions,
-        photoBlobPath: order.photoBlobPath ?? null,
-        theme: order.theme,
-      },
-      characterAnchor,
-      textLayout: p.textLayout,
-    }),
+  const promptBuild = buildInitialImagePrompts(
+    order,
+    story,
+    characterAnchor,
+    (artDirectionPatch.artDirectionPacket ?? null) as ArtDirectionPacket | null,
   );
+  if (promptBuild.prompts === null) {
+    await failClosedForArtDirection(order, storyMeta, artDirectionPatch, promptBuild.reason ?? 'unknown art-direction error');
+    return;
+  }
+  const imagePrompts = promptBuild.prompts;
   const imageResults = await runImageGeneration(imagePrompts, order, deps);
   const imageUrls = imageResults.map((r) => r.imageUrl);
 
@@ -806,24 +920,20 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // here.
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta, ...routeCarryPatch, ...artDirectionPatch }));
   // Same identity-anchored prompt construction as the digital path — keeps the
-  // same child consistent across all pages of the print book.
+  // same child consistent across all pages of the print book, and weaves in the
+  // art-direction packet (with the same fail-closed semantics) when present.
   const characterAnchor = story.characterDescription ?? null;
-  const imagePrompts = story.pages.map((p) =>
-    buildPagePrompt({
-      basePrompt: p.imagePrompt,
-      storyText: p.story,
-      order: {
-        childName: order.childName,
-        childAge: order.childAge,
-        characterNotes: order.characterNotes,
-        appearanceOptions: order.appearanceOptions,
-        photoBlobPath: order.photoBlobPath ?? null,
-        theme: order.theme,
-      },
-      characterAnchor,
-      textLayout: p.textLayout,
-    }),
+  const promptBuild = buildInitialImagePrompts(
+    order,
+    story,
+    characterAnchor,
+    (artDirectionPatch.artDirectionPacket ?? null) as ArtDirectionPacket | null,
   );
+  if (promptBuild.prompts === null) {
+    await failClosedForArtDirection(order, storyMeta, artDirectionPatch, promptBuild.reason ?? 'unknown art-direction error');
+    return;
+  }
+  const imagePrompts = promptBuild.prompts;
   const imageResults = await runImageGeneration(imagePrompts, order, deps);
   const imageUrls = imageResults.map((r) => r.imageUrl);
 

@@ -12,6 +12,7 @@
 
 import type { OrderRecord } from './orders.ts';
 import type { PageTextLayout } from './fulfillment-types.ts';
+import type { ArtDirectionPromptObject } from './art-direction-prompt-builder.ts';
 
 export const FEEDBACK_TAGS = [
   'hands',
@@ -98,6 +99,19 @@ export interface PagePromptInput {
    * StoryContent.characterDescription; never re-derived per page.
    */
   characterAnchor?: string | null;
+  /**
+   * Validated art-direction guidance for THIS page, derived from the order's
+   * ArtDirectionPacket (StyleBible + CharacterSheets + this page's
+   * StoryboardEntry) via buildArtDirectionPromptObject(). When present, its
+   * `positive` block is added as an authoritative art-direction section ahead
+   * of the generic scaffolding and its `negativeGuardrails` are appended as
+   * explicit "must NOT appear" constraints. When absent (the production
+   * default, since there is no default packet provider), prompt output is
+   * byte-identical to the pre-Slice-3 behavior. This object is assembled from
+   * schema-validated style/character/storyboard fields only — it carries no
+   * customer PII, photo URLs, or provider responses.
+   */
+  artDirection?: ArtDirectionPromptObject | null;
   /** Customer feedback for a regenerate. Empty/undefined for initial generation. */
   feedback?: string;
   /**
@@ -215,6 +229,31 @@ function qualitySection(): string {
   return `Quality requirements: ${QUALITY_CONSTRAINTS.join('; ')}.`;
 }
 
+/**
+ * Authoritative art-direction section. Placed immediately after the frozen
+ * character anchor so the validated StyleBible/CharacterSheet/Storyboard
+ * direction (watercolor/gouache style, immutable character anchors, page
+ * scene + safe-zone notes, continuity motifs) leads the prompt. The generic
+ * identity/continuity/theme/quality sections below remain as defense-in-depth
+ * guardrails (face visibility, no masks/capes, no logo book, fully clothed,
+ * no readable text) that the packet's art-style negatives do not all cover.
+ */
+function artDirectionPositiveSection(artDirection: ArtDirectionPromptObject | null | undefined): string {
+  const positive = (artDirection?.positive ?? '').trim();
+  if (!positive) return '';
+  return ['ART DIRECTION (authoritative — follow exactly):', positive].join('\n');
+}
+
+function artDirectionNegativeSection(artDirection: ArtDirectionPromptObject | null | undefined): string {
+  if (!artDirection) return '';
+  const guardrails = artDirection.negativeGuardrails.map((g) => g.trim()).filter(Boolean);
+  if (guardrails.length === 0) return '';
+  return [
+    'Art-direction negative guardrails (must NOT appear in the image):',
+    ...guardrails.map((g) => `- ${g}`),
+  ].join('\n');
+}
+
 const ZONE_DESCRIPTIONS: Record<PageTextLayout['zone'], string> = {
   top_left: 'the upper-left quarter of the frame',
   top_right: 'the upper-right quarter of the frame',
@@ -294,6 +333,7 @@ function tagEmphasisSection(tags: FeedbackTag[]): string {
 export function buildPagePrompt(input: PagePromptInput): string {
   return [
     characterAnchorSection(input.characterAnchor),
+    artDirectionPositiveSection(input.artDirection),
     input.basePrompt.trim(),
     childIdentitySection(input.order),
     continuitySection(input.order),
@@ -301,6 +341,7 @@ export function buildPagePrompt(input: PagePromptInput): string {
     sceneGroundingSection(input.storyText),
     compositionDisciplineSection(),
     safeTextAreaSection(input.textLayout),
+    artDirectionNegativeSection(input.artDirection),
     qualitySection(),
   ]
     .filter(Boolean)
