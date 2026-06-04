@@ -8,6 +8,7 @@ import { isPrintFormat } from './orders.ts';
 import { ArtDirectionPacketSchema } from './art-direction-schemas.ts';
 import { validateStoryboardCompleteness, type StoryboardValidationIssue } from './storyboard-validator.ts';
 import { evaluateProofSubmissionGate, hasUsableShippingAddress } from './proof-submission-gate.ts';
+import { evaluateArtifactEvidence, type ArtifactEvidenceResult } from './artifact-evidence.ts';
 
 export type DiagnosticSeverity = 'ok' | 'info' | 'warn' | 'fail';
 
@@ -166,6 +167,13 @@ export interface OrderDiagnostics {
   };
   /** Compact ops-facing classification for paid orders missing their artifact. */
   paidOrderOpsIssue: PaidOrderOpsIssue | null;
+  /**
+   * Artifact evidence gate (Slice 4). Read-only/diagnostic: structured evidence
+   * for whether the persisted artifacts support a gift-quality/custom proof
+   * claim. Does NOT flip proof_release_hold or manual review — Rex decides.
+   * Default fail-closed for unknown/template-only/short/imageless artifacts.
+   */
+  evidence: ArtifactEvidenceResult;
   /** Ordered list of named checks — the ones that fail are what to escalate on. */
   checks: DiagnosticCheck[];
 }
@@ -647,6 +655,7 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       paidArtifactNeedsAttention: Boolean(paidOrderOpsIssue && paidOrderOpsIssue.severity !== 'info'),
     },
     paidOrderOpsIssue,
+    evidence: evaluateArtifactEvidence(order),
     checks: [],
   };
 
@@ -890,6 +899,12 @@ export function formatDiagnosticsSummary(d: OrderDiagnostics): string {
     lines.push(`  art-direction ${issue.code} ${issue.path}: ${issue.message}`);
   }
   lines.push(`Pages: ${d.artifacts.pagesAccepted}/${d.artifacts.pageArtifactCount} accepted · ${d.artifacts.pagesWithoutImage} missing image · ${d.artifacts.totalRegenerations} regenerations`);
+  lines.push(
+    `Artifact evidence: ${d.evidence.severity.toUpperCase()} (ok=${d.evidence.ok ? 'yes' : 'no'}) · ${d.evidence.summary}`,
+  );
+  for (const r of d.evidence.reasons) {
+    lines.push(`  evidence ${r.severity} ${r.code}: ${r.message}`);
+  }
   lines.push(
     `Conditioning: ${d.artifacts.pagesPhotoConditioned} photo-edit · ${d.artifacts.pagesTextOnly} text-only · ${d.artifacts.pagesUnknownConditioning} unknown`,
   );
