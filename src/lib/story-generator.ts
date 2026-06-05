@@ -4,6 +4,7 @@ import type { StoryContent, StoryMeta, StoryPage } from './fulfillment-types.ts'
 import { STORY_THEMES } from './story-catalog.ts';
 import { SAMPLE_ADVENTURES } from './sample-adventures.ts';
 import { planStorybook, validateStoryPlan, type StoryPlanPage } from './story-planner.ts';
+import { fixSingularTheyAgreement, spreadIndex } from './prose-quality.ts';
 import {
   buildStoryFromGeminiPageProse,
   getGeminiApiKey,
@@ -296,6 +297,12 @@ export function buildSafeImagePrompt(input: {
 }
 
 function buildTemplatePageProse(order: OrderRecord, beat: StoryPlanPage, index: number, pageCount: number): string {
+  // Defensive grammar pass so singular-they orders never ship "They tells" /
+  // "they does" (regression class found in the G5 owner-test proof).
+  return fixSingularTheyAgreement(buildTemplatePageProseRaw(order, beat, index, pageCount));
+}
+
+function buildTemplatePageProseRaw(order: OrderRecord, beat: StoryPlanPage, index: number, pageCount: number): string {
   const name = firstNameOnly(order);
   const pronouns = (() => {
     switch (inferPronouns(order)) {
@@ -362,10 +369,12 @@ function buildTemplatePageProse(order: OrderRecord, beat: StoryPlanPage, index: 
     `Nothing announces the answer; ${followSubject} has to notice it for ${pronouns.reflexive}.`,
   ];
 
+  // Coprime strides so adjacent pages never reuse the same templated line and
+  // the opener/middle/closing combination varies (reduces obvious repetition).
   return [
-    sensoryOpeners[index % sensoryOpeners.length],
-    middleLines[index % middleLines.length],
-    closingLines[index % closingLines.length],
+    sensoryOpeners[spreadIndex(index, sensoryOpeners.length, 5)],
+    middleLines[spreadIndex(index, middleLines.length, 7)],
+    closingLines[spreadIndex(index, closingLines.length, 11)],
   ].join(' ');
 }
 

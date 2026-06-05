@@ -1,6 +1,7 @@
 import { Resend } from 'resend';
 
 import type { OrderRecord } from './orders';
+import { canEmailCustomer } from './qa-lifecycle.ts';
 
 const DEFAULT_SUPPORT_EMAIL = 'support@herostorybooks.com';
 const DEFAULT_FROM_EMAIL = 'Hero Story Books <onboarding@resend.dev>';
@@ -449,6 +450,9 @@ export async function sendDigitalDeliveryEmail(
   order: OrderRecord,
   options: { pdfUrl: string },
 ) {
+  // QA gate: never email a customer their proof/delivery unless QA passed.
+  const qaGate = canEmailCustomer(order);
+  if (!qaGate.allowed) return { skipped: true as const, reason: 'qa_not_passed', detail: qaGate.reason };
   const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
   if (!apiKey) return { skipped: true as const, reason: 'missing_resend_api_key' };
 
@@ -522,6 +526,9 @@ export async function sendProofReadyEmail(
   order: OrderRecord,
   options: { reviewUrl: string; proofUrl: string },
 ) {
+  // QA gate: never email a customer their proof unless QA passed.
+  const qaGate = canEmailCustomer(order);
+  if (!qaGate.allowed) return { skipped: true as const, reason: 'qa_not_passed', detail: qaGate.reason };
   const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
   if (!apiKey) return { skipped: true as const, reason: 'missing_resend_api_key' };
 

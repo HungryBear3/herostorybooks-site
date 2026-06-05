@@ -35,7 +35,9 @@ export type FulfillmentStatus =
    * than `failed_manual_review` so the book itself is not regenerated.
    */
   | 'delivery_email_failed'
-  | 'failed_manual_review';
+  | 'failed_manual_review'
+  /** Operator sent the proof back for regeneration after a QA fail (CD lifecycle). */
+  | 'needs_rebuild';
 
 /**
  * Picture-book typography control. Lets each page steer how its text is

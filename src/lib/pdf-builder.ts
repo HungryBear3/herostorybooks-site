@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { OrderRecord } from './orders.ts';
+import { canRenderColophon } from './qa-lifecycle.ts';
 import type {
   PageTextLayout,
   StoryContent,
@@ -410,11 +411,17 @@ function buildFrontMatterPages(story: StoryContent, order: OrderRecord): MatterP
 }
 
 function buildCopyrightBody(story: StoryContent, order: OrderRecord): string {
+  // Colophon gate: the "AI assistance + reviewed before printing" line only
+  // renders when real art is present AND QA has passed/reviewed. Pre-QA proofs
+  // (and any imageless build) omit it so we never assert a review that didn't happen.
+  const colophonLine = canRenderColophon(order)
+    ? 'Illustrations generated with AI assistance and reviewed before printing.\n\n'
+    : '';
   return (
     `© 2026 Hero Story Books. All rights reserved.\n\n` +
     `This book was created uniquely for ${order.childName}.\n` +
     'Personal use only. No part of this book may be reproduced for resale.\n\n' +
-    'Illustrations generated with AI assistance and reviewed before printing.\n\n' +
+    colophonLine +
     `First printing, May 2026. Printed in the United States.\n\n` +
     `Hero Story Books Edition: ${order.id}\n` +
     'herostorybooks.com'
