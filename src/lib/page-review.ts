@@ -366,7 +366,13 @@ export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
   // it here would short-circuit the ack/approve gate and cause approveWholeBook
   // to return `already_approved` for customers who never completed the
   // intended full-approval path.
-  const savedOrder = await updateFulfillmentState(order.id, { pageArtifacts: artifacts });
+  // Thread the already-read fresh `order` so updateFulfillmentState does NOT do
+  // a second getOrder() that can return a stale blob snapshot and merge it over
+  // the just-accepted pageArtifacts (same stale read-modify-write clobber class
+  // as the regenerate bug). Without this, the persisted accept could be built on
+  // a pre-regenerate snapshot — accepted reverting to false, acceptedImageUrl
+  // stale, regenerateCount/versionHistory reset.
+  const savedOrder = await updateFulfillmentState(order.id, { pageArtifacts: artifacts }, order);
 
   // Thread savedOrder so appendAuditEvent doesn't re-read stale blob state
   // and clobber the accepted pageArtifacts we just wrote (production clobber bug).
@@ -408,11 +414,14 @@ export async function requestPageChanges(
     return { ok: false, status, error: error ?? 'request_changes_failed' };
   }
 
+  // Thread the fresh `order` (same stale read-modify-write guard as acceptPage):
+  // updateFulfillmentState must not do a second getOrder() that could merge a
+  // stale blob snapshot over the just-written change-request state.
   const savedOrder = await updateFulfillmentState(order.id, {
     pageArtifacts: artifacts,
     reviewStatus: 'customer_changes_requested',
     proofReviewedAt: null,
-  });
+  }, order);
   await appendAuditEvent(order.id, {
     type: 'page_changes_requested',
     pageIndex: input.pageIndex,

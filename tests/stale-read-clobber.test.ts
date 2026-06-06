@@ -17,7 +17,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -32,6 +32,7 @@ import {
 } from '../src/lib/orders.ts';
 import {
   acceptPage,
+  applyAcceptPage,
   approveWholeBook,
   getReviewSnapshot,
   regeneratePage,
@@ -191,6 +192,147 @@ test('regen + proof rebuild + accept: pageArtifacts survive reload (no clobber)'
     assert.ok(eventTypes.includes('page_regenerated'), 'page_regenerated audit event must be present');
     assert.ok(eventTypes.includes('proof_rebuilt'), 'proof_rebuilt audit event must be present');
     assert.ok(eventTypes.includes('page_accepted'), 'page_accepted audit event must be present');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+// ── accept-page durability after regenerate (preview QA: ord_rexgemini340967) ─
+//
+// Repro of the preview bug: regenerate page 0, then accept page 0. A fresh
+// review/admin read must show accepted=true with the regenerated image — not a
+// reverted accepted=false / stale acceptedImageUrl. Also covers double-accept
+// (the QA repro accepted twice) and that regenerate evidence is not reset.
+
+test('accept after regenerate is durable on fresh read; double-accept stays accepted', async () => {
+  const dir = makeTmp();
+  try {
+    const orderId = 'ord_accept_durable';
+    await seedOrder(orderId, { reviewStatus: 'customer_changes_requested' });
+
+    // Regenerate page 0 → new image, regenerateCount=1, versionHistory gains an entry.
+    const regen = await regeneratePage(
+      { orderId, pageIndex: 0, feedback: 'fix the hands' },
+      { providers: [regenProvider], rebuildProof: async () => ({ ok: true, proofUrl: 'https://example.com/proof-rebuilt.pdf' }) },
+    );
+    assert.equal(regen.ok, true);
+
+    // Accept page 0 twice (the QA repro POSTed accept-page twice).
+    assert.equal((await acceptPage({ orderId, pageIndex: 0 })).ok, true);
+    assert.equal((await acceptPage({ orderId, pageIndex: 0 })).ok, true);
+
+    // Fresh persisted read (review snapshot + raw order) must reflect the accept.
+    const snap = await getReviewSnapshot(orderId);
+    const p0 = snap!.pageArtifacts.find((p) => p.pageIndex === 0)!;
+    assert.equal(p0.accepted, true, 'accepted must survive a fresh read (not revert to false)');
+    assert.equal(p0.acceptedImageUrl, 'https://example.com/regenerated-new.png', 'acceptedImageUrl must equal the regenerated currentImageUrl');
+    assert.equal(p0.acceptedImageUrl, p0.currentImageUrl, 'acceptedImageUrl must equal currentImageUrl');
+    assert.equal(p0.regenerateCount, 1, 'regenerateCount must NOT be reset by accept');
+    assert.equal(p0.versionHistory.length, 2, 'versionHistory must NOT be reset by accept');
+    assert.equal(p0.feedbackHistory.length, 1, 'feedbackHistory preserved');
+
+    // Audit append did not clobber pageArtifacts; the accept event is present.
+    const order = await getOrder(orderId);
+    assert.equal(order!.pageArtifacts![0].accepted, true, 'raw order read also shows accepted=true (audit append did not clobber)');
+    assert.equal(order!.pageArtifacts![0].acceptedImageUrl, 'https://example.com/regenerated-new.png');
+    assert.ok((order!.auditEvents ?? []).some((e) => e.type === 'page_accepted'), 'page_accepted audit event present');
+
+    // Sibling page untouched.
+    const p1 = snap!.pageArtifacts.find((p) => p.pageIndex === 1)!;
+    assert.equal(p1.accepted, false);
+    assert.equal(p1.currentImageUrl, 'https://example.com/old-1.png');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+// ── acceptPage must thread its fresh order into updateFulfillmentState ────────
+//
+// Source-level guard: on a consistent test store the second getOrder() returns
+// the same snapshot, so the fix is only observable under real blob staleness
+// between acceptPage's top read and updateFulfillmentState's re-read. This
+// assertion prevents the existingOrder arg from being silently dropped again.
+
+test('acceptPage threads fresh order into updateFulfillmentState (no un-hinted re-read)', () => {
+  const src = readFileSync(new URL('../src/lib/page-review.ts', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('export async function acceptPage'), src.indexOf('export async function requestPageChanges'));
+  assert.ok(fn.length > 0, 'acceptPage body located');
+  // The accept persistence write must pass `order` as existingOrder.
+  assert.match(fn, /updateFulfillmentState\(\s*order\.id,\s*\{\s*pageArtifacts:\s*artifacts\s*\}\s*,\s*order\s*\)/);
+  // It must NOT use the un-hinted two-arg form that re-reads stale blob state.
+  assert.doesNotMatch(fn, /updateFulfillmentState\(\s*order\.id,\s*\{\s*pageArtifacts:\s*artifacts\s*\}\s*\)/);
+});
+
+test('requestPageChanges threads fresh order into updateFulfillmentState (no un-hinted re-read)', () => {
+  const src = readFileSync(new URL('../src/lib/page-review.ts', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('export async function requestPageChanges'), src.indexOf('export async function', src.indexOf('export async function requestPageChanges') + 1));
+  assert.ok(fn.length > 0, 'requestPageChanges body located');
+  // The change-request write must pass `order` as existingOrder.
+  assert.match(fn, /updateFulfillmentState\(\s*order\.id,\s*\{[\s\S]*?reviewStatus:\s*'customer_changes_requested',[\s\S]*?proofReviewedAt:\s*null,?\s*\}\s*,\s*order\s*\)/);
+  // It must NOT use the un-hinted form (no third arg) for that write.
+  assert.doesNotMatch(fn, /updateFulfillmentState\(\s*order\.id,\s*\{[\s\S]*?proofReviewedAt:\s*null,?\s*\}\s*\)\s*;/);
+});
+
+// ── accept-page stale-read guard (fix-sensitive) ──────────────────────────────
+//
+// acceptPage now threads its fresh `order` into updateFulfillmentState so the
+// helper does NOT do a second getOrder() that returns a stale blob snapshot.
+// Mirrors the appendAuditEvent stale-read test below: we drive the exact accept
+// persistence pattern and overwrite disk with a stale snapshot to prove the
+// fixed (existingOrder) path keeps fresh state while the unfixed (no
+// existingOrder) path is built from the stale re-read.
+
+test('stale-read: acceptPage updateFulfillmentState with existingOrder ignores stale disk', async () => {
+  const dir = makeTmp();
+  try {
+    const orderId = 'ord_accept_stale';
+    const original = await seedOrder(orderId, { storyArtifactUrl: 'https://example.com/OLD-proof.pdf' });
+
+    // Fresh post-regenerate snapshot (what acceptPage's top read returns).
+    const fresh: OrderRecord = {
+      ...original,
+      storyArtifactUrl: 'https://example.com/REGEN-proof.pdf',
+      reviewStatus: 'customer_changes_requested',
+      pageArtifacts: [
+        {
+          ...original.pageArtifacts![0]!,
+          currentImageUrl: 'https://example.com/regen.png',
+          regenerateCount: 1,
+          versionHistory: [
+            ...original.pageArtifacts![0]!.versionHistory,
+            { createdAt: '2026-06-05T12:00:00Z', imageUrl: 'https://example.com/regen.png', provider: 'gemini', model: 'm', promptUsed: 'regen' },
+          ],
+        },
+        ...original.pageArtifacts!.slice(1),
+      ],
+    };
+    await persistOrder(fresh);
+    const { artifacts } = applyAcceptPage(fresh.pageArtifacts!, 0);
+
+    // --- UNFIXED: no existingOrder → updateFulfillmentState re-reads stale disk ---
+    await persistOrder({ ...original, storyArtifactUrl: 'https://example.com/OLD-proof.pdf' }); // stale blob
+    const savedUnfixed = await updateFulfillmentState(orderId, { pageArtifacts: artifacts });
+    assert.equal(
+      savedUnfixed!.storyArtifactUrl,
+      'https://example.com/OLD-proof.pdf',
+      'UNFIXED: savedOrder built from stale re-read (regen proof URL clobbered) — demonstrates the bug class',
+    );
+
+    // --- FIXED: pass the fresh order → no stale re-read ---
+    await persistOrder(fresh); // restore correct state
+    await persistOrder({ ...original, storyArtifactUrl: 'https://example.com/OLD-proof.pdf' }); // stale blob again
+    const savedFixed = await updateFulfillmentState(orderId, { pageArtifacts: artifacts }, fresh);
+    assert.equal(
+      savedFixed!.storyArtifactUrl,
+      'https://example.com/REGEN-proof.pdf',
+      'FIXED: existingOrder pins the fresh snapshot — regen proof URL preserved',
+    );
+    const fp0 = savedFixed!.pageArtifacts![0];
+    assert.equal(fp0.accepted, true);
+    assert.equal(fp0.acceptedImageUrl, 'https://example.com/regen.png');
+    assert.equal(fp0.currentImageUrl, 'https://example.com/regen.png');
+    assert.equal(fp0.regenerateCount, 1, 'regenerateCount preserved');
+    assert.equal(fp0.versionHistory.length, 2, 'versionHistory preserved');
   } finally {
     cleanup(dir);
   }
