@@ -443,7 +443,7 @@ function buildBackMatterPages(story: StoryContent, order: OrderRecord): MatterPa
       kind: 'closing',
       title: 'About This Book',
       body:
-        `This book was made just for ${firstName}. Every word and illustration was created uniquely for this story by Hero Story Books.\n\n` +
+        `This book was personalized for ${firstName} by Hero Story Books.\n\n` +
         `Every story has a little magic tucked inside it. ${story.title} was made to be read, remembered, and returned to whenever ${firstName} needs a brave step forward.\n\n` +
         'herostorybooks.com',
     },

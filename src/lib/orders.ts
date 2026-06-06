@@ -149,6 +149,10 @@ export type ReviewAuditEventType =
   /** Recorded when releaseOrderAfterQa refuses to send the customer email
    *  because of a Generation Operating Policy guard failure. */
   | 'proof_release_failed'
+  /** Recorded when the automated QA gate hard-fails closed before any proof is
+   *  built — missing illustrations, or no usable image route (parked in
+   *  awaiting_manual_art for the manual/subscription art workflow). */
+  | 'qa_blocked'
   /** Recorded when print submission refuses to call submitPrintJob because
    *  the policy guard failed (missing customer approval, manifest invalid,
    *  lineage broken). */

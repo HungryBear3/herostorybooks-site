@@ -7,8 +7,9 @@ import type { GenerationRouteDecision, OrderRecord, ReviewAuditEvent } from './o
 import type { StoryContent } from './fulfillment-types.ts';
 import { generateStory, generateStoryWithMeta } from './story-generator.ts';
 import type { StoryWithMeta } from './story-generator.ts';
-import { generateStoryImageResults } from './image-generator.ts';
+import { generateStoryImageResults, isTextToImageFallbackEnabled } from './image-generator.ts';
 import type { GeneratedImageResult } from './image-generator.ts';
+import { redactSecrets } from './redact-secrets.ts';
 import { buildPdf, buildPrintCoverPdf, buildPrintInteriorPdf, getPrintInteriorPageCount } from './pdf-builder.ts';
 import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';
 import {
@@ -114,6 +115,92 @@ export interface FulfillmentDeps {
 
 function hasQaPass(order: OrderRecord): boolean {
   return Boolean(order.qaPassAt);
+}
+
+/**
+ * Whether this order has ANY usable image route at fulfillment time:
+ *   - a customer photo (photo-edit providers), OR
+ *   - the explicit text-to-image lane is enabled, OR
+ *   - a caller injected an image dep (tests / local harness).
+ * When none exist, the near-term HSB model produces art manually, so the order
+ * is parked in `awaiting_manual_art` rather than entering an empty provider
+ * chain. Automated image-provider readiness is NOT implied — text-to-image is
+ * default OFF.
+ */
+function hasImageRoute(order: OrderRecord, deps: FulfillmentDeps): boolean {
+  return (
+    Boolean(getOrderPhotoUrl(order)) ||
+    isTextToImageFallbackEnabled() ||
+    Boolean(deps.generateImageResults) ||
+    Boolean(deps.generateImages)
+  );
+}
+
+/**
+ * Hard illustration-completeness gate. Unlike detectFailedPages (which only
+ * halts on structured 4xx/5xx/timeout), this flags ANY page missing a usable
+ * image URL — including null-with-no-error pages — so no proof may embed an
+ * "illustration unavailable" placeholder. Returns 1-based page numbers missing art.
+ */
+export function detectMissingIllustrations(imageResults: ReadonlyArray<GeneratedImageResult>): number[] {
+  const missing: number[] = [];
+  for (let i = 0; i < imageResults.length; i += 1) {
+    const url = imageResults[i]?.imageUrl;
+    if (!url || !url.trim()) missing.push(i + 1);
+  }
+  return missing;
+}
+
+/**
+ * Park a paid order in the manual/subscription art queue (no automated image
+ * route). Composes with the base canonical QA model (qaStatus/qaBlockedReason)
+ * and provenance carry (patch carries routeCarryPatch + artDirectionPatch). No
+ * proof is built, no email is sent. Does NOT clear or bypass any release guard.
+ */
+async function routeToManualArt(
+  order: OrderRecord,
+  storyMeta: StoryWithMeta['meta'],
+  patch: Partial<OrderRecord>,
+  pageCount: number,
+): Promise<void> {
+  const reason = `awaiting manual/subscription art: ${pageCount} page images required (no automated image route enabled)`;
+  console.error(`[fulfillment] orderId=${order.id} ${reason}`);
+  const blocked = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    fulfillmentStatus: 'awaiting_manual_art',
+    qaStatus: 'blocked',
+    qaBlockedReason: reason.slice(0, 480),
+    fulfillmentAttempts: 0,
+    fulfillmentLastError: null,
+    storyMeta,
+    ...patch,
+  }));
+  await appendAuditEvent(order.id, { type: 'qa_blocked', reason: 'awaiting_manual_art', meta: { pageCount } }, blocked ?? undefined);
+}
+
+/**
+ * Hard-fail closed when illustrations are incomplete. Uses the base canonical
+ * failed_manual_review state + qaStatus model; the persisted reason/lastError
+ * are secret-redacted (provider error bodies). Composes with — never replaces —
+ * the existing release guard.
+ */
+async function failClosedForMissingArt(
+  order: OrderRecord,
+  storyMeta: StoryWithMeta['meta'],
+  patch: Partial<OrderRecord>,
+  rawSummary: string,
+): Promise<void> {
+  const safe = redactSecrets(rawSummary).slice(0, 500);
+  console.error(`[fulfillment] orderId=${order.id} QA hard-fail (missing illustrations): ${safe}`);
+  const blocked = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    fulfillmentStatus: 'failed_manual_review',
+    qaStatus: 'blocked',
+    qaBlockedReason: safe.slice(0, 480),
+    fulfillmentAttempts: 0,
+    fulfillmentLastError: safe,
+    storyMeta,
+    ...patch,
+  }));
+  await appendAuditEvent(order.id, { type: 'qa_blocked', reason: 'missing_illustrations', meta: { detail: safe.slice(0, 200) } }, blocked ?? undefined);
 }
 
 function paidFulfillmentPatch(order: OrderRecord, patch: Partial<OrderRecord>): Partial<OrderRecord> {
@@ -494,7 +581,7 @@ async function runWithRetry(
       return;
     } catch (err) {
       attempt++;
-      const errMsg = err instanceof Error ? err.message : String(err);
+      const errMsg = redactSecrets(err instanceof Error ? err.message : String(err));
       console.error(`[fulfillment] orderId=${orderId} attempt=${attempt} error: ${errMsg}`);
 
       if (attempt >= MAX_RETRIES) {
@@ -554,6 +641,14 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // blob-read freshness. Defense-in-depth: also carry it through
   // delivery_email_failed so an email-side failure cannot drop it
   // either.
+  // Manual-art routing: with no enabled automated image route (no photo, no
+  // text-to-image lane, no injected image dep), park the order in the manual/
+  // subscription art queue instead of entering an empty provider chain. Carries
+  // routeCarryPatch + artDirectionPatch provenance forward.
+  if (!hasImageRoute(order, deps)) {
+    await routeToManualArt(order, storyMeta, { ...routeCarryPatch, ...artDirectionPatch }, story.pages.length);
+    return;
+  }
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta, ...routeCarryPatch, ...artDirectionPatch }));
   // Build per-page prompts that LEAD with the frozen character anchor + identity
   // section + continuity rules + quality constraints. Initial generation now
@@ -643,8 +738,18 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
       storyMeta,
       ...routeCarryPatch,
       ...artDirectionPatch,
-      fulfillmentLastError: summary.slice(0, 500),
+      fulfillmentLastError: redactSecrets(summary).slice(0, 500),
     }));
+    return;
+  }
+
+  // Hard illustration-completeness gate: no releasable preview may embed an
+  // "illustration unavailable" placeholder. Any page missing a usable image
+  // (including null-with-no-halting-error) fails QA closed before the PDF build.
+  const missingArt = detectMissingIllustrations(imageResults);
+  if (missingArt.length > 0) {
+    const summary = `missing illustrations on ${missingArt.length} of ${story.pages.length} pages: pages ${missingArt.join(',')}`;
+    await failClosedForMissingArt(order, storyMeta, { pageArtifacts: seededPageArtifacts, ...routeCarryPatch, ...artDirectionPatch }, summary);
     return;
   }
 
@@ -804,6 +909,11 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // write. The 2026-05-15 Gemini preview proof test reproduced the
   // dropped-storyMeta failure on the digital path; same risk applies
   // here.
+  // Manual-art routing (mirror of the digital path).
+  if (!hasImageRoute(order, deps)) {
+    await routeToManualArt(order, storyMeta, { ...routeCarryPatch, ...artDirectionPatch }, story.pages.length);
+    return;
+  }
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta, ...routeCarryPatch, ...artDirectionPatch }));
   // Same identity-anchored prompt construction as the digital path — keeps the
   // same child consistent across all pages of the print book.
@@ -878,8 +988,17 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
       storyMeta,
       ...routeCarryPatch,
       ...artDirectionPatch,
-      fulfillmentLastError: summary.slice(0, 500),
+      fulfillmentLastError: redactSecrets(summary).slice(0, 500),
     }));
+    return;
+  }
+
+  // Hard illustration-completeness gate (mirror of the digital path): no proof
+  // PDF may embed an "illustration unavailable" placeholder.
+  const missingArt = detectMissingIllustrations(imageResults);
+  if (missingArt.length > 0) {
+    const summary = `missing illustrations on ${missingArt.length} of ${story.pages.length} pages: pages ${missingArt.join(',')}`;
+    await failClosedForMissingArt(order, storyMeta, { pageArtifacts: seededPageArtifacts, ...routeCarryPatch, ...artDirectionPatch }, summary);
     return;
   }
 
@@ -1683,7 +1802,7 @@ export async function submitPrintAfterOwnerGo(
     await runPrintProduction(verify, deps);
     return { ok: true };
   } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
+    const errMsg = redactSecrets(err instanceof Error ? err.message : String(err));
     console.error(`[fulfillment] orderId=${orderId} owner-go print submit failed: ${errMsg}`);
     await updateFulfillmentState(orderId, {
       fulfillmentStatus: 'failed_manual_review',
