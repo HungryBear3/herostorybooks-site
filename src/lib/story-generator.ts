@@ -581,6 +581,48 @@ export function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage
   ].filter(Boolean).join('\n');
 }
 
+// Singular-they subject–verb agreement bug: "they was/walks/hears…". HSB
+// protagonists routed to they/them produce these pervasively. Detected so the
+// page-prose validator fails closed before any proof.
+const SINGULAR_THEY_VERB =
+  /\bthey\s+(is|was|has|does|goes|hears|sees|says|brushes|checks|follows|runs|walks|jumps|smiles|reaches|climbs|holds|finds|gives|takes|makes|looks|feels|knows|wants|comes|sits|stands|turns|opens|closes|pulls|pushes|grabs|whispers|shouts|laughs|cries|nods|points|waves|steps|listens|watches|notices|carries|wishes|touches|crosses|rushes|dashes|leaps)\b/gi;
+
+export function detectSingularTheyIssues(text: string): string[] {
+  const matches = (text.match(SINGULAR_THEY_VERB) ?? []).map((m) => m.replace(/\s+/g, ' ').toLowerCase());
+  return [...new Set(matches)];
+}
+
+/**
+ * Cross-page repetition guard. Flags templated/repeated prose where the same
+ * non-trivial sentence (>= 5 words) is reused across two or more pages — the
+ * "repeated templated prose" failure the owner-test surfaced. One issue string
+ * per offending sentence (capped) so a final QA sweep can fail closed.
+ */
+export function detectRepeatedProse(pageTexts: string[]): string[] {
+  const sentenceToPages = new Map<string, Set<number>>();
+  pageTexts.forEach((text, pageIdx) => {
+    const sentences = (text ?? '')
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.trim().toLowerCase().replace(/\s+/g, ' '))
+      .filter((s) => s.split(' ').filter(Boolean).length >= 5);
+    for (const sentence of sentences) {
+      if (!sentenceToPages.has(sentence)) sentenceToPages.set(sentence, new Set());
+      sentenceToPages.get(sentence)!.add(pageIdx);
+    }
+  });
+
+  const issues: string[] = [];
+  for (const [sentence, pages] of sentenceToPages) {
+    if (pages.size >= 2) {
+      const where = [...pages].sort((a, b) => a - b).map((i) => i + 1).join(',');
+      const preview = sentence.length > 60 ? `${sentence.slice(0, 57)}...` : sentence;
+      issues.push(`repeated sentence on pages ${where}: "${preview}"`);
+    }
+    if (issues.length >= 10) break;
+  }
+  return issues;
+}
+
 export function validatePageProse(text: string, protagonist: string): string[] {
   const issues: string[] = [];
   const trimmed = text.trim();
@@ -589,6 +631,10 @@ export function validatePageProse(text: string, protagonist: string): string[] {
   if (words.length > 60) issues.push('page prose exceeds 60 words');
   const nameCount = (trimmed.match(new RegExp(`\\b${protagonist.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi')) || []).length;
   if (nameCount > 1) issues.push('protagonist first name used more than once');
+  const theyIssues = detectSingularTheyIssues(trimmed);
+  if (theyIssues.length > 0) {
+    issues.push(`page prose contains singular-they verb agreement bug: ${theyIssues.join(', ')}`);
+  }
   if (/pulls the eye first|everything is held in|guided by|while noticing|moment shifts|shifts toward|page \d+:|^title:|hinting at more adventure ahead|feels?\s+(mysterious|exciting|magical|special)/i.test(trimmed)) {
     issues.push('page prose contains forbidden template language');
   }
