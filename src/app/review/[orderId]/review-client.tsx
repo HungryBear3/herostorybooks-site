@@ -97,7 +97,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setError(data?.error ?? `Change request failed (${res.status})`);
+        setError('We couldn’t save that note just now — nothing on your book changed. Please try again in a moment.');
         return;
       }
       setSnapshot((s) => ({
@@ -140,7 +140,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setError(data?.error ?? `Accept failed (${res.status})`);
+        setError('We couldn’t save that just now — nothing on your book changed. Please try again in a moment.');
         return;
       }
       setSnapshot((s) => ({
@@ -265,7 +265,7 @@ No image yet
                 )}
                 {selected.customerReviewStatus === 'approved' || selected.accepted ? (
                   <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-900">
-                    Approved page
+                    Looks good
                   </span>
                 ) : null}
               </div>
@@ -317,7 +317,7 @@ No image yet
                 Previous
               </button>
               <span className="shrink-0 text-xs font-semibold text-gray-500">
-                {selectedIdx + 1} / {pageCount}
+                Page {selectedIdx + 1} of {pageCount}
               </span>
               <button
                 type="button"
@@ -328,6 +328,16 @@ No image yet
                 Next
                 <ChevronRight className="h-4 w-4" aria-hidden="true" />
               </button>
+            </div>
+
+            <div className="mb-4 text-center">
+              <a
+                href="#approve-whole-book"
+                data-testid="go-to-approval"
+                className="text-xs font-semibold text-[#10263d] underline underline-offset-2"
+              >
+                Go to approval
+              </a>
             </div>
 
             <p className="mb-3 text-sm text-gray-700">{selected.storyText}</p>
@@ -379,7 +389,7 @@ No image yet
                 className="rounded-xl bg-[#10263d] px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
                 data-testid="request-page-changes"
               >
-                {busy === 'requesting' ? 'Saving…' : 'Request changes'}
+                {busy === 'requesting' ? 'Saving…' : 'Ask for a new version'}
               </button>
               <button
                 type="button"
@@ -387,9 +397,12 @@ No image yet
                 disabled={busy !== 'idle' || !selected.currentImageUrl || selected.accepted}
                 className="rounded-xl bg-[#c9a227] px-5 py-2.5 text-sm font-semibold text-[#10263d] disabled:opacity-50"
               >
-                {selected.accepted ? 'Approved' : busy === 'accepting' ? 'Approving…' : 'Approve this page'}
+                {selected.accepted ? 'Looks good ✓' : busy === 'accepting' ? 'Saving…' : 'Looks good'}
               </button>
             </div>
+            <p className="mt-2 text-xs text-gray-500" data-testid="page-mark-helper">
+              “Looks good” only marks this page — it does not approve your book. You’ll approve the whole book at the bottom of this page once every page is right.
+            </p>
 
             {selected.feedbackHistory.length > 0 && (
               <details className="mt-4 text-xs text-gray-500">
@@ -417,7 +430,7 @@ No image yet
         </div>
 
         {/* Approve whole book */}
-        <section className="mt-8 rounded-2xl border-2 border-emerald-200 bg-white p-5 shadow-sm" data-testid="approval-section">
+        <section id="approve-whole-book" className="mt-8 scroll-mt-4 rounded-2xl border-2 border-emerald-200 bg-white p-5 shadow-sm" data-testid="approval-section">
           {/* Step 1: prominent full-proof CTA */}
           {snapshot.storyArtifactUrl ? (
             <div className="mb-5">
@@ -471,7 +484,7 @@ Step 2 — accept each illustrated story page
           {/* Step 3: explicit acknowledgment that proof was reviewed */}
           <div className="mb-5">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proof' : 'PDF'}
+Step 3 — confirm you reviewed the full book — every page, cover to cover ({snapshot.isPrint ? 'printed-book proof' : 'PDF'})
             </p>
             <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-[#10263d]">
               <input
@@ -492,7 +505,7 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
                     const data = await res.json();
                     if (!res.ok || !data.ok) {
                       setProofAck(false);
-                      setError(data?.error ?? `Could not save acknowledgment (${res.status})`);
+                      setError('We couldn’t save that just now. Please try again in a moment.');
                       return;
                     }
                     setSnapshot((s) => ({ ...s, proofReviewedAt: data.proofReviewedAt }));
@@ -509,8 +522,8 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
               />
               <span>
                 {snapshot.isPrint
-                  ? `I reviewed the full proof PDF for ${snapshot.childName}’s complete printed book and I’m approving everything in it — not just the ${snapshot.pageArtifacts.length} illustrated story pages above.`
-                  : 'I opened the full PDF and reviewed the complete storybook before approving.'}
+                  ? `I reviewed the full proof PDF for ${snapshot.childName}’s complete printed book — cover to cover, all pages — and I’m approving everything in it, not just the ${snapshot.pageArtifacts.length} illustrated story pages above.`
+                  : 'I opened the full PDF and reviewed the complete storybook, cover to cover, before approving.'}
               </span>
             </label>
           </div>
@@ -593,7 +606,7 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
                     });
                     const data = await res.json();
                     if (!res.ok || !data.ok) {
-                      setError(data?.error ?? `Approval failed (${res.status})`);
+                      setError('We couldn’t complete that just now — nothing has been sent. Please try again in a moment.');
                       return;
                     }
                     setSnapshot((s) => ({ ...s, reviewStatus: 'approved' }));
