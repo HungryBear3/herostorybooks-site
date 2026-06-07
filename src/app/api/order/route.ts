@@ -197,12 +197,12 @@ export async function POST(request: Request) {
       );
     }
 
-    // Owner-test gate (DEFAULT-CLOSED). Runs AFTER checkout pause / KS (those
-    // take precedence) and BEFORE any blob writes or Stripe Checkout Session.
-    // Refuses unless BOTH the global enable flag is set AND the buyer email is
-    // allowlisted — prevents accidental public/creator/gifting charges during
-    // the controlled owner-test. The response intentionally does not reveal
-    // the flag state or allowlist contents; the reason is logged internally.
+    // Checkout access gate (DEFAULT-CLOSED). Runs AFTER checkout pause / KS
+    // (those take precedence) and BEFORE any blob writes or Stripe Checkout
+    // Session. HSB_PUBLIC_CHECKOUT_ENABLED='true' opens checkout to all buyers;
+    // otherwise the owner-test path still requires BOTH the global enable flag
+    // and the buyer email allowlist. The response intentionally does not reveal
+    // flag state or allowlist contents; the reason is logged internally.
     const ownerTestGate = evaluateOwnerTestGate(email);
     if (!ownerTestGate.allowed) {
       const reason = 'reason' in ownerTestGate ? ownerTestGate.reason : 'unknown';
