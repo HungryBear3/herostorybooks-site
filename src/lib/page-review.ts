@@ -4,7 +4,7 @@
 // updateFulfillmentState() at the end. Tests can also call the pure helpers
 // directly via applyAcceptPage()/applyRegeneratePage().
 
-import { appendAuditEvent, getOrder, getOrderPhotoUrl, updateFulfillmentState } from './orders.ts';
+import { appendAuditEvent, getOrder, getOrderPhotoUrl, updateFulfillmentState, withOrderWriteLock } from './orders.ts';
 import type {
   OrderRecord,
   PageArtifact,
@@ -241,41 +241,58 @@ export async function regeneratePage(
     success: Boolean(result.imageUrl),
   };
 
-  const { artifacts: updatedArtifacts, page: updatedPage, error } = applyRegeneratePage(
-    order.pageArtifacts,
-    input.pageIndex,
-    result.imageUrl,
-    result.provider,
-    result.model,
-    result.promptUsed,
-    feedbackEntry,
-    result.conditioning ?? null,
-    result.referencePhotoUrl ?? null,
-  );
-  if (error || !updatedPage) {
-    return { ok: false, status: 400, error: error ?? 'regenerate_failed' };
-  }
-
-  // Thread the just-written record through so the subsequent appendAuditEvent
-  // and rebuildProof calls don't re-read a stale blob snapshot that would
-  // overwrite pageArtifacts back to the pre-regen state (production bug).
-  const savedOrder = await updateFulfillmentState(order.id, {
-    pageArtifacts: updatedArtifacts,
-    reviewStatus: 'customer_changes_requested',
+  // Image generation (above) happened OUTSIDE the order write lock — it can take
+  // seconds and must not block other per-page writes. Now serialize the
+  // read→modify→write per order and, INSIDE the lock, re-read the freshest order
+  // and apply this page's change onto the latest array (not the stale
+  // request-time snapshot), so a concurrent accept/regenerate on another page
+  // that persisted during generation is preserved rather than reverted.
+  const writeOutcome = await withOrderWriteLock(order.id, async () => {
+    const latest = (await getOrder(order.id)) ?? order;
+    if (latest.reviewStatus === 'approved') {
+      return { error: 'Order is already approved', status: 409 as const };
+    }
+    const baseArtifacts = latest.pageArtifacts && latest.pageArtifacts.length > 0
+      ? latest.pageArtifacts
+      : order.pageArtifacts;
+    const { artifacts: mergedArtifacts, page: mergedPage, error: applyErr } = applyRegeneratePage(
+      baseArtifacts,
+      input.pageIndex,
+      result.imageUrl,
+      result.provider,
+      result.model,
+      result.promptUsed,
+      feedbackEntry,
+      result.conditioning ?? null,
+      result.referencePhotoUrl ?? null,
+    );
+    if (applyErr || !mergedPage) {
+      return { error: applyErr ?? 'regenerate_failed' as string };
+    }
+    const savedOrder = await updateFulfillmentState(order.id, {
+      pageArtifacts: mergedArtifacts,
+      reviewStatus: 'customer_changes_requested',
+    }, latest);
+    const audit = await appendAuditEvent(order.id, {
+      type: 'page_regenerated',
+      pageIndex: input.pageIndex,
+      reason: result.imageUrl ? null : (result.error ?? 'image_generation_failed'),
+      meta: {
+        provider: result.provider,
+        model: result.model,
+        regenerateCount: mergedPage.regenerateCount,
+        success: Boolean(result.imageUrl),
+        tags: tags.join(',') || '',
+      },
+    }, savedOrder ?? undefined);
+    return { updatedPage: mergedPage, afterRegenAudit: audit };
   });
 
-  const afterRegenAudit = await appendAuditEvent(order.id, {
-    type: 'page_regenerated',
-    pageIndex: input.pageIndex,
-    reason: result.imageUrl ? null : (result.error ?? 'image_generation_failed'),
-    meta: {
-      provider: result.provider,
-      model: result.model,
-      regenerateCount: updatedPage.regenerateCount,
-      success: Boolean(result.imageUrl),
-      tags: tags.join(',') || '',
-    },
-  }, savedOrder ?? undefined);
+  if ('error' in writeOutcome) {
+    return { ok: false, status: writeOutcome.status ?? 400, error: writeOutcome.error };
+  }
+  const updatedPage = writeOutcome.updatedPage;
+  const afterRegenAudit = writeOutcome.afterRegenAudit;
 
   if (!result.imageUrl) {
     return {
@@ -318,7 +335,7 @@ export async function regeneratePage(
         pageIndex: input.pageIndex,
         reason: proofRefreshError,
         meta: { triggeredBy: 'page_regenerated', success: false },
-      }, afterRegenAudit ?? savedOrder ?? undefined);
+      }, afterRegenAudit ?? undefined);
     }
   }
 
@@ -355,38 +372,47 @@ export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
   if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
     return { ok: false, status: 409, error: 'Page review not yet ready for this order' };
   }
-  const { artifacts, page, error } = applyAcceptPage(order.pageArtifacts, input.pageIndex);
-  if (error || !page) {
-    return { ok: false, status: 400, error: error ?? 'accept_failed' };
-  }
+  // Serialize the read→modify→write per order (cross-request clobber guard) and,
+  // INSIDE the lock, re-read the freshest order and apply this single page's
+  // accept onto the latest array. A concurrent regenerate/accept on another page
+  // (incl. an in-flight regen that persists during this request) is preserved
+  // rather than reverted by writing a request-time snapshot array.
+  return withOrderWriteLock(input.orderId, async () => {
+    const latest = (await getOrder(input.orderId)) ?? order;
+    if (latest.reviewStatus === 'approved') {
+      return { ok: false, status: 409, error: 'Order is already approved' };
+    }
+    const baseArtifacts = latest.pageArtifacts && latest.pageArtifacts.length > 0
+      ? latest.pageArtifacts
+      : order.pageArtifacts;
+    const { artifacts, page, error } = applyAcceptPage(baseArtifacts, input.pageIndex);
+    if (error || !page) {
+      return { ok: false, status: 400, error: error ?? 'accept_failed' };
+    }
 
-  // IMPORTANT: do NOT flip reviewStatus to 'approved' here, even when every
-  // page happens to be accepted. 'approved' is reserved exclusively for the
-  // approveWholeBook flow (proof acknowledgment + full-proof rebuild). Setting
-  // it here would short-circuit the ack/approve gate and cause approveWholeBook
-  // to return `already_approved` for customers who never completed the
-  // intended full-approval path.
-  // Thread the already-read fresh `order` so updateFulfillmentState does NOT do
-  // a second getOrder() that can return a stale blob snapshot and merge it over
-  // the just-accepted pageArtifacts (same stale read-modify-write clobber class
-  // as the regenerate bug). Without this, the persisted accept could be built on
-  // a pre-regenerate snapshot — accepted reverting to false, acceptedImageUrl
-  // stale, regenerateCount/versionHistory reset.
-  const savedOrder = await updateFulfillmentState(order.id, { pageArtifacts: artifacts }, order);
+    // IMPORTANT: do NOT flip reviewStatus to 'approved' here, even when every
+    // page happens to be accepted. 'approved' is reserved exclusively for the
+    // approveWholeBook flow (proof acknowledgment + full-proof rebuild). Setting
+    // it here would short-circuit the ack/approve gate and cause approveWholeBook
+    // to return `already_approved` for customers who never completed the
+    // intended full-approval path. Thread `latest` so updateFulfillmentState
+    // does not do a stale blob re-read inside the locked write.
+    const savedOrder = await updateFulfillmentState(order.id, { pageArtifacts: artifacts }, latest);
 
-  // Thread savedOrder so appendAuditEvent doesn't re-read stale blob state
-  // and clobber the accepted pageArtifacts we just wrote (production clobber bug).
-  await appendAuditEvent(order.id, {
-    type: 'page_accepted',
-    pageIndex: input.pageIndex,
-    meta: {
-      acceptedCount: artifacts.filter((p) => p.accepted).length,
-      totalPages: artifacts.length,
-      regenerateCountAtAccept: page.regenerateCount,
-    },
-  }, savedOrder ?? undefined);
+    // Thread savedOrder so appendAuditEvent doesn't re-read stale blob state
+    // and clobber the accepted pageArtifacts we just wrote (production clobber bug).
+    await appendAuditEvent(order.id, {
+      type: 'page_accepted',
+      pageIndex: input.pageIndex,
+      meta: {
+        acceptedCount: artifacts.filter((p) => p.accepted).length,
+        totalPages: artifacts.length,
+        regenerateCountAtAccept: page.regenerateCount,
+      },
+    }, savedOrder ?? undefined);
 
-  return { ok: true, status: 200, page };
+    return { ok: true, status: 200, page };
+  });
 }
 
 export async function requestPageChanges(
@@ -403,35 +429,44 @@ export async function requestPageChanges(
   }
 
   const ts = now.toISOString();
-  const { artifacts, page, error } = applyRequestPageChanges(
-    order.pageArtifacts,
-    input.pageIndex,
-    input.note,
-    ts,
-  );
-  if (error || !page) {
-    const status = error === 'change_note_required' ? 400 : 400;
-    return { ok: false, status, error: error ?? 'request_changes_failed' };
-  }
+  // Serialize per order + re-read latest INSIDE the lock, then apply this single
+  // page's change onto the freshest array so a concurrent accept/regenerate on
+  // another page is preserved, not reverted by a request-time snapshot write.
+  return withOrderWriteLock(input.orderId, async () => {
+    const latest = (await getOrder(input.orderId)) ?? order;
+    if (latest.reviewStatus === 'approved') {
+      return { ok: false, status: 409, error: 'Order is already approved' };
+    }
+    const baseArtifacts = latest.pageArtifacts && latest.pageArtifacts.length > 0
+      ? latest.pageArtifacts
+      : order.pageArtifacts;
+    const { artifacts, page, error } = applyRequestPageChanges(
+      baseArtifacts,
+      input.pageIndex,
+      input.note,
+      ts,
+    );
+    if (error || !page) {
+      const status = error === 'change_note_required' ? 400 : 400;
+      return { ok: false, status, error: error ?? 'request_changes_failed' };
+    }
 
-  // Thread the fresh `order` (same stale read-modify-write guard as acceptPage):
-  // updateFulfillmentState must not do a second getOrder() that could merge a
-  // stale blob snapshot over the just-written change-request state.
-  const savedOrder = await updateFulfillmentState(order.id, {
-    pageArtifacts: artifacts,
-    reviewStatus: 'customer_changes_requested',
-    proofReviewedAt: null,
-  }, order);
-  await appendAuditEvent(order.id, {
-    type: 'page_changes_requested',
-    pageIndex: input.pageIndex,
-    meta: {
-      lifecycleStatus: page.customerRequestedChange?.lifecycleStatus ?? 'triage',
-      noteLength: page.customerRequestedChange?.note.length ?? 0,
-    },
-  }, savedOrder ?? undefined);
+    const savedOrder = await updateFulfillmentState(order.id, {
+      pageArtifacts: artifacts,
+      reviewStatus: 'customer_changes_requested',
+      proofReviewedAt: null,
+    }, latest);
+    await appendAuditEvent(order.id, {
+      type: 'page_changes_requested',
+      pageIndex: input.pageIndex,
+      meta: {
+        lifecycleStatus: page.customerRequestedChange?.lifecycleStatus ?? 'triage',
+        noteLength: page.customerRequestedChange?.note.length ?? 0,
+      },
+    }, savedOrder ?? undefined);
 
-  return { ok: true, status: 200, page };
+    return { ok: true, status: 200, page };
+  });
 }
 
 // ── Approve whole book ───────────────────────────────────────────────────────
@@ -448,7 +483,7 @@ export interface ApproveWholeBookResult {
 export interface ApproveWholeBookDeps {
   rebuildProof?: typeof rebuildProofFromPageArtifacts;
   /** Optional injection point for the print-approval handoff (tests). */
-  approvePrint?: (orderId: string, token: string) => Promise<{ ok: boolean; error?: string }>;
+  approvePrint?: (orderId: string, token: string, deps?: unknown, existingOrder?: OrderRecord) => Promise<{ ok: boolean; error?: string }>;
 }
 
 /**
@@ -466,136 +501,143 @@ export async function approveWholeBook(
   orderId: string,
   deps: ApproveWholeBookDeps = {},
 ): Promise<ApproveWholeBookResult> {
-  const order = await getOrder(orderId);
-  if (!order) return { ok: false, status: 404, error: 'Order not found' };
-  if (order.reviewStatus === 'approved') {
+  // Serialize terminal approval with page-level review writes. Approval re-reads
+  // the freshest order inside the lock and validates that every page is still
+  // accepted immediately before rebuilding/marking approved, so an in-flight
+  // regenerate/request-changes cannot approve stale page state.
+  return withOrderWriteLock(orderId, async () => {
+    const order = await getOrder(orderId);
+    if (!order) return { ok: false, status: 404, error: 'Order not found' };
+    if (order.reviewStatus === 'approved') {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'already_approved',
+      }, order);
+      return { ok: false, status: 409, error: 'Order is already approved' };
+    }
+    if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'review_not_ready',
+      }, order);
+      return { ok: false, status: 409, error: 'Page review not yet ready for this order' };
+    }
+    const allAccepted = order.pageArtifacts.every((p) => p.accepted && p.acceptedImageUrl);
+    if (!allAccepted) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'pages_not_accepted',
+        meta: {
+          acceptedCount: order.pageArtifacts.filter((p) => p.accepted).length,
+          totalPages: order.pageArtifacts.length,
+        },
+      }, order);
+      return { ok: false, status: 409, error: 'All pages must be accepted before approving the whole book' };
+    }
+    // The full proof PDF must exist on the order. Without it the customer is
+    // approving the 6 illustrated pages only, which is the exact UX bug we fixed.
+    if (!order.storyArtifactUrl) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'proof_not_ready',
+      }, order);
+      return { ok: false, status: 409, error: 'Full proof PDF is not ready yet' };
+    }
+    // Server-side enforcement of the proof acknowledgment. Client UI checks the
+    // box; this checks the persisted state. Don't trust the client.
+    if (!order.proofReviewedAt) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'proof_ack_missing',
+      }, order);
+      return {
+        ok: false,
+        status: 409,
+        error:
+          'Proof acknowledgment required — confirm you reviewed the full proof PDF before approving',
+      };
+    }
+    const proofGate = evaluateProofSubmissionGate(order);
+    if (!proofGate.allowed) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'proof_release_gate_blocked',
+        meta: { reasons: proofGate.reasons.map((reason) => reason.code).join(',') },
+      }, order);
+      return {
+        ok: false,
+        status: 409,
+        error: `Proof release gate blocked: ${proofGate.reasons.map((reason) => reason.code).join(', ')}`,
+      };
+    }
+
+    // Rebuild the proof from accepted/current artifacts.
+    const rebuild = deps.rebuildProof ?? rebuildProofFromPageArtifacts;
+    const rb = await rebuild(orderId, {}, order);
+    if (!rb.ok) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'proof_rebuild_failed',
+        meta: { error: rb.error ?? 'proof_rebuild_failed' },
+      }, order);
+      return { ok: false, status: 502, error: rb.error ?? 'proof_rebuild_failed' };
+    }
+    const proofBaseOrder = rb.updatedOrder ?? (await getOrder(orderId)) ?? order;
+    const afterProofRebuiltAudit = await appendAuditEvent(orderId, {
+      type: 'proof_rebuilt',
+      reason: null,
+      meta: { triggeredBy: 'whole_book_approved', success: true },
+    }, proofBaseOrder);
+
+    const approvedOrder = await updateFulfillmentState(
+      orderId,
+      { reviewStatus: 'approved' },
+      afterProofRebuiltAudit ?? proofBaseOrder,
+    );
     await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'already_approved',
-    });
-    return { ok: false, status: 409, error: 'Order is already approved' };
-  }
-  if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'review_not_ready',
-    });
-    return { ok: false, status: 409, error: 'Page review not yet ready for this order' };
-  }
-  const allAccepted = order.pageArtifacts.every((p) => p.accepted && p.acceptedImageUrl);
-  if (!allAccepted) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'pages_not_accepted',
+      type: 'whole_book_approved',
       meta: {
-        acceptedCount: order.pageArtifacts.filter((p) => p.accepted).length,
-        totalPages: order.pageArtifacts.length,
+        bookFormat: order.bookFormat,
+        proofUrl: rb.proofUrl ?? null,
       },
-    });
-    return { ok: false, status: 409, error: 'All pages must be accepted before approving the whole book' };
-  }
-  // The full proof PDF must exist on the order. Without it the customer is
-  // approving the 6 illustrated pages only, which is the exact UX bug we fixed.
-  if (!order.storyArtifactUrl) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'proof_not_ready',
-    });
-    return { ok: false, status: 409, error: 'Full proof PDF is not ready yet' };
-  }
-  // Server-side enforcement of the proof acknowledgment. Client UI checks the
-  // box; this checks the persisted state. Don't trust the client.
-  if (!order.proofReviewedAt) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'proof_ack_missing',
-    });
-    return {
-      ok: false,
-      status: 409,
-      error:
-        'Proof acknowledgment required — confirm you reviewed the full proof PDF before approving',
-    };
-  }
-  const proofGate = evaluateProofSubmissionGate(order);
-  if (!proofGate.allowed) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'proof_release_gate_blocked',
-      meta: { reasons: proofGate.reasons.map((reason) => reason.code).join(',') },
-    });
-    return {
-      ok: false,
-      status: 409,
-      error: `Proof release gate blocked: ${proofGate.reasons.map((reason) => reason.code).join(', ')}`,
-    };
-  }
+    }, approvedOrder ?? undefined);
 
-  // Rebuild the proof from accepted/current artifacts.
-  const rebuild = deps.rebuildProof ?? rebuildProofFromPageArtifacts;
-  const rb = await rebuild(orderId, {}, order);
-  if (!rb.ok) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'proof_rebuild_failed',
-      meta: { error: rb.error ?? 'proof_rebuild_failed' },
-    });
-    return { ok: false, status: 502, error: rb.error ?? 'proof_rebuild_failed' };
-  }
-  const afterProofRebuiltAudit = await appendAuditEvent(orderId, {
-    type: 'proof_rebuilt',
-    reason: null,
-    meta: { triggeredBy: 'whole_book_approved', success: true },
-  }, rb.updatedOrder ?? undefined);
+    const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
+    if (!isPrint) {
+      return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: false };
+    }
 
-  const approvedOrder = await updateFulfillmentState(
-    orderId,
-    { reviewStatus: 'approved' },
-    afterProofRebuiltAudit ?? rb.updatedOrder ?? undefined,
-  );
-  await appendAuditEvent(orderId, {
-    type: 'whole_book_approved',
-    meta: {
-      bookFormat: order.bookFormat,
-      proofUrl: rb.proofUrl ?? null,
-    },
-  }, approvedOrder ?? undefined);
+    // Print: hand off to the existing approve-proof flow using the stored token.
+    if (!order.proofApprovalToken) {
+      // No token means we never reached proof_ready; the customer can't legitimately
+      // approve a print order from here. Return success on rebuild but flag the
+      // print-approval gap so ops can finish manually.
+      return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: false };
+    }
 
-  const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
-  if (!isPrint) {
-    return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: false };
-  }
-
-  // Print: hand off to the existing approve-proof flow using the stored token.
-  if (!order.proofApprovalToken) {
-    // No token means we never reached proof_ready; the customer can't legitimately
-    // approve a print order from here. Return success on rebuild but flag the
-    // print-approval gap so ops can finish manually.
-    return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: false };
-  }
-
-  const approveFn = deps.approvePrint ?? (await import('./fulfillment.ts')).approvePrintProof;
-  try {
-    const handoff = await approveFn(orderId, order.proofApprovalToken);
-    if (!handoff.ok) {
+    const approveFn = deps.approvePrint ?? (await import('./fulfillment.ts')).approvePrintProof;
+    try {
+      const handoff = await approveFn(orderId, order.proofApprovalToken, {}, approvedOrder ?? afterProofRebuiltAudit ?? proofBaseOrder);
+      if (!handoff.ok) {
+        return {
+          ok: true,
+          status: 200,
+          proofUrl: rb.proofUrl,
+          printApproved: false,
+          error: handoff.error ?? 'print_approval_handoff_failed',
+        };
+      }
+      return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: true };
+    } catch (err) {
       return {
         ok: true,
         status: 200,
         proofUrl: rb.proofUrl,
         printApproved: false,
-        error: handoff.error ?? 'print_approval_handoff_failed',
+        error: err instanceof Error ? err.message : String(err),
       };
     }
-    return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: true };
-  } catch (err) {
-    return {
-      ok: true,
-      status: 200,
-      proofUrl: rb.proofUrl,
-      printApproved: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
+  });
 }
 
 // ── Proof acknowledgment (persisted) ────────────────────────────────────────
@@ -616,28 +658,30 @@ export async function acknowledgeProofReview(
   orderId: string,
   now: Date = new Date(),
 ): Promise<AckProofResult> {
-  const order = await getOrder(orderId);
-  if (!order) return { ok: false, status: 404, error: 'Order not found' };
-  if (!order.storyArtifactUrl) {
-    return {
-      ok: false,
-      status: 409,
-      error: 'Full proof PDF is not ready yet — cannot acknowledge what does not exist',
-    };
-  }
-  if (order.reviewStatus === 'approved') {
-    return { ok: false, status: 409, error: 'Order is already approved' };
-  }
-  if (order.proofReviewedAt) {
-    return { ok: true, status: 200, proofReviewedAt: order.proofReviewedAt };
-  }
-  const ts = now.toISOString();
-  const savedOrder = await updateFulfillmentState(orderId, { proofReviewedAt: ts });
-  await appendAuditEvent(orderId, {
-    at: ts,
-    type: 'proof_review_acknowledged',
-  }, savedOrder ?? undefined);
-  return { ok: true, status: 200, proofReviewedAt: ts };
+  return withOrderWriteLock(orderId, async () => {
+    const order = await getOrder(orderId);
+    if (!order) return { ok: false, status: 404, error: 'Order not found' };
+    if (!order.storyArtifactUrl) {
+      return {
+        ok: false,
+        status: 409,
+        error: 'Full proof PDF is not ready yet — cannot acknowledge what does not exist',
+      };
+    }
+    if (order.reviewStatus === 'approved') {
+      return { ok: false, status: 409, error: 'Order is already approved' };
+    }
+    if (order.proofReviewedAt) {
+      return { ok: true, status: 200, proofReviewedAt: order.proofReviewedAt };
+    }
+    const ts = now.toISOString();
+    const savedOrder = await updateFulfillmentState(orderId, { proofReviewedAt: ts }, order);
+    await appendAuditEvent(orderId, {
+      at: ts,
+      type: 'proof_review_acknowledged',
+    }, savedOrder ?? order);
+    return { ok: true, status: 200, proofReviewedAt: ts };
+  });
 }
 
 // ── Approval-gate helpers (pure, testable) ──────────────────────────────────

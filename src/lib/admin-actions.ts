@@ -214,6 +214,31 @@ function defaultBaseUrl(): string {
 
 // ── Retry ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Returns a short human description of customer review work that a destructive
+ * full retry (re-seed) would wipe, or null if there is none to protect.
+ * Covers: an active/finished review status, and any page that has been accepted,
+ * carries customer feedback, or has been regenerated (>1 version).
+ */
+export function describeCustomerReviewWork(order: OrderRecord): string | null {
+  const reasons: string[] = [];
+  if (
+    order.reviewStatus === 'in_review' ||
+    order.reviewStatus === 'customer_changes_requested' ||
+    order.reviewStatus === 'approved'
+  ) {
+    reasons.push(`reviewStatus=${order.reviewStatus}`);
+  }
+  const pages = order.pageArtifacts ?? [];
+  const accepted = pages.filter((p) => p.accepted).length;
+  const withFeedback = pages.filter((p) => (p.feedbackHistory?.length ?? 0) > 0).length;
+  const regenerated = pages.filter((p) => (p.versionHistory?.length ?? 0) > 1).length;
+  if (accepted > 0) reasons.push(`${accepted} accepted page(s)`);
+  if (withFeedback > 0) reasons.push(`${withFeedback} page(s) with customer feedback`);
+  if (regenerated > 0) reasons.push(`${regenerated} regenerated page(s)`);
+  return reasons.length > 0 ? reasons.join(', ') : null;
+}
+
 export async function retryOrderFulfillment(orderId: string): Promise<ActionResult> {
   const order = await getOrder(orderId);
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
@@ -320,6 +345,24 @@ export async function retryOrderFulfillment(orderId: string): Promise<ActionResu
     }
     // delivery_email_failed but somehow no artifact URL — fall through to
     // a normal full retry; that path will at least regenerate properly.
+  }
+
+  // C1 guard: a full retry resets to not_started and re-runs fulfillment, which
+  // re-seeds pageArtifacts from scratch — destroying accepted images, customer
+  // regenerations, feedback/version history, the review status, and the built
+  // proof. Refuse (rather than silently wipe) when the order already carries
+  // customer review work. Recover such orders via the artifact-preserving paths
+  // (proof rebuild / email resend), not a destructive re-seed.
+  const reviewWork = describeCustomerReviewWork(order);
+  if (reviewWork) {
+    return {
+      ok: false,
+      status: 409,
+      error:
+        `Refusing full retry: order has customer review work (${reviewWork}). `
+        + `Re-seeding would destroy accepted/regenerated pages and the approved proof. `
+        + `Use proof rebuild or email resend instead.`,
+    };
   }
 
   await updateFulfillmentState(orderId, {
@@ -725,7 +768,7 @@ export async function manuallyApproveProof(orderId: string): Promise<ActionResul
   // Reuse the same code path as the customer approval — pass the stored
   // token. This advances state to `proof_approved` ONLY; it does NOT
   // call runPrintProduction. Operator's next step is recordOwnerPrintGo.
-  const result = await approvePrintProof(order.id, order.proofApprovalToken);
+  const result = await approvePrintProof(order.id, order.proofApprovalToken, {}, order);
   if (!result.ok) {
     return { ok: false, status: 409, error: result.error ?? 'Approval failed' };
   }

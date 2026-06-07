@@ -1659,6 +1659,29 @@ function assertRouteDecisionAllowsProofRelease(orderId: string, patch: Fulfillme
   }
 }
 
+// ── Per-order write serialization ─────────────────────────────────────────────
+//
+// Order persistence is last-writer-wins (blob `put`, no CAS/etag). Two concurrent
+// read-modify-write requests on the same order can lose one write. This in-process
+// lock serializes the read→modify→write critical section per orderId so the second
+// caller re-reads the first caller's persisted result (combine with a re-read of
+// the latest order INSIDE the locked section). NOTE: this protects concurrency
+// within a single server instance; it is not a cross-instance distributed lock —
+// the merge-at-write re-read narrows the remaining cross-instance window.
+const orderWriteChains = new Map<string, Promise<unknown>>();
+
+export async function withOrderWriteLock<T>(orderId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = orderWriteChains.get(orderId) ?? Promise.resolve();
+  const result = prev.then(() => fn(), () => fn());
+  const chain = result.then(() => undefined, () => undefined);
+  orderWriteChains.set(orderId, chain);
+  // Drop the map entry once this is the last queued writer, to avoid unbounded growth.
+  void chain.then(() => {
+    if (orderWriteChains.get(orderId) === chain) orderWriteChains.delete(orderId);
+  });
+  return result;
+}
+
 export async function updateFulfillmentState(
   orderId: string,
   patch: FulfillmentPatch,
