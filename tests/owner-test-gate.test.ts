@@ -7,6 +7,9 @@
  *   2. the buyer email is on HSB_OWNER_TEST_EMAILS  (comma-separated,
  *      case-insensitive, trimmed)
  *
+ * Public posture: HSB_PUBLIC_CHECKOUT_ENABLED === 'true' bypasses the owner
+ * allowlist while checkout pause / kill switch / proof gates still apply.
+ *
  * Default with NO env set MUST be closed. The customer-facing response must
  * not leak the allowlist contents (the gate reason is internal only).
  *
@@ -22,9 +25,22 @@ import {
   OWNER_TEST_GATE_MESSAGE,
   evaluateOwnerTestGate,
   isOwnerTestCheckoutEnabled,
+  isPublicCheckoutEnabled,
   isOwnerTestEmailAllowed,
   parseOwnerTestEmails,
 } from '../src/lib/owner-test-gate.ts';
+
+
+// ── isPublicCheckoutEnabled ──────────────────────────────────────────────────
+
+test('isPublicCheckoutEnabled: only "true" opens public checkout, tolerant of Vercel whitespace/case', () => {
+  assert.equal(isPublicCheckoutEnabled('true'), true);
+  assert.equal(isPublicCheckoutEnabled(' TRUE '), true);
+  assert.equal(isPublicCheckoutEnabled('false'), false);
+  assert.equal(isPublicCheckoutEnabled('1'), false);
+  assert.equal(isPublicCheckoutEnabled(''), false);
+  assert.equal(isPublicCheckoutEnabled(undefined), false);
+});
 
 // ── isOwnerTestCheckoutEnabled ───────────────────────────────────────────────
 
@@ -62,7 +78,7 @@ test('isOwnerTestEmailAllowed: case-insensitive + trimmed match', () => {
 // ── evaluateOwnerTestGate (combined decision) ────────────────────────────────
 
 test('default-closed: no env at all → blocked with flag_disabled', () => {
-  const r = evaluateOwnerTestGate('owner@hsb.com', { enabledFlag: undefined, allowEmails: undefined });
+  const r = evaluateOwnerTestGate('owner@hsb.com', { publicFlag: undefined, enabledFlag: undefined, allowEmails: undefined });
   assert.equal(r.allowed, false);
   assert.equal(r.allowed === false && r.reason, 'flag_disabled');
 });
@@ -85,9 +101,16 @@ test('flag on but allowlist empty/unset → blocked (default-closed even with fl
   assert.equal(r.allowed === false && r.reason, 'email_not_allowlisted');
 });
 
-test('flag on AND email allowlisted (case-insensitive) → allowed', () => {
+test('flag on AND email allowlisted (case-insensitive) → allowed in owner-test mode', () => {
   const r = evaluateOwnerTestGate('  OWNER@HSB.com ', { enabledFlag: ' true ', allowEmails: 'owner@hsb.com, second@hsb.com' });
   assert.equal(r.allowed, true);
+  assert.equal(r.allowed && r.mode, 'owner_test');
+});
+
+test('public checkout enabled bypasses owner-test allowlist for non-allowlisted buyers', () => {
+  const r = evaluateOwnerTestGate('stranger@example.com', { publicFlag: ' true ', enabledFlag: 'false', allowEmails: '' });
+  assert.equal(r.allowed, true);
+  assert.equal(r.allowed && r.mode, 'public');
 });
 
 // ── No allowlist leakage in the customer-facing message ──────────────────────

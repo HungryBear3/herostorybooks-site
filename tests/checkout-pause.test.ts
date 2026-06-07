@@ -7,6 +7,7 @@ import {
   CHECKOUT_PAUSED_MESSAGE,
   isCheckoutCapacityFull,
   isCheckoutPaused,
+  parsePublicCheckoutDailyPaidLimit,
 } from '../src/lib/checkout-pause.ts';
 import { DAILY_PAID_CEILING } from '../src/lib/capacity-dashboard.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
@@ -36,11 +37,38 @@ test('isCheckoutPaused only enables for true, allowing Vercel env whitespace/cas
   assert.equal(isCheckoutPaused(undefined), false);
 });
 
+test('parsePublicCheckoutDailyPaidLimit accepts bounded integer caps and treats bad configured caps as closed', () => {
+  assert.equal(parsePublicCheckoutDailyPaidLimit(undefined), null);
+  assert.equal(parsePublicCheckoutDailyPaidLimit(''), null);
+  assert.equal(parsePublicCheckoutDailyPaidLimit(' 2 '), 2);
+  assert.equal(parsePublicCheckoutDailyPaidLimit('0'), 0);
+  assert.equal(parsePublicCheckoutDailyPaidLimit('-1'), 0);
+  assert.equal(parsePublicCheckoutDailyPaidLimit('many'), 0);
+  assert.equal(parsePublicCheckoutDailyPaidLimit('101'), 0);
+});
+
 test('isCheckoutCapacityFull trips when the daily paid ceiling is already hit', () => {
   const nine = Array.from({ length: DAILY_PAID_CEILING - 1 }, (_, i) => paidOrder(`ord_nine_${i}`));
   const ten = Array.from({ length: DAILY_PAID_CEILING }, (_, i) => paidOrder(`ord_ten_${i}`));
   assert.equal(isCheckoutCapacityFull(nine, new Date('2026-06-01T22:00:00.000Z')), false);
   assert.equal(isCheckoutCapacityFull(ten, new Date('2026-06-01T22:00:00.000Z')), true);
+});
+
+test('isCheckoutCapacityFull honors HSB_PUBLIC_CHECKOUT_DAILY_PAID_LIMIT override', () => {
+  const old = process.env.HSB_PUBLIC_CHECKOUT_DAILY_PAID_LIMIT;
+  try {
+    process.env.HSB_PUBLIC_CHECKOUT_DAILY_PAID_LIMIT = '1';
+    const none: OrderRecord[] = [];
+    const one = [paidOrder('ord_one')];
+    assert.equal(isCheckoutCapacityFull(none, new Date('2026-06-01T22:00:00.000Z')), false);
+    assert.equal(isCheckoutCapacityFull(one, new Date('2026-06-01T22:00:00.000Z')), true);
+
+    process.env.HSB_PUBLIC_CHECKOUT_DAILY_PAID_LIMIT = 'invalid';
+    assert.equal(isCheckoutCapacityFull(none, new Date('2026-06-01T22:00:00.000Z')), true);
+  } finally {
+    if (old === undefined) delete process.env.HSB_PUBLIC_CHECKOUT_DAILY_PAID_LIMIT;
+    else process.env.HSB_PUBLIC_CHECKOUT_DAILY_PAID_LIMIT = old;
+  }
 });
 
 test('checkout page gates the active form behind the pause flag', () => {

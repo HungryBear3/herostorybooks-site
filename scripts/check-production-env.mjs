@@ -170,6 +170,22 @@ const checks = [
     shape: shapeNextPublicUrl,
   },
   {
+    name: 'HSB_PUBLIC_CHECKOUT_ENABLED',
+    purpose:
+      'Public checkout gate (src/lib/owner-test-gate.ts). When exactly true, non-allowlisted buyers may create Stripe Checkout sessions; proof/print gates still apply.',
+    aliases: [],
+    requiredOn: [],
+    shape: shapeBooleanTrueFlag('public checkout is ENABLED; owner-test allowlist is bypassed'),
+  },
+  {
+    name: 'HSB_PUBLIC_CHECKOUT_DAILY_PAID_LIMIT',
+    purpose:
+      'Optional public-intake hard cap for paid orders per Chicago day. If invalid at runtime, checkout fails closed.',
+    aliases: [],
+    requiredOn: [],
+    shape: shapeDailyPaidLimit,
+  },
+  {
     name: 'HSB_OWNER_TEST_CHECKOUT_ENABLED',
     purpose:
       'Owner-test checkout enable flag (src/lib/owner-test-gate.ts). Required on production for the G5 owner-test: ' +
@@ -290,6 +306,29 @@ function shapeNextPublicUrl(value) {
     };
   }
   return { ok: true, observation: `https origin (length ${trimmed.length}); no localhost / vercel.app / trailing slash` };
+}
+
+function shapeBooleanTrueFlag(enabledObservation) {
+  return (value) => {
+    if (value.toLowerCase() === 'true') {
+      return { ok: true, observation: `equals 'true' — ${enabledObservation}` };
+    }
+    return {
+      ok: false,
+      observation: `not enabled; must be exactly 'true' to open this mode (length ${value.length})`,
+    };
+  };
+}
+
+function shapeDailyPaidLimit(value) {
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 100) {
+    return { ok: true, observation: `integer daily paid-order cap ${parsed}` };
+  }
+  return {
+    ok: false,
+    observation: `must be an integer from 0 through 100; runtime treats invalid configured caps as closed`,
+  };
 }
 
 function shapeBlobNamespaceForEnv(targetEnv) {
@@ -482,12 +521,15 @@ function inspectOne(spec) {
 }
 
 const results = checks.map(inspectOne);
+const publicCheckoutOpen = results.some((r) => r.name === 'HSB_PUBLIC_CHECKOUT_ENABLED' && r.status === 'PRESENT');
+const ownerTestNames = new Set(['HSB_OWNER_TEST_CHECKOUT_ENABLED', 'HSB_OWNER_TEST_EMAILS']);
 
 // A result is a FAILURE if it's required-here AND status is anything
 // other than 'PRESENT', OR if it's PRESENT_DISALLOWED regardless of
-// requiredHere. PRESENT alone is always fine.
+// requiredHere. PRESENT alone is always fine. When public checkout is explicitly
+// open, owner-test allowlist vars are no longer production-blocking.
 const failures = results.filter(
-  (r) => r.status === 'PRESENT_DISALLOWED' || (r.requiredHere && r.status !== 'PRESENT'),
+  (r) => r.status === 'PRESENT_DISALLOWED' || (r.requiredHere && r.status !== 'PRESENT' && !(publicCheckoutOpen && ownerTestNames.has(r.name))),
 );
 const warnings = results.filter(
   (r) => !r.requiredHere && r.status !== 'PRESENT' && r.status !== 'MISSING' && r.status !== 'PRESENT_DISALLOWED',
