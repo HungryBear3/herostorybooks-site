@@ -71,9 +71,9 @@ test('review client mounts InlineProofPreview between per-page review and approv
 
 test('review client preserves per-page review controls (request changes / approve / past feedback)', () => {
   const src = readFileSync(REVIEW_CLIENT, 'utf8');
-  // Page selector + per-page actions
-  assert.match(src, /Request changes/);
-  assert.match(src, /Approve this page/);
+  // Page selector + per-page actions (calm, page-scoped labels)
+  assert.match(src, /Ask for a new version/);
+  assert.match(src, /Looks good/);
   // Per-page feedback / version history surfaces still rendered
   assert.match(src, /Past feedback/);
 });

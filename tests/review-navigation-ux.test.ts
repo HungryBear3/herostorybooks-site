@@ -27,8 +27,8 @@ test('review client provides previous and next page navigation controls', () => 
 
 test('review client shows a selected-page counter', () => {
   const src = source();
-  assert.match(src, /Page \{selectedIdx \+ 1\} of \{pageCount\}/);
-  assert.match(src, /\{selectedIdx \+ 1\} \/ \{pageCount\}/);
+  // Both the header counter and the sticky nav bar use the explicit "Page X of N" form.
+  assert.equal(src.match(/Page \{selectedIdx \+ 1\} of \{pageCount\}/g)?.length, 2);
 });
 
 test('review client supports desktop arrow-key navigation without hijacking form fields', () => {
@@ -47,6 +47,6 @@ test('review navigation keeps existing review actions wired to the selected page
   assert.match(src, /pageIndex: selected\.pageIndex/);
   assert.match(src, /note: feedback/);
   assert.match(src, /action: 'approve_page'/);
-  assert.match(src, /Request changes/);
-  assert.match(src, /Approve this page/);
+  assert.match(src, /Ask for a new version/);
+  assert.match(src, /Looks good/);
 });
