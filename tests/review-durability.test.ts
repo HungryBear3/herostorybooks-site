@@ -166,7 +166,7 @@ test('C2.4 regenerate → approveWholeBook proof reflects the regenerated image'
   assert.equal(proofSawRegen, true, 'proof rebuild used the regenerated image for page 0');
 });
 
-test('C2.5 stale approved state inside lock rejects late regenerate/request-changes', async (t) => {
+test('C2.5 stale approved state inside lock rejects late regenerate/request-changes/accept', async (t) => {
   const dir = makeTmp(); t.after(() => cleanup(dir));
   await seed('ord_c2_5');
 
@@ -195,4 +195,52 @@ test('C2.5 stale approved state inside lock rejects late regenerate/request-chan
   const afterChange = await getOrder('ord_c2_5');
   assert.equal(afterChange!.reviewStatus, 'approved');
   assert.equal(afterChange!.pageArtifacts!.find((p) => p.pageIndex === 1)!.customerRequestedChange, undefined);
+
+  const acceptResult = await acceptPage({ orderId: 'ord_c2_5', pageIndex: 2 });
+  assert.equal(acceptResult.ok, false);
+  assert.equal(acceptResult.status, 409);
+  const afterAccept = await getOrder('ord_c2_5');
+  assert.equal(afterAccept!.reviewStatus, 'approved');
+  assert.equal(afterAccept!.pageArtifacts!.find((p) => p.pageIndex === 2)!.accepted, false);
+});
+
+test('C2.6 approveWholeBook lock blocks concurrent regenerate from changing approved proof state', async (t) => {
+  const dir = makeTmp(); t.after(() => cleanup(dir));
+  await seed('ord_c2_6');
+  for (const i of [0, 1, 2]) {
+    const acc = await acceptPage({ orderId: 'ord_c2_6', pageIndex: i });
+    assert.equal(acc.ok, true);
+  }
+  const pre = await getOrder('ord_c2_6');
+  await persistOrder({ ...pre!, storyArtifactUrl: 'https://cdn/proof.pdf', proofReviewedAt: '2026-04-26T11:00:00Z' });
+
+  let releaseRebuild!: () => void;
+  const rebuildGate = new Promise<void>((r) => { releaseRebuild = r; });
+  const approve = approveWholeBook('ord_c2_6', {
+    rebuildProof: (async (orderId: string, _deps: unknown, existingOrder?: OrderRecord) => {
+      await rebuildGate;
+      const o = existingOrder ?? (await getOrder(orderId))!;
+      return { ok: true, proofUrl: 'https://cdn/proof-rebuilt.pdf', updatedOrder: o };
+    }) as unknown as Parameters<typeof approveWholeBook>[1]['rebuildProof'],
+  });
+  await new Promise((r) => setTimeout(r, 20));
+
+  const regen = regeneratePage(
+    { orderId: 'ord_c2_6', pageIndex: 0, feedback: 'change after approve started' },
+    { generatePageImage: gatedGen('https://img/regen-after-approve-started.png', Promise.resolve()), skipProofRebuild: true },
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  releaseRebuild();
+
+  const approveResult = await approve;
+  assert.equal(approveResult.ok, true, (approveResult as { error?: string }).error);
+  const regenResult = await regen;
+  assert.equal(regenResult.ok, false);
+  assert.equal(regenResult.status, 409);
+
+  const after = await getOrder('ord_c2_6');
+  assert.equal(after!.reviewStatus, 'approved');
+  const p0 = after!.pageArtifacts!.find((p) => p.pageIndex === 0)!;
+  assert.equal(p0.accepted, true, 'approved order kept accepted page state');
+  assert.notEqual(p0.currentImageUrl, 'https://img/regen-after-approve-started.png');
 });

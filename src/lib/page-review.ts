@@ -379,6 +379,9 @@ export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
   // rather than reverted by writing a request-time snapshot array.
   return withOrderWriteLock(input.orderId, async () => {
     const latest = (await getOrder(input.orderId)) ?? order;
+    if (latest.reviewStatus === 'approved') {
+      return { ok: false, status: 409, error: 'Order is already approved' };
+    }
     const baseArtifacts = latest.pageArtifacts && latest.pageArtifacts.length > 0
       ? latest.pageArtifacts
       : order.pageArtifacts;
@@ -498,136 +501,143 @@ export async function approveWholeBook(
   orderId: string,
   deps: ApproveWholeBookDeps = {},
 ): Promise<ApproveWholeBookResult> {
-  const order = await getOrder(orderId);
-  if (!order) return { ok: false, status: 404, error: 'Order not found' };
-  if (order.reviewStatus === 'approved') {
+  // Serialize terminal approval with page-level review writes. Approval re-reads
+  // the freshest order inside the lock and validates that every page is still
+  // accepted immediately before rebuilding/marking approved, so an in-flight
+  // regenerate/request-changes cannot approve stale page state.
+  return withOrderWriteLock(orderId, async () => {
+    const order = await getOrder(orderId);
+    if (!order) return { ok: false, status: 404, error: 'Order not found' };
+    if (order.reviewStatus === 'approved') {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'already_approved',
+      }, order);
+      return { ok: false, status: 409, error: 'Order is already approved' };
+    }
+    if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'review_not_ready',
+      }, order);
+      return { ok: false, status: 409, error: 'Page review not yet ready for this order' };
+    }
+    const allAccepted = order.pageArtifacts.every((p) => p.accepted && p.acceptedImageUrl);
+    if (!allAccepted) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'pages_not_accepted',
+        meta: {
+          acceptedCount: order.pageArtifacts.filter((p) => p.accepted).length,
+          totalPages: order.pageArtifacts.length,
+        },
+      }, order);
+      return { ok: false, status: 409, error: 'All pages must be accepted before approving the whole book' };
+    }
+    // The full proof PDF must exist on the order. Without it the customer is
+    // approving the 6 illustrated pages only, which is the exact UX bug we fixed.
+    if (!order.storyArtifactUrl) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'proof_not_ready',
+      }, order);
+      return { ok: false, status: 409, error: 'Full proof PDF is not ready yet' };
+    }
+    // Server-side enforcement of the proof acknowledgment. Client UI checks the
+    // box; this checks the persisted state. Don't trust the client.
+    if (!order.proofReviewedAt) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'proof_ack_missing',
+      }, order);
+      return {
+        ok: false,
+        status: 409,
+        error:
+          'Proof acknowledgment required — confirm you reviewed the full proof PDF before approving',
+      };
+    }
+    const proofGate = evaluateProofSubmissionGate(order);
+    if (!proofGate.allowed) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'proof_release_gate_blocked',
+        meta: { reasons: proofGate.reasons.map((reason) => reason.code).join(',') },
+      }, order);
+      return {
+        ok: false,
+        status: 409,
+        error: `Proof release gate blocked: ${proofGate.reasons.map((reason) => reason.code).join(', ')}`,
+      };
+    }
+
+    // Rebuild the proof from accepted/current artifacts.
+    const rebuild = deps.rebuildProof ?? rebuildProofFromPageArtifacts;
+    const rb = await rebuild(orderId, {}, order);
+    if (!rb.ok) {
+      await appendAuditEvent(orderId, {
+        type: 'whole_book_approval_rejected',
+        reason: 'proof_rebuild_failed',
+        meta: { error: rb.error ?? 'proof_rebuild_failed' },
+      }, order);
+      return { ok: false, status: 502, error: rb.error ?? 'proof_rebuild_failed' };
+    }
+    const proofBaseOrder = rb.updatedOrder ?? (await getOrder(orderId)) ?? order;
+    const afterProofRebuiltAudit = await appendAuditEvent(orderId, {
+      type: 'proof_rebuilt',
+      reason: null,
+      meta: { triggeredBy: 'whole_book_approved', success: true },
+    }, proofBaseOrder);
+
+    const approvedOrder = await updateFulfillmentState(
+      orderId,
+      { reviewStatus: 'approved' },
+      afterProofRebuiltAudit ?? proofBaseOrder,
+    );
     await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'already_approved',
-    });
-    return { ok: false, status: 409, error: 'Order is already approved' };
-  }
-  if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'review_not_ready',
-    });
-    return { ok: false, status: 409, error: 'Page review not yet ready for this order' };
-  }
-  const allAccepted = order.pageArtifacts.every((p) => p.accepted && p.acceptedImageUrl);
-  if (!allAccepted) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'pages_not_accepted',
+      type: 'whole_book_approved',
       meta: {
-        acceptedCount: order.pageArtifacts.filter((p) => p.accepted).length,
-        totalPages: order.pageArtifacts.length,
+        bookFormat: order.bookFormat,
+        proofUrl: rb.proofUrl ?? null,
       },
-    });
-    return { ok: false, status: 409, error: 'All pages must be accepted before approving the whole book' };
-  }
-  // The full proof PDF must exist on the order. Without it the customer is
-  // approving the 6 illustrated pages only, which is the exact UX bug we fixed.
-  if (!order.storyArtifactUrl) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'proof_not_ready',
-    });
-    return { ok: false, status: 409, error: 'Full proof PDF is not ready yet' };
-  }
-  // Server-side enforcement of the proof acknowledgment. Client UI checks the
-  // box; this checks the persisted state. Don't trust the client.
-  if (!order.proofReviewedAt) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'proof_ack_missing',
-    });
-    return {
-      ok: false,
-      status: 409,
-      error:
-        'Proof acknowledgment required — confirm you reviewed the full proof PDF before approving',
-    };
-  }
-  const proofGate = evaluateProofSubmissionGate(order);
-  if (!proofGate.allowed) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'proof_release_gate_blocked',
-      meta: { reasons: proofGate.reasons.map((reason) => reason.code).join(',') },
-    });
-    return {
-      ok: false,
-      status: 409,
-      error: `Proof release gate blocked: ${proofGate.reasons.map((reason) => reason.code).join(', ')}`,
-    };
-  }
+    }, approvedOrder ?? undefined);
 
-  // Rebuild the proof from accepted/current artifacts.
-  const rebuild = deps.rebuildProof ?? rebuildProofFromPageArtifacts;
-  const rb = await rebuild(orderId, {}, order);
-  if (!rb.ok) {
-    await appendAuditEvent(orderId, {
-      type: 'whole_book_approval_rejected',
-      reason: 'proof_rebuild_failed',
-      meta: { error: rb.error ?? 'proof_rebuild_failed' },
-    });
-    return { ok: false, status: 502, error: rb.error ?? 'proof_rebuild_failed' };
-  }
-  const afterProofRebuiltAudit = await appendAuditEvent(orderId, {
-    type: 'proof_rebuilt',
-    reason: null,
-    meta: { triggeredBy: 'whole_book_approved', success: true },
-  }, rb.updatedOrder ?? undefined);
+    const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
+    if (!isPrint) {
+      return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: false };
+    }
 
-  const approvedOrder = await updateFulfillmentState(
-    orderId,
-    { reviewStatus: 'approved' },
-    afterProofRebuiltAudit ?? rb.updatedOrder ?? undefined,
-  );
-  await appendAuditEvent(orderId, {
-    type: 'whole_book_approved',
-    meta: {
-      bookFormat: order.bookFormat,
-      proofUrl: rb.proofUrl ?? null,
-    },
-  }, approvedOrder ?? undefined);
+    // Print: hand off to the existing approve-proof flow using the stored token.
+    if (!order.proofApprovalToken) {
+      // No token means we never reached proof_ready; the customer can't legitimately
+      // approve a print order from here. Return success on rebuild but flag the
+      // print-approval gap so ops can finish manually.
+      return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: false };
+    }
 
-  const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
-  if (!isPrint) {
-    return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: false };
-  }
-
-  // Print: hand off to the existing approve-proof flow using the stored token.
-  if (!order.proofApprovalToken) {
-    // No token means we never reached proof_ready; the customer can't legitimately
-    // approve a print order from here. Return success on rebuild but flag the
-    // print-approval gap so ops can finish manually.
-    return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: false };
-  }
-
-  const approveFn = deps.approvePrint ?? (await import('./fulfillment.ts')).approvePrintProof;
-  try {
-    const handoff = await approveFn(orderId, order.proofApprovalToken);
-    if (!handoff.ok) {
+    const approveFn = deps.approvePrint ?? (await import('./fulfillment.ts')).approvePrintProof;
+    try {
+      const handoff = await approveFn(orderId, order.proofApprovalToken);
+      if (!handoff.ok) {
+        return {
+          ok: true,
+          status: 200,
+          proofUrl: rb.proofUrl,
+          printApproved: false,
+          error: handoff.error ?? 'print_approval_handoff_failed',
+        };
+      }
+      return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: true };
+    } catch (err) {
       return {
         ok: true,
         status: 200,
         proofUrl: rb.proofUrl,
         printApproved: false,
-        error: handoff.error ?? 'print_approval_handoff_failed',
+        error: err instanceof Error ? err.message : String(err),
       };
     }
-    return { ok: true, status: 200, proofUrl: rb.proofUrl, printApproved: true };
-  } catch (err) {
-    return {
-      ok: true,
-      status: 200,
-      proofUrl: rb.proofUrl,
-      printApproved: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
+  });
 }
 
 // ── Proof acknowledgment (persisted) ────────────────────────────────────────
