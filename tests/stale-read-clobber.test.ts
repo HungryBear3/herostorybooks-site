@@ -281,7 +281,7 @@ test('approveWholeBook print handoff threads approved order into approvePrintPro
   assert.ok(fn.length > 0, 'approveWholeBook body located');
   assert.match(fn, /withOrderWriteLock\(orderId,\s*async \(\) =>/);
   assert.match(fn, /const approvedOrder = await updateFulfillmentState\([\s\S]*?\);/);
-  assert.match(fn, /approveFn\(orderId,\s*order\.proofApprovalToken,\s*approvedOrder \?\? afterProofRebuiltAudit \?\? proofBaseOrder\)/);
+  assert.match(fn, /approveFn\(orderId,\s*order\.proofApprovalToken,\s*\{\},\s*approvedOrder \?\? afterProofRebuiltAudit \?\? proofBaseOrder\)/);
 });
 
 test('approvePrintProof uses provided existingOrder for proof_approved write', () => {

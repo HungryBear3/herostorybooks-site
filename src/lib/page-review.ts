@@ -483,7 +483,7 @@ export interface ApproveWholeBookResult {
 export interface ApproveWholeBookDeps {
   rebuildProof?: typeof rebuildProofFromPageArtifacts;
   /** Optional injection point for the print-approval handoff (tests). */
-  approvePrint?: (orderId: string, token: string, existingOrder?: OrderRecord) => Promise<{ ok: boolean; error?: string }>;
+  approvePrint?: (orderId: string, token: string, deps?: unknown, existingOrder?: OrderRecord) => Promise<{ ok: boolean; error?: string }>;
 }
 
 /**
@@ -617,7 +617,7 @@ export async function approveWholeBook(
 
     const approveFn = deps.approvePrint ?? (await import('./fulfillment.ts')).approvePrintProof;
     try {
-      const handoff = await approveFn(orderId, order.proofApprovalToken, approvedOrder ?? afterProofRebuiltAudit ?? proofBaseOrder);
+      const handoff = await approveFn(orderId, order.proofApprovalToken, {}, approvedOrder ?? afterProofRebuiltAudit ?? proofBaseOrder);
       if (!handoff.ok) {
         return {
           ok: true,
