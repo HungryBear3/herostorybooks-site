@@ -4,7 +4,7 @@
 // updateFulfillmentState() at the end. Tests can also call the pure helpers
 // directly via applyAcceptPage()/applyRegeneratePage().
 
-import { appendAuditEvent, getOrder, getOrderPhotoUrl, updateFulfillmentState } from './orders.ts';
+import { appendAuditEvent, getOrder, getOrderPhotoUrl, updateFulfillmentState, withOrderWriteLock } from './orders.ts';
 import type {
   OrderRecord,
   PageArtifact,
@@ -241,41 +241,58 @@ export async function regeneratePage(
     success: Boolean(result.imageUrl),
   };
 
-  const { artifacts: updatedArtifacts, page: updatedPage, error } = applyRegeneratePage(
-    order.pageArtifacts,
-    input.pageIndex,
-    result.imageUrl,
-    result.provider,
-    result.model,
-    result.promptUsed,
-    feedbackEntry,
-    result.conditioning ?? null,
-    result.referencePhotoUrl ?? null,
-  );
-  if (error || !updatedPage) {
-    return { ok: false, status: 400, error: error ?? 'regenerate_failed' };
-  }
-
-  // Thread the just-written record through so the subsequent appendAuditEvent
-  // and rebuildProof calls don't re-read a stale blob snapshot that would
-  // overwrite pageArtifacts back to the pre-regen state (production bug).
-  const savedOrder = await updateFulfillmentState(order.id, {
-    pageArtifacts: updatedArtifacts,
-    reviewStatus: 'customer_changes_requested',
+  // Image generation (above) happened OUTSIDE the order write lock — it can take
+  // seconds and must not block other per-page writes. Now serialize the
+  // read→modify→write per order and, INSIDE the lock, re-read the freshest order
+  // and apply this page's change onto the latest array (not the stale
+  // request-time snapshot), so a concurrent accept/regenerate on another page
+  // that persisted during generation is preserved rather than reverted.
+  const writeOutcome = await withOrderWriteLock(order.id, async () => {
+    const latest = (await getOrder(order.id)) ?? order;
+    if (latest.reviewStatus === 'approved') {
+      return { error: 'Order is already approved', status: 409 as const };
+    }
+    const baseArtifacts = latest.pageArtifacts && latest.pageArtifacts.length > 0
+      ? latest.pageArtifacts
+      : order.pageArtifacts;
+    const { artifacts: mergedArtifacts, page: mergedPage, error: applyErr } = applyRegeneratePage(
+      baseArtifacts,
+      input.pageIndex,
+      result.imageUrl,
+      result.provider,
+      result.model,
+      result.promptUsed,
+      feedbackEntry,
+      result.conditioning ?? null,
+      result.referencePhotoUrl ?? null,
+    );
+    if (applyErr || !mergedPage) {
+      return { error: applyErr ?? 'regenerate_failed' as string };
+    }
+    const savedOrder = await updateFulfillmentState(order.id, {
+      pageArtifacts: mergedArtifacts,
+      reviewStatus: 'customer_changes_requested',
+    }, latest);
+    const audit = await appendAuditEvent(order.id, {
+      type: 'page_regenerated',
+      pageIndex: input.pageIndex,
+      reason: result.imageUrl ? null : (result.error ?? 'image_generation_failed'),
+      meta: {
+        provider: result.provider,
+        model: result.model,
+        regenerateCount: mergedPage.regenerateCount,
+        success: Boolean(result.imageUrl),
+        tags: tags.join(',') || '',
+      },
+    }, savedOrder ?? undefined);
+    return { updatedPage: mergedPage, afterRegenAudit: audit };
   });
 
-  const afterRegenAudit = await appendAuditEvent(order.id, {
-    type: 'page_regenerated',
-    pageIndex: input.pageIndex,
-    reason: result.imageUrl ? null : (result.error ?? 'image_generation_failed'),
-    meta: {
-      provider: result.provider,
-      model: result.model,
-      regenerateCount: updatedPage.regenerateCount,
-      success: Boolean(result.imageUrl),
-      tags: tags.join(',') || '',
-    },
-  }, savedOrder ?? undefined);
+  if ('error' in writeOutcome) {
+    return { ok: false, status: writeOutcome.status ?? 400, error: writeOutcome.error };
+  }
+  const updatedPage = writeOutcome.updatedPage;
+  const afterRegenAudit = writeOutcome.afterRegenAudit;
 
   if (!result.imageUrl) {
     return {
@@ -318,7 +335,7 @@ export async function regeneratePage(
         pageIndex: input.pageIndex,
         reason: proofRefreshError,
         meta: { triggeredBy: 'page_regenerated', success: false },
-      }, afterRegenAudit ?? savedOrder ?? undefined);
+      }, afterRegenAudit ?? undefined);
     }
   }
 
@@ -355,38 +372,44 @@ export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
   if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
     return { ok: false, status: 409, error: 'Page review not yet ready for this order' };
   }
-  const { artifacts, page, error } = applyAcceptPage(order.pageArtifacts, input.pageIndex);
-  if (error || !page) {
-    return { ok: false, status: 400, error: error ?? 'accept_failed' };
-  }
+  // Serialize the read→modify→write per order (cross-request clobber guard) and,
+  // INSIDE the lock, re-read the freshest order and apply this single page's
+  // accept onto the latest array. A concurrent regenerate/accept on another page
+  // (incl. an in-flight regen that persists during this request) is preserved
+  // rather than reverted by writing a request-time snapshot array.
+  return withOrderWriteLock(input.orderId, async () => {
+    const latest = (await getOrder(input.orderId)) ?? order;
+    const baseArtifacts = latest.pageArtifacts && latest.pageArtifacts.length > 0
+      ? latest.pageArtifacts
+      : order.pageArtifacts;
+    const { artifacts, page, error } = applyAcceptPage(baseArtifacts, input.pageIndex);
+    if (error || !page) {
+      return { ok: false, status: 400, error: error ?? 'accept_failed' };
+    }
 
-  // IMPORTANT: do NOT flip reviewStatus to 'approved' here, even when every
-  // page happens to be accepted. 'approved' is reserved exclusively for the
-  // approveWholeBook flow (proof acknowledgment + full-proof rebuild). Setting
-  // it here would short-circuit the ack/approve gate and cause approveWholeBook
-  // to return `already_approved` for customers who never completed the
-  // intended full-approval path.
-  // Thread the already-read fresh `order` so updateFulfillmentState does NOT do
-  // a second getOrder() that can return a stale blob snapshot and merge it over
-  // the just-accepted pageArtifacts (same stale read-modify-write clobber class
-  // as the regenerate bug). Without this, the persisted accept could be built on
-  // a pre-regenerate snapshot — accepted reverting to false, acceptedImageUrl
-  // stale, regenerateCount/versionHistory reset.
-  const savedOrder = await updateFulfillmentState(order.id, { pageArtifacts: artifacts }, order);
+    // IMPORTANT: do NOT flip reviewStatus to 'approved' here, even when every
+    // page happens to be accepted. 'approved' is reserved exclusively for the
+    // approveWholeBook flow (proof acknowledgment + full-proof rebuild). Setting
+    // it here would short-circuit the ack/approve gate and cause approveWholeBook
+    // to return `already_approved` for customers who never completed the
+    // intended full-approval path. Thread `latest` so updateFulfillmentState
+    // does not do a stale blob re-read inside the locked write.
+    const savedOrder = await updateFulfillmentState(order.id, { pageArtifacts: artifacts }, latest);
 
-  // Thread savedOrder so appendAuditEvent doesn't re-read stale blob state
-  // and clobber the accepted pageArtifacts we just wrote (production clobber bug).
-  await appendAuditEvent(order.id, {
-    type: 'page_accepted',
-    pageIndex: input.pageIndex,
-    meta: {
-      acceptedCount: artifacts.filter((p) => p.accepted).length,
-      totalPages: artifacts.length,
-      regenerateCountAtAccept: page.regenerateCount,
-    },
-  }, savedOrder ?? undefined);
+    // Thread savedOrder so appendAuditEvent doesn't re-read stale blob state
+    // and clobber the accepted pageArtifacts we just wrote (production clobber bug).
+    await appendAuditEvent(order.id, {
+      type: 'page_accepted',
+      pageIndex: input.pageIndex,
+      meta: {
+        acceptedCount: artifacts.filter((p) => p.accepted).length,
+        totalPages: artifacts.length,
+        regenerateCountAtAccept: page.regenerateCount,
+      },
+    }, savedOrder ?? undefined);
 
-  return { ok: true, status: 200, page };
+    return { ok: true, status: 200, page };
+  });
 }
 
 export async function requestPageChanges(
@@ -403,35 +426,44 @@ export async function requestPageChanges(
   }
 
   const ts = now.toISOString();
-  const { artifacts, page, error } = applyRequestPageChanges(
-    order.pageArtifacts,
-    input.pageIndex,
-    input.note,
-    ts,
-  );
-  if (error || !page) {
-    const status = error === 'change_note_required' ? 400 : 400;
-    return { ok: false, status, error: error ?? 'request_changes_failed' };
-  }
+  // Serialize per order + re-read latest INSIDE the lock, then apply this single
+  // page's change onto the freshest array so a concurrent accept/regenerate on
+  // another page is preserved, not reverted by a request-time snapshot write.
+  return withOrderWriteLock(input.orderId, async () => {
+    const latest = (await getOrder(input.orderId)) ?? order;
+    if (latest.reviewStatus === 'approved') {
+      return { ok: false, status: 409, error: 'Order is already approved' };
+    }
+    const baseArtifacts = latest.pageArtifacts && latest.pageArtifacts.length > 0
+      ? latest.pageArtifacts
+      : order.pageArtifacts;
+    const { artifacts, page, error } = applyRequestPageChanges(
+      baseArtifacts,
+      input.pageIndex,
+      input.note,
+      ts,
+    );
+    if (error || !page) {
+      const status = error === 'change_note_required' ? 400 : 400;
+      return { ok: false, status, error: error ?? 'request_changes_failed' };
+    }
 
-  // Thread the fresh `order` (same stale read-modify-write guard as acceptPage):
-  // updateFulfillmentState must not do a second getOrder() that could merge a
-  // stale blob snapshot over the just-written change-request state.
-  const savedOrder = await updateFulfillmentState(order.id, {
-    pageArtifacts: artifacts,
-    reviewStatus: 'customer_changes_requested',
-    proofReviewedAt: null,
-  }, order);
-  await appendAuditEvent(order.id, {
-    type: 'page_changes_requested',
-    pageIndex: input.pageIndex,
-    meta: {
-      lifecycleStatus: page.customerRequestedChange?.lifecycleStatus ?? 'triage',
-      noteLength: page.customerRequestedChange?.note.length ?? 0,
-    },
-  }, savedOrder ?? undefined);
+    const savedOrder = await updateFulfillmentState(order.id, {
+      pageArtifacts: artifacts,
+      reviewStatus: 'customer_changes_requested',
+      proofReviewedAt: null,
+    }, latest);
+    await appendAuditEvent(order.id, {
+      type: 'page_changes_requested',
+      pageIndex: input.pageIndex,
+      meta: {
+        lifecycleStatus: page.customerRequestedChange?.lifecycleStatus ?? 'triage',
+        noteLength: page.customerRequestedChange?.note.length ?? 0,
+      },
+    }, savedOrder ?? undefined);
 
-  return { ok: true, status: 200, page };
+    return { ok: true, status: 200, page };
+  });
 }
 
 // ── Approve whole book ───────────────────────────────────────────────────────
