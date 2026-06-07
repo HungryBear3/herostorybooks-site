@@ -275,6 +275,33 @@ test('requestPageChanges threads latest locked order into updateFulfillmentState
   assert.doesNotMatch(fn, /updateFulfillmentState\(\s*order\.id,\s*\{[\s\S]*?proofReviewedAt:\s*null,?\s*\}\s*\)\s*;/);
 });
 
+test('approveWholeBook print handoff threads approved order into approvePrintProof', () => {
+  const src = readFileSync(new URL('../src/lib/page-review.ts', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('export async function approveWholeBook'), src.indexOf('// ── Proof acknowledgment'));
+  assert.ok(fn.length > 0, 'approveWholeBook body located');
+  assert.match(fn, /withOrderWriteLock\(orderId,\s*async \(\) =>/);
+  assert.match(fn, /const approvedOrder = await updateFulfillmentState\([\s\S]*?\);/);
+  assert.match(fn, /approveFn\(orderId,\s*order\.proofApprovalToken,\s*approvedOrder \?\? afterProofRebuiltAudit \?\? proofBaseOrder\)/);
+});
+
+test('approvePrintProof uses provided existingOrder for proof_approved write', () => {
+  const src = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('export async function approvePrintProof'), src.indexOf('/**', src.indexOf('export async function approvePrintProof') + 1));
+  assert.ok(fn.length > 0, 'approvePrintProof body located');
+  assert.match(fn, /existingOrder\?: OrderRecord/);
+  assert.match(fn, /const order = existingOrder\?\.id === orderId \? existingOrder : await getOrder\(orderId\)/);
+  assert.match(fn, /updateFulfillmentState\(orderId,\s*\{[\s\S]*?fulfillmentStatus:\s*'proof_approved',[\s\S]*?printApprovedAt:\s*approvedAt,?\s*\}\s*,\s*order\s*\)/);
+});
+
+test('acknowledgeProofReview serializes and writes from the locked latest order', () => {
+  const src = readFileSync(new URL('../src/lib/page-review.ts', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('export async function acknowledgeProofReview'), src.indexOf('// ── Approval-gate helpers'));
+  assert.ok(fn.length > 0, 'acknowledgeProofReview body located');
+  assert.match(fn, /withOrderWriteLock\(orderId,\s*async \(\) =>/);
+  assert.match(fn, /updateFulfillmentState\(orderId,\s*\{ proofReviewedAt: ts \},\s*order\)/);
+  assert.match(fn, /appendAuditEvent\(orderId,[\s\S]*?savedOrder \?\? order\)/);
+});
+
 // ── accept-page stale-read guard (fix-sensitive) ──────────────────────────────
 //
 // acceptPage now threads its fresh `order` into updateFulfillmentState so the

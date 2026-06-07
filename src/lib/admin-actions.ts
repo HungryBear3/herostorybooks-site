@@ -768,7 +768,7 @@ export async function manuallyApproveProof(orderId: string): Promise<ActionResul
   // Reuse the same code path as the customer approval — pass the stored
   // token. This advances state to `proof_approved` ONLY; it does NOT
   // call runPrintProduction. Operator's next step is recordOwnerPrintGo.
-  const result = await approvePrintProof(order.id, order.proofApprovalToken);
+  const result = await approvePrintProof(order.id, order.proofApprovalToken, {}, order);
   if (!result.ok) {
     return { ok: false, status: 409, error: result.error ?? 'Approval failed' };
   }

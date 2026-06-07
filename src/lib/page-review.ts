@@ -483,7 +483,7 @@ export interface ApproveWholeBookResult {
 export interface ApproveWholeBookDeps {
   rebuildProof?: typeof rebuildProofFromPageArtifacts;
   /** Optional injection point for the print-approval handoff (tests). */
-  approvePrint?: (orderId: string, token: string) => Promise<{ ok: boolean; error?: string }>;
+  approvePrint?: (orderId: string, token: string, existingOrder?: OrderRecord) => Promise<{ ok: boolean; error?: string }>;
 }
 
 /**
@@ -617,7 +617,7 @@ export async function approveWholeBook(
 
     const approveFn = deps.approvePrint ?? (await import('./fulfillment.ts')).approvePrintProof;
     try {
-      const handoff = await approveFn(orderId, order.proofApprovalToken);
+      const handoff = await approveFn(orderId, order.proofApprovalToken, approvedOrder ?? afterProofRebuiltAudit ?? proofBaseOrder);
       if (!handoff.ok) {
         return {
           ok: true,
@@ -658,28 +658,30 @@ export async function acknowledgeProofReview(
   orderId: string,
   now: Date = new Date(),
 ): Promise<AckProofResult> {
-  const order = await getOrder(orderId);
-  if (!order) return { ok: false, status: 404, error: 'Order not found' };
-  if (!order.storyArtifactUrl) {
-    return {
-      ok: false,
-      status: 409,
-      error: 'Full proof PDF is not ready yet — cannot acknowledge what does not exist',
-    };
-  }
-  if (order.reviewStatus === 'approved') {
-    return { ok: false, status: 409, error: 'Order is already approved' };
-  }
-  if (order.proofReviewedAt) {
-    return { ok: true, status: 200, proofReviewedAt: order.proofReviewedAt };
-  }
-  const ts = now.toISOString();
-  const savedOrder = await updateFulfillmentState(orderId, { proofReviewedAt: ts });
-  await appendAuditEvent(orderId, {
-    at: ts,
-    type: 'proof_review_acknowledged',
-  }, savedOrder ?? undefined);
-  return { ok: true, status: 200, proofReviewedAt: ts };
+  return withOrderWriteLock(orderId, async () => {
+    const order = await getOrder(orderId);
+    if (!order) return { ok: false, status: 404, error: 'Order not found' };
+    if (!order.storyArtifactUrl) {
+      return {
+        ok: false,
+        status: 409,
+        error: 'Full proof PDF is not ready yet — cannot acknowledge what does not exist',
+      };
+    }
+    if (order.reviewStatus === 'approved') {
+      return { ok: false, status: 409, error: 'Order is already approved' };
+    }
+    if (order.proofReviewedAt) {
+      return { ok: true, status: 200, proofReviewedAt: order.proofReviewedAt };
+    }
+    const ts = now.toISOString();
+    const savedOrder = await updateFulfillmentState(orderId, { proofReviewedAt: ts }, order);
+    await appendAuditEvent(orderId, {
+      at: ts,
+      type: 'proof_review_acknowledged',
+    }, savedOrder ?? order);
+    return { ok: true, status: 200, proofReviewedAt: ts };
+  });
 }
 
 // ── Approval-gate helpers (pure, testable) ──────────────────────────────────

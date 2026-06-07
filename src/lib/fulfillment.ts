@@ -1515,8 +1515,12 @@ export async function approvePrintProof(
   orderId: string,
   token: string,
   _deps: FulfillmentDeps = {},
+  existingOrder?: OrderRecord,
 ): Promise<{ ok: boolean; error?: string }> {
-  const order = await getOrder(orderId);
+  // When called from approveWholeBook, use the freshly written approved order
+  // instead of doing another un-hinted getOrder() that can see stale Blob state
+  // and clobber the rebuilt proof / cleared proof ack during proof_approved write.
+  const order = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
   if (!order) return { ok: false, error: 'Order not found' };
   if (!order.proofApprovalToken) return { ok: false, error: 'No proof pending approval' };
   const storedToken = order.proofApprovalToken ?? '';
@@ -1536,7 +1540,7 @@ export async function approvePrintProof(
     fulfillmentStatus: 'proof_approved',
     proofApprovedAt: approvedAt,
     printApprovedAt: approvedAt,
-  });
+  }, order);
   if (!updatedOrder) return { ok: false, error: 'Failed to update order state' };
 
   // INTENTIONALLY DO NOT call runPrintProduction here. Customer approval
