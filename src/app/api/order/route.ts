@@ -11,8 +11,10 @@ import {
   sanitizeFamilyCharacters,
   uploadOrderPhoto,
   uploadOrderSupportingPhoto,
+  uploadOrderGuidedPhoto,
   uploadOrderVoice,
 } from '@/lib/orders';
+import { collectGuidedReferencePhotos } from '@/lib/guided-photo-capture';
 import {
   missingFieldErrorCode,
   missingRequiredField,
@@ -369,6 +371,24 @@ export async function POST(request: Request) {
       voiceTranscript = await transcribeVoiceNote(voiceRaw as File);
     }
 
+    // Guided multi-angle reference photos (feature-flagged client capture).
+    // Still images only — never video. MIME/size are validated and each still
+    // is persisted to durable storage BEFORE Stripe. Any failure aborts here so
+    // the customer is not charged for an order whose reference photos were lost.
+    const guidedResult = await collectGuidedReferencePhotos(form, draftOrder.id, {
+      upload: uploadOrderGuidedPhoto,
+    });
+    if (!guidedResult.ok) {
+      console.error(
+        `[order] ABORT BEFORE STRIPE: guided reference photos rejected for ${draftOrder.id}: ${guidedResult.code}`,
+      );
+      return NextResponse.json(
+        { error: guidedResult.error, code: guidedResult.code },
+        { status: guidedResult.status },
+      );
+    }
+    const guidedReferencePhotos = guidedResult.records.length > 0 ? guidedResult.records : null;
+
     // Persist the order record durably. If this throws OrderPersistenceError
     // we MUST NOT create a Stripe Checkout Session — the customer would pay
     // for an order the webhook + status page can never find.
@@ -384,6 +404,7 @@ export async function POST(request: Request) {
         voiceConsentAt,
         voiceSource: hasVoiceUpload ? voiceSource : null,
         voiceTranscript,
+        guidedReferencePhotos,
       });
     } catch (error) {
       if (error instanceof OrderPersistenceError) {

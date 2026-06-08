@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { del, get, list, put } from '@vercel/blob';
 
 import type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta } from './fulfillment-types.ts';
+import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import { sanitizeReferralCode } from './referral-code.ts';
 export type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta };
 
@@ -63,6 +64,13 @@ export interface OrderInput {
    * never for voice cloning.
    */
   voiceTranscript?: VoiceTranscriptMeta | null;
+  /**
+   * Optional multi-angle guided reference photos (NEXT_PUBLIC_HSB_GUIDED_PHOTO_CAPTURE).
+   * Still images only — never video. Persisted to durable storage BEFORE Stripe.
+   * Used as additional illustrator reference material; not a face/biometric scan
+   * and never used for voice/identity verification.
+   */
+  guidedReferencePhotos?: GuidedReferencePhotoRecord[] | null;
   referralCode?: string | null;
 }
 
@@ -834,6 +842,10 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     // so this is normally null here and set later in the persist call. We
     // still pass it through when supplied so the field round-trips cleanly.
     voiceTranscript: input.voiceTranscript ?? null,
+    guidedReferencePhotos:
+      Array.isArray(input.guidedReferencePhotos) && input.guidedReferencePhotos.length > 0
+        ? input.guidedReferencePhotos
+        : null,
     referralCode: sanitizeReferralCode(input.referralCode),
     status: 'order_received',
     paymentStatus: 'pending',
@@ -1179,6 +1191,19 @@ export async function uploadOrderSupportingPhoto(
     orderId,
     file,
     (safeName) => `orders/${orderId}/supporting-${safeIndex}-photo-${safeName}`,
+  );
+}
+
+export async function uploadOrderGuidedPhoto(
+  orderId: string,
+  index: number,
+  file: File,
+): Promise<UploadedPhotoRef | null> {
+  const safeIndex = Number.isInteger(index) && index >= 0 ? index + 1 : 1;
+  return uploadOrderPhotoAtPath(
+    orderId,
+    file,
+    (safeName) => `orders/${orderId}/guided-${safeIndex}-photo-${safeName}`,
   );
 }
 
