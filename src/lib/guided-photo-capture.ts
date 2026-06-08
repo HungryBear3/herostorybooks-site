@@ -6,6 +6,15 @@ export const GUIDED_PHOTO_CONSENT_COPY =
 export const GUIDED_PHOTO_STILL_ONLY_COPY =
   'We only upload the still photos you approve — never video. These are temporary reference photos for your book.';
 
+export const GUIDED_CAMERA_TRUST_BADGES = [
+  'Still photos only',
+  'Not a face scan',
+  'Never video',
+] as const;
+
+export const GUIDED_FACE_GUIDE_CLASS_NAME =
+  'pointer-events-none absolute left-1/2 top-1/2 h-[72%] w-[52%] max-w-[16rem] -translate-x-1/2 -translate-y-1/2 rounded-[48%] border-2 border-white/80 shadow-[0_0_0_9999px_rgba(31,26,22,0.16)]';
+
 export const GUIDED_PHOTO_LABELS = [
   'front',
   'left',
@@ -29,6 +38,16 @@ export const GUIDED_PHOTO_PROMPTS: GuidedPhotoPrompt[] = [
   { label: 'up', title: 'Tilt slightly up', instruction: 'A tiny upward angle helps the illustrator keep shape consistent.' },
   { label: 'smile', title: 'Smile', instruction: 'One natural expression for warmer storybook pages.' },
 ];
+
+export function getNextGuidedPromptIndex(frames: Array<{ label?: unknown }> | null | undefined): number {
+  const capturedLabels = new Set(
+    (Array.isArray(frames) ? frames : [])
+      .map((frame) => sanitizeGuidedPhotoLabel(frame?.label))
+      .filter(Boolean),
+  );
+  const nextIndex = GUIDED_PHOTO_PROMPTS.findIndex((prompt) => !capturedLabels.has(prompt.label));
+  return nextIndex >= 0 ? nextIndex : Math.max(0, GUIDED_PHOTO_PROMPTS.length - 1);
+}
 
 export interface GuidedPhotoFile {
   label: GuidedPhotoLabel | string;

@@ -3,11 +3,14 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   GUIDED_CAPTURE_MEDIA_CONSTRAINTS,
+  GUIDED_CAMERA_TRUST_BADGES,
+  GUIDED_FACE_GUIDE_CLASS_NAME,
   GUIDED_PHOTO_CONSENT_COPY,
   GUIDED_PHOTO_PROMPTS,
   GUIDED_PHOTO_STILL_ONLY_COPY,
   buildGuidedPhotoFileName,
   canStartGuidedCamera,
+  getNextGuidedPromptIndex,
   stopMediaTracks,
   type GuidedPhotoFile,
 } from "@/lib/guided-photo-capture";
@@ -51,7 +54,7 @@ export function GuidedPhotoCapture({
   const streamRef = useRef<MediaStream | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
-  const [currentPromptIndex, setCurrentPromptIndex] = useState(0);
+  const currentPromptIndex = getNextGuidedPromptIndex(frames);
 
   const stopCamera = useCallback(() => {
     stopMediaTracks(streamRef.current);
@@ -112,7 +115,6 @@ export function GuidedPhotoCapture({
       { label: prompt.label, file, dataUrl },
     ];
     onFramesChange(nextFrames);
-    setCurrentPromptIndex((idx) => Math.min(idx + 1, GUIDED_PHOTO_PROMPTS.length - 1));
   }, [currentPromptIndex, frames, onFramesChange]);
 
   const currentPrompt = GUIDED_PHOTO_PROMPTS[currentPromptIndex];
@@ -149,14 +151,14 @@ export function GuidedPhotoCapture({
               playsInline
               muted
               autoPlay
-              className="aspect-video w-full object-cover"
+              className="aspect-[3/4] w-full object-cover md:aspect-video"
             />
             {!cameraActive && (
               <div className="absolute inset-0 flex items-center justify-center bg-[#1f1a16]/80 px-6 text-center text-sm text-white">
                 Camera stays local until you capture and approve still photos.
               </div>
             )}
-            <div className="pointer-events-none absolute inset-8 rounded-[50%] border-2 border-white/75" />
+            <div className={GUIDED_FACE_GUIDE_CLASS_NAME} />
           </div>
           {cameraError && (
             <p className="rounded-xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-3 py-2 text-sm text-[#7a3030]">
@@ -180,6 +182,13 @@ export function GuidedPhotoCapture({
             >
               Capture {currentPrompt?.title ?? "photo"}
             </button>
+          </div>
+          <div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-white">
+            {GUIDED_CAMERA_TRUST_BADGES.map((badge) => (
+              <span key={badge} className="rounded-full bg-[#1f1a16] px-2.5 py-1">
+                {badge}
+              </span>
+            ))}
           </div>
         </div>
 

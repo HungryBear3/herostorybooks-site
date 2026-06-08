@@ -9,12 +9,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  GUIDED_CAMERA_TRUST_BADGES,
   GUIDED_CAPTURE_MEDIA_CONSTRAINTS,
+  GUIDED_FACE_GUIDE_CLASS_NAME,
   GUIDED_PHOTO_CAPTURE_VERSION,
   GUIDED_PHOTO_CONSENT_COPY,
   GUIDED_PHOTO_STILL_ONLY_COPY,
   appendGuidedCaptureToFormData,
   canStartGuidedCamera,
+  getNextGuidedPromptIndex,
   isGuidedPhotoCaptureEnabled,
   stopMediaTracks,
   type GuidedCaptureAppendable,
@@ -45,6 +48,21 @@ test('consent copy contains the required negated reassurances', () => {
 test('still-only copy says still photos only / never video', () => {
   assert.match(GUIDED_PHOTO_STILL_ONLY_COPY, /still photos/i);
   assert.match(GUIDED_PHOTO_STILL_ONLY_COPY, /never video/i);
+});
+
+test('camera trust badges repeat the safety message near capture controls', () => {
+  assert.deepEqual([...GUIDED_CAMERA_TRUST_BADGES], [
+    'Still photos only',
+    'Not a face scan',
+    'Never video',
+  ]);
+});
+
+test('face guide uses a portrait oval, not a wide horizontal crop guide', () => {
+  assert.match(GUIDED_FACE_GUIDE_CLASS_NAME, /h-\[72%\]/);
+  assert.match(GUIDED_FACE_GUIDE_CLASS_NAME, /w-\[52%\]/);
+  assert.match(GUIDED_FACE_GUIDE_CLASS_NAME, /left-1\/2/);
+  assert.doesNotMatch(GUIDED_FACE_GUIDE_CLASS_NAME, /inset-8/);
 });
 
 // ── consent gates camera ──────────────────────────────────────────────────────
@@ -96,6 +114,18 @@ test('delete/retake: a removed frame is not re-sent (rebuilt from current frames
   assert.ok(fd.get('guidedPhoto_0') instanceof File);
   assert.equal(fd.get('guidedPhoto_1'), null);
   assert.deepEqual(JSON.parse(String(fd.get('guidedPhotoLabels'))), ['front']);
+});
+
+test('delete/retake prompt flow restarts at first missing still', () => {
+  assert.equal(getNextGuidedPromptIndex([]), 0, 'no approved stills should restart at 1/5 Look straight');
+  assert.equal(getNextGuidedPromptIndex([frame('front')]), 1, 'front captured should advance to left');
+  assert.equal(getNextGuidedPromptIndex([frame('front'), frame('right')]), 1, 'missing left should be next');
+  assert.equal(getNextGuidedPromptIndex([frame('smile')]), 0, 'deleting earlier stills should not stick on smile');
+  assert.equal(
+    getNextGuidedPromptIndex([frame('front'), frame('left'), frame('right'), frame('up'), frame('smile')]),
+    4,
+    'all complete stays on the final prompt for retake',
+  );
 });
 
 // ── media tracks stop on finish/cancel/unmount ────────────────────────────────
