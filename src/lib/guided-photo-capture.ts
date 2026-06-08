@@ -4,7 +4,7 @@ export const GUIDED_PHOTO_CONSENT_COPY =
   'This guided photo capture takes a few ordinary reference photos to help us illustrate your child more consistently. It is not a face scan, biometric scan, or Face ID. You can delete any photo before submitting.';
 
 export const GUIDED_PHOTO_STILL_ONLY_COPY =
-  'We only upload the still photos you approve — never video. These are temporary reference photos for your book.';
+  'We only upload the still photos you approve — never video. These are temporary reference photos for your book, never used to train AI, and deleted after book delivery plus 30 days unless needed for support or legal record-keeping. Want them removed sooner? Email support@herostorybooks.com.';
 
 export const GUIDED_CAMERA_TRUST_BADGES = [
   'Still photos only',
