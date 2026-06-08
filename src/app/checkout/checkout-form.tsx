@@ -17,6 +17,13 @@ import {
   isCombinedUploadTooLarge,
 } from "@/lib/upload-limits";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
+import { GuidedPhotoCapture } from "@/components/checkout/GuidedPhotoCapture";
+import { StoryPreviewCard } from "@/components/checkout/StoryPreviewCard";
+import {
+  appendGuidedCaptureToFormData,
+  isGuidedPhotoCaptureEnabled,
+  type GuidedPhotoFile,
+} from "@/lib/guided-photo-capture";
 import {
   CHECKOUT_SAMPLE_IMAGES,
   STORY_OCCASIONS,
@@ -328,6 +335,11 @@ export function CheckoutForm() {
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
+  // Guided multi-angle photo capture (feature-flagged). Normal photo upload
+  // above remains the always-available path; guided stills are optional extras.
+  const guidedCaptureEnabled = isGuidedPhotoCaptureEnabled();
+  const [guidedFrames, setGuidedFrames] = useState<GuidedPhotoFile[]>([]);
+  const [guidedConsent, setGuidedConsent] = useState(false);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Restore saved progress on mount + honor checkout entry context.
@@ -696,6 +708,11 @@ export function CheckoutForm() {
         payload.set("voice", form.voiceFile);
         payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
         if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
+      }
+      // Guided reference stills (flag-gated). Appends guidedPhoto_i + labels +
+      // version + consent for approved still frames only — never video.
+      if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
+        appendGuidedCaptureToFormData(payload, guidedFrames);
       }
 
       const response = await fetch("/api/order", {
@@ -1656,6 +1673,15 @@ export function CheckoutForm() {
               </p>
             </section>
 
+            {guidedCaptureEnabled && (
+              <GuidedPhotoCapture
+                frames={guidedFrames}
+                consent={guidedConsent}
+                onConsentChange={setGuidedConsent}
+                onFramesChange={setGuidedFrames}
+              />
+            )}
+
             {VOICE_BETA_ENABLED && (
               <VoiceRecorderSection
                 voiceFile={form.voiceFile}
@@ -1871,6 +1897,21 @@ export function CheckoutForm() {
                 </li>
               </ol>
             </section>
+
+            {/* Pre-purchase story-confidence preview — deterministic + local,
+                rendered before the payment boundary. No-op until child name +
+                story are chosen. */}
+            <StoryPreviewCard
+              childName={form.childName}
+              theme={form.theme}
+              lesson={form.lesson}
+              giftMessage={form.giftMessage}
+              characterNotes={form.characterNotes}
+              voiceAttached={VOICE_BETA_ENABLED && Boolean(form.voiceFile)}
+              voiceTranscribed={false}
+              guidedPhotoCount={guidedCaptureEnabled ? guidedFrames.length : 0}
+              bookFormat={form.bookFormat}
+            />
 
             <div className="space-y-3 pb-10">
               {/* Disabled-CTA reason. Listed before the button so a screen

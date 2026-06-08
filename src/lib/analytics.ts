@@ -3,7 +3,11 @@
 // when GA isn't wired yet.
 import type { CoverVariant } from './cover-variant';
 
-type GtagFn = (command: string, eventName: string, params?: Record<string, unknown>) => void;
+type GtagFn = (
+  command: 'config' | 'event' | 'js',
+  target: string | Date,
+  params?: Record<string, unknown>,
+) => void;
 
 declare global {
   interface Window {
@@ -149,6 +153,9 @@ export function track(
     window.dataLayer.push(record);
     window.hsbEvents = window.hsbEvents ?? [];
     window.hsbEvents.push(record);
+    if (typeof window.gtag === 'function') {
+      window.gtag('event', event, vercelSafeProps(record));
+    }
     if (typeof window.va === 'function') {
       window.va('track', event, vercelSafeProps(record));
     }
