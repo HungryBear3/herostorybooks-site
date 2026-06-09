@@ -1,6 +1,18 @@
 import { NextResponse } from 'next/server';
 
-import { acceptPage, getReviewSnapshot, requestPageChanges } from '@/lib/page-review';
+import {
+  acceptPage,
+  getReviewSnapshot,
+  requestPageChanges,
+  updatePageTextLayout,
+} from '@/lib/page-review';
+
+/** Server-side gate for the constrained proof text editor. Off by default; the
+ *  action 404s unless explicitly enabled in this environment. Mirrors the
+ *  public client flag so the route can never be driven before the UI ships. */
+const PROOF_TEXT_EDITOR_ENABLED =
+  process.env.NEXT_PUBLIC_HSB_PROOF_TEXT_EDITOR_ENABLED === 'true' ||
+  process.env.HSB_PROOF_TEXT_EDITOR_ENABLED === 'true';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,6 +57,27 @@ export async function POST(
       return NextResponse.json({ ok: false, error: result.error }, { status: result.status });
     }
     return NextResponse.json({ ok: true, page: result.page });
+  }
+
+  if (action === 'update_text_layout') {
+    if (!PROOF_TEXT_EDITOR_ENABLED) {
+      return NextResponse.json({ ok: false, error: 'Unsupported review action' }, { status: 400 });
+    }
+    const result = await updatePageTextLayout({
+      orderId,
+      pageIndex,
+      textLayout: body?.textLayout ?? null,
+    });
+    if (!result.ok) {
+      return NextResponse.json({ ok: false, error: result.error }, { status: result.status });
+    }
+    return NextResponse.json({
+      ok: true,
+      page: result.page,
+      savedLayout: result.savedLayout,
+      proofRefreshed: result.proofRefreshed,
+      ...(result.proofRefreshError ? { proofRefreshError: result.proofRefreshError } : {}),
+    });
   }
 
   return NextResponse.json({ ok: false, error: 'Unsupported review action' }, { status: 400 });

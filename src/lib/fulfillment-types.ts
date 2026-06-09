@@ -77,10 +77,37 @@ export type TextPanelStyle =
   | 'translucent_dark'
   | 'soft_scrim';
 
+/** Customer/operator-tunable text size preset. Maps to a conservative font-fit
+ *  band in the PDF renderer — never to a raw point size — so a preset can only
+ *  bias the fitter, never force overflow. */
+export type TextSizePreset = 'small' | 'medium' | 'large';
+
+/** Normalized text-block position override, expressed as percentages of the
+ *  page (0–100). The renderer maps these into proof/print coordinate spaces and
+ *  clamps them to the safe printable zone, so out-of-range values can never push
+ *  copy off the page. All fields optional: an absent `position` means "use the
+ *  recommended default band". */
+export interface PageTextPosition {
+  /** Left edge of the text block, as % of page width. */
+  xPct: number;
+  /** Top edge of the text block, as % of page height. */
+  yPct: number;
+  /** Width of the text block, as % of page width. Optional — defaults to the
+   *  recommended band width when omitted. */
+  widthPct?: number;
+}
+
 export interface PageTextLayout {
   zone: TextZone;
   colorMode: TextColorMode;
   panelStyle: TextPanelStyle;
+  /** Optional structured placement override saved by the proof text editor.
+   *  Backward compatible: legacy records omit it and render on the default
+   *  recommended band. */
+  position?: PageTextPosition | null;
+  /** Optional text-size preset saved by the proof text editor. Absent → the
+   *  renderer's default adaptive fit. */
+  sizePreset?: TextSizePreset | null;
 }
 
 export interface StoryPage {
