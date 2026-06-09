@@ -9,6 +9,7 @@ import type {
   ImageProviderDeps,
   ImageProviderInput,
 } from './image-provider-types.ts';
+import { redactProviderError } from './redact-secrets.ts';
 
 const FAL_ENDPOINT = process.env.FAL_IMAGE_ENDPOINT ?? 'https://fal.run/fal-ai/flux/schnell';
 const DEFAULT_MODEL = process.env.FAL_IMAGE_MODEL ?? 'fal-ai/flux/schnell';
@@ -81,7 +82,7 @@ export const falImageProvider: ImageProvider = {
           model: DEFAULT_MODEL,
           promptUsed: input.prompt,
           latencyMs: Date.now() - startedAt,
-          error: `FAL ${res.status}: ${body.slice(0, 200)}`,
+          error: redactProviderError(null, { provider: 'FAL', status: res.status }),
         };
       }
 
@@ -114,7 +115,7 @@ export const falImageProvider: ImageProvider = {
         model: DEFAULT_MODEL,
         promptUsed: input.prompt,
         latencyMs: Date.now() - startedAt,
-        error: err instanceof Error ? err.message : String(err),
+        error: redactProviderError(err, { provider: 'FAL' }),
       };
     }
   },

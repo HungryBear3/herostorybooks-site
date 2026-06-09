@@ -36,3 +36,35 @@ export function redactSecrets(input: unknown): string {
   for (const re of SECRET_PATTERNS) s = s.replace(re, REDACTED);
   return s;
 }
+
+/**
+ * Centralized provider-error redactor. The raw body of an OpenAI/FAL/Gemini/
+ * Seedream error (HTTP response text or a thrown Error's message) routinely
+ * echoes BOTH credentials AND customer PII (a child's name the prompt embedded)
+ * or internal prompt text. `redactSecrets` only removes credential-shaped
+ * tokens — a name would survive. So before persisting a provider error to an
+ * order artifact, Blob, Vercel log, or any customer-reachable field, keep only
+ * a stable type/code classifier (provider label + HTTP status + Error name) and
+ * DROP the message body entirely. Defense-in-depth: the classifier is still run
+ * through `redactSecrets` in case a status line embedded a token.
+ *
+ * Returns e.g. "FAL 429", "OpenAI 401", "fal AbortError", or "provider_error".
+ */
+export function redactProviderError(
+  err: unknown,
+  opts?: { provider?: string; status?: number },
+): string {
+  const parts: string[] = [];
+  if (opts?.provider) parts.push(opts.provider);
+  let code: string | number | undefined = opts?.status;
+  if (code === undefined && err && typeof err === 'object') {
+    const e = err as Record<string, unknown>;
+    const sniffed = e.status ?? e.statusCode ?? e.code;
+    if (typeof sniffed === 'number') code = sniffed;
+    else if (typeof sniffed === 'string' && sniffed.length > 0 && sniffed.length <= 40) code = sniffed;
+  }
+  if (code !== undefined && String(code).length > 0) parts.push(String(code));
+  if (err instanceof Error && err.name && !parts.includes(err.name)) parts.push(err.name);
+  const label = parts.join(' ').trim() || 'provider_error';
+  return redactSecrets(label).slice(0, 80);
+}
