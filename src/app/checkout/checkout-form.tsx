@@ -6,11 +6,13 @@ import { Progress } from "@/components/ui/progress";
 import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from "@/lib/checkout-flow";
 import {
   MAX_PHOTO_BYTES,
+  compressPhotosForBudget,
   isHeicLikePhoto,
   shouldAutoShrinkPhoto,
   shrinkPhotoForUpload,
 } from "@/lib/photo-upload";
 import {
+  MAX_TOTAL_UPLOAD_BYTES,
   combinedTooLargeMessage,
   estimateTotalUploadBytes,
   formatMb,
@@ -613,22 +615,49 @@ export function CheckoutForm() {
     setIsSubmitting(true);
     setSubmitError(null);
 
-    // Combined-payload guard: estimate total attached bytes (main photo +
-    // supporting photos + voice/doc) and block client-side before any network
-    // call if it exceeds the cap. This avoids waiting for Vercel to reject an
-    // oversized multipart request before our /api/order code ever runs. No
-    // charge has been made at this point.
+    // Combined-payload guard: estimate total attached bytes and, if over budget,
+    // attempt a budget-aware recompression of all resizable photos before
+    // surfacing an error. This handles the common case where individually-valid
+    // photos + a voice note collectively exceed Vercel's ~4.5 MB request limit.
+    const voiceBytes = VOICE_BETA_ENABLED && form.voiceFile ? form.voiceFile.size : 0;
+    let resolvedPhotoFile = form.photoFile;
+    let resolvedCharacters = form.familyCharacters;
+
     const totalUploadBytes = estimateTotalUploadBytes({
-      mainPhotoBytes: form.photoFile?.size ?? 0,
-      supportingPhotoBytes: form.familyCharacters
-        .map((c) => c.photoFile?.size ?? 0)
-        .filter((n) => n > 0),
-      voiceBytes: VOICE_BETA_ENABLED && form.voiceFile ? form.voiceFile.size : 0,
+      mainPhotoBytes: resolvedPhotoFile?.size ?? 0,
+      supportingPhotoBytes: resolvedCharacters.map((c) => c.photoFile?.size ?? 0).filter((n) => n > 0),
+      voiceBytes,
     });
+
     if (isCombinedUploadTooLarge(totalUploadBytes)) {
-      setSubmitError(combinedTooLargeMessage(totalUploadBytes));
-      setIsSubmitting(false);
-      return;
+      // Collect all photo files, compress to fit the photo budget, then
+      // redistribute back into form state for this submission only.
+      const allPhotos: File[] = [
+        ...(resolvedPhotoFile ? [resolvedPhotoFile] : []),
+        ...resolvedCharacters.map((c) => c.photoFile).filter((f): f is File => f != null),
+      ];
+      const photoBudget = MAX_TOTAL_UPLOAD_BYTES - voiceBytes;
+      try {
+        const recompressed = await compressPhotosForBudget(allPhotos, photoBudget);
+        let recompIdx = 0;
+        resolvedPhotoFile = resolvedPhotoFile ? recompressed[recompIdx++] : resolvedPhotoFile;
+        resolvedCharacters = resolvedCharacters.map((c) =>
+          c.photoFile ? { ...c, photoFile: recompressed[recompIdx++] } : c,
+        );
+      } catch {
+        // Compression failed — fall through to the size error below.
+      }
+
+      const retotalBytes = estimateTotalUploadBytes({
+        mainPhotoBytes: resolvedPhotoFile?.size ?? 0,
+        supportingPhotoBytes: resolvedCharacters.map((c) => c.photoFile?.size ?? 0).filter((n) => n > 0),
+        voiceBytes,
+      });
+      if (isCombinedUploadTooLarge(retotalBytes)) {
+        setSubmitError(combinedTooLargeMessage(retotalBytes));
+        setIsSubmitting(false);
+        return;
+      }
     }
 
     // Fire BOTH the brief's "purchase_intent" alias and the more literal
@@ -651,7 +680,7 @@ export function CheckoutForm() {
 
     try {
       const payload = new FormData();
-      const familyCharactersForOrder = form.familyCharacters
+      const familyCharactersForOrder = resolvedCharacters
         .filter((character) =>
           Boolean(
             character.name.trim() ||
@@ -701,8 +730,8 @@ export function CheckoutForm() {
       payload.set("email", form.email);
       const referralCode = checkoutReferralCode();
       if (referralCode) payload.set("referralCode", referralCode);
-      if (form.photoFile) {
-        payload.set("photo", form.photoFile);
+      if (resolvedPhotoFile) {
+        payload.set("photo", resolvedPhotoFile);
       }
       if (VOICE_BETA_ENABLED && form.voiceFile) {
         payload.set("voice", form.voiceFile);
