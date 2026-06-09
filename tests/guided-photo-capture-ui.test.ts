@@ -56,7 +56,7 @@ test('still-only copy says still photos only / never video with retention window
 test('camera trust badges repeat the safety message near capture controls', () => {
   assert.deepEqual([...GUIDED_CAMERA_TRUST_BADGES], [
     'Still photos only',
-    'Not a face scan',
+    'Parent-approved',
     'Never video',
   ]);
 });

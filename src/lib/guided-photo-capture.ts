@@ -8,7 +8,7 @@ export const GUIDED_PHOTO_STILL_ONLY_COPY =
 
 export const GUIDED_CAMERA_TRUST_BADGES = [
   'Still photos only',
-  'Not a face scan',
+  'Parent-approved',
   'Never video',
 ] as const;
 

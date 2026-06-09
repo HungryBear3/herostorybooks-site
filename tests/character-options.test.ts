@@ -105,6 +105,8 @@ test('checkout form keeps pet detail guidance as placeholder text, not submitted
   assert.match(src, /const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings"/);
   assert.match(src, /notes: ""/);
   assert.match(src, /notes: character\.notes === PET_NOTES_PLACEHOLDER \? "" : character\.notes/);
-  assert.match(src, /Reference photo/);
-  assert.match(src, /for \$\{character\.name \|\| character\.relationshipLabel\}/);
+  assert.match(src, /Use camera/);
+  assert.match(src, /Upload photo/);
+  assert.match(src, /Photo optional for pets/);
+  assert.match(src, /character\.name \|\| character\.relationshipLabel/);
 });

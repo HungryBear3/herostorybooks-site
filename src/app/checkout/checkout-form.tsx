@@ -1091,6 +1091,206 @@ export function CheckoutForm() {
               </AnimatePresence>
             </section>
 
+            {/* ── 2.4 Who's in the story? — hero photo (moved above family
+                   members per 2026-06-09 checkout UX review) ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+              <div>
+                <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
+                  Who&apos;s in the story?
+                </h2>
+                <p className="text-sm text-[#695f54]">
+                  Add still reference photos so we can illustrate your family
+                  more consistently. You control every photo: use camera,
+                  upload, retake, or remove before checkout.
+                </p>
+                <p className="mt-1 text-xs leading-5 text-[#8a7b6a]">
+                  Still photos only — never video. These are private reference
+                  photos for your book.
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-[#dfd2b8] bg-[#fffaf1] p-4 space-y-4">
+                <div>
+                  <p className="text-sm font-bold text-[#1f1a16]">
+                    {form.childName
+                      ? `${form.childName} — the hero`
+                      : "Your child — the hero"}
+                  </p>
+                  <p className="text-sm text-[#695f54]">
+                    Add a still reference photo for {form.childName || "your child"} — we&apos;ll
+                    draw them as the hero. Use your camera or upload one you
+                    already have, then we hand-review the proof before anything
+                    prints.
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-4 py-3 text-sm text-[#1f1a16]">
+                  {PHOTO_UPLOAD_HELP}
+                </div>
+
+                {/* Sample teaser — shown before a photo is added */}
+                {!form.photoDataUrl && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-[#8a7b6a] uppercase tracking-widest text-center">
+                      What your proof includes
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-[0.85fr_1.15fr]">
+                      <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src="/assets/real-photo-demo.png"
+                          alt="Example reference photo used for a personalized book"
+                          className="h-40 w-full object-cover sm:h-full"
+                        />
+                        <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                          Uploaded photo
+                        </div>
+                      </div>
+                      <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src="/assets/storybook-transform-demo.png"
+                          alt="Example storybook illustration created from the uploaded photo"
+                          className="h-40 w-full object-cover sm:h-full"
+                        />
+                        <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                          Illustration proof
+                        </div>
+                      </div>
+                    </div>
+                    <p className="text-xs text-center text-[#8a7b6a]">
+                      Uploaded photo → storybook illustration · hand-reviewed
+                      before print
+                    </p>
+                  </div>
+                )}
+
+                {/* Upload/camera zone or preview */}
+                {form.photoDataUrl ? (
+                  <div className="space-y-3">
+                    <div className="relative rounded-2xl overflow-hidden border-2 border-[#a64c4c] shadow-md">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={form.photoDataUrl}
+                        alt="Uploaded photo"
+                        className="w-full max-h-72 object-contain bg-[#f5ead2]"
+                      />
+                      <div className="absolute inset-0 flex items-end p-3 pointer-events-none">
+                        <span className="bg-[#1f1a16]/80 text-white text-xs font-semibold px-3 py-1 rounded-full">
+                          ✨{" "}
+                          {form.childName
+                            ? `${form.childName} becomes`
+                            : "Your child becomes"}{" "}
+                          the hero
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setForm((prev) => ({
+                            ...prev,
+                            photoFile: null,
+                            photoDataUrl: null,
+                          }));
+                        }}
+                        className="absolute top-2 right-2 bg-[#fffaf1]/90 hover:bg-[#fffaf1] text-[#1f1a16] text-xs font-semibold px-3 py-1.5 rounded-full shadow transition"
+                      >
+                        Retake or remove
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-[#35564d] bg-[#eef4f1] border border-[#cfe0d8] rounded-lg px-3 py-2">
+                      <span>✅</span>
+                      <span className="font-medium">{form.photoFile?.name}</span>
+                      <span className="text-[#35564d] text-xs ml-auto">
+                        Ready for proof
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {/* Two ways to add the hero photo: camera (capture attr opens
+                        the camera on mobile) or upload from the library. Both
+                        reuse the existing processPhoto handler. */}
+                    <div className="flex flex-wrap gap-2">
+                      <label className="flex cursor-pointer items-center gap-1.5 rounded-full bg-[#1f1a16] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3029]">
+                        Use camera
+                        <input
+                          type="file"
+                          accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                          capture="user"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) processPhoto(f);
+                            e.currentTarget.value = "";
+                          }}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => photoInputRef.current?.click()}
+                        className="flex items-center gap-1.5 rounded-full border-2 border-[#dfd2b8] px-4 py-2 text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]"
+                      >
+                        Upload photo
+                      </button>
+                    </div>
+                    <div
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setDragOver(true);
+                      }}
+                      onDragLeave={() => setDragOver(false)}
+                      onDrop={handleDrop}
+                      onClick={() => photoInputRef.current?.click()}
+                      className={`
+                      flex flex-col items-center justify-center gap-3 min-h-40 rounded-2xl border-2 border-dashed cursor-pointer transition-all
+                      ${dragOver ? "border-[#a64c4c] bg-[#a64c4c]/10 scale-[1.01]" : "border-[#d8c6a2] hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]"}
+                    `}
+                    >
+                      <input
+                        ref={photoInputRef}
+                        type="file"
+                        accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) processPhoto(f);
+                        }}
+                      />
+                      <span className="text-5xl">{dragOver ? "🌟" : "📸"}</span>
+                      <div className="text-center">
+                        <p className="font-semibold text-[#1f1a16]">
+                          {dragOver ? "Drop it here!" : "Take a photo or upload one"}
+                        </p>
+                        <p className="mt-0.5 px-2 text-sm leading-5 text-[#8a7b6a]">
+                          or drag &amp; drop · JPG/PNG/WebP/HEIC
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {photoError && (
+                  <p role="alert" className="text-sm font-medium text-[#8a2f2f]">
+                    {photoError}
+                  </p>
+                )}
+                <p className="text-xs text-center text-[#8a7b6a]">
+                  🔒 Photos processed securely · Used only for your order · Add it
+                  later if you need to
+                </p>
+              </div>
+
+              {guidedCaptureEnabled && (
+                <GuidedPhotoCapture
+                  heroName={form.childName}
+                  frames={guidedFrames}
+                  consent={guidedConsent}
+                  onConsentChange={setGuidedConsent}
+                  onFramesChange={setGuidedFrames}
+                />
+              )}
+            </section>
+
             {/* ── 2.5 Character details ── */}
             <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
               <div>
@@ -1324,13 +1524,17 @@ export function CheckoutForm() {
                         <div className="mb-2 flex items-center justify-between gap-3">
                           <div>
                             <p className="text-sm font-semibold text-[#1f1a16]">
-                              Reference photo
+                              {character.role === "pet"
+                                ? "Your pet (optional)"
+                                : "A parent or loved one (optional)"}
                               {character.name || character.relationshipLabel
-                                ? ` for ${character.name || character.relationshipLabel}`
+                                ? ` — ${character.name || character.relationshipLabel}`
                                 : ""}
                             </p>
                             <p className="text-xs leading-5 text-[#8a7b6a]">
-                              Optional, for Dad, Mom, grandparents, siblings, or pets.
+                              {character.role === "pet"
+                                ? "Appears as a companion character"
+                                : "Appears in keepsake pages"}
                             </p>
                           </div>
                           {character.photoFile && (
@@ -1369,22 +1573,47 @@ export function CheckoutForm() {
                             </div>
                           </div>
                         ) : (
-                          <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-4 text-center text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
-                            <span>Add photo</span>
-                            <span className="text-xs font-normal text-[#8a7b6a]">
-                              JPG/PNG/WebP/HEIC
-                            </span>
-                            <input
-                              type="file"
-                              accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
-                              className="hidden"
-                              onChange={(e) => {
-                                const f = e.target.files?.[0];
-                                if (f) processSupportingCharacterPhoto(character.id, f);
-                                e.currentTarget.value = "";
-                              }}
-                            />
-                          </label>
+                          <div className="space-y-2">
+                            {/* Both ways to add a photo for this character:
+                                camera (capture attr opens the camera on mobile)
+                                or an upload from the library. Both reuse the same
+                                per-character handler — no submission change. */}
+                            <div className="flex flex-wrap gap-2">
+                              <label className="flex cursor-pointer items-center gap-1.5 rounded-full bg-[#1f1a16] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3029]">
+                                Use camera
+                                <input
+                                  type="file"
+                                  accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                                  capture="user"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (f) processSupportingCharacterPhoto(character.id, f);
+                                    e.currentTarget.value = "";
+                                  }}
+                                />
+                              </label>
+                              <label className="flex cursor-pointer items-center gap-1.5 rounded-full border-2 border-[#dfd2b8] px-4 py-2 text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
+                                Upload photo
+                                <input
+                                  type="file"
+                                  accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (f) processSupportingCharacterPhoto(character.id, f);
+                                    e.currentTarget.value = "";
+                                  }}
+                                />
+                              </label>
+                            </div>
+                            <p className="text-xs text-[#8a7b6a]">
+                              JPG/PNG/WebP/HEIC ·{" "}
+                              {character.role === "pet"
+                                ? "Photo optional for pets"
+                                : "Optional"}
+                            </p>
+                          </div>
                         )}
                         {supportingPhotoErrors[character.id] && (
                           <p role="alert" className="mt-2 text-xs font-medium text-[#8a2f2f]">
@@ -1533,154 +1762,6 @@ export function CheckoutForm() {
                 ✨ {PRINT_PREVIEW_PROMISE}
               </div>
             </section>
-
-            {/* ── 5. Photo Upload ── */}
-            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
-              <div>
-                <h2 className="font-serif text-xl text-[#1f1a16] mb-1">
-                  Add a photo when you&apos;re ready
-                </h2>
-                <p className="text-sm text-[#695f54]">
-                  We use the photo as a reference for your child&apos;s illustrated
-                  character, then hand-review the proof before anything prints.
-                </p>
-              </div>
-              <div className="rounded-2xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-4 py-3 text-sm text-[#1f1a16]">
-                {PHOTO_UPLOAD_HELP}
-              </div>
-
-              {/* Sample teaser — shown before upload */}
-              {!form.photoDataUrl && (
-                <div className="space-y-2">
-                  <p className="text-xs font-semibold text-[#8a7b6a] uppercase tracking-widest text-center">
-                    What your proof includes
-                  </p>
-                  <div className="grid gap-2 sm:grid-cols-[0.85fr_1.15fr]">
-                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src="/assets/real-photo-demo.png"
-                        alt="Example reference photo used for a personalized book"
-                        className="h-40 w-full object-cover sm:h-full"
-                      />
-                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
-                        Uploaded photo
-                      </div>
-                    </div>
-                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src="/assets/storybook-transform-demo.png"
-                        alt="Example storybook illustration created from the uploaded photo"
-                        className="h-40 w-full object-cover sm:h-full"
-                      />
-                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
-                        Illustration proof
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-xs text-center text-[#8a7b6a]">
-                    Uploaded photo → storybook illustration · hand-reviewed before print
-                  </p>
-                </div>
-              )}
-
-              {/* Upload zone / preview */}
-              {form.photoDataUrl ? (
-                <div className="space-y-3">
-                  <div className="relative rounded-2xl overflow-hidden border-2 border-[#a64c4c] shadow-md">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={form.photoDataUrl}
-                      alt="Uploaded photo"
-                      className="w-full max-h-72 object-contain bg-[#f5ead2]"
-                    />
-                    <div className="absolute inset-0 flex items-end p-3 pointer-events-none">
-                      <span className="bg-[#1f1a16]/80 text-white text-xs font-semibold px-3 py-1 rounded-full">
-                        ✨{" "}
-                        {form.childName
-                          ? `${form.childName} becomes`
-                          : "Your child becomes"}{" "}
-                        the hero
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setForm((prev) => ({
-                          ...prev,
-                          photoFile: null,
-                          photoDataUrl: null,
-                        }));
-                      }}
-                      className="absolute top-2 right-2 bg-[#fffaf1]/90 hover:bg-[#fffaf1] text-[#1f1a16] text-xs font-semibold px-3 py-1.5 rounded-full shadow transition"
-                    >
-                      Change Photo
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2 text-sm text-[#35564d] bg-[#eef4f1] border border-[#cfe0d8] rounded-lg px-3 py-2">
-                    <span>✅</span>
-                    <span className="font-medium">{form.photoFile?.name}</span>
-                    <span className="text-[#35564d] text-xs ml-auto">
-                      Ready for proof
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setDragOver(true);
-                  }}
-                  onDragLeave={() => setDragOver(false)}
-                  onDrop={handleDrop}
-                  onClick={() => photoInputRef.current?.click()}
-                  className={`
-                  flex flex-col items-center justify-center gap-3 min-h-40 rounded-2xl border-2 border-dashed cursor-pointer transition-all
-                  ${dragOver ? "border-[#a64c4c] bg-[#a64c4c]/10 scale-[1.01]" : "border-[#d8c6a2] hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]"}
-                `}
-                >
-                  <input
-                    ref={photoInputRef}
-                    type="file"
-                    accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) processPhoto(f);
-                    }}
-                  />
-                  <span className="text-5xl">{dragOver ? "🌟" : "📸"}</span>
-                  <div className="text-center">
-                    <p className="font-semibold text-[#1f1a16]">
-                      {dragOver ? "Drop it here!" : "Click to Upload"}
-                    </p>
-                    <p className="mt-0.5 px-2 text-sm leading-5 text-[#8a7b6a]">
-                      or drag &amp; drop · JPG/PNG/WebP/HEIC
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {photoError && (
-                <p role="alert" className="text-sm font-medium text-[#8a2f2f]">
-                  {photoError}
-                </p>
-              )}
-              <p className="text-xs text-center text-[#8a7b6a]">
-                🔒 Photos processed securely · Used only for your order · Add it
-                later if you need to
-              </p>
-            </section>
-
-            {guidedCaptureEnabled && (
-              <GuidedPhotoCapture
-                frames={guidedFrames}
-                consent={guidedConsent}
-                onConsentChange={setGuidedConsent}
-                onFramesChange={setGuidedFrames}
-              />
-            )}
 
             {VOICE_BETA_ENABLED && (
               <VoiceRecorderSection
