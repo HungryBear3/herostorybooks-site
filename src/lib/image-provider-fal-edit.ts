@@ -21,6 +21,7 @@ import type {
   ImageProviderDeps,
   ImageProviderInput,
 } from './image-provider-types.ts';
+import { redactProviderError } from './redact-secrets.ts';
 
 const FAL_EDIT_ENDPOINT =
   process.env.FAL_EDIT_IMAGE_ENDPOINT ?? 'https://fal.run/fal-ai/nano-banana/edit';
@@ -123,7 +124,7 @@ export const falEditImageProvider: ImageProvider = {
           conditioning: 'photo_edit',
           referencePhotoUrl: primaryReference,
           latencyMs: Date.now() - startedAt,
-          error: `FAL ${res.status}: ${body.slice(0, 200)}`,
+          error: redactProviderError(null, { provider: 'FAL', status: res.status }),
         };
       }
 
@@ -165,7 +166,7 @@ export const falEditImageProvider: ImageProvider = {
         conditioning: 'photo_edit',
         referencePhotoUrl: primaryReference,
         latencyMs: Date.now() - startedAt,
-        error: err instanceof Error ? err.message : String(err),
+        error: redactProviderError(err, { provider: 'FAL' }),
       };
     }
   },

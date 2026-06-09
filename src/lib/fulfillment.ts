@@ -233,6 +233,29 @@ async function failClosedForCustomStoryFallback(order: OrderRecord, storyMeta: S
   }));
 }
 
+// Tier1 D: repeated cross-page prose (detected by detectRepeatedProse and
+// surfaced on storyMeta.repeatedProse) is the "templated repetition" failure the
+// owner-test surfaced. For proof-gated custom orders, fail closed to manual
+// review rather than shipping duplicated text — mirrors the template-fallback
+// guard above.
+function shouldFailClosedForRepeatedProse(order: OrderRecord, storyMeta: StoryWithMeta['meta']): boolean {
+  return (storyMeta.repeatedProse?.length ?? 0) > 0 &&
+    isCustomStoryFallbackGuardedOrder(order) &&
+    !isValidProofReleaseOverride(order);
+}
+
+async function failClosedForRepeatedProse(order: OrderRecord, storyMeta: StoryWithMeta['meta']): Promise<void> {
+  const count = storyMeta.repeatedProse?.length ?? 0;
+  const reason = `custom story contains repeated cross-page prose (${count} duplicated sentence${count === 1 ? '' : 's'}); manual review required before customer proof`;
+  console.error(`[fulfillment] orderId=${order.id} ${reason}`);
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    fulfillmentStatus: 'failed_manual_review',
+    storyMeta,
+    fulfillmentAttempts: 0,
+    fulfillmentLastError: reason,
+  }));
+}
+
 // ── Default implementations ───────────────────────────────────────────────────
 
 async function defaultUploadArtifact(orderId: string, buffer: Buffer, filename: string): Promise<string> {
@@ -630,6 +653,10 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     await failClosedForCustomStoryFallback(order, storyMeta);
     return;
   }
+  if (shouldFailClosedForRepeatedProse(order, storyMeta)) {
+    await failClosedForRepeatedProse(order, storyMeta);
+    return;
+  }
 
   // Every subsequent updateFulfillmentState in this function is a
   // read-modify-write against blob. If the blob read returns a slightly
@@ -901,6 +928,10 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta, ...routePatch, ...artDirectionPatch }));
   if (shouldFailClosedForStoryFallback(order, storyMeta)) {
     await failClosedForCustomStoryFallback(order, storyMeta);
+    return;
+  }
+  if (shouldFailClosedForRepeatedProse(order, storyMeta)) {
+    await failClosedForRepeatedProse(order, storyMeta);
     return;
   }
 

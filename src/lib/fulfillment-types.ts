@@ -164,6 +164,11 @@ export interface StoryMeta {
    *  template was substituted; 'rejected' when policy refused the artifact;
    *  'needs_review' when the operator must inspect. Optional. */
   attemptResult?: 'success' | 'fallback' | 'rejected' | 'needs_review' | string | null;
+  /** Cross-page repetition findings from `detectRepeatedProse` over the final
+   *  page prose (Tier1 D). Non-empty means the same non-trivial sentence
+   *  repeats across pages — fulfillment fails closed to manual review rather
+   *  than shipping templated/duplicated text. Absent/empty when clean. */
+  repeatedProse?: string[];
 }
 
 /**
