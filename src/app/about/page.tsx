@@ -3,7 +3,7 @@ import { EditorialAboutPage } from '@/components/editorial-site';
 export const metadata = {
   title: 'About HeroStoryBooks',
   description:
-    'HeroStoryBooks is a small California team making proof-first personalized storybooks for family gifts.',
+    'HeroStoryBooks is a small Chicago team making proof-first personalized storybooks for family gifts.',
   openGraph: {
     title: 'About HeroStoryBooks',
     description:
