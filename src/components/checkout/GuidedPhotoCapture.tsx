@@ -5,7 +5,6 @@ import {
   GUIDED_CAPTURE_MEDIA_CONSTRAINTS,
   GUIDED_CAMERA_TRUST_BADGES,
   GUIDED_FACE_GUIDE_CLASS_NAME,
-  GUIDED_PHOTO_CONSENT_COPY,
   GUIDED_PHOTO_PROMPTS,
   GUIDED_PHOTO_STILL_ONLY_COPY,
   buildGuidedPhotoFileName,
@@ -20,6 +19,9 @@ interface GuidedPhotoCaptureProps {
   consent: boolean;
   onConsentChange: (consent: boolean) => void;
   onFramesChange: (frames: GuidedPhotoFile[]) => void;
+  /** Child/hero name for the section title. Falls back to "your child" when
+   *  the name hasn't been entered yet. Display-only — never submitted here. */
+  heroName?: string;
 }
 
 const MAX_CAPTURE_WIDTH = 1280;
@@ -49,7 +51,9 @@ export function GuidedPhotoCapture({
   consent,
   onConsentChange,
   onFramesChange,
+  heroName,
 }: GuidedPhotoCaptureProps) {
+  const heroLabel = heroName?.trim() || "your child";
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -124,12 +128,17 @@ export function GuidedPhotoCapture({
     <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] p-4 space-y-4">
       <div className="space-y-1">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#35564d]">
-          Optional guided photo capture
+          Optional — guided photos for best likeness
         </p>
         <h3 className="font-serif text-xl text-[#1f1a16]">
-          Capture {GUIDED_PHOTO_PROMPTS.length} approved reference photos for better likeness
+          Add still reference photos for {heroLabel}
         </h3>
-        <p className="text-sm leading-6 text-[#35564d]">{GUIDED_PHOTO_CONSENT_COPY}</p>
+        <p className="text-sm leading-6 text-[#35564d]">
+          Use camera or upload photos so we can illustrate {heroLabel} as the hero of the story.
+        </p>
+        <p className="text-sm leading-6 text-[#35564d]">
+          Still reference photos only — never video. You can retake, remove, or upload a different photo before checkout.
+        </p>
         <p className="text-xs leading-5 text-[#5f766f]">{GUIDED_PHOTO_STILL_ONLY_COPY}</p>
       </div>
 
@@ -155,7 +164,7 @@ export function GuidedPhotoCapture({
             />
             {!cameraActive && (
               <div className="absolute inset-0 flex items-center justify-center bg-[#1f1a16]/80 px-6 text-center text-sm text-white">
-                Camera stays local until you capture and approve still photos.
+                Camera stays local until you take and approve still photos.
               </div>
             )}
             <div className={GUIDED_FACE_GUIDE_CLASS_NAME} />
@@ -180,7 +189,7 @@ export function GuidedPhotoCapture({
               disabled={!cameraActive}
               className="rounded-full bg-[#a64c4c] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#8f3d3d] disabled:cursor-not-allowed disabled:opacity-45"
             >
-              Capture {currentPrompt?.title ?? "photo"}
+              Take photo{currentPrompt?.title ? ` · ${currentPrompt.title}` : ""}
             </button>
           </div>
           <div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-white">
@@ -216,7 +225,7 @@ export function GuidedPhotoCapture({
                       className="text-[#a64c4c] underline"
                       onClick={() => onFramesChange(frames.filter((item) => item.label !== frame.label))}
                     >
-                      Delete
+                      Remove
                     </button>
                   </div>
                 </div>

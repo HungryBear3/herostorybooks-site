@@ -48,15 +48,17 @@ test('consent copy contains the required negated reassurances', () => {
 test('still-only copy says still photos only / never video with retention window', () => {
   assert.match(GUIDED_PHOTO_STILL_ONLY_COPY, /still photos/i);
   assert.match(GUIDED_PHOTO_STILL_ONLY_COPY, /never video/i);
-  assert.match(GUIDED_PHOTO_STILL_ONLY_COPY, /never used to train AI/i);
-  assert.match(GUIDED_PHOTO_STILL_ONLY_COPY, /book delivery plus 30 days/i);
+  assert.match(GUIDED_PHOTO_STILL_ONLY_COPY, /train our own models/i);
+  assert.match(GUIDED_PHOTO_STILL_ONLY_COPY, /providers may temporarily process/i);
+  assert.doesNotMatch(GUIDED_PHOTO_STILL_ONLY_COPY, /never used to train AI/i);
+  assert.doesNotMatch(GUIDED_PHOTO_STILL_ONLY_COPY, /book delivery plus 30 days/i);
   assert.match(GUIDED_PHOTO_STILL_ONLY_COPY, /support@herostorybooks\.com/i);
 });
 
 test('camera trust badges repeat the safety message near capture controls', () => {
   assert.deepEqual([...GUIDED_CAMERA_TRUST_BADGES], [
     'Still photos only',
-    'Not a face scan',
+    'Parent-approved',
     'Never video',
   ]);
 });
