@@ -359,10 +359,13 @@ test('voice section no longer promises automated deletion after shipping', () =>
   assert.doesNotMatch(VOICE_UI_SRC, /deleted after your book ships/i);
 });
 
-test('voice section states the approved retention window and deletion path', () => {
-  assert.match(VOICE_UI_SRC, /never share it/i);
-  assert.match(VOICE_UI_SRC, /never use it to train AI/i);
-  assert.match(VOICE_UI_SRC, /story\/proof generation plus 30 days/i);
+test('voice section uses softened provider and deletion-request copy', () => {
+  assert.match(VOICE_UI_SRC, /never publish it/i);
+  assert.match(VOICE_UI_SRC, /sell it/i);
+  assert.match(VOICE_UI_SRC, /Trusted providers may temporarily process/i);
+  assert.match(VOICE_UI_SRC, /Want it removed\?/i);
+  assert.doesNotMatch(VOICE_UI_SRC, /never use it to train AI/i);
+  assert.doesNotMatch(VOICE_UI_SRC, /story\/proof generation plus 30 days/i);
   assert.match(VOICE_UI_SRC, /support@herostorybooks\.com/);
 });
 

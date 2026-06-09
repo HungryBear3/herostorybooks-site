@@ -211,10 +211,9 @@ export function VoiceRecorderSection({
           <strong>never published</strong> or shared — it just inspires the words on the page.
         </p>
         <p className="text-xs text-gray-500 mt-1">
-          Used only to help our writer match the story&apos;s voice — we never share it,
-          never use it to train AI, and delete it after story/proof generation plus 30 days
-          unless needed for support or legal record-keeping. Want it removed sooner?
-          Email support@herostorybooks.com.
+          Used only to help our writer match the story&apos;s voice — we never publish it,
+          sell it, or use it for voice cloning. Trusted providers may temporarily process
+          it to create and secure your order. Want it removed? Email support@herostorybooks.com.
         </p>
         <p className="text-xs text-gray-500 mt-1">
           Notes and uploads are in beta. To avoid losing something special if checkout hits an
