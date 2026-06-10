@@ -1811,13 +1811,11 @@ async function readOrderWithEtag(
   // then write with the ETag from head(). If another writer lands between this
   // read and our put(), ifMatch still fails and the outer loop retries.
   try {
-    const result = await get(pathname, {
-      access: getBlobAccessMode(),
+    const text = await readBlobText({
+      pathname,
+      url: 'url' in meta ? meta.url : null,
       token,
-      useCache: false,
     });
-    if (!result?.stream) return null;
-    const text = await new Response(result.stream).text();
     if (!text) return null;
     return { order: JSON.parse(text) as OrderRecord, etag: meta.etag };
   } catch (err) {
