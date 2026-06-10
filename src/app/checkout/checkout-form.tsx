@@ -143,6 +143,8 @@ function envFlagEnabled(value: string | undefined): boolean {
 
 const VOICE_BETA_ENABLED =
   envFlagEnabled(process.env.NEXT_PUBLIC_HSB_VOICE_BETA);
+const SPLIT_ASSET_INTAKE_ENABLED =
+  envFlagEnabled(process.env.NEXT_PUBLIC_HSB_SPLIT_ASSET_INTAKE);
 
 const STORAGE_KEY = "hsb_order_v1";
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
@@ -150,6 +152,10 @@ const RECOVERY_DEBOUNCE_MS = 1500;
 
 function looksLikeEmail(e: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
+function isAudioInspirationFile(file: File): boolean {
+  return file.type.startsWith("audio/") || /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i.test(file.name);
 }
 
 const SAMPLE_IMAGES = CHECKOUT_SAMPLE_IMAGES;
@@ -690,6 +696,151 @@ export function CheckoutForm() {
           ),
         )
         .slice(0, SUPPORTING_CHARACTER_LIMIT);
+
+      if (SPLIT_ASSET_INTAKE_ENABLED) {
+        setSubmitError("Saving your photos and story details securely before payment…");
+        const familyCharactersJson = familyCharactersForOrder.map((character) => ({
+          role: character.role,
+          name: character.name,
+          relationshipLabel: character.relationshipLabel,
+          pronouns: character.pronouns,
+          notes: character.notes,
+          isGiftRecipient: character.isGiftRecipient,
+          appearsInStory: character.appearsInStory,
+          photoFileName: character.photoFile?.name ?? null,
+        }));
+        const draftResponse = await fetch("/api/order/draft", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            childName: form.childName,
+            childAge: form.childAge,
+            theme: form.theme,
+            lesson: form.lesson,
+            occasion: form.occasion,
+            giftMessage: form.giftMessage,
+            characterNotes: form.characterNotes,
+            familyCharacters: familyCharactersJson,
+            appearanceOptions: JSON.stringify({
+              skinTone: form.skinTone,
+              hairStyle: form.hairStyle,
+              eyewear: form.eyewear,
+            }),
+            skinTone: form.skinTone,
+            hairStyle: form.hairStyle,
+            bookFormat: form.bookFormat,
+            email: form.email,
+            referralCode: checkoutReferralCode(),
+          }),
+        });
+        const draftBody = await draftResponse.json().catch(() => null);
+        if (!draftResponse.ok || !draftBody?.draftOrderId) {
+          throw new Error(draftBody?.error || "We couldn't securely save your order draft. You have not been charged.");
+        }
+        const draftOrderId = String(draftBody.draftOrderId);
+        const uploadOneAsset = async (
+          label: string,
+          category: string,
+          file: File,
+          extra: Record<string, string> = {},
+        ) => {
+          const assetPayload = new FormData();
+          assetPayload.set("category", category);
+          assetPayload.set("label", label);
+          assetPayload.set("file", file, file.name);
+          for (const [key, value] of Object.entries(extra)) assetPayload.set(key, value);
+          const response = await fetch(`/api/order/draft/${draftOrderId}/assets`, {
+            method: "POST",
+            body: assetPayload,
+          });
+          const body = await response.json().catch(() => null);
+          if (!response.ok || !body?.asset?.assetId) {
+            throw new Error(
+              body?.error ||
+                `We couldn't securely save ${label}. You have not been charged. Please retry or remove that file.`,
+            );
+          }
+          return String(body.asset.assetId);
+        };
+
+        const primaryPhotoAssetId = resolvedPhotoFile
+          ? await uploadOneAsset("child reference photo", "primary_photo", resolvedPhotoFile)
+          : null;
+        const guidedChildReferenceAssetIds: string[] = [];
+        if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
+          for (const frame of guidedFrames) {
+            guidedChildReferenceAssetIds.push(
+              await uploadOneAsset(`guided ${frame.label} reference photo`, "guided_child_reference", frame.file, {
+                source: "guided_capture",
+                label: String(frame.label),
+                guidedPhotoConsent: "true",
+              }),
+            );
+          }
+        }
+        for (const [index, character] of familyCharactersForOrder.entries()) {
+          if (character.photoFile) {
+            await uploadOneAsset(`${character.relationshipLabel || character.name || "family"} reference photo`, "supporting_character_reference", character.photoFile, {
+              familyCharacterIndex: String(index),
+              familyCharacterId: `family-${index}`,
+            });
+          }
+        }
+        const voiceAssetId = VOICE_BETA_ENABLED && form.voiceFile && isAudioInspirationFile(form.voiceFile)
+          ? await uploadOneAsset("story inspiration", "voice_inspiration", form.voiceFile, {
+              source: form.voiceSource === "recorded" ? "recorded" : "upload",
+              voiceConsent: form.voiceConsent ? "true" : "false",
+            })
+          : null;
+        const documentAssetIds = VOICE_BETA_ENABLED && form.voiceFile && !isAudioInspirationFile(form.voiceFile)
+          ? [await uploadOneAsset("story inspiration", "document_inspiration", form.voiceFile, {
+              source: "upload",
+              voiceConsent: form.voiceConsent ? "true" : "false",
+            })]
+          : [];
+        const finalizeResponse = await fetch("/api/order/finalize", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            draftOrderId,
+            primaryPhotoAssetId,
+            guidedChildReferenceAssetIds,
+            voiceAssetId,
+            documentAssetIds,
+            finalConsent: { photos: true, voice: form.voiceConsent, terms: true },
+            fields: {
+              childName: form.childName,
+              childAge: form.childAge,
+              theme: form.theme,
+              lesson: form.lesson,
+              occasion: form.occasion,
+              giftMessage: form.giftMessage,
+              characterNotes: form.characterNotes,
+              familyCharacters: familyCharactersJson,
+              appearanceOptions: JSON.stringify({
+                skinTone: form.skinTone,
+                hairStyle: form.hairStyle,
+                eyewear: form.eyewear,
+              }),
+              bookFormat: form.bookFormat,
+              email: form.email,
+              referralCode: checkoutReferralCode(),
+            },
+          }),
+        });
+        const result = await finalizeResponse.json().catch(() => null);
+        if (!finalizeResponse.ok || !result?.redirectTo) {
+          throw new Error(result?.error || "We couldn't securely finalize your order. You have not been charged.");
+        }
+        setSubmitError(null);
+        setSuccess(true);
+        localStorage.removeItem(STORAGE_KEY);
+        setTimeout(() => {
+          window.location.href = result.redirectTo;
+        }, 1200);
+        return;
+      }
+
       payload.set("childName", form.childName);
       payload.set("childAge", form.childAge);
       payload.set("theme", form.theme);
