@@ -43,7 +43,20 @@ export type FulfillmentStatus =
    * generation failure).
    */
   | 'awaiting_manual_art'
-  | 'failed_manual_review';
+  | 'failed_manual_review'
+  /**
+   * Manual production queue states (Manual Fulfillment Factory, 2026-06-10).
+   * Appended alongside — never replacing — the auto-pipeline states above.
+   * An order in any of these states has a complete or partial
+   * OrderArtifactManifest stored at orders/{orderId}/manifest.json in Blob.
+   * Artifacts are always Blob URL references — never raw binary bodies.
+   */
+  | 'manual_generation_required'   // paid; waiting for operator to start generation
+  | 'generation_in_progress'       // operator started; artifacts being built/attached
+  | 'proof_ready_for_internal_qa'  // all artifact refs attached; awaiting internal QA
+  | 'proof_ready_for_customer'     // internal QA passed; proof link released to customer
+  | 'owner_print_go_required'      // customer approved proof; awaiting owner print-go
+  | 'submitted_to_print';          // owner approved; print job submitted
 
 /**
  * Picture-book typography control. Lets each page steer how its text is
@@ -128,6 +141,157 @@ export type StorySource =
    *  workflow. Operator-authored prose copied in. Distinct from
    *  `openai_chat` which records an automated chat-completions API call. */
   | 'manual';
+
+// ── Manual Fulfillment Factory: artifact manifest (2026-06-10) ───────────────
+
+/**
+ * Source-of-truth manifest for one book order's artifact set.
+ *
+ * Design: every artifact is a Blob URL reference + metadata.
+ * Raw binaries, base64 strings, and multipart data are NEVER stored here.
+ * Upload workflow: file → Vercel Blob → URL → ArtifactRecord.url.
+ *
+ * Proof release is BLOCKED unless:
+ *   - all required fields are non-null
+ *   - qaReport.passed === true
+ *   - no artifact.source is 'template' or 'template_after_openai_failure'
+ *
+ * Persisted at: orders/{orderId}/manifest.json (Vercel Blob)
+ */
+export interface OrderArtifactManifest {
+  schemaVersion: 1;
+  orderId: string;
+  createdAt: string;    // ISO timestamp
+  updatedAt: string;    // ISO timestamp
+  generatedBy: 'operator' | 'api' | 'mixed';
+
+  storyBrief: ArtifactRecord | null;
+  pagePlan: ArtifactRecord | null;
+  proseFinal: ArtifactRecord | null;
+  artDirectionPacket: ArtifactRecord | null;
+  /** Keyed by 1-based page number. */
+  pageImages: Record<number, ArtifactRecord> | null;
+  proofPdf: ArtifactRecord | null;
+  qaReport: QAReportRecord | null;
+}
+
+export interface ArtifactRecord {
+  /**
+   * Vercel Blob URL for this artifact.
+   * MUST be a blob.vercel-storage.com URL or equivalent Blob ref.
+   * Raw binary data, base64, and data URIs are never valid here.
+   */
+  url: string;
+  /**
+   * How this artifact was produced.
+   * 'template' and 'template_after_openai_failure' values BLOCK proof release.
+   */
+  source: StorySource | 'operator_upload' | 'api_generated';
+  producedAt: string;   // ISO timestamp
+  producedBy: string;   // operator name or model id (e.g. 'alexy' or 'gpt-4o')
+  /** Optional content checksum (e.g. sha256 hex) for provenance/integrity.
+   *  A reference only — never the artifact bytes. */
+  checksum?: string;
+}
+
+export interface QAReportRecord {
+  passed: boolean;
+  reviewedAt: string;   // ISO timestamp
+  reviewedBy: string;
+  notes: string;
+  checks: {
+    noTemplateSource: boolean;
+    allPageImagesPresent: boolean;
+    proofPdfPresent: boolean;
+    artDirectionPacketPresent: boolean;
+    proseFinalPresent: boolean;
+  };
+}
+
+/**
+ * Returns true only when the manifest is complete, QA-passed, and contains
+ * no template-source artifacts. This is the gate for proof release — if it
+ * returns false, the release route MUST return 422.
+ */
+export function isManifestProofReady(
+  manifest: OrderArtifactManifest | null | undefined,
+): boolean {
+  if (!manifest) return false;
+  if (!manifest.qaReport?.passed) return false;
+  if (!manifest.proofPdf) return false;
+  if (!manifest.proseFinal) return false;
+  if (!manifest.artDirectionPacket) return false;
+  if (!manifest.pageImages || Object.keys(manifest.pageImages).length === 0) return false;
+
+  const allArtifacts: (ArtifactRecord | null | undefined)[] = [
+    manifest.storyBrief,
+    manifest.pagePlan,
+    manifest.proseFinal,
+    manifest.artDirectionPacket,
+    manifest.proofPdf,
+    ...Object.values(manifest.pageImages ?? {}),
+  ];
+  const hasTemplateSource = allArtifacts.some(
+    (a) => a && (a.source === 'template' || a.source === 'template_after_openai_failure'),
+  );
+  if (hasTemplateSource) return false;
+
+  const c = manifest.qaReport.checks;
+  return (
+    c.noTemplateSource &&
+    c.allPageImagesPresent &&
+    c.proofPdfPresent &&
+    c.artDirectionPacketPresent &&
+    c.proseFinalPresent
+  );
+}
+
+/**
+ * Operator-facing explanation of WHY a manifest is not proof-ready. Returns one
+ * stable reason string per failing condition (empty array iff proof-ready).
+ * Mirrors isManifestProofReady exactly so the gate and its reasons cannot drift.
+ * The mark-proof-ready admin route returns these in a 422 body.
+ */
+export function describeManifestGateFailures(
+  manifest: OrderArtifactManifest | null | undefined,
+): string[] {
+  if (!manifest) return ['manifest_missing'];
+  const reasons: string[] = [];
+  if (!manifest.qaReport) reasons.push('qa_report_missing');
+  else if (!manifest.qaReport.passed) reasons.push('qa_report_not_passed');
+  if (!manifest.proseFinal) reasons.push('prose_final_missing');
+  if (!manifest.artDirectionPacket) reasons.push('art_direction_packet_missing');
+  if (!manifest.proofPdf) reasons.push('proof_pdf_missing');
+  if (!manifest.pageImages || Object.keys(manifest.pageImages).length === 0) {
+    reasons.push('page_images_missing');
+  }
+
+  const allArtifacts: (ArtifactRecord | null | undefined)[] = [
+    manifest.storyBrief,
+    manifest.pagePlan,
+    manifest.proseFinal,
+    manifest.artDirectionPacket,
+    manifest.proofPdf,
+    ...Object.values(manifest.pageImages ?? {}),
+  ];
+  if (
+    allArtifacts.some(
+      (a) => a && (a.source === 'template' || a.source === 'template_after_openai_failure'),
+    )
+  ) {
+    reasons.push('template_source_present');
+  }
+
+  const c = manifest.qaReport?.checks;
+  if (c) {
+    if (!c.noTemplateSource) reasons.push('qa_check_noTemplateSource_false');
+    if (!c.allPageImagesPresent) reasons.push('qa_check_allPageImagesPresent_false');
+    if (!c.proofPdfPresent) reasons.push('qa_check_proofPdfPresent_false');
+    if (!c.artDirectionPacketPresent) reasons.push('qa_check_artDirectionPacketPresent_false');
+    if (!c.proseFinalPresent) reasons.push('qa_check_proseFinalPresent_false');
+  }
+  return reasons;
+}
 
 /** Persisted record of how the story for this order was produced. */
 export interface StoryMeta {

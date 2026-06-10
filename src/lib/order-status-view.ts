@@ -88,7 +88,21 @@ function enrichDigital(
 ): OrderStatusView {
   view.timeline = buildDigitalTimeline(order);
 
-  if (fulfillment === 'awaiting_qa' && order.storyArtifactUrl) {
+  if (
+    fulfillment === 'manual_generation_required' ||
+    fulfillment === 'generation_in_progress' ||
+    fulfillment === 'proof_ready_for_internal_qa'
+  ) {
+    view.headline = `${order.childName}'s book is being crafted`;
+    view.subhead = "Your book is being crafted. We'll email you when your proof is ready.";
+    view.tone = 'neutral';
+  } else if (fulfillment === 'proof_ready_for_customer') {
+    // Internal proof-ready state. No customer review link is created in this
+    // phase — keep the status honest: it's ready on our side, the email follows.
+    view.headline = `${order.childName}'s proof is ready`;
+    view.subhead = "Your proof has passed our review — we'll email you the link to see it shortly.";
+    view.tone = 'neutral';
+  } else if (fulfillment === 'awaiting_qa' && order.storyArtifactUrl) {
     view.headline = `${order.childName}'s storybook is being reviewed`;
     view.subhead = 'Your book is being personalized and hand-reviewed before we send your proof.';
     view.tone = 'neutral';
@@ -129,7 +143,21 @@ function enrichPrint(
 ): OrderStatusView {
   view.timeline = buildPrintTimeline(order);
 
-  if (order.status === 'shipped') {
+  if (
+    fulfillment === 'manual_generation_required' ||
+    fulfillment === 'generation_in_progress' ||
+    fulfillment === 'proof_ready_for_internal_qa'
+  ) {
+    view.headline = `${order.childName}'s book is being crafted`;
+    view.subhead = "Your book is being crafted. We'll email you when your proof is ready.";
+    view.tone = 'neutral';
+  } else if (fulfillment === 'proof_ready_for_customer') {
+    // Internal proof-ready state. No customer review link is created in this
+    // phase — keep the status honest: it's ready on our side, the email follows.
+    view.headline = `${order.childName}'s proof is ready`;
+    view.subhead = "Your proof has passed our review — we'll email you the link to see it shortly.";
+    view.tone = 'neutral';
+  } else if (order.status === 'shipped') {
     view.headline = `${order.childName}'s book has shipped`;
     view.subhead = order.trackingNumber
       ? 'It is on its way — tracking info is below.'

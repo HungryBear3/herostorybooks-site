@@ -70,7 +70,8 @@ function SuccessView({
           {childName}&apos;s Storybook Is In Motion!
         </h1>
         <p className="text-lg text-gray-600 max-w-md mx-auto">
-          We saved your {format} order and kicked off the first delivery step.
+          We&apos;re preparing your custom proof. You&apos;ll receive an email when
+          it&apos;s ready for review — nothing prints until you approve.
         </p>
       </div>
 
@@ -87,10 +88,10 @@ function SuccessView({
           <div className="flex items-start gap-3">
             <span className="text-xl flex-shrink-0">📱</span>
             <div>
-              <p className="font-semibold text-[var(--forest)]">Confirmation + digital-first delivery</p>
+              <p className="font-semibold text-[var(--forest)]">Confirmation + proof for review</p>
               <p className="text-gray-500">
                 {email ? `A confirmation was sent to ${email}. ` : ''}
-                Digital proofs are usually ready within 2 business days; final PDFs and print production follow after approval.
+                We&apos;ll email you when your proof is ready for review. Nothing prints until you approve.
               </p>
             </div>
           </div>
