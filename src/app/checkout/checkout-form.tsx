@@ -6,11 +6,13 @@ import { Progress } from "@/components/ui/progress";
 import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from "@/lib/checkout-flow";
 import {
   MAX_PHOTO_BYTES,
+  compressPhotosForBudget,
   isHeicLikePhoto,
   shouldAutoShrinkPhoto,
   shrinkPhotoForUpload,
 } from "@/lib/photo-upload";
 import {
+  MAX_TOTAL_UPLOAD_BYTES,
   combinedTooLargeMessage,
   estimateTotalUploadBytes,
   formatMb,
@@ -613,22 +615,49 @@ export function CheckoutForm() {
     setIsSubmitting(true);
     setSubmitError(null);
 
-    // Combined-payload guard: estimate total attached bytes (main photo +
-    // supporting photos + voice/doc) and block client-side before any network
-    // call if it exceeds the cap. This avoids waiting for Vercel to reject an
-    // oversized multipart request before our /api/order code ever runs. No
-    // charge has been made at this point.
+    // Combined-payload guard: estimate total attached bytes and, if over budget,
+    // attempt a budget-aware recompression of all resizable photos before
+    // surfacing an error. This handles the common case where individually-valid
+    // photos + a voice note collectively exceed Vercel's ~4.5 MB request limit.
+    const voiceBytes = VOICE_BETA_ENABLED && form.voiceFile ? form.voiceFile.size : 0;
+    let resolvedPhotoFile = form.photoFile;
+    let resolvedCharacters = form.familyCharacters;
+
     const totalUploadBytes = estimateTotalUploadBytes({
-      mainPhotoBytes: form.photoFile?.size ?? 0,
-      supportingPhotoBytes: form.familyCharacters
-        .map((c) => c.photoFile?.size ?? 0)
-        .filter((n) => n > 0),
-      voiceBytes: VOICE_BETA_ENABLED && form.voiceFile ? form.voiceFile.size : 0,
+      mainPhotoBytes: resolvedPhotoFile?.size ?? 0,
+      supportingPhotoBytes: resolvedCharacters.map((c) => c.photoFile?.size ?? 0).filter((n) => n > 0),
+      voiceBytes,
     });
+
     if (isCombinedUploadTooLarge(totalUploadBytes)) {
-      setSubmitError(combinedTooLargeMessage(totalUploadBytes));
-      setIsSubmitting(false);
-      return;
+      // Collect all photo files, compress to fit the photo budget, then
+      // redistribute back into form state for this submission only.
+      const allPhotos: File[] = [
+        ...(resolvedPhotoFile ? [resolvedPhotoFile] : []),
+        ...resolvedCharacters.map((c) => c.photoFile).filter((f): f is File => f != null),
+      ];
+      const photoBudget = MAX_TOTAL_UPLOAD_BYTES - voiceBytes;
+      try {
+        const recompressed = await compressPhotosForBudget(allPhotos, photoBudget);
+        let recompIdx = 0;
+        resolvedPhotoFile = resolvedPhotoFile ? recompressed[recompIdx++] : resolvedPhotoFile;
+        resolvedCharacters = resolvedCharacters.map((c) =>
+          c.photoFile ? { ...c, photoFile: recompressed[recompIdx++] } : c,
+        );
+      } catch {
+        // Compression failed — fall through to the size error below.
+      }
+
+      const retotalBytes = estimateTotalUploadBytes({
+        mainPhotoBytes: resolvedPhotoFile?.size ?? 0,
+        supportingPhotoBytes: resolvedCharacters.map((c) => c.photoFile?.size ?? 0).filter((n) => n > 0),
+        voiceBytes,
+      });
+      if (isCombinedUploadTooLarge(retotalBytes)) {
+        setSubmitError(combinedTooLargeMessage(retotalBytes));
+        setIsSubmitting(false);
+        return;
+      }
     }
 
     // Fire BOTH the brief's "purchase_intent" alias and the more literal
@@ -651,7 +680,7 @@ export function CheckoutForm() {
 
     try {
       const payload = new FormData();
-      const familyCharactersForOrder = form.familyCharacters
+      const familyCharactersForOrder = resolvedCharacters
         .filter((character) =>
           Boolean(
             character.name.trim() ||
@@ -701,8 +730,8 @@ export function CheckoutForm() {
       payload.set("email", form.email);
       const referralCode = checkoutReferralCode();
       if (referralCode) payload.set("referralCode", referralCode);
-      if (form.photoFile) {
-        payload.set("photo", form.photoFile);
+      if (resolvedPhotoFile) {
+        payload.set("photo", resolvedPhotoFile);
       }
       if (VOICE_BETA_ENABLED && form.voiceFile) {
         payload.set("voice", form.voiceFile);
@@ -960,135 +989,6 @@ export function CheckoutForm() {
                   </select>
                 </div>
               </div>
-
-              {/* Lesson */}
-              <div>
-                <label className="block text-sm font-semibold text-[#1f1a16] mb-2">
-                  Story lesson{" "}
-                  <span className="text-[#8a7b6a] font-normal">
-                    (what should the story teach?)
-                  </span>
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  {LESSONS.map((l) => (
-                    <button
-                      key={l.id}
-                      type="button"
-                      onClick={() =>
-                        set("lesson", form.lesson === l.id ? "" : l.id)
-                      }
-                      className={`
-                      flex items-center gap-1.5 px-3 py-2 rounded-full border-2 text-sm font-semibold transition cursor-pointer
-                      ${
-                        form.lesson === l.id
-                          ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30 text-navy"
-                          : "border-[#dfd2b8] text-[#695f54] hover:border-[#d8c6a2]"
-                      }
-                    `}
-                    >
-                      <span>{l.emoji}</span>
-                      {l.label}
-                    </button>
-                  ))}
-                </div>
-                <label
-                  htmlFor="customLesson"
-                  className="mt-4 block text-xs font-semibold uppercase tracking-[0.16em] text-[#8a7663]"
-                >
-                  Custom story lesson
-                </label>
-                <input
-                  id="customLesson"
-                  type="text"
-                  value={selectedLesson ? "" : form.lesson}
-                  onChange={(e) => set("lesson", e.target.value.slice(0, 80))}
-                  placeholder="e.g. Dad always comes home, sharing bravely, asking for help"
-                  className="mt-2 w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                />
-              </div>
-
-              {/* Occasion */}
-              <div>
-                <label className="block text-sm font-semibold text-[#1f1a16] mb-2">
-                  Occasion{" "}
-                  <span className="text-[#8a7b6a] font-normal">(optional)</span>
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  {OCCASIONS.map((o) => (
-                    <button
-                      key={o.id}
-                      type="button"
-                      onClick={() => {
-                        const next = form.occasion === o.id ? "" : o.id;
-                        setForm((prev) => ({
-                          ...prev,
-                          occasion: next,
-                          giftMessage: next ? prev.giftMessage : "",
-                        }));
-                      }}
-                      className={`
-                      px-3 py-2 rounded-full border-2 text-sm font-semibold transition cursor-pointer
-                      ${
-                        form.occasion === o.id
-                          ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30 text-navy"
-                          : "border-[#dfd2b8] text-[#695f54] hover:border-[#d8c6a2]"
-                      }
-                    `}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
-                </div>
-                <label
-                  htmlFor="customOccasion"
-                  className="mt-4 block text-xs font-semibold uppercase tracking-[0.16em] text-[#8a7663]"
-                >
-                  Custom occasion
-                </label>
-                <input
-                  id="customOccasion"
-                  type="text"
-                  value={selectedOccasion ? "" : form.occasion}
-                  onChange={(e) => {
-                    const next = e.target.value.slice(0, 80);
-                    setForm((prev) => ({
-                      ...prev,
-                      occasion: next,
-                    }));
-                  }}
-                  placeholder="e.g. Father's Day, first day of school, big sibling gift"
-                  className="mt-2 w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                />
-              </div>
-
-              {/* Gift message — conditional */}
-              <AnimatePresence>
-                {form.occasion && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                  >
-                    <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
-                      Gift message{" "}
-                      <span className="text-[#8a7b6a] font-normal">
-                        (printed on the dedication page)
-                      </span>
-                    </label>
-                    <textarea
-                      value={form.giftMessage}
-                      onChange={(e) => set("giftMessage", e.target.value)}
-                      placeholder={`e.g. "To Emma — may every day be a new adventure. Love, Grandma"`}
-                      rows={2}
-                      maxLength={200}
-                      className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1] resize-none text-sm"
-                    />
-                    <p className="text-xs text-[#8a7b6a] text-right mt-0.5">
-                      {form.giftMessage.length}/200
-                    </p>
-                  </motion.div>
-                )}
-              </AnimatePresence>
             </section>
 
             {/* ── 2.4 Who's in the story? — hero photo (moved above family
@@ -1290,6 +1190,139 @@ export function CheckoutForm() {
                 />
               )}
             </section>
+
+            {/* ── 2.5 Story details ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-5">
+              {/* Lesson */}
+              <div>
+                <label className="block text-sm font-semibold text-[#1f1a16] mb-2">
+                  Story lesson{" "}
+                  <span className="text-[#8a7b6a] font-normal">
+                    (what should the story teach?)
+                  </span>
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {LESSONS.map((l) => (
+                    <button
+                      key={l.id}
+                      type="button"
+                      onClick={() =>
+                        set("lesson", form.lesson === l.id ? "" : l.id)
+                      }
+                      className={`
+                      flex items-center gap-1.5 px-3 py-2 rounded-full border-2 text-sm font-semibold transition cursor-pointer
+                      ${
+                        form.lesson === l.id
+                          ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30 text-navy"
+                          : "border-[#dfd2b8] text-[#695f54] hover:border-[#d8c6a2]"
+                      }
+                    `}
+                    >
+                      <span>{l.emoji}</span>
+                      {l.label}
+                    </button>
+                  ))}
+                </div>
+                <label
+                  htmlFor="customLesson"
+                  className="mt-4 block text-xs font-semibold uppercase tracking-[0.16em] text-[#8a7663]"
+                >
+                  Custom story lesson
+                </label>
+                <input
+                  id="customLesson"
+                  type="text"
+                  value={selectedLesson ? "" : form.lesson}
+                  onChange={(e) => set("lesson", e.target.value.slice(0, 80))}
+                  placeholder="e.g. Dad always comes home, sharing bravely, asking for help"
+                  className="mt-2 w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                />
+              </div>
+
+              {/* Occasion */}
+              <div>
+                <label className="block text-sm font-semibold text-[#1f1a16] mb-2">
+                  Occasion{" "}
+                  <span className="text-[#8a7b6a] font-normal">(optional)</span>
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {OCCASIONS.map((o) => (
+                    <button
+                      key={o.id}
+                      type="button"
+                      onClick={() => {
+                        const next = form.occasion === o.id ? "" : o.id;
+                        setForm((prev) => ({
+                          ...prev,
+                          occasion: next,
+                          giftMessage: next ? prev.giftMessage : "",
+                        }));
+                      }}
+                      className={`
+                      px-3 py-2 rounded-full border-2 text-sm font-semibold transition cursor-pointer
+                      ${
+                        form.occasion === o.id
+                          ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30 text-navy"
+                          : "border-[#dfd2b8] text-[#695f54] hover:border-[#d8c6a2]"
+                      }
+                    `}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+                <label
+                  htmlFor="customOccasion"
+                  className="mt-4 block text-xs font-semibold uppercase tracking-[0.16em] text-[#8a7663]"
+                >
+                  Custom occasion
+                </label>
+                <input
+                  id="customOccasion"
+                  type="text"
+                  value={selectedOccasion ? "" : form.occasion}
+                  onChange={(e) => {
+                    const next = e.target.value.slice(0, 80);
+                    setForm((prev) => ({
+                      ...prev,
+                      occasion: next,
+                    }));
+                  }}
+                  placeholder="e.g. Father's Day, first day of school, big sibling gift"
+                  className="mt-2 w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                />
+              </div>
+
+              {/* Gift message — conditional */}
+              <AnimatePresence>
+                {form.occasion && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                  >
+                    <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
+                      Gift message{" "}
+                      <span className="text-[#8a7b6a] font-normal">
+                        (printed on the dedication page)
+                      </span>
+                    </label>
+                    <textarea
+                      value={form.giftMessage}
+                      onChange={(e) => set("giftMessage", e.target.value)}
+                      placeholder={`e.g. "To Emma — may every day be a new adventure. Love, Grandma"`}
+                      rows={2}
+                      maxLength={200}
+                      className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1] resize-none text-sm"
+                    />
+                    <p className="text-xs text-[#8a7b6a] text-right mt-0.5">
+                      {form.giftMessage.length}/200
+                    </p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </section>
+
 
             {/* ── 2.5 Character details ── */}
             <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">

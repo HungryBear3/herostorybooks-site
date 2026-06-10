@@ -99,11 +99,7 @@ async function canvasToFile(canvas: HTMLCanvasElement, type: string, quality: nu
   return new File([blob], `${baseName}.${extension}`, { type, lastModified: Date.now() });
 }
 
-export async function shrinkPhotoForUpload(file: File) {
-  if (!shouldAutoShrinkPhoto(file)) {
-    return file;
-  }
-
+async function shrinkPhotoToTargetBytes(file: File, targetBytes: number): Promise<File> {
   const decoded = await fileToImageBitmap(file);
   const width = 'naturalWidth' in decoded ? decoded.naturalWidth : decoded.width;
   const height = 'naturalHeight' in decoded ? decoded.naturalHeight : decoded.height;
@@ -118,7 +114,7 @@ export async function shrinkPhotoForUpload(file: File) {
   let best: File | null = null;
   const outputType = targetMimeType(file);
 
-  for (let attempt = 0; attempt < 6; attempt += 1) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     const { width: nextWidth, height: nextHeight } = scaledDimensions(width, height, currentMaxDimension);
     canvas.width = nextWidth;
     canvas.height = nextHeight;
@@ -126,22 +122,56 @@ export async function shrinkPhotoForUpload(file: File) {
     context.drawImage(decoded as CanvasImageSource, 0, 0, nextWidth, nextHeight);
 
     const candidate = await canvasToFile(canvas, outputType, currentQuality, file.name);
-    best = candidate;
-    if (candidate.size <= MAX_PHOTO_BYTES) {
-      return candidate;
-    }
+    if (!best || candidate.size < best.size) best = candidate;
+    if (candidate.size <= targetBytes) return candidate;
 
-    if (candidate.size <= TARGET_PHOTO_BYTES) {
-      return candidate;
-    }
-
-    currentQuality = Math.max(MIN_JPEG_QUALITY, currentQuality - 0.08);
-    currentMaxDimension = Math.max(900, Math.round(currentMaxDimension * 0.85));
+    currentQuality = Math.max(MIN_JPEG_QUALITY, currentQuality - 0.1);
+    currentMaxDimension = Math.max(600, Math.round(currentMaxDimension * 0.8));
   }
 
-  if (best && best.size <= MAX_PHOTO_BYTES) {
-    return best;
-  }
+  return best!;
+}
 
-  throw new Error('Photo still too large after resize');
+export async function shrinkPhotoForUpload(file: File) {
+  if (!shouldAutoShrinkPhoto(file)) {
+    return file;
+  }
+  return shrinkPhotoToTargetBytes(file, TARGET_PHOTO_BYTES);
+}
+
+/**
+ * Compress resizable photos so their combined size fits within budgetBytes.
+ * Non-resizable photos (HEIC) are returned unchanged — caller should check
+ * whether the budget was actually met after this returns.
+ */
+export async function compressPhotosForBudget(
+  photos: File[],
+  budgetBytes: number,
+): Promise<File[]> {
+  if (photos.length === 0) return photos;
+
+  const resizable = photos.filter((f) => isBrowserResizablePhoto(f) && !isHeicLikePhoto(f));
+  const nonResizable = photos.filter((f) => !isBrowserResizablePhoto(f) || isHeicLikePhoto(f));
+
+  const nonResizableTotal = nonResizable.reduce((sum, f) => sum + f.size, 0);
+  const remainingBudget = budgetBytes - nonResizableTotal;
+  if (remainingBudget <= 0 || resizable.length === 0) return photos;
+
+  // Distribute budget proportionally by current size, floor at 150 KB per photo.
+  const currentResizableTotal = resizable.reduce((sum, f) => sum + f.size, 0);
+  const compressed = await Promise.all(
+    resizable.map((f) => {
+      const share = Math.max(150 * 1024, Math.floor((f.size / currentResizableTotal) * remainingBudget));
+      return f.size <= share ? Promise.resolve(f) : shrinkPhotoToTargetBytes(f, share);
+    }),
+  );
+
+  // Rebuild the original order
+  const resizableIter = compressed[Symbol.iterator]();
+  const nonResizableIter = nonResizable[Symbol.iterator]();
+  return photos.map((f) =>
+    isBrowserResizablePhoto(f) && !isHeicLikePhoto(f)
+      ? resizableIter.next().value
+      : nonResizableIter.next().value,
+  );
 }
