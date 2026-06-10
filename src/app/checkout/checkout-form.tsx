@@ -356,6 +356,15 @@ export function CheckoutForm() {
   // server enforces per-category caps and would reject the duplicate, breaking
   // the retry. assetUploadStatuses drives the per-file progress (spinner / check
   // / error + retry) UI.
+  //
+  // SCOPE (reload-safe dedupe — Part D follow-up): this dedupe is SAME-SESSION
+  // ONLY. It keys by the in-memory File object, whose identity is stable across
+  // retries within one page session but is gone after a reload. The server does
+  // not yet dedupe by a stable localId (see addIntakeAsset TODO in
+  // order-intake.ts), so we must NOT promise reload/resume is duplicate-proof in
+  // customer-facing copy. On reload the draft id is not persisted, so a fresh
+  // submit starts a new draft (no double-charge — payment only happens later at
+  // hosted Stripe), at the cost of orphaned, uncharged draft assets.
   const uploadedAssetIdsRef = useRef<Map<File, string>>(new Map());
   // Reuse the same draft + uploaded assets across retries, but only while the
   // selected file set is unchanged. If the customer swaps/removes a file, the
@@ -1027,12 +1036,12 @@ export function CheckoutForm() {
             Taking you to secure payment…
           </h2>
           <p className="text-[#695f54] mb-2">
-            We saved your details for{" "}
+            Your files are saved for{" "}
             {form.childName
               ? `${form.childName}'s custom story`
               : "your custom story"}
-            . You&apos;ll finish at Stripe — your book starts once payment
-            is complete.
+            . Next you&apos;ll review payment in Stripe — nothing is charged
+            until you complete it there.
           </p>
           <p className="text-sm text-[#695f54]">
             Redirecting to Stripe… please don&apos;t close this tab.
@@ -2288,6 +2297,8 @@ export function CheckoutForm() {
               {assetUploadStatuses.length > 0 && (
                 <div
                   data-testid="asset-upload-status"
+                  role="status"
+                  aria-live="polite"
                   className="rounded-xl border border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm"
                 >
                   <p className="font-semibold text-[#1f1a16]">
@@ -2304,12 +2315,15 @@ export function CheckoutForm() {
                           {s.status === "error" && <span className="text-[#a64c4c]">✗</span>}
                         </span>
                         <span className="capitalize">{s.label}</span>
+                        {/* Status word: never color-only — icon + word (CD spec §02
+                            verbatim: Sending… / Saved / Didn't send). No bytes,
+                            HTTP codes, or provider/bucket strings. */}
                         <span className="ml-auto text-xs text-[#8a7b6a]">
                           {s.status === "uploading"
-                            ? "Uploading…"
+                            ? "Sending…"
                             : s.status === "uploaded"
                               ? "Saved"
-                              : "Didn't upload — tap Continue to retry just this file"}
+                              : "Didn't send — tap Continue to retry just this file"}
                         </span>
                       </li>
                     ))}

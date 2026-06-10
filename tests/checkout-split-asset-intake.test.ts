@@ -21,6 +21,8 @@ import {
 
 const CHECKOUT_SRC = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
 const ORDER_ROUTE_SRC = readFileSync('src/app/api/order/route.ts', 'utf8');
+const FINALIZE_SRC = readFileSync('src/app/api/order/finalize/route.ts', 'utf8');
+const ORDER_INTAKE_SRC = readFileSync('src/lib/order-intake.ts', 'utf8');
 
 // ── flag gating ───────────────────────────────────────────────────────────────
 
@@ -124,4 +126,60 @@ test('checkout memoizes uploaded assetIds per File so a retry does not re-upload
   assert.match(CHECKOUT_SRC, /uploadedAssetIdsRef/);
   assert.match(CHECKOUT_SRC, /uploadedAssetIdsRef\.current\.get\(file\)/);
   assert.match(CHECKOUT_SRC, /uploadedAssetIdsRef\.current\.set\(file, assetId\)/);
+});
+
+// ── double-tap / concurrent retry is idempotent (no duplicate uploads) ─────────
+
+test('uploadOneAsset short-circuits a cached File (returns the assetId before any fetch)', () => {
+  // The cached branch must `return cached;` BEFORE issuing the assets POST, so a
+  // double-tap / re-submit of an already-uploaded file never hits the network.
+  const cachedIdx = CHECKOUT_SRC.indexOf('const cached = uploadedAssetIdsRef.current.get(file)');
+  assert.ok(cachedIdx > -1, 'must read the per-File cache');
+  const assetsFetchIdx = CHECKOUT_SRC.indexOf('/api/order/draft/${draftOrderId}/assets', cachedIdx);
+  const earlyReturn = CHECKOUT_SRC.slice(cachedIdx, assetsFetchIdx);
+  assert.match(earlyReturn, /if \(cached\)[\s\S]*return cached;/, 'cached File returns before the assets PUT');
+});
+
+test('submit button is disabled while submitting so a double-tap cannot fire a second batch', () => {
+  assert.match(CHECKOUT_SRC, /disabled=\{isSubmitting/);
+});
+
+// ── charge copy is bounded by the Stripe handoff ──────────────────────────────
+
+test('finalize hands off to hosted Stripe Checkout (charge happens there, not at finalize)', () => {
+  // This is WHY the pre-handoff copy can say "not charged yet": finalize only
+  // creates a Stripe Checkout session and returns its URL; the customer is
+  // charged on the hosted Stripe page, not by finalize.
+  assert.match(FINALIZE_SRC, /stripe\.checkout\.sessions\.create/);
+  assert.match(FINALIZE_SRC, /redirectTo: session\.url/);
+});
+
+test('pre-handoff upload band shows the "not charged yet" promise', () => {
+  // While files are uploading (before any Stripe handoff) the persistent band
+  // must reassure the customer they have not been charged.
+  assert.match(CHECKOUT_SRC, /Saving your files securely — you have not been charged yet\./);
+});
+
+test('post-finalize interstitial uses Stripe-handoff wording, not a charged/free claim', () => {
+  // After finalize succeeds we redirect to hosted Stripe. The copy must say
+  // payment is reviewed in Stripe and nothing is charged until completed there —
+  // never "charged"/"confirmed"/"free", which would misstate the boundary.
+  const successIdx = CHECKOUT_SRC.indexOf('Taking you to secure payment');
+  assert.ok(successIdx > -1, 'Stripe-handoff interstitial must exist');
+  const successBlock = CHECKOUT_SRC.slice(successIdx, successIdx + 900);
+  assert.match(successBlock, /review payment in Stripe/);
+  assert.match(successBlock, /nothing is charged[\s\S]*until you complete it there/);
+  assert.doesNotMatch(successBlock, /\byou have been charged\b/i);
+  assert.doesNotMatch(successBlock, /\bfor free\b|\bit'?s free\b/i);
+});
+
+// ── reload-safe dedupe is a documented follow-up, not an over-promise ──────────
+
+test('server-side reload-safe dedupe is documented as a TODO (not silently implied)', () => {
+  // Clarification 2: there is no server-side localId/content-hash dedupe yet, so
+  // duplicate protection is same-session only. That gap must be documented where
+  // the follow-up would live, so UI copy is not built on a false reload promise.
+  assert.match(ORDER_INTAKE_SRC, /reload-safe dedupe/);
+  assert.match(ORDER_INTAKE_SRC, /localId/);
+  assert.match(CHECKOUT_SRC, /SAME-SESSION/);
 });

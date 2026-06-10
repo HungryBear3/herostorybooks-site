@@ -237,6 +237,20 @@ export async function addIntakeAsset(params: {
   if (!draft) throw new OrderPersistenceError(params.draftId, 'Draft order not found');
   if (draft.status === 'finalized') throw new OrderPersistenceError(params.draftId, 'Draft order already finalized');
 
+  // NOTE / TODO (reload-safe dedupe — Part D follow-up):
+  // This function mints a NEW assetId per call and only enforces per-category
+  // caps below — it does NOT dedupe by a stable client localId or content hash.
+  // That means duplicate protection is currently SAME-SESSION ONLY, enforced on
+  // the client by uploadedAssetIdsRef (File-identity cache) + planAssetUploads.
+  // A retry whose first PUT actually landed but whose response was lost (e.g.
+  // reload/resume, where the in-memory File identity is gone) is NOT guaranteed
+  // to be idempotent here: on a multi-asset category it could append a second
+  // copy, and on a singleton category it 4xxs on the cap. The CD spec's
+  // "server dedupes by localId" invariant is therefore NOT yet implemented.
+  // Follow-up to make reload/resume duplicate-proof: accept an optional
+  // `localId` (and/or content hash) from the assets route, and short-circuit
+  // here returning the existing asset when (draftId, localId) already exists.
+  // Until then, do not promise reload-safe dedupe in customer-facing copy.
   const existingForCategory = draft.assets.filter((asset) => asset.category === params.category);
   if (params.category === 'primary_photo' && existingForCategory.length >= 1) {
     const error = new Error('Only one primary child photo can be uploaded for this draft. You have not been charged.') as Error & { status?: number; code?: string };
