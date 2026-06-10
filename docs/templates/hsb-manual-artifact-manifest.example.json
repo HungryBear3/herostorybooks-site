@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "orderId": "ord_example",
+  "operatorId": "abby",
+  "revision": 1,
+  "generationMethod": "manual_subscription",
+  "createdAt": "YYYY-MM-DDTHH:mm:ssZ",
+  "expectedPageCount": 24,
+  "customerReleaseApproved": false,
+  "printSubmissionApproved": false,
+  "artifacts": [
+    {
+      "kind": "story_brief",
+      "path": "story-brief.md",
+      "contentType": "text/markdown",
+      "sha256": "TODO",
+      "notes": "Operator-authored story brief."
+    },
+    {
+      "kind": "page_plan",
+      "path": "page-plan.json",
+      "contentType": "application/json",
+      "sha256": "TODO"
+    },
+    {
+      "kind": "prose",
+      "path": "prose.md",
+      "contentType": "text/markdown",
+      "sha256": "TODO",
+      "source": "manual"
+    },
+    {
+      "kind": "art_direction_packet",
+      "path": "art-direction-packet.json",
+      "contentType": "application/json",
+      "sha256": "TODO"
+    },
+    {
+      "kind": "page_image",
+      "pageIndex": 1,
+      "path": "images/page-01.png",
+      "contentType": "image/png",
+      "sha256": "TODO",
+      "generationProvider": "manual",
+      "generationModel": "abby:manual-subscription",
+      "assetSource": "live"
+    },
+    {
+      "kind": "proof_pdf",
+      "path": "proof.pdf",
+      "contentType": "application/pdf",
+      "sha256": "TODO"
+    },
+    {
+      "kind": "qa_report",
+      "path": "qa-report.md",
+      "contentType": "text/markdown",
+      "sha256": "TODO"
+    }
+  ],
+  "qaChecklist": {
+    "personalizationDetailsCorrect": false,
+    "notTemplateFallback": false,
+    "noChildFamilyReuse": false,
+    "allPagesPresent": false,
+    "allImagesLoad": false,
+    "artConsistent": false,
+    "proofPdfOpens": false,
+    "noFixtureInternalAssets": false,
+    "printNotSubmitted": true,
+    "customerEmailNotSentBeforeRelease": true
+  },
+  "notes": "Replace local paths with Blob refs before committing import if route expects metadata-only payload."
+}
