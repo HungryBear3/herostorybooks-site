@@ -99,6 +99,11 @@ Route behavior:
 - Require paid, non-refunded order.
 - Allow from `manual_generation_required`, maybe `awaiting_manual_art`, `failed_manual_review` only with explicit replace flag.
 - Upload/record artifacts, hash binaries if present, persist via existing safe order write lock/CAS path.
+- Avoid Vercel/serverless 4 MB request-body failures: do **not** require large image/PDF bundles to pass through a single Next route multipart body. First-cut acceptable shapes are:
+  - manifest references to already-uploaded Blob URLs/paths, or
+  - CLI/server-side import that uploads files directly to Blob before patching the order, or
+  - short-lived direct-to-Blob upload token flow if building browser upload.
+- The order/admin route should receive metadata/blob refs, not multi-MB binaries, for page images/proof PDFs. Add request-size guard tests or source guard proving `/manual-artifacts` is not the large-binary transport path.
 - Transition to `awaiting_qa` only when complete.
 - Never send customer email or call print.
 
