@@ -95,7 +95,7 @@ const FORMATS = [
     price: "$14.99",
     priceNum: 14.99,
     badge: "Father's Day pick",
-    delivery: "Digital proof usually ready within 2 business days",
+    delivery: "We email your digital proof when it's ready — you approve before final delivery",
     deliveryDetail:
       "32-page high-res PDF delivered after you approve · No printing or shipping step",
   },
@@ -2156,8 +2156,8 @@ export function CheckoutForm() {
                     <strong className="block text-[#241914]">
                       Then we print or deliver
                     </strong>
-                    Print books ship after approval; digital books are delivered
-                    right away.
+                    Nothing prints until you approve your proof. After you
+                    approve, digital books are delivered and print books ship.
                   </span>
                 </li>
               </ol>

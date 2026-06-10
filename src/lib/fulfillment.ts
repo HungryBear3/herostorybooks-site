@@ -1512,7 +1512,8 @@ export type TriggerResult =
   | { status: 'skipped_already_running'; fulfillmentStatus: string }
   | { status: 'skipped_already_complete'; fulfillmentStatus: string }
   | { status: 'not_paid_yet'; attempts: number }
-  | { status: 'not_found' };
+  | { status: 'not_found' }
+  | { status: 'manual_generation_required' };
 
 const DEFAULT_READBACK_MAX_ATTEMPTS = 3;
 const DEFAULT_READBACK_INITIAL_DELAY_MS = 100;
@@ -1620,6 +1621,29 @@ export async function triggerFulfillment(
   if (cur && cur !== 'not_started' && cur !== 'failed_manual_review') {
     console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=${cur} — skipping (in progress)`);
     return { status: 'skipped_already_running', fulfillmentStatus: cur };
+  }
+
+  // Manual production queue: operator generates and attaches artifacts via Blob
+  // refs before proof release. When OpenAI story generation is disabled (current
+  // production default) AND no story generator is injected (i.e. this is the real
+  // production path, not a test/override that supplies its own generators), a
+  // paid order must NOT run the automatic pipeline — which would produce template
+  // prose and no real illustrations. Instead it enters the manual queue at
+  // `manual_generation_required`. Injected-generator callers (tests, explicit
+  // overrides) keep running the auto path unchanged.
+  const manualMode =
+    process.env.HSB_ENABLE_OPENAI_STORY !== 'true' &&
+    !deps.generateStory &&
+    !deps.generateStoryWithMeta;
+  if (manualMode) {
+    console.log(
+      `[fulfillment] order ${orderId} entering manual production queue (manual_generation_required) — HSB_ENABLE_OPENAI_STORY!=true`,
+    );
+    await updateFulfillmentState(
+      order.id,
+      paidFulfillmentPatch(order, { fulfillmentStatus: 'manual_generation_required' }),
+    );
+    return { status: 'manual_generation_required' };
   }
 
   const isDigital = !isPrintFormat(order.bookFormat);

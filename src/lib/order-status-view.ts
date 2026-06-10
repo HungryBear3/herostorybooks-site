@@ -88,7 +88,11 @@ function enrichDigital(
 ): OrderStatusView {
   view.timeline = buildDigitalTimeline(order);
 
-  if (fulfillment === 'awaiting_qa' && order.storyArtifactUrl) {
+  if (fulfillment === 'manual_generation_required' || fulfillment === 'generation_in_progress') {
+    view.headline = `${order.childName}'s book is being crafted`;
+    view.subhead = "Your book is being crafted. We'll email you when your proof is ready.";
+    view.tone = 'neutral';
+  } else if (fulfillment === 'awaiting_qa' && order.storyArtifactUrl) {
     view.headline = `${order.childName}'s storybook is being reviewed`;
     view.subhead = 'Your book is being personalized and hand-reviewed before we send your proof.';
     view.tone = 'neutral';
@@ -129,7 +133,11 @@ function enrichPrint(
 ): OrderStatusView {
   view.timeline = buildPrintTimeline(order);
 
-  if (order.status === 'shipped') {
+  if (fulfillment === 'manual_generation_required' || fulfillment === 'generation_in_progress') {
+    view.headline = `${order.childName}'s book is being crafted`;
+    view.subhead = "Your book is being crafted. We'll email you when your proof is ready.";
+    view.tone = 'neutral';
+  } else if (order.status === 'shipped') {
     view.headline = `${order.childName}'s book has shipped`;
     view.subhead = order.trackingNumber
       ? 'It is on its way — tracking info is below.'
