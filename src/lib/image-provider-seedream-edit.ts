@@ -14,6 +14,7 @@ import type {
   ImageProviderDeps,
   ImageProviderInput,
 } from './image-provider-types.ts';
+import { redactProviderError } from './redact-secrets.ts';
 
 const FAL_SEEDREAM_ENDPOINT =
   process.env.FAL_SEEDREAM_IMAGE_ENDPOINT ?? 'https://fal.run/fal-ai/bytedance/seedream/v4/edit';
@@ -108,7 +109,7 @@ export const seedreamEditImageProvider: ImageProvider = {
           conditioning: 'photo_edit',
           referencePhotoUrl: primaryReference,
           latencyMs: Date.now() - startedAt,
-          error: `FAL ${res.status}: ${body.slice(0, 200)}`,
+          error: redactProviderError(null, { provider: 'FAL', status: res.status }),
         };
       }
 
@@ -150,7 +151,7 @@ export const seedreamEditImageProvider: ImageProvider = {
         conditioning: 'photo_edit',
         referencePhotoUrl: primaryReference,
         latencyMs: Date.now() - startedAt,
-        error: err instanceof Error ? err.message : String(err),
+        error: redactProviderError(err, { provider: 'FAL' }),
       };
     }
   },

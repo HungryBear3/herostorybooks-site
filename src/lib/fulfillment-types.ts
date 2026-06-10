@@ -35,6 +35,14 @@ export type FulfillmentStatus =
    * than `failed_manual_review` so the book itself is not regenerated.
    */
   | 'delivery_email_failed'
+  /**
+   * Paid order whose story is ready but whose illustrations must be produced by
+   * the manual/subscription art workflow (the near-term HSB model) — no enabled
+   * automated image route. Parked in an ops queue with qaStatus='blocked' until
+   * art is attached and QA passes. Distinct from failed_manual_review (a real
+   * generation failure).
+   */
+  | 'awaiting_manual_art'
   | 'failed_manual_review';
 
 /**
@@ -156,6 +164,11 @@ export interface StoryMeta {
    *  template was substituted; 'rejected' when policy refused the artifact;
    *  'needs_review' when the operator must inspect. Optional. */
   attemptResult?: 'success' | 'fallback' | 'rejected' | 'needs_review' | string | null;
+  /** Cross-page repetition findings from `detectRepeatedProse` over the final
+   *  page prose (Tier1 D). Non-empty means the same non-trivial sentence
+   *  repeats across pages — fulfillment fails closed to manual review rather
+   *  than shipping templated/duplicated text. Absent/empty when clean. */
+  repeatedProse?: string[];
 }
 
 /**

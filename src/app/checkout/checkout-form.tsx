@@ -4,7 +4,28 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from "@/lib/checkout-flow";
+import {
+  MAX_PHOTO_BYTES,
+  compressPhotosForBudget,
+  isHeicLikePhoto,
+  shouldAutoShrinkPhoto,
+  shrinkPhotoForUpload,
+} from "@/lib/photo-upload";
+import {
+  MAX_TOTAL_UPLOAD_BYTES,
+  combinedTooLargeMessage,
+  estimateTotalUploadBytes,
+  formatMb,
+  isCombinedUploadTooLarge,
+} from "@/lib/upload-limits";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
+import { GuidedPhotoCapture } from "@/components/checkout/GuidedPhotoCapture";
+import { StoryPreviewCard } from "@/components/checkout/StoryPreviewCard";
+import {
+  appendGuidedCaptureToFormData,
+  isGuidedPhotoCaptureEnabled,
+  type GuidedPhotoFile,
+} from "@/lib/guided-photo-capture";
 import {
   CHECKOUT_SAMPLE_IMAGES,
   STORY_OCCASIONS,
@@ -122,6 +143,8 @@ function envFlagEnabled(value: string | undefined): boolean {
 
 const VOICE_BETA_ENABLED =
   envFlagEnabled(process.env.NEXT_PUBLIC_HSB_VOICE_BETA);
+const SPLIT_ASSET_INTAKE_ENABLED =
+  envFlagEnabled(process.env.NEXT_PUBLIC_HSB_SPLIT_ASSET_INTAKE);
 
 const STORAGE_KEY = "hsb_order_v1";
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
@@ -129,6 +152,10 @@ const RECOVERY_DEBOUNCE_MS = 1500;
 
 function looksLikeEmail(e: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
+function isAudioInspirationFile(file: File): boolean {
+  return file.type.startsWith("audio/") || /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i.test(file.name);
 }
 
 const SAMPLE_IMAGES = CHECKOUT_SAMPLE_IMAGES;
@@ -310,9 +337,17 @@ export function CheckoutForm() {
   // dismissed instantly on mobile) and so we can reassure the customer that no
   // charge was made and nothing was saved when submission fails before Stripe.
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Per-upload size/format errors (resize gate). Main photo + per-character.
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [supportingPhotoErrors, setSupportingPhotoErrors] = useState<Record<string, string>>({});
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
+  // Guided multi-angle photo capture (feature-flagged). Normal photo upload
+  // above remains the always-available path; guided stills are optional extras.
+  const guidedCaptureEnabled = isGuidedPhotoCaptureEnabled();
+  const [guidedFrames, setGuidedFrames] = useState<GuidedPhotoFile[]>([]);
+  const [guidedConsent, setGuidedConsent] = useState(false);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Restore saved progress on mount + honor checkout entry context.
@@ -471,11 +506,15 @@ export function CheckoutForm() {
   const selectedSampleImage = form.photoDataUrl ?? SAMPLE_IMAGES[0];
   const fathersDay = getFathersDayCountdown();
   const showFathersDayReminder = fathersDay.tier !== "past-event";
+  // Email must be a real, deliverable address — not just non-empty. Proof-
+  // before-print delivery depends on it, so a malformed address keeps the CTA
+  // disabled (matches the server's /api/order email validation).
+  const emailLooksValid = looksLikeEmail(form.email);
   const isReadyToPay =
     Boolean(form.theme) &&
     Boolean(form.childName) &&
     Boolean(form.bookFormat) &&
-    Boolean(form.email) &&
+    emailLooksValid &&
     Boolean(form.skinTone) &&
     Boolean(form.hairStyle) &&
     (!VOICE_BETA_ENABLED || form.voiceFile == null || form.voiceConsent);
@@ -488,36 +527,84 @@ export function CheckoutForm() {
   ].filter(Boolean).length;
   const progressValue = (completedStepCount / CHECKOUT_STEPS.length) * 100;
 
-  const processPhoto = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setForm((prev) => ({
-        ...prev,
-        photoFile: file,
-        photoDataUrl: e.target?.result as string,
-      }));
-    };
-    reader.readAsDataURL(file);
-  }, []);
+  // Resize JPG/PNG/WebP before storing/submitting; HEIC/HEIF cannot be resized
+  // in-browser, so we keep honest behavior: oversized HEIC (or any non-resizable
+  // file over the per-photo cap) is rejected with a clear message instead of
+  // being silently sent and bounced by Vercel. Returns the prepared (possibly
+  // smaller) File, or null with the error already surfaced.
+  const preparePhotoFile = useCallback(
+    async (file: File, onError: (msg: string) => void): Promise<File | null> => {
+      try {
+        if (shouldAutoShrinkPhoto(file)) {
+          return await shrinkPhotoForUpload(file);
+        }
+        if (file.size > MAX_PHOTO_BYTES) {
+          onError(
+            isHeicLikePhoto(file)
+              ? `This HEIC photo is ${formatMb(file.size)}. We can't shrink HEIC in the browser — please upload a JPG, PNG, or WebP, or a smaller photo (under ${formatMb(MAX_PHOTO_BYTES)}).`
+              : `This photo is ${formatMb(file.size)}, over the ${formatMb(MAX_PHOTO_BYTES)} limit. Please upload a smaller JPG, PNG, or WebP.`,
+          );
+          return null;
+        }
+        return file;
+      } catch {
+        onError(
+          `We couldn't process that photo. Please try a different JPG, PNG, or WebP under ${formatMb(MAX_PHOTO_BYTES)}.`,
+        );
+        return null;
+      }
+    },
+    [],
+  );
 
-  const processSupportingCharacterPhoto = useCallback((id: string, file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setForm((prev) => ({
-        ...prev,
-        familyCharacters: prev.familyCharacters.map((character) =>
-          character.id === id
-            ? {
-                ...character,
-                photoFile: file,
-                photoDataUrl: e.target?.result as string,
-              }
-            : character,
-        ),
-      }));
-    };
-    reader.readAsDataURL(file);
-  }, []);
+  const processPhoto = useCallback(
+    async (file: File) => {
+      setPhotoError(null);
+      const prepared = await preparePhotoFile(file, setPhotoError);
+      if (!prepared) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setForm((prev) => ({
+          ...prev,
+          photoFile: prepared,
+          photoDataUrl: e.target?.result as string,
+        }));
+      };
+      reader.readAsDataURL(prepared);
+    },
+    [preparePhotoFile],
+  );
+
+  const processSupportingCharacterPhoto = useCallback(
+    async (id: string, file: File) => {
+      setSupportingPhotoErrors((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      const prepared = await preparePhotoFile(file, (msg) =>
+        setSupportingPhotoErrors((prev) => ({ ...prev, [id]: msg })),
+      );
+      if (!prepared) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setForm((prev) => ({
+          ...prev,
+          familyCharacters: prev.familyCharacters.map((character) =>
+            character.id === id
+              ? {
+                  ...character,
+                  photoFile: prepared,
+                  photoDataUrl: e.target?.result as string,
+                }
+              : character,
+          ),
+        }));
+      };
+      reader.readAsDataURL(prepared);
+    },
+    [preparePhotoFile],
+  );
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -533,6 +620,52 @@ export function CheckoutForm() {
     e.preventDefault();
     setIsSubmitting(true);
     setSubmitError(null);
+
+    // Combined-payload guard: estimate total attached bytes and, if over budget,
+    // attempt a budget-aware recompression of all resizable photos before
+    // surfacing an error. This handles the common case where individually-valid
+    // photos + a voice note collectively exceed Vercel's ~4.5 MB request limit.
+    const voiceBytes = VOICE_BETA_ENABLED && form.voiceFile ? form.voiceFile.size : 0;
+    let resolvedPhotoFile = form.photoFile;
+    let resolvedCharacters = form.familyCharacters;
+
+    const totalUploadBytes = estimateTotalUploadBytes({
+      mainPhotoBytes: resolvedPhotoFile?.size ?? 0,
+      supportingPhotoBytes: resolvedCharacters.map((c) => c.photoFile?.size ?? 0).filter((n) => n > 0),
+      voiceBytes,
+    });
+
+    if (isCombinedUploadTooLarge(totalUploadBytes)) {
+      // Collect all photo files, compress to fit the photo budget, then
+      // redistribute back into form state for this submission only.
+      const allPhotos: File[] = [
+        ...(resolvedPhotoFile ? [resolvedPhotoFile] : []),
+        ...resolvedCharacters.map((c) => c.photoFile).filter((f): f is File => f != null),
+      ];
+      const photoBudget = MAX_TOTAL_UPLOAD_BYTES - voiceBytes;
+      try {
+        const recompressed = await compressPhotosForBudget(allPhotos, photoBudget);
+        let recompIdx = 0;
+        resolvedPhotoFile = resolvedPhotoFile ? recompressed[recompIdx++] : resolvedPhotoFile;
+        resolvedCharacters = resolvedCharacters.map((c) =>
+          c.photoFile ? { ...c, photoFile: recompressed[recompIdx++] } : c,
+        );
+      } catch {
+        // Compression failed — fall through to the size error below.
+      }
+
+      const retotalBytes = estimateTotalUploadBytes({
+        mainPhotoBytes: resolvedPhotoFile?.size ?? 0,
+        supportingPhotoBytes: resolvedCharacters.map((c) => c.photoFile?.size ?? 0).filter((n) => n > 0),
+        voiceBytes,
+      });
+      if (isCombinedUploadTooLarge(retotalBytes)) {
+        setSubmitError(combinedTooLargeMessage(retotalBytes));
+        setIsSubmitting(false);
+        return;
+      }
+    }
+
     // Fire BOTH the brief's "purchase_intent" alias and the more literal
     // "order_submit_attempt" so downstream funnels can use either name.
     // Network round-trip + payment success/failure live further along the
@@ -553,7 +686,7 @@ export function CheckoutForm() {
 
     try {
       const payload = new FormData();
-      const familyCharactersForOrder = form.familyCharacters
+      const familyCharactersForOrder = resolvedCharacters
         .filter((character) =>
           Boolean(
             character.name.trim() ||
@@ -563,6 +696,151 @@ export function CheckoutForm() {
           ),
         )
         .slice(0, SUPPORTING_CHARACTER_LIMIT);
+
+      if (SPLIT_ASSET_INTAKE_ENABLED) {
+        setSubmitError("Saving your photos and story details securely before payment…");
+        const familyCharactersJson = familyCharactersForOrder.map((character) => ({
+          role: character.role,
+          name: character.name,
+          relationshipLabel: character.relationshipLabel,
+          pronouns: character.pronouns,
+          notes: character.notes,
+          isGiftRecipient: character.isGiftRecipient,
+          appearsInStory: character.appearsInStory,
+          photoFileName: character.photoFile?.name ?? null,
+        }));
+        const draftResponse = await fetch("/api/order/draft", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            childName: form.childName,
+            childAge: form.childAge,
+            theme: form.theme,
+            lesson: form.lesson,
+            occasion: form.occasion,
+            giftMessage: form.giftMessage,
+            characterNotes: form.characterNotes,
+            familyCharacters: familyCharactersJson,
+            appearanceOptions: JSON.stringify({
+              skinTone: form.skinTone,
+              hairStyle: form.hairStyle,
+              eyewear: form.eyewear,
+            }),
+            skinTone: form.skinTone,
+            hairStyle: form.hairStyle,
+            bookFormat: form.bookFormat,
+            email: form.email,
+            referralCode: checkoutReferralCode(),
+          }),
+        });
+        const draftBody = await draftResponse.json().catch(() => null);
+        if (!draftResponse.ok || !draftBody?.draftOrderId) {
+          throw new Error(draftBody?.error || "We couldn't securely save your order draft. You have not been charged.");
+        }
+        const draftOrderId = String(draftBody.draftOrderId);
+        const uploadOneAsset = async (
+          label: string,
+          category: string,
+          file: File,
+          extra: Record<string, string> = {},
+        ) => {
+          const assetPayload = new FormData();
+          assetPayload.set("category", category);
+          assetPayload.set("label", label);
+          assetPayload.set("file", file, file.name);
+          for (const [key, value] of Object.entries(extra)) assetPayload.set(key, value);
+          const response = await fetch(`/api/order/draft/${draftOrderId}/assets`, {
+            method: "POST",
+            body: assetPayload,
+          });
+          const body = await response.json().catch(() => null);
+          if (!response.ok || !body?.asset?.assetId) {
+            throw new Error(
+              body?.error ||
+                `We couldn't securely save ${label}. You have not been charged. Please retry or remove that file.`,
+            );
+          }
+          return String(body.asset.assetId);
+        };
+
+        const primaryPhotoAssetId = resolvedPhotoFile
+          ? await uploadOneAsset("child reference photo", "primary_photo", resolvedPhotoFile)
+          : null;
+        const guidedChildReferenceAssetIds: string[] = [];
+        if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
+          for (const frame of guidedFrames) {
+            guidedChildReferenceAssetIds.push(
+              await uploadOneAsset(`guided ${frame.label} reference photo`, "guided_child_reference", frame.file, {
+                source: "guided_capture",
+                label: String(frame.label),
+                guidedPhotoConsent: "true",
+              }),
+            );
+          }
+        }
+        for (const [index, character] of familyCharactersForOrder.entries()) {
+          if (character.photoFile) {
+            await uploadOneAsset(`${character.relationshipLabel || character.name || "family"} reference photo`, "supporting_character_reference", character.photoFile, {
+              familyCharacterIndex: String(index),
+              familyCharacterId: `family-${index}`,
+            });
+          }
+        }
+        const voiceAssetId = VOICE_BETA_ENABLED && form.voiceFile && isAudioInspirationFile(form.voiceFile)
+          ? await uploadOneAsset("story inspiration", "voice_inspiration", form.voiceFile, {
+              source: form.voiceSource === "recorded" ? "recorded" : "upload",
+              voiceConsent: form.voiceConsent ? "true" : "false",
+            })
+          : null;
+        const documentAssetIds = VOICE_BETA_ENABLED && form.voiceFile && !isAudioInspirationFile(form.voiceFile)
+          ? [await uploadOneAsset("story inspiration", "document_inspiration", form.voiceFile, {
+              source: "upload",
+              voiceConsent: form.voiceConsent ? "true" : "false",
+            })]
+          : [];
+        const finalizeResponse = await fetch("/api/order/finalize", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            draftOrderId,
+            primaryPhotoAssetId,
+            guidedChildReferenceAssetIds,
+            voiceAssetId,
+            documentAssetIds,
+            finalConsent: { photos: true, voice: form.voiceConsent, terms: true },
+            fields: {
+              childName: form.childName,
+              childAge: form.childAge,
+              theme: form.theme,
+              lesson: form.lesson,
+              occasion: form.occasion,
+              giftMessage: form.giftMessage,
+              characterNotes: form.characterNotes,
+              familyCharacters: familyCharactersJson,
+              appearanceOptions: JSON.stringify({
+                skinTone: form.skinTone,
+                hairStyle: form.hairStyle,
+                eyewear: form.eyewear,
+              }),
+              bookFormat: form.bookFormat,
+              email: form.email,
+              referralCode: checkoutReferralCode(),
+            },
+          }),
+        });
+        const result = await finalizeResponse.json().catch(() => null);
+        if (!finalizeResponse.ok || !result?.redirectTo) {
+          throw new Error(result?.error || "We couldn't securely finalize your order. You have not been charged.");
+        }
+        setSubmitError(null);
+        setSuccess(true);
+        localStorage.removeItem(STORAGE_KEY);
+        setTimeout(() => {
+          window.location.href = result.redirectTo;
+        }, 1200);
+        return;
+      }
+
       payload.set("childName", form.childName);
       payload.set("childAge", form.childAge);
       payload.set("theme", form.theme);
@@ -603,13 +881,18 @@ export function CheckoutForm() {
       payload.set("email", form.email);
       const referralCode = checkoutReferralCode();
       if (referralCode) payload.set("referralCode", referralCode);
-      if (form.photoFile) {
-        payload.set("photo", form.photoFile);
+      if (resolvedPhotoFile) {
+        payload.set("photo", resolvedPhotoFile);
       }
       if (VOICE_BETA_ENABLED && form.voiceFile) {
         payload.set("voice", form.voiceFile);
         payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
         if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
+      }
+      // Guided reference stills (flag-gated). Appends guidedPhoto_i + labels +
+      // version + consent for approved still frames only — never video.
+      if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
+        appendGuidedCaptureToFormData(payload, guidedFrames);
       }
 
       const response = await fetch("/api/order", {
@@ -857,7 +1140,210 @@ export function CheckoutForm() {
                   </select>
                 </div>
               </div>
+            </section>
 
+            {/* ── 2.4 Who's in the story? — hero photo (moved above family
+                   members per 2026-06-09 checkout UX review) ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+              <div>
+                <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
+                  Who&apos;s in the story?
+                </h2>
+                <p className="text-sm text-[#695f54]">
+                  Add still reference photos so we can illustrate your family
+                  more consistently. You control every photo: use camera,
+                  upload, retake, or remove before checkout.
+                </p>
+                <p className="mt-1 text-xs leading-5 text-[#8a7b6a]">
+                  Still photos only — never video. These are private reference
+                  photos for your book.
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-[#dfd2b8] bg-[#fffaf1] p-4 space-y-4">
+                <div>
+                  <p className="text-sm font-bold text-[#1f1a16]">
+                    {form.childName
+                      ? `${form.childName} — the hero`
+                      : "Your child — the hero"}
+                  </p>
+                  <p className="text-sm text-[#695f54]">
+                    Add a still reference photo for {form.childName || "your child"} — we&apos;ll
+                    draw them as the hero. Use your camera or upload one you
+                    already have, then we hand-review the proof before anything
+                    prints.
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-4 py-3 text-sm text-[#1f1a16]">
+                  {PHOTO_UPLOAD_HELP}
+                </div>
+
+                {/* Sample teaser — shown before a photo is added */}
+                {!form.photoDataUrl && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-[#8a7b6a] uppercase tracking-widest text-center">
+                      What your proof includes
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-[0.85fr_1.15fr]">
+                      <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src="/assets/real-photo-demo.png"
+                          alt="Example reference photo used for a personalized book"
+                          className="h-40 w-full object-cover sm:h-full"
+                        />
+                        <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                          Uploaded photo
+                        </div>
+                      </div>
+                      <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src="/assets/storybook-transform-demo.png"
+                          alt="Example storybook illustration created from the uploaded photo"
+                          className="h-40 w-full object-cover sm:h-full"
+                        />
+                        <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                          Illustration proof
+                        </div>
+                      </div>
+                    </div>
+                    <p className="text-xs text-center text-[#8a7b6a]">
+                      Uploaded photo → storybook illustration · hand-reviewed
+                      before print
+                    </p>
+                  </div>
+                )}
+
+                {/* Upload/camera zone or preview */}
+                {form.photoDataUrl ? (
+                  <div className="space-y-3">
+                    <div className="relative rounded-2xl overflow-hidden border-2 border-[#a64c4c] shadow-md">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={form.photoDataUrl}
+                        alt="Uploaded photo"
+                        className="w-full max-h-72 object-contain bg-[#f5ead2]"
+                      />
+                      <div className="absolute inset-0 flex items-end p-3 pointer-events-none">
+                        <span className="bg-[#1f1a16]/80 text-white text-xs font-semibold px-3 py-1 rounded-full">
+                          ✨{" "}
+                          {form.childName
+                            ? `${form.childName} becomes`
+                            : "Your child becomes"}{" "}
+                          the hero
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setForm((prev) => ({
+                            ...prev,
+                            photoFile: null,
+                            photoDataUrl: null,
+                          }));
+                        }}
+                        className="absolute top-2 right-2 bg-[#fffaf1]/90 hover:bg-[#fffaf1] text-[#1f1a16] text-xs font-semibold px-3 py-1.5 rounded-full shadow transition"
+                      >
+                        Retake or remove
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-[#35564d] bg-[#eef4f1] border border-[#cfe0d8] rounded-lg px-3 py-2">
+                      <span>✅</span>
+                      <span className="font-medium">{form.photoFile?.name}</span>
+                      <span className="text-[#35564d] text-xs ml-auto">
+                        Ready for proof
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {/* Two ways to add the hero photo: camera (capture attr opens
+                        the camera on mobile) or upload from the library. Both
+                        reuse the existing processPhoto handler. */}
+                    <div className="flex flex-wrap gap-2">
+                      <label className="flex cursor-pointer items-center gap-1.5 rounded-full bg-[#1f1a16] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3029]">
+                        Use camera
+                        <input
+                          type="file"
+                          accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                          capture="user"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) processPhoto(f);
+                            e.currentTarget.value = "";
+                          }}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => photoInputRef.current?.click()}
+                        className="flex items-center gap-1.5 rounded-full border-2 border-[#dfd2b8] px-4 py-2 text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]"
+                      >
+                        Upload photo
+                      </button>
+                    </div>
+                    <div
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setDragOver(true);
+                      }}
+                      onDragLeave={() => setDragOver(false)}
+                      onDrop={handleDrop}
+                      onClick={() => photoInputRef.current?.click()}
+                      className={`
+                      flex flex-col items-center justify-center gap-3 min-h-40 rounded-2xl border-2 border-dashed cursor-pointer transition-all
+                      ${dragOver ? "border-[#a64c4c] bg-[#a64c4c]/10 scale-[1.01]" : "border-[#d8c6a2] hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]"}
+                    `}
+                    >
+                      <input
+                        ref={photoInputRef}
+                        type="file"
+                        accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) processPhoto(f);
+                        }}
+                      />
+                      <span className="text-5xl">{dragOver ? "🌟" : "📸"}</span>
+                      <div className="text-center">
+                        <p className="font-semibold text-[#1f1a16]">
+                          {dragOver ? "Drop it here!" : "Take a photo or upload one"}
+                        </p>
+                        <p className="mt-0.5 px-2 text-sm leading-5 text-[#8a7b6a]">
+                          or drag &amp; drop · JPG/PNG/WebP/HEIC
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {photoError && (
+                  <p role="alert" className="text-sm font-medium text-[#8a2f2f]">
+                    {photoError}
+                  </p>
+                )}
+                <p className="text-xs text-center text-[#8a7b6a]">
+                  🔒 Photos processed securely · Used only for your order · Add it
+                  later if you need to
+                </p>
+              </div>
+
+              {guidedCaptureEnabled && (
+                <GuidedPhotoCapture
+                  heroName={form.childName}
+                  frames={guidedFrames}
+                  consent={guidedConsent}
+                  onConsentChange={setGuidedConsent}
+                  onFramesChange={setGuidedFrames}
+                />
+              )}
+            </section>
+
+            {/* ── 2.5 Story details ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-5">
               {/* Lesson */}
               <div>
                 <label className="block text-sm font-semibold text-[#1f1a16] mb-2">
@@ -987,6 +1473,7 @@ export function CheckoutForm() {
                 )}
               </AnimatePresence>
             </section>
+
 
             {/* ── 2.5 Character details ── */}
             <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
@@ -1221,13 +1708,17 @@ export function CheckoutForm() {
                         <div className="mb-2 flex items-center justify-between gap-3">
                           <div>
                             <p className="text-sm font-semibold text-[#1f1a16]">
-                              Reference photo
+                              {character.role === "pet"
+                                ? "Your pet (optional)"
+                                : "A parent or loved one (optional)"}
                               {character.name || character.relationshipLabel
-                                ? ` for ${character.name || character.relationshipLabel}`
+                                ? ` — ${character.name || character.relationshipLabel}`
                                 : ""}
                             </p>
                             <p className="text-xs leading-5 text-[#8a7b6a]">
-                              Optional, for Dad, Mom, grandparents, siblings, or pets.
+                              {character.role === "pet"
+                                ? "Appears as a companion character"
+                                : "Appears in keepsake pages"}
                             </p>
                           </div>
                           {character.photoFile && (
@@ -1266,22 +1757,52 @@ export function CheckoutForm() {
                             </div>
                           </div>
                         ) : (
-                          <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-4 text-center text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
-                            <span>Add photo</span>
-                            <span className="text-xs font-normal text-[#8a7b6a]">
-                              JPG/PNG/WebP/HEIC
-                            </span>
-                            <input
-                              type="file"
-                              accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
-                              className="hidden"
-                              onChange={(e) => {
-                                const f = e.target.files?.[0];
-                                if (f) processSupportingCharacterPhoto(character.id, f);
-                                e.currentTarget.value = "";
-                              }}
-                            />
-                          </label>
+                          <div className="space-y-2">
+                            {/* Both ways to add a photo for this character:
+                                camera (capture attr opens the camera on mobile)
+                                or an upload from the library. Both reuse the same
+                                per-character handler — no submission change. */}
+                            <div className="flex flex-wrap gap-2">
+                              <label className="flex cursor-pointer items-center gap-1.5 rounded-full bg-[#1f1a16] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3029]">
+                                Use camera
+                                <input
+                                  type="file"
+                                  accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                                  capture="user"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (f) processSupportingCharacterPhoto(character.id, f);
+                                    e.currentTarget.value = "";
+                                  }}
+                                />
+                              </label>
+                              <label className="flex cursor-pointer items-center gap-1.5 rounded-full border-2 border-[#dfd2b8] px-4 py-2 text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
+                                Upload photo
+                                <input
+                                  type="file"
+                                  accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (f) processSupportingCharacterPhoto(character.id, f);
+                                    e.currentTarget.value = "";
+                                  }}
+                                />
+                              </label>
+                            </div>
+                            <p className="text-xs text-[#8a7b6a]">
+                              JPG/PNG/WebP/HEIC ·{" "}
+                              {character.role === "pet"
+                                ? "Photo optional for pets"
+                                : "Optional"}
+                            </p>
+                          </div>
+                        )}
+                        {supportingPhotoErrors[character.id] && (
+                          <p role="alert" className="mt-2 text-xs font-medium text-[#8a2f2f]">
+                            {supportingPhotoErrors[character.id]}
+                          </p>
                         )}
                       </div>
                     </div>
@@ -1401,145 +1922,29 @@ export function CheckoutForm() {
                 onChange={(e) => set("email", e.target.value)}
                 placeholder="your@email.com"
                 required
-                className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                aria-invalid={form.email.length > 0 && !emailLooksValid}
+                aria-describedby={
+                  form.email.length > 0 && !emailLooksValid ? "email-error" : undefined
+                }
+                className={`w-full px-4 py-3 border-2 rounded-2xl focus:outline-none focus:ring-2 transition text-[#1f1a16] bg-[#fffaf1] ${
+                  form.email.length > 0 && !emailLooksValid
+                    ? "border-[#a64c4c] focus:border-[#a64c4c] focus:ring-[#a64c4c]/30"
+                    : "border-[#dfd2b8] focus:border-[#a64c4c] focus:ring-[#a64c4c]/30"
+                }`}
               />
+              {form.email.length > 0 && !emailLooksValid && (
+                <p
+                  id="email-error"
+                  role="alert"
+                  className="text-sm font-medium text-[#8a2f2f]"
+                >
+                  Enter a valid email address (like name@example.com) so we can
+                  send your proof and book.
+                </p>
+              )}
               <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm text-[#35564d]">
                 ✨ {PRINT_PREVIEW_PROMISE}
               </div>
-            </section>
-
-            {/* ── 5. Photo Upload ── */}
-            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
-              <div>
-                <h2 className="font-serif text-xl text-[#1f1a16] mb-1">
-                  Add a photo when you&apos;re ready
-                </h2>
-                <p className="text-sm text-[#695f54]">
-                  We use the photo as a reference for your child&apos;s illustrated
-                  character, then hand-review the proof before anything prints.
-                </p>
-              </div>
-              <div className="rounded-2xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-4 py-3 text-sm text-[#1f1a16]">
-                {PHOTO_UPLOAD_HELP}
-              </div>
-
-              {/* Sample teaser — shown before upload */}
-              {!form.photoDataUrl && (
-                <div className="space-y-2">
-                  <p className="text-xs font-semibold text-[#8a7b6a] uppercase tracking-widest text-center">
-                    What your proof includes
-                  </p>
-                  <div className="grid gap-2 sm:grid-cols-[0.85fr_1.15fr]">
-                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src="/assets/real-photo-demo.png"
-                        alt="Example reference photo used for a personalized book"
-                        className="h-40 w-full object-cover sm:h-full"
-                      />
-                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
-                        Uploaded photo
-                      </div>
-                    </div>
-                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src="/assets/storybook-transform-demo.png"
-                        alt="Example storybook illustration created from the uploaded photo"
-                        className="h-40 w-full object-cover sm:h-full"
-                      />
-                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
-                        Illustration proof
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-xs text-center text-[#8a7b6a]">
-                    Uploaded photo → storybook illustration · hand-reviewed before print
-                  </p>
-                </div>
-              )}
-
-              {/* Upload zone / preview */}
-              {form.photoDataUrl ? (
-                <div className="space-y-3">
-                  <div className="relative rounded-2xl overflow-hidden border-2 border-[#a64c4c] shadow-md">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={form.photoDataUrl}
-                      alt="Uploaded photo"
-                      className="w-full max-h-72 object-contain bg-[#f5ead2]"
-                    />
-                    <div className="absolute inset-0 flex items-end p-3 pointer-events-none">
-                      <span className="bg-[#1f1a16]/80 text-white text-xs font-semibold px-3 py-1 rounded-full">
-                        ✨{" "}
-                        {form.childName
-                          ? `${form.childName} becomes`
-                          : "Your child becomes"}{" "}
-                        the hero
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setForm((prev) => ({
-                          ...prev,
-                          photoFile: null,
-                          photoDataUrl: null,
-                        }));
-                      }}
-                      className="absolute top-2 right-2 bg-[#fffaf1]/90 hover:bg-[#fffaf1] text-[#1f1a16] text-xs font-semibold px-3 py-1.5 rounded-full shadow transition"
-                    >
-                      Change Photo
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2 text-sm text-[#35564d] bg-[#eef4f1] border border-[#cfe0d8] rounded-lg px-3 py-2">
-                    <span>✅</span>
-                    <span className="font-medium">{form.photoFile?.name}</span>
-                    <span className="text-[#35564d] text-xs ml-auto">
-                      Ready for proof
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setDragOver(true);
-                  }}
-                  onDragLeave={() => setDragOver(false)}
-                  onDrop={handleDrop}
-                  onClick={() => photoInputRef.current?.click()}
-                  className={`
-                  flex flex-col items-center justify-center gap-3 min-h-40 rounded-2xl border-2 border-dashed cursor-pointer transition-all
-                  ${dragOver ? "border-[#a64c4c] bg-[#a64c4c]/10 scale-[1.01]" : "border-[#d8c6a2] hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]"}
-                `}
-                >
-                  <input
-                    ref={photoInputRef}
-                    type="file"
-                    accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) processPhoto(f);
-                    }}
-                  />
-                  <span className="text-5xl">{dragOver ? "🌟" : "📸"}</span>
-                  <div className="text-center">
-                    <p className="font-semibold text-[#1f1a16]">
-                      {dragOver ? "Drop it here!" : "Click to Upload"}
-                    </p>
-                    <p className="mt-0.5 px-2 text-sm leading-5 text-[#8a7b6a]">
-                      or drag &amp; drop · JPG/PNG/WebP/HEIC
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              <p className="text-xs text-center text-[#8a7b6a]">
-                🔒 Photos processed securely · Used only for your order · Add it
-                later if you need to
-              </p>
             </section>
 
             {VOICE_BETA_ENABLED && (
@@ -1758,6 +2163,21 @@ export function CheckoutForm() {
               </ol>
             </section>
 
+            {/* Pre-purchase story-confidence preview — deterministic + local,
+                rendered before the payment boundary. No-op until child name +
+                story are chosen. */}
+            <StoryPreviewCard
+              childName={form.childName}
+              theme={form.theme}
+              lesson={form.lesson}
+              giftMessage={form.giftMessage}
+              characterNotes={form.characterNotes}
+              voiceAttached={VOICE_BETA_ENABLED && Boolean(form.voiceFile)}
+              voiceTranscribed={false}
+              guidedPhotoCount={guidedCaptureEnabled ? guidedFrames.length : 0}
+              bookFormat={form.bookFormat}
+            />
+
             <div className="space-y-3 pb-10">
               {/* Disabled-CTA reason. Listed before the button so a screen
                   reader / sighted reviewer immediately knows WHY the button
@@ -1769,13 +2189,18 @@ export function CheckoutForm() {
                 if (!form.childName) missing.push("child's name");
                 if (!form.bookFormat) missing.push('format');
                 if (!form.email) missing.push('email');
+                else if (!emailLooksValid) missing.push('a valid email address');
                 if (!form.skinTone) missing.push('skin tone');
                 if (!form.hairStyle) missing.push('hair');
                 if (VOICE_BETA_ENABLED && form.voiceFile != null && !form.voiceConsent) {
                   missing.push('story inspiration consent');
                 }
                 return (
-                  <p className="rounded-xl border border-deep-gold/40 bg-deep-gold/10 px-3 py-2 text-center text-xs font-medium text-navy">
+                  <p
+                    id="cta-reason"
+                    role="status"
+                    className="rounded-xl border border-deep-gold/50 bg-deep-gold/15 px-3 py-2 text-center text-xs font-semibold text-[#3a2c10]"
+                  >
                     Finish these before continuing: {missing.join(' · ')}
                   </p>
                 );
@@ -1800,10 +2225,17 @@ export function CheckoutForm() {
                   </p>
                 </div>
               )}
+              {/* Disabled state uses a legible muted tan (not opacity-50, which
+                  faded the gold to an illegible "broken"-looking button on the
+                  cream page) and an explicit reason via aria-describedby. */}
               <button
                 type="submit"
                 disabled={isSubmitting || !isReadyToPay}
-                className="w-full rounded-2xl bg-deep-gold py-4 text-lg font-bold text-navy shadow-md transition-all hover:-translate-y-0.5 hover:bg-deep-gold/90 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
+                aria-disabled={isSubmitting || !isReadyToPay}
+                aria-describedby={
+                  !isReadyToPay && !isSubmitting ? "cta-reason" : undefined
+                }
+                className="w-full rounded-2xl bg-deep-gold py-4 text-lg font-bold text-navy shadow-md transition-all hover:-translate-y-0.5 hover:bg-deep-gold/90 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-[#e3d7bf] disabled:text-[#5c5145] disabled:shadow-none"
               >
                 {isSubmitting
                   ? "Processing…"

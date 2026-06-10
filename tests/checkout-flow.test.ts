@@ -7,6 +7,9 @@ import {
   PRINT_PREVIEW_PROMISE,
   PHOTO_UPLOAD_HELP,
   canSubmitCheckoutForm,
+  checkoutSubmitBlocker,
+  checkoutBlockerPrompt,
+  looksLikeEmail,
   selectAdventureValue,
   missingRequiredField,
   missingFieldPrompt,
@@ -61,6 +64,41 @@ test('canSubmitCheckoutForm: blocks submit when no adventure is selected', () =>
 test('canSubmitCheckoutForm: blocks submit when childName or email is missing', () => {
   assert.equal(canSubmitCheckoutForm({ ...FULL, childName: '' }), false);
   assert.equal(canSubmitCheckoutForm({ ...FULL, email: '' }), false);
+});
+
+// ── Email FORMAT gating (proof-before-print needs a deliverable address) ─────
+
+test('looksLikeEmail: accepts real-looking addresses, rejects malformed', () => {
+  assert.equal(looksLikeEmail('a@b.com'), true);
+  assert.equal(looksLikeEmail('  parent@example.co.uk '), true);
+  assert.equal(looksLikeEmail('notanemail'), false);
+  assert.equal(looksLikeEmail('missing@domain'), false);
+  assert.equal(looksLikeEmail('@nope.com'), false);
+  assert.equal(looksLikeEmail('a b@c.com'), false);
+  assert.equal(looksLikeEmail(''), false);
+});
+
+test('canSubmitCheckoutForm: a non-empty but malformed email still blocks checkout', () => {
+  assert.equal(canSubmitCheckoutForm({ ...FULL, email: 'notanemail' }), false);
+  assert.equal(canSubmitCheckoutForm({ ...FULL, email: 'missing@domain' }), false);
+});
+
+test('canSubmitCheckoutForm: a valid email enables checkout (all else present)', () => {
+  assert.equal(canSubmitCheckoutForm({ ...FULL, email: 'parent@example.com' }), true);
+});
+
+test('checkoutSubmitBlocker: distinguishes missing email from malformed email', () => {
+  assert.equal(checkoutSubmitBlocker({ ...FULL, email: '' }), 'email');
+  assert.equal(checkoutSubmitBlocker({ ...FULL, email: 'notanemail' }), 'email_invalid');
+  assert.equal(checkoutSubmitBlocker(FULL), null);
+  // Missing required fields still take priority over the email-format check.
+  assert.equal(checkoutSubmitBlocker({ ...FULL, theme: '', email: 'notanemail' }), 'adventure');
+});
+
+test('checkoutBlockerPrompt: gives format-specific copy for a malformed email', () => {
+  assert.match(checkoutBlockerPrompt('email_invalid'), /valid email/i);
+  assert.match(checkoutBlockerPrompt('email'), /enter.*email/i);
+  assert.equal(checkoutBlockerPrompt(null), null);
 });
 
 test('canSubmitCheckoutForm: blocks submit when skinTone is missing (launch spec requires explicit value)', () => {

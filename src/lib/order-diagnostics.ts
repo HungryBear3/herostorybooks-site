@@ -57,6 +57,14 @@ export interface OrderDiagnostics {
     fileName: string | null;
     blobPath: string | null;
   };
+  /** Guided multi-angle reference photos captured at checkout. Metadata only
+   *  (label + filename + blob path presence); still images only, never video. */
+  guidedPhotos: {
+    count: number;
+    persistedCount: number;
+    labels: string[];
+    refs: Array<{ label: string; fileName: string; hasBlobPath: boolean; consentAt: string | null }>;
+  };
   /** How the story was produced (template / openai_chat / fallback). Null
    *  when storyMeta wasn't persisted (legacy orders before observability). */
   story: {
@@ -541,6 +549,17 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
     payment: {
       status: order.paymentStatus,
       stripeSessionId: order.stripeSessionId ?? null,
+    },
+    guidedPhotos: {
+      count: order.guidedReferencePhotos?.length ?? 0,
+      persistedCount: (order.guidedReferencePhotos ?? []).filter((r) => Boolean(r.photoBlobPath)).length,
+      labels: (order.guidedReferencePhotos ?? []).map((r) => r.label),
+      refs: (order.guidedReferencePhotos ?? []).map((r) => ({
+        label: r.label,
+        fileName: r.fileName,
+        hasBlobPath: Boolean(r.photoBlobPath),
+        consentAt: r.consentAt ?? null,
+      })),
     },
     photo: {
       hasFileName: Boolean(order.photoFileName),

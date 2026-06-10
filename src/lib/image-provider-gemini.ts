@@ -36,6 +36,7 @@ import type {
   ImageProviderDeps,
   ImageProviderInput,
 } from './image-provider-types.ts';
+import { redactSecrets } from './redact-secrets.ts';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image-preview';
@@ -216,7 +217,7 @@ async function hostInlineImage(
     return { kind: 'hosted', url: result.url };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { kind: 'failed', error: message.slice(0, 200) };
+    return { kind: 'failed', error: redactSecrets(message).slice(0, 200) };
   }
 }
 

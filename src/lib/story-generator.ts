@@ -10,6 +10,7 @@ import {
   getGeminiPageProseModel,
   isGeminiPageProseEnabled,
 } from './story-provider-gemini.ts';
+import { redactSecrets } from './redact-secrets.ts';
 
 export type { StoryMeta };
 
@@ -605,6 +606,83 @@ export function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage
   ].filter(Boolean).join('\n');
 }
 
+// Singular-they subject–verb agreement bug: "they was/walks/hears…". HSB
+// protagonists routed to they/them produce these pervasively. Detected so the
+// page-prose validator fails closed before any proof.
+const SINGULAR_THEY_VERB =
+  /\bthey\s+(is|was|has|does|goes|hears|sees|says|brushes|checks|follows|runs|walks|jumps|smiles|reaches|climbs|holds|finds|gives|takes|makes|looks|feels|knows|wants|comes|sits|stands|turns|opens|closes|pulls|pushes|grabs|whispers|shouts|laughs|cries|nods|points|waves|steps|listens|watches|notices|carries|wishes|touches|crosses|rushes|dashes|leaps)\b/gi;
+
+export function detectSingularTheyIssues(text: string): string[] {
+  const matches = (text.match(SINGULAR_THEY_VERB) ?? []).map((m) => m.replace(/\s+/g, ' ').toLowerCase());
+  return [...new Set(matches)];
+}
+
+// Deterministic singular-they correction. Maps each 3rd-person-singular verb in
+// the detector's inventory to the base form that agrees with "they" (a plural-
+// agreement pronoun even when referring to one child). Applied as a
+// post-generation pass before image prompts / PDF build; `detectSingularTheyIssues`
+// remains the fail-closed backstop for anything not covered here. Mirrors
+// SINGULAR_THEY_VERB exactly — keep the two in lockstep.
+const SINGULAR_THEY_BASE: Record<string, string> = {
+  is: 'are', was: 'were', has: 'have', does: 'do', goes: 'go',
+  hears: 'hear', sees: 'see', says: 'say', brushes: 'brush', checks: 'check',
+  follows: 'follow', runs: 'run', walks: 'walk', jumps: 'jump', smiles: 'smile',
+  reaches: 'reach', climbs: 'climb', holds: 'hold', finds: 'find', gives: 'give',
+  takes: 'take', makes: 'make', looks: 'look', feels: 'feel', knows: 'know',
+  wants: 'want', comes: 'come', sits: 'sit', stands: 'stand', turns: 'turn',
+  opens: 'open', closes: 'close', pulls: 'pull', pushes: 'push', grabs: 'grab',
+  whispers: 'whisper', shouts: 'shout', laughs: 'laugh', cries: 'cry', nods: 'nod',
+  points: 'point', waves: 'wave', steps: 'step', listens: 'listen', watches: 'watch',
+  notices: 'notice', carries: 'carry', wishes: 'wish', touches: 'touch',
+  crosses: 'cross', rushes: 'rush', dashes: 'dash', leaps: 'leap',
+};
+
+export function correctSingularThey(text: string): string {
+  if (!text) return text;
+  const verbAlt = Object.keys(SINGULAR_THEY_BASE).join('|');
+  const theyVerb = new RegExp(`\\b(they)\\s+(${verbAlt})\\b`, 'gi');
+  let out = text.replace(theyVerb, (_m, they: string, verb: string) => {
+    const base = SINGULAR_THEY_BASE[verb.toLowerCase()] ?? verb;
+    return `${they} ${base}`;
+  });
+  // Non-verb artifacts: "them is" reads as a singular-they subject; "themself"
+  // → standard "themselves".
+  out = out.replace(/\bthem\s+is\b/gi, (m) => (m[0] === 'T' ? 'They are' : 'they are'));
+  out = out.replace(/\bthemself\b/gi, (m) => (m[0] === 'T' ? 'Themselves' : 'themselves'));
+  return out;
+}
+
+/**
+ * Cross-page repetition guard. Flags templated/repeated prose where the same
+ * non-trivial sentence (>= 5 words) is reused across two or more pages — the
+ * "repeated templated prose" failure the owner-test surfaced. One issue string
+ * per offending sentence (capped) so a final QA sweep can fail closed.
+ */
+export function detectRepeatedProse(pageTexts: string[]): string[] {
+  const sentenceToPages = new Map<string, Set<number>>();
+  pageTexts.forEach((text, pageIdx) => {
+    const sentences = (text ?? '')
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.trim().toLowerCase().replace(/\s+/g, ' '))
+      .filter((s) => s.split(' ').filter(Boolean).length >= 5);
+    for (const sentence of sentences) {
+      if (!sentenceToPages.has(sentence)) sentenceToPages.set(sentence, new Set());
+      sentenceToPages.get(sentence)!.add(pageIdx);
+    }
+  });
+
+  const issues: string[] = [];
+  for (const [sentence, pages] of sentenceToPages) {
+    if (pages.size >= 2) {
+      const where = [...pages].sort((a, b) => a - b).map((i) => i + 1).join(',');
+      const preview = sentence.length > 60 ? `${sentence.slice(0, 57)}...` : sentence;
+      issues.push(`repeated sentence on pages ${where}: "${preview}"`);
+    }
+    if (issues.length >= 10) break;
+  }
+  return issues;
+}
+
 export function validatePageProse(text: string, protagonist: string): string[] {
   const issues: string[] = [];
   const trimmed = text.trim();
@@ -613,6 +691,10 @@ export function validatePageProse(text: string, protagonist: string): string[] {
   if (words.length > 60) issues.push('page prose exceeds 60 words');
   const nameCount = (trimmed.match(new RegExp(`\\b${protagonist.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi')) || []).length;
   if (nameCount > 1) issues.push('protagonist first name used more than once');
+  const theyIssues = detectSingularTheyIssues(trimmed);
+  if (theyIssues.length > 0) {
+    issues.push(`page prose contains singular-they verb agreement bug: ${theyIssues.join(', ')}`);
+  }
   if (/pulls the eye first|everything is held in|guided by|while noticing|moment shifts|shifts toward|page \d+:|^title:|hinting at more adventure ahead|feels?\s+(mysterious|exciting|magical|special)/i.test(trimmed)) {
     issues.push('page prose contains forbidden template language');
   }
@@ -955,7 +1037,31 @@ export interface FetchDep {
  * order so admin diagnostics can answer "did this order use template or
  * model-generated story?" without log archaeology.
  */
+/**
+ * Public entry. Routes provider generation, then applies two deterministic
+ * post-generation guards before any image prompt or PDF build consumes the
+ * prose:
+ *  - C (singular-they): grammar-corrects every page's prose + the title so
+ *    "they is/was/runs…" agrees ("they are/were/run"). The per-page
+ *    `detectSingularTheyIssues` validator stays as the fail-closed backstop.
+ *  - D (repetition): runs `detectRepeatedProse` across the final pages and
+ *    surfaces any duplicated cross-page sentences on `meta.repeatedProse`, so
+ *    fulfillment can fail closed to manual review instead of silently shipping
+ *    templated/duplicated text.
+ */
 export async function generateStoryWithMeta(
+  order: OrderRecord,
+  deps: { fetch?: FetchDep; now?: () => Date } = {},
+): Promise<StoryWithMeta> {
+  const result = await generateStoryWithMetaRaw(order, deps);
+  const pages = result.story.pages.map((p) => ({ ...p, story: correctSingularThey(p.story) }));
+  const story: StoryContent = { ...result.story, title: correctSingularThey(result.story.title), pages };
+  const repeatedProse = detectRepeatedProse(pages.map((p) => p.story));
+  const meta = repeatedProse.length > 0 ? { ...result.meta, repeatedProse } : result.meta;
+  return { story, meta };
+}
+
+async function generateStoryWithMetaRaw(
   order: OrderRecord,
   deps: { fetch?: FetchDep; now?: () => Date } = {},
 ): Promise<StoryWithMeta> {
@@ -982,8 +1088,8 @@ export async function generateStoryWithMeta(
         },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[story-generator] Falling back to templates after Gemini page-prose failure for order ${order.id}: ${message}`);
+      const safeError = redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 200);
+      console.warn(`[story-generator] Falling back to templates after Gemini page-prose failure for order ${order.id}: ${safeError}`);
       const { story, variant } = buildTemplateFallbackWithVariant(order);
       return {
         story,
@@ -991,7 +1097,7 @@ export async function generateStoryWithMeta(
           source: 'template_after_openai_failure',
           model: `template:${variant.titleSuffix}`,
           generatedAt: nowIso,
-          fallbackError: message.slice(0, 200),
+          fallbackError: safeError,
         },
       };
     }
@@ -1011,8 +1117,8 @@ export async function generateStoryWithMeta(
         },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[story-generator] Falling back to templates after Ollama page-prose failure for order ${order.id}: ${message}`);
+      const safeError = redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 200);
+      console.warn(`[story-generator] Falling back to templates after Ollama page-prose failure for order ${order.id}: ${safeError}`);
       const { story, variant } = buildTemplateFallbackWithVariant(order);
       return {
         story,
@@ -1020,7 +1126,7 @@ export async function generateStoryWithMeta(
           source: 'template_after_openai_failure',
           model: `template:${variant.titleSuffix}`,
           generatedAt: nowIso,
-          fallbackError: message.slice(0, 200),
+          fallbackError: safeError,
         },
       };
     }
@@ -1040,8 +1146,8 @@ export async function generateStoryWithMeta(
         },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[story-generator] Falling back to templates after page-prose failure for order ${order.id}: ${message}`);
+      const safeError = redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 200);
+      console.warn(`[story-generator] Falling back to templates after page-prose failure for order ${order.id}: ${safeError}`);
       const { story, variant } = buildTemplateFallbackWithVariant(order);
       return {
         story,
@@ -1049,7 +1155,7 @@ export async function generateStoryWithMeta(
           source: 'template_after_openai_failure',
           model: `template:${variant.titleSuffix}`,
           generatedAt: nowIso,
-          fallbackError: message.slice(0, 200),
+          fallbackError: safeError,
         },
       };
     }
@@ -1113,8 +1219,8 @@ export async function generateStoryWithMeta(
       },
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[story-generator] Falling back to templates for order ${order.id}: ${message}`);
+    const safeError = redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 200);
+    console.warn(`[story-generator] Falling back to templates for order ${order.id}: ${safeError}`);
     const { story, variant } = buildTemplateFallbackWithVariant(order);
     return {
       story,
@@ -1122,7 +1228,7 @@ export async function generateStoryWithMeta(
         source: 'template_after_openai_failure',
         model: `template:${variant.titleSuffix}`,
         generatedAt: nowIso,
-        fallbackError: message.slice(0, 200),
+        fallbackError: safeError,
       },
     };
   }

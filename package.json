@@ -5,9 +5,11 @@
   "scripts": {
     "build": "next build",
     "check:production-env": "node scripts/check-production-env.mjs --env=production",
+    "checkout:voice-smoke": "node scripts/checkout-voice-smoke.mjs",
     "dev": "next dev",
     "launch:hygiene": "node scripts/launch-hygiene-check.mjs",
     "lint": "eslint .",
+    "predeploy:live-features": "node scripts/predeploy-live-feature-check.mjs",
     "order:status": "node --experimental-strip-types scripts/order-status.ts",
     "preview:check": "node scripts/preview-launch-check.mjs",
     "start": "next start",

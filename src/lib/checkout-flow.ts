@@ -48,7 +48,11 @@ export interface CurrentCheckoutStep {
   totalCount: 5;
 }
 
-function looksLikeEmail(email: string): boolean {
+// Exported so the checkout form and tests share ONE email-format rule. This
+// mirrors the server's isValidEmail in /api/order so the client gate and the
+// server validation cannot drift. Proof-before-print depends on a deliverable
+// email, so checkout must require a real address — not just a non-empty string.
+export function looksLikeEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
@@ -61,8 +65,29 @@ export function missingRequiredField(fields: CheckoutRequiredFields): MissingChe
   return null;
 }
 
+// Submit gate, distinguishing a present-but-malformed email from a missing one
+// so the CTA can explain it. `missingRequiredField` stays the server contract
+// (non-empty checks) — this layers email FORMAT validation on top for the
+// client gate only.
+export type CheckoutSubmitBlocker = MissingCheckoutField | 'email_invalid';
+
+export function checkoutSubmitBlocker(fields: CheckoutRequiredFields): CheckoutSubmitBlocker {
+  const missing = missingRequiredField(fields);
+  if (missing) return missing;
+  if (!looksLikeEmail(fields.email)) return 'email_invalid';
+  return null;
+}
+
 export function canSubmitCheckoutForm(fields: CheckoutRequiredFields): boolean {
-  return missingRequiredField(fields) === null;
+  return checkoutSubmitBlocker(fields) === null;
+}
+
+/** Human CTA helper copy for any submit blocker, including a malformed email. */
+export function checkoutBlockerPrompt(blocker: CheckoutSubmitBlocker): string | null {
+  if (blocker === 'email_invalid') {
+    return 'Enter a valid email address (like name@example.com) so we can send your proof and book.';
+  }
+  return missingFieldPrompt(blocker);
 }
 
 export function missingFieldPrompt(missing: MissingCheckoutField): string | null {

@@ -159,8 +159,7 @@ function cx(...classes: Array<string | false | undefined>) {
 export function EditorialPageShell({ active, children }: { active?: 'home' | 'sample' | 'pricing'; children: React.ReactNode }) {
   return (
     <main className="min-h-screen bg-[#f8f0dd] text-[#1f1a16]">
-      {/* Fires page_view exactly once per mount. Vendor-free push to
-          window.dataLayer + window.hsbEvents. */}
+      {/* Fires page_view exactly once per mount through the shared analytics layer. */}
       <AnalyticsPageView />
       <EditorialHeader active={active} />
       {children}
@@ -291,7 +290,7 @@ function EditorialFooter() {
         <FooterLinks title="Help" items={[['FAQ', '/#faq'], ['support@herostorybooks.com', 'mailto:support@herostorybooks.com'], ['Privacy', '/privacy'], ['Terms', '/terms']]} />
       </div>
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 border-t border-[#dfd2b8] px-5 py-5 text-xs text-[#695f54] md:px-8">
-        <span>© 2026 HeroStoryBooks · Made by a small team in California · <a href="mailto:support@herostorybooks.com" className="hover:text-[#a64c4c]">support@herostorybooks.com</a></span>
+        <span>© 2026 HeroStoryBooks · Made by a small team in Chicago · <a href="mailto:support@herostorybooks.com" className="hover:text-[#a64c4c]">support@herostorybooks.com</a></span>
         <span>SSL-encrypted · Stripe-secured · US shipping included on printed books</span>
       </div>
     </footer>
@@ -796,7 +795,7 @@ export function EditorialAboutPage() {
         <h1 className="font-serif text-5xl font-medium leading-tight text-[#1f1a16] md:text-7xl">A small team making proof-first keepsake books.</h1>
         <div className="mt-8 space-y-5 text-base leading-8 text-[#695f54]">
           <p>
-            HeroStoryBooks is built by a small independent team in California. We make personalized children&apos;s books for adults buying gifts for children: parents, grandparents, relatives, and family friends.
+            HeroStoryBooks is built by a small independent team in Chicago. We make personalized children&apos;s books for adults buying gifts for children: parents, grandparents, relatives, and family friends.
           </p>
           <p>
             The core promise is simple: you never blindly send a custom book to print. Every order starts with the child&apos;s name, photo, story details, and optional voice note, then we prepare a digital proof for review before any physical copy is printed.

@@ -53,6 +53,7 @@ function goodEnv(overrides: Partial<Record<string, string>> = {}): Record<string
     STRIPE_WEBHOOK_SECRET: `whsec_stripe_${MARKER}`,
     FAL_KEY: `fal-key-${MARKER}`,
     NEXT_PUBLIC_URL: 'https://herostorybooks.com',
+    HSB_PUBLIC_CHECKOUT_DAILY_PAID_LIMIT: '1',
     HSB_OWNER_TEST_CHECKOUT_ENABLED: 'true',
     HSB_OWNER_TEST_EMAILS: 'owner@example.com, second@example.com',
     ...(overrides as Record<string, string>),
@@ -183,6 +184,27 @@ test('shape-valid value with a trailing literal "\\n" PASSES but is flagged as d
   assert.match(r.stdout, /✅ OK    STRIPE_WEBHOOK_SECRET/);
   assert.match(r.stdout, /runtime sanitizer strips/);
   assert.doesNotMatch(r.stdout, new RegExp(MARKER), 'no synthetic value may leak even when flagging dirty input');
+});
+
+
+test('HSB_PUBLIC_CHECKOUT_ENABLED=true allows public mode even if owner-test vars are absent', () => {
+  const env = goodEnv({ HSB_PUBLIC_CHECKOUT_ENABLED: 'true' });
+  delete env.HSB_OWNER_TEST_CHECKOUT_ENABLED;
+  delete env.HSB_OWNER_TEST_EMAILS;
+  const r = runChecker(env);
+  assert.equal(r.status, 0, `${r.stdout}
+${r.stderr}`);
+  assert.match(r.stdout, /✅ OK    HSB_PUBLIC_CHECKOUT_ENABLED/);
+  assert.match(r.stdout, /owner-test allowlist is bypassed/);
+  assert.match(r.stdout, /HSB_OWNER_TEST_CHECKOUT_ENABLED/);
+  assert.match(r.stdout, /Failures \(required \+ not PRESENT, or disallowed-on-env\): 0/);
+});
+
+test('HSB_PUBLIC_CHECKOUT_DAILY_PAID_LIMIT invalid is a WARN and documents fail-closed runtime behavior', () => {
+  const r = runChecker(goodEnv({ HSB_PUBLIC_CHECKOUT_DAILY_PAID_LIMIT: 'many' }));
+  assert.equal(r.status, 0, 'optional invalid cap should warn, not fail required env readiness');
+  assert.match(r.stdout, /⚠️  WARN HSB_PUBLIC_CHECKOUT_DAILY_PAID_LIMIT/);
+  assert.match(r.stdout, /runtime treats invalid configured caps as closed/);
 });
 
 // ── owner-test activation vars (validated by checker, status-only) ───────────

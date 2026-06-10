@@ -11,8 +11,10 @@ import {
   sanitizeFamilyCharacters,
   uploadOrderPhoto,
   uploadOrderSupportingPhoto,
+  uploadOrderGuidedPhoto,
   uploadOrderVoice,
 } from '@/lib/orders';
+import { collectGuidedReferencePhotos } from '@/lib/guided-photo-capture';
 import {
   missingFieldErrorCode,
   missingRequiredField,
@@ -197,12 +199,12 @@ export async function POST(request: Request) {
       );
     }
 
-    // Owner-test gate (DEFAULT-CLOSED). Runs AFTER checkout pause / KS (those
-    // take precedence) and BEFORE any blob writes or Stripe Checkout Session.
-    // Refuses unless BOTH the global enable flag is set AND the buyer email is
-    // allowlisted — prevents accidental public/creator/gifting charges during
-    // the controlled owner-test. The response intentionally does not reveal
-    // the flag state or allowlist contents; the reason is logged internally.
+    // Checkout access gate (DEFAULT-CLOSED). Runs AFTER checkout pause / KS
+    // (those take precedence) and BEFORE any blob writes or Stripe Checkout
+    // Session. HSB_PUBLIC_CHECKOUT_ENABLED='true' opens checkout to all buyers;
+    // otherwise the owner-test path still requires BOTH the global enable flag
+    // and the buyer email allowlist. The response intentionally does not reveal
+    // flag state or allowlist contents; the reason is logged internally.
     const ownerTestGate = evaluateOwnerTestGate(email);
     if (!ownerTestGate.allowed) {
       const reason = 'reason' in ownerTestGate ? ownerTestGate.reason : 'unknown';
@@ -369,6 +371,24 @@ export async function POST(request: Request) {
       voiceTranscript = await transcribeVoiceNote(voiceRaw as File);
     }
 
+    // Guided multi-angle reference photos (feature-flagged client capture).
+    // Still images only — never video. MIME/size are validated and each still
+    // is persisted to durable storage BEFORE Stripe. Any failure aborts here so
+    // the customer is not charged for an order whose reference photos were lost.
+    const guidedResult = await collectGuidedReferencePhotos(form, draftOrder.id, {
+      upload: uploadOrderGuidedPhoto,
+    });
+    if (!guidedResult.ok) {
+      console.error(
+        `[order] ABORT BEFORE STRIPE: guided reference photos rejected for ${draftOrder.id}: ${guidedResult.code}`,
+      );
+      return NextResponse.json(
+        { error: guidedResult.error, code: guidedResult.code },
+        { status: guidedResult.status },
+      );
+    }
+    const guidedReferencePhotos = guidedResult.records.length > 0 ? guidedResult.records : null;
+
     // Persist the order record durably. If this throws OrderPersistenceError
     // we MUST NOT create a Stripe Checkout Session — the customer would pay
     // for an order the webhook + status page can never find.
@@ -384,6 +404,7 @@ export async function POST(request: Request) {
         voiceConsentAt,
         voiceSource: hasVoiceUpload ? voiceSource : null,
         voiceTranscript,
+        guidedReferencePhotos,
       });
     } catch (error) {
       if (error instanceof OrderPersistenceError) {

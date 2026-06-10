@@ -1,8 +1,9 @@
 import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
-import { del, get, list, put } from '@vercel/blob';
+import { BlobNotFoundError, BlobPreconditionFailedError, del, get, head, list, put } from '@vercel/blob';
 
 import type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta } from './fulfillment-types.ts';
+import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import { sanitizeReferralCode } from './referral-code.ts';
 export type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta };
 
@@ -63,6 +64,13 @@ export interface OrderInput {
    * never for voice cloning.
    */
   voiceTranscript?: VoiceTranscriptMeta | null;
+  /**
+   * Optional multi-angle guided reference photos (NEXT_PUBLIC_HSB_GUIDED_PHOTO_CAPTURE).
+   * Still images only — never video. Persisted to durable storage BEFORE Stripe.
+   * Used as additional illustrator reference material; not a face/biometric scan
+   * and never used for voice/identity verification.
+   */
+  guidedReferencePhotos?: GuidedReferencePhotoRecord[] | null;
   referralCode?: string | null;
 }
 
@@ -149,6 +157,10 @@ export type ReviewAuditEventType =
   /** Recorded when releaseOrderAfterQa refuses to send the customer email
    *  because of a Generation Operating Policy guard failure. */
   | 'proof_release_failed'
+  /** Recorded when the automated QA gate hard-fails closed before any proof is
+   *  built — missing illustrations, or no usable image route (parked in
+   *  awaiting_manual_art for the manual/subscription art workflow). */
+  | 'qa_blocked'
   /** Recorded when print submission refuses to call submitPrintJob because
    *  the policy guard failed (missing customer approval, manifest invalid,
    *  lineage broken). */
@@ -438,6 +450,17 @@ export interface FamilyCharacterInput {
   photoFileName?: string | null;
   photoBlobPath?: string | null;
   photoBlobUrl?: string | null;
+  referencePhotos?: FamilyCharacterReferencePhoto[] | null;
+}
+
+export interface FamilyCharacterReferencePhoto {
+  assetId?: string | null;
+  label?: string | null;
+  fileName: string | null;
+  photoBlobPath: string | null;
+  photoBlobUrl: string | null;
+  source: 'upload' | 'guided_capture';
+  consentAt: string;
 }
 
 export interface FamilyCharacter {
@@ -451,6 +474,7 @@ export interface FamilyCharacter {
   photoFileName: string | null;
   photoBlobPath: string | null;
   photoBlobUrl: string | null;
+  referencePhotos?: FamilyCharacterReferencePhoto[] | null;
 }
 
 export function isPrintFormat(bookFormat: string): boolean {
@@ -530,6 +554,17 @@ export function sanitizeFamilyCharacters(input: OrderInput['familyCharacters']):
         (role === 'whole-family' ? 'whole family' : role);
       const notes = cleanShortText(character?.notes, FAMILY_CHARACTER_MAX_NOTES);
       const pronouns = cleanShortText(character?.pronouns, 32);
+      const referencePhotos = Array.isArray(character?.referencePhotos)
+        ? character.referencePhotos.slice(0, 4).map((ref) => ({
+            assetId: cleanShortText(ref?.assetId, 80) || null,
+            label: cleanShortText(ref?.label, 80) || null,
+            fileName: cleanShortText(ref?.fileName, 120) || null,
+            photoBlobPath: cleanShortText(ref?.photoBlobPath, 500) || null,
+            photoBlobUrl: cleanShortText(ref?.photoBlobUrl, 500) || null,
+            source: ref?.source === 'guided_capture' ? 'guided_capture' as const : 'upload' as const,
+            consentAt: cleanShortText(ref?.consentAt, 80) || new Date().toISOString(),
+          })).filter((ref) => Boolean(ref.photoBlobPath || ref.photoBlobUrl))
+        : [];
       return {
         role,
         name,
@@ -541,6 +576,7 @@ export function sanitizeFamilyCharacters(input: OrderInput['familyCharacters']):
         photoFileName: cleanShortText(character?.photoFileName, 120) || null,
         photoBlobPath: cleanShortText(character?.photoBlobPath, 500) || null,
         photoBlobUrl: cleanShortText(character?.photoBlobUrl, 500) || null,
+        referencePhotos: referencePhotos.length > 0 ? referencePhotos : null,
       };
     })
     .filter((character) =>
@@ -830,6 +866,10 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     // so this is normally null here and set later in the persist call. We
     // still pass it through when supplied so the field round-trips cleanly.
     voiceTranscript: input.voiceTranscript ?? null,
+    guidedReferencePhotos:
+      Array.isArray(input.guidedReferencePhotos) && input.guidedReferencePhotos.length > 0
+        ? input.guidedReferencePhotos
+        : null,
     referralCode: sanitizeReferralCode(input.referralCode),
     status: 'order_received',
     paymentStatus: 'pending',
@@ -1175,6 +1215,19 @@ export async function uploadOrderSupportingPhoto(
     orderId,
     file,
     (safeName) => `orders/${orderId}/supporting-${safeIndex}-photo-${safeName}`,
+  );
+}
+
+export async function uploadOrderGuidedPhoto(
+  orderId: string,
+  index: number,
+  file: File,
+): Promise<UploadedPhotoRef | null> {
+  const safeIndex = Number.isInteger(index) && index >= 0 ? index + 1 : 1;
+  return uploadOrderPhotoAtPath(
+    orderId,
+    file,
+    (safeName) => `orders/${orderId}/guided-${safeIndex}-photo-${safeName}`,
   );
 }
 
@@ -1655,35 +1708,209 @@ function assertRouteDecisionAllowsProofRelease(orderId: string, patch: Fulfillme
   }
 }
 
+// ── Per-order write serialization ─────────────────────────────────────────────
+//
+// Order persistence is last-writer-wins (blob `put`, no CAS/etag). Two concurrent
+// read-modify-write requests on the same order can lose one write. This in-process
+// lock serializes the read→modify→write critical section per orderId so the second
+// caller re-reads the first caller's persisted result (combine with a re-read of
+// the latest order INSIDE the locked section). NOTE: this protects concurrency
+// within a single server instance; it is not a cross-instance distributed lock —
+// the merge-at-write re-read narrows the remaining cross-instance window.
+const orderWriteChains = new Map<string, Promise<unknown>>();
+
+export async function withOrderWriteLock<T>(orderId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = orderWriteChains.get(orderId) ?? Promise.resolve();
+  const result = prev.then(() => fn(), () => fn());
+  const chain = result.then(() => undefined, () => undefined);
+  orderWriteChains.set(orderId, chain);
+  // Drop the map entry once this is the last queued writer, to avoid unbounded growth.
+  void chain.then(() => {
+    if (orderWriteChains.get(orderId) === chain) orderWriteChains.delete(orderId);
+  });
+  return result;
+}
+
+// ── Optimistic concurrency (Vercel Blob ETag CAS) for order JSON writes ───────
+//
+// Order blobs are last-writer-wins by default; two instances mutating the same
+// order can clobber each other (a fulfillment write dropping a concurrent
+// review write, or vice-versa). For UPDATES to an existing order we read the
+// current body + ETag, mutate from that latest snapshot, and write with
+// `ifMatch`. A precondition failure (a concurrent writer won the race) re-reads
+// and re-applies, bounded. Order CREATION (persistOrder) is single-writer (the
+// checkout request) and stays unchanged. The in-process withOrderWriteLock
+// remains a same-instance safety floor at the call sites.
+const ORDER_CAS_MAX_RETRIES = 5;
+
+export interface OrderCasStore {
+  /** Latest order body + its current ETag, or null if the blob does not exist. */
+  read(): Promise<{ order: OrderRecord; etag: string } | null>;
+  /** Conditional write — must reject (isPreconditionError) if etag no longer matches. */
+  write(order: OrderRecord, ifMatch: string): Promise<void>;
+  isPreconditionError(err: unknown): boolean;
+}
+
+// Single-shape result (this codebase compiles with tsconfig "strict": false,
+// under which `!result.ok` does not narrow a true/false discriminant).
+export interface CasMutateResult {
+  ok: boolean;
+  order?: OrderRecord;
+  reason?: 'not_found' | 'precondition_exhausted';
+  attempts: number;
+  error?: unknown;
+}
+
+/**
+ * Dependency-injected CAS read-modify-write loop. `build` is applied to the
+ * freshest snapshot on every attempt, so a field changed by a concurrent writer
+ * between attempts is preserved (the patch is re-merged onto the latest). Errors
+ * other than precondition failures propagate (never silent success); exhausting
+ * retries returns ok:false (caller surfaces it as a failure).
+ */
+export async function casMutateOrder(
+  store: OrderCasStore,
+  build: (latest: OrderRecord) => OrderRecord,
+  maxRetries: number = ORDER_CAS_MAX_RETRIES,
+): Promise<CasMutateResult> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    const snapshot = await store.read();
+    if (!snapshot) return { ok: false, reason: 'not_found', attempts: attempt };
+    const updated = build(snapshot.order); // build() may throw (e.g. payment gate) → propagates, not retried
+    try {
+      await store.write(updated, snapshot.etag);
+      return { ok: true, order: updated, attempts: attempt };
+    } catch (err) {
+      if (store.isPreconditionError(err)) {
+        lastError = err;
+        continue; // a concurrent writer committed first — re-read + re-apply
+      }
+      throw err; // genuine write failure — do NOT report success
+    }
+  }
+  return { ok: false, reason: 'precondition_exhausted', attempts: maxRetries, error: lastError };
+}
+
+async function readOrderWithEtag(
+  orderId: string,
+  token: string,
+): Promise<{ order: OrderRecord; etag: string } | null> {
+  const pathname = getOrderBlobPath(orderId);
+  let meta;
+  try {
+    meta = await head(pathname, { token });
+  } catch (err) {
+    if (err instanceof BlobNotFoundError) return null;
+    throw err;
+  }
+  if (!meta?.etag) return null;
+
+  // CAS must not pair a fresh ETag from head() with a possibly stale public-CDN
+  // body. Read the object body through the authenticated SDK path with cache off,
+  // then write with the ETag from head(). If another writer lands between this
+  // read and our put(), ifMatch still fails and the outer loop retries.
+  try {
+    const text = await readBlobText({
+      pathname,
+      url: 'url' in meta ? meta.url : null,
+      token,
+    });
+    if (!text) return null;
+    return { order: JSON.parse(text) as OrderRecord, etag: meta.etag };
+  } catch (err) {
+    if (err instanceof BlobNotFoundError) return null;
+    throw err;
+  }
+}
+
+/** Build the live blob-backed CAS store for an order. */
+function blobOrderCasStore(orderId: string, token: string): OrderCasStore {
+  return {
+    read: () => readOrderWithEtag(orderId, token),
+    write: async (order, ifMatch) => {
+      await put(getOrderBlobPath(order.id), JSON.stringify(order, null, 2), {
+        access: getBlobAccessMode(),
+        allowOverwrite: true,
+        addRandomSuffix: false,
+        contentType: 'application/json',
+        token,
+        ifMatch,
+      });
+    },
+    isPreconditionError: (err) => err instanceof BlobPreconditionFailedError,
+  };
+}
+
+/**
+ * Read-modify-write an EXISTING order. Uses Blob ETag CAS in production
+ * (token present); falls back to the prior read-then-persist behavior in
+ * dev / no-token. `existingOrder` is the caller's fresh in-process snapshot,
+ * used as the base only on the non-CAS path or when the blob is not yet
+ * visible via head() (a just-created order). Returns null when the order does
+ * not exist; throws (never silent success) on durable write failure.
+ */
+async function mutateOrderRecord(
+  orderId: string,
+  existingOrder: OrderRecord | undefined,
+  build: (latest: OrderRecord) => OrderRecord,
+): Promise<OrderRecord | null> {
+  const token = getBlobToken();
+
+  if (!token) {
+    const existing = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
+    if (!existing) return null;
+    const updated = build(existing);
+    await persistOrder(updated);
+    return updated;
+  }
+
+  const result = await casMutateOrder(blobOrderCasStore(orderId, token), build);
+  if (result.ok) return result.order ?? null;
+
+  if (result.reason === 'not_found') {
+    // Not visible via head() yet. If the caller handed us a fresh snapshot for
+    // THIS order (e.g. created earlier in the same request), persist from it;
+    // otherwise the order genuinely does not exist.
+    if (existingOrder?.id === orderId) {
+      const updated = build(existingOrder);
+      await persistOrder(updated);
+      return updated;
+    }
+    return null;
+  }
+
+  // precondition_exhausted — surface as a hard failure; never report success.
+  throw new OrderPersistenceError(
+    orderId,
+    `Durable order persistence failed: ETag precondition kept failing after ${ORDER_CAS_MAX_RETRIES} attempts`,
+    result.error,
+  );
+}
+
 export async function updateFulfillmentState(
   orderId: string,
   patch: FulfillmentPatch,
   existingOrder?: OrderRecord,
 ): Promise<OrderRecord | null> {
-  // If the caller already holds a freshly-written record for this order, use it
-  // directly. A second getOrder() here can return a stale blob snapshot and
-  // spread it over fields that were just written (e.g. pageArtifacts after
-  // regen). Guard the exported helper against accidental cross-order reuse.
-  const existing = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
-  if (!existing) return null;
-
-  const effectivePaymentStatus = patch.paymentStatus ?? existing.paymentStatus;
-  if (patchRequiresPaidOrder(patch) && effectivePaymentStatus !== 'paid') {
-    throw new Error(
-      `[orders] Refusing fulfillment mutation for ${orderId}: paymentStatus=${effectivePaymentStatus}`,
-    );
-  }
-
-  const updated: OrderRecord = {
-    ...existing,
-    ...patch,
-    updatedAt: new Date().toISOString(),
-  };
-
-  assertRouteDecisionAllowsProofRelease(orderId, patch, updated);
-
-  await persistOrder(updated);
-  return updated;
+  // CAS-protected read-modify-write. The patch is applied to the FRESHEST blob
+  // snapshot (re-read each attempt), so concurrent writes to other fields are
+  // preserved rather than clobbered. existingOrder is the dev/no-token base.
+  return mutateOrderRecord(orderId, existingOrder, (existing) => {
+    const effectivePaymentStatus = patch.paymentStatus ?? existing.paymentStatus;
+    if (patchRequiresPaidOrder(patch) && effectivePaymentStatus !== 'paid') {
+      throw new Error(
+        `[orders] Refusing fulfillment mutation for ${orderId}: paymentStatus=${effectivePaymentStatus}`,
+      );
+    }
+    const updated: OrderRecord = {
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    assertRouteDecisionAllowsProofRelease(orderId, patch, updated);
+    return updated;
+  });
 }
 
 /**
@@ -1702,8 +1929,6 @@ export async function appendAuditEvent(
   // pageArtifacts (the production regen-clobber bug: appendAuditEvent re-read
   // stale state after updateFulfillmentState had already persisted the regen'd
   // artifacts). Guard the exported helper against accidental cross-order reuse.
-  const existing = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
-  if (!existing) return null;
   const entry: ReviewAuditEvent = {
     at: event.at ?? new Date().toISOString(),
     type: event.type,
@@ -1711,13 +1936,13 @@ export async function appendAuditEvent(
     ...(event.reason ? { reason: event.reason } : {}),
     ...(event.meta ? { meta: event.meta } : {}),
   };
-  const updated: OrderRecord = {
+  // CAS-protected append: each attempt appends onto the FRESHEST auditEvents, so
+  // concurrent appends/updates are not lost (no clobber of newer pageArtifacts).
+  return mutateOrderRecord(orderId, existingOrder, (existing) => ({
     ...existing,
     auditEvents: [...(existing.auditEvents ?? []), entry],
     updatedAt: new Date().toISOString(),
-  };
-  await persistOrder(updated);
-  return updated;
+  }));
 }
 
 export async function updateOrderPayment(

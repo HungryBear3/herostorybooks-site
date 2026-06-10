@@ -7,6 +7,7 @@ import type {
   ImageProviderDeps,
   ImageProviderInput,
 } from './image-provider-types.ts';
+import { redactProviderError } from './redact-secrets.ts';
 
 const OPENAI_IMAGE_ENDPOINT = 'https://api.openai.com/v1/images/generations';
 const DEFAULT_MODEL = process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1';
@@ -63,7 +64,7 @@ export const openaiImageProvider: ImageProvider = {
           model: DEFAULT_MODEL,
           promptUsed: input.prompt,
           latencyMs: Date.now() - startedAt,
-          error: `OpenAI ${res.status}: ${body.slice(0, 200)}`,
+          error: redactProviderError(null, { provider: 'OpenAI', status: res.status }),
         };
       }
 
@@ -106,7 +107,7 @@ export const openaiImageProvider: ImageProvider = {
         model: DEFAULT_MODEL,
         promptUsed: input.prompt,
         latencyMs: Date.now() - startedAt,
-        error: err instanceof Error ? err.message : String(err),
+        error: redactProviderError(err, { provider: 'OpenAI' }),
       };
     }
   },

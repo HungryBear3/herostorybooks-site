@@ -12,6 +12,7 @@
 // fails. We do not silently ship text-only art for photo-based books.
 
 import { falEditImageProvider } from './image-provider-fal-edit.ts';
+import { falImageProvider } from './image-provider-fal.ts';
 import {
   geminiImageProvider,
   hasGeminiImageApiKey,
@@ -61,6 +62,19 @@ export interface OrchestratorDeps {
 
 const PHOTO_EDIT_CHAIN: ImageProvider[] = [seedreamEditImageProvider, falEditImageProvider];
 const NO_TEXT_ONLY_FALLBACK: ImageProvider[] = [];
+const TEXT_TO_IMAGE_CHAIN: ImageProvider[] = [falImageProvider];
+
+/**
+ * Opt-in text-to-image route for orders that legitimately have NO reference
+ * photo (e.g. a dinosaur/space book where no child likeness is required).
+ * Default OFF preserves the "never silently degrade a photo book to text-only"
+ * policy; when ON, no-photo orders route to FAL text-to-image instead of
+ * producing zero illustrations. Checkout/product decides which orders may be
+ * photo-less; this flag only controls whether the image lane exists.
+ */
+export function isTextToImageFallbackEnabled(): boolean {
+  return process.env.HSB_ENABLE_TEXT_TO_IMAGE === 'true';
+}
 
 /**
  * Build the default provider chain based on input + env flags.
@@ -84,7 +98,12 @@ export function defaultProviderOrder(input: ImageProviderInput): ImageProvider[]
   const hasReference = Boolean(
     (input.imageUrls && input.imageUrls.length > 0) || input.referenceImageUrl,
   );
-  if (!hasReference) return NO_TEXT_ONLY_FALLBACK;
+  if (!hasReference) {
+    // No photo: route to text-to-image ONLY when explicitly enabled; otherwise
+    // keep the empty chain so the fulfillment QA gate fails the order closed
+    // rather than silently degrading a photo-based book.
+    return isTextToImageFallbackEnabled() ? TEXT_TO_IMAGE_CHAIN : NO_TEXT_ONLY_FALLBACK;
+  }
   if (isGeminiImageEnabled() && hasGeminiImageApiKey()) {
     return isGeminiImageFalFallbackEnabled()
       ? [geminiImageProvider, ...PHOTO_EDIT_CHAIN]
