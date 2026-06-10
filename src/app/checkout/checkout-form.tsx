@@ -350,6 +350,34 @@ export function CheckoutForm() {
   const [guidedConsent, setGuidedConsent] = useState(false);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Split-asset pre-upload tracking (NEXT_PUBLIC_HSB_SPLIT_ASSET_INTAKE).
+  // uploadedAssetIdsRef memoizes the assetId returned for each File so a retry
+  // after a partial failure does NOT re-upload an already-saved file — the
+  // server enforces per-category caps and would reject the duplicate, breaking
+  // the retry. assetUploadStatuses drives the per-file progress (spinner / check
+  // / error + retry) UI.
+  const uploadedAssetIdsRef = useRef<Map<File, string>>(new Map());
+  // Reuse the same draft + uploaded assets across retries, but only while the
+  // selected file set is unchanged. If the customer swaps/removes a file, the
+  // signature changes and we start a fresh draft (the server caps each category,
+  // so reusing a draft after a file swap would collide).
+  const draftOrderIdRef = useRef<string | null>(null);
+  const draftSignatureRef = useRef<string>("");
+  type AssetUploadStatus = "uploading" | "uploaded" | "error";
+  const [assetUploadStatuses, setAssetUploadStatuses] = useState<
+    { key: string; label: string; status: AssetUploadStatus }[]
+  >([]);
+  const setAssetStatus = useCallback(
+    (key: string, label: string, status: AssetUploadStatus) => {
+      setAssetUploadStatuses((prev) => {
+        const next = prev.filter((s) => s.key !== key);
+        next.push({ key, label, status });
+        return next;
+      });
+    },
+    [],
+  );
+
   // Restore saved progress on mount + honor checkout entry context.
   // NamePreview carries typed names through sessionStorage so a child's name
   // is not put into server-visible query strings. `childName` query support is
@@ -698,7 +726,8 @@ export function CheckoutForm() {
         .slice(0, SUPPORTING_CHARACTER_LIMIT);
 
       if (SPLIT_ASSET_INTAKE_ENABLED) {
-        setSubmitError("Saving your photos and story details securely before payment…");
+        setSubmitError("Saving your photos and story details securely before payment… You have not been charged yet.");
+        setAssetUploadStatuses([]);
         const familyCharactersJson = familyCharactersForOrder.map((character) => ({
           role: character.role,
           name: character.name,
@@ -709,58 +738,99 @@ export function CheckoutForm() {
           appearsInStory: character.appearsInStory,
           photoFileName: character.photoFile?.name ?? null,
         }));
-        const draftResponse = await fetch("/api/order/draft", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            childName: form.childName,
-            childAge: form.childAge,
-            theme: form.theme,
-            lesson: form.lesson,
-            occasion: form.occasion,
-            giftMessage: form.giftMessage,
-            characterNotes: form.characterNotes,
-            familyCharacters: familyCharactersJson,
-            appearanceOptions: JSON.stringify({
+
+        // Signature of the selected file set. A retry with the SAME files reuses
+        // the existing draft + already-uploaded assets (idempotent). If any file
+        // changed, the signature differs and we start a fresh draft so the
+        // server's per-category caps can't collide with a swapped file.
+        const sig = (f: File | null | undefined) => (f ? `${f.name}:${f.size}` : "-");
+        const fileSignature = [
+          sig(resolvedPhotoFile),
+          ...guidedFrames.map((g) => sig(g.file)),
+          ...familyCharactersForOrder.map((c) => sig(c.photoFile)),
+          sig(VOICE_BETA_ENABLED ? form.voiceFile : null),
+        ].join("|");
+
+        let draftOrderId = draftOrderIdRef.current;
+        if (!draftOrderId || draftSignatureRef.current !== fileSignature) {
+          // Starting a fresh draft: drop any cached assetIds from a prior draft.
+          uploadedAssetIdsRef.current = new Map();
+          const draftResponse = await fetch("/api/order/draft", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              childName: form.childName,
+              childAge: form.childAge,
+              theme: form.theme,
+              lesson: form.lesson,
+              occasion: form.occasion,
+              giftMessage: form.giftMessage,
+              characterNotes: form.characterNotes,
+              familyCharacters: familyCharactersJson,
+              appearanceOptions: JSON.stringify({
+                skinTone: form.skinTone,
+                hairStyle: form.hairStyle,
+                eyewear: form.eyewear,
+              }),
               skinTone: form.skinTone,
               hairStyle: form.hairStyle,
-              eyewear: form.eyewear,
+              bookFormat: form.bookFormat,
+              email: form.email,
+              referralCode: checkoutReferralCode(),
             }),
-            skinTone: form.skinTone,
-            hairStyle: form.hairStyle,
-            bookFormat: form.bookFormat,
-            email: form.email,
-            referralCode: checkoutReferralCode(),
-          }),
-        });
-        const draftBody = await draftResponse.json().catch(() => null);
-        if (!draftResponse.ok || !draftBody?.draftOrderId) {
-          throw new Error(draftBody?.error || "We couldn't securely save your order draft. You have not been charged.");
+          });
+          const draftBody = await draftResponse.json().catch(() => null);
+          if (!draftResponse.ok || !draftBody?.draftOrderId) {
+            throw new Error(draftBody?.error || "We couldn't securely save your order draft. You have not been charged.");
+          }
+          draftOrderId = String(draftBody.draftOrderId);
+          draftOrderIdRef.current = draftOrderId;
+          draftSignatureRef.current = fileSignature;
         }
-        const draftOrderId = String(draftBody.draftOrderId);
+        // Idempotent per-file upload. If this File was already uploaded in a
+        // prior submit attempt, reuse its assetId and skip the network call —
+        // the server caps each category, so re-uploading would 4xx and break a
+        // retry. Each call reports its status for the per-file progress UI.
         const uploadOneAsset = async (
           label: string,
           category: string,
           file: File,
           extra: Record<string, string> = {},
         ) => {
+          const statusKey = `${category}:${file.name}:${file.size}`;
+          const cached = uploadedAssetIdsRef.current.get(file);
+          if (cached) {
+            setAssetStatus(statusKey, label, "uploaded");
+            return cached;
+          }
+          setAssetStatus(statusKey, label, "uploading");
           const assetPayload = new FormData();
           assetPayload.set("category", category);
           assetPayload.set("label", label);
           assetPayload.set("file", file, file.name);
           for (const [key, value] of Object.entries(extra)) assetPayload.set(key, value);
-          const response = await fetch(`/api/order/draft/${draftOrderId}/assets`, {
-            method: "POST",
-            body: assetPayload,
-          });
+          let response: Response;
+          try {
+            response = await fetch(`/api/order/draft/${draftOrderId}/assets`, {
+              method: "POST",
+              body: assetPayload,
+            });
+          } catch (networkError) {
+            setAssetStatus(statusKey, label, "error");
+            throw networkError;
+          }
           const body = await response.json().catch(() => null);
           if (!response.ok || !body?.asset?.assetId) {
+            setAssetStatus(statusKey, label, "error");
             throw new Error(
               body?.error ||
                 `We couldn't securely save ${label}. You have not been charged. Please retry or remove that file.`,
             );
           }
-          return String(body.asset.assetId);
+          const assetId = String(body.asset.assetId);
+          uploadedAssetIdsRef.current.set(file, assetId);
+          setAssetStatus(statusKey, label, "uploaded");
+          return assetId;
         };
 
         const primaryPhotoAssetId = resolvedPhotoFile
@@ -2209,6 +2279,43 @@ export function CheckoutForm() {
                   reassures the customer nothing was saved or charged — so a
                   failed submission (e.g. a voice-save abort) never looks like
                   it went through. */}
+              {/* Per-file pre-upload status (split-asset intake). Shows a
+                  spinner while each photo/voice file uploads to secure storage,
+                  a check when saved, and an error marker on the file that
+                  failed — with a clear "not charged yet" reassurance. The retry
+                  is the Place-Order button itself: already-uploaded files are
+                  skipped (idempotent), so only the failed file re-sends. */}
+              {assetUploadStatuses.length > 0 && (
+                <div
+                  data-testid="asset-upload-status"
+                  className="rounded-xl border border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm"
+                >
+                  <p className="font-semibold text-[#1f1a16]">
+                    Saving your files securely — you have not been charged yet.
+                  </p>
+                  <ul className="mt-2 space-y-1">
+                    {assetUploadStatuses.map((s) => (
+                      <li key={s.key} className="flex items-center gap-2 text-[#5f5346]">
+                        <span aria-hidden="true">
+                          {s.status === "uploading" && (
+                            <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-[#a64c4c]/30 border-t-[#a64c4c]" />
+                          )}
+                          {s.status === "uploaded" && <span className="text-[#2f7a4d]">✓</span>}
+                          {s.status === "error" && <span className="text-[#a64c4c]">✗</span>}
+                        </span>
+                        <span className="capitalize">{s.label}</span>
+                        <span className="ml-auto text-xs text-[#8a7b6a]">
+                          {s.status === "uploading"
+                            ? "Uploading…"
+                            : s.status === "uploaded"
+                              ? "Saved"
+                              : "Didn't upload — tap Continue to retry just this file"}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {submitError && (
                 <div
                   role="alert"

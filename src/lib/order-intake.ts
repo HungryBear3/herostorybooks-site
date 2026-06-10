@@ -461,3 +461,35 @@ export async function finalizeIntakeDraft(input: FinalizeIntakeInput, now = new 
 export function isSplitAssetIntakeEnabled(envValue = process.env.NEXT_PUBLIC_HSB_SPLIT_ASSET_INTAKE) {
   return envValue === 'true';
 }
+
+/**
+ * Per-file upload idempotency planner for the split-asset checkout client.
+ *
+ * Each asset is uploaded once via POST /api/order/draft/{id}/assets. If a later
+ * file in the batch fails, the customer retries the whole submit — but the
+ * server enforces per-category caps (primary_photo_limit, family_reference_limit,
+ * story_inspiration_limit, guided_photo_limit), so re-uploading an
+ * already-saved file is REJECTED and would break the retry. Given the map of
+ * files already uploaded in a prior attempt (file → assetId), this returns only
+ * the files that still need uploading plus the assetIds to reuse for the rest,
+ * so a retry never re-sends a successful upload. Order is preserved.
+ *
+ * Pure + generic so it is unit-testable without a DOM (the client keys by the
+ * in-memory File object, whose identity is stable across retries).
+ */
+export function planAssetUploads<T>(
+  files: readonly T[],
+  alreadyUploaded: ReadonlyMap<T, string>,
+): { pending: T[]; reusedAssetIds: string[] } {
+  const pending: T[] = [];
+  const reusedAssetIds: string[] = [];
+  for (const file of files) {
+    const existing = alreadyUploaded.get(file);
+    if (existing) {
+      reusedAssetIds.push(existing);
+    } else {
+      pending.push(file);
+    }
+  }
+  return { pending, reusedAssetIds };
+}
