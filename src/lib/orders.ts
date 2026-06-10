@@ -450,6 +450,17 @@ export interface FamilyCharacterInput {
   photoFileName?: string | null;
   photoBlobPath?: string | null;
   photoBlobUrl?: string | null;
+  referencePhotos?: FamilyCharacterReferencePhoto[] | null;
+}
+
+export interface FamilyCharacterReferencePhoto {
+  assetId?: string | null;
+  label?: string | null;
+  fileName: string | null;
+  photoBlobPath: string | null;
+  photoBlobUrl: string | null;
+  source: 'upload' | 'guided_capture';
+  consentAt: string;
 }
 
 export interface FamilyCharacter {
@@ -463,6 +474,7 @@ export interface FamilyCharacter {
   photoFileName: string | null;
   photoBlobPath: string | null;
   photoBlobUrl: string | null;
+  referencePhotos?: FamilyCharacterReferencePhoto[] | null;
 }
 
 export function isPrintFormat(bookFormat: string): boolean {
@@ -542,6 +554,17 @@ export function sanitizeFamilyCharacters(input: OrderInput['familyCharacters']):
         (role === 'whole-family' ? 'whole family' : role);
       const notes = cleanShortText(character?.notes, FAMILY_CHARACTER_MAX_NOTES);
       const pronouns = cleanShortText(character?.pronouns, 32);
+      const referencePhotos = Array.isArray(character?.referencePhotos)
+        ? character.referencePhotos.slice(0, 4).map((ref) => ({
+            assetId: cleanShortText(ref?.assetId, 80) || null,
+            label: cleanShortText(ref?.label, 80) || null,
+            fileName: cleanShortText(ref?.fileName, 120) || null,
+            photoBlobPath: cleanShortText(ref?.photoBlobPath, 500) || null,
+            photoBlobUrl: cleanShortText(ref?.photoBlobUrl, 500) || null,
+            source: ref?.source === 'guided_capture' ? 'guided_capture' as const : 'upload' as const,
+            consentAt: cleanShortText(ref?.consentAt, 80) || new Date().toISOString(),
+          })).filter((ref) => Boolean(ref.photoBlobPath || ref.photoBlobUrl))
+        : [];
       return {
         role,
         name,
@@ -553,6 +576,7 @@ export function sanitizeFamilyCharacters(input: OrderInput['familyCharacters']):
         photoFileName: cleanShortText(character?.photoFileName, 120) || null,
         photoBlobPath: cleanShortText(character?.photoBlobPath, 500) || null,
         photoBlobUrl: cleanShortText(character?.photoBlobUrl, 500) || null,
+        referencePhotos: referencePhotos.length > 0 ? referencePhotos : null,
       };
     })
     .filter((character) =>

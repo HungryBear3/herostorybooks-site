@@ -56,6 +56,7 @@ export interface GuidedPhotoFile {
 }
 
 export interface GuidedReferencePhotoRecord {
+  assetId?: string | null;
   label: GuidedPhotoLabel | string;
   fileName: string;
   photoBlobPath: string | null;
