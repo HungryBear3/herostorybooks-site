@@ -100,6 +100,26 @@ test('checkout form sends per-character family photo attachments', () => {
   assert.match(src, /photoFileName:\s*character\.photoFile\?\.name/);
 });
 
+test('checkout form places one hero photo section before supporting characters', () => {
+  const src = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  const heroSectionIndex = src.indexOf("Your child — the hero");
+  const guidedCaptureIndex = src.indexOf('<GuidedPhotoCapture');
+  const characterDetailsIndex = src.indexOf('Character details');
+  const supportingCharactersIndex = src.indexOf('Who else should appear?');
+
+  assert.notEqual(heroSectionIndex, -1, 'hero photo section copy should render exactly once');
+  assert.equal(src.indexOf("Your child — the hero", heroSectionIndex + 1), -1);
+  assert.notEqual(guidedCaptureIndex, -1, 'guided hero capture should render exactly once');
+  assert.equal(src.indexOf('<GuidedPhotoCapture', guidedCaptureIndex + 1), -1);
+  assert.notEqual(characterDetailsIndex, -1, 'character details section should exist');
+  assert.notEqual(supportingCharactersIndex, -1, 'supporting-character section should exist');
+
+  assert.ok(heroSectionIndex < characterDetailsIndex, 'hero photo section should appear before character details');
+  assert.ok(heroSectionIndex < supportingCharactersIndex, 'hero photo section should appear before supporting characters');
+  assert.ok(guidedCaptureIndex < characterDetailsIndex, 'guided hero capture should appear before character details');
+  assert.ok(guidedCaptureIndex < supportingCharactersIndex, 'guided hero capture should appear before supporting characters');
+});
+
 test('checkout form keeps pet detail guidance as placeholder text, not submitted notes', () => {
   const src = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
   assert.match(src, /const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings"/);
