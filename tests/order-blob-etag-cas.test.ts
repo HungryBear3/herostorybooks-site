@@ -180,16 +180,16 @@ test('build() error (e.g. payment gate) propagates and is not retried', async ()
 
 // ── live blob CAS read path source guard ─────────────────────────────────────
 
-test('live CAS read uses authenticated no-cache SDK body, not public URL readBlobText', () => {
+test('live CAS read uses head ETag plus public-store-safe body read', () => {
   const thisFile = fileURLToPath(import.meta.url);
   const ordersSource = readFileSync(path.resolve(path.dirname(thisFile), '../src/lib/orders.ts'), 'utf8');
   const match = ordersSource.match(/async function readOrderWithEtag[\s\S]*?^}/m);
   assert.ok(match, 'readOrderWithEtag source should be present');
   const block = match?.[0] ?? '';
   assert.match(block, /await head\(pathname, \{ token \}\)/);
-  assert.match(block, /await get\(pathname, \{/);
-  assert.match(block, /useCache: false/);
-  assert.doesNotMatch(block, /readBlobText\(/);
+  assert.match(block, /await readBlobText\(\{/);
+  assert.match(block, /url: 'url' in meta \? meta\.url : null/);
+  assert.doesNotMatch(block, /await get\(pathname, \{/);
 });
 
 // ── dev / no-token fallback preserves prior behavior ──────────────────────────
