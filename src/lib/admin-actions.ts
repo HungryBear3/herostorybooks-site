@@ -23,6 +23,7 @@ import {
   evaluateReleaseGuard,
   type ReleaseFailureCode,
 } from './generation-manifest.ts';
+import { describeManifestGateFailures } from './fulfillment-types.ts';
 import {
   enforceKillSwitch,
   KILL_SWITCH_STATE_UNAVAILABLE_CODE,
@@ -464,6 +465,23 @@ export async function releaseOrderAfterQa(
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
   if (order.paymentStatus !== 'paid') {
     return { ok: false, status: 400, error: 'Cannot release: payment not confirmed' };
+  }
+  // Manual Fulfillment Factory boundary (Phase 3). An order carrying an
+  // artifactManifest is manual-managed: it must NEVER reach customer release
+  // through this legacy auto-QA/email path. Manual orders release only via the
+  // manifest-gated manual path (a later, separately gated phase). This is
+  // belt-and-suspenders on top of the awaiting_qa precondition below (manual
+  // orders are not in awaiting_qa) and guarantees the new manifest gate cannot
+  // be bypassed even if a manual order were somehow routed here.
+  if (order.artifactManifest) {
+    return {
+      ok: false,
+      status: 409,
+      error:
+        'Manual-factory order: customer release must go through the manifest-gated manual path, not legacy QA release. ' +
+        `Manifest gate reasons: ${describeManifestGateFailures(order.artifactManifest).join(', ') || 'gate-ready (manual release path pending)'}`,
+      failureCode: 'MANUAL_ORDER_USES_MANIFEST_PATH',
+    };
   }
   if (order.fulfillmentStatus !== 'awaiting_qa') {
     return { ok: false, status: 409, error: `Order is in state ${order.fulfillmentStatus ?? 'not_started'}` };

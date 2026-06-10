@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { BlobNotFoundError, BlobPreconditionFailedError, del, get, head, list, put } from '@vercel/blob';
 
-import type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta } from './fulfillment-types.ts';
+import type { FulfillmentStatus, OrderArtifactManifest, PageTextLayout, StorySource, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import { sanitizeReferralCode } from './referral-code.ts';
 export type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta };
@@ -140,6 +140,16 @@ export type ReviewAuditEventType =
   | 'refund_issued'
   | 'refund_refused'
   | 'internal_disposition_marked'
+  // ── Manual Fulfillment Factory (additive) ─────────────────────────────────
+  /** An operator registered an artifact (blob ref) into the order's manifest. */
+  | 'manual_artifact_registered'
+  /** An operator set/updated the manual QA report on the manifest. */
+  | 'manual_qa_report_set'
+  /** Manual order advanced to proof_ready_for_customer after the manifest gate
+   *  (isManifestProofReady) passed. No customer email/release in this slice. */
+  | 'manual_proof_ready_marked'
+  /** Manual mark-proof-ready refused because the manifest gate failed. */
+  | 'manual_proof_ready_blocked'
   // ── Generation Operating Policy (additive) ────────────────────────────────
   /** Recorded every time chooseGenerationRoute returns a decision for a paid
    *  order. Captures route + reason + authorizer/approver fields. */
@@ -296,6 +306,12 @@ export interface OrderRecord extends OrderInput {
   fulfillmentStatus?: FulfillmentStatus;
   fulfillmentAttempts?: number;
   fulfillmentLastError?: string | null;
+  /** Manual Fulfillment Factory artifact ledger (blob-ref-only). Present only
+   *  on orders managed through the manual admin path; absent on auto/legacy
+   *  orders (which use storyArtifactUrl + generationRouteDecision). Its presence
+   *  marks an order as manual-managed: the proof-release guard requires
+   *  isManifestProofReady(this) before any customer-visible release. */
+  artifactManifest?: OrderArtifactManifest | null;
   storyArtifactUrl?: string | null;
   /** How the story for this order was produced (template / openai_chat /
    *  template_after_openai_failure). Set once during fulfillment, never
@@ -1619,6 +1635,7 @@ type FulfillmentPatch = Partial<Pick<
   | 'personalizationInputsPresent'
   | 'manifestComplete'
   | 'manifestHash'
+  | 'artifactManifest'
   | 'proofApprovalToken'
   | 'proofApprovedAt'
   | 'proofReviewedAt'

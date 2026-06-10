@@ -189,6 +189,9 @@ export interface ArtifactRecord {
   source: StorySource | 'operator_upload' | 'api_generated';
   producedAt: string;   // ISO timestamp
   producedBy: string;   // operator name or model id (e.g. 'alexy' or 'gpt-4o')
+  /** Optional content checksum (e.g. sha256 hex) for provenance/integrity.
+   *  A reference only — never the artifact bytes. */
+  checksum?: string;
 }
 
 export interface QAReportRecord {
@@ -241,6 +244,53 @@ export function isManifestProofReady(
     c.artDirectionPacketPresent &&
     c.proseFinalPresent
   );
+}
+
+/**
+ * Operator-facing explanation of WHY a manifest is not proof-ready. Returns one
+ * stable reason string per failing condition (empty array iff proof-ready).
+ * Mirrors isManifestProofReady exactly so the gate and its reasons cannot drift.
+ * The mark-proof-ready admin route returns these in a 422 body.
+ */
+export function describeManifestGateFailures(
+  manifest: OrderArtifactManifest | null | undefined,
+): string[] {
+  if (!manifest) return ['manifest_missing'];
+  const reasons: string[] = [];
+  if (!manifest.qaReport) reasons.push('qa_report_missing');
+  else if (!manifest.qaReport.passed) reasons.push('qa_report_not_passed');
+  if (!manifest.proseFinal) reasons.push('prose_final_missing');
+  if (!manifest.artDirectionPacket) reasons.push('art_direction_packet_missing');
+  if (!manifest.proofPdf) reasons.push('proof_pdf_missing');
+  if (!manifest.pageImages || Object.keys(manifest.pageImages).length === 0) {
+    reasons.push('page_images_missing');
+  }
+
+  const allArtifacts: (ArtifactRecord | null | undefined)[] = [
+    manifest.storyBrief,
+    manifest.pagePlan,
+    manifest.proseFinal,
+    manifest.artDirectionPacket,
+    manifest.proofPdf,
+    ...Object.values(manifest.pageImages ?? {}),
+  ];
+  if (
+    allArtifacts.some(
+      (a) => a && (a.source === 'template' || a.source === 'template_after_openai_failure'),
+    )
+  ) {
+    reasons.push('template_source_present');
+  }
+
+  const c = manifest.qaReport?.checks;
+  if (c) {
+    if (!c.noTemplateSource) reasons.push('qa_check_noTemplateSource_false');
+    if (!c.allPageImagesPresent) reasons.push('qa_check_allPageImagesPresent_false');
+    if (!c.proofPdfPresent) reasons.push('qa_check_proofPdfPresent_false');
+    if (!c.artDirectionPacketPresent) reasons.push('qa_check_artDirectionPacketPresent_false');
+    if (!c.proseFinalPresent) reasons.push('qa_check_proseFinalPresent_false');
+  }
+  return reasons;
 }
 
 /** Persisted record of how the story for this order was produced. */
