@@ -28,11 +28,21 @@ Turn paid HSB fulfillment from vague auto-fail states into a manual artifact fac
 - No print provider call in attach/import/QA-pass/release-proof paths.
 - Subscription-first generation: do not use app OpenAI API/FAL/Gemini/RunPod for routine book generation.
 
+## Build sequence endorsed by Alexy
+Implement Phase 1+2+3 as one PR:
+1. State machine
+2. Manifest schema
+3. Minimal admin gate
+4. Contract tests proving fallback/template/missing artifacts cannot reach customer proof
+
+Phase 4 is a single internal end-to-end order/process proof. Phase 5 is controlled concierge intake at 1–3/day.
+
 ## Backend tasks
 
-### Slice 1 — status + payment parking
+### Slice 1 — status + payment parking + transactional acknowledgement
 - Add `manual_generation_required` to `FulfillmentStatus` in `src/lib/fulfillment-types.ts` / related status unions.
 - Stripe paid path should set paid order to `manual_generation_required` and **not** schedule normal `scheduleFulfillmentKickoff`.
+- Paid path should send only a safe transactional acknowledgement email: “we're preparing your handcrafted proof; you'll get an email when it's ready.” This is not a proof release and must not expose internal artifact state.
 - Replay/backfill/sweep/retry must not auto-run fulfillment from `manual_generation_required`.
 - Admin retry should refuse or require a clearly separate emergency override.
 
@@ -71,8 +81,15 @@ Tests:
 - Page images build safe `PageArtifact[]` with manual lineage.
 - Proof PDF writes include route decision + audit event.
 - Fixture/internal/template lineage blocks release.
+- **Contract tests: fallback/template/missing artifacts cannot reach customer proof or digital delivery. This is the G5 prevention contract.**
 
-### Slice 3 — admin route + CLI import
+### Slice 3 — minimal admin gate + CLI import
+First cut admin surface is intentionally constrained to **three actions only**:
+1. Attach artifact bundle
+2. Mark QA pass/fail
+3. Release proof
+
+Skip per-artifact upload buttons/editors in this PR. Bundle-first avoids admin surface ballooning and is enough to run the factory.
 Add:
 - `POST /api/admin/orders/[orderId]/manual-artifacts`
 - `scripts/import-manual-artifacts.mjs`
@@ -91,8 +108,13 @@ node scripts/import-manual-artifacts.mjs --order ord_123 --operator abby --manif
 node scripts/import-manual-artifacts.mjs --order ord_123 --operator abby --manifest ./manual-artifacts/ord_123/manifest.json --commit
 ```
 
-### Slice 4 — split QA pass from customer release
+### Slice 4 — split QA pass from customer release + key emails
 Existing `/qa-pass` couples QA pass with customer email. Split it.
+
+Transactional email contract:
+1. Paid → acknowledgement email only: “we're preparing your proof; you'll get an email when ready.”
+2. Proof ready/released → customer review email with proof link.
+3. Customer approved → confirmation email: “thanks, we're routing to print.” This must not submit print by itself.
 
 Add/refactor:
 - `recordQaPassOnly()` — records QA pass, sends no email.

@@ -12,6 +12,14 @@ Make the admin/operator workflow obvious and safe:
 
 ## UI tasks
 
+### First-cut scope limit
+Do **not** build per-artifact upload/edit buttons in the first PR. Keep admin surface to three actions:
+1. Attach artifact bundle
+2. Mark QA pass/fail
+3. Release proof/customer email
+
+The panel can show artifact checklist/completeness, but editing is bundle-first only.
+
 ### Admin order detail
 Add a “Manual Artifact Factory” panel to `/admin/orders/[orderId]`:
 - Artifact checklist:
