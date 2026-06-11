@@ -1647,7 +1647,8 @@ export function CheckoutForm() {
                 </h2>
                 <p className="text-sm text-[#695f54]">
                   Add family members or pets for the story text and scene notes.
-                  The child photo remains the main visual identity reference.
+                  Each person can include one optional still reference photo.
+                  The child remains the main hero reference.
                 </p>
               </div>
 
@@ -1787,17 +1788,15 @@ export function CheckoutForm() {
                         <div className="mb-2 flex items-center justify-between gap-3">
                           <div>
                             <p className="text-sm font-semibold text-[#1f1a16]">
-                              {character.role === "pet"
-                                ? "Your pet (optional)"
-                                : "A parent or loved one (optional)"}
+                              Supporting character reference photo
                               {character.name || character.relationshipLabel
                                 ? ` — ${character.name || character.relationshipLabel}`
                                 : ""}
                             </p>
                             <p className="text-xs leading-5 text-[#8a7b6a]">
-                              {character.role === "pet"
-                                ? "Appears as a companion character"
-                                : "Appears in keepsake pages"}
+                              Want this character to look more like themselves?
+                              One optional still photo helps guide the illustration.
+                              The child remains the main hero reference.
                             </p>
                           </div>
                           {character.photoFile && (
