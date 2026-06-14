@@ -817,6 +817,9 @@ export function CheckoutForm() {
           assetPayload.set("category", category);
           assetPayload.set("label", label);
           assetPayload.set("file", file, file.name);
+          // Stable per-file id so the server can dedupe a reload/resume or
+          // lost-response retry (returns the existing asset instead of a copy).
+          assetPayload.set("localId", `${file.name}|${file.size}|${file.lastModified}`);
           for (const [key, value] of Object.entries(extra)) assetPayload.set(key, value);
           let response: Response;
           try {

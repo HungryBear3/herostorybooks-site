@@ -173,13 +173,13 @@ test('post-finalize interstitial uses Stripe-handoff wording, not a charged/free
   assert.doesNotMatch(successBlock, /\bfor free\b|\bit'?s free\b/i);
 });
 
-// ── reload-safe dedupe is a documented follow-up, not an over-promise ──────────
+// ── reload/resume-safe dedupe is now implemented via a stable client localId ──
 
-test('server-side reload-safe dedupe is documented as a TODO (not silently implied)', () => {
-  // Clarification 2: there is no server-side localId/content-hash dedupe yet, so
-  // duplicate protection is same-session only. That gap must be documented where
-  // the follow-up would live, so UI copy is not built on a false reload promise.
-  assert.match(ORDER_INTAKE_SRC, /reload-safe dedupe/);
-  assert.match(ORDER_INTAKE_SRC, /localId/);
-  assert.match(CHECKOUT_SRC, /SAME-SESSION/);
+test('server-side reload/resume-safe dedupe is implemented via localId', () => {
+  // addIntakeAsset short-circuits on a matching (category, localId): a re-sent
+  // file returns the existing asset instead of duplicating or tripping a cap.
+  assert.match(ORDER_INTAKE_SRC, /Reload\/resume-safe idempotency/);
+  assert.match(ORDER_INTAKE_SRC, /asset\.localId === localId/);
+  // The client sends a stable per-file localId with every asset upload.
+  assert.match(CHECKOUT_SRC, /assetPayload\.set\("localId"/);
 });
