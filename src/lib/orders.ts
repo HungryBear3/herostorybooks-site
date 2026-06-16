@@ -4,6 +4,7 @@ import { BlobNotFoundError, BlobPreconditionFailedError, del, get, head, list, p
 
 import type { FulfillmentStatus, OrderArtifactManifest, PageTextLayout, StorySource, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
+import { ALLOWED_PHOTO_MIME_TYPES, getPhotoExtension, MAX_PHOTO_BYTES } from './photo-upload.ts';
 import { sanitizeReferralCode } from './referral-code.ts';
 export type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta };
 
@@ -34,6 +35,7 @@ export interface OrderInput {
   giftMessage?: string;
   characterNotes?: string;
   familyCharacters?: FamilyCharacterInput[] | string | null;
+  familyCharacterPhotoAssets?: SupportingCharacterPhotoAsset[] | null;
   appearanceOptions?: string;
   bookFormat: string;
   email: string;
@@ -73,6 +75,20 @@ export interface OrderInput {
   guidedReferencePhotos?: GuidedReferencePhotoRecord[] | null;
   referralCode?: string | null;
 }
+
+export type SupportingCharacterPhotoAsset = {
+  characterId: string;
+  assetId: string;
+  filename?: string;
+  contentType: string;
+  sizeBytes: number;
+  role?: string;
+  name?: string;
+  relationshipLabel?: string;
+  consentConfirmed: boolean;
+  referenceOnly: true;
+  uploadedAt: string;
+};
 
 export type ReviewStatus =
   | 'not_started'
@@ -519,6 +535,7 @@ export function getStoryPageCount(bookFormat: string): number {
 }
 
 const FAMILY_CHARACTER_MAX_COUNT = 4;
+export const SUPPORTING_CHARACTER_PHOTO_LIMIT = 4;
 const FAMILY_CHARACTER_MAX_FIELD = 80;
 const FAMILY_CHARACTER_MAX_NOTES = 180;
 const FAMILY_CHARACTER_ROLES = new Set<FamilyCharacterRole>([
@@ -538,6 +555,142 @@ function cleanShortText(value: unknown, max = FAMILY_CHARACTER_MAX_FIELD): strin
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, max);
+}
+
+export function isMultiFamilyPhotoIntakeEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.NEXT_PUBLIC_HSB_MULTI_FAMILY_PHOTO_INTAKE === 'true';
+}
+
+function cleanOptionalShortText(value: unknown, max = FAMILY_CHARACTER_MAX_FIELD): string | undefined {
+  const cleaned = cleanShortText(value, max);
+  return cleaned || undefined;
+}
+
+export type FamilyCharacterPhotoValidationInput = {
+  characterId: string;
+  characterIndex: number;
+  file: { name?: string; type?: string; size: number };
+  consentConfirmed: boolean;
+};
+
+export type FamilyCharacterPhotoValidationResult =
+  | { ok: true }
+  | { ok: false; status: number; code: string; error: string };
+
+export function validateFamilyCharacterPhotoUploads(
+  characters: readonly { id?: string | null }[],
+  uploads: readonly FamilyCharacterPhotoValidationInput[],
+): FamilyCharacterPhotoValidationResult {
+  if (uploads.length === 0) return { ok: true };
+  if (uploads.length > SUPPORTING_CHARACTER_PHOTO_LIMIT) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'supporting_photo_limit_exceeded',
+      error: `Please attach no more than ${SUPPORTING_CHARACTER_PHOTO_LIMIT} family or pet reference photos.`,
+    };
+  }
+
+  const characterIds = new Set(
+    characters.map((character, index) => cleanShortText(character.id || `family-character-${index + 1}`, 120)),
+  );
+  const seen = new Set<string>();
+  for (const upload of uploads) {
+    const characterId = cleanShortText(upload.characterId, 120);
+    if (!characterId || !characterIds.has(characterId)) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'supporting_photo_unknown_character',
+        error: 'That family or pet reference photo does not match a supporting character. Please remove it and try again.',
+      };
+    }
+    if (seen.has(characterId)) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'supporting_photo_duplicate_character',
+        error: 'Please attach only one reference photo per family member or pet for now.',
+      };
+    }
+    seen.add(characterId);
+    if (!upload.consentConfirmed) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'supporting_photo_consent_required',
+        error: 'Please confirm you have permission to share each family or pet reference photo for private book prep.',
+      };
+    }
+    const type = cleanShortText(upload.file.type, 80).toLowerCase();
+    const extension = getPhotoExtension(upload.file.name || '');
+    const acceptedExtension = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'].includes(extension);
+    if (!ALLOWED_PHOTO_MIME_TYPES.has(type) && !acceptedExtension) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'supporting_photo_invalid_type',
+        error: 'Family or pet reference photos must be JPG, PNG, WebP, HEIC, or HEIF images.',
+      };
+    }
+    if (upload.file.size > MAX_PHOTO_BYTES) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'supporting_photo_too_large',
+        error: 'Family or pet reference photos must be 4 MB or smaller.',
+      };
+    }
+  }
+  return { ok: true };
+}
+
+export function buildSupportingCharacterPhotoAsset(input: {
+  characterId: string;
+  assetId: string;
+  file: { name?: string; type?: string; size: number };
+  role?: string | null;
+  name?: string | null;
+  relationshipLabel?: string | null;
+  uploadedAt?: string;
+}): SupportingCharacterPhotoAsset {
+  return {
+    characterId: cleanShortText(input.characterId, 120),
+    assetId: cleanShortText(input.assetId, 500),
+    filename: cleanOptionalShortText(input.file.name, 120),
+    contentType: cleanShortText(input.file.type, 80).toLowerCase() || 'application/octet-stream',
+    sizeBytes: Math.max(0, Math.floor(input.file.size)),
+    role: cleanOptionalShortText(input.role, 40),
+    name: cleanOptionalShortText(input.name, 80),
+    relationshipLabel: cleanOptionalShortText(input.relationshipLabel, 80),
+    consentConfirmed: true,
+    referenceOnly: true,
+    uploadedAt: input.uploadedAt || new Date().toISOString(),
+  };
+}
+
+export function sanitizeSupportingCharacterPhotoAssets(
+  input: OrderInput['familyCharacterPhotoAssets'],
+): SupportingCharacterPhotoAsset[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .slice(0, SUPPORTING_CHARACTER_PHOTO_LIMIT)
+    .map((asset) => ({
+      characterId: cleanShortText(asset?.characterId, 120),
+      assetId: cleanShortText(asset?.assetId, 500),
+      filename: cleanOptionalShortText(asset?.filename, 120),
+      contentType: cleanShortText(asset?.contentType, 80).toLowerCase() || 'application/octet-stream',
+      sizeBytes: Math.max(0, Math.floor(Number(asset?.sizeBytes) || 0)),
+      role: cleanOptionalShortText(asset?.role, 40),
+      name: cleanOptionalShortText(asset?.name, 80),
+      relationshipLabel: cleanOptionalShortText(asset?.relationshipLabel, 80),
+      consentConfirmed: asset?.consentConfirmed === true,
+      referenceOnly: true as const,
+      uploadedAt: cleanShortText(asset?.uploadedAt, 40),
+    }))
+    .filter((asset) => asset.characterId && asset.assetId && asset.consentConfirmed);
 }
 
 function normalizeFamilyRole(role: unknown): FamilyCharacterRole {
@@ -862,6 +1015,7 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     giftMessage: input.giftMessage?.trim() || '',
     characterNotes: input.characterNotes?.trim() || '',
     familyCharacters: sanitizeFamilyCharacters(input.familyCharacters),
+    familyCharacterPhotoAssets: sanitizeSupportingCharacterPhotoAssets(input.familyCharacterPhotoAssets),
     appearanceOptions: input.appearanceOptions?.trim() || '',
     bookFormat: format,
     formatLabel: meta.label,

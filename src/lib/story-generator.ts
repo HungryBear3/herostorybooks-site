@@ -444,6 +444,22 @@ export function voiceInspirationBlock(order: OrderRecord): string {
   );
 }
 
+export function familyCharacterReferencesBlock(order: OrderRecord): string {
+  const assets = Array.isArray(order.familyCharacterPhotoAssets)
+    ? order.familyCharacterPhotoAssets.filter((asset) => asset?.referenceOnly === true).slice(0, 4)
+    : [];
+  if (assets.length === 0) return '';
+
+  const lines = assets.map((asset) => {
+    const relationship = sanitizeInput(asset.relationshipLabel, 80) || sanitizeInput(asset.role, 40) || 'supporting character';
+    const name = sanitizeInput(asset.name, 80);
+    const label = name ? `${relationship} / ${name}` : relationship;
+    return `- ${label}: optional private reference photo uploaded for reviewer guidance only. Use for broad details; do not promise exact likeness.`;
+  });
+
+  return `\n\nSUPPORTING FAMILY REFERENCES (internal reviewer guidance only — reference-only, no exact-likeness guarantee):\n${lines.join('\n')}`;
+}
+
 export function familyCharactersBlock(order: OrderRecord): string {
   const characters = Array.isArray(order.familyCharacters)
     ? order.familyCharacters
@@ -603,6 +619,7 @@ export function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage
     // existing prompts are unchanged. filter(Boolean) drops the '' case.
     voiceInspirationBlock(order).trim() || null,
     familyCharactersBlock(order).trim() || null,
+    familyCharacterReferencesBlock(order).trim() || null,
   ].filter(Boolean).join('\n');
 }
 
@@ -1001,6 +1018,7 @@ export function buildUserPrompt(order: OrderRecord): string {
 - Appearance: ${appearanceOptions || 'not specified'}
 - Format: ${order.bookFormat}
 ${familyCharactersBlock(order).trim() || '- Supporting family / pet characters: none'}
+${familyCharacterReferencesBlock(order).trim()}
 
 Visual identity hard rules for this child:
 - If pronouns are he/him, describe and illustrate the hero as a young boy.

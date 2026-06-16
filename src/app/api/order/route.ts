@@ -3,6 +3,7 @@ import Stripe from 'stripe';
 
 import {
   createOrderRecord,
+  isMultiFamilyPhotoIntakeEnabled,
   isPrintFormat,
   MAX_VOICE_BYTES,
   OrderPersistenceError,
@@ -13,6 +14,8 @@ import {
   uploadOrderSupportingPhoto,
   uploadOrderGuidedPhoto,
   uploadOrderVoice,
+  validateFamilyCharacterPhotoUploads,
+  buildSupportingCharacterPhotoAsset,
 } from '@/lib/orders';
 import { collectGuidedReferencePhotos } from '@/lib/guided-photo-capture';
 import {
@@ -265,21 +268,64 @@ export async function POST(request: Request) {
     }
 
     const familyCharacters = sanitizeFamilyCharacters(familyCharactersRaw);
-    const familyCharactersWithPhotos = [];
-    for (const [index, character] of familyCharacters.entries()) {
-      const familyPhoto = form.get(`familyCharacterPhoto_${index}`);
-      if (!(familyPhoto instanceof File) || familyPhoto.size <= 0) {
-        familyCharactersWithPhotos.push(character);
-        continue;
-      }
+    let rawFamilyCharacters: Array<{ id?: string; role?: string; name?: string; relationshipLabel?: string }> = [];
+    try {
+      const parsed = JSON.parse(familyCharactersRaw || '[]');
+      rawFamilyCharacters = Array.isArray(parsed) ? parsed.slice(0, 4) : [];
+    } catch {
+      rawFamilyCharacters = [];
+    }
+
+    const multiFamilyPhotoEnabled = isMultiFamilyPhotoIntakeEnabled();
+    const familyCharactersWithPhotos = [...familyCharacters];
+    const familyCharacterPhotoAssets = [];
+    const supportingPhotoUploads = multiFamilyPhotoEnabled
+      ? familyCharacters
+          .map((character, index) => {
+            const familyPhoto = form.get(`familyCharacterPhoto_${index}`);
+            if (!(familyPhoto instanceof File) || familyPhoto.size <= 0) return null;
+            return {
+              characterId: String(rawFamilyCharacters[index]?.id || `family-character-${index + 1}`),
+              characterIndex: index,
+              file: familyPhoto,
+              consentConfirmed: String(form.get(`familyCharacterPhotoConsent_${index}`) || '').toLowerCase() === 'true',
+              character,
+            };
+          })
+          .filter((upload): upload is NonNullable<typeof upload> => Boolean(upload))
+      : [];
+
+    const photoValidation = validateFamilyCharacterPhotoUploads(
+      rawFamilyCharacters.map((character, index) => ({ id: character.id || `family-character-${index + 1}` })),
+      supportingPhotoUploads,
+    );
+    if (photoValidation.ok === false) {
+      return NextResponse.json(
+        { error: photoValidation.error, code: photoValidation.code },
+        { status: photoValidation.status },
+      );
+    }
+
+    for (const upload of supportingPhotoUploads) {
+      const familyPhoto = upload.file;
       try {
-        const uploaded = await uploadOrderSupportingPhoto(draftOrder.id, index, familyPhoto);
-        familyCharactersWithPhotos.push({
-          ...character,
+        const uploaded = await uploadOrderSupportingPhoto(draftOrder.id, upload.characterIndex, familyPhoto);
+        familyCharactersWithPhotos[upload.characterIndex] = {
+          ...upload.character,
           photoFileName: familyPhoto.name,
           photoBlobPath: uploaded?.pathname ?? null,
           photoBlobUrl: uploaded?.url ?? null,
-        });
+        };
+        familyCharacterPhotoAssets.push(
+          buildSupportingCharacterPhotoAsset({
+            characterId: upload.characterId,
+            assetId: uploaded?.pathname ?? `local-dev:${draftOrder.id}:supporting-${upload.characterIndex + 1}`,
+            file: familyPhoto,
+            role: upload.character.role,
+            name: upload.character.name,
+            relationshipLabel: upload.character.relationshipLabel,
+          }),
+        );
       } catch (error) {
         if (error instanceof OrderPersistenceError) {
           console.error(
@@ -299,12 +345,12 @@ export async function POST(request: Request) {
           `[order] supporting photo upload failed for ${draftOrder.id}; continuing without that photo`,
           error,
         );
-        familyCharactersWithPhotos.push({
-          ...character,
+        familyCharactersWithPhotos[upload.characterIndex] = {
+          ...upload.character,
           photoFileName: familyPhoto.name,
           photoBlobPath: null,
           photoBlobUrl: null,
-        });
+        };
       }
     }
 
@@ -397,6 +443,7 @@ export async function POST(request: Request) {
       order = await persistOrder({
         ...draftOrder,
         familyCharacters: familyCharactersWithPhotos,
+        familyCharacterPhotoAssets,
         photoBlobPath,
         photoBlobUrl,
         voiceBlobPath,
