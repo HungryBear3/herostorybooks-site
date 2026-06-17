@@ -30,6 +30,10 @@ import { OWNER_TEST_GATE_CODE, OWNER_TEST_GATE_MESSAGE, evaluateOwnerTestGate } 
 import { enforceKillSwitch } from '@/lib/ops-kill-switches';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 import { getReferralCodeFromCookieHeader, sanitizeReferralCode } from '@/lib/referrals';
+import {
+  buildSupportingCharacterPhotoError,
+  missingSupportingCharacterPhotoLabels,
+} from '@/lib/supporting-character-photo-gate';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -219,6 +223,26 @@ export async function POST(request: Request) {
     }
 
     const familyCharactersRaw = String(form.get('familyCharacters') || '');
+    const familyCharacters = sanitizeFamilyCharacters(familyCharactersRaw);
+
+    // Friends/family invariant (ported from hotfix 6880bb4): every human
+    // supporting character that appears in the story needs a still reference
+    // photo before payment; pets stay optional. Fail closed HERE — before the
+    // draft order, any blob writes, durable persistence, or the Stripe Checkout
+    // Session — so no buyer is charged for a book we cannot draw consistently.
+    const missingSupportingPhotos = missingSupportingCharacterPhotoLabels(
+      familyCharacters,
+      (index) => {
+        const file = form.get(`familyCharacterPhoto_${index}`);
+        return file instanceof File && file.size > 0;
+      },
+    );
+    if (missingSupportingPhotos.length > 0) {
+      return NextResponse.json(buildSupportingCharacterPhotoError(missingSupportingPhotos), {
+        status: 400,
+      });
+    }
+
     const draftOrder = createOrderRecord({
       childName,
       childAge: String(form.get('childAge') || ''),
@@ -267,7 +291,6 @@ export async function POST(request: Request) {
       }
     }
 
-    const familyCharacters = sanitizeFamilyCharacters(familyCharactersRaw);
     let rawFamilyCharacters: Array<{ id?: string; role?: string; name?: string; relationshipLabel?: string }> = [];
     try {
       const parsed = JSON.parse(familyCharactersRaw || '[]');
