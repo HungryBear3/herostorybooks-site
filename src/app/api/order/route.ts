@@ -432,6 +432,7 @@ export async function POST(request: Request) {
       childName: order.childName,
       format: order.formatLabel,
       email: order.email,
+      ...(order.familyContributionToken ? { contributionToken: order.familyContributionToken } : {}),
     });
 
     const session = await stripe.checkout.sessions.create({

@@ -13,6 +13,7 @@ type ThankYouPageProps = {
     childName?: string;
     format?: string;
     email?: string;
+    contributionToken?: string;
   }>;
 };
 
@@ -32,6 +33,8 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
   const format = order?.formatLabel?.trim() || formatFallback;
   const email = order?.email?.trim() || emailFallback;
   const orderId = order?.id ?? orderIdParam;
+  const contributionToken =
+    order?.familyContributionToken?.trim() || params.contributionToken?.trim() || null;
 
   // Branch on payment state, defaulting to the safer (neutral) view when
   // we can't confirm 'paid'.
@@ -39,7 +42,13 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
 
   if (paymentStatus === 'paid') {
     return (
-      <SuccessView childName={childName} format={format} email={email} orderId={orderId} />
+      <SuccessView
+        childName={childName}
+        format={format}
+        email={email}
+        orderId={orderId}
+        contributionToken={contributionToken}
+      />
     );
   }
 
@@ -56,12 +65,17 @@ function SuccessView({
   format,
   email,
   orderId,
+  contributionToken,
 }: {
   childName: string;
   format: string;
   email: string | undefined;
   orderId: string | undefined;
+  contributionToken: string | null;
 }) {
+  const contributionUrl = contributionToken
+    ? `/family-contribute/${encodeURIComponent(contributionToken)}`
+    : null;
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--cream)] px-4 py-16 space-y-8">
       <div className="text-center">
@@ -70,7 +84,7 @@ function SuccessView({
           {childName}&apos;s Storybook Is In Motion!
         </h1>
         <p className="text-lg text-gray-600 max-w-md mx-auto">
-          We&apos;re preparing your custom proof. You&apos;ll receive an email when
+          We&apos;re preparing your custom {format} proof. You&apos;ll receive an email when
           it&apos;s ready for review — nothing prints until you approve.
         </p>
       </div>
@@ -107,6 +121,26 @@ function SuccessView({
           Questions? support@herostorybooks.com · Print books move to production only after proof approval
         </p>
       </div>
+
+      {contributionUrl ? (
+        <div className="bg-[#FFF8E5] rounded-2xl border border-[#D4AF37]/40 shadow-sm p-6 w-full max-w-md space-y-3">
+          <p className="font-semibold text-[var(--forest)] text-base">Invite family to add memories</p>
+          <p className="text-sm text-gray-600">
+            Share this private link so grandparents, siblings, or friends can add a dedication,
+            memory, voice note, story idea, or supporting character photo for {childName}&apos;s book.
+          </p>
+          <a
+            href={contributionUrl}
+            className="inline-flex px-5 py-3 rounded-xl font-semibold text-sm text-center"
+            style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}
+          >
+            Open Family Invite Link
+          </a>
+          <p className="break-all rounded-xl bg-white/70 p-3 font-mono text-xs text-gray-500">
+            {contributionUrl}
+          </p>
+        </div>
+      ) : null}
 
       <div className="flex flex-col sm:flex-row gap-3">
         {orderId ? (
