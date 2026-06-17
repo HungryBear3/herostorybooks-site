@@ -145,6 +145,8 @@ const VOICE_BETA_ENABLED =
   envFlagEnabled(process.env.NEXT_PUBLIC_HSB_VOICE_BETA);
 const SPLIT_ASSET_INTAKE_ENABLED =
   envFlagEnabled(process.env.NEXT_PUBLIC_HSB_SPLIT_ASSET_INTAKE);
+const MULTI_FAMILY_PHOTO_INTAKE_ENABLED =
+  envFlagEnabled(process.env.NEXT_PUBLIC_HSB_MULTI_FAMILY_PHOTO_INTAKE);
 
 const STORAGE_KEY = "hsb_order_v1";
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
@@ -202,6 +204,7 @@ interface SupportingCharacter {
   appearsInStory: boolean;
   photoFile: File | null;
   photoDataUrl: string | null;
+  photoConsent: boolean;
 }
 
 const emptyForm: FormState = {
@@ -240,7 +243,11 @@ function saveProgress(form: FormState) {
         occasion: form.occasion,
         giftMessage: form.giftMessage,
         characterNotes: form.characterNotes,
-        familyCharacters: form.familyCharacters,
+        familyCharacters: form.familyCharacters.map((character) => ({
+          ...character,
+          photoFile: null,
+          photoDataUrl: null,
+        })),
         skinTone: form.skinTone,
         hairStyle: form.hairStyle,
         eyewear: form.eyewear,
@@ -312,6 +319,9 @@ function normalizeSavedFamilyCharacters(
   return characters.map((character) => ({
     ...character,
     notes: character.notes === PET_NOTES_PLACEHOLDER ? "" : character.notes,
+    photoFile: null,
+    photoDataUrl: null,
+    photoConsent: Boolean(character.photoConsent),
   }));
 }
 
@@ -498,6 +508,7 @@ export function CheckoutForm() {
             appearsInStory: true,
             photoFile: null,
             photoDataUrl: null,
+            photoConsent: false,
           },
         ],
       };
@@ -935,6 +946,7 @@ export function CheckoutForm() {
         JSON.stringify(
           familyCharactersForOrder
             .map((character) => ({
+              id: character.id,
               role: character.role,
               name: character.name,
               relationshipLabel: character.relationshipLabel,
@@ -947,8 +959,12 @@ export function CheckoutForm() {
         ),
       );
       familyCharactersForOrder.forEach((character, index) => {
-        if (character.photoFile) {
+        if (MULTI_FAMILY_PHOTO_INTAKE_ENABLED && character.photoFile) {
           payload.set(`familyCharacterPhoto_${index}`, character.photoFile);
+          payload.set(
+            `familyCharacterPhotoConsent_${index}`,
+            character.photoConsent ? "true" : "false",
+          );
         }
       });
       payload.set(
@@ -1787,105 +1803,118 @@ export function CheckoutForm() {
                         {character.notes.length}/180
                       </p>
 
-                      <div className="mt-3 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] p-3">
-                        <div className="mb-2 flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-semibold text-[#1f1a16]">
-                              Supporting character reference photo
-                              {character.name || character.relationshipLabel
-                                ? ` — ${character.name || character.relationshipLabel}`
-                                : ""}
-                            </p>
-                            <p className="text-xs leading-5 text-[#8a7b6a]">
-                              Want this character to look more like themselves?
-                              One optional still photo helps guide the illustration.
-                              The child remains the main hero reference.
-                            </p>
+{MULTI_FAMILY_PHOTO_INTAKE_ENABLED && (
+                        <div className="mt-3 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] p-3">
+                          <div className="mb-2 flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-[#1f1a16]">
+                                Optional: add a reference photo
+                                {character.name || character.relationshipLabel
+                                  ? ` for ${character.name || character.relationshipLabel}`
+                                  : " for this family member or pet"}
+                              </p>
+                              <p className="text-xs leading-5 text-[#8a7b6a]">
+                                Used only as reviewer guidance for private book prep;
+                                your child&apos;s photo remains the main visual reference.
+                                Reference-only, not an exact-likeness guarantee.
+                              </p>
+                            </div>
+                            {character.photoFile && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateSupportingCharacter(character.id, {
+                                    photoFile: null,
+                                    photoDataUrl: null,
+                                    photoConsent: false,
+                                  })
+                                }
+                                className="rounded-full border border-[#dfd2b8] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:text-[#a64c4c]"
+                              >
+                                Remove photo
+                              </button>
+                            )}
                           </div>
+
+                          {character.photoDataUrl ? (
+                            <div className="grid gap-3 sm:grid-cols-[96px_1fr] sm:items-center">
+                              <div className="overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fffaf1]">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={character.photoDataUrl}
+                                  alt={`${character.relationshipLabel || "Supporting character"} reference`}
+                                  className="h-24 w-full object-cover"
+                                />
+                              </div>
+                              <div className="min-w-0 text-sm text-[#35564d]">
+                                <p className="truncate font-semibold">
+                                  Reference photo ready
+                                </p>
+                                <p className="text-xs text-[#5f766f]">
+                                  This optional photo will be saved privately for reviewer guidance only.
+                                </p>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <div className="flex flex-wrap gap-2">
+                                <label className="flex cursor-pointer items-center gap-1.5 rounded-full bg-[#1f1a16] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3029]">
+                                  Use camera
+                                  <input
+                                    type="file"
+                                    accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                                    capture="user"
+                                    className="hidden"
+                                    onChange={(e) => {
+                                      const f = e.target.files?.[0];
+                                      if (f) processSupportingCharacterPhoto(character.id, f);
+                                      e.currentTarget.value = "";
+                                    }}
+                                  />
+                                </label>
+                                <label className="flex cursor-pointer items-center gap-1.5 rounded-full border-2 border-[#dfd2b8] px-4 py-2 text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
+                                  Upload photo
+                                  <input
+                                    type="file"
+                                    accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                                    className="hidden"
+                                    onChange={(e) => {
+                                      const f = e.target.files?.[0];
+                                      if (f) processSupportingCharacterPhoto(character.id, f);
+                                      e.currentTarget.value = "";
+                                    }}
+                                  />
+                                </label>
+                              </div>
+                              <p className="text-xs text-[#8a7b6a]">
+                                JPG/PNG/WebP/HEIC · max 4 MB · optional
+                              </p>
+                            </div>
+                          )}
                           {character.photoFile && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateSupportingCharacter(character.id, {
-                                  photoFile: null,
-                                  photoDataUrl: null,
-                                })
-                              }
-                              className="rounded-full border border-[#dfd2b8] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:text-[#a64c4c]"
-                            >
-                              Remove photo
-                            </button>
+                            <label className="mt-3 flex items-start gap-2 rounded-xl border border-[#dfd2b8] bg-[#fffaf1] px-3 py-2 text-xs leading-5 text-[#695f54]">
+                              <input
+                                type="checkbox"
+                                checked={character.photoConsent}
+                                onChange={(e) =>
+                                  updateSupportingCharacter(character.id, {
+                                    photoConsent: e.target.checked,
+                                  })
+                                }
+                                className="mt-1"
+                              />
+                              <span>
+                                I have permission to share this photo for private book prep.
+                              </span>
+                            </label>
+                          )}
+                          {supportingPhotoErrors[character.id] && (
+                            <p role="alert" className="mt-2 text-xs font-medium text-[#8a2f2f]">
+                              {supportingPhotoErrors[character.id]}
+                            </p>
                           )}
                         </div>
-
-                        {character.photoDataUrl ? (
-                          <div className="grid gap-3 sm:grid-cols-[96px_1fr] sm:items-center">
-                            <div className="overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fffaf1]">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={character.photoDataUrl}
-                                alt={`${character.relationshipLabel || "Supporting character"} reference`}
-                                className="h-24 w-full object-cover"
-                              />
-                            </div>
-                            <div className="min-w-0 text-sm text-[#35564d]">
-                              <p className="truncate font-semibold">
-                                {character.photoFile?.name}
-                              </p>
-                              <p className="text-xs text-[#5f766f]">
-                                Saved with this character for operator review.
-                              </p>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            {/* Both ways to add a photo for this character:
-                                camera (capture attr opens the camera on mobile)
-                                or an upload from the library. Both reuse the same
-                                per-character handler — no submission change. */}
-                            <div className="flex flex-wrap gap-2">
-                              <label className="flex cursor-pointer items-center gap-1.5 rounded-full bg-[#1f1a16] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3029]">
-                                Use camera
-                                <input
-                                  type="file"
-                                  accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
-                                  capture="user"
-                                  className="hidden"
-                                  onChange={(e) => {
-                                    const f = e.target.files?.[0];
-                                    if (f) processSupportingCharacterPhoto(character.id, f);
-                                    e.currentTarget.value = "";
-                                  }}
-                                />
-                              </label>
-                              <label className="flex cursor-pointer items-center gap-1.5 rounded-full border-2 border-[#dfd2b8] px-4 py-2 text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
-                                Upload photo
-                                <input
-                                  type="file"
-                                  accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
-                                  className="hidden"
-                                  onChange={(e) => {
-                                    const f = e.target.files?.[0];
-                                    if (f) processSupportingCharacterPhoto(character.id, f);
-                                    e.currentTarget.value = "";
-                                  }}
-                                />
-                              </label>
-                            </div>
-                            <p className="text-xs text-[#8a7b6a]">
-                              JPG/PNG/WebP/HEIC ·{" "}
-                              {character.role === "pet"
-                                ? "Photo optional for pets"
-                                : "Optional"}
-                            </p>
-                          </div>
-                        )}
-                        {supportingPhotoErrors[character.id] && (
-                          <p role="alert" className="mt-2 text-xs font-medium text-[#8a2f2f]">
-                            {supportingPhotoErrors[character.id]}
-                          </p>
-                        )}
-                      </div>
+                      )}
                     </div>
                   ))}
                 </div>
