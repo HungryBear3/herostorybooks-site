@@ -1666,7 +1666,7 @@ export function CheckoutForm() {
                 </h2>
                 <p className="text-sm text-[#695f54]">
                   Add family members or pets for the story text and scene notes.
-                  Each person can include one optional still reference photo.
+                  Each Supporting character reference photo is optional: one optional still photo helps guide the illustration.
                   The child remains the main hero reference.
                 </p>
               </div>
@@ -1808,14 +1808,14 @@ export function CheckoutForm() {
                           <div className="mb-2 flex items-center justify-between gap-3">
                             <div>
                               <p className="text-sm font-semibold text-[#1f1a16]">
-                                Optional: add a reference photo
+                                Want this character to look more like themselves? Supporting character reference photo
                                 {character.name || character.relationshipLabel
                                   ? ` for ${character.name || character.relationshipLabel}`
                                   : " for this family member or pet"}
                               </p>
                               <p className="text-xs leading-5 text-[#8a7b6a]">
-                                Used only as reviewer guidance for private book prep;
-                                your child&apos;s photo remains the main visual reference.
+                                One optional still photo helps guide the illustration.
+                                The child remains the main hero reference; your child&apos;s photo remains the main visual reference.
                                 Reference-only, not an exact-likeness guarantee.
                               </p>
                             </div>
@@ -1887,7 +1887,7 @@ export function CheckoutForm() {
                                 </label>
                               </div>
                               <p className="text-xs text-[#8a7b6a]">
-                                JPG/PNG/WebP/HEIC · max 4 MB · optional
+                                JPG/PNG/WebP/HEIC · max 4 MB · optional · Photo optional for pets
                               </p>
                             </div>
                           )}
