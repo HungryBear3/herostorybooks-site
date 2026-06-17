@@ -49,81 +49,59 @@ const tiers: Tier[] = [
 
 const sampleBooks = [
   {
-    // Was hsb-lukas-print-front-cover.jpg, which carried "Made for Lukas
-    // Kaplun" on the cover subtitle — exposing a real customer surname on
-    // a marketing tile. Swapped to the watercolor dinosaur cover, which
-    // shows the child + dinosaurs without any real-name overlay. This is
-    // the ONE cover-style tile in the 3-card cluster (cards 2 and 3 are
-    // now interior spreads, per the "at most one cover-style per cluster"
-    // rule).
-    tag: 'WATERCOLOR DINOSAUR COVER',
-    title: 'A Dinosaur Adventure Cover',
+    tag: 'INTERIOR STORY PAGE',
+    title: 'Lukas and the French Fry City',
     star: 'the child',
     tone: 'hardcover',
-    image: '/assets/lukas-watercolor-dino-cover.jpg',
-    copy: 'A watercolor dinosaur cover proof — example of the personalized cover direction, with no real customer details on the artwork.',
+    image: '/assets/hsb-lukas-french-fry-p06.jpg',
+    copy: 'A recent printed-book picture page from the same order — no blank placeholders, title-only pages, or printer filler used as marketing samples.',
   },
   {
-    // Was lukas-dino-companion-proof.jpg, which shows only a T-Rex and a
-    // Triceratops in a forest — no child. Card copy claimed "Lukas meets
-    // the dinosaur," which the image did not back up. Swapped to the
-    // bedtime proof, where the child is clearly present alongside the
-    // dinosaur dream-bubble.
-    tag: 'DINOSAUR STORY ART',
-    title: 'Bedtime With Dinosaurs',
+    tag: 'INTERIOR STORY PAGE',
+    title: 'A Better Photo-to-Story Example',
     star: 'the child',
     tone: 'softcover',
-    image: '/assets/lukas-dino-bedtime-proof.jpg',
-    copy: 'A bedtime spread from the proof set — the child reading the book while a friendly dinosaur dream takes shape above the lamp. Illustration only, no story text overlaid.',
+    image: '/assets/hsb-lukas-french-fry-p03.jpg',
+    copy: 'A real interior page where the uploaded child reference carries through into a playful, readable storybook scene.',
   },
   {
-    // Was lukas-watercolor-adventure-page.jpg. The jungle-kneeling shot
-    // had the child far from camera with a small, indistinct face —
-    // likeness was visibly weak in QA. Swapped to the "King of All
-    // Dinosaurs" interior proof from the print book set: the child's
-    // face is centered, in focus, smiling, and reads unambiguously as
-    // the canonical Lukas. The page-text panel sits cleanly in the
-    // lower-left corner of the image, so it reads as an intentional
-    // inside-book proof rather than an unreadable hero thumbnail.
-    // Tag + title + copy updated honestly to reflect it is an interior
-    // proof, not a watercolor-direction concept.
-    tag: 'INTERIOR PROOF',
-    title: 'Lukas, King of All Dinosaurs',
+    tag: 'APPROVAL-FIRST SAMPLE',
+    title: 'Proof Before Anything Prints',
     star: 'the child',
     tone: 'digital',
-    image: '/assets/hsb-lukas-print-story-21.jpg',
-    copy: 'A real interior proof with a stronger Lukas likeness — the same proof-approved book that digital orders receive as a high-resolution PDF.',
+    image: '/assets/hsb-lukas-french-fry-p24.jpg',
+    copy: 'A finished-book interior scene that supports the core promise: parents see the proof first, request changes if needed, then approve for print.',
   },
 ];
 
 const lukasStorySnippets = [
   {
     page: '1',
-    title: 'The wish',
-    body: 'Lukas did not want to just visit Dinosaur World. He wanted to be a real dinosaur, with a tail behind him and jungle light on his claws.',
-    image: '/assets/hsb-lukas-print-story-01.jpg',
-    imageAlt: 'Real Lukas dinosaur book story page for The wish',
+    title: 'The portal opens',
+    body: 'The story moves from an everyday child into a magical food-world adventure — exactly the kind of custom premise a gift buyer can shape at checkout.',
+    image: '/assets/hsb-lukas-french-fry-p13.jpg',
+    imageAlt: 'Real Lukas French Fry City book page with the hero at a glowing doorway',
   },
   {
     page: '2',
-    title: 'The big decision',
-    body: 'The leaves smelled wet and green. Lukas could stay where the room was quiet, or he could step through the bright doorway. He stepped through.',
-    image: '/assets/hsb-lukas-print-story-07.jpg',
-    imageAlt: 'Real Lukas dinosaur book story page for The big decision',
+    title: 'A world built around his idea',
+    body: 'The proof shows a personalized adventure direction carried through multiple illustrated scenes, not just a name pasted onto a template.',
+    image: '/assets/hsb-lukas-french-fry-p15.jpg',
+    imageAlt: 'Real Lukas French Fry City book page with a gingerbread character in a candy landscape',
   },
   {
     page: '3',
-    title: 'The two sides of Lukas',
-    body: 'One side of him was T-Rex brave. One side was triceratops strong. Lukas stood between them and understood that both sides belonged to him.',
-    image: '/assets/hsb-lukas-print-story-16.jpg',
-    imageAlt: 'Real Lukas dinosaur book story page for The two sides of Lukas',
+    title: 'Friends and details matter',
+    body: 'Companion characters, colors, settings, and story beats can all be adjusted during proof review before a printed copy is released.',
+    image: '/assets/hsb-lukas-french-fry-p19.jpg',
+    imageAlt: 'Real Lukas French Fry City book page with the hero and a dog in a golden city',
   },
   {
     page: 'Final',
-    title: 'The crown',
-    body: 'The brontosauruses lowered a leafy crown onto his head. Lukas held very still. Then the whole valley stomped once, very softly, for their king.',
-    image: '/assets/hsb-lukas-print-story-21.jpg',
-    imageAlt: 'Real Lukas dinosaur book story page for The crown',
+    title: 'A keepsake ending',
+    body: 'The final proof can include the family tone that makes the book feel like a real gift, while still staying reviewable before print.',
+    image: '/assets/hsb-lukas-french-fry-p28.jpg',
+    imageAlt: 'Real Lukas French Fry City book bedtime page with a warm keepsake ending',
   },
 ];
 
@@ -397,41 +375,17 @@ function BookCoverStack() {
     <div className="relative mx-auto w-full max-w-[520px]">
       <div className="overflow-hidden rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_30px_80px_-50px_rgba(31,26,22,0.55)]">
         <div className="aspect-[4/5] bg-[#eadfc7]">
-          {/* Watercolor cover proof, off-center crop. The child's face
-              sits slightly left and below center on the source art;
-              object-position [30%_55%] biases the visible window so
-              the face lands in the upper-left third instead of being
-              clipped by the default 50%/50% center crop. */}
           <img
-            src="/assets/lukas-watercolor-dino-cover.jpg"
-            alt="Watercolor dinosaur cover proof — child with a friendly T-Rex"
-            className="h-full w-full object-cover object-[30%_55%]"
+            src="/assets/hsb-lukas-french-fry-p03.jpg"
+            alt="Finished Lukas and the French Fry City interior proof page"
+            className="h-full w-full object-cover object-[50%_35%]"
           />
         </div>
         <div className="border-t border-[#eadfc7] p-5">
-          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.22em] text-[#a64c4c]">Watercolor cover proof</div>
-          <p className="font-serif text-2xl leading-tight text-[#1f1a16]">An example of the personalized dinosaur direction — shown without any real customer details.</p>
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.22em] text-[#a64c4c]">Recent printed-book proof</div>
+          <p className="font-serif text-2xl leading-tight text-[#1f1a16]">A real finished-book sample from Lukas and the French Fry City — shown consistently from one print-approved order.</p>
         </div>
       </div>
-      {/* Above-fold side thumbnails. The previous pass swapped tiny
-          text-bearing page screenshots out; this pass fixes two new
-          issues spotted in QA:
-            (1) lukas-dino-companion-proof.jpg shows only two
-                dinosaurs and no child, so it cannot serve as "Lukas
-                with a friendly dinosaur." Replaced with the bedtime
-                proof, which shows the child clearly.
-            (2) lukas-watercolor-dino-cover.jpg now lives as the main
-                hero center, so reusing it as a side thumb made the
-                hero look like two near-identical covers. Side thumb
-                moved to the jungle adventure illustration for a
-                visually distinct second impression. */}
-      {/* Both side thumbs removed in 2026-05-19 hotfix series. The
-          upper-right interior-page inset was removed first (likeness
-          break + readable body copy at thumbnail size). The lower-left
-          bedside thumb was removed second after launch review: even
-          when repositioned below the caption panel it still read as a
-          loose sticker rather than an intentional design element. The
-          hero is now a single watercolor cover + caption — no collage. */}
     </div>
   );
 }
@@ -503,7 +457,7 @@ function SamplePreviewSection() {
   return (
     <section className="bg-[#fff8ec]/45 pt-4 pb-20 md:pt-6 md:pb-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
-        <SectionHeader eyebrow="Real order sample" title="One finished book, shown consistently." sub="The sample art below comes from the latest Lukas print production packet. Digital orders use the same proof-first story experience, without the print-and-ship step." />
+        <SectionHeader eyebrow="Real order sample" title="One finished book, shown consistently." sub="The sample art below comes from the recent Lukas and the French Fry City hardcover print package. Digital orders use the same proof-first story experience, without the print-and-ship step." />
         <div className="grid gap-5 md:grid-cols-3">
           {sampleBooks.map((book) => <SampleCard key={book.title} {...book} />)}
         </div>
@@ -766,9 +720,9 @@ export function EditorialFathersDayPage() {
           </div>
           <div className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-5 shadow-[0_24px_70px_-58px_rgba(36,25,20,0.65)]">
             <img
-              src="/assets/lukas-watercolor-dino-cover.jpg"
-              alt="Watercolor personalized dinosaur proof cover"
-              className="aspect-[4/5] w-full rounded-2xl object-cover object-[30%_55%]"
+              src="/assets/hsb-lukas-french-fry-p24.jpg"
+              alt="Finished Lukas and the French Fry City bedtime interior proof"
+              className="aspect-[4/5] w-full rounded-2xl object-cover object-[50%_35%]"
             />
             <p className="mt-4 text-sm leading-6 text-[#695f54]">
               Digital gives Dad something meaningful to open on the day. Printed books are best-chance keepsakes after proof approval; hardcover should be treated as a follow-up keepsake after Father&apos;s Day unless partner timing is confirmed in writing.
@@ -819,69 +773,39 @@ export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Sample" title="A peek inside a personalized proof book." sub="This page uses watercolor proof art from the Lukas book work as a sample: one child, one story, one consistent watercolor direction. Real customer details aren't shown on the artwork. Digital buyers receive the same proof-first book as a PDF after approval." centered />
+        <SectionHeader eyebrow="Sample" title="A peek inside a personalized proof book." sub="This page uses the recent Lukas and the French Fry City hardcover print package as a sample: one child, one story, one consistent finished-book direction. Digital buyers receive the same proof-first book as a PDF after approval." centered />
         <div className="grid items-start gap-8 md:grid-cols-[0.9fr_1.1fr]">
           <div className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
             <div className="mx-auto max-w-[320px] [perspective:1200px]">
               <div className="relative origin-left overflow-hidden rounded-xl bg-[#fff8ec] shadow-2xl ring-1 ring-[#d8c6a2] [transform:rotateY(-10deg)_rotateZ(-1deg)]">
-                {/* Was hsb-lukas-print-front-cover.jpg, which exposed
-                    "Made for Lukas Kaplun" as the cover subtitle.
-                    Replaced with the watercolor dinosaur cover that
-                    shows the child + dinosaurs without any real
-                    customer surname on the artwork. */}
                 <img
-                  src="/assets/lukas-watercolor-dino-cover.jpg"
-                  alt="Watercolor dinosaur cover proof — child with a friendly T-Rex"
-                  className="aspect-[4/5] h-full w-full object-cover object-[30%_55%]"
+                  src="/assets/hsb-lukas-french-fry-front-cover.jpg"
+                  alt="Lukas and the French Fry City hardcover front cover"
+                  className="aspect-[4/5] h-full w-full object-cover object-[50%_45%]"
                 />
                 <div className="absolute inset-y-0 left-0 w-7 bg-gradient-to-r from-black/18 to-transparent" aria-hidden="true" />
                 <div className="absolute inset-y-0 right-0 w-4 bg-white/30" aria-hidden="true" />
               </div>
             </div>
-            <p className="mt-5 text-center text-xs leading-5 text-[#695f54]">A watercolor dinosaur cover proof, displayed as a book-style mockup. Every new order still receives its own proof and approval pass.</p>
+            <p className="mt-5 text-center text-xs leading-5 text-[#695f54]">A recent hardcover print package, displayed as a book-style mockup. Every new order still receives its own proof and approval pass.</p>
           </div>
           <div className="space-y-5">
-            {/* Was hsb-lukas-print-cover-wrap.jpg, the front-and-back
-                production cover wrap — which exposed "Made for Lukas
-                Kaplun" on the front face AND "With Love from Alexy
-                Kaplun & Michelle Kim" on the back face. Replaced with
-                the bedtime illustration proof. We lose the
-                "production-artifact" framing for the lead figure, but
-                we keep the child-visible, no-surname rule intact.
-                Real production artifacts still appear lower on this
-                page as "inside the book" interior proofs. */}
             <figure className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-3 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
-              {/* Bedtime hero figure crop tightened from 16:10 → 4:3 so
-                  the child reading on the bed isn't letterboxed off the
-                  top edge. object-position center-top keeps the lamp +
-                  dream bubble in frame instead of cropping them. */}
               <img
-                src="/assets/lukas-dino-bedtime-proof.jpg"
-                alt="Bedtime illustration proof — child reading the book with a dinosaur dream above the lamp"
+                src="/assets/hsb-lukas-french-fry-p03.jpg"
+                alt="Lukas and the French Fry City interior proof page with French fry characters"
                 className="aspect-[4/3] w-full rounded-xl object-cover object-[50%_30%]"
                 loading="lazy"
               />
               <figcaption className="mt-3 px-2 text-center text-xs leading-5 text-[#695f54]">
-                A bedtime illustration proof from the watercolor direction. Illustration only — no real customer details shown on the artwork.
+                Interior proof from a recent print-submitted book. Sample proof shown with permission; every customer book is reviewed before fulfillment.
               </figcaption>
             </figure>
-            {/* Supporting-proof grid — three real interior pages from
-                the Lukas print order. lukas-watercolor-adventure-page.jpg
-                was removed in the 2026-05-19 launch round: weak Lukas
-                likeness (kneeling, far from camera, indistinct face),
-                no story-text context, and read as disconnected from the
-                proofed book. No replacement asset substituted; per the
-                rule "remove the tile rather than show weak art." Grid
-                drops to sm:grid-cols-3 so the row stays balanced. */}
-            {/* Interior-proof grid. Square crops biased upward
-                (object-position 50% 35%) so the child's face / upper
-                body stays in frame on each tile instead of being
-                clipped by the centered crop default. */}
             <div className="grid gap-4 sm:grid-cols-3">
               {[
-                ['/assets/hsb-lukas-print-story-07.jpg', 'Interior page from a real Lukas-book order — dinosaur story page'],
-                ['/assets/hsb-lukas-print-story-16.jpg', 'Interior page from a real Lukas-book order — two sides of the hero'],
-                ['/assets/hsb-lukas-print-story-21.jpg', 'Interior page from a real Lukas-book order — story spread'],
+                ['/assets/hsb-lukas-french-fry-p13.jpg', 'Interior page from a real Lukas French Fry City order — doorway scene'],
+                ['/assets/hsb-lukas-french-fry-p15.jpg', 'Interior page from a real Lukas French Fry City order — candy world scene'],
+                ['/assets/hsb-lukas-french-fry-p19.jpg', 'Interior page from a real Lukas French Fry City order — golden city scene'],
               ].map(([src, alt]) => (
                 <img
                   key={src}

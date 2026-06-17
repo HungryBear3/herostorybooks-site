@@ -80,6 +80,8 @@
     "@types/pdfkit": "^0.17.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.0",
     "playwright": "^1.60.0",
     "postcss": "^8.5",
     "tailwindcss": "^4.2.0",
