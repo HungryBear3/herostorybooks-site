@@ -183,3 +183,18 @@ test('server-side reload-safe dedupe is documented as a TODO (not silently impli
   assert.match(ORDER_INTAKE_SRC, /localId/);
   assert.match(CHECKOUT_SRC, /SAME-SESSION/);
 });
+
+// ── durable draft read path ───────────────────────────────────────────────────
+
+test('getIntakeDraft public blob reads resolve the persisted blob URL before reading', () => {
+  // Production/Preview order reads learned this lesson already: with public Blob
+  // stores, read via the listed blob.url first. Reading a just-written draft only
+  // by pathname through @vercel/blob get() can fail in Vercel Preview and break
+  // the next /assets call with `Durable draft read failed`.
+  const readStart = ORDER_INTAKE_SRC.indexOf('export async function getIntakeDraft');
+  assert.ok(readStart > -1, 'getIntakeDraft must exist');
+  const readBlock = ORDER_INTAKE_SRC.slice(readStart, ORDER_INTAKE_SRC.indexOf('export async function createIntakeDraft', readStart));
+  assert.match(readBlock, /await list\(\{ prefix: pathname, token \}\)/);
+  assert.match(readBlock, /blob\.pathname === pathname/);
+  assert.match(readBlock, /readBlobText\(\{ pathname: blob\.pathname, url: blob\.url, token \}\)/);
+});

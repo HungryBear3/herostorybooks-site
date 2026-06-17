@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { get, put } from '@vercel/blob';
+import { list, put } from '@vercel/blob';
 
 import {
   createOrderRecord,
@@ -10,6 +10,7 @@ import {
   requiresDurablePersistence,
   sanitizeFamilyCharacters,
   getBlobAccessMode,
+  readBlobText,
   uploadOrderGuidedPhoto,
   uploadOrderPhoto,
   uploadOrderSupportingPhoto,
@@ -141,9 +142,17 @@ export async function getIntakeDraft(draftId: string): Promise<IntakeDraftRecord
   const token = getBlobToken();
   if (token) {
     try {
-      const result = await get(draftBlobPath(draftId), { access: getBlobAccessMode(), token, useCache: false });
-      const text = await new Response(result.stream).text();
-      return JSON.parse(text) as IntakeDraftRecord;
+      const pathname = draftBlobPath(draftId);
+      let text: string | null;
+      if (getBlobAccessMode() === 'public') {
+        const { blobs } = await list({ prefix: pathname, token });
+        const blob = blobs.find((blob) => blob.pathname === pathname);
+        if (!blob?.url) return null;
+        text = await readBlobText({ pathname: blob.pathname, url: blob.url, token });
+      } else {
+        text = await readBlobText({ pathname, token });
+      }
+      return text ? (JSON.parse(text) as IntakeDraftRecord) : null;
     } catch (error) {
       if (requiresDurablePersistence()) throw new OrderPersistenceError(draftId, 'Durable draft read failed', error);
     }
