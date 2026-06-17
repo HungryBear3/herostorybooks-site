@@ -74,34 +74,126 @@ const sampleBooks = [
   },
 ];
 
-const lukasStorySnippets = [
+// ── /samples assets (handoff 2026-06-16, copy-fixed) ─────────────────────────
+//
+// Asset-truth rules are binding here:
+//   • dinoBookPhotos are PHOTOGRAPHS of the real printed "King of the
+//     Dinosaurs" softcover. These are the ONLY assets allowed to use
+//     "real sample book" / photo-proof language.
+//   • Everything else (dino* clean exports and all French Fry City art) is
+//     clean digital/exported page art and is labeled "sample interior page" /
+//     "sample cover" / "clean art from a real title" — never physical-book
+//     proof language.
+//   • Title / dedication / back-cover / cover-wrap / blank pages are excluded
+//     as marketing samples and are not referenced here.
+
+const dinoBookPhotos = [
   {
-    page: '1',
-    title: 'The portal opens',
-    body: 'The story moves from an everyday child into a magical food-world adventure — exactly the kind of custom premise a gift buyer can shape at checkout.',
-    image: '/assets/hsb-lukas-french-fry-p13.jpg',
-    imageAlt: 'Real Lukas French Fry City book page with the hero at a glowing doorway',
+    src: '/assets/hsb-lukas-dino-photo-cover.jpg',
+    alt: 'Photograph of the printed King of the Dinosaurs softcover resting on a desk',
+    caption: 'The printed softcover, photographed on a desk.',
   },
   {
-    page: '2',
-    title: 'A world built around his idea',
-    body: 'The proof shows a personalized adventure direction carried through multiple illustrated scenes, not just a name pasted onto a template.',
-    image: '/assets/hsb-lukas-french-fry-p15.jpg',
-    imageAlt: 'Real Lukas French Fry City book page with a gingerbread character in a candy landscape',
+    src: '/assets/hsb-lukas-dino-photo-parade.jpg',
+    alt: 'Photograph of the open printed book showing a dinosaur-parade spread beside a sunset page',
+    caption: 'A real spread, open and photographed.',
   },
   {
-    page: '3',
-    title: 'Friends and details matter',
-    body: 'Companion characters, colors, settings, and story beats can all be adjusted during proof review before a printed copy is released.',
-    image: '/assets/hsb-lukas-french-fry-p19.jpg',
-    imageAlt: 'Real Lukas French Fry City book page with the hero and a dog in a golden city',
+    src: '/assets/hsb-lukas-dino-photo-feast.jpg',
+    alt: 'Photograph of the open printed book showing the full-color dinosaur-feast spread',
+    caption: 'Full-color matte interior pages, in print.',
   },
   {
-    page: 'Final',
-    title: 'A keepsake ending',
-    body: 'The final proof can include the family tone that makes the book feel like a real gift, while still staying reviewable before print.',
-    image: '/assets/hsb-lukas-french-fry-p28.jpg',
-    imageAlt: 'Real Lukas French Fry City book bedtime page with a warm keepsake ending',
+    src: '/assets/hsb-lukas-dino-photo-hands-1.jpg',
+    alt: 'Photograph of the printed book held open in two hands to a forest spread',
+    caption: 'Held open — a real, bound keepsake.',
+  },
+  {
+    src: '/assets/hsb-lukas-dino-photo-hands-2.jpg',
+    alt: 'Photograph of the printed book held open in hand to a triceratops spread',
+    caption: 'Matte pages, photographed in hand.',
+  },
+];
+
+// Clean exported page art (Dinosaurs + French Fry City). Labeled as sample
+// interior art only — these are not photographs of a physical book.
+const cleanInteriorPages = [
+  {
+    src: '/assets/hsb-lukas-print-story-07.jpg',
+    alt: 'King of the Dinosaurs sample interior page — a friendly T-rex in a forest',
+    book: 'King of the Dinosaurs',
+  },
+  {
+    src: '/assets/hsb-lukas-print-story-16.jpg',
+    alt: 'King of the Dinosaurs sample interior page — a child and two dinosaurs in a glade',
+    book: 'King of the Dinosaurs',
+  },
+  {
+    src: '/assets/hsb-lukas-french-fry-p06.jpg',
+    alt: 'French Fry City sample interior page — playful food-world scene',
+    book: 'French Fry City',
+  },
+  {
+    src: '/assets/hsb-lukas-french-fry-p13.jpg',
+    alt: 'French Fry City sample interior page — the hero at a glowing doorway',
+    book: 'French Fry City',
+  },
+];
+
+// Direction-C editorial gallery clusters. Two real titles, both made for the
+// same child (Lukas). Clean art only — no physical-book proof language.
+const galleryClusters = [
+  {
+    title: 'King of the Dinosaurs',
+    blurb: 'Clean art from a real title — a child crowned king of a friendly dinosaur world.',
+    cover: {
+      src: '/assets/hsb-lukas-print-front-cover.jpg',
+      label: 'Sample cover',
+      alt: 'King of the Dinosaurs sample cover art',
+    },
+    pages: [
+      {
+        src: '/assets/hsb-lukas-print-story-01.jpg',
+        label: 'Sample interior page',
+        alt: 'King of the Dinosaurs sample interior page — a child reading in bed',
+      },
+      {
+        src: '/assets/hsb-lukas-print-story-21.jpg',
+        label: 'Sample interior page',
+        alt: 'King of the Dinosaurs sample interior page — a child beside a crowned dinosaur',
+      },
+      {
+        src: '/assets/hsb-lukas-print-story-24.jpg',
+        label: 'Sample interior page',
+        alt: 'King of the Dinosaurs sample interior page — a cozy bedtime scene',
+      },
+    ],
+  },
+  {
+    title: 'French Fry City',
+    blurb: 'Clean art from a real title — the same child, a different made-up adventure.',
+    cover: {
+      src: '/assets/hsb-lukas-french-fry-front-cover.jpg',
+      label: 'Sample cover',
+      alt: 'French Fry City sample cover art',
+    },
+    pages: [
+      {
+        src: '/assets/hsb-lukas-french-fry-p15.jpg',
+        label: 'Sample interior page',
+        alt: 'French Fry City sample interior page — a candy-world character',
+      },
+      {
+        src: '/assets/hsb-lukas-french-fry-p19.jpg',
+        label: 'Sample interior page',
+        alt: 'French Fry City sample interior page — the hero and a dog in a golden city',
+      },
+      {
+        src: '/assets/hsb-lukas-french-fry-p28.jpg',
+        label: 'Sample interior page',
+        alt: 'French Fry City sample interior page — a warm keepsake ending',
+      },
+    ],
   },
 ];
 
@@ -269,7 +361,7 @@ function EditorialFooter() {
       </div>
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 border-t border-[#dfd2b8] px-5 py-5 text-xs text-[#695f54] md:px-8">
         <span>© 2026 HeroStoryBooks · Made by a small team in Chicago · <a href="mailto:support@herostorybooks.com" className="hover:text-[#a64c4c]">support@herostorybooks.com</a></span>
-        <span>SSL-encrypted · Stripe-secured · US shipping included on printed books</span>
+        <span>SSL-encrypted · Stripe-secured · proof-first printed keepsakes</span>
       </div>
     </footer>
   );
@@ -772,74 +864,289 @@ export function EditorialAboutPage() {
 export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
-      <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Sample" title="A peek inside a personalized proof book." sub="This page uses the recent Lukas and the French Fry City hardcover print package as a sample: one child, one story, one consistent finished-book direction. Digital buyers receive the same proof-first book as a PDF after approval." centered />
-        <div className="grid items-start gap-8 md:grid-cols-[0.9fr_1.1fr]">
-          <div className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
-            <div className="mx-auto max-w-[320px] [perspective:1200px]">
-              <div className="relative origin-left overflow-hidden rounded-xl bg-[#fff8ec] shadow-2xl ring-1 ring-[#d8c6a2] [transform:rotateY(-10deg)_rotateZ(-1deg)]">
-                <img
-                  src="/assets/hsb-lukas-french-fry-front-cover.jpg"
-                  alt="Lukas and the French Fry City hardcover front cover"
-                  className="aspect-[4/5] h-full w-full object-cover object-[50%_45%]"
-                />
-                <div className="absolute inset-y-0 left-0 w-7 bg-gradient-to-r from-black/18 to-transparent" aria-hidden="true" />
-                <div className="absolute inset-y-0 right-0 w-4 bg-white/30" aria-hidden="true" />
-              </div>
-            </div>
-            <p className="mt-5 text-center text-xs leading-5 text-[#695f54]">A recent hardcover print package, displayed as a book-style mockup. Every new order still receives its own proof and approval pass.</p>
+      <SamplesHero />
+      <SamplesTrustStrip />
+      <RealSampleBookCarousel />
+      <CleanInteriorBand />
+      <TwoAdventuresBeat />
+      <SamplesHowItBecomesReal />
+      <SamplesGallery />
+      <HonestExpectations />
+      <SamplesFinalCta />
+    </EditorialPageShell>
+  );
+}
+
+/**
+ * Proof-first hero. The single strongest trust asset on the page is a real
+ * photograph of the printed "King of the Dinosaurs" book, so it leads.
+ * No prices, no SLA, no shipping claims here — copy points to /pricing.
+ */
+function SamplesHero() {
+  return (
+    <section className="relative overflow-hidden">
+      <div className="absolute inset-0 opacity-60 [background:radial-gradient(circle_at_18%_8%,#fff4d6_0,transparent_34%),radial-gradient(circle_at_82%_0,#ead8b8_0,transparent_28%)]" />
+      <div className="relative mx-auto grid max-w-6xl items-center gap-10 px-5 py-14 md:grid-cols-[1.02fr_0.98fr] md:px-8 md:py-20">
+        <div>
+          <div className="mb-5 inline-flex rounded-full border border-[#d8c6a2] bg-[#fff8ec]/65 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.22em] text-[#695f54]">
+            Real sample book
           </div>
-          <div className="space-y-5">
-            <figure className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-3 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
-              <img
-                src="/assets/hsb-lukas-french-fry-p03.jpg"
-                alt="Lukas and the French Fry City interior proof page with French fry characters"
-                className="aspect-[4/3] w-full rounded-xl object-cover object-[50%_30%]"
-                loading="lazy"
-              />
-              <figcaption className="mt-3 px-2 text-center text-xs leading-5 text-[#695f54]">
-                Interior proof from a recent print-submitted book. Sample proof shown with permission; every customer book is reviewed before fulfillment.
-              </figcaption>
-            </figure>
-            <div className="grid gap-4 sm:grid-cols-3">
-              {[
-                ['/assets/hsb-lukas-french-fry-p13.jpg', 'Interior page from a real Lukas French Fry City order — doorway scene'],
-                ['/assets/hsb-lukas-french-fry-p15.jpg', 'Interior page from a real Lukas French Fry City order — candy world scene'],
-                ['/assets/hsb-lukas-french-fry-p19.jpg', 'Interior page from a real Lukas French Fry City order — golden city scene'],
-              ].map(([src, alt]) => (
-                <img
-                  key={src}
-                  src={src}
-                  alt={alt}
-                  className="aspect-square w-full rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] object-cover object-[50%_35%]"
-                  loading="lazy"
-                />
-              ))}
-            </div>
+          <h1 className="max-w-2xl font-serif text-[clamp(2.7rem,7vw,5.6rem)] font-medium leading-[0.9] tracking-[-0.03em] text-[#1f1a16]">
+            A real printed book, <em className="font-normal italic text-[#a64c4c]">photographed</em>.
+          </h1>
+          <p className="mt-6 max-w-xl text-lg leading-8 text-[#695f54]">
+            This is an actual printed HeroStoryBooks copy — King of the Dinosaurs, made for a real child. The photos below are the physical book on a desk and in hand, not a mockup. The art further down is clean page art from real titles.
+          </p>
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+            <PrimaryCta href="/pricing" size="lg">See current pricing · approve before we print</PrimaryCta>
+            <a
+              href="/checkout"
+              className="inline-flex items-center justify-center rounded-full border border-[#c9b891] px-6 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-[#1f1a16] transition hover:border-[#a64c4c] hover:text-[#a64c4c]"
+            >
+              Start your book
+            </a>
           </div>
         </div>
-        <div className="mx-auto mt-10 max-w-5xl space-y-5">
-          {lukasStorySnippets.map(({ page, title, body, image, imageAlt }) => (
-            <article key={page} className="grid overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_20px_60px_-52px_rgba(31,26,22,0.35)] md:grid-cols-[0.92fr_1fr]">
+        <figure className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-4 shadow-[0_28px_80px_-58px_rgba(31,26,22,0.6)] md:p-5">
+          <img
+            src={dinoBookPhotos[0].src}
+            alt={dinoBookPhotos[0].alt}
+            className="aspect-[4/3] w-full rounded-2xl object-cover object-[50%_45%]"
+            fetchPriority="high"
+          />
+          <figcaption className="mt-4 flex items-center gap-2 px-1 text-xs leading-5 text-[#695f54]">
+            <span className="rounded-full bg-[#5b6047]/12 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-[#5b6047]">Photo of the printed book</span>
+            <span>{dinoBookPhotos[0].caption}</span>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+  );
+}
+
+/** Safe trust strip — approval, timing, and revision promises only. No fixed
+ *  prices, SLA windows, free/unlimited revision, or shipping-inclusion claims. */
+function SamplesTrustStrip() {
+  const items = [
+    'You approve every page before we print',
+    'Timing shown before order',
+    'Proof revisions before print',
+  ];
+  return (
+    <div className="border-y border-[#dfd2b8] bg-[#fff8ec]/55">
+      <div className="mx-auto flex max-w-6xl flex-col gap-2 px-5 py-5 text-sm text-[#695f54] min-[560px]:flex-row min-[560px]:flex-wrap min-[560px]:gap-x-8 min-[560px]:gap-y-3 md:px-8">
+        {items.map((item) => (
+          <span key={item} className="inline-flex items-center gap-2"><span className="text-[#a64c4c]">✓</span>{item}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Real-sample-book photo carousel — physical Dinosaurs photographs only.
+ *  CSS scroll-snap, no JS engine. */
+function RealSampleBookCarousel() {
+  return (
+    <section className="mx-auto max-w-6xl px-5 pt-14 pb-2 md:px-8 md:pt-20">
+      <SectionHeader
+        eyebrow="Real sample book"
+        title="The actual printed copy, page by page."
+        sub="Every image in this row is a photograph of the same real printed book — open on a desk and held in hand. Swipe to flip through it."
+      />
+      <div className="-mx-5 overflow-x-auto px-5 pb-4 [scrollbar-width:thin] md:mx-0 md:px-0" role="group" aria-label="Photographs of the printed sample book">
+        <ul className="flex snap-x snap-mandatory gap-4 md:gap-5">
+          {dinoBookPhotos.map((photo) => (
+            <li key={photo.src} className="w-[78%] shrink-0 snap-start min-[560px]:w-[56%] md:w-[44%] lg:w-[38%]">
+              <figure className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
+                <img
+                  src={photo.src}
+                  alt={photo.alt}
+                  className="aspect-[4/3] w-full object-cover"
+                  loading="lazy"
+                />
+                <figcaption className="px-4 py-3 text-xs leading-5 text-[#695f54]">{photo.caption}</figcaption>
+              </figure>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
+/** Clean interior page band — Dinosaurs + French Fry City clean art. Clearly
+ *  labeled "sample art" so it is never confused with a print proof. */
+function CleanInteriorBand() {
+  return (
+    <section className="bg-[#fff8ec]/45 py-14 md:py-20">
+      <div className="mx-auto max-w-6xl px-5 md:px-8">
+        <SectionHeader
+          eyebrow="Inside the stories"
+          title="Sample interior art, up close."
+          sub="Clean page art exported from two real titles. This is artwork, not a photo of a physical book — the printed proof photos are in the row above."
+        />
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4 md:gap-5">
+          {cleanInteriorPages.map((page) => (
+            <figure key={page.src} className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_20px_60px_-52px_rgba(31,26,22,0.35)]">
               <img
-                src={image}
-                alt={imageAlt}
-                className="aspect-[4/3] h-full w-full object-cover object-[50%_35%] md:aspect-auto"
+                src={page.src}
+                alt={page.alt}
+                className="aspect-square w-full object-cover object-[50%_35%]"
                 loading="lazy"
               />
-              <div className="relative p-7">
-                <div className="absolute right-5 top-5 font-serif text-sm italic text-[#9a8d7b]">— {page} —</div>
-                <h3 className="pr-16 font-serif text-3xl font-semibold">{title}</h3>
-                <p className="mt-4 text-base leading-8 text-[#695f54]">{body}</p>
-              </div>
+              <figcaption className="px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-[#a64c4c]">
+                Sample interior page<span className="block font-medium normal-case tracking-normal text-[#695f54]">{page.book}</span>
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** "One child. Two real adventures." with the explicit one-child caveat. */
+function TwoAdventuresBeat() {
+  return (
+    <section className="mx-auto max-w-6xl px-5 py-14 md:px-8 md:py-20">
+      <div className="grid items-center gap-8 rounded-3xl border border-[#d8c6a2] bg-[#f5ead2] p-7 md:grid-cols-[1fr_1fr] md:p-10">
+        <div>
+          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">From one real kid</div>
+          <h2 className="font-serif text-4xl font-medium leading-tight tracking-[-0.02em] text-[#1f1a16] md:text-5xl">One child. Two real adventures.</h2>
+          <p className="mt-4 text-base leading-7 text-[#695f54]">
+            Both sample titles on this page — King of the Dinosaurs and French Fry City — were made for the same real child, Lukas. They are two finished books from one kid, shown to demonstrate range of story and art, not a gallery of different children.
+          </p>
+          <p className="mt-3 text-base leading-7 text-[#695f54]">
+            Your book stars your child. The artwork is <strong className="font-semibold text-[#1f1a16]">recognizably inspired by your child</strong> — reference photos guide the art, a storybook character rather than an exact portrait.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <img
+            src="/assets/hsb-lukas-print-front-cover.jpg"
+            alt="King of the Dinosaurs sample cover art"
+            className="aspect-square w-full rounded-2xl border border-[#d8c6a2] object-cover"
+            loading="lazy"
+          />
+          <img
+            src="/assets/hsb-lukas-french-fry-front-cover.jpg"
+            alt="French Fry City sample cover art"
+            className="aspect-square w-full rounded-2xl border border-[#d8c6a2] object-cover object-[50%_25%]"
+            loading="lazy"
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** How a sample becomes a real, approved book. */
+function SamplesHowItBecomesReal() {
+  const steps = [
+    ['1', 'Send a photo and a few details', 'A clear photo of your child, their name, and the adventure you want. Reference photos guide the art.'],
+    ['2', 'We build the full proof', 'A complete digital proof — story and art across every page — for you to read before anything prints.'],
+    ['3', 'You approve, then we print', 'Reply with changes or approve. Proof revisions happen before print, and nothing prints until you say go.'],
+  ];
+  return (
+    <section className="bg-[#fff8ec]/45 py-14 md:py-20">
+      <div className="mx-auto max-w-6xl px-5 md:px-8">
+        <SectionHeader eyebrow="How it becomes real" title="From your photo to a printed keepsake." centered />
+        <div className="grid gap-5 md:grid-cols-3">
+          {steps.map(([n, title, body]) => (
+            <article key={n} className="relative rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-7 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
+              <div className="mb-8 inline-grid h-10 w-10 place-items-center rounded-full bg-[#a64c4c] font-serif text-xl text-white">{n}</div>
+              <h3 className="mb-3 font-serif text-2xl font-semibold text-[#1f1a16]">{title}</h3>
+              <p className="text-sm leading-6 text-[#695f54]">{body}</p>
             </article>
           ))}
         </div>
-        <div className="mt-12 grid gap-5 md:grid-cols-3">
-          {sampleBooks.map((book) => <SampleCard key={book.title} {...book} />)}
+      </div>
+    </section>
+  );
+}
+
+/** Direction-C editorial gallery clusters — two labeled real titles. */
+function SamplesGallery() {
+  return (
+    <section className="mx-auto max-w-6xl px-5 py-14 md:px-8 md:py-20">
+      <SectionHeader eyebrow="The gallery" title="Two real titles, in full." sub="Clean cover and interior art from each book. Both were made for the same child." />
+      <div className="space-y-12 md:space-y-16">
+        {galleryClusters.map((cluster) => (
+          <article key={cluster.title}>
+            <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h3 className="font-serif text-3xl font-semibold leading-tight text-[#1f1a16] md:text-4xl">{cluster.title}</h3>
+                <p className="mt-2 max-w-xl text-sm leading-6 text-[#695f54]">{cluster.blurb}</p>
+              </div>
+              <a href="/pricing" className="text-xs font-semibold uppercase tracking-[0.16em] text-[#a64c4c] underline-offset-4 hover:underline">
+                See current pricing
+              </a>
+            </div>
+            <div className="grid gap-4 md:grid-cols-4 md:gap-5">
+              <GalleryTile {...cluster.cover} featured />
+              {cluster.pages.map((page) => <GalleryTile key={page.src} {...page} />)}
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function GalleryTile({ src, alt, label, featured = false }: { src: string; alt: string; label: string; featured?: boolean }) {
+  return (
+    <figure className={cx(
+      'group relative overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_20px_60px_-52px_rgba(31,26,22,0.35)]',
+      featured && 'md:row-span-1 md:ring-2 md:ring-[#a64c4c]/15',
+    )}>
+      <img
+        src={src}
+        alt={alt}
+        className="aspect-square w-full object-cover object-[50%_35%] transition duration-500 group-hover:scale-[1.03]"
+      />
+      <figcaption className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/55 to-transparent px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-[#fff8ec]">
+        {label}
+      </figcaption>
+    </figure>
+  );
+}
+
+/** Honest expectations — keepsake framing, likeness caveat, timing pointer. */
+function HonestExpectations() {
+  const blocks = [
+    ['A keepsake, not a novelty', 'Printed and bound as a keepsake. Made to be read for years.'],
+    ['Inspired, not a portrait', 'Reference photos guide the art — a storybook character, not an exact portrait.'],
+    ['Timing is always shown', 'Proof timing is shown before you order; print and delivery timing are shown before checkout.'],
+  ];
+  return (
+    <section className="mx-auto max-w-6xl px-5 pb-4 md:px-8">
+      <div className="grid gap-5 rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-7 md:grid-cols-3 md:p-10">
+        {blocks.map(([title, body]) => (
+          <div key={title}>
+            <h3 className="mb-2 font-serif text-2xl font-semibold text-[#1f1a16]">{title}</h3>
+            <p className="text-sm leading-6 text-[#695f54]">{body}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SamplesFinalCta() {
+  return (
+    <section className="px-5 py-16 md:px-8 md:py-20">
+      <div className="mx-auto max-w-5xl rounded-[2rem] bg-[#1f1a16] px-6 py-14 text-center text-[#fff8ec] md:px-12">
+        <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#e2c889]">Ready when you are</div>
+        <h2 className="font-serif text-4xl font-medium leading-tight md:text-6xl">Make this for your child.</h2>
+        <p className="mx-auto mt-5 max-w-2xl text-base leading-7 text-[#e7dcc8]">Start with a name and a photo. You see the full proof first and approve every page before we print.</p>
+        <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          <a href="/checkout" className="inline-flex rounded-full bg-[#fff8ec] px-8 py-4 text-sm font-semibold uppercase tracking-[0.14em] text-[#1f1a16]">
+            Start your book
+          </a>
+          <Link href="/pricing" className="inline-flex rounded-full border border-[#e2c889]/40 px-8 py-4 text-sm font-semibold uppercase tracking-[0.14em] text-[#fff8ec] transition hover:border-[#e2c889]">
+            See current pricing · approve before we print
+          </Link>
         </div>
-      </section>
-      <FinalCta />
-    </EditorialPageShell>
+      </div>
+    </section>
   );
 }
