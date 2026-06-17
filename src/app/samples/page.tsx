@@ -5,29 +5,29 @@ import { getSiteOrigin } from '@/lib/site-url';
 const siteOrigin = getSiteOrigin();
 
 export const metadata: Metadata = {
-  title: 'Sample Personalized Proof Book | HeroStoryBooks',
+  title: 'See a Real Sample Book | HeroStoryBooks',
   description:
-    'Peek inside a personalized HeroStoryBooks proof book with real watercolor sample pages, proof-first review, and digital or printed keepsake options.',
+    'See a real printed HeroStoryBooks copy, photographed, plus clean sample art from real titles. Proof-first: you approve every page before we print.',
   openGraph: {
-    title: 'A peek inside a personalized proof book',
+    title: 'A real printed sample book, photographed',
     description:
-      'See sample story pages from a proof-first personalized children’s book before starting your own.',
+      'Photos of an actual printed personalized children’s book, plus clean sample art from real titles. You approve before we print.',
     url: `${siteOrigin}/samples`,
     images: [
       {
-        url: '/assets/hsb-lukas-print-story-21.jpg',
-        width: 1254,
-        height: 1254,
-        alt: 'Sample HeroStoryBooks personalized proof page',
+        url: '/assets/hsb-lukas-dino-photo-cover.jpg',
+        width: 960,
+        height: 880,
+        alt: 'Photograph of a printed HeroStoryBooks personalized book on a desk',
       },
     ],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'A peek inside a personalized proof book',
+    title: 'A real printed sample book, photographed',
     description:
-      'See sample story pages from a proof-first personalized children’s book before starting your own.',
-    images: ['/assets/hsb-lukas-print-story-21.jpg'],
+      'Photos of an actual printed personalized children’s book, plus clean sample art from real titles. You approve before we print.',
+    images: ['/assets/hsb-lukas-dino-photo-cover.jpg'],
   },
 };
 

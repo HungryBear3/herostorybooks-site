@@ -73,7 +73,7 @@ export default function NotFound() {
       <footer className="border-t border-[#dfd2b8] bg-[#f5ead2]">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-5 text-xs text-[#695f54] md:px-8">
           <span>© 2026 HeroStoryBooks · Made by a small team in Chicago · <a href="mailto:support@herostorybooks.com" className="hover:text-[#a64c4c]">support@herostorybooks.com</a></span>
-          <span>SSL-encrypted · Stripe-secured · US shipping included</span>
+          <span>SSL-encrypted · Stripe-secured · proof-first printed keepsakes</span>
         </div>
       </footer>
     </main>
