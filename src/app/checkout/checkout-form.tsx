@@ -139,7 +139,23 @@ const SUPPORTING_CHARACTER_PRESETS = [
 const CHECKOUT_PHOTO_ACCEPT_ATTR = "image/*";
 
 function envFlagEnabled(value: string | undefined): boolean {
-  return value?.replace(/\\n/g, "").trim().toLowerCase() === "true";
+  return value?.replace(/\n/g, "").trim().toLowerCase() === "true";
+}
+
+function supportingCharacterLabel(character: SupportingCharacter): string {
+  return (character.name || character.relationshipLabel || character.role || "family member").trim();
+}
+
+function isHumanSupportingCharacter(character: SupportingCharacter): boolean {
+  return character.role !== "pet";
+}
+
+function missingSupportingCharacterPhotoLabels(characters: SupportingCharacter[]): string[] {
+  return characters
+    .filter((character) => character.appearsInStory !== false)
+    .filter(isHumanSupportingCharacter)
+    .filter((character) => !character.photoFile)
+    .map(supportingCharacterLabel);
 }
 
 const VOICE_BETA_ENABLED =
@@ -147,7 +163,7 @@ const VOICE_BETA_ENABLED =
 const SPLIT_ASSET_INTAKE_ENABLED =
   envFlagEnabled(process.env.NEXT_PUBLIC_HSB_SPLIT_ASSET_INTAKE);
 const MULTI_FAMILY_PHOTO_INTAKE_ENABLED =
-  envFlagEnabled(process.env.NEXT_PUBLIC_HSB_MULTI_FAMILY_PHOTO_INTAKE);
+  process.env.NEXT_PUBLIC_HSB_MULTI_FAMILY_PHOTO_INTAKE?.replace(/\n/g, "").trim().toLowerCase() !== "false";
 
 const STORAGE_KEY = "hsb_order_v1";
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
@@ -588,6 +604,7 @@ export function CheckoutForm() {
   // before-print delivery depends on it, so a malformed address keeps the CTA
   // disabled (matches the server's /api/order email validation).
   const emailLooksValid = looksLikeEmail(form.email);
+  const missingSupportingPhotoLabels = missingSupportingCharacterPhotoLabels(form.familyCharacters);
   const isReadyToPay =
     Boolean(form.theme) &&
     Boolean(form.childName) &&
@@ -595,6 +612,7 @@ export function CheckoutForm() {
     emailLooksValid &&
     Boolean(form.skinTone) &&
     Boolean(form.hairStyle) &&
+    missingSupportingPhotoLabels.length === 0 &&
     (!VOICE_BETA_ENABLED || form.voiceFile == null || form.voiceConsent);
   const completedStepCount = [
     Boolean(form.theme),
@@ -1709,7 +1727,7 @@ export function CheckoutForm() {
                 </h2>
                 <p className="text-sm text-[#695f54]">
                   Add family members or pets for the story text and scene notes.
-                  Each Supporting character reference photo is optional: one optional still photo helps guide the illustration.
+                  Human family members need their own still reference photo before payment; pet photos stay optional.
                   The child remains the main hero reference.
                 </p>
               </div>
@@ -1828,13 +1846,13 @@ export function CheckoutForm() {
                           <div className="mb-2 flex items-center justify-between gap-3">
                             <div>
                               <p className="text-sm font-semibold text-[#1f1a16]">
-                                Want this character to look more like themselves? Supporting character reference photo
+                                Supporting character reference photo
                                 {character.name || character.relationshipLabel
                                   ? ` for ${character.name || character.relationshipLabel}`
                                   : " for this family member or pet"}
                               </p>
                               <p className="text-xs leading-5 text-[#8a7b6a]">
-                                One optional still photo helps guide the illustration.
+                                Required for human family members before payment; optional for pets.
                                 The child remains the main hero reference; your child&apos;s photo remains the main visual reference.
                                 Reference-only, not an exact-likeness guarantee.
                               </p>
@@ -1871,7 +1889,7 @@ export function CheckoutForm() {
                                   Reference photo ready
                                 </p>
                                 <p className="text-xs text-[#5f766f]">
-                                  This optional photo will be saved privately for reviewer guidance only.
+                                  This photo will be saved privately for reviewer guidance only.
                                 </p>
                               </div>
                             </div>
@@ -1907,7 +1925,7 @@ export function CheckoutForm() {
                                 </label>
                               </div>
                               <p className="text-xs text-[#8a7b6a]">
-                                JPG/PNG/WebP/HEIC · max 4 MB · optional · Photo optional for pets
+                                JPG/PNG/WebP/HEIC · max 4 MB · required for human family members · optional for pets
                               </p>
                             </div>
                           )}
@@ -2098,6 +2116,12 @@ export function CheckoutForm() {
               <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm text-[#35564d]">
                 ✨ {PRINT_PREVIEW_PROMISE}
               </div>
+              {missingSupportingPhotoLabels.length > 0 && (
+                <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
+                  Add a still reference photo for {missingSupportingPhotoLabels.join(", ")} before payment. Pets are optional; human family members need a photo so the proof can match them.
+                </div>
+              )}
+
             </section>
 
             {VOICE_BETA_ENABLED && (

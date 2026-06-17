@@ -39,6 +39,30 @@ function getStripe() {
   return new Stripe(getRequiredStripeSecretKey());
 }
 
+function familyCharacterLabel(character: ReturnType<typeof sanitizeFamilyCharacters>[number]): string {
+  return (character.name || character.relationshipLabel || character.role || 'family member').trim();
+}
+
+function isHumanSupportingCharacter(character: ReturnType<typeof sanitizeFamilyCharacters>[number]): boolean {
+  return character.role !== 'pet';
+}
+
+function missingSupportingCharacterPhotoLabels(
+  familyCharacters: ReturnType<typeof sanitizeFamilyCharacters>,
+  form: FormData,
+): string[] {
+  return familyCharacters
+    .map((character, index) => ({ character, index }))
+    .filter(({ character }) => character.appearsInStory !== false)
+    .filter(({ character }) => isHumanSupportingCharacter(character))
+    .filter(({ character, index }) => {
+      if (character.photoFileName || character.photoBlobPath || character.photoBlobUrl) return false;
+      const file = form.get(`familyCharacterPhoto_${index}`);
+      return !(file instanceof File) || file.size <= 0;
+    })
+    .map(({ character }) => familyCharacterLabel(character));
+}
+
 const AUDIO_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i;
 const INSPIRATION_DOC_EXT_RE = /\.(txt|pdf|doc|docx)$/i;
 
@@ -219,6 +243,18 @@ export async function POST(request: Request) {
     }
 
     const familyCharactersRaw = String(form.get('familyCharacters') || '');
+    const familyCharacters = sanitizeFamilyCharacters(familyCharactersRaw);
+    const missingSupportingPhotos = missingSupportingCharacterPhotoLabels(familyCharacters, form);
+    if (missingSupportingPhotos.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Add a still reference photo for ${missingSupportingPhotos.join(', ')} before payment. No charge was made.`,
+          code: 'supporting_character_photo_required',
+        },
+        { status: 400 },
+      );
+    }
+
     const draftOrder = createOrderRecord({
       childName,
       childAge: String(form.get('childAge') || ''),
@@ -268,6 +304,17 @@ export async function POST(request: Request) {
     }
 
     const familyCharacters = sanitizeFamilyCharacters(familyCharactersRaw);
+    const missingSupportingPhotos = missingSupportingCharacterPhotoLabels(familyCharacters, form);
+    if (missingSupportingPhotos.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Add still reference photo${missingSupportingPhotos.length === 1 ? '' : 's'} for ${missingSupportingPhotos.join(', ')} before payment. Pet photos stay optional.`,
+          code: 'supporting_character_photo_required',
+        },
+        { status: 400 },
+      );
+    }
+
     let rawFamilyCharacters: Array<{ id?: string; role?: string; name?: string; relationshipLabel?: string }> = [];
     try {
       const parsed = JSON.parse(familyCharactersRaw || '[]');
