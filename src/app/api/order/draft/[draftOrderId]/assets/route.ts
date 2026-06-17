@@ -63,6 +63,10 @@ export async function POST(
       familyCharacterId: form.get('familyCharacterId') ? String(form.get('familyCharacterId')) : null,
       familyCharacterIndex: Number.isInteger(familyCharacterIndex) ? familyCharacterIndex : null,
       source: form.get('source') === 'recorded' ? 'recorded' : form.get('source') === 'guided_capture' ? 'guided_capture' : 'upload',
+      // Reload/resume-safe dedupe key (stable per-file client id). When the
+      // client re-sends the same file (lost response / resume), the server
+      // returns the existing asset instead of duplicating.
+      localId: form.get('localId') ? String(form.get('localId')) : null,
     });
     return NextResponse.json({ ok: true, asset });
   } catch (error) {
