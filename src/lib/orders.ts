@@ -24,6 +24,44 @@ export interface ShippingAddress {
   country: string;
 }
 
+export interface FamilyContributionInput {
+  contributorName?: string | null;
+  relationship?: string | null;
+  dedication?: string | null;
+  memory?: string | null;
+  storyIdea?: string | null;
+  supportingCharacterName?: string | null;
+  supportingCharacterRelationship?: string | null;
+  supportingCharacterNotes?: string | null;
+  voiceFileName?: string | null;
+  voiceBlobPath?: string | null;
+  voiceBlobUrl?: string | null;
+  voiceConsentAt?: string | null;
+  photoFileName?: string | null;
+  photoBlobPath?: string | null;
+  photoBlobUrl?: string | null;
+}
+
+export interface FamilyContribution {
+  id: string;
+  submittedAt: string;
+  contributorName: string;
+  relationship: string;
+  dedication: string;
+  memory: string;
+  storyIdea: string;
+  supportingCharacterName: string;
+  supportingCharacterRelationship: string;
+  supportingCharacterNotes: string;
+  voiceFileName: string | null;
+  voiceBlobPath: string | null;
+  voiceBlobUrl: string | null;
+  voiceConsentAt: string | null;
+  photoFileName: string | null;
+  photoBlobPath: string | null;
+  photoBlobUrl: string | null;
+}
+
 export interface OrderInput {
   childName: string;
   childAge?: string;
@@ -446,6 +484,10 @@ export interface OrderRecord extends OrderInput {
   pageArtifacts?: PageArtifact[];
   /** Influencer / partner attribution captured from ?ref= or hsb_ref cookie. */
   referralCode?: string | null;
+  /** Bearer-style private link token for family memory/photo/story contributors. */
+  familyContributionToken?: string | null;
+  /** Append-only family-provided inspiration for the order. Never public by default. */
+  familyContributions?: FamilyContribution[];
   /** Append-only audit log of review/approval events. Optional on legacy orders. */
   auditEvents?: ReviewAuditEvent[];
   /** Pre-print refund state. Set when admin issues a Stripe refund for an
@@ -997,6 +1039,57 @@ export function buildDeliveryExpectation(bookFormat: string): string {
   return 'Softcover ships 5–7 business days after proof approval — free shipping included. Digital preview arrives first so you can approve before it prints.';
 }
 
+const FAMILY_CONTRIBUTION_TOKEN_BYTES = 16;
+const FAMILY_CONTRIBUTION_SHORT_MAX = 120;
+const FAMILY_CONTRIBUTION_LONG_MAX = 800;
+
+export function createFamilyContributionToken(): string {
+  return crypto.randomBytes(FAMILY_CONTRIBUTION_TOKEN_BYTES).toString('hex');
+}
+
+export function buildFamilyContributionUrl(baseUrl: string, token: string | null | undefined): string | null {
+  const cleanToken = cleanShortText(token, 80);
+  if (!cleanToken) return null;
+  const url = new URL(`/family-contribute/${encodeURIComponent(cleanToken)}`, baseUrl);
+  return url.toString();
+}
+
+export function sanitizeFamilyContributionInput(
+  input: FamilyContributionInput,
+  submittedAt = new Date().toISOString(),
+): FamilyContribution {
+  return {
+    id: `fam_${crypto.createHash('sha256').update(`${submittedAt}:${JSON.stringify(input)}`).digest('hex').slice(0, 16)}`,
+    submittedAt,
+    contributorName: cleanShortText(input.contributorName, FAMILY_CONTRIBUTION_SHORT_MAX),
+    relationship: cleanShortText(input.relationship, FAMILY_CONTRIBUTION_SHORT_MAX),
+    dedication: cleanShortText(input.dedication, FAMILY_CONTRIBUTION_LONG_MAX),
+    memory: cleanShortText(input.memory, FAMILY_CONTRIBUTION_LONG_MAX),
+    storyIdea: cleanShortText(input.storyIdea, FAMILY_CONTRIBUTION_LONG_MAX),
+    supportingCharacterName: cleanShortText(input.supportingCharacterName, FAMILY_CONTRIBUTION_SHORT_MAX),
+    supportingCharacterRelationship: cleanShortText(input.supportingCharacterRelationship, FAMILY_CONTRIBUTION_SHORT_MAX),
+    supportingCharacterNotes: cleanShortText(input.supportingCharacterNotes, FAMILY_CONTRIBUTION_LONG_MAX),
+    voiceFileName: cleanShortText(input.voiceFileName, 160) || null,
+    voiceBlobPath: cleanShortText(input.voiceBlobPath, 500) || null,
+    voiceBlobUrl: cleanShortText(input.voiceBlobUrl, 500) || null,
+    voiceConsentAt: cleanShortText(input.voiceConsentAt, 80) || null,
+    photoFileName: cleanShortText(input.photoFileName, 160) || null,
+    photoBlobPath: cleanShortText(input.photoBlobPath, 500) || null,
+    photoBlobUrl: cleanShortText(input.photoBlobUrl, 500) || null,
+  };
+}
+
+export function appendFamilyContribution(
+  order: OrderRecord,
+  contribution: FamilyContribution,
+): OrderRecord {
+  return {
+    ...order,
+    familyContributions: [...(order.familyContributions ?? []), contribution],
+    updatedAt: contribution.submittedAt,
+  };
+}
+
 export function createOrderRecord(input: OrderInput, options: CreateOrderOptions = {}): OrderRecord {
   const format = normalizeFormat(input.bookFormat);
   const meta = FORMAT_META[format];
@@ -1041,6 +1134,8 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
         ? input.guidedReferencePhotos
         : null,
     referralCode: sanitizeReferralCode(input.referralCode),
+    familyContributionToken: createFamilyContributionToken(),
+    familyContributions: [],
     status: 'order_received',
     paymentStatus: 'pending',
     stripeSessionId: null,
@@ -1257,7 +1352,11 @@ export interface UploadedVoiceRef {
  * Upload an attached child-voice audio file to durable blob storage. Mirrors
  * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
  */
-export async function uploadOrderVoice(orderId: string, file: File): Promise<UploadedVoiceRef | null> {
+async function uploadOrderVoiceAtPath(
+  orderId: string,
+  file: File,
+  pathnameForSafeName: (safeName: string) => string,
+): Promise<UploadedVoiceRef | null> {
   const token = getBlobToken();
 
   if (typeof file.arrayBuffer !== 'function') {
@@ -1281,7 +1380,7 @@ export async function uploadOrderVoice(orderId: string, file: File): Promise<Upl
     .replace(/[^a-zA-Z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '') || 'voice';
 
-  const pathname = withBlobNamespace(`orders/${orderId}/voice-${safeName}`);
+  const pathname = withBlobNamespace(pathnameForSafeName(safeName));
   const buffer = Buffer.from(await file.arrayBuffer());
 
   try {
@@ -1308,6 +1407,23 @@ export async function uploadOrderVoice(orderId: string, file: File): Promise<Upl
     console.warn(`[orders] uploadOrderVoice blob put failed in dev for ${orderId}:`, err);
     return null;
   }
+}
+
+export async function uploadOrderVoice(orderId: string, file: File): Promise<UploadedVoiceRef | null> {
+  return uploadOrderVoiceAtPath(orderId, file, (safeName) => `orders/${orderId}/voice-${safeName}`);
+}
+
+export async function uploadFamilyContributionVoice(
+  orderId: string,
+  contributionId: string,
+  file: File,
+): Promise<UploadedVoiceRef | null> {
+  const safeContributionId = cleanShortText(contributionId, 80) || 'contribution';
+  return uploadOrderVoiceAtPath(
+    orderId,
+    file,
+    (safeName) => `orders/${orderId}/family-contributions/${safeContributionId}/voice-${safeName}`,
+  );
 }
 
 async function uploadOrderPhotoAtPath(
@@ -1385,6 +1501,19 @@ export async function uploadOrderSupportingPhoto(
     orderId,
     file,
     (safeName) => `orders/${orderId}/supporting-${safeIndex}-photo-${safeName}`,
+  );
+}
+
+export async function uploadFamilyContributionPhoto(
+  orderId: string,
+  contributionId: string,
+  file: File,
+): Promise<UploadedPhotoRef | null> {
+  const safeContributionId = cleanShortText(contributionId, 80) || 'contribution';
+  return uploadOrderPhotoAtPath(
+    orderId,
+    file,
+    (safeName) => `orders/${orderId}/family-contributions/${safeContributionId}/photo-${safeName}`,
   );
 }
 
@@ -1732,6 +1861,13 @@ export async function listOrders(): Promise<OrderRecord[]> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
+}
+
+export async function findOrderByFamilyContributionToken(token: string): Promise<OrderRecord | null> {
+  const cleanToken = cleanShortText(token, 80);
+  if (!cleanToken) return null;
+  const orders = await listOrders();
+  return orders.find((order) => order.familyContributionToken === cleanToken) ?? null;
 }
 
 export function isOrderStatus(value: string): value is OrderStatus {
