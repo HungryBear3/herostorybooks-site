@@ -46,6 +46,13 @@ export interface IntakeAssetRef {
   familyCharacterId?: string | null;
   familyCharacterIndex?: number | null;
   source?: 'upload' | 'guided_capture' | 'recorded' | null;
+  /**
+   * Stable client-provided id for the underlying file (name|size|lastModified).
+   * Used for reload/resume-safe dedupe: a re-upload of the same (draftId,
+   * category, localId) returns the EXISTING asset instead of minting a
+   * duplicate or tripping a per-category cap. Optional/null for legacy callers.
+   */
+  localId?: string | null;
   uploadedAt: string;
 }
 
@@ -231,6 +238,13 @@ async function uploadAssetFile(draftId: string, category: IntakeAssetCategory, f
   return uploadOrderVoice(draftId, file);
 }
 
+/** Normalize a client-provided localId: trim, length-cap, empty → null. */
+function normalizeLocalId(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().slice(0, 200);
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export async function addIntakeAsset(params: {
   draftId: string;
   category: IntakeAssetCategory;
@@ -240,26 +254,31 @@ export async function addIntakeAsset(params: {
   familyCharacterId?: string | null;
   familyCharacterIndex?: number | null;
   source?: 'upload' | 'guided_capture' | 'recorded' | null;
+  /** Stable per-file client id (name|size|lastModified). Enables reload/resume
+   *  -safe dedupe: a re-upload with the same (category, localId) returns the
+   *  existing asset instead of duplicating or tripping a per-category cap. */
+  localId?: string | null;
   now?: string;
 }): Promise<{ draft: IntakeDraftRecord; asset: IntakeAssetRef }> {
   const draft = await getIntakeDraft(params.draftId);
   if (!draft) throw new OrderPersistenceError(params.draftId, 'Draft order not found');
   if (draft.status === 'finalized') throw new OrderPersistenceError(params.draftId, 'Draft order already finalized');
 
-  // NOTE / TODO (reload-safe dedupe — Part D follow-up):
-  // This function mints a NEW assetId per call and only enforces per-category
-  // caps below — it does NOT dedupe by a stable client localId or content hash.
-  // That means duplicate protection is currently SAME-SESSION ONLY, enforced on
-  // the client by uploadedAssetIdsRef (File-identity cache) + planAssetUploads.
-  // A retry whose first PUT actually landed but whose response was lost (e.g.
-  // reload/resume, where the in-memory File identity is gone) is NOT guaranteed
-  // to be idempotent here: on a multi-asset category it could append a second
-  // copy, and on a singleton category it 4xxs on the cap. The CD spec's
-  // "server dedupes by localId" invariant is therefore NOT yet implemented.
-  // Follow-up to make reload/resume duplicate-proof: accept an optional
-  // `localId` (and/or content hash) from the assets route, and short-circuit
-  // here returning the existing asset when (draftId, localId) already exists.
-  // Until then, do not promise reload-safe dedupe in customer-facing copy.
+  // Reload/resume-safe idempotency: if this draft already holds an asset with
+  // the same (category, localId), return it WITHOUT re-uploading or appending a
+  // duplicate — and BEFORE the per-category cap checks, so a lost-response retry
+  // or a post-reload resubmit can never 4xx on a singleton cap or append a
+  // second copy. localId is the stable client file id (name|size|lastModified).
+  const localId = normalizeLocalId(params.localId);
+  if (localId) {
+    const existing = draft.assets.find(
+      (asset) => asset.category === params.category && asset.localId === localId,
+    );
+    if (existing) {
+      return { draft, asset: existing };
+    }
+  }
+
   const existingForCategory = draft.assets.filter((asset) => asset.category === params.category);
   if (params.category === 'primary_photo' && existingForCategory.length >= 1) {
     const error = new Error('Only one primary child photo can be uploaded for this draft. You have not been charged.') as Error & { status?: number; code?: string };
@@ -320,6 +339,7 @@ export async function addIntakeAsset(params: {
     familyCharacterId: params.familyCharacterId ?? null,
     familyCharacterIndex: Number.isInteger(params.familyCharacterIndex) ? params.familyCharacterIndex! : null,
     source: params.source ?? (params.category === 'guided_child_reference' ? 'guided_capture' : 'upload'),
+    localId,
     uploadedAt: now,
   };
   const next: IntakeDraftRecord = {

@@ -4,6 +4,7 @@ import { BlobNotFoundError, BlobPreconditionFailedError, del, get, head, list, p
 
 import type { FulfillmentStatus, OrderArtifactManifest, PageTextLayout, StorySource, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
+import { ALLOWED_PHOTO_MIME_TYPES, getPhotoExtension, MAX_PHOTO_BYTES } from './photo-upload.ts';
 import { sanitizeReferralCode } from './referral-code.ts';
 export type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta };
 
@@ -23,6 +24,44 @@ export interface ShippingAddress {
   country: string;
 }
 
+export interface FamilyContributionInput {
+  contributorName?: string | null;
+  relationship?: string | null;
+  dedication?: string | null;
+  memory?: string | null;
+  storyIdea?: string | null;
+  supportingCharacterName?: string | null;
+  supportingCharacterRelationship?: string | null;
+  supportingCharacterNotes?: string | null;
+  voiceFileName?: string | null;
+  voiceBlobPath?: string | null;
+  voiceBlobUrl?: string | null;
+  voiceConsentAt?: string | null;
+  photoFileName?: string | null;
+  photoBlobPath?: string | null;
+  photoBlobUrl?: string | null;
+}
+
+export interface FamilyContribution {
+  id: string;
+  submittedAt: string;
+  contributorName: string;
+  relationship: string;
+  dedication: string;
+  memory: string;
+  storyIdea: string;
+  supportingCharacterName: string;
+  supportingCharacterRelationship: string;
+  supportingCharacterNotes: string;
+  voiceFileName: string | null;
+  voiceBlobPath: string | null;
+  voiceBlobUrl: string | null;
+  voiceConsentAt: string | null;
+  photoFileName: string | null;
+  photoBlobPath: string | null;
+  photoBlobUrl: string | null;
+}
+
 export interface OrderInput {
   childName: string;
   childAge?: string;
@@ -34,6 +73,7 @@ export interface OrderInput {
   giftMessage?: string;
   characterNotes?: string;
   familyCharacters?: FamilyCharacterInput[] | string | null;
+  familyCharacterPhotoAssets?: SupportingCharacterPhotoAsset[] | null;
   appearanceOptions?: string;
   bookFormat: string;
   email: string;
@@ -73,6 +113,20 @@ export interface OrderInput {
   guidedReferencePhotos?: GuidedReferencePhotoRecord[] | null;
   referralCode?: string | null;
 }
+
+export type SupportingCharacterPhotoAsset = {
+  characterId: string;
+  assetId: string;
+  filename?: string;
+  contentType: string;
+  sizeBytes: number;
+  role?: string;
+  name?: string;
+  relationshipLabel?: string;
+  consentConfirmed: boolean;
+  referenceOnly: true;
+  uploadedAt: string;
+};
 
 export type ReviewStatus =
   | 'not_started'
@@ -430,6 +484,10 @@ export interface OrderRecord extends OrderInput {
   pageArtifacts?: PageArtifact[];
   /** Influencer / partner attribution captured from ?ref= or hsb_ref cookie. */
   referralCode?: string | null;
+  /** Bearer-style private link token for family memory/photo/story contributors. */
+  familyContributionToken?: string | null;
+  /** Append-only family-provided inspiration for the order. Never public by default. */
+  familyContributions?: FamilyContribution[];
   /** Append-only audit log of review/approval events. Optional on legacy orders. */
   auditEvents?: ReviewAuditEvent[];
   /** Pre-print refund state. Set when admin issues a Stripe refund for an
@@ -519,6 +577,7 @@ export function getStoryPageCount(bookFormat: string): number {
 }
 
 const FAMILY_CHARACTER_MAX_COUNT = 4;
+export const SUPPORTING_CHARACTER_PHOTO_LIMIT = 4;
 const FAMILY_CHARACTER_MAX_FIELD = 80;
 const FAMILY_CHARACTER_MAX_NOTES = 180;
 const FAMILY_CHARACTER_ROLES = new Set<FamilyCharacterRole>([
@@ -538,6 +597,142 @@ function cleanShortText(value: unknown, max = FAMILY_CHARACTER_MAX_FIELD): strin
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, max);
+}
+
+export function isMultiFamilyPhotoIntakeEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.NEXT_PUBLIC_HSB_MULTI_FAMILY_PHOTO_INTAKE === 'true';
+}
+
+function cleanOptionalShortText(value: unknown, max = FAMILY_CHARACTER_MAX_FIELD): string | undefined {
+  const cleaned = cleanShortText(value, max);
+  return cleaned || undefined;
+}
+
+export type FamilyCharacterPhotoValidationInput = {
+  characterId: string;
+  characterIndex: number;
+  file: { name?: string; type?: string; size: number };
+  consentConfirmed: boolean;
+};
+
+export type FamilyCharacterPhotoValidationResult =
+  | { ok: true }
+  | { ok: false; status: number; code: string; error: string };
+
+export function validateFamilyCharacterPhotoUploads(
+  characters: readonly { id?: string | null }[],
+  uploads: readonly FamilyCharacterPhotoValidationInput[],
+): FamilyCharacterPhotoValidationResult {
+  if (uploads.length === 0) return { ok: true };
+  if (uploads.length > SUPPORTING_CHARACTER_PHOTO_LIMIT) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'supporting_photo_limit_exceeded',
+      error: `Please attach no more than ${SUPPORTING_CHARACTER_PHOTO_LIMIT} family or pet reference photos.`,
+    };
+  }
+
+  const characterIds = new Set(
+    characters.map((character, index) => cleanShortText(character.id || `family-character-${index + 1}`, 120)),
+  );
+  const seen = new Set<string>();
+  for (const upload of uploads) {
+    const characterId = cleanShortText(upload.characterId, 120);
+    if (!characterId || !characterIds.has(characterId)) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'supporting_photo_unknown_character',
+        error: 'That family or pet reference photo does not match a supporting character. Please remove it and try again.',
+      };
+    }
+    if (seen.has(characterId)) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'supporting_photo_duplicate_character',
+        error: 'Please attach only one reference photo per family member or pet for now.',
+      };
+    }
+    seen.add(characterId);
+    if (!upload.consentConfirmed) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'supporting_photo_consent_required',
+        error: 'Please confirm you have permission to share each family or pet reference photo for private book prep.',
+      };
+    }
+    const type = cleanShortText(upload.file.type, 80).toLowerCase();
+    const extension = getPhotoExtension(upload.file.name || '');
+    const acceptedExtension = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'].includes(extension);
+    if (!ALLOWED_PHOTO_MIME_TYPES.has(type) && !acceptedExtension) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'supporting_photo_invalid_type',
+        error: 'Family or pet reference photos must be JPG, PNG, WebP, HEIC, or HEIF images.',
+      };
+    }
+    if (upload.file.size > MAX_PHOTO_BYTES) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'supporting_photo_too_large',
+        error: 'Family or pet reference photos must be 4 MB or smaller.',
+      };
+    }
+  }
+  return { ok: true };
+}
+
+export function buildSupportingCharacterPhotoAsset(input: {
+  characterId: string;
+  assetId: string;
+  file: { name?: string; type?: string; size: number };
+  role?: string | null;
+  name?: string | null;
+  relationshipLabel?: string | null;
+  uploadedAt?: string;
+}): SupportingCharacterPhotoAsset {
+  return {
+    characterId: cleanShortText(input.characterId, 120),
+    assetId: cleanShortText(input.assetId, 500),
+    filename: cleanOptionalShortText(input.file.name, 120),
+    contentType: cleanShortText(input.file.type, 80).toLowerCase() || 'application/octet-stream',
+    sizeBytes: Math.max(0, Math.floor(input.file.size)),
+    role: cleanOptionalShortText(input.role, 40),
+    name: cleanOptionalShortText(input.name, 80),
+    relationshipLabel: cleanOptionalShortText(input.relationshipLabel, 80),
+    consentConfirmed: true,
+    referenceOnly: true,
+    uploadedAt: input.uploadedAt || new Date().toISOString(),
+  };
+}
+
+export function sanitizeSupportingCharacterPhotoAssets(
+  input: OrderInput['familyCharacterPhotoAssets'],
+): SupportingCharacterPhotoAsset[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .slice(0, SUPPORTING_CHARACTER_PHOTO_LIMIT)
+    .map((asset) => ({
+      characterId: cleanShortText(asset?.characterId, 120),
+      assetId: cleanShortText(asset?.assetId, 500),
+      filename: cleanOptionalShortText(asset?.filename, 120),
+      contentType: cleanShortText(asset?.contentType, 80).toLowerCase() || 'application/octet-stream',
+      sizeBytes: Math.max(0, Math.floor(Number(asset?.sizeBytes) || 0)),
+      role: cleanOptionalShortText(asset?.role, 40),
+      name: cleanOptionalShortText(asset?.name, 80),
+      relationshipLabel: cleanOptionalShortText(asset?.relationshipLabel, 80),
+      consentConfirmed: asset?.consentConfirmed === true,
+      referenceOnly: true as const,
+      uploadedAt: cleanShortText(asset?.uploadedAt, 40),
+    }))
+    .filter((asset) => asset.characterId && asset.assetId && asset.consentConfirmed);
 }
 
 function normalizeFamilyRole(role: unknown): FamilyCharacterRole {
@@ -844,6 +1039,57 @@ export function buildDeliveryExpectation(bookFormat: string): string {
   return 'Softcover ships 5–7 business days after proof approval — free shipping included. Digital preview arrives first so you can approve before it prints.';
 }
 
+const FAMILY_CONTRIBUTION_TOKEN_BYTES = 16;
+const FAMILY_CONTRIBUTION_SHORT_MAX = 120;
+const FAMILY_CONTRIBUTION_LONG_MAX = 800;
+
+export function createFamilyContributionToken(): string {
+  return crypto.randomBytes(FAMILY_CONTRIBUTION_TOKEN_BYTES).toString('hex');
+}
+
+export function buildFamilyContributionUrl(baseUrl: string, token: string | null | undefined): string | null {
+  const cleanToken = cleanShortText(token, 80);
+  if (!cleanToken) return null;
+  const url = new URL(`/family-contribute/${encodeURIComponent(cleanToken)}`, baseUrl);
+  return url.toString();
+}
+
+export function sanitizeFamilyContributionInput(
+  input: FamilyContributionInput,
+  submittedAt = new Date().toISOString(),
+): FamilyContribution {
+  return {
+    id: `fam_${crypto.createHash('sha256').update(`${submittedAt}:${JSON.stringify(input)}`).digest('hex').slice(0, 16)}`,
+    submittedAt,
+    contributorName: cleanShortText(input.contributorName, FAMILY_CONTRIBUTION_SHORT_MAX),
+    relationship: cleanShortText(input.relationship, FAMILY_CONTRIBUTION_SHORT_MAX),
+    dedication: cleanShortText(input.dedication, FAMILY_CONTRIBUTION_LONG_MAX),
+    memory: cleanShortText(input.memory, FAMILY_CONTRIBUTION_LONG_MAX),
+    storyIdea: cleanShortText(input.storyIdea, FAMILY_CONTRIBUTION_LONG_MAX),
+    supportingCharacterName: cleanShortText(input.supportingCharacterName, FAMILY_CONTRIBUTION_SHORT_MAX),
+    supportingCharacterRelationship: cleanShortText(input.supportingCharacterRelationship, FAMILY_CONTRIBUTION_SHORT_MAX),
+    supportingCharacterNotes: cleanShortText(input.supportingCharacterNotes, FAMILY_CONTRIBUTION_LONG_MAX),
+    voiceFileName: cleanShortText(input.voiceFileName, 160) || null,
+    voiceBlobPath: cleanShortText(input.voiceBlobPath, 500) || null,
+    voiceBlobUrl: cleanShortText(input.voiceBlobUrl, 500) || null,
+    voiceConsentAt: cleanShortText(input.voiceConsentAt, 80) || null,
+    photoFileName: cleanShortText(input.photoFileName, 160) || null,
+    photoBlobPath: cleanShortText(input.photoBlobPath, 500) || null,
+    photoBlobUrl: cleanShortText(input.photoBlobUrl, 500) || null,
+  };
+}
+
+export function appendFamilyContribution(
+  order: OrderRecord,
+  contribution: FamilyContribution,
+): OrderRecord {
+  return {
+    ...order,
+    familyContributions: [...(order.familyContributions ?? []), contribution],
+    updatedAt: contribution.submittedAt,
+  };
+}
+
 export function createOrderRecord(input: OrderInput, options: CreateOrderOptions = {}): OrderRecord {
   const format = normalizeFormat(input.bookFormat);
   const meta = FORMAT_META[format];
@@ -862,6 +1108,7 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     giftMessage: input.giftMessage?.trim() || '',
     characterNotes: input.characterNotes?.trim() || '',
     familyCharacters: sanitizeFamilyCharacters(input.familyCharacters),
+    familyCharacterPhotoAssets: sanitizeSupportingCharacterPhotoAssets(input.familyCharacterPhotoAssets),
     appearanceOptions: input.appearanceOptions?.trim() || '',
     bookFormat: format,
     formatLabel: meta.label,
@@ -887,6 +1134,8 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
         ? input.guidedReferencePhotos
         : null,
     referralCode: sanitizeReferralCode(input.referralCode),
+    familyContributionToken: createFamilyContributionToken(),
+    familyContributions: [],
     status: 'order_received',
     paymentStatus: 'pending',
     stripeSessionId: null,
@@ -1103,7 +1352,11 @@ export interface UploadedVoiceRef {
  * Upload an attached child-voice audio file to durable blob storage. Mirrors
  * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
  */
-export async function uploadOrderVoice(orderId: string, file: File): Promise<UploadedVoiceRef | null> {
+async function uploadOrderVoiceAtPath(
+  orderId: string,
+  file: File,
+  pathnameForSafeName: (safeName: string) => string,
+): Promise<UploadedVoiceRef | null> {
   const token = getBlobToken();
 
   if (typeof file.arrayBuffer !== 'function') {
@@ -1127,7 +1380,7 @@ export async function uploadOrderVoice(orderId: string, file: File): Promise<Upl
     .replace(/[^a-zA-Z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '') || 'voice';
 
-  const pathname = withBlobNamespace(`orders/${orderId}/voice-${safeName}`);
+  const pathname = withBlobNamespace(pathnameForSafeName(safeName));
   const buffer = Buffer.from(await file.arrayBuffer());
 
   try {
@@ -1154,6 +1407,23 @@ export async function uploadOrderVoice(orderId: string, file: File): Promise<Upl
     console.warn(`[orders] uploadOrderVoice blob put failed in dev for ${orderId}:`, err);
     return null;
   }
+}
+
+export async function uploadOrderVoice(orderId: string, file: File): Promise<UploadedVoiceRef | null> {
+  return uploadOrderVoiceAtPath(orderId, file, (safeName) => `orders/${orderId}/voice-${safeName}`);
+}
+
+export async function uploadFamilyContributionVoice(
+  orderId: string,
+  contributionId: string,
+  file: File,
+): Promise<UploadedVoiceRef | null> {
+  const safeContributionId = cleanShortText(contributionId, 80) || 'contribution';
+  return uploadOrderVoiceAtPath(
+    orderId,
+    file,
+    (safeName) => `orders/${orderId}/family-contributions/${safeContributionId}/voice-${safeName}`,
+  );
 }
 
 async function uploadOrderPhotoAtPath(
@@ -1231,6 +1501,19 @@ export async function uploadOrderSupportingPhoto(
     orderId,
     file,
     (safeName) => `orders/${orderId}/supporting-${safeIndex}-photo-${safeName}`,
+  );
+}
+
+export async function uploadFamilyContributionPhoto(
+  orderId: string,
+  contributionId: string,
+  file: File,
+): Promise<UploadedPhotoRef | null> {
+  const safeContributionId = cleanShortText(contributionId, 80) || 'contribution';
+  return uploadOrderPhotoAtPath(
+    orderId,
+    file,
+    (safeName) => `orders/${orderId}/family-contributions/${safeContributionId}/photo-${safeName}`,
   );
 }
 
@@ -1578,6 +1861,13 @@ export async function listOrders(): Promise<OrderRecord[]> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
+}
+
+export async function findOrderByFamilyContributionToken(token: string): Promise<OrderRecord | null> {
+  const cleanToken = cleanShortText(token, 80);
+  if (!cleanToken) return null;
+  const orders = await listOrders();
+  return orders.find((order) => order.familyContributionToken === cleanToken) ?? null;
 }
 
 export function isOrderStatus(value: string): value is OrderStatus {
