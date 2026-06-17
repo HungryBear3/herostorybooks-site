@@ -22,7 +22,7 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
       '24 illustrated story pages plus keepsake pages',
       'Read on any device',
       'Print at home anytime',
-      'Safest late-window Father’s Day option',
+      'Fastest option after proof approval',
     ],
     cta: 'Choose Digital',
   },

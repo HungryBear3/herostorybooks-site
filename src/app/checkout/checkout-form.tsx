@@ -31,7 +31,6 @@ import {
   STORY_OCCASIONS,
   STORY_THEMES,
 } from "@/lib/story-catalog";
-import { getFathersDayCountdown, FATHERS_DAY_OFFER } from "@/lib/fathers-day";
 import { track } from "@/lib/analytics";
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -94,8 +93,7 @@ const FORMATS = [
     icon: "Digital",
     price: "$14.99",
     priceNum: 14.99,
-    badge: "Father's Day pick",
-    delivery: "We email your digital proof when it's ready — you approve before final delivery",
+    delivery: "Digital proof usually ready within 2 business days",
     deliveryDetail:
       "32-page high-res PDF delivered after you approve · No printing or shipping step",
   },
@@ -136,6 +134,22 @@ const SUPPORTING_CHARACTER_PRESETS = [
 ] as const;
 
 const CHECKOUT_PHOTO_ACCEPT_ATTR = "image/*";
+
+function supportingCharacterLabel(character: SupportingCharacter): string {
+  return (character.name || character.relationshipLabel || character.role || "family member").trim();
+}
+
+function isHumanSupportingCharacter(character: SupportingCharacter): boolean {
+  return character.role !== "pet";
+}
+
+function missingSupportingCharacterPhotoLabels(characters: SupportingCharacter[]): string[] {
+  return characters
+    .filter((character) => character.appearsInStory !== false)
+    .filter(isHumanSupportingCharacter)
+    .filter((character) => !character.photoFile)
+    .map(supportingCharacterLabel);
+}
 
 function envFlagEnabled(value: string | undefined): boolean {
   return value?.replace(/\\n/g, "").trim().toLowerCase() === "true";
@@ -552,12 +566,11 @@ export function CheckoutForm() {
     ? `${heroName}'s ${selectedTheme.label}`
     : "Your Wonderful Story";
   const selectedSampleImage = form.photoDataUrl ?? SAMPLE_IMAGES[0];
-  const fathersDay = getFathersDayCountdown();
-  const showFathersDayReminder = fathersDay.tier !== "past-event";
   // Email must be a real, deliverable address — not just non-empty. Proof-
   // before-print delivery depends on it, so a malformed address keeps the CTA
   // disabled (matches the server's /api/order email validation).
   const emailLooksValid = looksLikeEmail(form.email);
+  const missingSupportingPhotoLabels = missingSupportingCharacterPhotoLabels(form.familyCharacters);
   const isReadyToPay =
     Boolean(form.theme) &&
     Boolean(form.childName) &&
@@ -565,6 +578,7 @@ export function CheckoutForm() {
     emailLooksValid &&
     Boolean(form.skinTone) &&
     Boolean(form.hairStyle) &&
+    missingSupportingPhotoLabels.length === 0 &&
     (!VOICE_BETA_ENABLED || form.voiceFile == null || form.voiceConsent);
   const completedStepCount = [
     Boolean(form.theme),
@@ -1537,7 +1551,7 @@ export function CheckoutForm() {
                       occasion: next,
                     }));
                   }}
-                  placeholder="e.g. Father's Day, first day of school, big sibling gift"
+                  placeholder="e.g. birthday, first day of school, big sibling gift"
                   className="mt-2 w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
                 />
               </div>
@@ -1926,37 +1940,6 @@ export function CheckoutForm() {
               <h2 className="font-serif text-2xl text-[#1f1a16]">
                 Choose your format
               </h2>
-              {showFathersDayReminder && (
-                <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16] space-y-3">
-                  <div>
-                    <strong>Father&apos;s Day timing — by format:</strong>
-                  </div>
-                  {/* Per-format split. Pulled from FATHERS_DAY_OFFER so
-                      the same wording renders on /, /pricing, and
-                      /fathers-day. Rules: no guaranteed FD delivery;
-                      digital safe cutoff Jun 18; softcover Jun 5 best
-                      chance only; hardcover post-holiday keepsake. */}
-                  <ul className="space-y-2">
-                    <li>
-                      <span className="font-semibold text-[#705d87]">Digital PDF:</span>{" "}
-                      {FATHERS_DAY_OFFER.digitalTiming}
-                    </li>
-                    <li>
-                      <span className="font-semibold text-[#b96b5f]">Classic softcover:</span>{" "}
-                      {FATHERS_DAY_OFFER.softcoverTiming}
-                    </li>
-                    <li>
-                      <span className="font-semibold text-[#5b6047]">Premium hardcover:</span>{" "}
-                      {FATHERS_DAY_OFFER.hardcoverTiming}
-                    </li>
-                  </ul>
-                  <p className="text-xs leading-5 text-[#695f54]">
-                    <strong className="text-[#1f1a16]">{FATHERS_DAY_OFFER.shippingDisclaimer}</strong>
-                    {" "}
-                    {FATHERS_DAY_OFFER.proofBeforePrint}
-                  </p>
-                </div>
-              )}
               <div className="space-y-3">
                 {FORMATS.map((fmt) => (
                   <button
@@ -1984,11 +1967,6 @@ export function CheckoutForm() {
                           <p className="font-bold leading-5 text-[#1f1a16]">
                             {fmt.label}
                           </p>
-                          {fmt.badge && (
-                            <span className="rounded-full bg-[#a64c4c] px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-white sm:text-xs">
-                              {fmt.badge}
-                            </span>
-                          )}
                         </div>
                         <p className="text-sm leading-5 text-[#695f54]">
                           ⚡ {fmt.delivery}
@@ -2380,6 +2358,9 @@ export function CheckoutForm() {
               {/* Disabled state uses a legible muted tan (not opacity-50, which
                   faded the gold to an illegible "broken"-looking button on the
                   cream page) and an explicit reason via aria-describedby. */}
+              <p className="rounded-xl border border-[#dfd2b8] bg-[#fff8ec] px-3 py-2 text-center text-xs leading-5 text-[#695f54]">
+                Have a friends &amp; family invite code? You can enter it on the secure payment step.
+              </p>
               <button
                 type="submit"
                 disabled={isSubmitting || !isReadyToPay}
