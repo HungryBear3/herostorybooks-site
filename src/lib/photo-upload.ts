@@ -3,16 +3,19 @@ const TARGET_PHOTO_BYTES = Math.floor(MAX_PHOTO_BYTES * 0.82);
 const MAX_RESIZE_DIMENSION = 1600;
 const MIN_JPEG_QUALITY = 0.55;
 const INITIAL_JPEG_QUALITY = 0.86;
-const RESIZABLE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const RESIZABLE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const RESIZABLE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp']);
 export const ALLOWED_PHOTO_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'];
 export const ALLOWED_PHOTO_MIME_TYPES = new Set([
   'image/jpeg',
+  'image/jpg',
   'image/png',
   'image/webp',
   'image/heic',
   'image/heif',
 ]);
+export const UNSUPPORTED_STILL_PHOTO_MESSAGE =
+  'That file is not a supported still photo. Please upload JPG, PNG, WebP, or HEIC.';
 
 export type BasicPhotoFile = {
   name: string;
@@ -34,6 +37,21 @@ export function isBrowserResizablePhoto(file: BasicPhotoFile) {
   const extension = getPhotoExtension(file.name);
   const mimeType = file.type.toLowerCase();
   return RESIZABLE_MIME_TYPES.has(mimeType) || RESIZABLE_EXTENSIONS.has(extension);
+}
+
+export function validateStillPhotoMetadata(file: BasicPhotoFile):
+  | { ok: true }
+  | { ok: false; error: string } {
+  const extension = getPhotoExtension(file.name);
+  const mimeType = file.type.trim().toLowerCase();
+  const acceptedExtension = ALLOWED_PHOTO_EXTENSIONS.includes(extension);
+  const acceptedMime = ALLOWED_PHOTO_MIME_TYPES.has(mimeType);
+
+  if (!acceptedExtension || !acceptedMime) {
+    return { ok: false, error: UNSUPPORTED_STILL_PHOTO_MESSAGE };
+  }
+
+  return { ok: true };
 }
 
 export function shouldAutoShrinkPhoto(file: BasicPhotoFile) {
