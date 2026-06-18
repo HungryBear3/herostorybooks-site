@@ -8,7 +8,7 @@ import { ALLOWED_PHOTO_MIME_TYPES, getPhotoExtension, MAX_PHOTO_BYTES } from './
 import { sanitizeReferralCode } from './referral-code.ts';
 export type { FulfillmentStatus, PageTextLayout, StorySource, VoiceTranscriptMeta };
 
-export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
+export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped' | 'checkout_failed';
 export type BookFormat = 'digital' | 'classic' | 'premium';
 export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded';
 export type InternalOrderDisposition =
@@ -40,6 +40,7 @@ export interface FamilyContributionInput {
   photoFileName?: string | null;
   photoBlobPath?: string | null;
   photoBlobUrl?: string | null;
+  photoConsentAt?: string | null;
 }
 
 export interface FamilyContribution {
@@ -60,6 +61,7 @@ export interface FamilyContribution {
   photoFileName: string | null;
   photoBlobPath: string | null;
   photoBlobUrl: string | null;
+  photoConsentAt: string | null;
 }
 
 export interface OrderInput {
@@ -1076,6 +1078,7 @@ export function sanitizeFamilyContributionInput(
     photoFileName: cleanShortText(input.photoFileName, 160) || null,
     photoBlobPath: cleanShortText(input.photoBlobPath, 500) || null,
     photoBlobUrl: cleanShortText(input.photoBlobUrl, 500) || null,
+    photoConsentAt: cleanShortText(input.photoConsentAt, 80) || null,
   };
 }
 
@@ -1871,7 +1874,7 @@ export async function findOrderByFamilyContributionToken(token: string): Promise
 }
 
 export function isOrderStatus(value: string): value is OrderStatus {
-  return ['order_received', 'preview_ready', 'print_in_production', 'shipped'].includes(value);
+  return ['order_received', 'preview_ready', 'print_in_production', 'shipped', 'checkout_failed'].includes(value);
 }
 
 export async function updateOrderStatus(orderId: string, status: OrderStatus) {

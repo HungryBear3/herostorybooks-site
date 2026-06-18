@@ -97,3 +97,23 @@ test('source contract: contribution API accepts voice-only or photo-only submiss
   assert.match(emptyGuard, /!isAttachedFile\(voiceFile\)/);
   assert.match(emptyGuard, /!isAttachedFile\(photoFile\)/);
 });
+
+test('source contract: contribution photo uploads require explicit permission and persist consent timestamp', () => {
+  const page = readFileSync('src/app/family-contribute/[token]/page.tsx', 'utf8');
+  const route = readFileSync('src/app/api/family-contributions/[token]/route.ts', 'utf8');
+  const orders = readFileSync('src/lib/orders.ts', 'utf8');
+
+  assert.match(page, /name="photoConsent"/);
+  assert.match(page, /permission to share this supporting character photo/i);
+  assert.match(route, /photoConsent/);
+  assert.match(route, /error:\s*'photo_consent'/);
+  assert.match(route, /photoConsentAt:\s*submittedAt/);
+  assert.match(orders, /photoConsentAt/);
+});
+
+test('source contract: contribution API rejects unpaid or failed private-token orders', () => {
+  const route = readFileSync('src/app/api/family-contributions/[token]/route.ts', 'utf8');
+
+  assert.match(route, /paymentStatus\s*!==\s*'paid'/);
+  assert.match(route, /error:\s*'inactive_order'/);
+});

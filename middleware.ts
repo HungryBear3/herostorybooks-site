@@ -8,7 +8,7 @@ import {
 } from '@/lib/cover-variant';
 
 /**
- * Cover-variant cookie + family-review private headers.
+ * Cover-variant cookie + private-token route privacy headers.
  *
  * Two responsibilities now:
  *
@@ -33,6 +33,7 @@ import {
  */
 
 const FAMILY_REVIEW_PATH = /^\/(?:api\/)?family-review(?:\/|$)/;
+const FAMILY_PRIVATE_PATH = /^\/(?:family-review|api\/family-review|family-contribute|api\/family-contributions)(?:\/|$)/;
 
 const FAMILY_REVIEW_CSP = [
   "default-src 'self'",
@@ -51,6 +52,7 @@ const FAMILY_REVIEW_CSP = [
 function applyFamilyReviewPrivacyHeaders(response: NextResponse): void {
   response.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet');
   response.headers.set('Referrer-Policy', 'no-referrer');
+  response.headers.set('X-Content-Type-Options', 'nosniff');
   response.headers.set('X-Frame-Options', 'DENY');
   response.headers.set(
     'Permissions-Policy',
@@ -65,12 +67,12 @@ function applyFamilyReviewPrivacyHeaders(response: NextResponse): void {
 }
 
 export function middleware(request: NextRequest) {
-  const isFamilyReview = FAMILY_REVIEW_PATH.test(request.nextUrl.pathname);
+  const isFamilyPrivate = FAMILY_PRIVATE_PATH.test(request.nextUrl.pathname);
 
   // Existing cover-variant logic — only applies on non-family-review
   // public pages (we never want the variant cookie to follow a parent
   // around their private review URL).
-  if (!isFamilyReview) {
+  if (!isFamilyPrivate) {
     const existing = parseVariantCookie(
       request.cookies.get(COVER_VARIANT_COOKIE)?.value,
     );
@@ -88,7 +90,7 @@ export function middleware(request: NextRequest) {
     return response;
   }
 
-  // Family-review surface: apply the privacy headers and pass through.
+  // Private token surfaces: apply privacy headers and pass through.
   const response = NextResponse.next();
   applyFamilyReviewPrivacyHeaders(response);
   return response;

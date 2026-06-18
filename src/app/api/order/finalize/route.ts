@@ -6,7 +6,7 @@ import { evaluateCheckoutAccessGate } from '@/lib/checkout-access-gate';
 import { getReferralCodeFromCookieHeader, sanitizeReferralCode } from '@/lib/referrals';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 import { finalizeIntakeDraft, getIntakeDraft, persistIntakeDraft, type FinalizeIntakeInput, type IntakeDraftRecord } from '@/lib/order-intake';
-import { isPrintFormat } from '@/lib/orders';
+import { isPrintFormat, persistOrder, type OrderRecord } from '@/lib/orders';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 
 function isValidEmail(value: string) {
@@ -30,8 +30,20 @@ function getReturnBaseUrl(request: Request): string {
   return process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'http://localhost:3000';
 }
 
+async function voidCheckoutFailedOrder(order: OrderRecord): Promise<void> {
+  await persistOrder({
+    ...order,
+    status: 'checkout_failed',
+    paymentStatus: 'failed',
+    familyContributionToken: null,
+    stripeSessionId: null,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
 export async function POST(request: Request) {
   let finalizedDraftForRetry: IntakeDraftRecord | null = null;
+  let persistedOrderForRetry: OrderRecord | null = null;
   try {
     if (!request.headers.get('content-type')?.toLowerCase().includes('application/json')) {
       return NextResponse.json({ error: 'Finalize must be JSON only; upload assets before payment.', code: 'json_required' }, { status: 415 });
@@ -65,6 +77,7 @@ export async function POST(request: Request) {
       fields: { ...fields, referralCode },
     });
     finalizedDraftForRetry = finalizedDraft;
+    persistedOrderForRetry = order;
 
     markRecoveryLeadConverted(order.email, order.id).catch(() => {});
 
@@ -100,6 +113,13 @@ export async function POST(request: Request) {
   } catch (error) {
     if (finalizedDraftForRetry) {
       try {
+        if (persistedOrderForRetry) {
+          try {
+            await voidCheckoutFailedOrder(persistedOrderForRetry);
+          } catch (voidError) {
+            console.error('[order-finalize] failed to mark pending order checkout_failed after Stripe checkout creation failure', voidError);
+          }
+        }
         await persistIntakeDraft({
           ...finalizedDraftForRetry,
           status: 'assets_uploaded',

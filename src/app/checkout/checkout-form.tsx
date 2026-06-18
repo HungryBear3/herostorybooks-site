@@ -876,6 +876,7 @@ export function CheckoutForm() {
             await uploadOneAsset(`${character.relationshipLabel || character.name || "family"} reference photo`, "supporting_character_reference", character.photoFile, {
               familyCharacterIndex: String(index),
               familyCharacterId: `family-${index}`,
+              supportingPhotoConsent: character.photoConsent ? "true" : "false",
             });
           }
         }

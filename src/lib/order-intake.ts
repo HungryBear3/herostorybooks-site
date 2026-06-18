@@ -53,6 +53,8 @@ export interface IntakeAssetRef {
    * duplicate or tripping a per-category cap. Optional/null for legacy callers.
    */
   localId?: string | null;
+  /** Timestamp when explicit permission was affirmed for this asset, when required. */
+  consentAt?: string | null;
   uploadedAt: string;
 }
 
@@ -68,6 +70,7 @@ export interface IntakeDraftRecord {
   assets: IntakeAssetRef[];
   consent: {
     guidedPhotoConsentAt?: string | null;
+    supportingPhotoConsentAt?: string | null;
     voiceConsentAt?: string | null;
   };
 }
@@ -250,6 +253,7 @@ export async function addIntakeAsset(params: {
   category: IntakeAssetCategory;
   file: File;
   guidedPhotoConsent?: boolean;
+  supportingPhotoConsent?: boolean;
   label?: string | null;
   familyCharacterId?: string | null;
   familyCharacterIndex?: number | null;
@@ -302,6 +306,12 @@ export async function addIntakeAsset(params: {
     }
   }
   if (params.category === 'supporting_character_reference') {
+    if (params.supportingPhotoConsent !== true) {
+      const error = new Error('Please confirm you have permission to share each family or pet reference photo for private book prep. You have not been charged.') as Error & { status?: number; code?: string };
+      error.status = 400;
+      error.code = 'supporting_photo_consent_required';
+      throw error;
+    }
     const familyIndex = Number.isInteger(params.familyCharacterIndex) ? params.familyCharacterIndex! : -1;
     const alreadyUploadedForCharacter = draft.assets.some((asset) => asset.category === 'supporting_character_reference' && asset.familyCharacterIndex === familyIndex);
     if (familyIndex < 0 || familyIndex >= draft.familyCharacters.length || alreadyUploadedForCharacter) {
@@ -340,6 +350,12 @@ export async function addIntakeAsset(params: {
     familyCharacterIndex: Number.isInteger(params.familyCharacterIndex) ? params.familyCharacterIndex! : null,
     source: params.source ?? (params.category === 'guided_child_reference' ? 'guided_capture' : 'upload'),
     localId,
+    consentAt: (params.category === 'guided_child_reference' && params.guidedPhotoConsent === true)
+      || (params.category === 'supporting_character_reference' && params.supportingPhotoConsent === true)
+      || params.category === 'voice_inspiration'
+      || params.category === 'document_inspiration'
+      ? now
+      : null,
     uploadedAt: now,
   };
   const next: IntakeDraftRecord = {
@@ -350,6 +366,7 @@ export async function addIntakeAsset(params: {
     consent: {
       ...draft.consent,
       guidedPhotoConsentAt: params.category === 'guided_child_reference' && params.guidedPhotoConsent === true ? now : draft.consent.guidedPhotoConsentAt ?? null,
+      supportingPhotoConsentAt: params.category === 'supporting_character_reference' && params.supportingPhotoConsent === true ? now : draft.consent.supportingPhotoConsentAt ?? null,
       voiceConsentAt: params.category === 'voice_inspiration' ? now : draft.consent.voiceConsentAt ?? null,
     },
   };
@@ -410,7 +427,7 @@ export function buildOrderInputFromDraft(draft: IntakeDraftRecord, input: Finali
       photoBlobPath: asset.blobPath,
       photoBlobUrl: asset.blobUrl,
       source: asset.source === 'guided_capture' ? 'guided_capture' : 'upload',
-      consentAt: asset.uploadedAt,
+      consentAt: asset.consentAt ?? asset.uploadedAt,
     }));
     const first = refs[0] ?? null;
     return {
