@@ -10,6 +10,7 @@ import {
   isHeicLikePhoto,
   shouldAutoShrinkPhoto,
   shrinkPhotoForUpload,
+  validateStillPhotoMetadata,
 } from "@/lib/photo-upload";
 import {
   MAX_TOTAL_UPLOAD_BYTES,
@@ -151,6 +152,35 @@ const MULTI_FAMILY_PHOTO_INTAKE_ENABLED =
 const STORAGE_KEY = "hsb_order_v1";
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
 const RECOVERY_DEBOUNCE_MS = 1500;
+
+async function canDecodeBrowserStillPhoto(file: File): Promise<boolean> {
+  if (isHeicLikePhoto(file)) return true;
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file);
+      bitmap.close?.();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (typeof Image === "undefined" || typeof URL === "undefined") return true;
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("Image decode failed"));
+      image.src = objectUrl;
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
 
 function looksLikeEmail(e: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
@@ -582,6 +612,18 @@ export function CheckoutForm() {
   // smaller) File, or null with the error already surfaced.
   const preparePhotoFile = useCallback(
     async (file: File, onError: (msg: string) => void): Promise<File | null> => {
+      const metadata = validateStillPhotoMetadata(file);
+      if (metadata.ok === false) {
+        onError(metadata.error);
+        return null;
+      }
+      if (!(await canDecodeBrowserStillPhoto(file))) {
+        onError(
+          `We couldn't process that photo. Please try a different JPG, PNG, or WebP under ${formatMb(MAX_PHOTO_BYTES)}.`,
+        );
+        return null;
+      }
+
       try {
         if (shouldAutoShrinkPhoto(file)) {
           return await shrinkPhotoForUpload(file);
@@ -659,7 +701,7 @@ export function CheckoutForm() {
       e.preventDefault();
       setDragOver(false);
       const file = e.dataTransfer.files[0];
-      if (file && file.type.startsWith("image/")) processPhoto(file);
+      if (file) processPhoto(file);
     },
     [processPhoto],
   );
@@ -1780,29 +1822,6 @@ export function CheckoutForm() {
                         </label>
                       </div>
 
-                      <label className="mt-3 block text-sm font-semibold text-[#1f1a16]">
-                        Details to capture
-                      </label>
-                      <textarea
-                        value={character.notes}
-                        onChange={(e) =>
-                          updateSupportingCharacter(character.id, {
-                            notes: e.target.value,
-                          })
-                        }
-                        placeholder={
-                          character.role === "pet"
-                            ? PET_NOTES_PLACEHOLDER
-                            : "Personality, favorite activity, nickname, inside joke, or how this character should show up in the story..."
-                        }
-                        rows={2}
-                        maxLength={180}
-                        className="mt-1.5 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                      />
-                      <p className="mt-0.5 text-right text-xs text-[#8a7b6a]">
-                        {character.notes.length}/180
-                      </p>
-
 {MULTI_FAMILY_PHOTO_INTAKE_ENABLED && (
                         <div className="mt-3 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] p-3">
                           <div className="mb-2 flex items-center justify-between gap-3">
@@ -1915,6 +1934,29 @@ export function CheckoutForm() {
                           )}
                         </div>
                       )}
+                      <label className="mt-3 block text-sm font-semibold text-[#1f1a16]">
+                        Details to capture
+                      </label>
+                      <textarea
+                        value={character.notes}
+                        onChange={(e) =>
+                          updateSupportingCharacter(character.id, {
+                            notes: e.target.value,
+                          })
+                        }
+                        placeholder={
+                          character.role === "pet"
+                            ? PET_NOTES_PLACEHOLDER
+                            : "Personality, favorite activity, nickname, inside joke, or how this character should show up in the story..."
+                        }
+                        rows={2}
+                        maxLength={180}
+                        className="mt-1.5 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                      />
+                      <p className="mt-0.5 text-right text-xs text-[#8a7b6a]">
+                        {character.notes.length}/180
+                      </p>
+
                     </div>
                   ))}
                 </div>
@@ -2144,7 +2186,7 @@ export function CheckoutForm() {
                       Photos
                     </dt>
                     <dd className="mt-1 font-semibold text-[#241914]">
-                      {form.photoFile ? "1 photo" : "Add later"}
+                      {form.photoFile ? "1 photo" : "Add later before proofing"}
                     </dd>
                   </div>
                   <div>
