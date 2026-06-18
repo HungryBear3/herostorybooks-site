@@ -90,7 +90,7 @@ test('finalize maps persisted child, guided, family, and voice refs into final o
   const draft = await createIntakeDraft(baseDraftInput());
   const primary = await addIntakeAsset({ draftId: draft.id, category: 'primary_photo', file: new File(['p'], 'primary.jpg', { type: 'image/jpeg' }), label: 'front' });
   const guided = await addIntakeAsset({ draftId: draft.id, category: 'guided_child_reference', file: new File(['g'], 'guided.jpg', { type: 'image/jpeg' }), guidedPhotoConsent: true, label: 'left', source: 'guided_capture' });
-  const family = await addIntakeAsset({ draftId: draft.id, category: 'supporting_character_reference', file: new File(['d'], 'dad.jpg', { type: 'image/jpeg' }), label: 'dad', familyCharacterIndex: 0, familyCharacterId: 'family-0' });
+  const family = await addIntakeAsset({ draftId: draft.id, category: 'supporting_character_reference', file: new File(['d'], 'dad.jpg', { type: 'image/jpeg' }), label: 'dad', familyCharacterIndex: 0, familyCharacterId: 'family-0', supportingPhotoConsent: true });
   const voice = await addIntakeAsset({ draftId: draft.id, category: 'voice_inspiration', file: new File(['voice'], 'idea.webm', { type: 'audio/webm' }), label: 'story direction', source: 'recorded' });
 
   const reloaded = await getIntakeDraft(draft.id);
@@ -166,6 +166,34 @@ test('guided references require explicit photo consent at server boundary', asyn
   );
 });
 
+test('supporting family reference split uploads require explicit photo consent at server boundary', async () => {
+  await withDraftStore();
+  const draft = await createIntakeDraft(baseDraftInput());
+  await assert.rejects(
+    () => addIntakeAsset({
+      draftId: draft.id,
+      category: 'supporting_character_reference',
+      file: new File(['d'], 'dad.jpg', { type: 'image/jpeg' }),
+      familyCharacterIndex: 0,
+      familyCharacterId: 'family-0',
+    }),
+    /permission to share each family or pet reference photo/,
+  );
+
+  const accepted = await addIntakeAsset({
+    draftId: draft.id,
+    category: 'supporting_character_reference',
+    file: new File(['d'], 'dad.jpg', { type: 'image/jpeg' }),
+    familyCharacterIndex: 0,
+    familyCharacterId: 'family-0',
+    supportingPhotoConsent: true,
+    now: '2026-06-17T16:00:00.000Z',
+  });
+  assert.equal(accepted.asset.consentAt, '2026-06-17T16:00:00.000Z');
+  const reloaded = await getIntakeDraft(draft.id);
+  assert.equal(reloaded?.consent.supportingPhotoConsentAt, '2026-06-17T16:00:00.000Z');
+});
+
 test('server-side asset caps reject duplicate primary, family, and story inspiration uploads', async () => {
   await withDraftStore();
   const draft = await createIntakeDraft(baseDraftInput());
@@ -174,9 +202,9 @@ test('server-side asset caps reject duplicate primary, family, and story inspira
     () => addIntakeAsset({ draftId: draft.id, category: 'primary_photo', file: new File(['p2'], 'primary2.jpg', { type: 'image/jpeg' }) }),
     /Only one primary child photo/,
   );
-  await addIntakeAsset({ draftId: draft.id, category: 'supporting_character_reference', file: new File(['d'], 'dad.jpg', { type: 'image/jpeg' }), familyCharacterIndex: 0 });
+  await addIntakeAsset({ draftId: draft.id, category: 'supporting_character_reference', file: new File(['d'], 'dad.jpg', { type: 'image/jpeg' }), familyCharacterIndex: 0, supportingPhotoConsent: true });
   await assert.rejects(
-    () => addIntakeAsset({ draftId: draft.id, category: 'supporting_character_reference', file: new File(['d2'], 'dad2.jpg', { type: 'image/jpeg' }), familyCharacterIndex: 0 }),
+    () => addIntakeAsset({ draftId: draft.id, category: 'supporting_character_reference', file: new File(['d2'], 'dad2.jpg', { type: 'image/jpeg' }), familyCharacterIndex: 0, supportingPhotoConsent: true }),
     /Only one supporting family reference/,
   );
   await addIntakeAsset({ draftId: draft.id, category: 'voice_inspiration', file: new File(['voice'], 'idea.webm', { type: 'audio/webm' }) });
@@ -189,7 +217,7 @@ test('server-side asset caps reject duplicate primary, family, and story inspira
 test('finalize validates and applies selected supporting family asset ids', async () => {
   await withDraftStore();
   const draft = await createIntakeDraft(baseDraftInput());
-  const family = await addIntakeAsset({ draftId: draft.id, category: 'supporting_character_reference', file: new File(['d'], 'dad.jpg', { type: 'image/jpeg' }), label: 'dad', familyCharacterIndex: 0, familyCharacterId: 'family-0' });
+  const family = await addIntakeAsset({ draftId: draft.id, category: 'supporting_character_reference', file: new File(['d'], 'dad.jpg', { type: 'image/jpeg' }), label: 'dad', familyCharacterIndex: 0, familyCharacterId: 'family-0', supportingPhotoConsent: true });
   const reloaded = await getIntakeDraft(draft.id);
   assert.ok(reloaded);
   const missing = validateFinalizeAssets(reloaded!, { draftOrderId: draft.id, familyCharacterReferenceAssetIds: { 'family-0': 'asset_missing' } });

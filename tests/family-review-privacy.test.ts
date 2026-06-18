@@ -231,6 +231,16 @@ test('middleware applies noindex + CSP + referrer headers to family-review paths
   assert.match(src, /Permissions-Policy/i);
 });
 
+test('middleware applies private no-store/no-referrer/noindex headers to family contribution token pages and APIs', () => {
+  const src = read(SOURCES.middleware);
+  assert.match(src, /FAMILY_PRIVATE_PATH\s*=/, 'middleware must define shared private-token route regex');
+  assert.match(src, /family-contribute/);
+  assert.match(src, /family-contributions/);
+  assert.match(src, /Cache-Control/i);
+  assert.match(src, /private, no-store, max-age=0/);
+  assert.match(src, /X-Content-Type-Options/i);
+});
+
 /* ── 5. Deletion request route exists + writes the timestamp ──────── */
 
 test('deletion-request route shape-checks token, persists deletionRequestedAt', () => {

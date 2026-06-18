@@ -17,6 +17,8 @@ const errorCopy: Record<string, string> = {
   voice_consent: 'Please confirm you have permission to share the voice note.',
   photo_type: 'Supporting character photos must be image files.',
   photo_size: 'Supporting character photos need to be under 10 MB.',
+  photo_consent: 'Please confirm you have permission to share the supporting character photo.',
+  inactive_order: 'That private contribution link is not accepting uploads right now. Ask the parent for the latest invite link.',
 };
 
 export default async function FamilyContributionPage({ params, searchParams }: ContributionPageProps) {
@@ -154,6 +156,12 @@ export default async function FamilyContributionPage({ params, searchParams }: C
             <label className="block space-y-2 text-sm font-semibold">
               Supporting character photo
               <input name="supportingCharacterPhoto" type="file" accept="image/*" className="block w-full text-sm" />
+            </label>
+            <label className="flex items-start gap-3 text-sm text-gray-600">
+              <input name="photoConsent" type="checkbox" className="mt-1" />
+              <span>
+                I have permission to share this supporting character photo for private storybook preparation.
+              </span>
             </label>
           </fieldset>
 

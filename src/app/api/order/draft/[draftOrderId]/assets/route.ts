@@ -44,6 +44,13 @@ export async function POST(
         { status: 400 },
       );
     }
+    const supportingPhotoConsent = consentGiven(form.get('supportingPhotoConsent')) || consentGiven(form.get('photoConsent'));
+    if (rawCategory === 'supporting_character_reference' && !supportingPhotoConsent) {
+      return NextResponse.json(
+        { error: 'Please confirm you have permission to share each family or pet reference photo for private book prep. You have not been charged.', code: 'supporting_photo_consent_required' },
+        { status: 400 },
+      );
+    }
     if ((rawCategory === 'voice_inspiration' || rawCategory === 'document_inspiration') && !consentGiven(form.get('voiceConsent'))) {
       return NextResponse.json(
         { error: 'Parent/guardian consent is required to attach story inspiration. You have not been charged.', code: 'voice_consent_required' },
@@ -59,6 +66,7 @@ export async function POST(
       category: rawCategory,
       file,
       guidedPhotoConsent,
+      supportingPhotoConsent,
       label: String(form.get('label') ?? rawCategory),
       familyCharacterId: form.get('familyCharacterId') ? String(form.get('familyCharacterId')) : null,
       familyCharacterIndex: Number.isInteger(familyCharacterIndex) ? familyCharacterIndex : null,

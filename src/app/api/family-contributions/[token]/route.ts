@@ -37,6 +37,9 @@ export async function POST(
   if (!order) {
     return NextResponse.redirect(samePage(request, token, { error: 'invalid_link' }), 303);
   }
+  if (order.paymentStatus !== 'paid') {
+    return NextResponse.redirect(samePage(request, token, { error: 'inactive_order' }), 303);
+  }
 
   const form = await request.formData();
   const submittedAt = new Date().toISOString();
@@ -68,6 +71,7 @@ export async function POST(
   }
 
   const voiceConsent = String(form.get('voiceConsent') || '') === 'on';
+  const photoConsent = String(form.get('photoConsent') || '') === 'on';
   if (isAttachedFile(voiceFile)) {
     if (!voiceFile.type.startsWith('audio/')) {
       return NextResponse.redirect(samePage(request, token, { error: 'voice_type' }), 303);
@@ -95,12 +99,16 @@ export async function POST(
     if (photoFile.size > MAX_CONTRIBUTOR_PHOTO_BYTES) {
       return NextResponse.redirect(samePage(request, token, { error: 'photo_size' }), 303);
     }
+    if (!photoConsent) {
+      return NextResponse.redirect(samePage(request, token, { error: 'photo_consent' }), 303);
+    }
     const uploadedPhoto = await uploadFamilyContributionPhoto(order.id, contribution.id, photoFile);
     contribution = {
       ...contribution,
       photoFileName: photoFile.name || 'supporting-character-photo',
       photoBlobPath: uploadedPhoto?.pathname ?? null,
       photoBlobUrl: uploadedPhoto?.url ?? null,
+      photoConsentAt: submittedAt,
     };
   }
 
