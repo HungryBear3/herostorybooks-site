@@ -1982,40 +1982,193 @@ export function CheckoutForm() {
               )}
             </section>
 
-            {/* ── 3. Format + Delivery ── */}
+            {/* ── 3. Hero photo + voice ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+              <div>
+                <h2 className="font-serif text-xl text-[#1f1a16] mb-1">
+                  Add a photo when you&apos;re ready
+                </h2>
+                <p className="text-sm text-[#695f54]">
+                  We use the photo as a reference for AI-assisted illustration,
+                  then hand-review the proof before anything prints.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-4 py-3 text-sm text-[#1f1a16]">
+                {PHOTO_UPLOAD_HELP}
+              </div>
+
+              {/* Sample teaser — shown before upload */}
+              {!form.photoDataUrl && (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-[#8a7b6a] uppercase tracking-widest text-center">
+                    What your proof includes
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-[0.85fr_1.15fr]">
+                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src="/assets/real-photo-demo.png"
+                        alt="Example reference photo used for a personalized book"
+                        className="h-40 w-full object-cover sm:h-full"
+                      />
+                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                        Uploaded photo
+                      </div>
+                    </div>
+                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src="/assets/storybook-transform-demo.png"
+                        alt="Example storybook illustration created from the uploaded photo"
+                        className="h-40 w-full object-cover sm:h-full"
+                      />
+                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                        Illustration proof
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-xs text-center text-[#8a7b6a]">
+                    Uploaded photo → storybook illustration · hand-reviewed before print
+                  </p>
+                </div>
+              )}
+
+              {/* Upload zone / preview */}
+              {form.photoDataUrl ? (
+                <div className="space-y-3">
+                  <div className="relative rounded-2xl overflow-hidden border-2 border-[#a64c4c] shadow-md">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={form.photoDataUrl}
+                      alt="Uploaded photo"
+                      className="w-full max-h-72 object-contain bg-[#f5ead2]"
+                    />
+                    <div className="absolute inset-0 flex items-end p-3 pointer-events-none">
+                      <span className="bg-[#1f1a16]/80 text-white text-xs font-semibold px-3 py-1 rounded-full">
+                        ✨{" "}
+                        {form.childName
+                          ? `${form.childName} becomes`
+                          : "Your child becomes"}{" "}
+                        the hero
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForm((prev) => ({
+                          ...prev,
+                          photoFile: null,
+                          photoDataUrl: null,
+                        }));
+                      }}
+                      className="absolute top-2 right-2 bg-[#fffaf1]/90 hover:bg-[#fffaf1] text-[#1f1a16] text-xs font-semibold px-3 py-1.5 rounded-full shadow transition"
+                    >
+                      Change Photo
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm text-[#35564d] bg-[#eef4f1] border border-[#cfe0d8] rounded-lg px-3 py-2">
+                    <span>✅</span>
+                    <span className="font-medium">{form.photoFile?.name}</span>
+                    <span className="text-[#35564d] text-xs ml-auto">
+                      Ready for magic
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDragOver(true);
+                    }}
+                    onDragLeave={() => setDragOver(false)}
+                    onDrop={handleDrop}
+                    onClick={() => photoInputRef.current?.click()}
+                    className={`
+                    flex min-h-40 flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed cursor-pointer transition-all
+                    ${dragOver ? "border-[#a64c4c] bg-[#a64c4c]/10 scale-[1.01]" : "border-[#d8c6a2] hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]"}
+                  `}
+                  >
+                    <input
+                      ref={photoInputRef}
+                      type="file"
+                      accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) processPhoto(f);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                    <span className="text-5xl">{dragOver ? "🌟" : "📸"}</span>
+                    <div className="text-center">
+                      <p className="font-semibold text-[#1f1a16]">
+                        {dragOver ? "Drop it here!" : "Upload picture"}
+                      </p>
+                      <p className="mt-0.5 px-2 text-sm leading-5 text-[#8a7b6a]">
+                        Drag &amp; drop · JPG/PNG/WebP/HEIC
+                      </p>
+                    </div>
+                  </div>
+
+                  <label className="flex min-h-40 cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-5 text-center transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
+                    <span className="text-5xl">🤳</span>
+                    <span className="font-semibold text-[#1f1a16]">Take a picture</span>
+                    <span className="px-2 text-sm leading-5 text-[#8a7b6a]">
+                      Opens your phone camera · still photo only, never video
+                    </span>
+                    <input
+                      type="file"
+                      accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                      capture="user"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) processPhoto(f);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
+
+              <p className="text-xs text-center text-[#8a7b6a]">
+                🔒 Photos processed securely · Never used to train AI · Add it
+                later if you need to
+              </p>
+            </section>
+
+            {VOICE_BETA_ENABLED && (
+              <VoiceRecorderSection
+                voiceFile={form.voiceFile}
+                voicePreviewUrl={form.voicePreviewUrl}
+                voiceSource={form.voiceSource}
+                voiceConsent={form.voiceConsent}
+                onVoiceChange={(file, previewUrl, source) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    theme: file && !prev.theme ? "custom-voice-story" : prev.theme,
+                    voiceFile: file,
+                    voicePreviewUrl: previewUrl,
+                    voiceSource: source,
+                    voiceConsent: file ? prev.voiceConsent : false,
+                  }))
+                }
+                onConsentChange={(consent) =>
+                  setForm((prev) => ({ ...prev, voiceConsent: consent }))
+                }
+              />
+            )}
+
+            {/* ── 4. Format + Delivery ── */}
             <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
               <h2 className="font-serif text-2xl text-[#1f1a16]">
                 Choose your format
               </h2>
               {showFathersDayReminder && (
-                <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16] space-y-3">
-                  <div>
-                    <strong>Father&apos;s Day timing — by format:</strong>
-                  </div>
-                  {/* Per-format split. Pulled from FATHERS_DAY_OFFER so
-                      the same wording renders on /, /pricing, and
-                      /fathers-day. Rules: no guaranteed FD delivery;
-                      digital safe cutoff Jun 18; softcover Jun 5 best
-                      chance only; hardcover post-holiday keepsake. */}
-                  <ul className="space-y-2">
-                    <li>
-                      <span className="font-semibold text-[#705d87]">Digital PDF:</span>{" "}
-                      {FATHERS_DAY_OFFER.digitalTiming}
-                    </li>
-                    <li>
-                      <span className="font-semibold text-[#b96b5f]">Classic softcover:</span>{" "}
-                      {FATHERS_DAY_OFFER.softcoverTiming}
-                    </li>
-                    <li>
-                      <span className="font-semibold text-[#5b6047]">Premium hardcover:</span>{" "}
-                      {FATHERS_DAY_OFFER.hardcoverTiming}
-                    </li>
-                  </ul>
-                  <p className="text-xs leading-5 text-[#695f54]">
-                    <strong className="text-[#1f1a16]">{FATHERS_DAY_OFFER.shippingDisclaimer}</strong>
-                    {" "}
-                    {FATHERS_DAY_OFFER.proofBeforePrint}
-                  </p>
+                <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
+                  <strong>Father&apos;s Day order-by date: {fathersDay.safeOrderDateLabel}.</strong>{" "}
+                  Digital arrives same-day after proof approval; printed books depend on proof timing and carrier delivery.
                 </div>
               )}
               <div className="space-y-3">
@@ -2075,7 +2228,7 @@ export function CheckoutForm() {
               </div>
             </section>
 
-            {/* ── 4. Email + Preview Promise ── */}
+            {/* ── 5. Email + Preview Promise ── */}
             <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
               <div>
                 <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
@@ -2093,26 +2246,8 @@ export function CheckoutForm() {
                 onChange={(e) => set("email", e.target.value)}
                 placeholder="your@email.com"
                 required
-                aria-invalid={form.email.length > 0 && !emailLooksValid}
-                aria-describedby={
-                  form.email.length > 0 && !emailLooksValid ? "email-error" : undefined
-                }
-                className={`w-full px-4 py-3 border-2 rounded-2xl focus:outline-none focus:ring-2 transition text-[#1f1a16] bg-[#fffaf1] ${
-                  form.email.length > 0 && !emailLooksValid
-                    ? "border-[#a64c4c] focus:border-[#a64c4c] focus:ring-[#a64c4c]/30"
-                    : "border-[#dfd2b8] focus:border-[#a64c4c] focus:ring-[#a64c4c]/30"
-                }`}
+                className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
               />
-              {form.email.length > 0 && !emailLooksValid && (
-                <p
-                  id="email-error"
-                  role="alert"
-                  className="text-sm font-medium text-[#8a2f2f]"
-                >
-                  Enter a valid email address (like name@example.com) so we can
-                  send your proof and book.
-                </p>
-              )}
               <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm text-[#35564d]">
                 ✨ {PRINT_PREVIEW_PROMISE}
               </div>
@@ -2124,27 +2259,6 @@ export function CheckoutForm() {
 
             </section>
 
-            {VOICE_BETA_ENABLED && (
-              <VoiceRecorderSection
-                voiceFile={form.voiceFile}
-                voicePreviewUrl={form.voicePreviewUrl}
-                voiceSource={form.voiceSource}
-                voiceConsent={form.voiceConsent}
-                onVoiceChange={(file, previewUrl, source) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    theme: file && !prev.theme ? "custom-voice-story" : prev.theme,
-                    voiceFile: file,
-                    voicePreviewUrl: previewUrl,
-                    voiceSource: source,
-                    voiceConsent: file ? prev.voiceConsent : false,
-                  }))
-                }
-                onConsentChange={(consent) =>
-                  setForm((prev) => ({ ...prev, voiceConsent: consent }))
-                }
-              />
-            )}
           </div>
 
           <aside className="space-y-5 lg:sticky lg:top-6">
