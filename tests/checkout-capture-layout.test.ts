@@ -22,3 +22,10 @@ test('child photo and voice sections appear before choose-your-format', () => {
   assert.ok(photoIndex < formatIndex, 'photo upload should come before format choice');
   assert.ok(voiceIndex < formatIndex, 'voice upload should come before format choice');
 });
+
+test('checkout pre-shrinks photos below Vercel payload limit before submit', () => {
+  assert.match(checkoutFormSource, /CHECKOUT_PHOTO_MAX_BYTES\s*=\s*1\.1 \* 1024 \* 1024/);
+  assert.match(checkoutFormSource, /shrinkPhotoForUpload\(file, CHECKOUT_PHOTO_MAX_BYTES\)/);
+  assert.match(checkoutFormSource, /payload\.set\("photo", form\.photoFile\)/);
+  assert.match(checkoutFormSource, /payload\.set\(`familyCharacterPhoto_\$\{index\}`, character\.photoFile\)/);
+});

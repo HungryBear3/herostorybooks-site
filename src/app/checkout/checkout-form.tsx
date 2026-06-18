@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from "@/lib/checkout-flow";
 import {
-  MAX_PHOTO_BYTES,
+  buildAutoShrinkNotice,
   compressPhotosForBudget,
   isHeicLikePhoto,
   shouldAutoShrinkPhoto,
@@ -36,6 +36,8 @@ import { getFathersDayCountdown, FATHERS_DAY_OFFER } from "@/lib/fathers-day";
 import { track } from "@/lib/analytics";
 
 // ── Constants ──────────────────────────────────────────────────────────────
+
+const CHECKOUT_PHOTO_MAX_BYTES = 1.1 * 1024 * 1024;
 
 const LAUNCH_THEME_IDS = new Set([
   "custom-voice-story",
@@ -396,6 +398,7 @@ export function CheckoutForm() {
   // Per-upload size/format errors (resize gate). Main photo + per-character.
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [supportingPhotoErrors, setSupportingPhotoErrors] = useState<Record<string, string>>({});
+  const [photoNotice, setPhotoNotice] = useState<string | null>(null);
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
@@ -637,27 +640,31 @@ export function CheckoutForm() {
       }
       if (!(await canDecodeBrowserStillPhoto(file))) {
         onError(
-          `We couldn't process that photo. Please try a different JPG, PNG, or WebP under ${formatMb(MAX_PHOTO_BYTES)}.`,
+          `We couldn't process that photo. Please try a different JPG, PNG, or WebP under ${formatMb(CHECKOUT_PHOTO_MAX_BYTES)}.`,
         );
         return null;
       }
 
       try {
-        if (shouldAutoShrinkPhoto(file)) {
-          return await shrinkPhotoForUpload(file);
+        if (shouldAutoShrinkPhoto(file, CHECKOUT_PHOTO_MAX_BYTES)) {
+          const prepared = await shrinkPhotoForUpload(file, CHECKOUT_PHOTO_MAX_BYTES);
+          if (prepared.size < file.size) {
+            setPhotoNotice(buildAutoShrinkNotice(file.size, prepared.size));
+          }
+          return prepared;
         }
-        if (file.size > MAX_PHOTO_BYTES) {
+        if (file.size > CHECKOUT_PHOTO_MAX_BYTES) {
           onError(
             isHeicLikePhoto(file)
-              ? `This HEIC photo is ${formatMb(file.size)}. We can't shrink HEIC in the browser — please upload a JPG, PNG, or WebP, or a smaller photo (under ${formatMb(MAX_PHOTO_BYTES)}).`
-              : `This photo is ${formatMb(file.size)}, over the ${formatMb(MAX_PHOTO_BYTES)} limit. Please upload a smaller JPG, PNG, or WebP.`,
+              ? `This HEIC photo is ${formatMb(file.size)}. We can't shrink HEIC in the browser — please upload a JPG, PNG, or WebP, or a smaller photo (under ${formatMb(CHECKOUT_PHOTO_MAX_BYTES)}).`
+              : `This photo is ${formatMb(file.size)}, over the ${formatMb(CHECKOUT_PHOTO_MAX_BYTES)} limit. Please upload a smaller JPG, PNG, or WebP.`,
           );
           return null;
         }
         return file;
       } catch {
         onError(
-          `We couldn't process that photo. Please try a different JPG, PNG, or WebP under ${formatMb(MAX_PHOTO_BYTES)}.`,
+          `We couldn't process that photo. Please try a different JPG, PNG, or WebP under ${formatMb(CHECKOUT_PHOTO_MAX_BYTES)}.`,
         );
         return null;
       }
@@ -713,7 +720,6 @@ export function CheckoutForm() {
     },
     [preparePhotoFile],
   );
-
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
@@ -1040,7 +1046,9 @@ export function CheckoutForm() {
       payload.set("email", form.email);
       const referralCode = checkoutReferralCode();
       if (referralCode) payload.set("referralCode", referralCode);
-      if (resolvedPhotoFile) {
+      if (form.photoFile && resolvedPhotoFile === form.photoFile) {
+        payload.set("photo", form.photoFile);
+      } else if (resolvedPhotoFile) {
         payload.set("photo", resolvedPhotoFile);
       }
       if (VOICE_BETA_ENABLED && form.voiceFile) {
@@ -1199,6 +1207,12 @@ export function CheckoutForm() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {photoNotice && (
+          <div className="mb-6 rounded-2xl border border-[#4f7d58]/25 bg-[#e8f2df] px-4 py-3 text-sm font-medium text-[#31543a]">
+            {photoNotice}
+          </div>
+        )}
 
         <form
           onSubmit={handleSubmit}
@@ -1422,7 +1436,7 @@ export function CheckoutForm() {
                         reuse the existing processPhoto handler. */}
                     <div className="flex flex-wrap gap-2">
                       <label className="flex cursor-pointer items-center gap-1.5 rounded-full bg-[#1f1a16] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3029]">
-                        Use camera
+                        Take 1 picture
                         <input
                           type="file"
                           accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
@@ -1440,7 +1454,7 @@ export function CheckoutForm() {
                         onClick={() => photoInputRef.current?.click()}
                         className="flex items-center gap-1.5 rounded-full border-2 border-[#dfd2b8] px-4 py-2 text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]"
                       >
-                        Upload photo
+                        Upload picture
                       </button>
                     </div>
                     <div
@@ -1897,7 +1911,7 @@ export function CheckoutForm() {
                             <div className="space-y-2">
                               <div className="flex flex-wrap gap-2">
                                 <label className="flex cursor-pointer items-center gap-1.5 rounded-full bg-[#1f1a16] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3029]">
-                                  Use camera
+                                  Take 1 picture
                                   <input
                                     type="file"
                                     accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
@@ -1911,7 +1925,7 @@ export function CheckoutForm() {
                                   />
                                 </label>
                                 <label className="flex cursor-pointer items-center gap-1.5 rounded-full border-2 border-[#dfd2b8] px-4 py-2 text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
-                                  Upload photo
+                                  Upload picture
                                   <input
                                     type="file"
                                     accept={CHECKOUT_PHOTO_ACCEPT_ATTR}

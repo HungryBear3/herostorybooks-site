@@ -54,8 +54,8 @@ export function validateStillPhotoMetadata(file: BasicPhotoFile):
   return { ok: true };
 }
 
-export function shouldAutoShrinkPhoto(file: BasicPhotoFile) {
-  return file.size > MAX_PHOTO_BYTES && isBrowserResizablePhoto(file) && !isHeicLikePhoto(file);
+export function shouldAutoShrinkPhoto(file: BasicPhotoFile, maxBytes = MAX_PHOTO_BYTES) {
+  return file.size > maxBytes && isBrowserResizablePhoto(file) && !isHeicLikePhoto(file);
 }
 
 function formatMb(bytes: number) {
@@ -117,7 +117,7 @@ async function canvasToFile(canvas: HTMLCanvasElement, type: string, quality: nu
   return new File([blob], `${baseName}.${extension}`, { type, lastModified: Date.now() });
 }
 
-async function shrinkPhotoToTargetBytes(file: File, targetBytes: number): Promise<File> {
+async function shrinkPhotoToTargetBytes(file: File, targetBytes: number, maxBytes = MAX_PHOTO_BYTES): Promise<File> {
   const decoded = await fileToImageBitmap(file);
   const width = 'naturalWidth' in decoded ? decoded.naturalWidth : decoded.width;
   const height = 'naturalHeight' in decoded ? decoded.naturalHeight : decoded.height;
@@ -141,20 +141,22 @@ async function shrinkPhotoToTargetBytes(file: File, targetBytes: number): Promis
 
     const candidate = await canvasToFile(canvas, outputType, currentQuality, file.name);
     if (!best || candidate.size < best.size) best = candidate;
-    if (candidate.size <= targetBytes) return candidate;
+    if (candidate.size <= targetBytes || candidate.size <= maxBytes) return candidate;
 
-    currentQuality = Math.max(MIN_JPEG_QUALITY, currentQuality - 0.1);
-    currentMaxDimension = Math.max(600, Math.round(currentMaxDimension * 0.8));
+    currentQuality = Math.max(MIN_JPEG_QUALITY, currentQuality - 0.08);
+    currentMaxDimension = Math.max(900, Math.round(currentMaxDimension * 0.85));
   }
 
-  return best!;
+  if (best && best.size <= maxBytes) return best;
+  throw new Error('Photo still too large after resize');
 }
 
-export async function shrinkPhotoForUpload(file: File) {
-  if (!shouldAutoShrinkPhoto(file)) {
+export async function shrinkPhotoForUpload(file: File, maxBytes = MAX_PHOTO_BYTES) {
+  if (!shouldAutoShrinkPhoto(file, maxBytes)) {
     return file;
   }
-  return shrinkPhotoToTargetBytes(file, TARGET_PHOTO_BYTES);
+  const targetBytes = Math.min(TARGET_PHOTO_BYTES, Math.floor(maxBytes * 0.82));
+  return shrinkPhotoToTargetBytes(file, targetBytes, maxBytes);
 }
 
 /**
@@ -180,7 +182,7 @@ export async function compressPhotosForBudget(
   const compressed = await Promise.all(
     resizable.map((f) => {
       const share = Math.max(150 * 1024, Math.floor((f.size / currentResizableTotal) * remainingBudget));
-      return f.size <= share ? Promise.resolve(f) : shrinkPhotoToTargetBytes(f, share);
+      return f.size <= share ? Promise.resolve(f) : shrinkPhotoToTargetBytes(f, share, share);
     }),
   );
 

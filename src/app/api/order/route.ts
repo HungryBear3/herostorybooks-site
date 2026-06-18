@@ -303,18 +303,6 @@ export async function POST(request: Request) {
       }
     }
 
-    const familyCharacters = sanitizeFamilyCharacters(familyCharactersRaw);
-    const missingSupportingPhotos = missingSupportingCharacterPhotoLabels(familyCharacters, form);
-    if (missingSupportingPhotos.length > 0) {
-      return NextResponse.json(
-        {
-          error: `Add still reference photo${missingSupportingPhotos.length === 1 ? '' : 's'} for ${missingSupportingPhotos.join(', ')} before payment. Pet photos stay optional.`,
-          code: 'supporting_character_photo_required',
-        },
-        { status: 400 },
-      );
-    }
-
     let rawFamilyCharacters: Array<{ id?: string; role?: string; name?: string; relationshipLabel?: string }> = [];
     try {
       const parsed = JSON.parse(familyCharactersRaw || '[]');
