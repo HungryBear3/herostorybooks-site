@@ -162,3 +162,11 @@ test('order route source: print checkout asks Stripe to collect shipping, digita
   assert.ok(shippingIdx > printIdx, 'shipping collection must be inside the print-format Checkout branch');
   assert.match(src, /allowed_countries:\s*\[\s*'US'/);
 });
+
+test('order route source: Stripe Checkout allows buyer-entered promotion codes', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const sessionIdx = src.indexOf('stripe.checkout.sessions.create');
+  const promoIdx = src.indexOf('allow_promotion_codes: true');
+  assert.ok(sessionIdx > -1, 'route must create a Stripe Checkout Session');
+  assert.ok(promoIdx > sessionIdx, 'promotion-code entry must be enabled on the Checkout Session');
+});
