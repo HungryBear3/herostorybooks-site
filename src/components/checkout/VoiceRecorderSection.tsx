@@ -35,8 +35,8 @@ export interface VoiceRecorderSectionProps {
 }
 
 /**
- * Optional beta UI for attaching a short child-voice note. Mounts only when
- * `NEXT_PUBLIC_HSB_VOICE_BETA === 'true'`. The microphone is requested only
+ * Optional beta UI for attaching a short child-voice note. Mounts unless
+ * `NEXT_PUBLIC_HSB_VOICE_BETA === 'false'`. The microphone is requested only
  * after the user taps Record; tracks are released as soon as recording stops.
  *
  * The recording is positioned as inspiration/source material for personalizing
