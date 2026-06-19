@@ -169,7 +169,7 @@ test('order route accepts text/PDF/Word inspiration uploads but transcribes audi
   for (const extension of ['txt', 'pdf', 'doc', 'docx']) {
     assert.match(ROUTE_SRC, new RegExp(extension));
   }
-  assert.match(ROUTE_SRC, /isAudioInspirationFile\(voiceRaw as File\)/);
+  assert.match(ROUTE_SRC, /isAudioInspirationFile\(voiceRaw\)/);
   assert.match(ROUTE_SRC, /transcribeVoiceNote/);
 });
 
@@ -177,7 +177,7 @@ test('order route enforces the 15 MB cap (voice_too_large)', () => {
   assert.match(ROUTE_SRC, /voice_too_large/);
 });
 
-test('order route uploads voice BEFORE creating the Stripe Checkout Session', () => {
+test('order route uploads attached voice BEFORE creating the Stripe Checkout Session', () => {
   const voiceUploadIdx = ROUTE_SRC.indexOf('uploadOrderVoice');
   const stripeIdx = ROUTE_SRC.indexOf('stripe.checkout.sessions.create');
   assert.ok(voiceUploadIdx > -1, 'route must call uploadOrderVoice');
@@ -186,6 +186,17 @@ test('order route uploads voice BEFORE creating the Stripe Checkout Session', ()
     voiceUploadIdx < stripeIdx,
     'uploadOrderVoice must run before stripe.checkout.sessions.create',
   );
+  assert.match(
+    ROUTE_SRC,
+    /if \(voiceRaw instanceof File && voiceRaw\.size > 0\) \{[\s\S]*?uploadOrderVoice\(draftOrder\.id, voiceRaw\)/,
+    'route must only call uploadOrderVoice when a real File is attached, not for preuploaded refs',
+  );
+});
+
+test('order route supports preuploaded voice refs without re-uploading a null file', () => {
+  assert.match(ROUTE_SRC, /String\(form\.get\('voiceBlobPath'\) \|\| ''\)\.trim\(\) \|\| null/);
+  assert.match(ROUTE_SRC, /const hasVoiceUpload = \(voiceRaw instanceof File && voiceRaw\.size > 0\) \|\| Boolean\(preuploadedVoiceBlobPath\)/);
+  assert.doesNotMatch(ROUTE_SRC, /uploadOrderVoice\(draftOrder\.id, voiceRaw as File\)/);
 });
 
 test('order route persists voice metadata onto the order record', () => {
@@ -261,16 +272,16 @@ test('checkout source mounts VoiceRecorderSection ONLY when flag is on', () => {
   assert.match(CHECKOUT_SRC, /VOICE_BETA_ENABLED && \(\s*<VoiceRecorderSection/);
 });
 
-test('checkout source attaches voice fields to FormData only when flag is on', () => {
-  // The single FormData wiring block must be guarded by VOICE_BETA_ENABLED.
-  // Quote style (single vs double) is a formatter choice and shouldn't
-  // regress this contract — accept both.
+test('checkout source uploads voice separately and sends lightweight refs only when flag is on', () => {
   assert.match(
     CHECKOUT_SRC,
-    /if \(VOICE_BETA_ENABLED && form\.voiceFile\) \{[\s\S]*?payload\.set\(['"]voice['"],/,
+    /VOICE_BETA_ENABLED && form\.voiceFile[\s\S]*?uploadCheckoutFile\(checkoutDraftId, "voice", form\.voiceFile\)/,
   );
+  assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceBlobPath['"], uploadedVoice\.pathname\)/);
+  assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceBlobUrl['"], uploadedVoice\.url\)/);
   assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceConsent['"]/);
   assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceSource['"]/);
+  assert.doesNotMatch(CHECKOUT_SRC, /payload\.set\(['"]voice['"], form\.voiceFile\)/);
 });
 
 test('checkout source blocks submit when voice attached without consent', () => {

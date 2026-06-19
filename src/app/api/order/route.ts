@@ -293,9 +293,9 @@ export async function POST(request: Request) {
     let voiceBlobPath: string | null = String(form.get('voiceBlobPath') || '').trim() || null;
     let voiceBlobUrl: string | null = String(form.get('voiceBlobUrl') || '').trim() || null;
     let voiceConsentAt: string | null = voiceBlobPath ? new Date().toISOString() : null;
-    if (hasVoiceUpload) {
+    if (voiceRaw instanceof File && voiceRaw.size > 0) {
       try {
-        const uploadedVoice = await uploadOrderVoice(draftOrder.id, voiceRaw as File);
+        const uploadedVoice = await uploadOrderVoice(draftOrder.id, voiceRaw);
         if (uploadedVoice) {
           voiceBlobPath = uploadedVoice.pathname;
           voiceBlobUrl = uploadedVoice.url;
@@ -349,8 +349,8 @@ export async function POST(request: Request) {
     // persist as a failure marker and continue. Only an unstorable voice FILE
     // (handled above) aborts before Stripe.
     let voiceTranscript: VoiceTranscriptMeta | null = null;
-    if (hasVoiceUpload && voiceBlobPath && isAudioInspirationFile(voiceRaw as File)) {
-      voiceTranscript = await transcribeVoiceNote(voiceRaw as File);
+    if (voiceRaw instanceof File && voiceRaw.size > 0 && voiceBlobPath && isAudioInspirationFile(voiceRaw)) {
+      voiceTranscript = await transcribeVoiceNote(voiceRaw);
     }
 
     // Persist the order record durably. If this throws OrderPersistenceError
