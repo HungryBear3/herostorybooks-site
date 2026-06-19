@@ -2,6 +2,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 const RECORDED_FILE_NAME = 'child-voice-note.webm';
+const RECORDER_AUDIO_BITS_PER_SECOND = 32_000;
+const RECORDER_MAX_MS = 45_000;
+const CLIENT_VOICE_MAX_BYTES = 2.75 * 1024 * 1024;
+
+function formatMb(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 const VOICE_AUDIO_UPLOAD_ACCEPT_ATTR = [
   'audio/*',
   '.m4a',
@@ -81,6 +88,7 @@ export function VoiceRecorderSection({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioFileInputRef = useRef<HTMLInputElement | null>(null);
   const documentFileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -89,6 +97,8 @@ export function VoiceRecorderSection({
     return () => {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
+      if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = null;
       if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
     };
     // We intentionally do NOT depend on voicePreviewUrl — the cleanup is for unmount only.
@@ -110,7 +120,9 @@ export function VoiceRecorderSection({
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       const mimeType = pickSupportedMimeType();
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const recorderOptions: MediaRecorderOptions = { audioBitsPerSecond: RECORDER_AUDIO_BITS_PER_SECOND };
+      if (mimeType) recorderOptions.mimeType = mimeType;
+      const recorder = new MediaRecorder(stream, recorderOptions);
       recordedChunksRef.current = [];
       recorder.addEventListener('dataavailable', (event) => {
         if (event.data && event.data.size > 0) recordedChunksRef.current.push(event.data);
@@ -118,6 +130,14 @@ export function VoiceRecorderSection({
       recorder.addEventListener('stop', () => {
         const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
         const file = new File([blob], RECORDED_FILE_NAME, { type: blob.type });
+        if (file.size > CLIENT_VOICE_MAX_BYTES) {
+          setRecorderError(`That recording is ${formatMb(file.size)}. Please keep it under ${formatMb(CLIENT_VOICE_MAX_BYTES)} — about 45 seconds — so checkout can continue.`);
+          onVoiceChange(null, null, null);
+          onConsentChange(false);
+          stopStream();
+          setIsRecording(false);
+          return;
+        }
         const previewUrl = URL.createObjectURL(blob);
         if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
         onVoiceChange(file, previewUrl, 'recorded');
@@ -127,6 +147,9 @@ export function VoiceRecorderSection({
       });
       mediaRecorderRef.current = recorder;
       recorder.start();
+      autoStopTimerRef.current = setTimeout(() => {
+        if (recorder.state !== 'inactive') recorder.stop();
+      }, RECORDER_MAX_MS);
       setIsRecording(true);
     } catch (err) {
       setRecorderError('We could not access the microphone. Please allow access, or upload a file instead.');
@@ -150,6 +173,11 @@ export function VoiceRecorderSection({
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       if (!file) return;
+      if (file.size > CLIENT_VOICE_MAX_BYTES) {
+        setRecorderError(`That file is ${formatMb(file.size)}. Please upload a shorter/smaller note under ${formatMb(CLIENT_VOICE_MAX_BYTES)} so checkout can continue.`);
+        event.target.value = '';
+        return;
+      }
       const previewUrl = URL.createObjectURL(file);
       if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
       onVoiceChange(file, previewUrl, 'uploaded');

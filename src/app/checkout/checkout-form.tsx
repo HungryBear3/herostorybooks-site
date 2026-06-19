@@ -17,6 +17,11 @@ import { buildAutoShrinkNotice, shrinkPhotoForUpload } from "@/lib/photo-upload"
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const CHECKOUT_PHOTO_MAX_BYTES = 1.1 * 1024 * 1024;
+const CHECKOUT_MULTIPART_SAFE_MAX_BYTES = 3.5 * 1024 * 1024;
+
+function formatCheckoutMb(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const LAUNCH_THEME_IDS = new Set([
   "custom-voice-story",
@@ -649,6 +654,16 @@ export function CheckoutForm() {
         if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
       }
 
+      const uploadBytes =
+        (form.photoFile?.size ?? 0) +
+        (VOICE_BETA_ENABLED ? form.voiceFile?.size ?? 0 : 0) +
+        familyCharactersForOrder.reduce((sum, character) => sum + (character.photoFile?.size ?? 0), 0);
+      if (uploadBytes > CHECKOUT_MULTIPART_SAFE_MAX_BYTES) {
+        throw new Error(
+          `Your photos/voice note are ${formatCheckoutMb(uploadBytes)} together. Please remove the voice note and re-record a shorter one (or upload text notes) so checkout can continue. You have not been charged.`,
+        );
+      }
+
       const response = await fetch("/api/order", {
         method: "POST",
         body: payload,
@@ -688,11 +703,13 @@ export function CheckoutForm() {
     } catch (error) {
       console.error(error);
       // Inline banner instead of window.alert — see submitError declaration.
-      setSubmitError(
-        error instanceof Error
-          ? error.message
-          : "We couldn't start your order. You have not been charged. Please try again.",
-      );
+      const message =
+        error instanceof TypeError
+          ? "We couldn't reach checkout. If you attached a voice note, download it, then remove it or re-record a shorter note and try again. You have not been charged."
+          : error instanceof Error
+            ? error.message
+            : "We couldn't start your order. You have not been charged. Please try again.";
+      setSubmitError(message);
     } finally {
       setIsSubmitting(false);
     }
