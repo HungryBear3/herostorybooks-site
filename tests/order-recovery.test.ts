@@ -5,12 +5,30 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  buildRecoveryInputWithPriorShipping,
   buildRecoveryOrderRecord,
   recoverOrder,
   formatRecoverySummary,
+  hasCompleteShippingAddress,
   uploadOrderPhotoFromPath,
 } from '../src/lib/order-recovery.ts';
 import { getOrder } from '../src/lib/orders.ts';
+
+const OWNER_PAID_ORDER_ID = 'ord_d8ba45c3169b456f';
+
+function priorOrderShippingFixture() {
+  return {
+    id: 'ord_prior_shipping_fixture',
+    shippingAddress: {
+      line1: '10 Fixture Lane',
+      line2: null,
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60640',
+      country: 'US',
+    },
+  };
+}
 
 function makeTmp() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-recovery-'));
@@ -65,6 +83,80 @@ test('buildRecoveryOrderRecord: passes through stripeSessionId + shippingAddress
   assert.equal(r.shippingAddress?.line1, '1 Main');
 });
 
+test('hasCompleteShippingAddress: validates required print shipping fields', () => {
+  assert.equal(hasCompleteShippingAddress(priorOrderShippingFixture().shippingAddress), true);
+  assert.equal(
+    hasCompleteShippingAddress({
+      line1: '10 Fixture Lane',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '',
+      country: 'US',
+    }),
+    false,
+  );
+});
+
+test('buildRecoveryInputWithPriorShipping: copies shipping from prior-order-shaped fixture only', () => {
+  const input = buildRecoveryInputWithPriorShipping(
+    {
+      id: 'ord_internal_shipping_recovery_local',
+      childName: 'Lukas',
+      theme: 'custom-voice-story',
+      bookFormat: 'classic',
+      email: 'local-recovery@example.invalid',
+    },
+    priorOrderShippingFixture(),
+  );
+
+  assert.equal(input.shippingAddress?.city, 'Chicago');
+  assert.equal(input.shippingAddress?.state, 'IL');
+  assert.equal(input.shippingAddress?.zip, '60640');
+  assert.notEqual(input.id, priorOrderShippingFixture().id);
+});
+
+test('buildRecoveryInputWithPriorShipping: refuses same-order backfill and incomplete prior shipping', () => {
+  assert.throws(
+    () =>
+      buildRecoveryInputWithPriorShipping(
+        {
+          id: 'ord_same',
+          childName: 'Lukas',
+          bookFormat: 'classic',
+          email: 'local-recovery@example.invalid',
+        },
+        {
+          id: 'ord_same',
+          shippingAddress: priorOrderShippingFixture().shippingAddress,
+        },
+      ),
+    /must differ/,
+  );
+
+  assert.throws(
+    () =>
+      buildRecoveryInputWithPriorShipping(
+        {
+          id: 'ord_internal_shipping_recovery_local',
+          childName: 'Lukas',
+          bookFormat: 'classic',
+          email: 'local-recovery@example.invalid',
+        },
+        {
+          id: 'ord_prior_incomplete',
+          shippingAddress: {
+            line1: '10 Fixture Lane',
+            city: 'Chicago',
+            state: 'IL',
+            zip: '',
+            country: 'US',
+          },
+        },
+      ),
+    /missing or incomplete/,
+  );
+});
+
 test('buildRecoveryOrderRecord: defaults nullable refs to null when not provided', () => {
   const r = buildRecoveryOrderRecord({
     id: 'ord_minimal',
@@ -85,7 +177,7 @@ test('buildRecoveryOrderRecord: digital format yields the digital priceCents + d
     email: 'a@b.com',
   });
   assert.equal(r.bookFormat, 'digital');
-  assert.equal(r.priceCents, 1900);
+  assert.equal(r.priceCents, 1499);
   assert.match(r.deliveryExpectation, /PDF/);
 });
 
@@ -125,6 +217,40 @@ test('recoverOrder: print order missing shipping emits a warning but still persi
     assert.equal(s.shippingPersisted, false);
     const after = await getOrder('ord_print_no_ship');
     assert.ok(after);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('recoverOrder: synthetic recovery order can be shipping-complete without touching owner paid order', async () => {
+  const dir = makeTmp();
+  const syntheticId = 'ord_internal_shipping_recovery_local';
+  try {
+    const input = buildRecoveryInputWithPriorShipping(
+      {
+        id: syntheticId,
+        childName: 'Lukas',
+        theme: 'custom-voice-story',
+        bookFormat: 'classic',
+        email: 'local-recovery@example.invalid',
+        stripeSessionId: 'cs_test_internal_shipping_recovery',
+      },
+      priorOrderShippingFixture(),
+    );
+
+    const summary = await recoverOrder(input);
+    assert.equal(summary.orderId, syntheticId);
+    assert.equal(summary.shippingPersisted, true);
+    assert.equal(summary.warnings.some((w) => /shippingAddress/.test(w)), false);
+
+    const after = await getOrder(syntheticId);
+    assert.ok(after, 'synthetic recovery order must be persisted');
+    assert.equal(hasCompleteShippingAddress(after!.shippingAddress), true);
+    assert.equal(after!.shippingAddress?.city, 'Chicago');
+    assert.equal(after!.shippingAddress?.state, 'IL');
+    assert.equal(after!.shippingAddress?.zip, '60640');
+
+    assert.equal(await getOrder(OWNER_PAID_ORDER_ID), null);
   } finally {
     cleanup(dir);
   }

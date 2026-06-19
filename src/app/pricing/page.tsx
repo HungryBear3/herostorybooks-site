@@ -1,5 +1,5 @@
-import { redirect } from 'next/navigation'
+import { EditorialPricingPage } from '@/components/editorial-site';
 
 export default function PricingPage() {
-  redirect('/#pricing')
+  return <EditorialPricingPage />;
 }

@@ -53,7 +53,7 @@ export function FeaturedBooks() {
                 <h3 className="font-serif text-lg text-forest mb-2">{book.title}</h3>
                 <p className="text-gray-600 text-sm flex-grow">{book.description}</p>
                 <Link
-                  href="/order"
+                  href="/checkout"
                   className="mt-4 inline-block bg-deep-gold text-white px-4 py-2 rounded-lg text-center font-semibold hover:bg-deep-gold/90 transition"
                 >
                   Personalize

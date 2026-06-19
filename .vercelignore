@@ -1,6 +1,8 @@
 node_modules
 .next
 .git
+.vercel
+visual-reports
 tmp
 tmp_*
 graphify-out

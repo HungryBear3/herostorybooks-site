@@ -126,14 +126,23 @@ async function sendWithFallback(
   return assertResendSuccess(primary, context, payload.from);
 }
 
+function getPublicBaseUrl() {
+  return process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'https://herostorybooks.com';
+}
+
+function buildStatusUrl(orderId: string) {
+  return `${getPublicBaseUrl()}/status/${encodeURIComponent(orderId)}`;
+}
+
 export function buildOrderConfirmationEmail(
   order: OrderRecord,
   options: { supportEmail?: string } = {},
 ) {
   const supportEmail = options.supportEmail || getSupportEmail();
   const previewNote = order.bookFormat === 'digital'
-    ? 'Your PDF will be delivered to this email in about 15 minutes.'
+    ? 'Your digital proof is usually ready within 2 business days; your final PDF is delivered after approval.'
     : 'Your digital preview will arrive first so you can approve it before it prints.';
+  const statusUrl = buildStatusUrl(order.id);
 
   const subject = `${order.childName}'s Hero Story Books order is in`;
   const detailRows = [
@@ -151,6 +160,9 @@ export function buildOrderConfirmationEmail(
         ${detailRows.map(([label, value]) => `<p style="margin:0 0 8px;"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</p>`).join('')}
       </div>
       <p style="margin:0 0 12px;">${escapeHtml(previewNote)}</p>
+      <div style="text-align:center;margin:20px 0;">
+        <a href="${escapeHtml(statusUrl)}" style="background:#D4AF37;color:#1F3A5F;font-weight:bold;font-size:16px;text-decoration:none;padding:14px 32px;border-radius:12px;display:inline-block;">Track your order</a>
+      </div>
       <p style="margin:0 0 12px;">If you have questions, just reply to this email or contact <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>.</p>
       <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Proof approval before print · Personalized with care by Hero Story Books</p>
     </div>
@@ -165,7 +177,7 @@ export function buildOrderConfirmationEmail(
     `Order ID: ${order.id}`,
     '',
     previewNote,
-    `Track your order: ${(process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'https://herostorybooks.com')}/status/${order.id}`,
+    `Track your order: ${statusUrl}`,
     `Questions? ${supportEmail}`,
   ].join('\n');
 

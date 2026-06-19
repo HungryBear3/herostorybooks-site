@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 
 function getTimeLeft() {
-  const target = new Date('2026-04-30T23:59:59');
+  const target = new Date('2026-06-05T23:59:59');
   const now = new Date();
   const diff = target.getTime() - now.getTime();
   if (diff <= 0) return { days: 0, hours: 0, minutes: 0, seconds: 0 };
@@ -49,8 +49,8 @@ export function MothersDayBanner() {
     >
       <div className="container mx-auto flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-6 text-sm sm:text-base">
         <span className="font-semibold" style={{ color: '#D4AF37' }}>
-          Mother&apos;s Day Special: 20% off with code{' '}
-          <strong className="bg-white/10 px-2 py-0.5 rounded font-mono">MOM20</strong>
+          Father&apos;s Day proof deadline: order early, approve before print{' '}
+          <strong className="bg-white/10 px-2 py-0.5 rounded font-mono">PROOF</strong>
         </span>
 
         <div
@@ -67,7 +67,7 @@ export function MothersDayBanner() {
         </div>
 
         <Link
-          href="/#pricing"
+          href="/pricing"
           className="font-semibold px-4 py-1 rounded-lg text-sm transition-colors"
           style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}
         >

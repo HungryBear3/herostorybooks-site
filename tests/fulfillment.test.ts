@@ -13,7 +13,8 @@ import {
 } from '../src/lib/fulfillment.ts';
 import { createOrderRecord, persistOrder, getOrder, updateFulfillmentState } from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
-import type { StoryContent } from '../src/lib/fulfillment-types.ts';
+import type { StoryContent, StoryMeta } from '../src/lib/fulfillment-types.ts';
+import { lukasDinoArtDirectionFixture } from './fixtures/art-direction/lukas-dino-valid.ts';
 
 // ── Shared test fixtures ──────────────────────────────────────────────────────
 
@@ -30,9 +31,23 @@ const MOCK_STORY: StoryContent = {
 
 const MOCK_PDF = Buffer.from('%PDF-1.4 mock');
 
+const FALLBACK_STORY_META: StoryMeta = {
+  source: 'template_after_openai_failure',
+  model: 'template:Adventure',
+  generatedAt: '2026-05-28T15:20:00.000Z',
+  fallbackError: 'fetch failed',
+};
+
 const PASS_DEPS: FulfillmentDeps = {
   generateStory: async () => MOCK_STORY,
-  generateImages: async (prompts) => prompts.map(() => null),
+  // Returns plausible per-page URLs. Returning null here used to be the
+  // historical placeholder (the PDF builder silently substituted blanks),
+  // but after the 2026-05-15 partial-image-failure patch, any null URL
+  // in image results is correctly classified as a generation failure and
+  // halts at failed_manual_review — the very behavior change Rex's proof
+  // rerun motivated. Orchestration assertions in this suite still hold;
+  // only the fixture URLs changed.
+  generateImages: async (prompts) => prompts.map((_p, i) => `https://cdn.example.com/p${i}.png`),
   buildPdf: async () => MOCK_PDF,
   buildPrintInteriorPdf: async () => Buffer.from('%PDF-1.4 mock-interior'),
   buildPrintCoverPdf: () => Buffer.from('%PDF-1.4 mock-cover'),
@@ -49,6 +64,8 @@ function makeTmpDir() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-fulfill-'));
   process.env.HSB_ORDER_STORE_DIR = dir;
   delete process.env.BLOB_READ_WRITE_TOKEN;
+  delete process.env.HSB_RESEND_API_KEY;
+  delete process.env.RESEND_API_KEY;
   return dir;
 }
 
@@ -65,7 +82,17 @@ async function makeOrder(
     { childName: 'Luna', bookFormat: 'digital', email: 'luna@example.com' },
     { id: `ord_${Math.random().toString(36).slice(2, 10)}`, now: '2026-04-23T10:00:00Z' },
   );
-  const order: OrderRecord = { ...base, ...overrides };
+  const order: OrderRecord = {
+    ...base,
+    shippingAddress: {
+      line1: '100 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
+    ...overrides,
+  };
   await persistOrder(order);
   return order;
 }
@@ -211,6 +238,175 @@ test('paid print order reaches proof_ready and gets proofApprovalToken', async (
     assert.equal(after?.printInteriorMd5, '9438d3bf30c74a06e6be381d2632a06e');
     assert.equal(after?.printInteriorPageCount, 32);
     assert.equal(after?.printTitle, MOCK_STORY.title);
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('custom voice/story print order with template_after_openai_failure fails closed before proof_ready', async () => {
+  const dir = makeTmpDir();
+  try {
+    let buildPdfCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStoryWithMeta: async () => ({ story: MOCK_STORY, meta: FALLBACK_STORY_META }),
+      buildPdf: async () => {
+        buildPdfCalls += 1;
+        return MOCK_PDF;
+      },
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      theme: 'custom-voice-story',
+      voiceFileName: 'family-story.txt',
+      voiceBlobPath: 'orders/test/voice-family-story.txt',
+      voiceConsentAt: '2026-05-28T15:00:00.000Z',
+      voiceSource: 'uploaded',
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'failed_manual_review');
+    assert.equal(after?.status, 'order_received');
+    assert.equal(after?.storyMeta?.source, 'template_after_openai_failure');
+    assert.match(after?.fulfillmentLastError ?? '', /manual review required/);
+    assert.ok(!after?.proofApprovalToken, 'fallback-blocked print order must not expose approval token');
+    assert.ok(!after?.storyArtifactUrl, 'fallback-blocked print order must not persist proof PDF');
+    assert.equal(buildPdfCalls, 0, 'fallback-blocked print order must stop before PDF build');
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('custom story digital order with template_after_openai_failure fails closed before preview_ready', async () => {
+  const dir = makeTmpDir();
+  try {
+    let buildPdfCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStoryWithMeta: async () => ({ story: MOCK_STORY, meta: FALLBACK_STORY_META }),
+      buildPdf: async () => {
+        buildPdfCalls += 1;
+        return MOCK_PDF;
+      },
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'digital',
+      theme: 'custom-voice-story',
+      lesson: 'Dad always comes home',
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'failed_manual_review');
+    assert.equal(after?.status, 'order_received');
+    assert.equal(after?.storyMeta?.fallbackError, 'fetch failed');
+    assert.ok(!after?.storyArtifactUrl, 'fallback-blocked digital order must not persist customer PDF');
+    assert.equal(buildPdfCalls, 0, 'fallback-blocked digital order must stop before PDF build');
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('template-only print order may still reach proof_ready after template_after_openai_failure', async () => {
+  const dir = makeTmpDir();
+  try {
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStoryWithMeta: async () => ({ story: MOCK_STORY, meta: FALLBACK_STORY_META }),
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      theme: 'dinosaur-discovery',
+      lesson: 'courage',
+      occasion: 'birthday',
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.status, 'preview_ready');
+    assert.equal(after?.storyMeta?.source, 'template_after_openai_failure');
+    assert.ok(after?.proofApprovalToken);
+    assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('custom print order with model story and complete art-direction passes proof release gate', async () => {
+  const dir = makeTmpDir();
+  try {
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStoryWithMeta: async () => ({
+        story: MOCK_STORY,
+        meta: {
+          source: 'openai_page_prose',
+          model: 'gpt-4o-mini',
+          generatedAt: '2026-05-28T20:00:00.000Z',
+          fallbackError: null,
+        },
+      }),
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      theme: 'custom-voice-story',
+      lesson: 'Dad always comes home',
+      artDirectionPacket: lukasDinoArtDirectionFixture,
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.status, 'preview_ready');
+    assert.ok(after?.proofApprovalToken);
+    assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('custom print order with model story but missing art-direction blocks proof_ready', async () => {
+  const dir = makeTmpDir();
+  try {
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      generateStoryWithMeta: async () => ({
+        story: MOCK_STORY,
+        meta: {
+          source: 'openai_page_prose',
+          model: 'gpt-4o-mini',
+          generatedAt: '2026-05-28T20:00:00.000Z',
+          fallbackError: null,
+        },
+      }),
+    };
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      theme: 'custom-voice-story',
+      lesson: 'Dad always comes home',
+      artDirectionPacket: null,
+    }, dir);
+
+    await triggerFulfillment(order.id, deps);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'failed_manual_review');
+    assert.equal(after?.status, 'order_received');
+    assert.ok(!after?.proofApprovalToken, 'gate-blocked order must not expose proof token');
+    assert.ok(!after?.storyArtifactUrl, 'gate-blocked order must not expose proof PDF');
+    assert.match(after?.fulfillmentLastError ?? '', /art_direction_packet_missing/);
+    assert.ok(after?.auditEvents?.some((event) => event.type === 'proof_release_blocked'));
   } finally {
     cleanupTmpDir(dir);
   }
@@ -368,7 +564,8 @@ test('payment pending cannot produce complete fulfillment (readback gate)', asyn
     const counting: FulfillmentDeps = {
       ...PASS_DEPS,
       generateStory: async () => { storyCalls++; return MOCK_STORY; },
-      generateImages: async (prompts) => { imageCalls++; return prompts.map(() => null); },
+      // Plausible URLs — see PASS_DEPS comment re: 2026-05-15 partial-image-failure patch.
+      generateImages: async (prompts) => { imageCalls++; return prompts.map((_p, i) => `https://cdn.example.com/p${i}.png`); },
       buildPdf: async () => { pdfCalls++; return MOCK_PDF; },
       submitPrint: async () => { submitPrintCalls++; return { jobId: 'never' }; },
       sleep: async () => {}, // make readback retries instant in tests
@@ -443,7 +640,8 @@ test('digital fulfillment: duplicate triggerFulfillment is idempotent (no double
     const counting: FulfillmentDeps = {
       ...PASS_DEPS,
       generateStory: async () => { storyCalls++; return MOCK_STORY; },
-      generateImages: async (prompts) => { imageCalls++; return prompts.map(() => null); },
+      // Plausible URLs — see PASS_DEPS comment re: 2026-05-15 partial-image-failure patch.
+      generateImages: async (prompts) => { imageCalls++; return prompts.map((_p, i) => `https://cdn.example.com/p${i}.png`); },
       buildPdf: async () => { pdfCalls++; return MOCK_PDF; },
       submitPrint: async () => { submitPrintCalls++; return { jobId: 'never' }; },
     };

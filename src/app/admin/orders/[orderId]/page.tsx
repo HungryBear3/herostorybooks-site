@@ -103,6 +103,127 @@ export default async function AdminOrderDetail({ params }: Props) {
           <Row label="Updated" value={order.updatedAt} />
         </Section>
 
+        <Section title="Story source + input">
+          <Row label="Story source" value={diagnostics.story.source ?? 'unknown'} tone={diagnostics.story.source === 'template_after_openai_failure' ? 'bad' : 'neutral'} />
+          <Row label="Story model" value={diagnostics.story.model ?? '—'} mono />
+          <Row label="Story generated" value={diagnostics.story.generatedAt ?? '—'} />
+          {diagnostics.story.fallbackError && (
+            <Row label="Fallback reason" value={diagnostics.story.fallbackError} tone="bad" />
+          )}
+          <Row label="Custom story selected" value={diagnostics.storyInput.theme === 'custom-voice-story' ? 'yes' : 'no'} />
+          <Row label="Custom text present" value={diagnostics.storyInput.hasCustomText ? 'yes' : 'no'} />
+          <Row label="Story direction" value={diagnostics.storyInput.theme ?? '—'} />
+          <Row label="Custom story lesson" value={diagnostics.storyInput.lesson ?? '—'} />
+          <Row label="Occasion" value={diagnostics.storyInput.occasion ?? '—'} />
+          <Row label="Gift message" value={diagnostics.storyInput.giftMessagePreview ?? '—'} />
+          <Row label="Character notes" value={diagnostics.storyInput.characterNotesPreview ?? '—'} />
+          <Row label="Inspiration upload present" value={diagnostics.storyInput.hasVoiceOrUpload ? 'yes' : 'no'} />
+          {diagnostics.storyInput.hasVoiceOrUpload && (
+            <>
+              <Row label="Upload source" value={diagnostics.storyInput.voiceSource ?? 'uploaded/unknown'} />
+              <Row label="Upload file" value={diagnostics.storyInput.voiceFileName ?? '—'} />
+              <Row label="Upload blob path" value={diagnostics.storyInput.voiceBlobPath ?? '—'} mono />
+              <Row label="Consent recorded" value={diagnostics.storyInput.voiceConsentAt ?? '—'} />
+              <Row label="Transcript status" value={diagnostics.storyInput.transcriptStatus} tone={diagnostics.storyInput.transcriptStatus === 'failed' ? 'bad' : 'neutral'} />
+              <Row label="Transcript model" value={diagnostics.storyInput.transcriptModel ?? '—'} mono />
+              <Row label="Story inspiration" value={diagnostics.storyInput.inspirationPreview ?? '—'} />
+              <Row
+                label="Transcript preview"
+                value={
+                  diagnostics.storyInput.transcriptPreview
+                    ? `${diagnostics.storyInput.transcriptPreview}${diagnostics.storyInput.transcriptChars != null ? ` (${diagnostics.storyInput.transcriptChars} chars)` : ''}`
+                    : '—'
+                }
+              />
+              {diagnostics.storyInput.transcriptError && (
+                <Row label="Transcript error" value={diagnostics.storyInput.transcriptError} tone="bad" />
+              )}
+            </>
+          )}
+        </Section>
+
+        <Section title="Art direction">
+          <Row
+            label="Packet"
+            value={
+              diagnostics.artDirection.status === 'absent'
+                ? 'not yet generated'
+                : diagnostics.artDirection.status
+            }
+            tone={diagnostics.artDirection.status === 'invalid' ? 'bad' : diagnostics.artDirection.status === 'present' ? 'good' : 'neutral'}
+          />
+          <Row
+            label="Storyboard"
+            value={diagnostics.artDirection.storyboard.validationStatus}
+            tone={diagnostics.artDirection.storyboard.validationStatus === 'complete' ? 'good' : diagnostics.artDirection.storyboard.validationStatus === 'incomplete' ? 'bad' : 'neutral'}
+          />
+          <Row label="Generated" value={diagnostics.artDirection.generatedAt ?? '—'} />
+          <Row label="Human review" value={diagnostics.artDirection.humanReviewStatus ?? '—'} />
+          {diagnostics.artDirection.humanReviewNotes && (
+            <Row label="Review notes" value={diagnostics.artDirection.humanReviewNotes} />
+          )}
+
+          {diagnostics.artDirection.styleBible ? (
+            <>
+              <Row label="Style" value={`${diagnostics.artDirection.styleBible.targetIllustrationStyle ?? '—'} · ${diagnostics.artDirection.styleBible.renderingLevel ?? '—'}`} />
+              <Row label="Style template" value={diagnostics.artDirection.styleBible.templateId ?? '—'} mono />
+              <Row label="Style approved" value={`${diagnostics.artDirection.styleBible.approvedBy ?? '—'} · ${diagnostics.artDirection.styleBible.approvedAt ?? '—'}`} />
+              <Row label="Palette / prohibited" value={`${diagnostics.artDirection.styleBible.paletteColorCount} colors · ${diagnostics.artDirection.styleBible.prohibitedCount} prohibited terms`} />
+              <Row label="Continuity motifs" value={
+                diagnostics.artDirection.styleBible.continuityMotifs.length > 0
+                  ? diagnostics.artDirection.styleBible.continuityMotifs.join(', ')
+                  : '—'
+              } />
+            </>
+          ) : (
+            <Row label="Style bible" value="not available" />
+          )}
+
+          <Row
+            label="Character sheets"
+            value={`${diagnostics.artDirection.characterSheets.approvedCount}/${diagnostics.artDirection.characterSheets.count} approved · roles: ${diagnostics.artDirection.characterSheets.roles.join(', ') || '—'}`}
+          />
+          {diagnostics.artDirection.characterSheets.summaries.length > 0 && (
+            <div className="mt-3 rounded-lg border border-gray-100 overflow-hidden">
+              {diagnostics.artDirection.characterSheets.summaries.map((sheet, index) => (
+                <div key={`${sheet.id ?? index}`} className="grid grid-cols-2 gap-2 border-t first:border-t-0 border-gray-100 px-3 py-2 text-xs">
+                  <span className="text-gray-500">{sheet.name ?? sheet.id ?? 'Character'}</span>
+                  <span className="text-right text-gray-700">
+                    {sheet.role ?? '—'} · {sheet.approvedBy ? 'approved' : 'not approved'} · traits {sheet.recurringTraitCount}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <Row label="Storyboard entries" value={`${diagnostics.artDirection.storyboard.actualEntries ?? 0} / ${diagnostics.artDirection.storyboard.expectedEntries ?? 24}`} />
+          <Row label="Storyboard issues" value={`${diagnostics.artDirection.storyboard.errorCount} errors · ${diagnostics.artDirection.storyboard.warningCount} warnings`} tone={diagnostics.artDirection.storyboard.errorCount > 0 ? 'bad' : 'neutral'} />
+          <Row label="Continuity counts" value={`${diagnostics.artDirection.continuity.pagesWithContinuityCallback} callbacks · ${diagnostics.artDirection.continuity.uniqueRecurringObjectCount} unique recurring objects`} />
+          {(diagnostics.artDirection.schemaErrors.length > 0 ||
+            diagnostics.artDirection.storyboard.errors.length > 0 ||
+            diagnostics.artDirection.storyboard.warnings.length > 0) && (
+            <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50/60 p-3">
+              <p className="text-[10px] uppercase tracking-wider text-amber-900 mb-2">Validation issues</p>
+              <ul className="space-y-1 text-xs text-amber-950">
+                {[
+                  ...diagnostics.artDirection.schemaErrors,
+                  ...diagnostics.artDirection.storyboard.errors,
+                  ...diagnostics.artDirection.storyboard.warnings,
+                ].slice(0, 8).map((issue, index) => (
+                  <li key={`${issue.code}-${issue.path}-${index}`}>
+                    <span className="font-mono text-[10px]">{issue.code}</span>
+                    {' · '}
+                    <span className="font-mono text-[10px]">{issue.path}</span>
+                    {issue.pageNumber != null && <span> · page {issue.pageNumber}</span>}
+                    {' — '}
+                    <span>{issue.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </Section>
+
         <Section title="Payment">
           <Row label="Status" value={order.paymentStatus} tone={order.paymentStatus === 'paid' ? 'good' : 'neutral'} />
           <Row label="Stripe session" value={order.stripeSessionId ?? '—'} mono />
@@ -164,15 +285,20 @@ export default async function AdminOrderDetail({ params }: Props) {
                     {p.generationProvider && (
                       <span className="text-gray-500">last: {p.generationProvider}/{p.generationModel ?? '—'}</span>
                     )}
+                    {p.customerReviewStatus === 'changes_requested' && (
+                      <span className="inline-block px-2 py-0.5 rounded-full bg-amber-100 text-amber-900">customer changes</span>
+                    )}
                   </summary>
-                  <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <div className="mt-2 grid gap-3 sm:grid-cols-3">
                     <div>
                       <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Current image</p>
-                      {p.currentImageUrl ? (
+                      {p.currentImageUrl ? (<>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={p.currentImageUrl} alt={`Current page ${p.pageIndex + 1}`} className="mb-1 h-28 w-full rounded border border-gray-100 object-cover" />
                         <a href={p.currentImageUrl} target="_blank" rel="noopener" className="text-forest underline break-all">
                           {p.currentImageUrl}
                         </a>
-                      ) : <span className="text-gray-400">—</span>}
+                      </>) : <span className="text-gray-400">—</span>}
                       {p.acceptedImageUrl && p.acceptedImageUrl !== p.currentImageUrl && (
                         <p className="mt-1 text-gray-500">accepted: <a className="underline break-all" href={p.acceptedImageUrl} target="_blank" rel="noopener">{p.acceptedImageUrl}</a></p>
                       )}
@@ -180,6 +306,16 @@ export default async function AdminOrderDetail({ params }: Props) {
                     <div>
                       <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Story text</p>
                       <p className="text-gray-700 line-clamp-4">{p.storyText}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Requested change</p>
+                      {p.customerRequestedChange ? (
+                        <div className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-950">
+                          <p className="font-semibold">{p.customerRequestedChange.lifecycleStatus.replace(/_/g, ' ')}</p>
+                          <p className="mt-1">{p.customerRequestedChange.note}</p>
+                          <p className="mt-1 text-[10px] text-amber-800">{new Date(p.customerRequestedChange.requestedAt).toLocaleString()}</p>
+                        </div>
+                      ) : <span className="text-gray-400">—</span>}
                     </div>
                   </div>
                   {p.feedbackHistory.length > 0 && (
@@ -198,6 +334,26 @@ export default async function AdminOrderDetail({ params }: Props) {
                   {p.versionHistory.length > 0 && (
                     <div className="mt-3">
                       <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Version history ({p.versionHistory.length})</p>
+                      <div className="mb-2 grid gap-2 sm:grid-cols-2">
+                        {p.versionHistory.slice(-2).map((v, i, versions) => (
+                          <div key={`${v.createdAt}-${i}`} className="rounded border border-gray-100 bg-gray-50 p-2">
+                            <p className="mb-1 text-[10px] uppercase tracking-wider text-gray-400">
+                              {versions.length === 1 || i === versions.length - 1 ? 'Current render' : 'Prior render'}
+                            </p>
+                            {v.imageUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={v.imageUrl} alt={`Render ${i + 1} for page ${p.pageIndex + 1}`} className="h-32 w-full rounded object-cover" />
+                            ) : (
+                              <div className="flex h-32 items-center justify-center rounded bg-white text-gray-400">no image</div>
+                            )}
+                            {v.referencePhotoUrl && (
+                              <a href={v.referencePhotoUrl} target="_blank" rel="noopener" className="mt-1 block truncate text-forest underline">
+                                reference/photo/context
+                              </a>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                       <ul className="space-y-1 font-mono text-[10px] text-gray-600">
                         {p.versionHistory.map((v, i) => (
                           <li key={i} className="break-all">

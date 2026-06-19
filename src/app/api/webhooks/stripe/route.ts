@@ -2,44 +2,22 @@ import { NextResponse, after } from 'next/server';
 import Stripe from 'stripe';
 
 import { sendOrderConfirmationEmail } from '@/lib/order-email';
-import { isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
+import { isPrintFormat, updateOrderPayment } from '@/lib/orders';
 import { scheduleFulfillmentKickoff } from '@/lib/fulfillment-kickoff';
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
+import { extractCheckoutShipping, type StripeCheckoutSessionWithShipping } from '@/lib/stripe-shipping';
 
 // kept for future use (print-vs-digital branching); referenced by tests
 void isPrintFormat;
 
-interface StripeCheckoutSession {
+interface StripeCheckoutSession extends StripeCheckoutSessionWithShipping {
   id: string;
   metadata?: Record<string, string> | null;
   client_reference_id?: string | null;
-  shipping_details?: {
-    address?: {
-      line1?: string | null;
-      line2?: string | null;
-      city?: string | null;
-      state?: string | null;
-      postal_code?: string | null;
-      country?: string | null;
-    } | null;
-  } | null;
 }
 
 function getStripe() {
   return new Stripe(getRequiredStripeSecretKey());
-}
-
-function extractShipping(session: StripeCheckoutSession): ShippingAddress | undefined {
-  const addr = session.shipping_details?.address;
-  if (!addr) return undefined;
-  return {
-    line1: addr.line1 ?? '',
-    line2: addr.line2 ?? null,
-    city: addr.city ?? '',
-    state: addr.state ?? '',
-    zip: addr.postal_code ?? '',
-    country: addr.country ?? '',
-  };
 }
 
 export async function POST(request: Request) {
@@ -134,7 +112,7 @@ export async function POST(request: Request) {
         }
       }
 
-      const shipping = extractShipping(session);
+      const shipping = extractCheckoutShipping(session);
       const updated = await updateOrderPayment(orderId, 'paid', {
         stripeSessionId: session.id,
         ...(shipping ? { shippingAddress: shipping } : {}),

@@ -87,10 +87,10 @@ function SuccessView({
           <div className="flex items-start gap-3">
             <span className="text-xl flex-shrink-0">📱</span>
             <div>
-              <p className="font-semibold text-[var(--forest)]">Confirmation + proof-first delivery</p>
+              <p className="font-semibold text-[var(--forest)]">Confirmation + digital-first delivery</p>
               <p className="text-gray-500">
                 {email ? `A confirmation was sent to ${email}. ` : ''}
-                We email a digital proof first, usually within 2 business days. Once you approve the proof, you receive the final high-resolution PDF for digital orders, or the printed book ships for softcover/hardcover orders.
+                Digital proofs are usually ready within 2 business days; final PDFs and print production follow after approval.
               </p>
             </div>
           </div>

@@ -2,8 +2,9 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { get, list, put } from '@vercel/blob';
 
-import type { FulfillmentStatus, PageTextLayout } from './fulfillment-types.ts';
-export type { FulfillmentStatus, PageTextLayout };
+import type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
+import { sanitizeReferralCode } from './referral-code.ts';
+export type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
 export type BookFormat = 'digital' | 'classic' | 'premium';
@@ -31,6 +32,7 @@ export interface OrderInput {
   occasion?: string;
   giftMessage?: string;
   characterNotes?: string;
+  familyCharacters?: FamilyCharacterInput[] | string | null;
   appearanceOptions?: string;
   bookFormat: string;
   email: string;
@@ -54,6 +56,14 @@ export interface OrderInput {
   voiceBlobUrl?: string | null;
   voiceConsentAt?: string | null;
   voiceSource?: 'recorded' | 'uploaded' | null;
+  /**
+   * Transcription metadata for the optional consented voice note. Populated
+   * during checkout only when HSB_VOICE_TRANSCRIPTION_ENABLED is on; null
+   * otherwise. The audio is used for transcription + story inspiration ONLY,
+   * never for voice cloning.
+   */
+  voiceTranscript?: VoiceTranscriptMeta | null;
+  referralCode?: string | null;
 }
 
 export type ReviewStatus =
@@ -61,6 +71,26 @@ export type ReviewStatus =
   | 'in_review'
   | 'customer_changes_requested'
   | 'approved';
+
+export type CustomerPageReviewStatus =
+  | 'pending'
+  | 'approved'
+  | 'changes_requested'
+  | 'resolved';
+
+export type ChangeLifecycleStatus =
+  | 'triage'
+  | 'illustrator'
+  | 'qa'
+  | 'ready_for_customer'
+  | 'resolved';
+
+export interface CustomerRequestedChange {
+  requestedAt: string;
+  note: string;
+  lifecycleStatus: ChangeLifecycleStatus;
+  updatedAt?: string | null;
+}
 
 export interface PageFeedbackEntry {
   createdAt: string;
@@ -89,9 +119,12 @@ export interface PageVersionEntry {
 export type ReviewAuditEventType =
   | 'proof_generated'
   | 'proof_rebuilt'
+  | 'proof_release_blocked'
+  | 'proof_release_override_recorded'
   | 'proof_review_acknowledged'
   | 'page_regenerated'
   | 'page_accepted'
+  | 'page_changes_requested'
   | 'whole_book_approved'
   | 'whole_book_approval_rejected'
   | 'refund_issued'
@@ -108,6 +141,23 @@ export interface ReviewAuditEvent {
   reason?: string | null;
   /** Free-form, sanitized metadata. Keep small. */
   meta?: Record<string, string | number | boolean | null> | null;
+}
+
+export interface ProofReleaseOverride {
+  /** ISO timestamp this override/spot-check was recorded. */
+  recordedAt: string;
+  /** Bounded internal operator identifier, not customer-facing. */
+  recordedBy: string;
+  /** Short reason explaining why automated checks were insufficient. */
+  reason: string;
+  /** Scope of the override. */
+  scope:
+    | 'story_source'
+    | 'art_direction'
+    | 'story_source_and_art_direction'
+    | 'full_proof_release';
+  /** Optional ISO expiry for temporary launch overrides. */
+  expiresAt?: string | null;
 }
 
 export interface PageArtifact {
@@ -129,6 +179,12 @@ export interface PageArtifact {
   generationConditioning?: 'text_only' | 'photo_edit' | null;
   regenerateCount: number;
   accepted: boolean;
+  /** Customer-facing review state for this page/spread. Optional so older
+   *  proof artifacts continue to load unchanged. */
+  customerReviewStatus?: CustomerPageReviewStatus | null;
+  /** Latest customer-requested change note. This records review intent only;
+   *  it does not trigger image providers or fulfillment by itself. */
+  customerRequestedChange?: CustomerRequestedChange | null;
   feedbackHistory: PageFeedbackEntry[];
   versionHistory: PageVersionEntry[];
   /** Optional picture-book text layout persisted on newer generated/rebuilt pages.
@@ -165,6 +221,20 @@ export interface OrderRecord extends OrderInput {
    *  template_after_openai_failure). Set once during fulfillment, never
    *  overwritten. Optional for backward compatibility with older orders. */
   storyMeta?: import('./fulfillment-types.ts').StoryMeta | null;
+  /** Optional read-only art-direction packet persisted by the art-direction
+   *  pipeline. Admin diagnostics may display bounded summaries from it, but
+   *  fulfillment/proof state must not depend on this field until the gated
+   *  state-machine work lands. */
+  artDirectionPacket?: import('./art-direction-schemas.ts').ArtDirectionPacket | unknown | null;
+  /** Optional persisted storyboard validation from the art-direction pipeline.
+   *  Diagnostics recompute when absent so legacy orders remain readable. */
+  artDirectionValidation?: import('./storyboard-validator.ts').StoryboardValidation | null;
+  artDirectionGeneratedAt?: string | null;
+  artDirectionHumanReviewStatus?: 'not_started' | 'needs_review' | 'approved' | 'rejected' | string | null;
+  artDirectionHumanReviewNotes?: string | null;
+  /** Internal-only proof release override. Honored only when accompanied by a
+   * matching proof_release_override_recorded audit event. */
+  proofReleaseOverride?: ProofReleaseOverride | null;
   printInteriorArtifactUrl?: string | null;
   printInteriorMd5?: string | null;
   printInteriorPageCount?: number | null;
@@ -190,6 +260,8 @@ export interface OrderRecord extends OrderInput {
   internalDispositionNote?: string | null;
   internalDispositionAt?: string | null;
   pageArtifacts?: PageArtifact[];
+  /** Influencer / partner attribution captured from ?ref= or hsb_ref cookie. */
+  referralCode?: string | null;
   /** Append-only audit log of review/approval events. Optional on legacy orders. */
   auditEvents?: ReviewAuditEvent[];
   /** Pre-print refund state. Set when admin issues a Stripe refund for an
@@ -203,6 +275,42 @@ export interface OrderRecord extends OrderInput {
   stripeRefundId?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type FamilyCharacterRole =
+  | 'dad'
+  | 'mom'
+  | 'parent'
+  | 'sibling'
+  | 'grandparent'
+  | 'pet'
+  | 'whole-family'
+  | 'other';
+
+export interface FamilyCharacterInput {
+  role?: FamilyCharacterRole | string | null;
+  name?: string | null;
+  relationshipLabel?: string | null;
+  pronouns?: string | null;
+  notes?: string | null;
+  isGiftRecipient?: boolean | null;
+  appearsInStory?: boolean | null;
+  photoFileName?: string | null;
+  photoBlobPath?: string | null;
+  photoBlobUrl?: string | null;
+}
+
+export interface FamilyCharacter {
+  role: FamilyCharacterRole;
+  name: string;
+  relationshipLabel: string;
+  pronouns: string;
+  notes: string;
+  isGiftRecipient: boolean;
+  appearsInStory: boolean;
+  photoFileName: string | null;
+  photoBlobPath: string | null;
+  photoBlobUrl: string | null;
 }
 
 export function isPrintFormat(bookFormat: string): boolean {
@@ -228,6 +336,76 @@ export function getStoryPageCount(bookFormat: string): number {
   if (bookFormat === 'classic') return 24;
   if (bookFormat === 'premium') return 32;
   return 6;
+}
+
+const FAMILY_CHARACTER_MAX_COUNT = 4;
+const FAMILY_CHARACTER_MAX_FIELD = 80;
+const FAMILY_CHARACTER_MAX_NOTES = 180;
+const FAMILY_CHARACTER_ROLES = new Set<FamilyCharacterRole>([
+  'dad',
+  'mom',
+  'parent',
+  'sibling',
+  'grandparent',
+  'pet',
+  'whole-family',
+  'other',
+]);
+
+function cleanShortText(value: unknown, max = FAMILY_CHARACTER_MAX_FIELD): string {
+  return String(value ?? '')
+    .replace(/[\x00-\x1F\x7F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+}
+
+function normalizeFamilyRole(role: unknown): FamilyCharacterRole {
+  const value = cleanShortText(role).toLowerCase();
+  return FAMILY_CHARACTER_ROLES.has(value as FamilyCharacterRole)
+    ? (value as FamilyCharacterRole)
+    : 'other';
+}
+
+function parseFamilyCharacters(input: OrderInput['familyCharacters']): FamilyCharacterInput[] {
+  if (!input) return [];
+  if (Array.isArray(input)) return input;
+  if (typeof input !== 'string') return [];
+  try {
+    const parsed = JSON.parse(input);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function sanitizeFamilyCharacters(input: OrderInput['familyCharacters']): FamilyCharacter[] {
+  return parseFamilyCharacters(input)
+    .slice(0, FAMILY_CHARACTER_MAX_COUNT)
+    .map((character) => {
+      const role = normalizeFamilyRole(character?.role);
+      const name = cleanShortText(character?.name);
+      const relationshipLabel =
+        cleanShortText(character?.relationshipLabel) ||
+        (role === 'whole-family' ? 'whole family' : role);
+      const notes = cleanShortText(character?.notes, FAMILY_CHARACTER_MAX_NOTES);
+      const pronouns = cleanShortText(character?.pronouns, 32);
+      return {
+        role,
+        name,
+        relationshipLabel,
+        pronouns,
+        notes,
+        isGiftRecipient: Boolean(character?.isGiftRecipient),
+        appearsInStory: character?.appearsInStory === false ? false : true,
+        photoFileName: cleanShortText(character?.photoFileName, 120) || null,
+        photoBlobPath: cleanShortText(character?.photoBlobPath, 500) || null,
+        photoBlobUrl: cleanShortText(character?.photoBlobUrl, 500) || null,
+      };
+    })
+    .filter((character) =>
+      Boolean(character.name || character.relationshipLabel || character.notes),
+    );
 }
 
 export const PAGE_REVIEW_NOTES_MAX_LENGTH = 500;
@@ -312,9 +490,9 @@ interface CreateOrderOptions {
 }
 
 const FORMAT_META: Record<BookFormat, { label: string; priceCents: number }> = {
-  digital: { label: 'Digital instant', priceCents: 1900 },
-  classic: { label: 'Classic softcover', priceCents: 3900 },
-  premium: { label: 'Premium hardcover', priceCents: 6400 },
+  digital: { label: 'Digital PDF', priceCents: 1499 },
+  classic: { label: 'Classic softcover', priceCents: 4499 },
+  premium: { label: 'Premium hardcover', priceCents: 6499 },
 };
 
 /**
@@ -338,6 +516,45 @@ export function getBlobAccessMode(): BlobAccessMode {
   return 'public';
 }
 
+/**
+ * Sanitize a Blob-related error message before persisting/logging it.
+ *
+ * Belt-and-suspenders against accidentally surfacing a token value in an
+ * error string. `@vercel/blob` does not normally echo the token, but the
+ * underlying `fetch` Response.statusText is operator-visible and we
+ * persist parts of error messages into order records via
+ * fulfillmentLastError. Strip anything that looks like a token before it
+ * leaves this module.
+ */
+function sanitizeBlobErrorMessage(message: string): string {
+  return message
+    .replace(/(vercel_blob_rw|rw_)[A-Za-z0-9_-]{8,}/gi, '$1[redacted]')
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [redacted]')
+    .replace(/([?&](?:token|key)=)[^\s&]+/gi, '$1[redacted]')
+    .slice(0, 500);
+}
+
+/**
+ * Read the text body of a single Blob.
+ *
+ * Strategy when `getBlobAccessMode() === 'public'`:
+ *   1. If a public URL is available, try the unauthenticated `fetch` first
+ *      (no SDK overhead, no list call).
+ *   2. If that returns 404, the blob is genuinely absent — return null.
+ *   3. If it returns ANY other non-OK status (notably 403, which the
+ *      2026-05-15 Rex proof rerun hit mid-fulfillment) AND we have a
+ *      blob token, fall back to the authenticated SDK `get()`. Vercel
+ *      Blob's public-read can throttle / cache-miss / 403 transiently,
+ *      and order-JSON reads must not fail in that window when we have
+ *      a token that authoritatively can read the object.
+ *   4. If `get()` itself fails or there is no token to retry with,
+ *      surface a sanitized error so callers can decide (production
+ *      callers re-throw; dev callers may fall back to filesystem).
+ *
+ * Private-access mode goes straight to the SDK `get()` as before.
+ *
+ * This function never logs the token.
+ */
 export async function readBlobText(input: {
   pathname: string;
   url?: string | null;
@@ -347,28 +564,70 @@ export async function readBlobText(input: {
 
   if (access === 'public') {
     const url = input.url;
-    if (!url) return null;
-    const bust = `ts=${Date.now()}`;
-    const separator = url.includes('?') ? '&' : '?';
-    const response = await fetch(`${url}${separator}${bust}`, { cache: 'no-store' });
-    if (response.status === 404) return null;
-    if (!response.ok) {
-      throw new Error(`Public blob fetch failed: ${response.status} ${response.statusText}`.trim());
+    let publicFetchError: { status: number; statusText: string } | null = null;
+    if (url) {
+      const bust = `ts=${Date.now()}`;
+      const separator = url.includes('?') ? '&' : '?';
+      const response = await fetch(`${url}${separator}${bust}`, { cache: 'no-store' });
+      if (response.status === 404) return null;
+      if (response.ok) {
+        return await response.text();
+      }
+      publicFetchError = { status: response.status, statusText: response.statusText };
     }
-    return await response.text();
-  }
 
-  const result = await get(input.pathname, {
-    access,
-    token: input.token,
-    useCache: false,
-  });
+    // Authenticated fallback: the public URL is unavailable, throttled, or
+    // permission-denied. Use the SDK with the token. This is the path the
+    // Rex 2026-05-15 rerun needed — the public blob returned 403 mid-run
+    // even though the token-authenticated read would have worked.
+    if (input.token) {
+      try {
+        const result = await get(input.pathname, {
+          access: 'public',
+          token: input.token,
+          useCache: false,
+        });
+        if (!result || !result.stream) {
+          // SDK returned no object — treat as 404 absence.
+          return null;
+        }
+        return await new Response(result.stream).text();
+      } catch (err) {
+        const sdkMsg = err instanceof Error ? err.message : String(err);
+        const sanitized = sanitizeBlobErrorMessage(sdkMsg);
+        if (publicFetchError) {
+          throw new Error(
+            `Blob read failed: public fetch ${publicFetchError.status} ${publicFetchError.statusText.trim()}, authenticated fallback also failed: ${sanitized}`.trim(),
+          );
+        }
+        throw new Error(`Authenticated blob fetch failed: ${sanitized}`.trim());
+      }
+    }
 
-  if (!result || !result.stream) {
+    // No token to retry with — surface the original public-fetch error.
+    if (publicFetchError) {
+      throw new Error(
+        `Public blob fetch failed: ${publicFetchError.status} ${publicFetchError.statusText}`.trim(),
+      );
+    }
     return null;
   }
 
-  return await new Response(result.stream).text();
+  // Private-access path: always SDK with token.
+  try {
+    const result = await get(input.pathname, {
+      access,
+      token: input.token,
+      useCache: false,
+    });
+    if (!result || !result.stream) {
+      return null;
+    }
+    return await new Response(result.stream).text();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Private blob fetch failed: ${sanitizeBlobErrorMessage(msg)}`.trim());
+  }
 }
 
 function normalizeFormat(bookFormat: string): BookFormat {
@@ -383,7 +642,7 @@ export function buildDeliveryExpectation(bookFormat: string): string {
   const format = normalizeFormat(bookFormat);
 
   if (format === 'digital') {
-    return 'PDF by email in ~15 minutes';
+    return 'Digital proof usually ready within 2 business days; final PDF delivered after approval.';
   }
 
   if (format === 'premium') {
@@ -410,6 +669,7 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     occasion: input.occasion?.trim() || '',
     giftMessage: input.giftMessage?.trim() || '',
     characterNotes: input.characterNotes?.trim() || '',
+    familyCharacters: sanitizeFamilyCharacters(input.familyCharacters),
     appearanceOptions: input.appearanceOptions?.trim() || '',
     bookFormat: format,
     formatLabel: meta.label,
@@ -426,6 +686,11 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
       input.voiceSource === 'recorded' || input.voiceSource === 'uploaded'
         ? input.voiceSource
         : null,
+    // Transcription is produced after createOrderRecord (post voice-upload),
+    // so this is normally null here and set later in the persist call. We
+    // still pass it through when supplied so the field round-trips cleanly.
+    voiceTranscript: input.voiceTranscript ?? null,
+    referralCode: sanitizeReferralCode(input.referralCode),
     status: 'order_received',
     paymentStatus: 'pending',
     stripeSessionId: null,
@@ -695,7 +960,11 @@ export async function uploadOrderVoice(orderId: string, file: File): Promise<Upl
   }
 }
 
-export async function uploadOrderPhoto(orderId: string, file: File): Promise<UploadedPhotoRef | null> {
+async function uploadOrderPhotoAtPath(
+  orderId: string,
+  file: File,
+  pathnameForSafeName: (safeName: string) => string,
+): Promise<UploadedPhotoRef | null> {
   const token = getBlobToken();
 
   if (typeof file.arrayBuffer !== 'function') {
@@ -722,7 +991,7 @@ export async function uploadOrderPhoto(orderId: string, file: File): Promise<Upl
     .replace(/[^a-zA-Z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '') || 'photo';
 
-  const pathname = withBlobNamespace(`orders/${orderId}/photo-${safeName}`);
+  const pathname = withBlobNamespace(pathnameForSafeName(safeName));
   const buffer = Buffer.from(await file.arrayBuffer());
 
   try {
@@ -750,6 +1019,23 @@ export async function uploadOrderPhoto(orderId: string, file: File): Promise<Upl
     console.warn(`[orders] uploadOrderPhoto blob put failed in dev for ${orderId}:`, err);
     return null;
   }
+}
+
+export async function uploadOrderPhoto(orderId: string, file: File): Promise<UploadedPhotoRef | null> {
+  return uploadOrderPhotoAtPath(orderId, file, (safeName) => `orders/${orderId}/photo-${safeName}`);
+}
+
+export async function uploadOrderSupportingPhoto(
+  orderId: string,
+  index: number,
+  file: File,
+): Promise<UploadedPhotoRef | null> {
+  const safeIndex = Number.isInteger(index) && index >= 0 ? index + 1 : 1;
+  return uploadOrderPhotoAtPath(
+    orderId,
+    file,
+    (safeName) => `orders/${orderId}/supporting-${safeIndex}-photo-${safeName}`,
+  );
 }
 
 export async function persistOrder(order: OrderRecord) {
@@ -984,8 +1270,13 @@ function patchRequiresPaidOrder(patch: FulfillmentPatch): boolean {
 export async function updateFulfillmentState(
   orderId: string,
   patch: FulfillmentPatch,
+  existingOrder?: OrderRecord,
 ): Promise<OrderRecord | null> {
-  const existing = await getOrder(orderId);
+  // If the caller already holds a freshly-written record for this order, use it
+  // directly. A second getOrder() here can return a stale blob snapshot and
+  // spread it over fields that were just written (e.g. pageArtifacts after
+  // regen). Guard the exported helper against accidental cross-order reuse.
+  const existing = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
   if (!existing) return null;
 
   const effectivePaymentStatus = patch.paymentStatus ?? existing.paymentStatus;
@@ -1014,8 +1305,14 @@ export async function updateFulfillmentState(
 export async function appendAuditEvent(
   orderId: string,
   event: Omit<ReviewAuditEvent, 'at'> & { at?: string },
+  existingOrder?: OrderRecord,
 ): Promise<OrderRecord | null> {
-  const existing = await getOrder(orderId);
+  // Use the caller's already-written record when available for this order. A
+  // fresh getOrder() here can return a stale blob snapshot and overwrite newer
+  // pageArtifacts (the production regen-clobber bug: appendAuditEvent re-read
+  // stale state after updateFulfillmentState had already persisted the regen'd
+  // artifacts). Guard the exported helper against accidental cross-order reuse.
+  const existing = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
   if (!existing) return null;
   const entry: ReviewAuditEvent = {
     at: event.at ?? new Date().toISOString(),

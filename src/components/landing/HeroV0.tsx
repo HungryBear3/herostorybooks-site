@@ -65,7 +65,7 @@ export function HeroV0() {
           {/* CTA Buttons */}
           <motion.div variants={fadeUp} className="flex flex-col sm:flex-row gap-4 pt-4">
             <Link
-              href="/order"
+              href="/checkout"
               className="inline-flex items-center justify-center px-8 py-4 bg-[#D6B25E] text-[#16324F] font-serif font-bold text-lg rounded-lg shadow-xl hover:bg-[#C9A960] transition-all duration-300 hover:shadow-2xl hover:scale-105"
             >
               Create Your Book

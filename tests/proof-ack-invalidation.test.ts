@@ -64,6 +64,13 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_ack_inv'): P
     proofApprovalToken: 'tok_xyz',
     fulfillmentStatus: 'proof_ready',
     storyArtifactUrl: 'https://example.com/proof-v1.pdf',
+    shippingAddress: {
+      line1: '100 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
     pageArtifacts: [
       pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
       pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
@@ -77,12 +84,12 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_ack_inv'): P
 }
 
 const successProvider: ImageProvider = {
-  name: 'openai',
+  name: 'gemini',
   async generate({ prompt }) {
     return {
       imageUrl: 'https://example.com/regen.png',
-      provider: 'openai',
-      model: 'gpt-image-1',
+      provider: 'gemini',
+      model: 'gemini-2.5-flash-image-preview',
       promptUsed: prompt,
       latencyMs: 1,
       error: null,

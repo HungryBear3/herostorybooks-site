@@ -28,22 +28,22 @@ export function Footer() {
             <h4 className="font-serif font-semibold text-lg mb-4">Quick Links</h4>
             <ul className="space-y-2">
               <li>
-                <Link href="#features" className="text-cream/70 hover:text-gold transition-colors">
-                  Features
+                <Link href="/#how" className="text-cream/70 hover:text-gold transition-colors">
+                  How it works
                 </Link>
               </li>
               <li>
-                <Link href="#pricing" className="text-cream/70 hover:text-gold transition-colors">
+                <Link href="/pricing" className="text-cream/70 hover:text-gold transition-colors">
                   Pricing
                 </Link>
               </li>
               <li>
-                <Link href="#faq" className="text-cream/70 hover:text-gold transition-colors">
+                <Link href="/#faq" className="text-cream/70 hover:text-gold transition-colors">
                   FAQ
                 </Link>
               </li>
               <li>
-                <Link href="#" className="text-cream/70 hover:text-gold transition-colors">
+                <Link href="mailto:support@herostorybooks.com" className="text-cream/70 hover:text-gold transition-colors">
                   Contact Us
                 </Link>
               </li>
@@ -55,22 +55,22 @@ export function Footer() {
             <h4 className="font-serif font-semibold text-lg mb-4">Legal</h4>
             <ul className="space-y-2">
               <li>
-                <Link href="#" className="text-cream/70 hover:text-gold transition-colors">
+                <Link href="/privacy" className="text-cream/70 hover:text-gold transition-colors">
                   Privacy Policy
                 </Link>
               </li>
               <li>
-                <Link href="#" className="text-cream/70 hover:text-gold transition-colors">
+                <Link href="/terms" className="text-cream/70 hover:text-gold transition-colors">
                   Terms of Service
                 </Link>
               </li>
               <li>
-                <Link href="#" className="text-cream/70 hover:text-gold transition-colors">
-                  Shipping Policy
+                <Link href="/terms" className="text-cream/70 hover:text-gold transition-colors">
+                  Shipping & Returns
                 </Link>
               </li>
               <li>
-                <Link href="#" className="text-cream/70 hover:text-gold transition-colors">
+                <Link href="/terms" className="text-cream/70 hover:text-gold transition-colors">
                   Returns
                 </Link>
               </li>

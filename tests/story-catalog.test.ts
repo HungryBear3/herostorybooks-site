@@ -11,9 +11,9 @@ import {
 test('story catalog includes real themed sample thumbnails instead of generic placeholders', () => {
   assert.equal(CHECKOUT_SAMPLE_IMAGES.some((image) => image.startsWith('/sample')), false);
   assert.deepEqual(CHECKOUT_SAMPLE_IMAGES, [
-    '/assets/explorer-sample.png',
-    '/assets/space-sample.png',
-    '/assets/ocean-sample.png',
+    '/assets/lukas-sample-forest-portrait.jpg',
+    '/assets/lukas-sample-dino-walk.jpg',
+    '/assets/lukas-sample-space-portrait.jpg',
   ]);
 });
 
@@ -43,6 +43,14 @@ test('catalog surfaces the evergreen Dragon Quest and Royal Adventure options', 
   assert.ok(royal, 'royal-adventure must be in catalog');
   assert.equal(dragon?.coverImage, '/assets/dragon-quest-gpt.png');
   assert.equal(royal?.coverImage, '/assets/royal-regen-candidates-v7/cover-v7.png');
+});
+
+test('catalog includes a custom voice-led story direction for checkout', () => {
+  const custom = STORY_THEMES.find((theme) => theme.id === 'custom-voice-story');
+  assert.ok(custom, 'custom voice-led story direction must exist');
+  assert.match(custom!.name, /Custom Story/i);
+  assert.match(custom!.description, /voice note|story ideas|family details/i);
+  assert.equal(custom!.href, '/checkout');
 });
 
 test('featured catalog now includes the expanded evergreen lineup', () => {

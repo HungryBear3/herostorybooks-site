@@ -113,16 +113,19 @@ test('submitPrintJob: returns jobId and estimatedShipDate on success', withCreds
   assert.equal(result.estimatedShipDate, '2026-05-01');
 }));
 
-test('submitPrintJob: works without shippingAddress', withCreds(async () => {
+test('submitPrintJob: refuses missing shippingAddress before print-jobs call', withCreds(async () => {
   const orderNoShipping: OrderRecord = { ...BASE_ORDER, shippingAddress: null };
-  const _fetch = mockFetch([
-    { ok: true, body: TOKEN_RESPONSE },
-    { ok: true, body: { id: 11111111, status: 'CREATED' } },
-  ]);
+  let calls = 0;
+  const _fetch = async () => {
+    calls += 1;
+    return { ok: true, status: 200, json: async () => TOKEN_RESPONSE, text: async () => '' } as Response;
+  };
 
-  const result = await submitPrintJob(orderNoShipping, { fetch: _fetch });
-  assert.equal(result.jobId, '11111111');
-  assert.equal(result.estimatedShipDate, undefined);
+  await assert.rejects(
+    () => submitPrintJob(orderNoShipping, { fetch: _fetch }),
+    /missing usable shippingAddress/,
+  );
+  assert.equal(calls, 0);
 }));
 
 test('submitPrintJob: falls back to lulu-{timestamp} jobId when id missing from response', withCreds(async () => {

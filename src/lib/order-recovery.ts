@@ -44,6 +44,37 @@ export interface RecoverySummary {
   warnings: string[];
 }
 
+export type PriorOrderShippingSource = Pick<OrderRecord, 'id' | 'shippingAddress'>;
+
+export function hasCompleteShippingAddress(
+  shippingAddress: ShippingAddress | null | undefined,
+): shippingAddress is ShippingAddress {
+  return Boolean(
+    shippingAddress?.line1 &&
+      shippingAddress.city &&
+      shippingAddress.state &&
+      shippingAddress.zip &&
+      shippingAddress.country,
+  );
+}
+
+export function buildRecoveryInputWithPriorShipping(
+  input: RecoveryInput,
+  priorOrder: PriorOrderShippingSource,
+): RecoveryInput {
+  if (input.id === priorOrder.id) {
+    throw new Error('recovery order id must differ from prior shipping source order id');
+  }
+  if (input.shippingAddress) return input;
+  if (!hasCompleteShippingAddress(priorOrder.shippingAddress)) {
+    throw new Error('prior order shippingAddress is missing or incomplete');
+  }
+  return {
+    ...input,
+    shippingAddress: { ...priorOrder.shippingAddress },
+  };
+}
+
 /**
  * Pure builder. Produces a recovery-ready OrderRecord:
  * - exact `id` preserved
