@@ -70,7 +70,7 @@ const FORMATS = [
   },
 ];
 
-const VOICE_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_VOICE_BETA === 'true';
+const VOICE_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_VOICE_BETA !== 'false';
 
 const STORAGE_KEY = 'hsb_order_v1';
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
