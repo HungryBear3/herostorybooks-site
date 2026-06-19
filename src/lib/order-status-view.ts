@@ -1,5 +1,6 @@
 import type { OrderRecord } from './orders.ts';
 import { isPrintFormat } from './orders.ts';
+import { evaluateProofSubmissionGate } from './proof-submission-gate.ts';
 
 export type TimelineStepState = 'done' | 'active' | 'pending' | 'failed';
 
@@ -18,7 +19,7 @@ export interface OrderStatusView {
   isFailed: boolean;
   needsAction: boolean;
   primaryAction?: { label: string; href: string; kind: 'download' | 'view' | 'approve' };
-  secondaryAction?: { label: string; href: string };
+  secondaryAction?: { label: string; href: string; kind?: 'download' | 'view' | 'approve' };
   tracking?: { number?: string; url?: string; shippedAt?: string };
   timeline: TimelineStep[];
   supportBlurb: string;
@@ -146,15 +147,36 @@ function enrichPrint(
     view.subhead = 'Thanks for approving. We are queuing the job with our print partner.';
     view.tone = 'neutral';
   } else if (fulfillment === 'proof_ready' && order.storyArtifactUrl) {
+    const proofGate = evaluateProofSubmissionGate(order);
+    if (!proofGate.allowed) {
+      view.headline = `${order.childName}'s proof is being reviewed`;
+      view.subhead = 'Our team is checking the story and art direction before sending it to you.';
+      view.tone = 'neutral';
+      view.needsAction = false;
+      return view;
+    }
     view.headline = `${order.childName}'s proof is ready for review`;
     view.subhead = 'Review your proof and approve it so we can send it to print.';
     view.tone = 'action';
     view.needsAction = true;
-    view.primaryAction = {
-      label: 'View Proof',
-      href: order.storyArtifactUrl,
-      kind: 'view',
-    };
+    if (order.proofApprovalToken) {
+      view.primaryAction = {
+        label: `Review & Approve ${order.childName}'s Book`,
+        href: `/review/${encodeURIComponent(order.id)}?token=${encodeURIComponent(order.proofApprovalToken)}`,
+        kind: 'approve',
+      };
+      view.secondaryAction = {
+        label: 'View proof PDF only',
+        href: order.storyArtifactUrl,
+        kind: 'view',
+      };
+    } else {
+      view.primaryAction = {
+        label: 'View Proof',
+        href: order.storyArtifactUrl,
+        kind: 'view',
+      };
+    }
   } else if (fulfillment === 'building_pdf') {
     view.headline = `Finalizing ${order.childName}'s proof`;
     view.subhead = 'Binding the proof PDF. You will get an email to approve it soon.';

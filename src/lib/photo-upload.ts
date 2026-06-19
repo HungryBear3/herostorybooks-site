@@ -36,8 +36,8 @@ export function isBrowserResizablePhoto(file: BasicPhotoFile) {
   return RESIZABLE_MIME_TYPES.has(mimeType) || RESIZABLE_EXTENSIONS.has(extension);
 }
 
-export function shouldAutoShrinkPhoto(file: BasicPhotoFile) {
-  return file.size > MAX_PHOTO_BYTES && isBrowserResizablePhoto(file) && !isHeicLikePhoto(file);
+export function shouldAutoShrinkPhoto(file: BasicPhotoFile, maxBytes = MAX_PHOTO_BYTES) {
+  return file.size > maxBytes && isBrowserResizablePhoto(file) && !isHeicLikePhoto(file);
 }
 
 function formatMb(bytes: number) {
@@ -99,8 +99,8 @@ async function canvasToFile(canvas: HTMLCanvasElement, type: string, quality: nu
   return new File([blob], `${baseName}.${extension}`, { type, lastModified: Date.now() });
 }
 
-export async function shrinkPhotoForUpload(file: File) {
-  if (!shouldAutoShrinkPhoto(file)) {
+export async function shrinkPhotoForUpload(file: File, maxBytes = MAX_PHOTO_BYTES) {
+  if (!shouldAutoShrinkPhoto(file, maxBytes)) {
     return file;
   }
 
@@ -117,6 +117,7 @@ export async function shrinkPhotoForUpload(file: File) {
   let currentQuality = INITIAL_JPEG_QUALITY;
   let best: File | null = null;
   const outputType = targetMimeType(file);
+  const targetBytes = Math.min(TARGET_PHOTO_BYTES, Math.floor(maxBytes * 0.82));
 
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const { width: nextWidth, height: nextHeight } = scaledDimensions(width, height, currentMaxDimension);
@@ -127,11 +128,11 @@ export async function shrinkPhotoForUpload(file: File) {
 
     const candidate = await canvasToFile(canvas, outputType, currentQuality, file.name);
     best = candidate;
-    if (candidate.size <= MAX_PHOTO_BYTES) {
+    if (candidate.size <= maxBytes) {
       return candidate;
     }
 
-    if (candidate.size <= TARGET_PHOTO_BYTES) {
+    if (candidate.size <= targetBytes) {
       return candidate;
     }
 
@@ -139,7 +140,7 @@ export async function shrinkPhotoForUpload(file: File) {
     currentMaxDimension = Math.max(900, Math.round(currentMaxDimension * 0.85));
   }
 
-  if (best && best.size <= MAX_PHOTO_BYTES) {
+  if (best && best.size <= maxBytes) {
     return best;
   }
 

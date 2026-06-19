@@ -81,6 +81,23 @@ test('buildOrderConfirmationEmail includes the promised order details and suppor
   assert.match(email.text, /support@herostorybooks.com/);
 });
 
+test('buildOrderConfirmationEmail includes clickable status CTA in html', () => {
+  const originalUrl = process.env.NEXT_PUBLIC_URL;
+  process.env.NEXT_PUBLIC_URL = 'https://preview.herostorybooks.test/';
+
+  try {
+    const order = makePremiumOrder();
+    const email = buildOrderConfirmationEmail(order, { supportEmail: SUPPORT });
+
+    assert.match(email.html, /Track your order/i);
+    assert.match(email.html, /href="https:\/\/preview\.herostorybooks\.test\/status\/ord_test_email"/);
+    assert.match(email.text, /Track your order: https:\/\/preview\.herostorybooks\.test\/status\/ord_test_email/);
+  } finally {
+    if (originalUrl === undefined) delete process.env.NEXT_PUBLIC_URL;
+    else process.env.NEXT_PUBLIC_URL = originalUrl;
+  }
+});
+
 // ── buildPreviewReadyEmail ────────────────────────────────────────────────────
 
 test('buildPreviewReadyEmail for print includes child name and approval framing', () => {

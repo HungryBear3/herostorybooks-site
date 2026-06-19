@@ -5,6 +5,9 @@
 
 import type { OrderRecord, ReviewAuditEvent } from './orders.ts';
 import { isPrintFormat } from './orders.ts';
+import { ArtDirectionPacketSchema } from './art-direction-schemas.ts';
+import { validateStoryboardCompleteness, type StoryboardValidationIssue } from './storyboard-validator.ts';
+import { evaluateProofSubmissionGate, hasUsableShippingAddress } from './proof-submission-gate.ts';
 
 export type DiagnosticSeverity = 'ok' | 'info' | 'warn' | 'fail';
 
@@ -61,6 +64,37 @@ export interface OrderDiagnostics {
     generatedAt: string | null;
     fallbackError: string | null;
   };
+  /** Admin/support-visible source material captured at checkout. This is
+   *  metadata and bounded text only; blob URLs/invite tokens are intentionally
+   *  not exposed here. */
+  storyInput: {
+    hasCustomText: boolean;
+    hasTheme: boolean;
+    theme: string | null;
+    hasLesson: boolean;
+    lesson: string | null;
+    hasOccasion: boolean;
+    occasion: string | null;
+    hasGiftMessage: boolean;
+    giftMessagePreview: string | null;
+    hasCharacterNotes: boolean;
+    characterNotesPreview: string | null;
+    hasVoiceOrUpload: boolean;
+    voiceSource: string | null;
+    voiceFileName: string | null;
+    voiceBlobPath: string | null;
+    voiceConsentAt: string | null;
+    transcriptStatus: 'none' | 'stored' | 'failed';
+    transcriptModel: string | null;
+    transcriptChars: number | null;
+    transcriptPreview: string | null;
+    inspirationChars: number | null;
+    inspirationPreview: string | null;
+    transcriptError: string | null;
+  };
+  /** Read-only art-direction/storyboard visibility for admin/support.
+   *  Bounded summaries only: no raw prompt text, URLs, tokens, or full packet. */
+  artDirection: ArtDirectionDiagnostics;
   artifacts: {
     storyArtifactUrl: string | null;
     pageArtifactCount: number;
@@ -101,6 +135,12 @@ export interface OrderDiagnostics {
     attempts: number;
     lastError: string | null;
   };
+  proofGate: {
+    gated: boolean;
+    allowed: boolean;
+    overrideApplied: boolean;
+    reasons: string[];
+  };
   print: {
     printJobId: string | null;
     printJobStatus: string | null;
@@ -128,6 +168,69 @@ export interface OrderDiagnostics {
   paidOrderOpsIssue: PaidOrderOpsIssue | null;
   /** Ordered list of named checks — the ones that fail are what to escalate on. */
   checks: DiagnosticCheck[];
+}
+
+export interface ArtDirectionDiagnostics {
+  status: 'absent' | 'present' | 'invalid';
+  packetPresent: boolean;
+  schemaValid: boolean | null;
+  generatedAt: string | null;
+  humanReviewStatus: string | null;
+  humanReviewNotes: string | null;
+  styleBible: {
+    bookId: string | null;
+    templateId: string | null;
+    targetIllustrationStyle: string | null;
+    renderingLevel: string | null;
+    paletteColorCount: number;
+    prohibitedCount: number;
+    continuityMotifCount: number;
+    continuityMotifs: string[];
+    approvedBy: string | null;
+    approvedAt: string | null;
+  } | null;
+  characterSheets: {
+    count: number;
+    approvedCount: number;
+    roles: string[];
+    summaries: Array<{
+      id: string | null;
+      name: string | null;
+      role: string | null;
+      approvedBy: string | null;
+      approvedAt: string | null;
+      recurringTraitCount: number;
+      neverChangeCount: number;
+    }>;
+  };
+  storyboard: {
+    validationStatus: 'complete' | 'incomplete' | 'not_available';
+    bookId: string | null;
+    expectedEntries: number | null;
+    actualEntries: number | null;
+    missingPages: number[];
+    duplicatePages: number[];
+    coveredStoryBeats: string[];
+    missingStoryBeats: string[];
+    errors: Array<BoundedArtDirectionIssue>;
+    warnings: Array<BoundedArtDirectionIssue>;
+    errorCount: number;
+    warningCount: number;
+  };
+  continuity: {
+    pagesWithContinuityCallback: number;
+    pagesWithRecurringObjects: number;
+    recurringObjectCount: number;
+    uniqueRecurringObjectCount: number;
+  };
+  schemaErrors: Array<BoundedArtDirectionIssue>;
+}
+
+export interface BoundedArtDirectionIssue {
+  code: string;
+  message: string;
+  path: string;
+  pageNumber?: number;
 }
 
 export const PAID_ARTIFACT_STALE_AFTER_MS = 15 * 60 * 1000;
@@ -206,10 +309,189 @@ export function classifyPaidOrderOpsIssue(
 }
 
 const RECENT_EVENT_LIMIT = 10;
+const INPUT_PREVIEW_LIMIT = 280;
+const ART_DIRECTION_ISSUE_LIMIT = 8;
+const ART_DIRECTION_CHARACTER_LIMIT = 8;
+const ART_DIRECTION_MOTIF_LIMIT = 8;
+
+function cleanPreview(value: string | null | undefined, max = INPUT_PREVIEW_LIMIT): string | null {
+  const cleaned = String(value ?? '')
+    .replace(/[\x00-\x1F\x7F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return null;
+  if (cleaned.length <= max) return cleaned;
+  return `${cleaned.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function hasText(value: string | null | undefined): boolean {
+  return Boolean(cleanPreview(value, 1));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function boundedIssue(issue: StoryboardValidationIssue): BoundedArtDirectionIssue {
+  return {
+    code: issue.code,
+    message: cleanPreview(issue.message, 180) ?? '',
+    path: issue.path,
+    ...(issue.pageNumber !== undefined ? { pageNumber: issue.pageNumber } : {}),
+  };
+}
+
+function countPaletteColors(palette: unknown): number {
+  if (!isRecord(palette)) return 0;
+  return ['primary', 'secondary', 'accent']
+    .map((key) => palette[key])
+    .filter(Array.isArray)
+    .reduce((sum, colors) => sum + colors.length, 0);
+}
+
+function extractPacket(order: OrderRecord): unknown | null {
+  return order.artDirectionPacket ?? null;
+}
+
+function buildArtDirectionDiagnostics(order: OrderRecord): ArtDirectionDiagnostics {
+  const rawPacket = extractPacket(order);
+  if (!rawPacket) {
+    return {
+      status: 'absent',
+      packetPresent: false,
+      schemaValid: null,
+      generatedAt: order.artDirectionGeneratedAt ?? null,
+      humanReviewStatus: order.artDirectionHumanReviewStatus ?? null,
+      humanReviewNotes: cleanPreview(order.artDirectionHumanReviewNotes, 180),
+      styleBible: null,
+      characterSheets: { count: 0, approvedCount: 0, roles: [], summaries: [] },
+      storyboard: {
+        validationStatus: 'not_available',
+        bookId: null,
+        expectedEntries: null,
+        actualEntries: null,
+        missingPages: [],
+        duplicatePages: [],
+        coveredStoryBeats: [],
+        missingStoryBeats: [],
+        errors: [],
+        warnings: [],
+        errorCount: 0,
+        warningCount: 0,
+      },
+      continuity: {
+        pagesWithContinuityCallback: 0,
+        pagesWithRecurringObjects: 0,
+        recurringObjectCount: 0,
+        uniqueRecurringObjectCount: 0,
+      },
+      schemaErrors: [],
+    };
+  }
+
+  const parsed = ArtDirectionPacketSchema.safeParse(rawPacket);
+  const packet = parsed.success ? parsed.data : (isRecord(rawPacket) ? rawPacket : {});
+  const styleBible = isRecord(packet.style_bible) ? packet.style_bible : null;
+  const sheets = Array.isArray(packet.character_sheets)
+    ? packet.character_sheets.filter(isRecord)
+    : [];
+  const storyboard = isRecord(packet.storyboard) ? packet.storyboard : null;
+  const entries = storyboard && Array.isArray(storyboard.entries)
+    ? storyboard.entries.filter(isRecord)
+    : [];
+
+  const validation = order.artDirectionValidation ?? validateStoryboardCompleteness(rawPacket);
+  const recurringObjects = entries.flatMap((entry) =>
+    Array.isArray(entry.required_recurring_objects)
+      ? entry.required_recurring_objects.filter((value) => typeof value === 'string' && value.trim())
+      : [],
+  );
+
+  const schemaErrors = parsed.success ? [] : parsed.error.issues.slice(0, ART_DIRECTION_ISSUE_LIMIT).map((issue) => ({
+    code: 'schema_invalid',
+    message: cleanPreview(issue.message, 180) ?? '',
+    path: issue.path.join('.') || 'artDirectionPacket',
+  }));
+
+  return {
+    status: parsed.success ? 'present' : 'invalid',
+    packetPresent: true,
+    schemaValid: parsed.success,
+    generatedAt: order.artDirectionGeneratedAt ?? null,
+    humanReviewStatus: order.artDirectionHumanReviewStatus ?? null,
+    humanReviewNotes: cleanPreview(order.artDirectionHumanReviewNotes, 180),
+    styleBible: styleBible ? {
+      bookId: typeof styleBible.book_id === 'string' ? styleBible.book_id : null,
+      templateId: typeof styleBible.template_id === 'string' ? styleBible.template_id : null,
+      targetIllustrationStyle: typeof styleBible.target_illustration_style === 'string' ? styleBible.target_illustration_style : null,
+      renderingLevel: typeof styleBible.rendering_level === 'string' ? styleBible.rendering_level : null,
+      paletteColorCount: countPaletteColors(styleBible.palette),
+      prohibitedCount: Array.isArray(styleBible.prohibited) ? styleBible.prohibited.length : 0,
+      continuityMotifCount: Array.isArray(styleBible.continuity_motifs) ? styleBible.continuity_motifs.length : 0,
+      continuityMotifs: Array.isArray(styleBible.continuity_motifs)
+        ? styleBible.continuity_motifs.filter((value): value is string => typeof value === 'string').slice(0, ART_DIRECTION_MOTIF_LIMIT)
+        : [],
+      approvedBy: isRecord(styleBible.versioning) && typeof styleBible.versioning.approved_by === 'string'
+        ? styleBible.versioning.approved_by
+        : null,
+      approvedAt: isRecord(styleBible.versioning) && typeof styleBible.versioning.approved_at === 'string'
+        ? styleBible.versioning.approved_at
+        : null,
+    } : null,
+    characterSheets: {
+      count: sheets.length,
+      approvedCount: sheets.filter((sheet) =>
+        isRecord(sheet.versioning) &&
+        typeof sheet.versioning.approved_by === 'string' &&
+        typeof sheet.versioning.approved_at === 'string',
+      ).length,
+      roles: [...new Set(sheets.map((sheet) => typeof sheet.role === 'string' ? sheet.role : 'unknown'))],
+      summaries: sheets.slice(0, ART_DIRECTION_CHARACTER_LIMIT).map((sheet) => ({
+        id: typeof sheet.character_id === 'string' ? sheet.character_id : null,
+        name: typeof sheet.display_name === 'string' ? sheet.display_name : null,
+        role: typeof sheet.role === 'string' ? sheet.role : null,
+        approvedBy: isRecord(sheet.versioning) && typeof sheet.versioning.approved_by === 'string'
+          ? sheet.versioning.approved_by
+          : null,
+        approvedAt: isRecord(sheet.versioning) && typeof sheet.versioning.approved_at === 'string'
+          ? sheet.versioning.approved_at
+          : null,
+        recurringTraitCount: isRecord(sheet.companion_anchors) && Array.isArray(sheet.companion_anchors.recurring_traits)
+          ? sheet.companion_anchors.recurring_traits.length
+          : 0,
+        neverChangeCount: Array.isArray(sheet.never_change) ? sheet.never_change.length : 0,
+      })),
+    },
+    storyboard: {
+      validationStatus: validation.status,
+      bookId: validation.bookId,
+      expectedEntries: validation.summary.expectedEntries,
+      actualEntries: validation.summary.actualEntries,
+      missingPages: validation.summary.missingPages,
+      duplicatePages: validation.summary.duplicatePages,
+      coveredStoryBeats: validation.summary.coveredStoryBeats,
+      missingStoryBeats: validation.summary.missingStoryBeats,
+      errors: validation.errors.slice(0, ART_DIRECTION_ISSUE_LIMIT).map(boundedIssue),
+      warnings: validation.warnings.slice(0, ART_DIRECTION_ISSUE_LIMIT).map(boundedIssue),
+      errorCount: validation.errors.length,
+      warningCount: validation.warnings.length,
+    },
+    continuity: {
+      pagesWithContinuityCallback: entries.filter((entry) => isRecord(entry.continuity_callback)).length,
+      pagesWithRecurringObjects: entries.filter((entry) =>
+        Array.isArray(entry.required_recurring_objects) && entry.required_recurring_objects.length > 0,
+      ).length,
+      recurringObjectCount: recurringObjects.length,
+      uniqueRecurringObjectCount: new Set(recurringObjects).size,
+    },
+    schemaErrors,
+  };
+}
 
 export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
   const isPrint = isPrintFormat(order.bookFormat);
   const fulfillment = order.fulfillmentStatus ?? 'not_started';
+  const proofGate = evaluateProofSubmissionGate(order);
   const isFailed = fulfillment === 'failed_manual_review';
   const isPaid = order.paymentStatus === 'paid';
   const proofReady = fulfillment === 'proof_ready' && Boolean(order.storyArtifactUrl);
@@ -264,6 +546,41 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       generatedAt: order.storyMeta?.generatedAt ?? null,
       fallbackError: order.storyMeta?.fallbackError ?? null,
     },
+    storyInput: {
+      hasCustomText: [
+        order.lesson,
+        order.occasion,
+        order.giftMessage,
+        order.characterNotes,
+      ].some(hasText),
+      hasTheme: hasText(order.theme),
+      theme: cleanPreview(order.theme, 120),
+      hasLesson: hasText(order.lesson),
+      lesson: cleanPreview(order.lesson),
+      hasOccasion: hasText(order.occasion),
+      occasion: cleanPreview(order.occasion, 160),
+      hasGiftMessage: hasText(order.giftMessage),
+      giftMessagePreview: cleanPreview(order.giftMessage),
+      hasCharacterNotes: hasText(order.characterNotes),
+      characterNotesPreview: cleanPreview(order.characterNotes),
+      hasVoiceOrUpload: Boolean(order.voiceFileName || order.voiceBlobPath || order.voiceTranscript),
+      voiceSource: order.voiceSource ?? null,
+      voiceFileName: order.voiceFileName ?? null,
+      voiceBlobPath: order.voiceBlobPath ?? null,
+      voiceConsentAt: order.voiceConsentAt ?? null,
+      transcriptStatus: order.voiceTranscript?.error
+        ? 'failed'
+        : order.voiceTranscript
+        ? 'stored'
+        : 'none',
+      transcriptModel: order.voiceTranscript?.model ?? null,
+      transcriptChars: order.voiceTranscript?.transcript?.length ?? null,
+      transcriptPreview: cleanPreview(order.voiceTranscript?.transcript),
+      inspirationChars: order.voiceTranscript?.inspiration?.length ?? null,
+      inspirationPreview: cleanPreview(order.voiceTranscript?.inspiration),
+      transcriptError: cleanPreview(order.voiceTranscript?.error, 180),
+    },
+    artDirection: buildArtDirectionDiagnostics(order),
     artifacts: {
       storyArtifactUrl: order.storyArtifactUrl ?? null,
       pageArtifactCount: pages.length,
@@ -303,13 +620,19 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       attempts: order.fulfillmentAttempts ?? 0,
       lastError: order.fulfillmentLastError ?? null,
     },
+    proofGate: {
+      gated: proofGate.gated,
+      allowed: proofGate.allowed,
+      overrideApplied: proofGate.overrideApplied,
+      reasons: proofGate.reasons.map((reason) => reason.code),
+    },
     print: {
       printJobId: order.printJobId ?? null,
       printJobStatus: order.printJobStatus ?? null,
       trackingNumber: order.trackingNumber ?? null,
       trackingUrl: order.trackingUrl ?? null,
       shippedAt: order.shippedAt ?? null,
-      hasShippingAddress: Boolean(order.shippingAddress),
+      hasShippingAddress: hasUsableShippingAddress(order),
     },
     flags: {
       isPaid,
@@ -350,8 +673,13 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
   }
 
   // Story source observability
-  if (d.story.source === 'openai_chat') {
-    checks.push({ id: 'story-source', label: `Story source: openai_chat (${d.story.model ?? 'unknown'})`, severity: 'ok', detail: 'Model-generated story.' });
+  if (
+    d.story.source === 'openai_chat' ||
+    d.story.source === 'openai_page_prose' ||
+    d.story.source === 'ollama_page_prose' ||
+    d.story.source === 'gemini_page_prose'
+  ) {
+    checks.push({ id: 'story-source', label: `Story source: ${d.story.source} (${d.story.model ?? 'unknown'})`, severity: 'ok', detail: 'Model-generated story.' });
   } else if (d.story.source === 'template') {
     checks.push({ id: 'story-source', label: `Story source: template (${d.story.model ?? 'unknown'})`, severity: 'info', detail: 'Deterministic template fallback (no OPENAI_API_KEY or template-only path).' });
   } else if (d.story.source === 'template_after_openai_failure') {
@@ -364,6 +692,31 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
   } else if (d.flags.isPaid && d.artifacts.pageArtifactCount > 0) {
     // Paid order with pages but no recorded story source = legacy / observability gap.
     checks.push({ id: 'story-source', label: 'Story source: unknown (legacy order)', severity: 'info', detail: 'storyMeta not persisted. Order created before generation observability landed.' });
+  }
+
+  // Art direction packet visibility. Read-only: this does not gate
+  // fulfillment/proof state in T6 admin visibility.
+  if (d.artDirection.status === 'absent') {
+    checks.push({
+      id: 'art-direction',
+      label: 'Art direction packet not generated',
+      severity: 'info',
+      detail: 'No style bible / character sheet / storyboard packet is stored on this order yet.',
+    });
+  } else if (d.artDirection.status === 'invalid') {
+    checks.push({
+      id: 'art-direction',
+      label: 'Art direction packet invalid',
+      severity: 'warn',
+      detail: `${d.artDirection.schemaErrors.length} schema issue(s) shown; storyboard status=${d.artDirection.storyboard.validationStatus}.`,
+    });
+  } else {
+    checks.push({
+      id: 'art-direction',
+      label: `Art direction packet present (${d.artDirection.storyboard.validationStatus})`,
+      severity: d.artDirection.storyboard.validationStatus === 'complete' ? 'ok' : 'warn',
+      detail: `${d.artDirection.characterSheets.count} character sheet(s), ${d.artDirection.styleBible?.continuityMotifCount ?? 0} continuity motif(s), ${d.artDirection.continuity.uniqueRecurringObjectCount} unique recurring object(s).`,
+    });
   }
 
   // Photo
@@ -408,6 +761,20 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
   }
 
   // Proof presence
+  if (d.proofGate.gated) {
+    checks.push({
+      id: 'proof-release-gate',
+      label: d.proofGate.allowed
+        ? d.proofGate.overrideApplied
+          ? 'Proof release gate passed by recorded override'
+          : 'Proof release gate passed'
+        : 'Proof release gate blocked',
+      severity: d.proofGate.allowed ? (d.proofGate.overrideApplied ? 'warn' : 'ok') : 'fail',
+      detail: d.proofGate.reasons.length > 0
+        ? `Reasons: ${d.proofGate.reasons.join(', ')}`
+        : 'Custom-order story, storyboard, and art-direction checks passed.',
+    });
+  }
   if (d.paidOrderOpsIssue) {
     checks.push({
       id: 'paid-artifact',
@@ -449,8 +816,8 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
     }
     if (d.flags.shipped) {
       checks.push({ id: 'shipped', label: 'Shipped', severity: 'ok', detail: `tracking=${d.print.trackingNumber ?? '(none stored)'} at ${d.print.shippedAt}` });
-    } else if (d.flags.approved && !d.print.hasShippingAddress) {
-      checks.push({ id: 'shipping-address', label: 'No shipping address', severity: 'fail', detail: 'Approved print order with no shippingAddress — will block fulfillment.' });
+    } else if (!d.print.hasShippingAddress) {
+      checks.push({ id: 'shipping-address', label: 'No usable shipping address', severity: 'fail', detail: 'Print order is missing shippingAddress before proof release / print submission.' });
     }
   }
 
@@ -476,12 +843,52 @@ export function formatDiagnosticsSummary(d: OrderDiagnostics): string {
   lines.push(`Created ${d.identity.createdAt} · Updated ${d.identity.updatedAt}`);
   lines.push(`Payment: ${d.payment.status}${d.payment.stripeSessionId ? ` (${d.payment.stripeSessionId})` : ''}`);
   lines.push(`Fulfillment: ${d.fulfillment.fulfillmentStatus} · Order: ${d.fulfillment.orderStatus} · Attempts: ${d.fulfillment.attempts}${d.fulfillment.lastError ? ` · LastError: ${d.fulfillment.lastError}` : ''}`);
+  lines.push(
+    `Proof gate: gated=${d.proofGate.gated ? 'yes' : 'no'} allowed=${d.proofGate.allowed ? 'yes' : 'no'}` +
+      ` override=${d.proofGate.overrideApplied ? 'yes' : 'no'}` +
+      `${d.proofGate.reasons.length ? ` reasons=${d.proofGate.reasons.join(',')}` : ''}`,
+  );
   lines.push(`Photo: blobPath=${d.photo.blobPath ?? 'none'} fileName=${d.photo.fileName ?? 'none'}`);
   lines.push(
     `Story: source=${d.story.source ?? 'unknown'} model=${d.story.model ?? 'unknown'}` +
       `${d.story.generatedAt ? ` generatedAt=${d.story.generatedAt}` : ''}` +
       `${d.story.fallbackError ? ` fallbackError="${d.story.fallbackError}"` : ''}`,
   );
+  lines.push(
+    `Story input: theme=${d.storyInput.theme ?? 'none'} lesson=${d.storyInput.lesson ?? 'none'}` +
+      ` customText=${d.storyInput.hasCustomText ? 'yes' : 'no'}` +
+      ` upload=${d.storyInput.hasVoiceOrUpload ? 'yes' : 'no'}` +
+      `${d.storyInput.voiceSource ? ` source=${d.storyInput.voiceSource}` : ''}` +
+      `${d.storyInput.voiceFileName ? ` file=${d.storyInput.voiceFileName}` : ''}` +
+      ` transcript=${d.storyInput.transcriptStatus}`,
+  );
+  if (d.storyInput.inspirationPreview) {
+    lines.push(`Story inspiration: ${d.storyInput.inspirationPreview}`);
+  }
+  lines.push(
+    `Art direction: status=${d.artDirection.status}` +
+      ` schema=${d.artDirection.schemaValid === null ? 'not_present' : d.artDirection.schemaValid ? 'valid' : 'invalid'}` +
+      ` storyboard=${d.artDirection.storyboard.validationStatus}` +
+      ` style=${d.artDirection.styleBible?.targetIllustrationStyle ?? 'none'}` +
+      ` characters=${d.artDirection.characterSheets.approvedCount}/${d.artDirection.characterSheets.count} approved` +
+      ` motifs=${d.artDirection.styleBible?.continuityMotifCount ?? 0}` +
+      ` recurringObjects=${d.artDirection.continuity.uniqueRecurringObjectCount}` +
+      ` errors=${d.artDirection.storyboard.errorCount}`,
+  );
+  if (d.artDirection.humanReviewStatus || d.artDirection.styleBible?.approvedBy) {
+    lines.push(
+      `Art direction review: status=${d.artDirection.humanReviewStatus ?? 'none'}` +
+        ` styleApprovedBy=${d.artDirection.styleBible?.approvedBy ?? 'none'}` +
+        ` styleApprovedAt=${d.artDirection.styleBible?.approvedAt ?? 'none'}`,
+    );
+  }
+  for (const issue of [
+    ...d.artDirection.schemaErrors,
+    ...d.artDirection.storyboard.errors,
+    ...d.artDirection.storyboard.warnings,
+  ].slice(0, ART_DIRECTION_ISSUE_LIMIT)) {
+    lines.push(`  art-direction ${issue.code} ${issue.path}: ${issue.message}`);
+  }
   lines.push(`Pages: ${d.artifacts.pagesAccepted}/${d.artifacts.pageArtifactCount} accepted · ${d.artifacts.pagesWithoutImage} missing image · ${d.artifacts.totalRegenerations} regenerations`);
   lines.push(
     `Conditioning: ${d.artifacts.pagesPhotoConditioned} photo-edit · ${d.artifacts.pagesTextOnly} text-only · ${d.artifacts.pagesUnknownConditioning} unknown`,
@@ -497,7 +904,7 @@ export function formatDiagnosticsSummary(d: OrderDiagnostics): string {
   lines.push(`Proof: ${d.artifacts.storyArtifactUrl ?? 'none'}`);
   lines.push(`Review: status=${d.review.reviewStatus} acknowledged=${d.review.proofReviewedAt ?? 'no'} approved=${d.review.proofApprovedAt ?? 'no'}`);
   if (d.identity.isPrint) {
-    lines.push(`Print: jobId=${d.print.printJobId ?? 'none'} jobStatus=${d.print.printJobStatus ?? 'none'} tracking=${d.print.trackingNumber ?? 'none'} shippedAt=${d.print.shippedAt ?? 'no'}`);
+    lines.push(`Print: shippingAddress=${d.print.hasShippingAddress ? 'yes' : 'no'} jobId=${d.print.printJobId ?? 'none'} jobStatus=${d.print.printJobStatus ?? 'none'} tracking=${d.print.trackingNumber ?? 'none'} shippedAt=${d.print.shippedAt ?? 'no'}`);
   }
   const failing = d.checks.filter((c) => c.severity === 'fail');
   const warning = d.checks.filter((c) => c.severity === 'warn');

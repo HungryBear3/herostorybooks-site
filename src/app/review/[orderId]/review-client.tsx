@@ -1,14 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 
 import type { PageArtifact } from '@/lib/orders';
 import { InlineProofPreview } from './inline-proof-preview';
 
 const FEEDBACK_HELPER =
   'Tell us what to change on this page — for example: fix the hands, make the child look happier, brighten the garden, or make the face look more like the uploaded photo.';
-const REGENERATION_POLICY =
-  'Regenerations are included for small fixes. After 3 tries on one page, we may step in to help; after 5, the page is flagged for a human quality check so we do not burn your time or the book budget.';
+const CHANGE_REQUEST_COPY =
+  'Your note saves to this proof and pauses final approval until our team marks the page ready again.';
 
 interface Snapshot {
   orderId: string;
@@ -19,38 +20,84 @@ interface Snapshot {
   isPrint: boolean;
   bookFormat: 'digital' | 'classic' | 'premium';
   proofReviewedAt: string | null;
+  deliveryMode: 'digital' | 'print' | 'combo';
+  trustCopy: string;
+  openRequestedChangesCount: number;
+  customerNudgesPaused: boolean;
 }
 
 export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [snapshot, setSnapshot] = useState<Snapshot>(initial);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [feedback, setFeedback] = useState('');
-  const [busy, setBusy] = useState<'idle' | 'regenerating' | 'accepting' | 'approving' | 'acknowledging'>('idle');
+  const [busy, setBusy] = useState<'idle' | 'requesting' | 'accepting' | 'approving' | 'acknowledging'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [proofAck, setProofAck] = useState<boolean>(Boolean(initial.proofReviewedAt));
   const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
 
+  const pageCount = snapshot.pageArtifacts.length;
   const selected = snapshot.pageArtifacts[selectedIdx];
+  const canGoPrevious = selectedIdx > 0;
+  const canGoNext = selectedIdx < pageCount - 1;
   const acceptedCount = snapshot.pageArtifacts.filter((p) => p.accepted).length;
   const allAccepted =
-    snapshot.pageArtifacts.length > 0 &&
-    acceptedCount === snapshot.pageArtifacts.length;
+    pageCount > 0 &&
+    acceptedCount === pageCount;
 
-  async function regenerate() {
+  const goToPreviousPage = useCallback(() => {
+    setSelectedIdx((idx) => Math.max(0, idx - 1));
+  }, []);
+
+  const goToNextPage = useCallback(() => {
+    setSelectedIdx((idx) => Math.min(Math.max(0, pageCount - 1), idx + 1));
+  }, [pageCount]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target;
+      const tagName = target instanceof HTMLElement ? target.tagName : '';
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT')
+      ) {
+        return;
+      }
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        goToPreviousPage();
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        goToNextPage();
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [goToNextPage, goToPreviousPage]);
+
+  async function requestChanges() {
     if (!selected) return;
-    setBusy('regenerating');
+    if (!feedback.trim()) {
+      setError('Add a short note so our team knows what to adjust.');
+      return;
+    }
+    setBusy('requesting');
     setError(null);
     setNotice(null);
     try {
-      const res = await fetch(`/api/order/${snapshot.orderId}/regenerate-page`, {
+      const res = await fetch(`/api/order/${snapshot.orderId}/review`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pageIndex: selected.pageIndex, feedback }),
+        body: JSON.stringify({
+          action: 'request_changes',
+          pageIndex: selected.pageIndex,
+          note: feedback,
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setError(data?.error ?? `Regeneration failed (${res.status})`);
+        setError(data?.error ?? `Change request failed (${res.status})`);
         return;
       }
       setSnapshot((s) => ({
@@ -59,13 +106,21 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
           p.pageIndex === selected.pageIndex ? data.page : p,
         ),
         reviewStatus: 'customer_changes_requested',
+        proofReviewedAt: null,
+        openRequestedChangesCount: Math.max(
+          1,
+          s.pageArtifacts.filter((p) =>
+            p.pageIndex === selected.pageIndex
+              ? true
+              : p.customerReviewStatus === 'changes_requested' &&
+                p.customerRequestedChange?.lifecycleStatus !== 'resolved',
+          ).length,
+        ),
+        customerNudgesPaused: true,
       }));
+      setProofAck(false);
       setFeedback('');
-      if (data.warning === 'regen_manual_review_threshold') {
-        setNotice('We\u2019ve regenerated this page several times. Our team will also take a look to make sure it lands right.');
-      } else if (data.warning === 'regen_threshold_warning') {
-        setNotice('Got it. If you\u2019re still not seeing what you want after a few tries, reply to your order email and we\u2019ll help directly.');
-      }
+      setNotice('Saved. We\u2019ll review this page before asking for final approval again.');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Network error');
     } finally {
@@ -78,10 +133,10 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
     setBusy('accepting');
     setError(null);
     try {
-      const res = await fetch(`/api/order/${snapshot.orderId}/accept-page`, {
+      const res = await fetch(`/api/order/${snapshot.orderId}/review`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pageIndex: selected.pageIndex }),
+        body: JSON.stringify({ action: 'approve_page', pageIndex: selected.pageIndex }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
@@ -92,6 +147,17 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
         ...s,
         pageArtifacts: s.pageArtifacts.map((p) =>
           p.pageIndex === selected.pageIndex ? data.page : p,
+        ),
+        openRequestedChangesCount: s.pageArtifacts.filter((p) =>
+          p.pageIndex === selected.pageIndex
+            ? false
+            : p.customerReviewStatus === 'changes_requested' &&
+              p.customerRequestedChange?.lifecycleStatus !== 'resolved',
+        ).length,
+        customerNudgesPaused: s.pageArtifacts.some((p) =>
+          p.pageIndex !== selected.pageIndex &&
+          p.customerReviewStatus === 'changes_requested' &&
+          p.customerRequestedChange?.lifecycleStatus !== 'resolved',
         ),
       }));
     } catch (e) {
@@ -111,6 +177,9 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
           <p className="mt-1 text-sm text-gray-600">
             Take your time. You can save your place, come back from your proof email later,
             and approve only when the whole book feels ready.
+          </p>
+          <p className="mt-2 inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-900" data-testid="delivery-trust-copy">
+            {snapshot.trustCopy}
           </p>
         </header>
 
@@ -180,13 +249,46 @@ No image yet
         {selected && (
           <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-serif text-xl text-[#10263d]">
-                Page {selected.pageIndex + 1}
-              </h2>
-              <span className="text-xs text-gray-500">
-                Regenerated {selected.regenerateCount}{' '}
-                {selected.regenerateCount === 1 ? 'time' : 'times'}
-              </span>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-500" aria-live="polite">
+                  Page {selectedIdx + 1} of {pageCount}
+                </p>
+                <h2 className="font-serif text-xl text-[#10263d]">
+                  Page {selected.pageIndex + 1}
+                </h2>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {selected.customerReviewStatus === 'changes_requested' && (
+                  <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-900" data-testid="page-change-status">
+                    Changes requested
+                  </span>
+                )}
+                {selected.customerReviewStatus === 'approved' || selected.accepted ? (
+                  <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-900">
+                    Approved page
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={goToPreviousPage}
+                  disabled={!canGoPrevious}
+                  aria-label="Review previous page"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 text-[#10263d] transition hover:border-[#c9a227] hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  onClick={goToNextPage}
+                  disabled={!canGoNext}
+                  aria-label="Review next page"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 text-[#10263d] transition hover:border-[#c9a227] hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <ChevronRight className="h-5 w-5" aria-hidden="true" />
+                </button>
+              </div>
             </div>
 
             <div className="mb-4 overflow-hidden rounded-xl border border-gray-200 bg-gray-50">
@@ -204,9 +306,42 @@ No image yet
               )}
             </div>
 
+            <div className="sticky bottom-3 z-10 mb-4 flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white/95 p-2 shadow-sm backdrop-blur sm:static sm:bg-transparent sm:p-0 sm:shadow-none sm:backdrop-blur-none">
+              <button
+                type="button"
+                onClick={goToPreviousPage}
+                disabled={!canGoPrevious}
+                className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-[#10263d] disabled:cursor-not-allowed disabled:opacity-35 sm:flex-none"
+              >
+                <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                Previous
+              </button>
+              <span className="shrink-0 text-xs font-semibold text-gray-500">
+                {selectedIdx + 1} / {pageCount}
+              </span>
+              <button
+                type="button"
+                onClick={goToNextPage}
+                disabled={!canGoNext}
+                className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-[#10263d] disabled:cursor-not-allowed disabled:opacity-35 sm:flex-none"
+              >
+                Next
+                <ChevronRight className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+
             <p className="mb-3 text-sm text-gray-700">{selected.storyText}</p>
+            {selected.customerRequestedChange?.note && (
+              <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="saved-change-note">
+                <p className="font-semibold">Your latest change note is saved.</p>
+                <p className="mt-1">{selected.customerRequestedChange.note}</p>
+                <p className="mt-1 text-amber-800">
+                  Status: {selected.customerRequestedChange.lifecycleStatus.replace(/_/g, ' ')}
+                </p>
+              </div>
+            )}
             <p className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-900">
-              {REGENERATION_POLICY}
+              {CHANGE_REQUEST_COPY}
             </p>
 
             <label
@@ -239,11 +374,12 @@ No image yet
             <div className="flex flex-wrap gap-3">
               <button
                 type="button"
-                onClick={regenerate}
+                onClick={requestChanges}
                 disabled={busy !== 'idle'}
                 className="rounded-xl bg-[#10263d] px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+                data-testid="request-page-changes"
               >
-                {busy === 'regenerating' ? 'Regenerating\u2026' : 'Regenerate this page'}
+                {busy === 'requesting' ? 'Saving…' : 'Request changes'}
               </button>
               <button
                 type="button"
@@ -251,7 +387,7 @@ No image yet
                 disabled={busy !== 'idle' || !selected.currentImageUrl || selected.accepted}
                 className="rounded-xl bg-[#c9a227] px-5 py-2.5 text-sm font-semibold text-[#10263d] disabled:opacity-50"
               >
-                {selected.accepted ? 'Accepted' : busy === 'accepting' ? 'Accepting…' : 'Accept this page'}
+                {selected.accepted ? 'Approved' : busy === 'accepting' ? 'Approving…' : 'Approve this page'}
               </button>
             </div>
 
@@ -325,6 +461,11 @@ Step 2 — accept each illustrated story page
                 style={{ width: `${snapshot.pageArtifacts.length ? (acceptedCount / snapshot.pageArtifacts.length) * 100 : 0}%` }}
               />
             </div>
+            {snapshot.openRequestedChangesCount > 0 && (
+              <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="open-change-hold">
+                {snapshot.openRequestedChangesCount} page{snapshot.openRequestedChangesCount === 1 ? '' : 's'} with requested changes. We will not nudge you for final approval while those are open.
+              </p>
+            )}
           </div>
 
           {/* Step 3: explicit acknowledgment that proof was reviewed */}

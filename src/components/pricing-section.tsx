@@ -60,7 +60,7 @@ export function PricingSection() {
               {plan.featured && (
                 <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-gold text-navy px-4 py-1 rounded-full text-sm font-semibold flex items-center gap-1.5">
                   <Sparkles className="w-4 h-4" />
-                  Most Popular
+                  Father&apos;s Day Pick
                 </div>
               )}
 

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   createOrderRecord,
@@ -37,8 +38,8 @@ test('digital order also starts with paymentStatus pending', () => {
     email: 'test@example.com',
   });
   assert.equal(order.paymentStatus, 'pending');
-  assert.equal(order.priceCents, 1900);
-  assert.equal(order.formatLabel, 'Digital instant');
+  assert.equal(order.priceCents, 1499);
+  assert.equal(order.formatLabel, 'Digital PDF');
 });
 
 // ── updateOrderPayment ───────────────────────────────────────────────────────
@@ -47,8 +48,8 @@ const DUMMY_ORDER: OrderRecord = {
   id: 'ord_test_abc',
   childName: 'Sam',
   bookFormat: 'classic',
-  formatLabel: 'Classic',
-  priceCents: 3900,
+  formatLabel: 'Classic softcover',
+  priceCents: 4499,
   email: 'sam@example.com',
   status: 'order_received',
   paymentStatus: 'pending',
@@ -151,4 +152,21 @@ test('digital order with paid payment does not trigger print fulfillment', () =>
   };
   const canFulfill = order.paymentStatus === 'paid' && isPrintFormat(order.bookFormat);
   assert.equal(canFulfill, false);
+});
+
+test('order route source: print checkout asks Stripe to collect shipping, digital stays conditional', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const printIdx = src.indexOf('isPrintFormat(order.bookFormat)');
+  const shippingIdx = src.indexOf('shipping_address_collection');
+  assert.ok(printIdx > -1, 'route must branch on print format');
+  assert.ok(shippingIdx > printIdx, 'shipping collection must be inside the print-format Checkout branch');
+  assert.match(src, /allowed_countries:\s*\[\s*'US'/);
+});
+
+test('order route source: Stripe Checkout allows buyer-entered promotion codes', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const sessionIdx = src.indexOf('stripe.checkout.sessions.create');
+  const promoIdx = src.indexOf('allow_promotion_codes: true');
+  assert.ok(sessionIdx > -1, 'route must create a Stripe Checkout Session');
+  assert.ok(promoIdx > sessionIdx, 'promotion-code entry must be enabled on the Checkout Session');
 });

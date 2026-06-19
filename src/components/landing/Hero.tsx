@@ -39,7 +39,7 @@ export function Hero() {
           </motion.p>
           <motion.div variants={fadeUp} initial="hidden" animate="visible" className="flex space-x-4">
             <Link
-              href="/order"
+              href="/checkout"
               className="bg-deep-gold text-white px-8 py-3 rounded-lg font-semibold shadow hover:bg-deep-gold/90 transition"
             >
               Create Your Book Now

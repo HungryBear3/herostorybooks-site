@@ -18,12 +18,14 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createOrderRecord, persistOrder } from '../src/lib/orders.ts';
+import { createOrderRecord, getOrder, persistOrder } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
 import {
   evaluateApproveGate,
   getReviewSnapshot,
   hasReviewAccess,
+  requestPageChanges,
+  shouldPauseCustomerReviewNudges,
 } from '../src/lib/page-review.ts';
 
 function makeTmp() {
@@ -224,6 +226,61 @@ test('getReviewSnapshot: storyArtifactUrl null when proof not yet built', async 
   }
 });
 
+test('requestPageChanges: persists customer note/status without generating a new image', async () => {
+  const dir = makeTmp();
+  try {
+    await seedOrder('classic', 'https://example.com/proof.pdf');
+    const before = await getReviewSnapshot('ord_review_gate_classic');
+    const imageBefore = before!.pageArtifacts[0].currentImageUrl;
+
+    const result = await requestPageChanges(
+      {
+        orderId: 'ord_review_gate_classic',
+        pageIndex: 0,
+        note: 'Please make the dinosaur smaller and keep Luna smiling.',
+      },
+      new Date('2026-05-28T22:00:00Z'),
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.page!.customerReviewStatus, 'changes_requested');
+    assert.equal(result.page!.customerRequestedChange?.note, 'Please make the dinosaur smaller and keep Luna smiling.');
+    assert.equal(result.page!.customerRequestedChange?.lifecycleStatus, 'triage');
+    assert.equal(result.page!.currentImageUrl, imageBefore);
+    assert.equal(result.page!.regenerateCount, 0);
+    assert.equal(result.page!.accepted, false);
+
+    const order = await getOrder('ord_review_gate_classic');
+    assert.equal(order!.reviewStatus, 'customer_changes_requested');
+    assert.equal(order!.proofReviewedAt ?? null, null);
+    assert.equal(order!.auditEvents?.at(-1)?.type, 'page_changes_requested');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('getReviewSnapshot: exposes open requested changes and pauses customer nudges', async () => {
+  const dir = makeTmp();
+  try {
+    await seedOrder('classic', 'https://example.com/proof.pdf');
+    await requestPageChanges(
+      { orderId: 'ord_review_gate_classic', pageIndex: 1, note: 'Face should match the photo more closely.' },
+      new Date('2026-05-28T22:05:00Z'),
+    );
+
+    const snap = await getReviewSnapshot('ord_review_gate_classic');
+    assert.equal(snap!.openRequestedChangesCount, 1);
+    assert.equal(snap!.customerNudgesPaused, true);
+    assert.equal(snap!.trustCopy, 'Nothing is sent to print until you give the final go-ahead.');
+    assert.equal(shouldPauseCustomerReviewNudges({
+      reviewStatus: snap!.reviewStatus,
+      pageArtifacts: snap!.pageArtifacts,
+    }), true);
+  } finally {
+    cleanup(dir);
+  }
+});
+
 
 test('review access: print order with proof token requires matching token', () => {
   const order = createOrderRecord(
@@ -257,6 +314,9 @@ test('review client renders the full-proof CTA + scope banner + ack checkbox', (
   assert.match(src, /data-testid="review-scope-banner"/);
   assert.match(src, /data-testid="proof-ack-checkbox"/);
   assert.match(src, /data-testid="approve-whole-book"/);
+  assert.match(src, /data-testid="delivery-trust-copy"/);
+  assert.match(src, /data-testid="request-page-changes"/);
+  assert.match(src, /data-testid="open-change-hold"/);
 });
 
 test('review client gates approve button on proofAck + storyArtifactUrl + allAccepted', () => {

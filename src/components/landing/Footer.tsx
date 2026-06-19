@@ -22,22 +22,20 @@ export function Footer() {
           <p className="text-sm mb-2 font-medium tracking-[0.2em] uppercase text-white/70">Stories That Build Courage & Kindness</p>
           <p className="text-sm mb-4">Magical storybooks where every child is the hero.</p>
           <div className="flex gap-4">
-            <a href="#" className="hover:text-gray-300">Instagram</a>
-            <a href="#" className="hover:text-gray-300">Facebook</a>
-            <a href="#" className="hover:text-gray-300">Pinterest</a>
+            <a href="mailto:support@herostorybooks.com" className="hover:text-gray-300">Email us</a>
           </div>
         </div>
         {/* Links */}
         <div className="flex justify-between">
           <ul className="space-y-2 text-sm">
-            <li><Link href="/#how-it-works">How It Works</Link></li>
-            <li><Link href="/#samples">Our Books</Link></li>
-            <li><Link href="/#pricing">Pricing</Link></li>
-            <li><Link href="/order">Create Your Book</Link></li>
+            <li><Link href="/#how">How It Works</Link></li>
+            <li><Link href="/samples">Sample Books</Link></li>
+            <li><Link href="/pricing">Pricing</Link></li>
+            <li><Link href="/checkout">Start Your Book</Link></li>
           </ul>
           <ul className="space-y-2 text-sm">
             <li><Link href="/#faq">FAQ</Link></li>
-            <li><Link href="/shipping">Shipping Info</Link></li>
+            <li><Link href="/terms">Shipping & Returns</Link></li>
             <li><Link href="/privacy">Privacy Policy</Link></li>
             <li><Link href="/terms">Terms of Service</Link></li>
           </ul>

@@ -69,11 +69,11 @@ test('review client mounts InlineProofPreview between per-page review and approv
   assert.ok(previewIdx < approvalIdx, 'InlineProofPreview must mount before the approval section');
 });
 
-test('review client preserves per-page review controls (regenerate / accept / past feedback)', () => {
+test('review client preserves per-page review controls (request changes / approve / past feedback)', () => {
   const src = readFileSync(REVIEW_CLIENT, 'utf8');
   // Page selector + per-page actions
-  assert.match(src, /Regenerate this page/);
-  assert.match(src, /Accept this page/);
+  assert.match(src, /Request changes/);
+  assert.match(src, /Approve this page/);
   // Per-page feedback / version history surfaces still rendered
   assert.match(src, /Past feedback/);
 });

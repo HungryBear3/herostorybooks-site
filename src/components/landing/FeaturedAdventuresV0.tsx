@@ -107,7 +107,7 @@ export function FeaturedAdventuresV0() {
 
                 {/* CTA */}
                 <Link
-                  href="/order"
+                  href="/checkout"
                   className="inline-block w-full text-center bg-gradient-to-r from-[#16324F] to-[#2D5A3D] text-cream font-semibold py-3 rounded-lg hover:from-[#2D5A3D] hover:to-[#16324F] transition-all duration-300"
                 >
                   Create This Adventure
@@ -129,7 +129,7 @@ export function FeaturedAdventuresV0() {
             Can't find the perfect adventure? We'll create a custom story just for your child!
           </p>
           <Link
-            href="/order"
+            href="/checkout"
             className="inline-block px-10 py-4 bg-[#D6B25E] text-[#16324F] font-serif font-bold text-lg rounded-lg shadow-xl hover:bg-[#C9A960] transition-all duration-300 hover:shadow-2xl"
           >
             Start Creating Now

@@ -1,10 +1,20 @@
 import './globals.css';
+import { Suspense } from 'react';
 import type { Metadata } from 'next';
+import { ReferralCapture } from '@/components/referral-capture';
+import { getSiteOrigin, shouldIndexSite } from '@/lib/site-url';
+
+const siteOrigin = getSiteOrigin();
+const indexSite = shouldIndexSite();
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://herostorybooks.com'),
+  metadataBase: new URL(siteOrigin),
   title: 'Hero Story Books',
   description: 'Personalized hero story books that help children feel brave, seen, and celebrated.',
+  robots: {
+    index: indexSite,
+    follow: indexSite,
+  },
   icons: {
     icon: '/assets/logo-icon-only.png',
     apple: '/assets/logo-icon-only.png',
@@ -12,7 +22,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: 'Hero Story Books',
     description: 'Create a personalized keepsake storybook where your child becomes the hero.',
-    url: 'https://herostorybooks.com',
+    url: siteOrigin,
     siteName: 'HeroStoryBooks',
     images: [
       {
@@ -36,7 +46,12 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="font-sans">
-      <body className="bg-cream text-gray-900">{children}</body>
+      <body className="bg-cream text-gray-900">
+        <Suspense fallback={null}>
+          <ReferralCapture />
+        </Suspense>
+        {children}
+      </body>
     </html>
   );
 }

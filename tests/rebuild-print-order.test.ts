@@ -71,6 +71,13 @@ async function seed(
     paymentStatus: 'paid',
     fulfillmentStatus: 'proof_ready',
     storyArtifactUrl: 'https://example.com/legacy-proof.pdf',
+    shippingAddress: {
+      line1: '100 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
     printInteriorArtifactUrl: 'https://example.com/legacy-interior.pdf',
     printInteriorMd5: 'legacy-md5',
     printInteriorPageCount: 32,

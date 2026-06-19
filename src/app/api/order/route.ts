@@ -7,7 +7,9 @@ import {
   MAX_VOICE_BYTES,
   OrderPersistenceError,
   persistOrder,
+  sanitizeFamilyCharacters,
   uploadOrderPhoto,
+  uploadOrderSupportingPhoto,
   uploadOrderVoice,
 } from '@/lib/orders';
 import {
@@ -15,8 +17,11 @@ import {
   missingRequiredField,
 } from '@/lib/checkout-flow';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
+import { transcribeVoiceNote } from '@/lib/voice-transcription';
+import type { VoiceTranscriptMeta } from '@/lib/fulfillment-types';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
+import { getReferralCodeFromCookieHeader, sanitizeReferralCode } from '@/lib/referrals';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -26,11 +31,43 @@ function getStripe() {
   return new Stripe(getRequiredStripeSecretKey());
 }
 
-const VOICE_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|flac|mp4)$/i;
+function familyCharacterLabel(character: ReturnType<typeof sanitizeFamilyCharacters>[number]): string {
+  return (character.name || character.relationshipLabel || character.role || 'family member').trim();
+}
 
-function isAcceptedVoiceFile(file: File): boolean {
+function isHumanSupportingCharacter(character: ReturnType<typeof sanitizeFamilyCharacters>[number]): boolean {
+  return character.role !== 'pet';
+}
+
+function missingSupportingCharacterPhotoLabels(
+  familyCharacters: ReturnType<typeof sanitizeFamilyCharacters>,
+  form: FormData,
+): string[] {
+  return familyCharacters
+    .map((character, index) => ({ character, index }))
+    .filter(({ character }) => character.appearsInStory !== false)
+    .filter(({ character }) => isHumanSupportingCharacter(character))
+    .filter(({ character, index }) => {
+      if (character.photoFileName || character.photoBlobPath || character.photoBlobUrl) return false;
+      const file = form.get(`familyCharacterPhoto_${index}`);
+      return !(file instanceof File) || file.size <= 0;
+    })
+    .map(({ character }) => familyCharacterLabel(character));
+}
+
+const AUDIO_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i;
+const INSPIRATION_DOC_EXT_RE = /\.(txt|pdf|doc|docx)$/i;
+
+function isAudioInspirationFile(file: File): boolean {
   if (file.type && file.type.startsWith('audio/')) return true;
-  if (file.name && VOICE_EXT_RE.test(file.name)) return true;
+  if (file.name && AUDIO_EXT_RE.test(file.name)) return true;
+  return false;
+}
+
+function isAcceptedInspirationFile(file: File): boolean {
+  if (isAudioInspirationFile(file)) return true;
+  if (['text/plain', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type)) return true;
+  if (file.name && INSPIRATION_DOC_EXT_RE.test(file.name)) return true;
   return false;
 }
 
@@ -77,6 +114,9 @@ export async function POST(request: Request) {
     const bookFormat = String(form.get('bookFormat') || 'classic').trim();
     const theme = String(form.get('theme') || '').trim();
     const childPronouns = String(form.get('childPronouns') || '').trim();
+    const referralCode =
+      sanitizeReferralCode(form.get('referralCode')) ??
+      getReferralCodeFromCookieHeader(request.headers.get('cookie'));
 
     // Structured appearance fields ride along inside the JSON
     // appearanceOptions blob from the form (kept as-is for backward
@@ -94,7 +134,8 @@ export async function POST(request: Request) {
     const hairStyle = String(form.get('hairStyle') || appearance.hairStyle || '').trim();
 
     const voiceRaw = form.get('voice');
-    const hasVoiceUpload = voiceRaw instanceof File && voiceRaw.size > 0;
+    const preuploadedVoiceBlobPath = String(form.get('voiceBlobPath') || '').trim();
+    const hasVoiceUpload = (voiceRaw instanceof File && voiceRaw.size > 0) || Boolean(preuploadedVoiceBlobPath);
     const voiceConsentRaw = String(form.get('voiceConsent') || '').trim().toLowerCase();
     const voiceConsentGiven = voiceConsentRaw === 'true' || voiceConsentRaw === 'on' || voiceConsentRaw === '1';
     const voiceSourceRaw = String(form.get('voiceSource') || '').trim();
@@ -112,15 +153,15 @@ export async function POST(request: Request) {
         );
       }
 
-      const voiceFile = voiceRaw as File;
-      if (!isAcceptedVoiceFile(voiceFile)) {
+      const voiceFile = voiceRaw instanceof File ? voiceRaw : null;
+      if (voiceFile && !isAcceptedInspirationFile(voiceFile)) {
         return NextResponse.json(
-          { error: 'Voice attachment must be an audio file.', code: 'voice_invalid_type' },
+          { error: 'Story inspiration attachment must be an audio, text, PDF, or Word document.', code: 'voice_invalid_type' },
           { status: 400 },
         );
       }
 
-      if (voiceFile.size > MAX_VOICE_BYTES) {
+      if (voiceFile && voiceFile.size > MAX_VOICE_BYTES) {
         return NextResponse.json(
           { error: 'Voice attachment is too large (max 15 MB).', code: 'voice_too_large' },
           { status: 400 },
@@ -128,7 +169,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const missing = missingRequiredField({ theme, childName, email, skinTone, hairStyle, childPronouns });
+    const missing = missingRequiredField({ theme, childName, email, skinTone, hairStyle });
     if (missing !== null || !isValidEmail(email)) {
       const code = missing ? missingFieldErrorCode(missing) : 'email_invalid';
       return NextResponse.json(
@@ -143,6 +184,19 @@ export async function POST(request: Request) {
       );
     }
 
+    const familyCharactersRaw = String(form.get('familyCharacters') || '');
+    const familyCharacters = sanitizeFamilyCharacters(familyCharactersRaw);
+    const missingSupportingPhotos = missingSupportingCharacterPhotoLabels(familyCharacters, form);
+    if (missingSupportingPhotos.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Add a still reference photo for ${missingSupportingPhotos.join(', ')} before payment. No charge was made.`,
+          code: 'supporting_character_photo_required',
+        },
+        { status: 400 },
+      );
+    }
+
     const draftOrder = createOrderRecord({
       childName,
       childAge: String(form.get('childAge') || ''),
@@ -151,18 +205,22 @@ export async function POST(request: Request) {
       occasion: String(form.get('occasion') || ''),
       giftMessage: String(form.get('giftMessage') || ''),
       characterNotes: String(form.get('characterNotes') || ''),
+      familyCharacters: familyCharactersRaw,
       childPronouns: childPronouns === 'he/him' || childPronouns === 'she/her' || childPronouns === 'they/them' ? childPronouns as 'he/him' | 'she/her' | 'they/them' : '',
       appearanceOptions: appearanceRaw,
       bookFormat,
       email,
-      photoFileName: form.get('photo') instanceof File ? (form.get('photo') as File).name : null,
-      voiceFileName: hasVoiceUpload ? (voiceRaw as File).name : null,
+      photoFileName: String(form.get('photoFileName') || '').trim() || (form.get('photo') instanceof File ? (form.get('photo') as File).name : null),
+      photoBlobPath: String(form.get('photoBlobPath') || '').trim() || null,
+      photoBlobUrl: String(form.get('photoBlobUrl') || '').trim() || null,
+      voiceFileName: String(form.get('voiceFileName') || '').trim() || (voiceRaw instanceof File ? voiceRaw.name : null),
+      referralCode,
     });
 
     const photo = form.get('photo');
-    let photoBlobPath: string | null = null;
-    let photoBlobUrl: string | null = null;
-    if (photo instanceof File && photo.size > 0) {
+    let photoBlobPath: string | null = String(form.get('photoBlobPath') || '').trim() || null;
+    let photoBlobUrl: string | null = String(form.get('photoBlobUrl') || '').trim() || null;
+    if (!photoBlobPath && photo instanceof File && photo.size > 0) {
       try {
         const uploaded = await uploadOrderPhoto(draftOrder.id, photo);
         if (uploaded) {
@@ -189,12 +247,55 @@ export async function POST(request: Request) {
       }
     }
 
-    let voiceBlobPath: string | null = null;
-    let voiceBlobUrl: string | null = null;
-    let voiceConsentAt: string | null = null;
-    if (hasVoiceUpload) {
+    const familyCharactersWithPhotos = [];
+    for (const [index, character] of familyCharacters.entries()) {
+      const familyPhoto = form.get(`familyCharacterPhoto_${index}`);
+      if (!(familyPhoto instanceof File) || familyPhoto.size <= 0) {
+        familyCharactersWithPhotos.push(character);
+        continue;
+      }
       try {
-        const uploadedVoice = await uploadOrderVoice(draftOrder.id, voiceRaw as File);
+        const uploaded = await uploadOrderSupportingPhoto(draftOrder.id, index, familyPhoto);
+        familyCharactersWithPhotos.push({
+          ...character,
+          photoFileName: familyPhoto.name,
+          photoBlobPath: uploaded?.pathname ?? null,
+          photoBlobUrl: uploaded?.url ?? null,
+        });
+      } catch (error) {
+        if (error instanceof OrderPersistenceError) {
+          console.error(
+            `[order] ABORT BEFORE STRIPE: supporting photo persistence failed for ${draftOrder.id}: ${error.message}`,
+            error.cause,
+          );
+          return NextResponse.json(
+            {
+              error:
+                'We could not securely save one of your family or pet photos. Please retry — no charge was made.',
+              code: 'supporting_photo_persist_failed',
+            },
+            { status: 503 },
+          );
+        }
+        console.error(
+          `[order] supporting photo upload failed for ${draftOrder.id}; continuing without that photo`,
+          error,
+        );
+        familyCharactersWithPhotos.push({
+          ...character,
+          photoFileName: familyPhoto.name,
+          photoBlobPath: null,
+          photoBlobUrl: null,
+        });
+      }
+    }
+
+    let voiceBlobPath: string | null = String(form.get('voiceBlobPath') || '').trim() || null;
+    let voiceBlobUrl: string | null = String(form.get('voiceBlobUrl') || '').trim() || null;
+    let voiceConsentAt: string | null = voiceBlobPath ? new Date().toISOString() : null;
+    if (voiceRaw instanceof File && voiceRaw.size > 0) {
+      try {
+        const uploadedVoice = await uploadOrderVoice(draftOrder.id, voiceRaw);
         if (uploadedVoice) {
           voiceBlobPath = uploadedVoice.pathname;
           voiceBlobUrl = uploadedVoice.url;
@@ -210,16 +311,46 @@ export async function POST(request: Request) {
             error.cause,
           );
           return NextResponse.json(
-            { error: 'We could not securely save your voice recording. Please retry — no charge was made.' },
+            {
+              error:
+                'We could not securely save your voice recording, so we stopped before payment. No charge was made and the recording was not saved — please download it from the checkout page and try again.',
+              code: 'voice_persist_failed',
+            },
             { status: 503 },
           );
         }
         console.error(`[order] voice upload failed for ${draftOrder.id}; aborting`, error);
         return NextResponse.json(
-          { error: 'We could not securely save your voice recording. Please retry — no charge was made.' },
+          {
+            error:
+              'We could not securely save your voice recording, so we stopped before payment. No charge was made and the recording was not saved — please download it from the checkout page and try again.',
+            code: 'voice_persist_failed',
+          },
           { status: 503 },
         );
       }
+    }
+
+    // Optional, feature-flagged voice transcription. We transcribe the File we
+    // still hold in this request (after the upload succeeded) so we don't have
+    // to re-fetch the blob bytes later. This is a no-op unless
+    // HSB_VOICE_TRANSCRIPTION_ENABLED is on AND OPENAI_API_KEY is set; with the
+    // flag off it returns null and adds zero latency.
+    //
+    // LATENCY TRADEOFF: when the flag is ON this runs synchronously before the
+    // Stripe Checkout Session, adding the transcription round-trip to checkout.
+    // For a 30–60s clip on gpt-4o-mini-transcribe that is typically a few
+    // seconds, which we accept while the feature is beta + low-volume. If it
+    // ever needs to come off the checkout critical path, move this call into
+    // fulfillment (transcribe from voiceBlobUrl after payment) instead.
+    //
+    // Transcription failure must NEVER block payment: transcribeVoiceNote
+    // catches its own errors and returns a record with `error` set, which we
+    // persist as a failure marker and continue. Only an unstorable voice FILE
+    // (handled above) aborts before Stripe.
+    let voiceTranscript: VoiceTranscriptMeta | null = null;
+    if (voiceRaw instanceof File && voiceRaw.size > 0 && voiceBlobPath && isAudioInspirationFile(voiceRaw)) {
+      voiceTranscript = await transcribeVoiceNote(voiceRaw);
     }
 
     // Persist the order record durably. If this throws OrderPersistenceError
@@ -229,12 +360,14 @@ export async function POST(request: Request) {
     try {
       order = await persistOrder({
         ...draftOrder,
+        familyCharacters: familyCharactersWithPhotos,
         photoBlobPath,
         photoBlobUrl,
         voiceBlobPath,
         voiceBlobUrl,
         voiceConsentAt,
         voiceSource: hasVoiceUpload ? voiceSource : null,
+        voiceTranscript,
       });
     } catch (error) {
       if (error instanceof OrderPersistenceError) {
@@ -266,9 +399,13 @@ export async function POST(request: Request) {
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
+      allow_promotion_codes: true,
       customer_email: order.email,
       client_reference_id: order.id,
-      metadata: { orderId: order.id },
+      metadata: {
+        orderId: order.id,
+        ...(order.referralCode ? { referralCode: order.referralCode } : {}),
+      },
       line_items: [
         {
           price_data: {

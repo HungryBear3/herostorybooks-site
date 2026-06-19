@@ -15,6 +15,7 @@ import { generatePageImage, type ImageProvider } from './image-generator.ts';
 import { buildRegeneratePrompt } from './image-prompt-builder.ts';
 import { rebuildProofFromPageArtifacts } from './fulfillment.ts';
 import { sendRegenManualReviewAlert } from './order-email.ts';
+import { evaluateProofSubmissionGate } from './proof-submission-gate.ts';
 
 // Soft internal thresholds (runbook): warn at 3, manual review at 5.
 export const REGEN_WARNING_THRESHOLD = 3;
@@ -50,6 +51,19 @@ export interface AcceptResult {
   error?: string;
 }
 
+export interface RequestChangesInput {
+  orderId: string;
+  pageIndex: number;
+  note: string;
+}
+
+export interface RequestChangesResult {
+  ok: boolean;
+  status: 200 | 400 | 404 | 409;
+  page?: PageArtifact;
+  error?: string;
+}
+
 // ── Pure helpers (testable without prisma/blob) ──────────────────────────────
 
 export function applyAcceptPage(
@@ -67,6 +81,45 @@ export function applyAcceptPage(
     ...current,
     accepted: true,
     acceptedImageUrl: current.currentImageUrl,
+    customerReviewStatus: 'approved',
+    customerRequestedChange: null,
+  };
+  return { artifacts: next, page: next[idx] };
+}
+
+export function applyRequestPageChanges(
+  artifacts: PageArtifact[],
+  pageIndex: number,
+  rawNote: string,
+  now: string,
+): { artifacts: PageArtifact[]; page?: PageArtifact; error?: string } {
+  const idx = artifacts.findIndex((p) => p.pageIndex === pageIndex);
+  if (idx === -1) return { artifacts, error: 'page_not_found' };
+  const note = rawNote.replace(/[\x00-\x1F\x7F]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+  if (!note) return { artifacts, error: 'change_note_required' };
+
+  const current = artifacts[idx];
+  const feedbackEntry: PageFeedbackEntry = {
+    createdAt: now,
+    rawText: note,
+    tags: [],
+    providerTried: null,
+    resultImageUrl: current.currentImageUrl ?? null,
+    success: true,
+  };
+  const next = artifacts.slice();
+  next[idx] = {
+    ...current,
+    accepted: false,
+    acceptedImageUrl: null,
+    customerReviewStatus: 'changes_requested',
+    customerRequestedChange: {
+      requestedAt: now,
+      note,
+      lifecycleStatus: current.customerRequestedChange?.lifecycleStatus ?? 'triage',
+      updatedAt: now,
+    },
+    feedbackHistory: [...current.feedbackHistory, feedbackEntry],
   };
   return { artifacts: next, page: next[idx] };
 }
@@ -203,12 +256,15 @@ export async function regeneratePage(
     return { ok: false, status: 400, error: error ?? 'regenerate_failed' };
   }
 
-  await updateFulfillmentState(order.id, {
+  // Thread the just-written record through so the subsequent appendAuditEvent
+  // and rebuildProof calls don't re-read a stale blob snapshot that would
+  // overwrite pageArtifacts back to the pre-regen state (production bug).
+  const savedOrder = await updateFulfillmentState(order.id, {
     pageArtifacts: updatedArtifacts,
     reviewStatus: 'customer_changes_requested',
   });
 
-  await appendAuditEvent(order.id, {
+  const afterRegenAudit = await appendAuditEvent(order.id, {
     type: 'page_regenerated',
     pageIndex: input.pageIndex,
     reason: result.imageUrl ? null : (result.error ?? 'image_generation_failed'),
@@ -219,7 +275,7 @@ export async function regeneratePage(
       success: Boolean(result.imageUrl),
       tags: tags.join(',') || '',
     },
-  });
+  }, savedOrder ?? undefined);
 
   if (!result.imageUrl) {
     return {
@@ -238,21 +294,32 @@ export async function regeneratePage(
   if (!deps.skipProofRebuild) {
     try {
       const rebuild = deps.rebuildProof ?? rebuildProofFromPageArtifacts;
-      const rb = await rebuild(order.id);
+      // Pass afterRegenAudit so rebuildProof can use the fresh post-regen record
+      // rather than doing another getOrder() that might return stale state.
+      const rb = await rebuild(order.id, {}, afterRegenAudit ?? undefined);
       if (rb.ok) {
         proofRefreshed = true;
       } else {
         proofRefreshError = rb.error ?? 'proof_rebuild_failed';
       }
+      // Thread rb.updatedOrder (when available) so appendAuditEvent doesn't
+      // re-read and overwrite the storyArtifactUrl/proofReviewedAt the rebuild
+      // just persisted.
+      await appendAuditEvent(order.id, {
+        type: 'proof_rebuilt',
+        pageIndex: input.pageIndex,
+        reason: proofRefreshError ?? null,
+        meta: { triggeredBy: 'page_regenerated', success: proofRefreshed },
+      }, rb.updatedOrder ?? undefined);
     } catch (err) {
       proofRefreshError = err instanceof Error ? err.message : String(err);
+      await appendAuditEvent(order.id, {
+        type: 'proof_rebuilt',
+        pageIndex: input.pageIndex,
+        reason: proofRefreshError,
+        meta: { triggeredBy: 'page_regenerated', success: false },
+      }, afterRegenAudit ?? savedOrder ?? undefined);
     }
-    await appendAuditEvent(order.id, {
-      type: 'proof_rebuilt',
-      pageIndex: input.pageIndex,
-      reason: proofRefreshError ?? null,
-      meta: { triggeredBy: 'page_regenerated', success: proofRefreshed },
-    });
   }
 
   // One-shot operator alert when this regeneration crosses the manual-review threshold.
@@ -299,8 +366,10 @@ export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
   // it here would short-circuit the ack/approve gate and cause approveWholeBook
   // to return `already_approved` for customers who never completed the
   // intended full-approval path.
-  await updateFulfillmentState(order.id, { pageArtifacts: artifacts });
+  const savedOrder = await updateFulfillmentState(order.id, { pageArtifacts: artifacts });
 
+  // Thread savedOrder so appendAuditEvent doesn't re-read stale blob state
+  // and clobber the accepted pageArtifacts we just wrote (production clobber bug).
   await appendAuditEvent(order.id, {
     type: 'page_accepted',
     pageIndex: input.pageIndex,
@@ -309,7 +378,49 @@ export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
       totalPages: artifacts.length,
       regenerateCountAtAccept: page.regenerateCount,
     },
+  }, savedOrder ?? undefined);
+
+  return { ok: true, status: 200, page };
+}
+
+export async function requestPageChanges(
+  input: RequestChangesInput,
+  now: Date = new Date(),
+): Promise<RequestChangesResult> {
+  const order = await getOrder(input.orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  if (order.reviewStatus === 'approved') {
+    return { ok: false, status: 409, error: 'Order is already approved' };
+  }
+  if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
+    return { ok: false, status: 409, error: 'Page review not yet ready for this order' };
+  }
+
+  const ts = now.toISOString();
+  const { artifacts, page, error } = applyRequestPageChanges(
+    order.pageArtifacts,
+    input.pageIndex,
+    input.note,
+    ts,
+  );
+  if (error || !page) {
+    const status = error === 'change_note_required' ? 400 : 400;
+    return { ok: false, status, error: error ?? 'request_changes_failed' };
+  }
+
+  const savedOrder = await updateFulfillmentState(order.id, {
+    pageArtifacts: artifacts,
+    reviewStatus: 'customer_changes_requested',
+    proofReviewedAt: null,
   });
+  await appendAuditEvent(order.id, {
+    type: 'page_changes_requested',
+    pageIndex: input.pageIndex,
+    meta: {
+      lifecycleStatus: page.customerRequestedChange?.lifecycleStatus ?? 'triage',
+      noteLength: page.customerRequestedChange?.note.length ?? 0,
+    },
+  }, savedOrder ?? undefined);
 
   return { ok: true, status: 200, page };
 }
@@ -397,10 +508,23 @@ export async function approveWholeBook(
         'Proof acknowledgment required — confirm you reviewed the full proof PDF before approving',
     };
   }
+  const proofGate = evaluateProofSubmissionGate(order);
+  if (!proofGate.allowed) {
+    await appendAuditEvent(orderId, {
+      type: 'whole_book_approval_rejected',
+      reason: 'proof_release_gate_blocked',
+      meta: { reasons: proofGate.reasons.map((reason) => reason.code).join(',') },
+    });
+    return {
+      ok: false,
+      status: 409,
+      error: `Proof release gate blocked: ${proofGate.reasons.map((reason) => reason.code).join(', ')}`,
+    };
+  }
 
   // Rebuild the proof from accepted/current artifacts.
   const rebuild = deps.rebuildProof ?? rebuildProofFromPageArtifacts;
-  const rb = await rebuild(orderId);
+  const rb = await rebuild(orderId, {}, order);
   if (!rb.ok) {
     await appendAuditEvent(orderId, {
       type: 'whole_book_approval_rejected',
@@ -409,20 +533,24 @@ export async function approveWholeBook(
     });
     return { ok: false, status: 502, error: rb.error ?? 'proof_rebuild_failed' };
   }
-  await appendAuditEvent(orderId, {
+  const afterProofRebuiltAudit = await appendAuditEvent(orderId, {
     type: 'proof_rebuilt',
     reason: null,
     meta: { triggeredBy: 'whole_book_approved', success: true },
-  });
+  }, rb.updatedOrder ?? undefined);
 
-  await updateFulfillmentState(orderId, { reviewStatus: 'approved' });
+  const approvedOrder = await updateFulfillmentState(
+    orderId,
+    { reviewStatus: 'approved' },
+    afterProofRebuiltAudit ?? rb.updatedOrder ?? undefined,
+  );
   await appendAuditEvent(orderId, {
     type: 'whole_book_approved',
     meta: {
       bookFormat: order.bookFormat,
       proofUrl: rb.proofUrl ?? null,
     },
-  });
+  }, approvedOrder ?? undefined);
 
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
   if (!isPrint) {
@@ -495,11 +623,11 @@ export async function acknowledgeProofReview(
     return { ok: true, status: 200, proofReviewedAt: order.proofReviewedAt };
   }
   const ts = now.toISOString();
-  await updateFulfillmentState(orderId, { proofReviewedAt: ts });
+  const savedOrder = await updateFulfillmentState(orderId, { proofReviewedAt: ts });
   await appendAuditEvent(orderId, {
     at: ts,
     type: 'proof_review_acknowledged',
-  });
+  }, savedOrder ?? undefined);
   return { ok: true, status: 200, proofReviewedAt: ts };
 }
 
@@ -537,6 +665,34 @@ export function evaluateApproveGate(args: {
   return null;
 }
 
+export function hasOpenRequestedChanges(order: Pick<OrderRecord, 'reviewStatus' | 'pageArtifacts'>): boolean {
+  if (order.reviewStatus === 'customer_changes_requested') return true;
+  return Boolean(order.pageArtifacts?.some((page) =>
+    page.customerReviewStatus === 'changes_requested' &&
+    page.customerRequestedChange?.lifecycleStatus !== 'resolved',
+  ));
+}
+
+export function shouldPauseCustomerReviewNudges(order: Pick<OrderRecord, 'reviewStatus' | 'pageArtifacts'>): boolean {
+  return hasOpenRequestedChanges(order);
+}
+
+export function deliveryTrustCopy(bookFormat: OrderRecord['bookFormat']): string {
+  if (bookFormat === 'digital') {
+    return 'Nothing is delivered until you give the final go-ahead.';
+  }
+  if (bookFormat === 'classic' || bookFormat === 'premium') {
+    return 'Nothing is sent to print until you give the final go-ahead.';
+  }
+  return 'Nothing is delivered or sent to print until you give the final go-ahead.';
+}
+
+export function deliveryModeFor(bookFormat: OrderRecord['bookFormat']): 'digital' | 'print' | 'combo' {
+  if (bookFormat === 'digital') return 'digital';
+  if (bookFormat === 'classic' || bookFormat === 'premium') return 'print';
+  return 'combo';
+}
+
 export interface ReviewAccessInput {
   /** Token from /review/<orderId>?token=... links. Required for print orders
    *  once a proofApprovalToken exists, so a bare order id is not enough to
@@ -557,6 +713,10 @@ export interface ReviewSnapshot {
   bookFormat: OrderRecord['bookFormat'];
   /** Persisted server-side ack timestamp; null until the customer ticks it. */
   proofReviewedAt: string | null;
+  deliveryMode: 'digital' | 'print' | 'combo';
+  trustCopy: string;
+  openRequestedChangesCount: number;
+  customerNudgesPaused: boolean;
 }
 
 export function hasReviewAccess(order: OrderRecord, input: ReviewAccessInput = {}): boolean {
@@ -577,6 +737,10 @@ export async function getReviewSnapshot(
   if (!order.pageArtifacts || order.pageArtifacts.length === 0) return null;
   if (!hasReviewAccess(order, input)) return null;
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
+  if (isPrint && order.fulfillmentStatus === 'proof_ready') {
+    const proofGate = evaluateProofSubmissionGate(order);
+    if (!proofGate.allowed) return null;
+  }
   return {
     orderId: order.id,
     childName: order.childName,
@@ -586,5 +750,12 @@ export async function getReviewSnapshot(
     isPrint,
     bookFormat: order.bookFormat,
     proofReviewedAt: order.proofReviewedAt ?? null,
+    deliveryMode: deliveryModeFor(order.bookFormat),
+    trustCopy: deliveryTrustCopy(order.bookFormat),
+    openRequestedChangesCount: (order.pageArtifacts ?? []).filter((page) =>
+      page.customerReviewStatus === 'changes_requested' &&
+      page.customerRequestedChange?.lifecycleStatus !== 'resolved',
+    ).length,
+    customerNudgesPaused: shouldPauseCustomerReviewNudges(order),
   };
 }

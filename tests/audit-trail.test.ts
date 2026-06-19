@@ -66,6 +66,13 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_audit_test')
     storyArtifactUrl: 'https://example.com/proof.pdf',
     proofApprovalToken: 'tok_xyz',
     fulfillmentStatus: 'proof_ready',
+    shippingAddress: {
+      line1: '100 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
     pageArtifacts: [
       pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
       pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
@@ -80,12 +87,12 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_audit_test')
 }
 
 const successProvider: ImageProvider = {
-  name: 'openai',
+  name: 'gemini',
   async generate({ prompt }) {
     return {
       imageUrl: 'https://example.com/regen.png',
-      provider: 'openai',
-      model: 'gpt-image-1',
+      provider: 'gemini',
+      model: 'gemini-2.5-flash-image-preview',
       promptUsed: prompt,
       latencyMs: 1,
       error: null,
@@ -140,7 +147,7 @@ test('regeneratePage writes a page_regenerated audit event with provider + page'
     const regen = events.find((e) => e.type === 'page_regenerated');
     assert.ok(regen, 'expected page_regenerated event');
     assert.equal(regen!.pageIndex, 1);
-    assert.equal((regen!.meta as Record<string, unknown>).provider, 'openai');
+    assert.equal((regen!.meta as Record<string, unknown>).provider, 'gemini');
     assert.equal((regen!.meta as Record<string, unknown>).success, true);
     assert.equal((regen!.meta as Record<string, unknown>).regenerateCount, 1);
   } finally { cleanup(dir); }

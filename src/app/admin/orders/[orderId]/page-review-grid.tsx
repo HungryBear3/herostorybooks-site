@@ -21,6 +21,10 @@ type GridPage = Pick<
   | 'reviewedAt'
   | 'generationProvider'
   | 'generationModel'
+  | 'customerReviewStatus'
+  | 'customerRequestedChange'
+  | 'versionHistory'
+  | 'feedbackHistory'
 >;
 
 interface Props {
@@ -72,12 +76,16 @@ function PageTile({ orderId, page }: { orderId: string; page: GridPage }) {
     (notes.trim() || null) !== (page.reviewerNotes ?? null);
 
   const hot = page.regenerateCount >= HIGH_REGEN_THRESHOLD;
-  const flagged = Boolean(page.targetedRegenNeeded);
+  const changeOpen =
+    page.customerReviewStatus === 'changes_requested' &&
+    page.customerRequestedChange?.lifecycleStatus !== 'resolved';
+  const flagged = Boolean(page.targetedRegenNeeded) || changeOpen;
   const borderColor = flagged
     ? 'border-coral'
     : hot
       ? 'border-amber-300'
       : 'border-gray-200';
+  const latestVersions = page.versionHistory?.slice(-2) ?? [];
 
   async function save() {
     setBusy(true);
@@ -122,7 +130,7 @@ function PageTile({ orderId, page }: { orderId: string; page: GridPage }) {
         </div>
         {flagged && (
           <div className="absolute top-1 right-1 px-1.5 py-0.5 rounded bg-coral text-white text-[10px] font-semibold">
-            regen
+            {changeOpen ? 'changes' : 'regen'}
           </div>
         )}
         {hot && !flagged && (
@@ -143,8 +151,46 @@ function PageTile({ orderId, page }: { orderId: string; page: GridPage }) {
             {open ? 'close' : 'review'}
           </button>
         </div>
+        {changeOpen && (
+          <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-900" data-testid="ops-change-context">
+            <p className="font-semibold">Customer requested changes · {page.customerRequestedChange?.lifecycleStatus.replace(/_/g, ' ')}</p>
+            <p className="mt-0.5 line-clamp-3">{page.customerRequestedChange?.note}</p>
+          </div>
+        )}
         {open && (
           <div className="space-y-2 border-t border-gray-100 pt-2">
+            {page.currentImageUrl && (
+              <a
+                href={page.currentImageUrl}
+                target="_blank"
+                rel="noopener"
+                className="block break-all text-[10px] text-forest underline"
+              >
+                current image URL
+              </a>
+            )}
+            {latestVersions.length ? (
+              <div className="grid grid-cols-2 gap-2">
+                {latestVersions.map((version, idx) => (
+                  <div key={`${version.createdAt}-${idx}`} className="rounded border border-gray-100 bg-white p-1">
+                    <p className="mb-1 text-[9px] uppercase tracking-wider text-gray-400">
+                      {latestVersions.length === 1 || idx === latestVersions.length - 1 ? 'Current render' : 'Prior render'}
+                    </p>
+                    {version.imageUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={version.imageUrl} alt={`Version for page ${page.pageIndex + 1}`} className="h-20 w-full rounded object-cover" />
+                    ) : (
+                      <div className="flex h-20 items-center justify-center rounded bg-gray-100 text-[10px] text-gray-400">no image</div>
+                    )}
+                    {version.referencePhotoUrl && (
+                      <a href={version.referencePhotoUrl} target="_blank" rel="noopener" className="mt-1 block truncate text-[9px] text-forest underline">
+                        reference/photo
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <label className="flex items-center gap-2 text-[11px] text-gray-700">
               <input
                 type="checkbox"
