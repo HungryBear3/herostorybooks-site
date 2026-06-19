@@ -134,7 +134,8 @@ export async function POST(request: Request) {
     const hairStyle = String(form.get('hairStyle') || appearance.hairStyle || '').trim();
 
     const voiceRaw = form.get('voice');
-    const hasVoiceUpload = voiceRaw instanceof File && voiceRaw.size > 0;
+    const preuploadedVoiceBlobPath = String(form.get('voiceBlobPath') || '').trim();
+    const hasVoiceUpload = (voiceRaw instanceof File && voiceRaw.size > 0) || Boolean(preuploadedVoiceBlobPath);
     const voiceConsentRaw = String(form.get('voiceConsent') || '').trim().toLowerCase();
     const voiceConsentGiven = voiceConsentRaw === 'true' || voiceConsentRaw === 'on' || voiceConsentRaw === '1';
     const voiceSourceRaw = String(form.get('voiceSource') || '').trim();
@@ -152,15 +153,15 @@ export async function POST(request: Request) {
         );
       }
 
-      const voiceFile = voiceRaw as File;
-      if (!isAcceptedInspirationFile(voiceFile)) {
+      const voiceFile = voiceRaw instanceof File ? voiceRaw : null;
+      if (voiceFile && !isAcceptedInspirationFile(voiceFile)) {
         return NextResponse.json(
           { error: 'Story inspiration attachment must be an audio, text, PDF, or Word document.', code: 'voice_invalid_type' },
           { status: 400 },
         );
       }
 
-      if (voiceFile.size > MAX_VOICE_BYTES) {
+      if (voiceFile && voiceFile.size > MAX_VOICE_BYTES) {
         return NextResponse.json(
           { error: 'Voice attachment is too large (max 15 MB).', code: 'voice_too_large' },
           { status: 400 },
@@ -209,15 +210,17 @@ export async function POST(request: Request) {
       appearanceOptions: appearanceRaw,
       bookFormat,
       email,
-      photoFileName: form.get('photo') instanceof File ? (form.get('photo') as File).name : null,
-      voiceFileName: hasVoiceUpload ? (voiceRaw as File).name : null,
+      photoFileName: String(form.get('photoFileName') || '').trim() || (form.get('photo') instanceof File ? (form.get('photo') as File).name : null),
+      photoBlobPath: String(form.get('photoBlobPath') || '').trim() || null,
+      photoBlobUrl: String(form.get('photoBlobUrl') || '').trim() || null,
+      voiceFileName: String(form.get('voiceFileName') || '').trim() || (voiceRaw instanceof File ? voiceRaw.name : null),
       referralCode,
     });
 
     const photo = form.get('photo');
-    let photoBlobPath: string | null = null;
-    let photoBlobUrl: string | null = null;
-    if (photo instanceof File && photo.size > 0) {
+    let photoBlobPath: string | null = String(form.get('photoBlobPath') || '').trim() || null;
+    let photoBlobUrl: string | null = String(form.get('photoBlobUrl') || '').trim() || null;
+    if (!photoBlobPath && photo instanceof File && photo.size > 0) {
       try {
         const uploaded = await uploadOrderPhoto(draftOrder.id, photo);
         if (uploaded) {
@@ -287,9 +290,9 @@ export async function POST(request: Request) {
       }
     }
 
-    let voiceBlobPath: string | null = null;
-    let voiceBlobUrl: string | null = null;
-    let voiceConsentAt: string | null = null;
+    let voiceBlobPath: string | null = String(form.get('voiceBlobPath') || '').trim() || null;
+    let voiceBlobUrl: string | null = String(form.get('voiceBlobUrl') || '').trim() || null;
+    let voiceConsentAt: string | null = voiceBlobPath ? new Date().toISOString() : null;
     if (hasVoiceUpload) {
       try {
         const uploadedVoice = await uploadOrderVoice(draftOrder.id, voiceRaw as File);

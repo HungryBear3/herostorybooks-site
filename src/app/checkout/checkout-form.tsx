@@ -17,12 +17,6 @@ import { buildAutoShrinkNotice, shrinkPhotoForUpload } from "@/lib/photo-upload"
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const CHECKOUT_PHOTO_MAX_BYTES = 1.1 * 1024 * 1024;
-const CHECKOUT_MULTIPART_SAFE_MAX_BYTES = 3.5 * 1024 * 1024;
-
-function formatCheckoutMb(bytes: number): string {
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 const LAUNCH_THEME_IDS = new Set([
   "custom-voice-story",
   "brave-explorer",
@@ -161,6 +155,48 @@ const CHECKOUT_STEPS = [
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+interface UploadedCheckoutFileRef {
+  fileName: string | null;
+  pathname: string;
+  url: string;
+}
+
+async function uploadCheckoutFile(
+  draftId: string,
+  kind: "photo" | "supporting" | "voice",
+  file: File,
+  index?: number,
+): Promise<UploadedCheckoutFileRef> {
+  const payload = new FormData();
+  payload.set("draftId", draftId);
+  payload.set("kind", kind);
+  payload.set("file", file);
+  if (typeof index === "number") payload.set("index", String(index + 1));
+
+  const response = await fetch("/api/order/upload", {
+    method: "POST",
+    body: payload,
+  });
+  let body: any = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  if (!response.ok || !body?.ok || !body?.pathname || !body?.url) {
+    throw new Error(
+      typeof body?.error === "string" && body.error.trim()
+        ? body.error
+        : "We couldn't upload one of your files before payment. You have not been charged. Please try again.",
+    );
+  }
+  return {
+    fileName: typeof body.fileName === "string" ? body.fileName : file.name || null,
+    pathname: body.pathname,
+    url: body.url,
+  };
+}
+
 interface FormState {
   photoFile: File | null;
   photoDataUrl: string | null;
@@ -194,6 +230,8 @@ interface SupportingCharacter {
   appearsInStory: boolean;
   photoFile: File | null;
   photoDataUrl: string | null;
+  photoBlobPath?: string | null;
+  photoBlobUrl?: string | null;
 }
 
 const emptyForm: FormState = {
@@ -595,16 +633,34 @@ export function CheckoutForm() {
 
     try {
       const payload = new FormData();
-      const familyCharactersForOrder = form.familyCharacters
-        .filter((character) =>
-          Boolean(
-            character.name.trim() ||
-              character.relationshipLabel.trim() ||
-              character.notes.trim() ||
-              character.photoFile,
-          ),
-        )
-        .slice(0, SUPPORTING_CHARACTER_LIMIT);
+      const checkoutDraftId = crypto.randomUUID();
+      const uploadedHeroPhoto = form.photoFile
+        ? await uploadCheckoutFile(checkoutDraftId, "photo", form.photoFile)
+        : null;
+      const uploadedVoice = VOICE_BETA_ENABLED && form.voiceFile
+        ? await uploadCheckoutFile(checkoutDraftId, "voice", form.voiceFile)
+        : null;
+      const familyCharactersForOrder = await Promise.all(
+        form.familyCharacters
+          .filter((character) =>
+            Boolean(
+              character.name.trim() ||
+                character.relationshipLabel.trim() ||
+                character.notes.trim() ||
+                character.photoFile,
+            ),
+          )
+          .slice(0, SUPPORTING_CHARACTER_LIMIT)
+          .map(async (character, index) => {
+            if (!character.photoFile) return character;
+            const uploaded = await uploadCheckoutFile(checkoutDraftId, "supporting", character.photoFile, index);
+            return {
+              ...character,
+              photoBlobPath: uploaded.pathname,
+              photoBlobUrl: uploaded.url,
+            };
+          }),
+      );
       payload.set("childName", form.childName);
       payload.set("childAge", form.childAge);
       payload.set("theme", form.theme);
@@ -625,14 +681,14 @@ export function CheckoutForm() {
               isGiftRecipient: character.isGiftRecipient,
               appearsInStory: character.appearsInStory,
               photoFileName: character.photoFile?.name ?? null,
+              photoBlobPath: character.photoBlobPath ?? null,
+              photoBlobUrl: character.photoBlobUrl ?? null,
             })),
         ),
       );
-      familyCharactersForOrder.forEach((character, index) => {
-        if (character.photoFile) {
-          payload.set(`familyCharacterPhoto_${index}`, character.photoFile);
-        }
-      });
+      // Large customer media is uploaded one file at a time above. The final
+      // order request stays lightweight so multi-photo + voice intake does not
+      // hit Vercel's request-body limit.
       payload.set(
         "appearanceOptions",
         JSON.stringify({
@@ -645,23 +701,19 @@ export function CheckoutForm() {
       payload.set("email", form.email);
       const referralCode = checkoutReferralCode();
       if (referralCode) payload.set("referralCode", referralCode);
-      if (form.photoFile) {
-        payload.set("photo", form.photoFile);
+      if (uploadedHeroPhoto) {
+        payload.set("photoFileName", uploadedHeroPhoto.fileName ?? form.photoFile?.name ?? "photo");
+        payload.set("photoBlobPath", uploadedHeroPhoto.pathname);
+        payload.set("photoBlobUrl", uploadedHeroPhoto.url);
       }
       if (VOICE_BETA_ENABLED && form.voiceFile) {
-        payload.set("voice", form.voiceFile);
         payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
+        if (uploadedVoice) {
+          payload.set("voiceFileName", uploadedVoice.fileName ?? form.voiceFile.name);
+          payload.set("voiceBlobPath", uploadedVoice.pathname);
+          payload.set("voiceBlobUrl", uploadedVoice.url);
+        }
         if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
-      }
-
-      const uploadBytes =
-        (form.photoFile?.size ?? 0) +
-        (VOICE_BETA_ENABLED ? form.voiceFile?.size ?? 0 : 0) +
-        familyCharactersForOrder.reduce((sum, character) => sum + (character.photoFile?.size ?? 0), 0);
-      if (uploadBytes > CHECKOUT_MULTIPART_SAFE_MAX_BYTES) {
-        throw new Error(
-          `Your photos/voice note are ${formatCheckoutMb(uploadBytes)} together. Please remove the voice note and re-record a shorter one (or upload text notes) so checkout can continue. You have not been charged.`,
-        );
       }
 
       const response = await fetch("/api/order", {
