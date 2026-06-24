@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { get, list, put } from '@vercel/blob';
 
 import type { FulfillmentStatus, PageTextLayout } from './fulfillment-types.ts';
+import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 export type { FulfillmentStatus, PageTextLayout };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
@@ -46,6 +47,8 @@ export interface OrderInput {
    * field was persisted — those still resolve via HSB_PUBLIC_BLOB_BASE.
    */
   photoBlobUrl?: string | null;
+  /** Optional parent-approved child/hero guided still reference photos. */
+  guidedReferencePhotos?: GuidedReferencePhotoRecord[];
   // Optional child-voice-note beta (NEXT_PUBLIC_HSB_VOICE_BETA). The audio is
   // NOT used for voice cloning; it's stored as inspiration/source material for
   // later operator-reviewed story personalization.
@@ -418,6 +421,7 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     photoFileName: input.photoFileName?.trim() || null,
     photoBlobPath: input.photoBlobPath?.trim() || null,
     photoBlobUrl: input.photoBlobUrl?.trim() || null,
+    guidedReferencePhotos: Array.isArray(input.guidedReferencePhotos) ? input.guidedReferencePhotos : [],
     voiceFileName: input.voiceFileName?.trim() || null,
     voiceBlobPath: input.voiceBlobPath?.trim() || null,
     voiceBlobUrl: input.voiceBlobUrl?.trim() || null,

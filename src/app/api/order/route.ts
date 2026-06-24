@@ -17,6 +17,7 @@ import {
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
+import { collectGuidedReferencePhotos } from '@/lib/guided-photo-capture';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -189,6 +190,16 @@ export async function POST(request: Request) {
       }
     }
 
+    const guidedPhotos = await collectGuidedReferencePhotos(form, draftOrder.id, {
+      upload: (orderId, _index, file) => uploadOrderPhoto(orderId, file),
+    });
+    if (!guidedPhotos.ok) {
+      return NextResponse.json(
+        { error: guidedPhotos.error || 'We could not securely save your guided reference photos. Please retry — no charge was made.', code: guidedPhotos.code },
+        { status: guidedPhotos.status || 400 },
+      );
+    }
+
     let voiceBlobPath: string | null = null;
     let voiceBlobUrl: string | null = null;
     let voiceConsentAt: string | null = null;
@@ -231,6 +242,7 @@ export async function POST(request: Request) {
         ...draftOrder,
         photoBlobPath,
         photoBlobUrl,
+        guidedReferencePhotos: guidedPhotos.records,
         voiceBlobPath,
         voiceBlobUrl,
         voiceConsentAt,
