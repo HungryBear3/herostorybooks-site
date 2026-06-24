@@ -5,29 +5,29 @@ import { getSiteOrigin } from '@/lib/site-url';
 const siteOrigin = getSiteOrigin();
 
 export const metadata: Metadata = {
-  title: 'See a Real Sample Book | HeroStoryBooks',
+  title: 'Sample Personalized Story Books | HeroStoryBooks',
   description:
-    'See a real printed HeroStoryBooks copy, photographed, plus clean sample art from real titles. Proof-first: you approve every page before we print.',
+    'Peek inside two digital sample story proofs with real watercolor pages, proof-first review, and digital or printed keepsake options.',
   openGraph: {
-    title: 'A real printed sample book, photographed',
+    title: 'HeroStoryBooks digital sample story proofs',
     description:
-      'Photos of an actual printed personalized children’s book, plus clean sample art from real titles. You approve before we print.',
+      'See illustrated sample pages from proof-first personalized children’s books before starting your own.',
     url: `${siteOrigin}/samples`,
     images: [
       {
-        url: '/assets/hsb-lukas-dino-photo-cover.jpg',
-        width: 960,
-        height: 880,
-        alt: 'Photograph of a printed HeroStoryBooks personalized book on a desk',
+        url: '/assets/kind-dragon-v5/cover.jpg',
+        width: 1536,
+        height: 1536,
+        alt: 'Lukas and the Kind Dragon digital sample cover',
       },
     ],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'A real printed sample book, photographed',
+    title: 'HeroStoryBooks digital sample story proofs',
     description:
-      'Photos of an actual printed personalized children’s book, plus clean sample art from real titles. You approve before we print.',
-    images: ['/assets/hsb-lukas-dino-photo-cover.jpg'],
+      'See illustrated sample pages from proof-first personalized children’s books before starting your own.',
+    images: ['/assets/kind-dragon-v5/cover.jpg'],
   },
 };
 
