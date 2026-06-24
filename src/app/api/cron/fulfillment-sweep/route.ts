@@ -12,12 +12,15 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 /**
- * Orders intentionally held OUT of the auto-sweep. ord_d4b46e9123c147ac is the
- * preserved G5 repro artifact (paid + not_started) — it must NOT be auto-retried
- * until a human explicitly approves the controlled retry. Remove its id here
- * only after that approval.
+ * Orders intentionally held OUT of the auto-sweep. These are known paid recovery
+ * / evidence lanes that require explicit order-scoped approval, not automatic
+ * cron pickup. Remove an id here only after that approval.
  */
-const SWEEP_EXCLUDE = new Set<string>(['ord_d4b46e9123c147ac']);
+const SWEEP_EXCLUDE = new Set<string>([
+  'ord_005d19dd86d846b7',
+  'ord_72fd9cc4d2c74694',
+  'ord_d4b46e9123c147ac',
+]);
 
 /**
  * Durable backstop for dropped paid->fulfillment kickoffs. Auth is fail-closed
