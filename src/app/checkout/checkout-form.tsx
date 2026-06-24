@@ -5,7 +5,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Progress } from '@/components/ui/progress';
 import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from '@/lib/checkout-flow';
 import { VoiceRecorderSection } from '@/components/checkout/VoiceRecorderSection';
+import { GuidedPhotoCapture } from '@/components/checkout/GuidedPhotoCapture';
 import { CHECKOUT_SAMPLE_IMAGES, STORY_OCCASIONS, STORY_THEMES } from '@/lib/story-catalog';
+import {
+  appendGuidedCaptureToFormData,
+  isGuidedPhotoCaptureEnabled,
+  type GuidedPhotoFile,
+} from '@/lib/guided-photo-capture';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -189,6 +195,9 @@ export function CheckoutForm() {
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
+  const guidedCaptureEnabled = isGuidedPhotoCaptureEnabled();
+  const [guidedFrames, setGuidedFrames] = useState<GuidedPhotoFile[]>([]);
+  const [guidedConsent, setGuidedConsent] = useState(false);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Restore saved progress on mount + honor checkout query params.
@@ -308,6 +317,10 @@ export function CheckoutForm() {
       payload.set('email', form.email);
       if (form.photoFile) {
         payload.set('photo', form.photoFile);
+      }
+      // Optional guided child stills. Appends only parent-approved still photos; no video.
+      if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
+        appendGuidedCaptureToFormData(payload, guidedFrames);
       }
       if (VOICE_BETA_ENABLED && form.voiceFile) {
         payload.set('voice', form.voiceFile);
@@ -801,8 +814,18 @@ export function CheckoutForm() {
             )}
 
             <p className="text-xs text-center text-gray-400">
-              🔒 Photos processed securely · Never stored after your book is made · Add it later if you need to
+              🔒 Photos processed securely · Used only for your order · Add it later if you need to
             </p>
+
+            {guidedCaptureEnabled && (
+              <GuidedPhotoCapture
+                heroName={form.childName}
+                frames={guidedFrames}
+                consent={guidedConsent}
+                onConsentChange={setGuidedConsent}
+                onFramesChange={setGuidedFrames}
+              />
+            )}
           </section>
 
           {VOICE_BETA_ENABLED && (
@@ -859,6 +882,12 @@ export function CheckoutForm() {
               <div className="mt-2 text-xs text-gray-500 bg-white/60 rounded-lg px-3 py-2">
                 {selectedFormat.delivery}
               </div>
+              {guidedCaptureEnabled && guidedFrames.length > 0 && (
+                <div className="flex justify-between">
+                  <span>Guided stills</span>
+                  <span className="font-medium">{guidedFrames.length} reference photo{guidedFrames.length === 1 ? '' : 's'}</span>
+                </div>
+              )}
               {form.bookFormat !== 'digital' && (
                 <div className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
                   {PRINT_PREVIEW_PROMISE}
