@@ -572,13 +572,13 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   const pdfUrl = await _upload(order.id, pdfBuffer, filename);
 
   const proofGeneratedEvent = buildProofGeneratedAuditEvent(order, seededPageArtifacts.length);
-  // CRITICAL: include storyMeta explicitly in the final 'complete' patch.
+  // CRITICAL: include storyMeta explicitly in the final customer-artifact patch.
   // The 2026-05-15 Gemini preview proof test showed final persisted
   // storyMeta=null because (a) storyMeta was written in a separate prior
   // patch, and (b) a stale blob-read in this final write merged-in over
   // the storyMeta field. Explicit inclusion makes the merge deterministic.
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
-    fulfillmentStatus: 'complete',
+    fulfillmentStatus: 'awaiting_qa',
     status: 'preview_ready',
     storyArtifactUrl: pdfUrl,
     pageArtifacts: seededPageArtifacts,
@@ -589,6 +589,8 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     fulfillmentLastError: null,
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   }));
+
+  return;
 
   // Delivery email runs AFTER the artifacts are durably persisted at
   // fulfillmentStatus='complete'. If the email fails (e.g. Resend domain
