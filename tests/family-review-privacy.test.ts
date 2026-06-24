@@ -523,6 +523,14 @@ test('admin board fetches include credentials: same-origin so cookie ships', () 
   }
 });
 
+test('family-review sample email draft makes the parent review link explicit', () => {
+  const src = read(SOURCES.adminBoard);
+  assert.match(src, /export function buildParentSampleEmail/);
+  assert.match(src, /Review link:/);
+  assert.match(src, /copy and paste the full URL above into your browser/);
+  assert.match(src, /sequential adventure story/);
+});
+
 test('admin login API + helper never reveal the reviewer key in any response', () => {
   // The login route returns { ok: true } only — no echo of the key.
   // The helper exports keysMatch via private fn, but doesn't return

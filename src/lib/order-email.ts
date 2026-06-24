@@ -24,9 +24,10 @@ export function getOrderSenderEmail() {
  * Operator UX:
  *   1. Set `HSB_EMAIL_FROM` to the branded sender (e.g.
  *      "Hero Story Books <support@herostorybooks.com>").
- *   2. Set `HSB_EMAIL_FROM_FALLBACK` to a sender on a Resend-verified
- *      domain (e.g. "Hero Story Books <onboarding@resend.dev>") so
- *      production fulfillment can still deliver while we work on
+ *   2. Set `HSB_EMAIL_FROM_FALLBACK` to a sender on a domain already
+ *      verified in this Resend account (not `onboarding@resend.dev`,
+ *      which Resend only allows for testing to the account owner's email)
+ *      so production fulfillment can still deliver while we work on
  *      verifying the production domain.
  *
  * When the fallback is unset, a domain-not-verified failure surfaces a
@@ -65,7 +66,7 @@ function formatActionableError(
   if (isDomainNotVerifiedError(error)) {
     const fallbackHint = getFallbackSenderEmail()
       ? ' (fallback HSB_EMAIL_FROM_FALLBACK also failed; verify that sender too)'
-      : ' — verify the sending domain at https://resend.com/domains, or set HSB_EMAIL_FROM_FALLBACK to a sender on an already-verified domain (e.g. "Hero Story Books <onboarding@resend.dev>")';
+      : ' — verify the sending domain at https://resend.com/domains, or set HSB_EMAIL_FROM_FALLBACK to a sender on a domain already verified in this Resend account (do not use onboarding@resend.dev for customer emails; Resend only allows that sender to email the account owner during testing)';
     return `${context} failed${statusFragment}: sender ${sender} is not on a verified Resend domain${fallbackHint}. Underlying error: ${message}`;
   }
   return `${context} failed${statusFragment}: ${message}`;
@@ -126,14 +127,23 @@ async function sendWithFallback(
   return assertResendSuccess(primary, context, payload.from);
 }
 
+function getPublicBaseUrl() {
+  return process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'https://herostorybooks.com';
+}
+
+function buildStatusUrl(orderId: string) {
+  return `${getPublicBaseUrl()}/status/${encodeURIComponent(orderId)}`;
+}
+
 export function buildOrderConfirmationEmail(
   order: OrderRecord,
   options: { supportEmail?: string } = {},
 ) {
   const supportEmail = options.supportEmail || getSupportEmail();
   const previewNote = order.bookFormat === 'digital'
-    ? 'Your PDF will be delivered to this email in about 15 minutes.'
+    ? 'Your digital proof is usually ready within 2 business days; your final PDF is delivered after approval.'
     : 'Your digital preview will arrive first so you can approve it before it prints.';
+  const statusUrl = buildStatusUrl(order.id);
 
   const subject = `${order.childName}'s Hero Story Books order is in`;
   const detailRows = [
@@ -151,6 +161,9 @@ export function buildOrderConfirmationEmail(
         ${detailRows.map(([label, value]) => `<p style="margin:0 0 8px;"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</p>`).join('')}
       </div>
       <p style="margin:0 0 12px;">${escapeHtml(previewNote)}</p>
+      <div style="text-align:center;margin:20px 0;">
+        <a href="${escapeHtml(statusUrl)}" style="background:#D4AF37;color:#1F3A5F;font-weight:bold;font-size:16px;text-decoration:none;padding:14px 32px;border-radius:12px;display:inline-block;">Track your order</a>
+      </div>
       <p style="margin:0 0 12px;">If you have questions, just reply to this email or contact <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>.</p>
       <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Proof approval before print · Personalized with care by Hero Story Books</p>
     </div>
@@ -165,7 +178,7 @@ export function buildOrderConfirmationEmail(
     `Order ID: ${order.id}`,
     '',
     previewNote,
-    `Track your order: ${(process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'https://herostorybooks.com')}/status/${order.id}`,
+    `Track your order: ${statusUrl}`,
     `Questions? ${supportEmail}`,
   ].join('\n');
 

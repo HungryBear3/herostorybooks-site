@@ -10,7 +10,17 @@ function makeOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
     { childName: 'Luna', bookFormat: 'digital', email: 'luna@example.com' },
     { id: 'ord_status_test', now: '2026-04-23T10:00:00Z' },
   );
-  return { ...base, ...overrides };
+  return {
+    ...base,
+    shippingAddress: {
+      line1: '100 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
+    ...overrides,
+  };
 }
 
 // ── Pending / unpaid ──────────────────────────────────────────────────────────
@@ -89,6 +99,24 @@ test('print order: proof_ready with artifact → view CTA + action tone', () => 
   assert.equal(view.primaryAction?.kind, 'view');
   const proof = view.timeline.find(s => s.id === 'proof');
   assert.equal(proof?.state, 'active');
+});
+
+test('print order: proof_ready with token → review approval CTA, not bare PDF', () => {
+  const view = buildOrderStatusView(
+    makeOrder({
+      id: 'ord_review_cta',
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      fulfillmentStatus: 'proof_ready',
+      storyArtifactUrl: 'https://cdn.example.com/luna-proof.pdf',
+      proofApprovalToken: 'tok_review_123',
+    }),
+  );
+  assert.equal(view.needsAction, true);
+  assert.equal(view.primaryAction?.kind, 'approve');
+  assert.equal(view.primaryAction?.href, '/review/ord_review_cta?token=tok_review_123');
+  assert.match(view.primaryAction?.label ?? '', /review/i);
+  assert.equal(view.secondaryAction?.href, 'https://cdn.example.com/luna-proof.pdf');
 });
 
 test('print order: in production → success tone, proof done, production active', () => {

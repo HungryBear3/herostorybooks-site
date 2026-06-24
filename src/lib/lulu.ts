@@ -165,6 +165,10 @@ export async function submitPrintJob(
       'LULU_CLIENT_KEY and LULU_CLIENT_SECRET are required — configure the Lulu integration first.',
     );
   }
+  const addr = order.shippingAddress;
+  if (!addr?.line1?.trim() || !addr.city?.trim() || !addr.state?.trim() || !addr.zip?.trim() || !addr.country?.trim()) {
+    throw new Error('Refusing Lulu print submission: missing usable shippingAddress');
+  }
 
   const artifacts = getPrintArtifacts(order);
   const _fetch = deps.fetch ?? globalThis.fetch;
@@ -192,18 +196,16 @@ export async function submitPrintJob(
     ],
   };
 
-  if (order.shippingAddress) {
-    body.shipping_address = {
-      name: order.childName,
-      street1: order.shippingAddress.line1,
-      ...(order.shippingAddress.line2 ? { street2: order.shippingAddress.line2 } : {}),
-      city: order.shippingAddress.city,
-      state_code: order.shippingAddress.state,
-      postcode: order.shippingAddress.zip,
-      country_code: order.shippingAddress.country,
-      phone_number: process.env.LULU_FALLBACK_PHONE ?? '000-000-0000',
-    };
-  }
+  body.shipping_address = {
+    name: order.childName,
+    street1: addr.line1,
+    ...(addr.line2 ? { street2: addr.line2 } : {}),
+    city: addr.city,
+    state_code: addr.state,
+    postcode: addr.zip,
+    country_code: addr.country,
+    phone_number: process.env.LULU_FALLBACK_PHONE ?? '000-000-0000',
+  };
 
   const res = await _fetch(`${getBaseUrl()}/print-jobs/`, {
     method: 'POST',

@@ -59,7 +59,7 @@ export function HowItWorks() {
           className="text-center mt-12"
         >
           <Link
-            href="/order"
+            href="/checkout"
             className="bg-deep-gold text-white px-8 py-3 rounded-lg font-semibold shadow hover:bg-deep-gold/90 transition"
           >
             Create Your Book Now

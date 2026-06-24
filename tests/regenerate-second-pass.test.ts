@@ -51,6 +51,13 @@ async function seedOrder(
   const order: OrderRecord = {
     ...base,
     paymentStatus: 'paid',
+    shippingAddress: {
+      line1: '100 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
     pageArtifacts: [pageFixture(0), pageFixture(1), pageFixture(2)],
     reviewStatus: 'in_review',
     ...overrides,
@@ -60,12 +67,12 @@ async function seedOrder(
 }
 
 const successProvider: ImageProvider = {
-  name: 'openai',
+  name: 'gemini',
   async generate({ prompt }) {
     return {
       imageUrl: 'https://example.com/regenerated.png',
-      provider: 'openai',
-      model: 'gpt-image-1',
+      provider: 'gemini',
+      model: 'gemini-2.5-flash-image-preview',
       promptUsed: prompt,
       latencyMs: 1,
       error: null,

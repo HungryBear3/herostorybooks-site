@@ -12,6 +12,7 @@ import {
   classifyPaidOrderOpsIssue,
   formatDiagnosticsSummary,
 } from '../src/lib/order-diagnostics.ts';
+import { lukasDinoArtDirectionFixture } from './fixtures/art-direction/lukas-dino-valid.ts';
 
 function pageFixture(i: number, overrides: Partial<PageArtifact> = {}): PageArtifact {
   return {
@@ -35,7 +36,17 @@ function makeOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
     { childName: 'Luna', bookFormat: 'classic', email: 'a@b.com' },
     { id: 'ord_diag_1', now: '2026-04-27T10:00:00Z' },
   );
-  return { ...base, ...overrides };
+  return {
+    ...base,
+    shippingAddress: {
+      line1: '123 Test St',
+      city: 'Chicago',
+      state: 'IL',
+      zip: '60601',
+      country: 'US',
+    },
+    ...overrides,
+  };
 }
 
 test('diagnostics: payment pending → warn', () => {
@@ -83,6 +94,126 @@ test('diagnostics: failed_manual_review surfaces fail check with last error', ()
   assert.equal(fail?.severity, 'fail');
   assert.match(fail?.detail ?? '', /rate limit/i);
   assert.equal(d.flags.isFailed, true);
+});
+
+test('diagnostics: story source/input summarizes custom lesson and inspiration upload metadata', () => {
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    theme: 'custom-voice-story',
+    lesson: 'Always tell the truth, even when it is hard.',
+    occasion: 'Father\'s Day',
+    giftMessage: 'For Dad, with love.',
+    characterNotes: 'Luna loves dinosaurs and bedtime jokes.',
+    storyMeta: {
+      source: 'template_after_openai_failure',
+      model: 'template:custom-voice-story',
+      generatedAt: '2026-05-28T18:00:00Z',
+      fallbackError: 'OpenAI story fetch failed',
+    },
+    voiceFileName: 'story-ideas.pdf',
+    voiceBlobPath: 'orders/ord_diag_1/voice/story-ideas.pdf',
+    voiceSource: 'uploaded',
+    voiceConsentAt: '2026-05-28T17:55:00Z',
+    voiceTranscript: {
+      transcript: 'Luna wants a dinosaur adventure with her dad.',
+      inspiration: 'Use a dinosaur adventure with Dad as the emotional center.',
+      model: 'gpt-4o-mini-transcribe',
+      transcribedAt: '2026-05-28T17:56:00Z',
+      error: null,
+    },
+  }));
+
+  assert.equal(d.story.source, 'template_after_openai_failure');
+  assert.equal(d.story.fallbackError, 'OpenAI story fetch failed');
+  assert.equal(d.storyInput.hasCustomText, true);
+  assert.equal(d.storyInput.lesson, 'Always tell the truth, even when it is hard.');
+  assert.equal(d.storyInput.hasVoiceOrUpload, true);
+  assert.equal(d.storyInput.voiceFileName, 'story-ideas.pdf');
+  assert.equal(d.storyInput.voiceBlobPath, 'orders/ord_diag_1/voice/story-ideas.pdf');
+  assert.equal(d.storyInput.transcriptStatus, 'stored');
+  assert.match(d.storyInput.inspirationPreview ?? '', /dinosaur adventure/);
+
+  const text = formatDiagnosticsSummary(d);
+  assert.match(text, /Story: source=template_after_openai_failure/);
+  assert.match(text, /fallbackError="OpenAI story fetch failed"/);
+  assert.match(text, /Story input: .*lesson=Always tell the truth/);
+  assert.match(text, /upload=yes/);
+  assert.match(text, /file=story-ideas\.pdf/);
+  assert.match(text, /transcript=stored/);
+});
+
+test('diagnostics: absent art-direction packet is neutral and bounded', () => {
+  const d = buildOrderDiagnostics(makeOrder({ paymentStatus: 'paid' }));
+
+  assert.equal(d.artDirection.status, 'absent');
+  assert.equal(d.artDirection.packetPresent, false);
+  assert.equal(d.artDirection.storyboard.validationStatus, 'not_available');
+  const c = d.checks.find((check) => check.id === 'art-direction');
+  assert.equal(c?.severity, 'info');
+  assert.match(c?.label ?? '', /not generated/i);
+
+  const text = formatDiagnosticsSummary(d);
+  assert.match(text, /Art direction: status=absent/);
+  assert.doesNotMatch(text, /undefined|null null/);
+});
+
+test('diagnostics: present art-direction packet summarizes style, characters, storyboard, and continuity', () => {
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    artDirectionPacket: lukasDinoArtDirectionFixture,
+    artDirectionGeneratedAt: '2026-05-28T21:00:00.000Z',
+    artDirectionHumanReviewStatus: 'approved',
+    artDirectionHumanReviewNotes: 'Operator spot check passed.',
+  }));
+
+  assert.equal(d.artDirection.status, 'present');
+  assert.equal(d.artDirection.schemaValid, true);
+  assert.equal(d.artDirection.styleBible?.targetIllustrationStyle, 'watercolor_classic');
+  assert.equal(d.artDirection.styleBible?.approvedBy, 'operator_abigail');
+  assert.equal(d.artDirection.characterSheets.count, 2);
+  assert.equal(d.artDirection.characterSheets.approvedCount, 2);
+  assert.deepEqual(d.artDirection.characterSheets.roles, ['hero', 'companion']);
+  assert.equal(d.artDirection.storyboard.validationStatus, 'complete');
+  assert.equal(d.artDirection.storyboard.errorCount, 0);
+  assert.equal(d.artDirection.continuity.pagesWithContinuityCallback, 24);
+  assert.ok(d.artDirection.continuity.uniqueRecurringObjectCount > 0);
+
+  const c = d.checks.find((check) => check.id === 'art-direction');
+  assert.equal(c?.severity, 'ok');
+
+  const text = formatDiagnosticsSummary(d);
+  assert.match(text, /Art direction: status=present schema=valid storyboard=complete style=watercolor_classic/);
+  assert.match(text, /characters=2\/2 approved/);
+  assert.match(text, /Art direction review: status=approved styleApprovedBy=operator_abigail/);
+});
+
+test('diagnostics: invalid art-direction packet reports bounded schema and storyboard issues', () => {
+  const invalid = structuredClone(lukasDinoArtDirectionFixture) as any;
+  delete invalid.style_bible.versioning.approved_by;
+  delete invalid.storyboard.entries[1].continuity_callback;
+  invalid.storyboard.entries[3].required_recurring_objects = [];
+
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    artDirectionPacket: invalid,
+  }));
+
+  assert.equal(d.artDirection.status, 'invalid');
+  assert.equal(d.artDirection.schemaValid, false);
+  assert.ok(d.artDirection.schemaErrors.length > 0);
+  assert.equal(d.artDirection.storyboard.validationStatus, 'incomplete');
+  assert.ok(d.artDirection.storyboard.errorCount > 0);
+  assert.ok(d.artDirection.storyboard.errors.length <= 8);
+  assert.ok(d.artDirection.schemaErrors.length <= 8);
+  assert.ok(d.artDirection.storyboard.errors.some((issue) => issue.code === 'missing_continuity_callback'));
+
+  const c = d.checks.find((check) => check.id === 'art-direction');
+  assert.equal(c?.severity, 'warn');
+
+  const text = formatDiagnosticsSummary(d);
+  assert.match(text, /Art direction: status=invalid schema=invalid storyboard=incomplete/);
+  assert.match(text, /art-direction schema_invalid/);
+  assert.doesNotMatch(text, /photo_lukas_parent_ref_1/);
 });
 
 test('diagnostics: paid + not_started + no artifact is an ops attention item', () => {
@@ -155,6 +286,36 @@ test('diagnostics: print order approved with no print job id → warn', () => {
   const c = d.checks.find((c) => c.id === 'print-job');
   assert.equal(c?.severity, 'warn');
   assert.equal(d.flags.approved, true);
+});
+
+test('diagnostics: print order missing shipping fails readiness with reason', () => {
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    bookFormat: 'classic',
+    shippingAddress: null,
+  }));
+
+  assert.equal(d.print.hasShippingAddress, false);
+  assert.ok(d.proofGate.reasons.includes('shipping_address_missing'));
+  const shipping = d.checks.find((c) => c.id === 'shipping-address');
+  assert.equal(shipping?.severity, 'fail');
+
+  const text = formatDiagnosticsSummary(d);
+  assert.match(text, /shippingAddress=no/);
+  assert.match(text, /shipping_address_missing/);
+});
+
+test('diagnostics: digital order missing shipping has no shipping failure', () => {
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    bookFormat: 'digital',
+    formatLabel: 'Digital PDF',
+    shippingAddress: null,
+  }));
+
+  assert.equal(d.identity.isPrint, false);
+  assert.equal(d.proofGate.reasons.includes('shipping_address_missing'), false);
+  assert.equal(d.checks.find((c) => c.id === 'shipping-address'), undefined);
 });
 
 test('diagnostics: shipped order is happy-path ok', () => {

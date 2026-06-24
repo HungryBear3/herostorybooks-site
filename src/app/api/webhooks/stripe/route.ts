@@ -2,44 +2,23 @@ import { NextResponse, after } from 'next/server';
 import Stripe from 'stripe';
 
 import { sendOrderConfirmationEmail } from '@/lib/order-email';
-import { isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
+import { isPrintFormat, updateOrderPayment, updatePrintUpgradePayment } from '@/lib/orders';
+import { PRINT_UPGRADE_TARGETS, type PrintUpgradeTargetFormat } from '@/lib/print-upgrade';
 import { scheduleFulfillmentKickoff } from '@/lib/fulfillment-kickoff';
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
+import { extractCheckoutShipping, type StripeCheckoutSessionWithShipping } from '@/lib/stripe-shipping';
 
 // kept for future use (print-vs-digital branching); referenced by tests
 void isPrintFormat;
 
-interface StripeCheckoutSession {
+interface StripeCheckoutSession extends StripeCheckoutSessionWithShipping {
   id: string;
   metadata?: Record<string, string> | null;
   client_reference_id?: string | null;
-  shipping_details?: {
-    address?: {
-      line1?: string | null;
-      line2?: string | null;
-      city?: string | null;
-      state?: string | null;
-      postal_code?: string | null;
-      country?: string | null;
-    } | null;
-  } | null;
 }
 
 function getStripe() {
   return new Stripe(getRequiredStripeSecretKey());
-}
-
-function extractShipping(session: StripeCheckoutSession): ShippingAddress | undefined {
-  const addr = session.shipping_details?.address;
-  if (!addr) return undefined;
-  return {
-    line1: addr.line1 ?? '',
-    line2: addr.line2 ?? null,
-    city: addr.city ?? '',
-    state: addr.state ?? '',
-    zip: addr.postal_code ?? '',
-    country: addr.country ?? '',
-  };
 }
 
 export async function POST(request: Request) {
@@ -78,6 +57,34 @@ export async function POST(request: Request) {
     if (!orderId) {
       console.error('Stripe webhook: no orderId in session metadata');
       return NextResponse.json({ received: true });
+    }
+
+    if (session.metadata?.kind === 'print_upgrade') {
+      const targetFormat = session.metadata?.targetFormat;
+      if (!targetFormat || !PRINT_UPGRADE_TARGETS.includes(targetFormat as PrintUpgradeTargetFormat)) {
+        console.error(`Stripe webhook: print upgrade ${session.id} missing/invalid targetFormat`);
+        return NextResponse.json({ received: true, invalidPrintUpgrade: true });
+      }
+
+      const shipping = extractCheckoutShipping(session);
+      const updated = await updatePrintUpgradePayment(orderId, {
+        stripeSessionId: session.id,
+        targetFormat: targetFormat as PrintUpgradeTargetFormat,
+        ...(shipping ? { shippingAddress: shipping } : {}),
+      });
+
+      if (!updated) {
+        console.error(`[webhook] CRITICAL: print upgrade paid for missing order ${orderId} via Stripe session ${session.id}`);
+        return NextResponse.json(
+          { error: `Order ${orderId} not found in durable store for print upgrade` },
+          { status: 500 },
+        );
+      }
+
+      console.warn(
+        `Stripe webhook: recorded print upgrade payment for ${orderId} targetFormat=${targetFormat}; proof/QA/owner print-go gates still required`,
+      );
+      return NextResponse.json({ received: true, printUpgrade: true });
     }
 
     try {
@@ -134,7 +141,7 @@ export async function POST(request: Request) {
         }
       }
 
-      const shipping = extractShipping(session);
+      const shipping = extractCheckoutShipping(session);
       const updated = await updateOrderPayment(orderId, 'paid', {
         stripeSessionId: session.id,
         ...(shipping ? { shippingAddress: shipping } : {}),

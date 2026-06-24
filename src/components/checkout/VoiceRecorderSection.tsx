@@ -2,6 +2,31 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 const RECORDED_FILE_NAME = 'child-voice-note.webm';
+const VOICE_AUDIO_UPLOAD_ACCEPT_ATTR = [
+  'audio/*',
+  '.m4a',
+  '.mp3',
+  '.wav',
+  '.webm',
+  '.ogg',
+  '.oga',
+  '.aac',
+  '.caf',
+  '.aif',
+  '.aiff',
+  '.flac',
+  '.mp4',
+].join(',');
+const VOICE_DOCUMENT_UPLOAD_ACCEPT_ATTR = [
+  'text/plain',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.txt',
+  '.pdf',
+  '.doc',
+  '.docx',
+].join(',');
 const VOICE_PROMPTS = [
   'What adventure should you go on?',
   'What do you love most right now?',
@@ -35,8 +60,8 @@ export interface VoiceRecorderSectionProps {
 }
 
 /**
- * Optional beta UI for attaching a short child-voice note. Mounts unless
- * `NEXT_PUBLIC_HSB_VOICE_BETA === 'false'`. The microphone is requested only
+ * Optional beta UI for attaching a short child-voice note. Mounts only when
+ * `NEXT_PUBLIC_HSB_VOICE_BETA === 'true'`. The microphone is requested only
  * after the user taps Record; tracks are released as soon as recording stops.
  *
  * The recording is positioned as inspiration/source material for personalizing
@@ -56,7 +81,8 @@ export function VoiceRecorderSection({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const audioFileInputRef = useRef<HTMLInputElement | null>(null);
+  const documentFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Always release the mic + revoke the preview URL on unmount.
   useEffect(() => {
@@ -95,6 +121,7 @@ export function VoiceRecorderSection({
         const previewUrl = URL.createObjectURL(blob);
         if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
         onVoiceChange(file, previewUrl, 'recorded');
+        setRecorderError(null);
         stopStream();
         setIsRecording(false);
       });
@@ -126,6 +153,7 @@ export function VoiceRecorderSection({
       const previewUrl = URL.createObjectURL(file);
       if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
       onVoiceChange(file, previewUrl, 'uploaded');
+      setRecorderError(null);
       // Reset the input so re-selecting the same file fires onChange again.
       event.target.value = '';
     },
@@ -137,6 +165,12 @@ export function VoiceRecorderSection({
     onVoiceChange(null, null, null);
     onConsentChange(false);
   }, [onConsentChange, onVoiceChange, voicePreviewUrl]);
+
+  const attachedFileIsAudio = Boolean(
+    voiceFile &&
+      (voiceFile.type.startsWith('audio/') ||
+        /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i.test(voiceFile.name)),
+  );
 
   return (
     <section
@@ -152,8 +186,22 @@ export function VoiceRecorderSection({
           </span>
         </div>
         <p className="text-sm text-gray-500 mt-1">
-          Record 30–60 seconds of your child answering a fun prompt, or upload an audio file.
-          We&apos;ll use it to personalize the story — <strong>not</strong> to clone their voice.
+          Optional: record a 30-second story idea — your child describing the adventure
+          they&apos;d love — or upload a note, PDF, Word doc, or audio file. It&apos;s a sweet way to make a
+          Father&apos;s Day book feel like it came from them. We use it only to help
+          personalize the writing.
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          We do <strong>not</strong> clone your child&apos;s voice, and the recording is{' '}
+          <strong>never published</strong> or shared — it just inspires the words on the page.
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          Used only to help our writer match the story&apos;s voice — we never share it.
+          Want it removed? Email support@herostorybooks.com and we&apos;ll delete it.
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          Notes and uploads are in beta. To avoid losing something special if checkout hits an
+          unexpected error, save it first on your device, then upload the saved file here.
         </p>
       </div>
 
@@ -173,7 +221,7 @@ export function VoiceRecorderSection({
             onClick={handleRecord}
             className="px-4 py-2 rounded-full border-2 border-deep-gold bg-deep-gold text-white font-semibold text-sm hover:bg-deep-gold/90 transition"
           >
-            ● Record
+            Record audio
           </button>
         )}
         {isRecording && (
@@ -189,15 +237,29 @@ export function VoiceRecorderSection({
           <>
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => audioFileInputRef.current?.click()}
               className="px-4 py-2 rounded-full border-2 border-gray-200 text-forest font-semibold text-sm hover:border-deep-gold transition"
             >
               Upload audio file
             </button>
             <input
-              ref={fileInputRef}
+              ref={audioFileInputRef}
               type="file"
-              accept="audio/*"
+              accept={VOICE_AUDIO_UPLOAD_ACCEPT_ATTR}
+              className="hidden"
+              onChange={handleUpload}
+            />
+            <button
+              type="button"
+              onClick={() => documentFileInputRef.current?.click()}
+              className="px-4 py-2 rounded-full border-2 border-gray-200 text-forest font-semibold text-sm hover:border-deep-gold transition"
+            >
+              Upload text/document
+            </button>
+            <input
+              ref={documentFileInputRef}
+              type="file"
+              accept={VOICE_DOCUMENT_UPLOAD_ACCEPT_ATTR}
               className="hidden"
               onChange={handleUpload}
             />
@@ -209,10 +271,18 @@ export function VoiceRecorderSection({
             onClick={handleRemove}
             className="px-4 py-2 rounded-full border-2 border-gray-200 text-gray-700 font-semibold text-sm hover:border-red-300 hover:text-red-600 transition"
           >
-            Remove recording
+            Remove file
           </button>
         )}
       </div>
+
+      {!voiceFile && !isRecording && (
+        <p className="text-xs text-gray-500">
+          Use <strong>Record audio</strong> for a new voice note, <strong>Upload audio file</strong>{' '}
+          for a saved recording, or <strong>Upload text/document</strong> for text, PDF, or Word
+          notes.
+        </p>
+      )}
 
       {recorderError && (
         <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
@@ -222,10 +292,26 @@ export function VoiceRecorderSection({
 
       {voicePreviewUrl && (
         <div className="space-y-2">
-          <audio controls src={voicePreviewUrl} className="w-full" data-testid="voice-preview" />
+          {attachedFileIsAudio ? (
+            <audio controls src={voicePreviewUrl} className="w-full" data-testid="voice-preview" />
+          ) : voiceFile ? (
+            <div className="rounded-xl border border-deep-gold/20 bg-deep-gold/5 px-4 py-3 text-sm text-forest">
+              Attached inspiration file: <strong>{voiceFile.name}</strong>
+            </div>
+          ) : null}
+          {voiceFile && (
+            <a
+              href={voicePreviewUrl}
+              download={voiceFile.name || 'hero-story-voice-note.webm'}
+              className="inline-flex text-sm font-semibold text-forest underline decoration-deep-gold/60 underline-offset-4 hover:text-deep-gold"
+            >
+              Download file
+            </a>
+          )}
           <p className="text-xs text-gray-500">
             {voiceSource === 'recorded' ? 'Recorded just now.' : 'Uploaded from your device.'}{' '}
-            Not happy with it? Tap <strong>Remove recording</strong> and try again.
+            Save it before leaving this page if you want to reuse it. Not happy with it? Tap{' '}
+            <strong>Remove file</strong> and try again.
           </p>
         </div>
       )}
@@ -240,9 +326,9 @@ export function VoiceRecorderSection({
             data-testid="voice-consent"
           />
           <span>
-            I&apos;m the parent/guardian and consent to HeroStoryBooks using this recording
+            I&apos;m the parent/guardian and consent to HeroStoryBooks using this recording or document
             only to personalize this order. I understand it will <strong>not</strong> be used
-            for voice cloning.
+            for voice cloning and will <strong>not</strong> be published or shared.
           </span>
         </label>
       )}

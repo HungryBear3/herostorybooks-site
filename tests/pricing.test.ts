@@ -7,9 +7,9 @@ test('public pricing plans match live checkout tiers and published route', () =>
   assert.deepEqual(
     PUBLIC_PRICING_PLANS.map((plan) => [plan.id, plan.price]),
     [
-      ['digital', '$19'],
-      ['classic', '$39'],
-      ['premium', '$64'],
+      ['digital', '$14.99'],
+      ['classic', '$44.99'],
+      ['premium', '$64.99'],
     ],
   );
 });
@@ -46,10 +46,10 @@ test('print plans promise preview approval before printing', () => {
   }
 });
 
-test('digital plan uses the canonical $19 price without a stale discount anchor', () => {
+test('digital plan uses the current published launch price without stale discount anchoring', () => {
   const digital = PUBLIC_PRICING_PLANS.find((plan) => plan.id === 'digital');
   assert.ok(digital);
-  assert.equal(digital!.price, '$19');
+  assert.equal(digital!.price, '$14.99');
   assert.equal(digital!.anchorPrice, undefined);
 });
 

@@ -46,7 +46,7 @@ export function Navbar() {
         {/* Desktop CTA */}
         <div className="hidden md:flex items-center">
           <Link
-            href="/order"
+            href="/checkout"
             className="bg-deep-gold hover:bg-deep-gold/90 text-white font-semibold px-5 py-2.5 rounded-lg text-sm transition-colors shadow-sm"
           >
             Create Your Book Now
@@ -85,7 +85,7 @@ export function Navbar() {
             </Link>
           ))}
           <Link
-            href="/order"
+            href="/checkout"
             className="block w-full bg-deep-gold hover:bg-deep-gold/90 text-white font-semibold px-5 py-3 rounded-lg text-center transition-colors mt-4"
             onClick={() => setMenuOpen(false)}
           >

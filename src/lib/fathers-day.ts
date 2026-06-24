@@ -128,3 +128,33 @@ export function getFathersDayCountdown(
     badgeCopy,
   };
 }
+
+/**
+ * Digital-first Father's Day offer copy.
+ *
+ * The Digital PDF is the lead Father's Day gift: it is delivered the same
+ * day a proof is approved, with no print or shipping step, so there is no
+ * carrier timing risk. Printed books stay available as an OPTIONAL upgrade,
+ * but their arrival depends on the order-by date and the carrier, so we
+ * never claim a printed book will arrive by Father's Day.
+ *
+ * Centralized here (rather than inline JSX) so the positioning is pure,
+ * importable, and pinned by tests. Copy rules — mirrored in
+ * tests/fathers-day.test.ts:
+ *   - Lead with digital / instant / no shipping risk.
+ *   - Frame print as optional and timing-dependent.
+ *   - Never guarantee delivery; never promise a printed book by Father's Day.
+ *   - No likeness guarantees.
+ */
+export const FATHERS_DAY_OFFER = {
+  eyebrow: "Father's Day gift",
+  headline: "A Father's Day gift with no shipping risk.",
+  digitalLead:
+    "The Digital PDF is the safest Father's Day pick. We email your proof first (usually within 2 business days); once you approve, the high-resolution book is delivered the same day — no printing or shipping, so no carrier timing risk. Print it at home, read it on any screen, or share it instantly.",
+  printOptional:
+    "Want a printed keepsake too? Add a softcover or hardcover as an optional upgrade. Printed books ship after proof approval, and arrival depends on the order-by date and your carrier, so we don't promise a printed book will arrive by Father's Day.",
+  proofNote:
+    'Every order includes a full digital proof before anything prints, human story and art review, and no blind hardcover order.',
+  ctaLabel: 'Start the digital book',
+  ctaHref: '/checkout?format=digital',
+} as const;

@@ -1,0 +1,38 @@
+Redesign the Hero Story Books /samples page so it feels coherent, premium, and trustworthy.
+
+Current issue:
+The page has strong material, but it now feels like several sample asset lanes stacked together: a Kind Dragon digital proof packet, real hardcover photos, and older dinosaur proof history. Redesign it into one clear story.
+
+Primary goal:
+Make /samples feel like an editorial product page for a premium personalized children's keepsake book.
+
+Use the included assets:
+- Kind Dragon v5 digital proof images in assets/kind-dragon-v5/
+- Real printed hardcover photos in assets/hardcover-photos/
+- Current desktop/mobile screenshots in screenshots/
+- Current code/source notes in source/
+
+Recommended page hierarchy:
+1. Lead with the current digital sample: "Lukas and the Kind Dragon."
+2. Show selected pages as a story arc, not just a grid.
+3. Use real hardcover photos as tactile proof that these become physical books.
+4. Add a concise proof-before-print reassurance section.
+5. Move the older dinosaur material into a smaller supporting/archive area.
+
+Preserve these business/copy guardrails:
+- This is a digital sample / illustrative sample, not a delivery promise.
+- Every paid book gets its own proof and approval pass before delivery or print.
+- Real hardcover photos are supporting printed-book context, not a guarantee every book looks identical.
+- Do not mention ERIC50.
+- Do not claim same-day delivery, guaranteed delivery, ready-to-print, Father's Day delivery, or broad availability.
+- Do not expose customer surnames or private family details.
+
+Implementation context:
+- Route: src/app/samples/page.tsx
+- Main component: EditorialSamplesPage in src/components/editorial-site.tsx
+- Existing helpers include KindDragonFeature and HardcoverPhotoSection.
+- Keep the design responsive at desktop, 390px, and 320px.
+- Avoid text overlap, broken images, or awkward cropping.
+
+Output requested:
+Provide either a redesigned React/Tailwind implementation for the current components or a clear visual mockup/spec that Codex/Claude Code can implement. Keep the current proof-before-print framing intact.
