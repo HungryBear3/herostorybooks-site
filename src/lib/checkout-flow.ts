@@ -126,3 +126,34 @@ export function selectAdventureValue(clickedId: string, currentSelection: string
   if (!clickedId) return currentSelection;
   return clickedId;
 }
+
+export interface GiftRecipientDefaultsInput {
+  childName: string;
+  occasion?: string | null;
+  supportingCharacters?: Array<{ name?: string | null; relationship?: string | null; role?: string | null }> | null;
+  explicitGiftRecipientName?: string | null;
+}
+
+const DAD_RELATION_RE = /\b(dad|father|daddy|papa)\b/i;
+
+/**
+ * Checkout gift defaults: the book is for the child/hero unless the buyer
+ * explicitly names a gift recipient. A Dad/Father supporting character is story
+ * context for Father's Day, not the shipment/gift recipient by default.
+ */
+export function defaultGiftRecipientName(input: GiftRecipientDefaultsInput): string {
+  const explicit = (input.explicitGiftRecipientName ?? '').trim();
+  if (explicit) return explicit;
+
+  const childName = (input.childName ?? '').trim();
+  const supportingCharacters = Array.isArray(input.supportingCharacters) ? input.supportingCharacters : [];
+  const nonDadNamedCharacter = supportingCharacters.find((character) => {
+    const relationText = `${character.relationship ?? ''} ${character.role ?? ''}`;
+    const name = (character.name ?? '').trim();
+    return name && !DAD_RELATION_RE.test(relationText) && !DAD_RELATION_RE.test(name);
+  });
+
+  // Keep the child as the safe default even when all supporting characters are
+  // Dad/Father. If no child name exists yet, avoid auto-selecting Dad; leave blank.
+  return childName || nonDadNamedCharacter?.name?.trim() || '';
+}

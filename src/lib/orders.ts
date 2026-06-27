@@ -4,6 +4,7 @@ import { get, list, put } from '@vercel/blob';
 
 import type { FulfillmentStatus, PageTextLayout } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
+import type { SupportingCharacter } from './supporting-characters.ts';
 export type { FulfillmentStatus, PageTextLayout };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
@@ -49,6 +50,9 @@ export interface OrderInput {
   photoBlobUrl?: string | null;
   /** Optional parent-approved child/hero guided still reference photos. */
   guidedReferencePhotos?: GuidedReferencePhotoRecord[];
+  /** Optional supporting cast for family/friends stories. Human supporting characters
+   *  require reference photos before checkout session creation. */
+  supportingCharacters?: SupportingCharacter[];
   // Optional child-voice-note beta (NEXT_PUBLIC_HSB_VOICE_BETA). The audio is
   // NOT used for voice cloning; it's stored as inspiration/source material for
   // later operator-reviewed story personalization.
@@ -159,6 +163,12 @@ export interface OrderRecord extends OrderInput {
   status: OrderStatus;
   paymentStatus: PaymentStatus;
   stripeSessionId?: string | null;
+  /** Tracks the pre-payment Stripe Checkout Session creation handoff.
+   *  `failed` means the order was saved but no Stripe session was created,
+   *  so the customer can safely retry checkout without a charge. */
+  checkoutSessionStatus?: 'not_started' | 'created' | 'failed';
+  checkoutSessionError?: string | null;
+  checkoutSessionFailedAt?: string | null;
   shippingAddress?: ShippingAddress | null;
   fulfillmentStatus?: FulfillmentStatus;
   fulfillmentAttempts?: number;
@@ -422,6 +432,7 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     photoBlobPath: input.photoBlobPath?.trim() || null,
     photoBlobUrl: input.photoBlobUrl?.trim() || null,
     guidedReferencePhotos: Array.isArray(input.guidedReferencePhotos) ? input.guidedReferencePhotos : [],
+    supportingCharacters: Array.isArray(input.supportingCharacters) ? input.supportingCharacters : [],
     voiceFileName: input.voiceFileName?.trim() || null,
     voiceBlobPath: input.voiceBlobPath?.trim() || null,
     voiceBlobUrl: input.voiceBlobUrl?.trim() || null,
@@ -433,6 +444,9 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     status: 'order_received',
     paymentStatus: 'pending',
     stripeSessionId: null,
+    checkoutSessionStatus: 'not_started',
+    checkoutSessionError: null,
+    checkoutSessionFailedAt: null,
     shippingAddress: null,
     deliveryExpectation: buildDeliveryExpectation(format),
     createdAt: now,
@@ -953,6 +967,9 @@ type FulfillmentPatch = Partial<Pick<
   | 'auditEvents'
   | 'paymentStatus'
   | 'stripeSessionId'
+  | 'checkoutSessionStatus'
+  | 'checkoutSessionError'
+  | 'checkoutSessionFailedAt'
   | 'shippingAddress'
   | 'refundedAt'
   | 'refundReason'

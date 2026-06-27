@@ -87,6 +87,38 @@ export default async function AdminOrderDetail({ params }: Props) {
           </details>
         </section>
 
+        <section className="bg-white border border-gray-200 rounded-xl p-5">
+          <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+            <h2 className="text-xs uppercase tracking-wider text-gray-500">Readiness card</h2>
+            <span className={`text-[10px] font-mono uppercase rounded-full px-2 py-0.5 ${
+              diagnostics.checks.some((c) => c.severity === 'fail')
+                ? 'bg-coral/10 text-coral-dark'
+                : diagnostics.checks.some((c) => c.severity === 'warn')
+                ? 'bg-amber-50 text-amber-900'
+                : 'bg-forest/10 text-forest'
+            }`}>
+              {diagnostics.checks.some((c) => c.severity === 'fail')
+                ? 'blocked'
+                : diagnostics.checks.some((c) => c.severity === 'warn')
+                ? 'review'
+                : 'ready'}
+            </span>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 text-xs">
+            <Flag label="Stripe checkout" ok={order.checkoutSessionStatus === 'created' || Boolean(order.stripeSessionId)} detail={order.checkoutSessionStatus ?? 'unknown'} />
+            <Flag label="Payment paid" ok={order.paymentStatus === 'paid'} detail={order.paymentStatus} />
+            <Flag label="Hero photo stored" ok={Boolean(order.photoBlobPath || order.photoBlobUrl)} detail={order.photoFileName ?? 'no photo'} />
+            <Flag label="Human cast photos" ok={!(order.supportingCharacters ?? []).some((c) => c.kind === 'human' && !c.hasReferencePhoto)} detail={`${(order.supportingCharacters ?? []).filter((c) => c.kind === 'human').length} human character(s)`} />
+            <Flag label="Proof/artifact" ok={Boolean(order.storyArtifactUrl)} detail={order.storyArtifactUrl ? 'present' : 'missing'} />
+            <Flag label="Proof release gate" ok={order.reviewStatus !== 'approved' || Boolean(order.proofReviewedAt)} detail={`review=${order.reviewStatus ?? 'not_started'}`} />
+          </div>
+          {order.checkoutSessionStatus === 'failed' && (
+            <p className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-xs text-coral-dark">
+              Stripe checkout did not start for this saved order. No charge was made; customer can safely retry. Error: {order.checkoutSessionError ?? 'unknown'}
+            </p>
+          )}
+        </section>
+
         <Section title="Order">
           <Row label="Child name" value={order.childName} />
           <Row label="Email" value={order.email} />
@@ -275,6 +307,18 @@ function Row({ label, value, tone = 'neutral', link, mono }: {
       <dd className={`${color} ${mono ? 'font-mono text-xs break-all max-w-[60%]' : 'max-w-[60%] text-right'}`}>
         {link ? <a className="underline" href={link} target="_blank" rel="noopener">{value}</a> : value}
       </dd>
+    </div>
+  );
+}
+
+function Flag({ label, ok, detail }: { label: string; ok: boolean; detail: string }) {
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${ok ? 'border-forest/10 bg-forest/5' : 'border-amber-200 bg-amber-50'}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-semibold text-gray-700">{label}</span>
+        <span className={`font-mono text-[10px] uppercase ${ok ? 'text-forest' : 'text-amber-900'}`}>{ok ? 'ok' : 'check'}</span>
+      </div>
+      <p className="mt-1 break-all text-gray-500">{detail}</p>
     </div>
   );
 }

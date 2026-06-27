@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   CHECKOUT_SECTION_ORDER,
@@ -10,6 +11,7 @@ import {
   missingRequiredField,
   missingFieldPrompt,
   currentCheckoutStep,
+  defaultGiftRecipientName,
 } from '../src/lib/checkout-flow.ts';
 
 test('checkout flow leads with story and hero details before photo upload', () => {
@@ -121,4 +123,38 @@ test('selectAdventureValue: switching between cards updates selection', () => {
 
 test('selectAdventureValue: selecting from empty state sets the adventure', () => {
   assert.equal(selectAdventureValue('brave-explorer', ''), 'brave-explorer');
+});
+
+
+test('defaultGiftRecipientName: Dad/Father supporting character is not auto-selected as gift recipient', () => {
+  assert.equal(defaultGiftRecipientName({
+    childName: 'Emma',
+    occasion: 'fathers-day',
+    supportingCharacters: [{ name: 'Dad', relationship: 'father', role: 'supporting character' }],
+  }), 'Emma');
+});
+
+test('defaultGiftRecipientName: explicit recipient overrides the child default', () => {
+  assert.equal(defaultGiftRecipientName({
+    childName: 'Emma',
+    supportingCharacters: [{ name: 'Dad', relationship: 'father' }],
+    explicitGiftRecipientName: 'Grandpa',
+  }), 'Grandpa');
+});
+
+test('defaultGiftRecipientName: when no child name exists, Dad/Father still does not become the default', () => {
+  assert.equal(defaultGiftRecipientName({
+    childName: '',
+    supportingCharacters: [{ name: 'Papa', relationship: 'dad' }],
+  }), '');
+});
+
+
+test('checkout UI: supporting human characters require their own photo before submit', () => {
+  const src = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  assert.match(src, /Family, friends, or pets in the story/);
+  assert.match(src, /Person — photo required/);
+  assert.match(src, /Pet — photo optional/);
+  assert.match(src, /missingSupportingHumanPhotos\.length > 0/);
+  assert.match(src, /supportingCharacterPhoto:\$\{character\.id\}/);
 });
