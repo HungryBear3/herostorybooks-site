@@ -18,6 +18,7 @@ import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 import { collectGuidedReferencePhotos } from '@/lib/guided-photo-capture';
+import { validateSupportingCharactersForCheckout } from '@/lib/supporting-characters';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -101,6 +102,17 @@ export async function POST(request: Request) {
     const voiceSourceRaw = String(form.get('voiceSource') || '').trim();
     const voiceSource: 'recorded' | 'uploaded' | null =
       voiceSourceRaw === 'recorded' || voiceSourceRaw === 'uploaded' ? voiceSourceRaw : null;
+
+    const supportingCharacterValidation = validateSupportingCharactersForCheckout(form.get('supportingCharacters'));
+    if (!supportingCharacterValidation.ok) {
+      return NextResponse.json(
+        {
+          error: supportingCharacterValidation.error,
+          code: supportingCharacterValidation.code,
+        },
+        { status: supportingCharacterValidation.status || 400 },
+      );
+    }
 
     if (hasVoiceUpload) {
       if (!voiceConsentGiven) {
@@ -243,6 +255,7 @@ export async function POST(request: Request) {
         photoBlobPath,
         photoBlobUrl,
         guidedReferencePhotos: guidedPhotos.records,
+        supportingCharacters: supportingCharacterValidation.supportingCharacters,
         voiceBlobPath,
         voiceBlobUrl,
         voiceConsentAt,

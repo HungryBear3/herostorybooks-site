@@ -85,3 +85,13 @@ test('server contract: /api/order POST imports + calls missingRequiredField', ()
   assert.match(src, /missingFieldErrorCode\(/);
   assert.match(src, /childPronouns/);
 });
+
+test('server contract: /api/order validates supporting characters before Stripe session creation', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const validationIndex = src.indexOf('validateSupportingCharactersForCheckout');
+  const stripeIndex = src.indexOf('stripe.checkout.sessions.create');
+  assert.ok(validationIndex >= 0, 'route should call validateSupportingCharactersForCheckout');
+  assert.ok(stripeIndex >= 0, 'route should create Stripe session after validation');
+  assert.ok(validationIndex < stripeIndex, 'supporting-character gate must run before Stripe');
+  assert.match(src, /supportingCharacters:\s*supportingCharacterValidation\.supportingCharacters/);
+});

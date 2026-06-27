@@ -308,6 +308,9 @@ export function CheckoutForm() {
       payload.set('occasion', form.occasion);
       payload.set('giftMessage', form.giftMessage);
       payload.set('characterNotes', form.characterNotes);
+      // TODO(family/friends-v2): add UI for structured supportingCharacters +
+      // per-human reference-photo upload. The server already validates any
+      // supportingCharacters payload before Stripe session creation.
       payload.set('appearanceOptions', JSON.stringify({
         skinTone: form.skinTone,
         hairStyle: form.hairStyle,

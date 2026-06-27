@@ -4,6 +4,7 @@ import { get, list, put } from '@vercel/blob';
 
 import type { FulfillmentStatus, PageTextLayout } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
+import type { SupportingCharacter } from './supporting-characters.ts';
 export type { FulfillmentStatus, PageTextLayout };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
@@ -49,6 +50,9 @@ export interface OrderInput {
   photoBlobUrl?: string | null;
   /** Optional parent-approved child/hero guided still reference photos. */
   guidedReferencePhotos?: GuidedReferencePhotoRecord[];
+  /** Optional supporting cast for family/friends stories. Human supporting characters
+   *  require reference photos before checkout session creation. */
+  supportingCharacters?: SupportingCharacter[];
   // Optional child-voice-note beta (NEXT_PUBLIC_HSB_VOICE_BETA). The audio is
   // NOT used for voice cloning; it's stored as inspiration/source material for
   // later operator-reviewed story personalization.
