@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   CHECKOUT_SECTION_ORDER,
@@ -146,4 +147,14 @@ test('defaultGiftRecipientName: when no child name exists, Dad/Father still does
     childName: '',
     supportingCharacters: [{ name: 'Papa', relationship: 'dad' }],
   }), '');
+});
+
+
+test('checkout UI: supporting human characters require their own photo before submit', () => {
+  const src = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  assert.match(src, /Family, friends, or pets in the story/);
+  assert.match(src, /Person — photo required/);
+  assert.match(src, /Pet — photo optional/);
+  assert.match(src, /missingSupportingHumanPhotos\.length > 0/);
+  assert.match(src, /supportingCharacterPhoto:\$\{character\.id\}/);
 });

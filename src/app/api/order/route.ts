@@ -18,7 +18,11 @@ import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 import { collectGuidedReferencePhotos } from '@/lib/guided-photo-capture';
-import { validateSupportingCharactersForCheckout } from '@/lib/supporting-characters';
+import {
+  parseSupportingCharacterInputs,
+  validateSupportingCharactersForCheckout,
+  type SupportingCharacterInput,
+} from '@/lib/supporting-characters';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -34,6 +38,53 @@ function isAcceptedVoiceFile(file: File): boolean {
   if (file.type && file.type.startsWith('audio/')) return true;
   if (file.name && VOICE_EXT_RE.test(file.name)) return true;
   return false;
+}
+
+
+async function attachSupportingCharacterPhotoUploads(
+  form: FormData,
+  orderId: string,
+  raw: FormDataEntryValue | null,
+): Promise<{ ok: true; raw: string } | { ok: false; status: number; code: string; error: string }> {
+  const inputs = parseSupportingCharacterInputs(raw);
+  if (inputs.length === 0) return { ok: true, raw: '[]' };
+
+  const augmented: SupportingCharacterInput[] = [];
+  for (let index = 0; index < inputs.length; index += 1) {
+    const character = inputs[index];
+    const id = String(character.id || `character-${index + 1}`).trim();
+    const file = form.get(`supportingCharacterPhoto:${id}`) || form.get(`supportingCharacterPhoto:${index}`);
+
+    if (file instanceof File && file.size > 0) {
+      try {
+        const uploaded = await uploadOrderPhoto(orderId, file);
+        augmented.push({
+          ...character,
+          referencePhotoBlobUrl: uploaded?.url ?? character.referencePhotoBlobUrl ?? character.photoBlobUrl ?? null,
+          referencePhotoUrl: uploaded?.url ?? character.referencePhotoUrl ?? character.photoUrl ?? null,
+        });
+      } catch (error) {
+        if (error instanceof OrderPersistenceError) {
+          console.error(
+            `[order] ABORT BEFORE STRIPE: supporting character photo persistence failed for ${orderId}: ${error.message}`,
+            error.cause,
+          );
+        } else {
+          console.error(`[order] ABORT BEFORE STRIPE: supporting character photo upload failed for ${orderId}`, error);
+        }
+        return {
+          ok: false,
+          status: 503,
+          code: 'supporting_character_photo_persist_failed',
+          error: 'We could not securely save a supporting character photo. Please retry — no charge was made.',
+        };
+      }
+    } else {
+      augmented.push(character);
+    }
+  }
+
+  return { ok: true, raw: JSON.stringify(augmented) };
 }
 
 function getReturnBaseUrl(request: Request): string {
@@ -103,17 +154,6 @@ export async function POST(request: Request) {
     const voiceSource: 'recorded' | 'uploaded' | null =
       voiceSourceRaw === 'recorded' || voiceSourceRaw === 'uploaded' ? voiceSourceRaw : null;
 
-    const supportingCharacterValidation = validateSupportingCharactersForCheckout(form.get('supportingCharacters'));
-    if (!supportingCharacterValidation.ok) {
-      return NextResponse.json(
-        {
-          error: supportingCharacterValidation.error,
-          code: supportingCharacterValidation.code,
-        },
-        { status: supportingCharacterValidation.status || 400 },
-      );
-    }
-
     if (hasVoiceUpload) {
       if (!voiceConsentGiven) {
         return NextResponse.json(
@@ -171,6 +211,29 @@ export async function POST(request: Request) {
       photoFileName: form.get('photo') instanceof File ? (form.get('photo') as File).name : null,
       voiceFileName: hasVoiceUpload ? (voiceRaw as File).name : null,
     });
+
+    const supportingUploads = await attachSupportingCharacterPhotoUploads(
+      form,
+      draftOrder.id,
+      form.get('supportingCharacters'),
+    );
+    if ('error' in supportingUploads) {
+      return NextResponse.json(
+        { error: supportingUploads.error, code: supportingUploads.code },
+        { status: supportingUploads.status },
+      );
+    }
+
+    const supportingCharacterValidation = validateSupportingCharactersForCheckout(supportingUploads.raw);
+    if (!supportingCharacterValidation.ok) {
+      return NextResponse.json(
+        {
+          error: supportingCharacterValidation.error,
+          code: supportingCharacterValidation.code,
+        },
+        { status: supportingCharacterValidation.status || 400 },
+      );
+    }
 
     const photo = form.get('photo');
     let photoBlobPath: string | null = null;
@@ -289,32 +352,65 @@ export async function POST(request: Request) {
       email: order.email,
     });
 
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      customer_email: order.email,
-      client_reference_id: order.id,
-      metadata: { orderId: order.id },
-      line_items: [
+    let session: { url: string | null };
+    try {
+      session = await stripe.checkout.sessions.create(
         {
-          price_data: {
-            currency: 'usd',
-            unit_amount: order.priceCents,
-            product_data: {
-              name: `${order.formatLabel} HeroStoryBook — ${order.childName}`,
-              description: order.deliveryExpectation,
+          mode: 'payment',
+          allow_promotion_codes: true,
+          customer_email: order.email,
+          client_reference_id: order.id,
+          metadata: { orderId: order.id },
+          line_items: [
+            {
+              price_data: {
+                currency: 'usd',
+                unit_amount: order.priceCents,
+                product_data: {
+                  name: `${order.formatLabel} HeroStoryBook — ${order.childName}`,
+                  description: order.deliveryExpectation,
+                },
+              },
+              quantity: 1,
             },
-          },
-          quantity: 1,
+          ],
+          ...(isPrintFormat(order.bookFormat)
+            ? { shipping_address_collection: { allowed_countries: ['US', 'CA', 'GB', 'AU', 'NZ'] } }
+            : {}),
+          success_url: `${baseUrl}/thank-you?${successParams.toString()}`,
+          cancel_url: `${baseUrl}/checkout`,
         },
-      ],
-      ...(isPrintFormat(order.bookFormat)
-        ? { shipping_address_collection: { allowed_countries: ['US', 'CA', 'GB', 'AU', 'NZ'] } }
-        : {}),
-      success_url: `${baseUrl}/thank-you?${successParams.toString()}`,
-      cancel_url: `${baseUrl}/checkout`,
+        { idempotencyKey: `checkout-session:${order.id}` },
+      );
+    } catch (error) {
+      console.error(`[order] Stripe Checkout Session creation failed for saved order ${order.id}; no charge was made`, error);
+      await persistOrder({
+        ...order,
+        checkoutSessionStatus: 'failed',
+        checkoutSessionError: error instanceof Error ? error.message : 'Stripe Checkout Session creation failed',
+        checkoutSessionFailedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      return NextResponse.json(
+        {
+          error: 'We saved your order details, but Stripe checkout did not start. No charge was made — please retry checkout.',
+          code: 'stripe_checkout_session_failed',
+          orderId: order.id,
+          retryable: true,
+        },
+        { status: 502 },
+      );
+    }
+
+    await persistOrder({
+      ...order,
+      checkoutSessionStatus: 'created',
+      checkoutSessionError: null,
+      checkoutSessionFailedAt: null,
+      updatedAt: new Date().toISOString(),
     });
 
-    return NextResponse.json({ ok: true, redirectTo: session.url });
+    return NextResponse.json({ ok: true, redirectTo: session.url, orderId: order.id });
   } catch (error) {
     console.error('Order error:', error);
     return NextResponse.json({ error: 'Order submission failed' }, { status: 500 });

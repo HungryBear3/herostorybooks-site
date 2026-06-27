@@ -95,3 +95,28 @@ test('server contract: /api/order validates supporting characters before Stripe 
   assert.ok(validationIndex < stripeIndex, 'supporting-character gate must run before Stripe');
   assert.match(src, /supportingCharacters:\s*supportingCharacterValidation\.supportingCharacters/);
 });
+
+
+test('server contract: /api/order uploads supporting-character photos before the server gate', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const uploadIndex = src.indexOf('attachSupportingCharacterPhotoUploads');
+  const validationIndex = src.lastIndexOf('validateSupportingCharactersForCheckout');
+  const stripeIndex = src.indexOf('stripe.checkout.sessions.create');
+  assert.ok(uploadIndex >= 0, 'route should attach supporting-character photo uploads');
+  assert.ok(uploadIndex < validationIndex, 'photo upload augmentation must happen before validation');
+  assert.ok(validationIndex < stripeIndex, 'supporting-character gate must run before Stripe');
+  assert.match(src, /supportingCharacterPhoto:\$\{id\}/);
+});
+
+test('server contract: Stripe Checkout enables buyer-entered promotion codes', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  assert.match(src, /allow_promotion_codes:\s*true/);
+});
+
+test('server contract: Stripe session creation failure is persisted as retryable and not charged', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  assert.match(src, /checkoutSessionStatus:\s*'failed'/);
+  assert.match(src, /stripe_checkout_session_failed/);
+  assert.match(src, /No charge was made/);
+  assert.match(src, /idempotencyKey:\s*`checkout-session:\$\{order\.id\}`/);
+});

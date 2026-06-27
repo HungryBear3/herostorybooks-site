@@ -163,6 +163,12 @@ export interface OrderRecord extends OrderInput {
   status: OrderStatus;
   paymentStatus: PaymentStatus;
   stripeSessionId?: string | null;
+  /** Tracks the pre-payment Stripe Checkout Session creation handoff.
+   *  `failed` means the order was saved but no Stripe session was created,
+   *  so the customer can safely retry checkout without a charge. */
+  checkoutSessionStatus?: 'not_started' | 'created' | 'failed';
+  checkoutSessionError?: string | null;
+  checkoutSessionFailedAt?: string | null;
   shippingAddress?: ShippingAddress | null;
   fulfillmentStatus?: FulfillmentStatus;
   fulfillmentAttempts?: number;
@@ -426,6 +432,7 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     photoBlobPath: input.photoBlobPath?.trim() || null,
     photoBlobUrl: input.photoBlobUrl?.trim() || null,
     guidedReferencePhotos: Array.isArray(input.guidedReferencePhotos) ? input.guidedReferencePhotos : [],
+    supportingCharacters: Array.isArray(input.supportingCharacters) ? input.supportingCharacters : [],
     voiceFileName: input.voiceFileName?.trim() || null,
     voiceBlobPath: input.voiceBlobPath?.trim() || null,
     voiceBlobUrl: input.voiceBlobUrl?.trim() || null,
@@ -437,6 +444,9 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     status: 'order_received',
     paymentStatus: 'pending',
     stripeSessionId: null,
+    checkoutSessionStatus: 'not_started',
+    checkoutSessionError: null,
+    checkoutSessionFailedAt: null,
     shippingAddress: null,
     deliveryExpectation: buildDeliveryExpectation(format),
     createdAt: now,
@@ -957,6 +967,9 @@ type FulfillmentPatch = Partial<Pick<
   | 'auditEvents'
   | 'paymentStatus'
   | 'stripeSessionId'
+  | 'checkoutSessionStatus'
+  | 'checkoutSessionError'
+  | 'checkoutSessionFailedAt'
   | 'shippingAddress'
   | 'refundedAt'
   | 'refundReason'

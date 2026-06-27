@@ -152,3 +152,15 @@ test('digital order with paid payment does not trigger print fulfillment', () =>
   const canFulfill = order.paymentStatus === 'paid' && isPrintFormat(order.bookFormat);
   assert.equal(canFulfill, false);
 });
+
+
+test('createOrderRecord records checkout-session status as not_started before Stripe handoff', () => {
+  const order = createOrderRecord({
+    childName: 'Mia',
+    bookFormat: 'classic',
+    email: 'test@example.com',
+  });
+  assert.equal(order.checkoutSessionStatus, 'not_started');
+  assert.equal(order.checkoutSessionError, null);
+  assert.equal(order.checkoutSessionFailedAt, null);
+});

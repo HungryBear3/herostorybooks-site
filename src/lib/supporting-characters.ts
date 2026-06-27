@@ -21,6 +21,8 @@ export interface SupportingCharacter {
   kind: SupportingCharacterKind;
   species: string;
   hasReferencePhoto: boolean;
+  referencePhotoUrl?: string | null;
+  referencePhotoBlobUrl?: string | null;
 }
 
 export interface SupportingCharacterValidationResult {
@@ -59,7 +61,7 @@ export function classifySupportingCharacterKind(input: SupportingCharacterInput)
   return 'unknown';
 }
 
-export function parseSupportingCharacters(raw: FormDataEntryValue | null): SupportingCharacter[] {
+export function parseSupportingCharacterInputs(raw: FormDataEntryValue | null): SupportingCharacterInput[] {
   if (typeof raw !== 'string' || !raw.trim()) return [];
   let parsed: unknown;
   try {
@@ -68,9 +70,13 @@ export function parseSupportingCharacters(raw: FormDataEntryValue | null): Suppo
     return [];
   }
   if (!Array.isArray(parsed)) return [];
+  return parsed.slice(0, 8).map((item) =>
+    (item && typeof item === 'object' ? item : {}) as SupportingCharacterInput,
+  );
+}
 
-  return parsed.slice(0, 8).map((item, index) => {
-    const input = (item && typeof item === 'object' ? item : {}) as SupportingCharacterInput;
+export function normalizeSupportingCharacters(inputs: SupportingCharacterInput[]): SupportingCharacter[] {
+  return inputs.map((input, index) => {
     const kind = classifySupportingCharacterKind(input);
     const name = safeString(input.name, 60);
     const relationship = safeString(input.relationship, 60);
@@ -90,8 +96,14 @@ export function parseSupportingCharacters(raw: FormDataEntryValue | null): Suppo
       kind,
       species,
       hasReferencePhoto,
+      referencePhotoUrl: safeString(input.referencePhotoUrl || input.photoUrl, 300) || null,
+      referencePhotoBlobUrl: safeString(input.referencePhotoBlobUrl || input.photoBlobUrl, 300) || null,
     };
   }).filter((character) => character.name || character.relationship || character.role || character.species);
+}
+
+export function parseSupportingCharacters(raw: FormDataEntryValue | null): SupportingCharacter[] {
+  return normalizeSupportingCharacters(parseSupportingCharacterInputs(raw));
 }
 
 export function validateSupportingCharactersForCheckout(

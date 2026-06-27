@@ -103,6 +103,7 @@ interface FormState {
   theme: string;
   childName: string;
   childAge: string;
+  childPronouns: string;
   lesson: string;
   occasion: string;
   giftMessage: string;
@@ -116,6 +117,18 @@ interface FormState {
   voicePreviewUrl: string | null;
   voiceSource: 'recorded' | 'uploaded' | null;
   voiceConsent: boolean;
+  supportingCharacters: SupportingCharacterForm[];
+}
+
+
+interface SupportingCharacterForm {
+  id: string;
+  name: string;
+  relationship: string;
+  kind: 'human' | 'pet';
+  species: string;
+  photoFile: File | null;
+  photoDataUrl: string | null;
 }
 
 const emptyForm: FormState = {
@@ -124,6 +137,7 @@ const emptyForm: FormState = {
   theme: '',
   childName: '',
   childAge: '',
+  childPronouns: '',
   lesson: '',
   occasion: '',
   giftMessage: '',
@@ -137,6 +151,7 @@ const emptyForm: FormState = {
   voicePreviewUrl: null,
   voiceSource: null,
   voiceConsent: false,
+  supportingCharacters: [],
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -147,6 +162,7 @@ function saveProgress(form: FormState) {
       theme: form.theme,
       childName: form.childName,
       childAge: form.childAge,
+      childPronouns: form.childPronouns,
       lesson: form.lesson,
       occasion: form.occasion,
       giftMessage: form.giftMessage,
@@ -154,6 +170,7 @@ function saveProgress(form: FormState) {
       skinTone: form.skinTone,
       hairStyle: form.hairStyle,
       eyewear: form.eyewear,
+      supportingCharacters: form.supportingCharacters.map(({ photoFile, photoDataUrl, ...character }) => character),
       bookFormat: form.bookFormat,
       email: form.email,
       savedAt: Date.now(),
@@ -233,9 +250,9 @@ export function CheckoutForm() {
     if (form.childName || form.theme || form.email) {
       saveProgress(form);
     }
-  }, [form.theme, form.childName, form.childAge, form.lesson, form.occasion,
+  }, [form.theme, form.childName, form.childAge, form.childPronouns, form.lesson, form.occasion,
       form.giftMessage, form.characterNotes, form.skinTone, form.hairStyle, form.eyewear,
-      form.bookFormat, form.email]);
+      form.supportingCharacters, form.bookFormat, form.email]);
 
   // Server-side recovery capture — debounced, fires when email + any key field is present
   useEffect(() => {
@@ -284,6 +301,64 @@ export function CheckoutForm() {
     reader.readAsDataURL(file);
   }, []);
 
+
+
+  const addSupportingCharacter = () => {
+    setForm(prev => ({
+      ...prev,
+      supportingCharacters: [
+        ...prev.supportingCharacters,
+        {
+          id: `support-${Date.now()}-${prev.supportingCharacters.length + 1}`,
+          name: '',
+          relationship: '',
+          kind: 'human',
+          species: '',
+          photoFile: null,
+          photoDataUrl: null,
+        },
+      ],
+    }));
+  };
+
+  const updateSupportingCharacter = (
+    id: string,
+    patch: Partial<Omit<SupportingCharacterForm, 'id' | 'photoFile' | 'photoDataUrl'>>,
+  ) => {
+    setForm(prev => ({
+      ...prev,
+      supportingCharacters: prev.supportingCharacters.map(character =>
+        character.id === id ? { ...character, ...patch } : character,
+      ),
+    }));
+  };
+
+  const removeSupportingCharacter = (id: string) => {
+    setForm(prev => ({
+      ...prev,
+      supportingCharacters: prev.supportingCharacters.filter(character => character.id !== id),
+    }));
+  };
+
+  const processSupportingPhoto = (id: string, file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setForm(prev => ({
+        ...prev,
+        supportingCharacters: prev.supportingCharacters.map(character =>
+          character.id === id
+            ? { ...character, photoFile: file, photoDataUrl: e.target?.result as string }
+            : character,
+        ),
+      }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const missingSupportingHumanPhotos = form.supportingCharacters.filter(
+    character => character.kind === 'human' && (character.name || character.relationship) && !character.photoFile,
+  );
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
@@ -303,14 +378,28 @@ export function CheckoutForm() {
       const payload = new FormData();
       payload.set('childName', form.childName);
       payload.set('childAge', form.childAge);
+      payload.set('childPronouns', form.childPronouns);
       payload.set('theme', form.theme);
       payload.set('lesson', form.lesson);
       payload.set('occasion', form.occasion);
       payload.set('giftMessage', form.giftMessage);
       payload.set('characterNotes', form.characterNotes);
-      // TODO(family/friends-v2): add UI for structured supportingCharacters +
-      // per-human reference-photo upload. The server already validates any
-      // supportingCharacters payload before Stripe session creation.
+      const supportingCharactersPayload = form.supportingCharacters
+        .filter(character => character.name.trim() || character.relationship.trim() || character.species.trim())
+        .map(character => ({
+          id: character.id,
+          name: character.name.trim(),
+          relationship: character.relationship.trim(),
+          kind: character.kind,
+          species: character.kind === 'pet' ? character.species.trim() : '',
+        }));
+      payload.set('supportingCharacters', JSON.stringify(supportingCharactersPayload));
+      form.supportingCharacters.forEach((character, index) => {
+        if (character.photoFile) {
+          payload.set(`supportingCharacterPhoto:${character.id}`, character.photoFile);
+          payload.set(`supportingCharacterPhoto:${index}`, character.photoFile);
+        }
+      });
       payload.set('appearanceOptions', JSON.stringify({
         skinTone: form.skinTone,
         hairStyle: form.hairStyle,
@@ -336,11 +425,10 @@ export function CheckoutForm() {
         body: payload,
       });
 
+      const result = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error('Order submission failed');
+        throw new Error(result?.error || 'Order submission failed');
       }
-
-      const result = await response.json();
       setSuccess(true);
       localStorage.removeItem(STORAGE_KEY);
       setTimeout(() => {
@@ -348,7 +436,7 @@ export function CheckoutForm() {
       }, 1200);
     } catch (error) {
       console.error(error);
-      alert('We could not save your order. Please try again.');
+      alert(error instanceof Error ? error.message : 'We could not save your order. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -514,6 +602,28 @@ export function CheckoutForm() {
               </div>
             </div>
 
+            <div>
+              <label className="block text-sm font-semibold text-forest mb-2">
+                Pronouns <span className="text-red-400">*</span>
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {['she/her', 'he/him', 'they/them'].map(pronouns => (
+                  <button
+                    key={pronouns}
+                    type="button"
+                    onClick={() => set('childPronouns', form.childPronouns === pronouns ? '' : pronouns)}
+                    className={`px-3 py-2 rounded-full border-2 text-sm font-semibold transition cursor-pointer ${
+                      form.childPronouns === pronouns
+                        ? 'border-deep-gold bg-deep-gold/10 text-forest'
+                        : 'border-gray-200 text-gray-700 hover:border-gray-300'
+                    }`}
+                  >
+                    {pronouns}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Lesson */}
             <div>
               <label className="block text-sm font-semibold text-forest mb-2">
@@ -664,6 +774,121 @@ export function CheckoutForm() {
               <p className="text-xs text-gray-400 text-right mt-0.5">{form.characterNotes.length}/240</p>
             </div>
           </section>
+
+          {/* ── 2.6 Supporting characters ── */}
+          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-serif text-xl text-forest mb-1">Family, friends, or pets in the story</h2>
+                <p className="text-sm text-gray-500">
+                  Optional. If you add a real person, include a reference photo before payment so we do not guess their appearance. Pets can be added without a photo.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={addSupportingCharacter}
+                className="shrink-0 rounded-full border-2 border-deep-gold px-3 py-2 text-xs font-bold text-forest hover:bg-deep-gold/10"
+              >
+                + Add
+              </button>
+            </div>
+
+            {form.supportingCharacters.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-5 text-center text-sm text-gray-500">
+                Add Dad, Grandma, a best friend, or a pet only if they should appear in the story.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {form.supportingCharacters.map((character, index) => (
+                  <div key={character.id} className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-bold text-forest">Supporting character {index + 1}</p>
+                      <button
+                        type="button"
+                        onClick={() => removeSupportingCharacter(character.id)}
+                        className="text-xs text-gray-500 underline hover:text-coral-dark"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <input
+                        type="text"
+                        value={character.name}
+                        onChange={e => updateSupportingCharacter(character.id, { name: e.target.value })}
+                        placeholder="Name, e.g. Dad or Max"
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white"
+                      />
+                      <input
+                        type="text"
+                        value={character.relationship}
+                        onChange={e => updateSupportingCharacter(character.id, { relationship: e.target.value })}
+                        placeholder="Relationship, e.g. father, sister, dog"
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {(['human', 'pet'] as const).map(kind => (
+                        <button
+                          key={kind}
+                          type="button"
+                          onClick={() => updateSupportingCharacter(character.id, { kind, species: kind === 'human' ? '' : character.species })}
+                          className={`px-3 py-2 rounded-full border-2 text-xs font-bold uppercase tracking-wide ${
+                            character.kind === kind
+                              ? 'border-deep-gold bg-deep-gold/10 text-forest'
+                              : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300'
+                          }`}
+                        >
+                          {kind === 'human' ? 'Person — photo required' : 'Pet — photo optional'}
+                        </button>
+                      ))}
+                    </div>
+                    {character.kind === 'pet' && (
+                      <input
+                        type="text"
+                        value={character.species}
+                        onChange={e => updateSupportingCharacter(character.id, { species: e.target.value })}
+                        placeholder="Pet species, e.g. golden retriever, cat, dragon"
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white"
+                      />
+                    )}
+                    {character.kind === 'human' && (
+                      <div className={`rounded-xl border-2 ${character.photoFile ? 'border-green-200 bg-green-50' : 'border-dashed border-gray-300 bg-white'} p-3`}>
+                        <label className="block cursor-pointer">
+                          <input
+                            type="file"
+                            accept="image/*,.heic,.heif"
+                            className="hidden"
+                            onChange={(e) => { const f = e.target.files?.[0]; if (f) processSupportingPhoto(character.id, f); }}
+                          />
+                          {character.photoDataUrl ? (
+                            <div className="flex items-center gap-3">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={character.photoDataUrl} alt={`${character.name || 'Supporting character'} reference`} className="h-16 w-16 rounded-lg object-cover bg-white" />
+                              <div className="text-sm">
+                                <p className="font-semibold text-green-700">Reference photo attached</p>
+                                <p className="text-xs text-green-600">{character.photoFile?.name}</p>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-sm text-gray-500">
+                              <span className="font-semibold text-forest">Upload reference photo</span> for this person before payment
+                            </div>
+                          )}
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {missingSupportingHumanPhotos.length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                Add reference photo{missingSupportingHumanPhotos.length === 1 ? '' : 's'} for: {missingSupportingHumanPhotos.map(c => c.name || c.relationship || 'supporting character').join(', ')}.
+              </div>
+            )}
+          </section>
+
 
           {/* ── 3. Format + Delivery ── */}
           <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
@@ -891,6 +1116,12 @@ export function CheckoutForm() {
                   <span className="font-medium">{guidedFrames.length} reference photo{guidedFrames.length === 1 ? '' : 's'}</span>
                 </div>
               )}
+              {form.supportingCharacters.length > 0 && (
+                <div className="flex justify-between">
+                  <span>Supporting cast</span>
+                  <span className="font-medium">{form.supportingCharacters.length} character{form.supportingCharacters.length === 1 ? '' : 's'}</span>
+                </div>
+              )}
               {form.bookFormat !== 'digital' && (
                 <div className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
                   {PRINT_PREVIEW_PROMISE}
@@ -907,7 +1138,7 @@ export function CheckoutForm() {
           <div className="space-y-3 pb-10">
             <button
               type="submit"
-              disabled={isSubmitting || !form.theme || !form.childName || !form.email || !form.skinTone || !form.hairStyle || (VOICE_BETA_ENABLED && form.voiceFile != null && !form.voiceConsent)}
+              disabled={isSubmitting || !form.theme || !form.childName || !form.childPronouns || !form.email || !form.skinTone || !form.hairStyle || missingSupportingHumanPhotos.length > 0 || (VOICE_BETA_ENABLED && form.voiceFile != null && !form.voiceConsent)}
               className="w-full py-4 rounded-xl font-bold text-lg transition-all
                 bg-deep-gold hover:bg-deep-gold/90 text-white shadow-md hover:shadow-lg hover:-translate-y-0.5
                 disabled:opacity-50 disabled:cursor-not-allowed disabled:translate-y-0 disabled:shadow-none"

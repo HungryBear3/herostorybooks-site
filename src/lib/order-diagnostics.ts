@@ -46,6 +46,9 @@ export interface OrderDiagnostics {
   payment: {
     status: string;
     stripeSessionId: string | null;
+    checkoutSessionStatus: string | null;
+    checkoutSessionError: string | null;
+    checkoutSessionFailedAt: string | null;
   };
   photo: {
     hasFileName: boolean;
@@ -251,6 +254,9 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
     payment: {
       status: order.paymentStatus,
       stripeSessionId: order.stripeSessionId ?? null,
+      checkoutSessionStatus: order.checkoutSessionStatus ?? null,
+      checkoutSessionError: order.checkoutSessionError ?? null,
+      checkoutSessionFailedAt: order.checkoutSessionFailedAt ?? null,
     },
     photo: {
       hasFileName: Boolean(order.photoFileName),
@@ -336,6 +342,21 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
   const isPrint = d.identity.isPrint;
 
   // Payment
+  if (d.payment.checkoutSessionStatus === 'failed') {
+    checks.push({
+      id: 'checkout-session',
+      label: 'Checkout session creation failed',
+      severity: 'fail',
+      detail: `${d.payment.checkoutSessionError ?? 'Stripe Checkout Session was not created'}${d.payment.checkoutSessionFailedAt ? ` at ${d.payment.checkoutSessionFailedAt}` : ''}. No charge was made; customer can retry checkout.`,
+    });
+  } else if (d.payment.checkoutSessionStatus === 'created' && d.payment.status !== 'paid') {
+    checks.push({
+      id: 'checkout-session',
+      label: 'Checkout session created; payment pending',
+      severity: 'info',
+      detail: 'Order is durably saved and Stripe Checkout was created, but no paid webhook/state is present yet.',
+    });
+  }
   checks.push(
     d.payment.status === 'paid'
       ? { id: 'payment', label: 'Payment confirmed', severity: 'ok', detail: `Stripe session ${d.payment.stripeSessionId ?? '(no session id stored)'}` }
@@ -475,6 +496,7 @@ export function formatDiagnosticsSummary(d: OrderDiagnostics): string {
   lines.push(`Order ${d.orderId} — ${d.identity.childName} <${d.identity.email}> · ${d.identity.formatLabel}`);
   lines.push(`Created ${d.identity.createdAt} · Updated ${d.identity.updatedAt}`);
   lines.push(`Payment: ${d.payment.status}${d.payment.stripeSessionId ? ` (${d.payment.stripeSessionId})` : ''}`);
+  lines.push(`Checkout session: ${d.payment.checkoutSessionStatus ?? 'unknown'}${d.payment.checkoutSessionError ? ` · ${d.payment.checkoutSessionError}` : ''}`);
   lines.push(`Fulfillment: ${d.fulfillment.fulfillmentStatus} · Order: ${d.fulfillment.orderStatus} · Attempts: ${d.fulfillment.attempts}${d.fulfillment.lastError ? ` · LastError: ${d.fulfillment.lastError}` : ''}`);
   lines.push(`Photo: blobPath=${d.photo.blobPath ?? 'none'} fileName=${d.photo.fileName ?? 'none'}`);
   lines.push(

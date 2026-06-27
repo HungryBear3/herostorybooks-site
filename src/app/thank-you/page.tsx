@@ -44,7 +44,11 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
   }
 
   if (paymentStatus === 'failed') {
-    return <FailedView orderId={orderId} />;
+    return <FailedView orderId={orderId} reason="payment" />;
+  }
+
+  if (order?.checkoutSessionStatus === 'failed') {
+    return <FailedView orderId={orderId} reason="checkout_session" />;
   }
 
   // pending OR order-not-found OR no orderId — show neutral processing state.
@@ -192,23 +196,27 @@ function PendingView({
   );
 }
 
-function FailedView({ orderId }: { orderId: string | undefined }) {
+function FailedView({ orderId, reason }: { orderId: string | undefined; reason: 'payment' | 'checkout_session' }) {
+  const isCheckoutSessionFailure = reason === 'checkout_session';
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--cream)] px-4 py-16 space-y-8">
       <div className="text-center">
         <span className="text-7xl">⚠️</span>
         <h1 className="text-4xl font-bold text-[var(--forest)] mt-4 mb-2">
-          We couldn&apos;t confirm your payment
+          {isCheckoutSessionFailure ? 'Checkout did not start' : 'We couldn\'t confirm your payment'}
         </h1>
         <p className="text-lg text-gray-600 max-w-md mx-auto">
-          Stripe reported a failed payment for this order. No book has been started yet.
+          {isCheckoutSessionFailure
+            ? 'We saved your order details, but Stripe checkout did not open. No charge was made.'
+            : 'Stripe reported a failed payment for this order. No book has been started yet.'}
         </p>
       </div>
 
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 w-full max-w-md space-y-3 text-sm text-gray-700">
         <p className="text-gray-600">
-          Most of the time this means the card was declined or the checkout was cancelled.
-          You can safely try checkout again — you have not been charged.
+          {isCheckoutSessionFailure
+            ? 'This is usually a temporary checkout/session issue. You can safely try checkout again — there is no charge for this saved order.'
+            : 'Most of the time this means the card was declined or the checkout was cancelled. You can safely try checkout again — you have not been charged.'}
         </p>
         {orderId ? (
           <p className="text-gray-500">
