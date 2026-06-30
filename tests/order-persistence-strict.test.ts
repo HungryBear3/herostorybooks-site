@@ -236,6 +236,16 @@ test('order route source: persistOrder is called before stripe.checkout.sessions
   );
 });
 
+test('order route source: Stripe Checkout enables buyer-entered promotion codes', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile('src/app/api/order/route.ts', 'utf8');
+  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
+  const promoIdx = src.indexOf('allow_promotion_codes: true');
+  assert.ok(stripeIdx > -1, 'route must call stripe.checkout.sessions.create');
+  assert.ok(promoIdx > -1, 'Checkout session must allow buyer-entered promotion codes');
+  assert.ok(promoIdx > stripeIdx, 'promotion-code setting must be part of session creation');
+});
+
 // ── Webhook: missing-order failure mode logs clearly + returns 500 ──────────
 
 test('webhook returns 500 with critical log when order is missing in durable store', async () => {
