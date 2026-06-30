@@ -278,6 +278,7 @@ export async function POST(request: Request) {
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
+      allow_promotion_codes: true,
       customer_email: order.email,
       client_reference_id: order.id,
       metadata: { orderId: order.id },
