@@ -15,6 +15,7 @@ import {
 } from '../src/lib/fulfillment-backlog.ts';
 
 const ROUTE = readFileSync(new URL('../src/app/api/cron/fulfillment-sweep/route.ts', import.meta.url), 'utf8');
+const ADMIN_ORDERS_ROUTE = readFileSync(new URL('../src/app/api/admin/orders/route.ts', import.meta.url), 'utf8');
 const VERCEL = readFileSync(new URL('../vercel.json', import.meta.url), 'utf8');
 
 async function withEnv(env: Record<string, string | undefined>, fn: () => Promise<void> | void) {
@@ -67,6 +68,12 @@ test('repro order is excluded from auto-sweep until explicit approval', () => {
 
 test('cron route triggers no print / no email-release / no payment side effects', () => {
   assert.doesNotMatch(ROUTE, /submitPrint|recordOwnerPrintGo|runPrintProduction|sendProofReadyEmail|sendDigitalDeliveryEmail|releaseOrderAfterQa|stripe|refund/i);
+});
+
+test('cron/admin routes expose ops digest hooks for paid-stuck and alert buckets', () => {
+  assert.match(ROUTE, /runFulfillmentSweep\(/);
+  assert.match(ADMIN_ORDERS_ROUTE, /buildFulfillmentOpsDigest\(orders\)/);
+  assert.match(ADMIN_ORDERS_ROUTE, /opsDigest/);
 });
 
 test('vercel.json registers exactly one cron — the sweep route (no duplicate backfill cron)', () => {
@@ -146,4 +153,5 @@ test('runtime: authorized sweep returns 200 and runs work (triggers eligible ord
   assert.equal(out.status, 200);
   assert.deepEqual(calls, ['ord_stuck'], 'triggers only the eligible, non-excluded order, once');
   assert.equal(out.body.swept, 1);
+  assert.deepEqual(out.body.opsDigest?.orderIds.paidStuck, ['ord_stuck']);
 });

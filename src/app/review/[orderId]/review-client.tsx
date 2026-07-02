@@ -601,8 +601,11 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
                   setError(null);
                   setNotice(null);
                   try {
+                    const reviewToken = new URLSearchParams(window.location.search).get('token');
                     const res = await fetch(`/api/order/${snapshot.orderId}/approve-whole-book`, {
                       method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ reviewToken }),
                     });
                     const data = await res.json();
                     if (!res.ok || !data.ok) {

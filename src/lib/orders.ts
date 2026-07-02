@@ -231,6 +231,10 @@ export type ReviewAuditEventType =
    *  the policy guard failed (missing customer approval, manifest invalid,
    *  lineage broken). */
   | 'print_submission_blocked'
+  /** Recorded after an operator alert email attempt for paid orders that need
+   *  manual review or delivery-email recovery. Keeps the alert path durable —
+   *  operators can see whether alerting was sent, skipped, or failed. */
+  | 'operator_alert_recorded'
   /** Recorded when `releaseOwnerPrintGoLock` clears a stuck owner-print-go
    *  intent lock. Meta captures the operator who released it, the prior
    *  fulfillment status, and the prior owner-go fields so the recovery
@@ -2262,6 +2266,21 @@ export async function updateOrderPayment(
 ) {
   const existing = await getOrder(orderId);
   if (!existing) return null;
+
+  // Stripe webhook replay/idempotency guard: once a Checkout session has been
+  // recorded, never let a later/different session overwrite the payment handle.
+  // Same-session replay may still repair missing shippingAddress below; a
+  // different session must be handled as a separate ops/recovery event.
+  if (
+    opts.stripeSessionId &&
+    existing.stripeSessionId &&
+    existing.stripeSessionId !== opts.stripeSessionId
+  ) {
+    console.warn(
+      `[orders] refusing to overwrite stripeSessionId for ${orderId}: existing=${existing.stripeSessionId} incoming=${opts.stripeSessionId}`,
+    );
+    return existing;
+  }
 
   const updated: OrderRecord = {
     ...existing,

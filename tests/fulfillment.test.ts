@@ -428,6 +428,10 @@ test('proof release hold blocks qa-passed digital auto-send before customer emai
     assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
     assert.match(after?.fulfillmentLastError ?? '', /KILL_SWITCH_ACTIVE:proof_release_hold/);
     assert.ok(after?.auditEvents?.some((e) => e.type === 'proof_release_failed' && e.reason === 'PROOF_RELEASE_HELD'));
+    assert.ok(
+      !after?.auditEvents?.some((e) => e.type === 'operator_alert_recorded'),
+      'expected proof-release holds must not emit failed-fulfillment operator alert audits',
+    );
   } finally {
     cleanupTmpDir(dir);
   }
@@ -578,6 +582,10 @@ test('proof release hold blocks qa-passed print proof auto-send before customer 
     assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
     assert.match(after?.fulfillmentLastError ?? '', /KILL_SWITCH_ACTIVE:proof_release_hold/);
     assert.ok(after?.auditEvents?.some((e) => e.type === 'proof_release_failed' && e.reason === 'PROOF_RELEASE_HELD'));
+    assert.ok(
+      !after?.auditEvents?.some((e) => e.type === 'operator_alert_recorded'),
+      'expected proof-release holds must not emit failed-fulfillment operator alert audits',
+    );
   } finally {
     cleanupTmpDir(dir);
   }
@@ -949,6 +957,47 @@ test('Rex G3: owner go AFTER customer approval submits to print (two-phase happy
     assert.equal(after?.ownerPrintGoBy, 'ops@example.com');
     assert.ok(after?.printJobId, 'printJobId set after submission');
     assert.ok(after?.printCoverArtifactUrl?.includes('-cover.pdf'));
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('Rex G3: owner go refuses print order without usable shipping address before lock/submit', async () => {
+  const dir = makeTmpDir();
+  try {
+    let submitPrintCalls = 0;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS,
+      submitPrint: async () => { submitPrintCalls += 1; return { jobId: 'should-not-run' }; },
+    };
+
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'classic',
+      shippingAddress: null,
+      fulfillmentStatus: 'proof_approved',
+      status: 'preview_ready',
+      storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+      printInteriorArtifactUrl: 'https://cdn.example.com/interior.pdf',
+      printInteriorMd5: 'INTERIORMD5',
+      printInteriorPageCount: 32,
+      printTitle: MOCK_STORY.title,
+      proofApprovalToken: 'tok-missing-address',
+      proofApprovedAt: '2026-05-31T20:35:00.000Z',
+      printApprovedAt: '2026-05-31T20:35:00.000Z',
+      qaPassAt: '2026-05-31T20:30:00.000Z',
+      qaPassBy: 'ops',
+    }, dir);
+
+    const r = await submitPrintAfterOwnerGo(order.id, 'ops@example.com', deps);
+    assert.equal(r.ok, false);
+    assert.equal(r.failureCode, 'MISSING_SHIPPING_ADDRESS');
+    assert.match(r.error ?? '', /shipping address/i);
+    assert.equal(submitPrintCalls, 0);
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.ownerPrintGoAt, undefined, 'owner-go lock/state must not be recorded before address gate passes');
+    assert.equal(after?.printJobId, undefined);
   } finally {
     cleanupTmpDir(dir);
   }

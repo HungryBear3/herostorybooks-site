@@ -127,6 +127,50 @@ test('updateOrderPayment returns null for unknown orderId', async () => {
   }
 });
 
+test('updateOrderPayment refuses to overwrite an existing Stripe session with a different session', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-test-'));
+  process.env.HSB_ORDER_STORE_DIR = dir;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+
+  try {
+    const ordersModule = await import('../src/lib/orders.ts');
+    await ordersModule.persistOrder({
+      ...DUMMY_ORDER,
+      paymentStatus: 'paid',
+      stripeSessionId: 'cs_test_original',
+      shippingAddress: {
+        line1: '123 Main St',
+        city: 'Springfield',
+        state: 'IL',
+        zip: '62701',
+        country: 'US',
+      },
+    });
+
+    const result = await ordersModule.updateOrderPayment('ord_test_abc', 'paid', {
+      stripeSessionId: 'cs_test_different',
+      shippingAddress: {
+        line1: '999 Other St',
+        city: 'Chicago',
+        state: 'IL',
+        zip: '60601',
+        country: 'US',
+      },
+    });
+
+    assert.ok(result);
+    assert.equal(result!.stripeSessionId, 'cs_test_original');
+    assert.equal(result!.shippingAddress?.line1, '123 Main St');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.HSB_ORDER_STORE_DIR;
+  }
+});
+
 // ── Payment gate ─────────────────────────────────────────────────────────────
 
 test('print order with pending payment is not ready for fulfillment', () => {
