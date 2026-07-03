@@ -128,7 +128,7 @@ function enrichPrint(
     view.headline = `${order.childName}'s book has shipped`;
     view.subhead = order.trackingNumber
       ? 'It is on its way — tracking info is below.'
-      : 'It is on its way. Expect it within 5–7 business days.';
+      : 'It is on its way. Use the tracking link for carrier timing.';
     view.tone = 'success';
     if (order.trackingUrl) {
       view.primaryAction = { label: 'Track your shipment', href: order.trackingUrl, kind: 'view' };
@@ -239,7 +239,7 @@ function buildPrintTimeline(order: OrderRecord): TimelineStep[] {
       'Starts once you approve the proof.', productionState),
     step('shipped', 'Shipped',
       shippedState === 'done' ? 'On its way to you.' :
-      'Ships within 5–7 business days of proof approval.', shippedState),
+      'Print production starts after proof approval; tracking follows when it ships.', shippedState),
   ];
 }
 

@@ -11,7 +11,7 @@ import {
 const faqs = [
   {
     question: "How long does it take to create and receive my book?",
-    answer: "Once you complete your order, our team crafts your personalized book within 3-5 business days. Standard shipping takes 5-7 business days, while Priority and Express options are available for faster delivery. You'll receive tracking information as soon as your book ships.",
+    answer: "Once you complete your order, our team prepares a personalized proof for review. Printed books are submitted to production only after approval. You'll receive tracking information as soon as your book ships.",
   },
   {
     question: "Can I personalize multiple copies of the same book?",

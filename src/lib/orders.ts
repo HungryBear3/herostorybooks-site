@@ -93,6 +93,7 @@ export type ReviewAuditEventType =
   | 'proof_generated'
   | 'proof_rebuilt'
   | 'proof_review_acknowledged'
+  | 'proof_release_override_recorded'
   | 'page_regenerated'
   | 'page_accepted'
   | 'whole_book_approved'
@@ -176,6 +177,20 @@ export interface OrderRecord extends OrderInput {
   printTitle?: string | null;
   proofApprovalToken?: string | null;
   proofApprovedAt?: string | null;
+  /** ISO timestamp print was approved for production; optional for legacy/ops records. */
+  printApprovedAt?: string | null;
+  /** ISO timestamp print handoff was submitted; optional for legacy/ops records. */
+  printSubmittedAt?: string | null;
+  /** ISO timestamp QA passed the order for customer proof/release; optional for legacy/ops records. */
+  qaPassAt?: string | null;
+  /** Current QA state for ops dashboards; optional for legacy/ops records. */
+  qaStatus?: string | null;
+  /** Manual intervention flag used by recovery dashboards; optional for legacy/ops records. */
+  manualInterventionRequired?: boolean | null;
+  /** Short QA/manual-review blocker reason; optional for legacy/ops records. */
+  qaBlockedReason?: string | null;
+  /** ISO timestamp a proof email/release was sent or manually overridden. Optional for legacy orders. */
+  customerProofReleasedAt?: string | null;
   /** ISO timestamp the customer ticked the "I reviewed the full proof PDF"
    *  acknowledgment on /review. Required server-side before approveWholeBook. */
   proofReviewedAt?: string | null;
@@ -938,6 +953,7 @@ type FulfillmentPatch = Partial<Pick<
   | 'printTitle'
   | 'proofApprovalToken'
   | 'proofApprovedAt'
+  | 'customerProofReleasedAt'
   | 'proofReviewedAt'
   | 'printJobId'
   | 'printJobStatus'
@@ -979,6 +995,7 @@ function patchRequiresPaidOrder(patch: FulfillmentPatch): boolean {
   if (patch.printInteriorArtifactUrl !== undefined) return true;
   if (patch.printCoverArtifactUrl !== undefined) return true;
   if (patch.proofApprovalToken !== undefined) return true;
+  if (patch.customerProofReleasedAt !== undefined) return true;
   if (patch.printJobId !== undefined) return true;
   if (patch.status === 'preview_ready' || patch.status === 'print_in_production' || patch.status === 'shipped') return true;
   if (patch.fulfillmentStatus && PAYMENT_GATED_FULFILLMENT_STATUSES.includes(patch.fulfillmentStatus)) return true;

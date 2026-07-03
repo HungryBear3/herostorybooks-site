@@ -98,7 +98,7 @@ function SuccessView({
             <span className="text-xl flex-shrink-0">📦</span>
             <div>
               <p className="font-semibold text-[var(--forest)]">Print timeline</p>
-              <p className="text-gray-500">If you chose a printed book, production and shipping follow after preview approval. Typical ship window is 5–7 business days.</p>
+              <p className="text-gray-500">If you chose a printed book, production and shipping follow after preview approval. Tracking follows when the book ships.</p>
             </div>
           </div>
         </div>
