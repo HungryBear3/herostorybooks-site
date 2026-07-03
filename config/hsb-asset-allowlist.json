@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Review-only approved source assets for HSB social/demo generation. Do not include real child/family/customer assets unless Alexy explicitly approves the exact asset for the exact platform/scope.",
+  "rules": {
+    "defaultDecision": "hold",
+    "allowedAssetClasses": [
+      "synthetic_demo_book",
+      "approved_product_mockup",
+      "operator-shot_non-child_physical_book",
+      "public_brand_asset"
+    ],
+    "blockedWithoutExplicitTelegramApproval": [
+      "real_child_photo",
+      "real_family_photo",
+      "customer_audio",
+      "customer_story_text",
+      "private_order_pdf",
+      "print_provider_file"
+    ],
+    "requiredApprovalPacketFields": [
+      "assetId",
+      "sourcePathOrUrl",
+      "platformScope",
+      "caption",
+      "claimLintResult",
+      "piiReview",
+      "qualityGrade",
+      "goNoGo"
+    ]
+  },
+  "assets": []
+}

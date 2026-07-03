@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 
 import type { OrderRecord } from '@/lib/orders';
+import { deriveOrderAttention, deriveOrderStage } from '@/lib/order-stage';
 
 /** Client-side mirror of preprintRefundRefusalReason (kept inline to
  *  avoid pulling Stripe into the client bundle through admin-actions).
@@ -62,7 +63,7 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
       )) return false;
 
       switch (filter) {
-        case 'paid_attention': return paidArtifactNeedsAttention(o, now);
+        case 'paid_attention': return deriveOrderAttention(o).severity !== 'none';
         case 'paid': return o.paymentStatus === 'paid';
         case 'in_progress':
           return ['generating_story', 'generating_images', 'building_pdf', 'submitting_to_print'].includes(o.fulfillmentStatus ?? '');
@@ -79,7 +80,7 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
     [orders],
   );
   const paidAttentionCount = useMemo(
-    () => orders.filter((o) => (!showInternalArchived && isInternalArchived(o)) ? false : paidArtifactNeedsAttention(o)).length,
+    () => orders.filter((o) => (!showInternalArchived && isInternalArchived(o)) ? false : deriveOrderAttention(o).severity !== 'none').length,
     [orders, showInternalArchived],
   );
 
@@ -167,13 +168,15 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
                 <th className="text-left px-3 py-2">Format</th>
                 <th className="text-left px-3 py-2">Payment</th>
                 <th className="text-left px-3 py-2">Fulfillment</th>
+                <th className="text-left px-3 py-2">Derived stage</th>
+                <th className="text-left px-3 py-2">Attention</th>
                 <th className="text-left px-3 py-2">Order status</th>
                 <th className="text-left px-3 py-2">Actions</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 && (
-                <tr><td colSpan={8} className="text-center py-8 text-gray-400">No orders match.</td></tr>
+                <tr><td colSpan={10} className="text-center py-8 text-gray-400">No orders match.</td></tr>
               )}
               {filtered.map(o => (
                 <Row
@@ -222,6 +225,12 @@ function Row({
   const created = order.createdAt ? new Date(order.createdAt) : null;
   const createdShort = created ? `${created.toISOString().slice(0, 10)} ${created.toISOString().slice(11, 16)}Z` : '—';
   const needsPaidArtifactAttention = paidArtifactNeedsAttention(order);
+  const derivedStage = deriveOrderStage(order);
+  const attention = deriveOrderAttention(order);
+  const attentionTone =
+    attention.severity === 'blocked' ? 'bg-coral/20 text-coral-dark' :
+    attention.severity === 'warn' ? 'bg-[#FFF8E6] text-[#8a6d1a]' :
+    'bg-gray-100 text-gray-500';
 
   return (
     <tr className="border-t border-gray-100 align-top">
@@ -255,6 +264,17 @@ function Row({
         {order.fulfillmentLastError && (
           <p className="text-[10px] text-coral-dark mt-1 max-w-[220px] truncate" title={order.fulfillmentLastError}>
             {order.fulfillmentLastError}
+          </p>
+        )}
+      </td>
+      <td className="px-3 py-3 text-xs">
+        <span className="inline-block px-2 py-0.5 rounded-full bg-gray-100 text-gray-700">{derivedStage}</span>
+      </td>
+      <td className="px-3 py-3 text-xs">
+        <span className={`inline-block px-2 py-0.5 rounded-full ${attentionTone}`}>{attention.severity}</span>
+        {attention.severity !== 'none' && (
+          <p className="text-[10px] text-gray-500 mt-1 max-w-[220px]">
+            {attention.reason} · {attention.queue} · owner: {attention.nextActionOwner}
           </p>
         )}
       </td>

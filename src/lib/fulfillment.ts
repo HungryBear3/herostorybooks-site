@@ -85,6 +85,14 @@ function paidFulfillmentPatch(order: OrderRecord, patch: Partial<OrderRecord>): 
   };
 }
 
+function proofReleasePatch(order: OrderRecord, persistedState: Partial<OrderRecord>): Partial<OrderRecord> {
+  return paidFulfillmentPatch(order, {
+    ...persistedState,
+    customerProofReleasedAt: new Date().toISOString(),
+    fulfillmentLastError: null,
+  });
+}
+
 // ── Default implementations ───────────────────────────────────────────────────
 
 async function defaultUploadArtifact(orderId: string, buffer: Buffer, filename: string): Promise<string> {
@@ -349,7 +357,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // storyMeta=null because (a) storyMeta was written in a separate prior
   // patch, and (b) a stale blob-read in this final write merged-in over
   // the storyMeta field. Explicit inclusion makes the merge deterministic.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+  const finalDigitalPatch: Partial<OrderRecord> = {
     fulfillmentStatus: 'complete',
     status: 'preview_ready',
     storyArtifactUrl: pdfUrl,
@@ -359,7 +367,8 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
-  }));
+  };
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, finalDigitalPatch));
 
   // Delivery email runs AFTER the artifacts are durably persisted at
   // fulfillmentStatus='complete'. If the email fails (e.g. Resend domain
@@ -370,7 +379,10 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // whose PDF is already correct. Admin's `retryOrderFulfillment` knows
   // how to recover by resending just the email.
   try {
-    await sendDigitalDeliveryEmail(order, { pdfUrl });
+    const emailResult = await sendDigitalDeliveryEmail(order, { pdfUrl });
+    if (!emailResult.skipped) {
+      await updateFulfillmentState(order.id, proofReleasePatch(order, finalDigitalPatch));
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[fulfillment] delivery email failed for ${order.id}: ${message}`);
@@ -490,7 +502,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   const proofGeneratedEvent = buildProofGeneratedAuditEvent(order, seededPageArtifacts.length);
   // storyMeta included explicitly so the proof_ready merge is
   // deterministic regardless of blob-read freshness.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+  const finalPrintProofPatch: Partial<OrderRecord> = {
     fulfillmentStatus: 'proof_ready',
     status: 'preview_ready',
     storyArtifactUrl: proofUrl,
@@ -507,7 +519,8 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
     auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
-  }));
+  };
+  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, finalPrintProofPatch));
 
   // Mirror of the digital path: proof artifacts are durably persisted at
   // fulfillmentStatus='proof_ready'. If the proof-ready email fails we
@@ -516,7 +529,10 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // already-correct PDFs and eventually move the order to
   // `failed_manual_review`. Admin can resend the proof email separately.
   try {
-    await sendProofReadyEmail(order, { reviewUrl, proofUrl });
+    const emailResult = await sendProofReadyEmail(order, { reviewUrl, proofUrl });
+    if (!emailResult.skipped) {
+      await updateFulfillmentState(order.id, proofReleasePatch(order, finalPrintProofPatch));
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[fulfillment] proof-ready email failed for ${order.id}: ${message}`);

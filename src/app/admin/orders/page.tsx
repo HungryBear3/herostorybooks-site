@@ -2,7 +2,7 @@ import { getConfiguredAdminKey } from '@/lib/admin-auth';
 import { isAdminAuthedFromCookie } from '@/lib/admin-auth-server';
 import { listOrders } from '@/lib/orders';
 import type { OrderRecord } from '@/lib/orders';
-import { classifyPaidOrderOpsIssue } from '@/lib/order-diagnostics';
+import { deriveOrderAttention } from '@/lib/order-stage';
 
 import AdminOrdersClient from './ops-client';
 
@@ -74,8 +74,8 @@ function summarize(orders: OrderRecord[]) {
   let paid = 0, paidAttention = 0, inProgress = 0, proofReady = 0, failed = 0;
   for (const o of orders) {
     if (o.paymentStatus === 'paid') paid++;
-    const paidIssue = classifyPaidOrderOpsIssue(o);
-    if (paidIssue && paidIssue.severity !== 'info') paidAttention++;
+    const paidIssue = deriveOrderAttention(o);
+    if (paidIssue.severity !== 'none') paidAttention++;
     const f = o.fulfillmentStatus;
     if (f === 'generating_story' || f === 'generating_images' || f === 'building_pdf' || f === 'submitting_to_print') inProgress++;
     if (f === 'proof_ready') proofReady++;

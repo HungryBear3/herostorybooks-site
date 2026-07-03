@@ -16,6 +16,7 @@ tsconfig.tsbuildinfo
 # Local-only artifacts and rescue scratch space
 .data/
 tmp/
+.hsb-email-ledger/
 
 # Local sample/QA prompt packs (regenerable, not source)
 fal_sample_prompt_pack_*.json

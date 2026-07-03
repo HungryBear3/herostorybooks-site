@@ -83,6 +83,14 @@ test('source-level: fulfillment artifact uploads allow overwrite for retries/reb
   assert.match(src, /allowOverwrite:\s*true/);
 });
 
+test('source-level: proof release timestamp writes carry final artifact state', () => {
+  const src = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
+  assert.match(src, /function proofReleasePatch\(order: OrderRecord, persistedState: Partial<OrderRecord>\)/);
+  assert.match(src, /\.\.\.persistedState,[\s\S]*customerProofReleasedAt:/);
+  assert.match(src, /proofReleasePatch\(order, finalDigitalPatch\)/);
+  assert.match(src, /proofReleasePatch\(order, finalPrintProofPatch\)/);
+});
+
 // ── Payment gate ──────────────────────────────────────────────────────────────
 
 test('triggerFulfillment: unpaid order is skipped — no fulfillmentStatus set', async () => {
@@ -152,6 +160,19 @@ test('updateFulfillmentState: paid webhook stamp is preserved with fulfillment w
   } finally { cleanupTmpDir(dir); }
 });
 
+test('updateFulfillmentState: paid proof release timestamp is allowed and preserved', async () => {
+  const dir = makeTmpDir();
+  try {
+    const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'classic' }, dir);
+    const releasedAt = '2026-07-03T09:00:00.000Z';
+
+    await updateFulfillmentState(order.id, { customerProofReleasedAt: releasedAt });
+
+    const after = await getOrder(order.id);
+    assert.equal(after?.customerProofReleasedAt, releasedAt);
+  } finally { cleanupTmpDir(dir); }
+});
+
 // ── Digital fulfillment ───────────────────────────────────────────────────────
 
 test('paid digital order reaches complete with storyArtifactUrl set', async () => {
@@ -163,6 +184,7 @@ test('paid digital order reaches complete with storyArtifactUrl set', async () =
     assert.equal(after?.fulfillmentStatus, 'complete');
     assert.equal(after?.status, 'preview_ready');
     assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
+    assert.ok(!after?.customerProofReleasedAt, 'missing Resend key must not mark delivery released');
   } finally {
     cleanupTmpDir(dir);
   }
