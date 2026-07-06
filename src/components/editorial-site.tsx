@@ -175,7 +175,63 @@ const kindDragonSample = {
   ],
 };
 
-const digitalStorySamples = [kindDragonSample] as const;
+const frenchFryCitySample = {
+  id: 'french-fry-city',
+  source: 'Lukas / French Fry City hardcover',
+  status: 'Recent finished book sample',
+  framing: 'Printed proof pages - illustrative only',
+  title: 'Lukas and the French Fry City',
+  summary:
+    'A newer finished-book sample built from a child’s own dream logic: family, friends, Brody, hockey, gingerbread streets, and safe bedtime magic.',
+  cover: '/assets/french-fry-city/cover.jpg',
+  contactSheet: '/assets/french-fry-city/contact-sheet.jpg',
+  pages: [
+    {
+      page: '3',
+      title: 'The City Appears',
+      body: 'Lukas steps into a bright, silly city where his own idea becomes the beginning of a whole adventure.',
+      image: '/assets/french-fry-city/03-french-fry-city.jpg',
+      imageAlt: 'Printed proof page from Lukas and the French Fry City showing Lukas in a bright French Fry City scene',
+    },
+    {
+      page: '6',
+      title: 'Hockey with Friends',
+      body: 'Friends, games, and real kid details turn the story into something that feels made for one child, not pulled from a template.',
+      image: '/assets/french-fry-city/06-hockey-friends.jpg',
+      imageAlt: 'Printed proof page from Lukas and the French Fry City showing Lukas playing hockey with a friend',
+    },
+    {
+      page: '13',
+      title: 'The Gingerbread Door',
+      body: 'A glowing doorway opens into the next chapter, keeping the scene magical while the child stays clearly recognizable.',
+      image: '/assets/french-fry-city/13-gingerbread-door.jpg',
+      imageAlt: 'Printed proof page from Lukas and the French Fry City showing Lukas entering a gingerbread doorway',
+    },
+    {
+      page: '15',
+      title: 'A Sweet New Friend',
+      body: 'The book can hold funny, specific moments while still reading like a warm bedtime keepsake.',
+      image: '/assets/french-fry-city/15-gingerbread-friend.jpg',
+      imageAlt: 'Printed proof page from Lukas and the French Fry City showing Lukas meeting a gingerbread friend',
+    },
+    {
+      page: '24',
+      title: 'Reading the Map',
+      body: 'Family scenes bring the adventure home, with the proof showing how story, likeness, and page design work together.',
+      image: '/assets/french-fry-city/24-family-story-map.jpg',
+      imageAlt: 'Printed proof page from Lukas and the French Fry City showing a family reading a glowing story map',
+    },
+    {
+      page: '28',
+      title: 'Safe Dreams',
+      body: 'The ending settles into bedtime: the world is big and magical, but the child is safe, loved, and home.',
+      image: '/assets/french-fry-city/28-safe-dreams.jpg',
+      imageAlt: 'Printed proof page from Lukas and the French Fry City showing Lukas asleep with dream scenes around the room',
+    },
+  ],
+};
+
+const digitalStorySamples = [kindDragonSample, frenchFryCitySample] as const;
 
 const hardcoverPhotoSample = {
   source: 'Recent printed hardcover sample',
@@ -582,7 +638,7 @@ function SamplePreviewSection() {
   return (
     <section className="bg-[#fff8ec]/45 pt-4 pb-20 md:pt-6 md:pb-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
-        <SectionHeader eyebrow="Website samples" title="One proof packet, shown clearly." sub="This digital sample shows the level of story, art, and proof review parents can expect. Each new paid book still gets its own proof and approval pass." />
+        <SectionHeader eyebrow="Website samples" title="Two proof packets, shown clearly." sub="These samples show the level of story, art, and proof review parents can expect. Each new paid book still gets its own proof and approval pass." />
         <div className="space-y-6">
           {digitalStorySamples.map((sample) => (
             <DigitalStoryFeature key={sample.id} sample={sample} compact />
@@ -958,7 +1014,7 @@ export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Samples" title="Peek inside a personalized proof book." sub="This story sample shows a completed digital proof packet as an illustrative example. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
+        <SectionHeader eyebrow="Samples" title="Peek inside two personalized proof books." sub="These story samples show completed proof packets as illustrative examples. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
         <div className="space-y-8">
           {digitalStorySamples.map((sample) => (
             <DigitalStoryFeature key={sample.id} sample={sample} />
