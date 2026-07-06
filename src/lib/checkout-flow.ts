@@ -13,6 +13,17 @@ export const PRINT_PREVIEW_PROMISE =
 export const PHOTO_UPLOAD_HELP =
   'No photo yet? Start now and add a photo later before you place the order. Large phone photos are automatically reduced when we can.';
 
+// Promo-code guidance. HSB checkout hands off to Stripe Checkout, which is
+// where promo codes are entered (the session sets allow_promotion_codes:
+// true — see src/app/api/order/route.ts). Buyers have entered a code on
+// this app's form expecting a discount, then paid full price because the
+// code must be applied on Stripe's page. This copy tells them exactly where
+// and when to apply it, and to stop if the discount is not visible before
+// paying. Kept general — no active code names — to avoid implying any code
+// is publicly available.
+export const PROMO_CODE_HELP =
+  'Have a promo code? You will enter it on the secure Stripe payment page (the next step) — type the code and tap Apply before paying so the discount shows in your total. If the discount does not appear before payment, stop and email support@herostorybooks.com instead of paying full price.';
+
 // ── Required-field gating for checkout submit ────────────────────────────────
 //
 // Launch spec requires explicit values for: theme (adventure), childName,
