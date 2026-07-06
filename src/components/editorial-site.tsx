@@ -532,20 +532,20 @@ function BookCoverStack() {
     <div className="relative mx-auto w-full max-w-[520px]">
       <div className="overflow-hidden rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] shadow-[0_30px_80px_-50px_rgba(31,26,22,0.55)]">
         <div className="aspect-[4/5] bg-[#eadfc7]">
-          {/* Watercolor cover proof, off-center crop. The child's face
-              sits slightly left and below center on the source art;
-              object-position [30%_55%] biases the visible window so
-              the face lands in the upper-left third instead of being
-              clipped by the default 50%/50% center crop. */}
+          {/* Current locked watercolor direction: use the polished Kind
+              Dragon sample cover as the above-fold anchor instead of
+              the older, cartoonier dinosaur mockup. The child sits low
+              in the frame, so this crop keeps both the face and title
+              readable on desktop and mobile. */}
           <img
-            src="/assets/lukas-watercolor-dino-cover.jpg"
-            alt="Watercolor dinosaur cover proof — child with a friendly T-Rex"
-            className="h-full w-full object-cover object-[30%_55%]"
+            src="/assets/kind-dragon-v5/cover.jpg"
+            alt="Watercolor sample cover — Lukas and the Kind Dragon"
+            className="h-full w-full object-cover object-[50%_42%]"
           />
         </div>
         <div className="border-t border-[#eadfc7] p-5">
-          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.22em] text-[#a64c4c]">Watercolor cover proof</div>
-          <p className="font-serif text-2xl leading-tight text-[#1f1a16]">An example of the personalized dinosaur direction — shown without any real customer details.</p>
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.22em] text-[#a64c4c]">Current watercolor proof</div>
+          <p className="font-serif text-2xl leading-tight text-[#1f1a16]">A polished sample cover in the current watercolor direction — personalized, warm, and ready for proof review.</p>
         </div>
       </div>
       {/* Above-fold side thumbnails. The previous pass swapped tiny
