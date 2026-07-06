@@ -11,9 +11,9 @@ import {
 test('story catalog includes real themed sample thumbnails instead of generic placeholders', () => {
   assert.equal(CHECKOUT_SAMPLE_IMAGES.some((image) => image.startsWith('/sample')), false);
   assert.deepEqual(CHECKOUT_SAMPLE_IMAGES, [
-    '/assets/explorer-sample.png',
-    '/assets/space-sample.png',
-    '/assets/ocean-sample.png',
+    '/assets/lukas-sample-forest-portrait.jpg',
+    '/assets/lukas-sample-dino-walk.jpg',
+    '/assets/lukas-sample-space-portrait.jpg',
   ]);
 });
 
@@ -24,9 +24,18 @@ test('story catalog launch occasions stay limited to evergreen gifting moments',
   );
 });
 
+test('catalog includes a custom voice-led story direction for checkout', () => {
+  const custom = STORY_THEMES.find((theme) => theme.id === 'custom-voice-story');
+  assert.ok(custom, 'custom voice-led story must be in catalog');
+  assert.equal(custom!.name, 'Custom Story');
+  assert.match(custom!.description, /voice note|family details|story ideas/i);
+  assert.equal(custom!.href, '/checkout');
+});
+
 test('story catalog still keeps seasonal gift variants available behind the scenes', () => {
   const ids = STORY_THEMES.map((theme) => theme.id);
 
+  assert.equal(ids.includes('custom-voice-story'), true);
   assert.equal(ids.includes('brave-explorer'), true);
   assert.equal(ids.includes('space-voyager'), true);
   assert.equal(ids.includes('ocean-dreams'), true);

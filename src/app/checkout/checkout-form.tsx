@@ -16,6 +16,7 @@ import {
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const LAUNCH_THEME_IDS = new Set([
+  'custom-voice-story',
   'brave-explorer',
   'space-voyager',
   'ocean-dreams',
