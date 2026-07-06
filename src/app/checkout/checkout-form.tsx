@@ -3,7 +3,7 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Progress } from '@/components/ui/progress';
-import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE } from '@/lib/checkout-flow';
+import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from '@/lib/checkout-flow';
 import { VoiceRecorderSection } from '@/components/checkout/VoiceRecorderSection';
 import { GuidedPhotoCapture } from '@/components/checkout/GuidedPhotoCapture';
 import { CHECKOUT_SAMPLE_IMAGES, STORY_OCCASIONS, STORY_THEMES } from '@/lib/story-catalog';
@@ -897,6 +897,9 @@ export function CheckoutForm() {
               <div className="flex justify-between pt-3 border-t border-gray-300 mt-2">
                 <span className="font-semibold text-base">Total</span>
                 <span className="font-bold text-xl text-deep-gold">{selectedFormat.price}</span>
+              </div>
+              <div className="mt-3 rounded-lg border border-deep-gold/30 bg-deep-gold/5 px-3 py-2 text-xs text-forest">
+                <span className="font-semibold">🎟️ Promo code?</span> {PROMO_CODE_HELP}
               </div>
             </div>
           </section>
