@@ -24,6 +24,15 @@ export const STORY_OCCASIONS: StoryOccasion[] = [
 
 export const STORY_THEMES: StoryTheme[] = [
   {
+    id: 'custom-voice-story',
+    name: 'Custom Story',
+    description: 'Built from your voice note, family details, and story ideas',
+    emoji: '🎙️',
+    href: '/checkout',
+    coverImage: '/assets/lukas-watercolor-adventure-page.jpg',
+    accent: 'from-amber-900 via-rose-700 to-yellow-500',
+  },
+  {
     id: 'brave-explorer',
     name: 'Brave Explorer',
     description: 'Jungle adventure & discovery',
@@ -116,7 +125,8 @@ export const FEATURED_STORY_THEMES: StoryTheme[] = FEATURED_THEME_ORDER
   .map((id) => STORY_THEMES.find((theme) => theme.id === id))
   .filter((theme): theme is StoryTheme => Boolean(theme));
 
-export const CHECKOUT_SAMPLE_IMAGES = FEATURED_STORY_THEMES
-  .map((theme) => theme.sampleImage)
-  .filter((image): image is string => Boolean(image))
-  .slice(0, 3);
+export const CHECKOUT_SAMPLE_IMAGES = [
+  '/assets/lukas-sample-forest-portrait.jpg',
+  '/assets/lukas-sample-dino-walk.jpg',
+  '/assets/lukas-sample-space-portrait.jpg',
+];
