@@ -175,63 +175,7 @@ const kindDragonSample = {
   ],
 };
 
-const yearOfLightsSample = {
-  id: 'year-of-lights',
-  source: 'Lukas / Year of Lights',
-  status: 'New digital proof sample',
-  framing: 'Digital sample - illustrative only',
-  title: 'Lukas and the Year of Lights',
-  summary:
-    'A Chicago family-year adventure built around holidays, small brave choices, Brody, and a golden thread that connects every month.',
-  cover: '/assets/year-of-lights/cover.jpg',
-  contactSheet: '/assets/year-of-lights/contact-sheet.jpg',
-  pages: [
-    {
-      page: '1',
-      title: 'The First Light',
-      body: 'Lukas crawls under the kitchen table and finds the first glowing thread beside Brody.',
-      image: '/assets/year-of-lights/01-first-light.jpg',
-      imageAlt: 'Digital sample page from Lukas and the Year of Lights showing Lukas and Brody finding a golden thread',
-    },
-    {
-      page: '5',
-      title: "Mom's Rainy-Day Parade",
-      body: 'A rainy city day turns into a tiny parade, with Chicago in the distance and Brody leading the way.',
-      image: '/assets/year-of-lights/05-rainy-day-parade.jpg',
-      imageAlt: 'Digital sample page from Lukas and the Year of Lights showing a rainy Chicago parade with Mom and Brody',
-    },
-    {
-      page: '7',
-      title: 'Summer Lanterns',
-      body: 'Lanterns glow over a warm evening while Lukas learns that helping can be quieter than showing off.',
-      image: '/assets/year-of-lights/07-summer-lanterns.jpg',
-      imageAlt: 'Digital sample page from Lukas and the Year of Lights showing summer lanterns with Lukas, Mom, and Brody',
-    },
-    {
-      page: '16',
-      title: "Brody's Big Jingle",
-      body: 'Brody races in with a bell, and Lukas discovers that joy can be part of solving the story.',
-      image: '/assets/year-of-lights/16-brody-big-jingle.jpg',
-      imageAlt: 'Digital sample page from Lukas and the Year of Lights showing Brody carrying a bell while Lukas laughs',
-    },
-    {
-      page: '21',
-      title: 'Lukas Chooses the Thread',
-      body: 'The golden thread links the year together, and Lukas chooses the story he wants to carry forward.',
-      image: '/assets/year-of-lights/21-lukas-chooses-thread.jpg',
-      imageAlt: 'Digital sample page from Lukas and the Year of Lights showing Lukas and Brody with glowing year-round memories',
-    },
-    {
-      page: '24',
-      title: 'The Year Remembers',
-      body: 'At bedtime, the year of lights settles into a window full of memories as Lukas and Brody rest.',
-      image: '/assets/year-of-lights/24-year-remembers.jpg',
-      imageAlt: 'Digital sample page from Lukas and the Year of Lights showing Lukas sleeping beside Brody under a glowing calendar window',
-    },
-  ],
-};
-
-const digitalStorySamples = [kindDragonSample, yearOfLightsSample] as const;
+const digitalStorySamples = [kindDragonSample] as const;
 
 const hardcoverPhotoSample = {
   source: 'Recent printed hardcover sample',
@@ -638,7 +582,7 @@ function SamplePreviewSection() {
   return (
     <section className="bg-[#fff8ec]/45 pt-4 pb-20 md:pt-6 md:pb-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
-        <SectionHeader eyebrow="Website samples" title="Two proof packets, shown clearly." sub="These digital samples show the level of story, art, and proof review parents can expect. They are illustrative samples; each new paid book still gets its own proof and approval pass." />
+        <SectionHeader eyebrow="Website samples" title="One proof packet, shown clearly." sub="This digital sample shows the level of story, art, and proof review parents can expect. Each new paid book still gets its own proof and approval pass." />
         <div className="space-y-6">
           {digitalStorySamples.map((sample) => (
             <DigitalStoryFeature key={sample.id} sample={sample} compact />
@@ -1014,7 +958,7 @@ export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Samples" title="Peek inside two personalized proof books." sub="These story samples show completed digital proof packets as illustrative examples. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
+        <SectionHeader eyebrow="Samples" title="Peek inside a personalized proof book." sub="This story sample shows a completed digital proof packet as an illustrative example. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
         <div className="space-y-8">
           {digitalStorySamples.map((sample) => (
             <DigitalStoryFeature key={sample.id} sample={sample} />
