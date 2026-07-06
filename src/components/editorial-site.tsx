@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { NamePreview } from '@/components/name-preview';
 import { AnalyticsPageView } from '@/components/analytics-page-view';
-import { getFathersDayCountdown, FATHERS_DAY_OFFER, type FathersDayCountdown } from '@/lib/fathers-day';
+import { getFathersDayCountdown, type FathersDayCountdown } from '@/lib/fathers-day';
 
 type TierId = 'digital' | 'softcover' | 'hardcover';
 
@@ -16,7 +16,7 @@ type Tier = {
 };
 
 // Canonical pricing — matches src/lib/orders.ts FORMAT_META.priceCents
-// (1499 / 4499 / 6499) and src/lib/pricing.ts PUBLIC_PRICING_PLANS.
+// (1900 / 3900 / 6400) and src/lib/pricing.ts PUBLIC_PRICING_PLANS.
 // If backend priceCents change, update this list AND lib/pricing.ts in
 // the same commit so the customer-facing display never diverges from
 // what Stripe actually charges.
@@ -24,23 +24,23 @@ const tiers: Tier[] = [
   {
     id: 'digital',
     name: 'Digital PDF',
-    price: 14.99,
-    sub: '32-page proof first, then high-resolution PDF',
-    blurb: 'We email a 32-page digital proof first, usually within 2 business days. It includes 24 illustrated story pages plus keepsake front and back matter. Once you approve, you receive the final high-resolution PDF to print at home, share, or read on any screen. No printing or shipping step.',
-    badge: "Father's Day pick",
+    price: 19,
+    sub: 'Proof first, then high-resolution PDF',
+    blurb: 'We email a digital proof first, usually within 2 business days. Once you approve, you receive the final high-resolution PDF to print at home, share, or read on any screen. No printing or shipping step.',
+    badge: 'Most loved',
     featured: true,
   },
   {
     id: 'softcover',
     name: 'Classic softcover',
-    price: 44.99,
+    price: 39,
     sub: '32-page 8.5″ × 8.5″ · perfect-bound',
     blurb: 'Full-color matte pages, perfect-bound spine, and a keepsake feel without the hardcover price. The interior includes 24 illustrated story pages plus keepsake front and back matter.',
   },
   {
     id: 'hardcover',
     name: 'Premium hardcover',
-    price: 64.99,
+    price: 64,
     sub: '32-page 8.5″ × 8.5″ · keepsake gift finish',
     blurb: 'Premium full-color pages, sturdy case binding, and a gift-ready finish for grandparents and big occasions. The interior includes 24 illustrated story pages plus keepsake front and back matter.',
   },
@@ -129,11 +129,11 @@ const lukasStorySnippets = [
 const kindDragonSample = {
   id: 'kind-dragon',
   source: 'Lukas / Kind Dragon v5',
-  status: 'Approved website sample',
-  framing: 'Digital sample - illustrative only',
+  status: 'Sample',
+  framing: 'Proof preview',
   title: 'Lukas and the Kind Dragon',
   summary:
-    'A kindness-first adventure with family moments, Brody, and a shy dragon. Baseline: v5 contrast packet, approved for website sample use with this illustrative framing.',
+    'A kindness-first adventure with family moments, Brody, and a shy dragon — shown so parents can see the story depth, page style, and proof-review quality before ordering.',
   cover: '/assets/kind-dragon-v5/cover.jpg',
   contactSheet: '/assets/kind-dragon-v5/contact-sheet.jpg',
   pages: [
@@ -178,8 +178,8 @@ const kindDragonSample = {
 const frenchFryCitySample = {
   id: 'french-fry-city',
   source: 'Lukas / French Fry City hardcover',
-  status: 'Recent finished book sample',
-  framing: 'Printed proof pages - illustrative only',
+  status: 'Sample',
+  framing: 'Finished book preview',
   title: 'Lukas and the French Fry City',
   summary:
     'A newer finished-book sample built from a child’s own dream logic: family, friends, Brody, hockey, gingerbread streets, and safe bedtime magic.',
@@ -235,7 +235,7 @@ const digitalStorySamples = [kindDragonSample, frenchFryCitySample] as const;
 
 const hardcoverPhotoSample = {
   source: 'Recent printed hardcover sample',
-  framing: 'Real book photos - illustrative only',
+  framing: 'Real printed book photos',
   lead: '/assets/hsb-lukas-dino-photo-cover.jpg',
   photos: [
     {
@@ -265,9 +265,9 @@ const faqs: Array<[string, string]> = [
   ['How personalized is the book?', 'Fully customizable. Every book can use your child’s name, age, interests, dedication, photo/character notes, and an optional 30-second voice note so the story can reflect their own ideas and phrases. We make the child the hero of the story instead of dropping their name into a generic template.'],
   ['Do I approve it before printing? Can I request changes?', 'Yes — and always. Physical books are not printed until you approve the digital proof. Reply to the proof email with any changes: story wording, photo placement, dedication, character details, scene tone. Revisions before approval are included, not an upsell.'],
   ['How long does it take from order to delivery?', 'Digital proofs are usually ready within 2 business days. After you approve, digital PDFs are delivered the same day; printed books ship 5–7 business days after approval, then US delivery is typically 3–5 days. We don’t guarantee specific holiday-delivery dates because carriers can vary.'],
-  ['Will it arrive in time for a birthday or Father’s Day?', 'Most US orders that approve their proof at least 9–12 days before the date arrive in time, but we don’t promise specific dates — shipping carriers vary. If timing is tight, the Digital PDF is a reliable fallback you can print at home or share instantly.'],
-  ['Which option is safest for a Father’s Day gift?', 'The Digital PDF. Once you approve the proof, it’s delivered the same day with no printing or shipping step, so there’s no carrier timing risk — you can print it at home or share it instantly. A printed softcover or hardcover is an optional upgrade that ships after approval; arrival depends on the order-by date and your carrier, so we don’t promise a printed book will arrive by Father’s Day.'],
-  ['What if my photo isn’t ready by Jun 5 — can I still order?', 'Yes. Place the order any time; the proof clock starts when we receive your photo. Digital orders aren’t time-locked because there’s no shipping step — you can approve and download as soon as the proof is ready.'],
+  ['Will it arrive in time for a birthday or gift deadline?', 'Most US printed orders that approve their proof at least 9–12 days before the date arrive in time, but we don’t promise specific dates — shipping carriers vary. If timing is tight, the Digital PDF is a reliable fallback you can print at home or share instantly.'],
+  ['Which option is safest for a gift with a deadline?', 'The Digital PDF. Once you approve the proof, it’s delivered the same day with no printing or shipping step, so there’s no carrier timing risk — you can print it at home or share it instantly. A printed softcover or hardcover is an optional upgrade that ships after approval; arrival depends on the order date, proof approval timing, and your carrier.'],
+  ['What if my photo isn’t ready yet — can I still order?', 'Yes. Place the order when you are ready; the proof clock starts when we receive your photo. Digital orders have no shipping step — you can approve and download as soon as the proof is ready.'],
   ['Can I send it as a gift or surprise someone?', 'Yes. Add a dedication and gift message at checkout. The proof email goes to whoever you list as the buyer, not the recipient, so the surprise stays intact.'],
   ['What if my child doesn’t like the proof?', 'Reply to the proof email with what to change — a different scene, a softer dinosaur, a recolored sweater, whatever. Revisions before approval are free. We don’t print until you say go.'],
   ['What is the refund policy for digital orders?', 'Digital orders are fully refundable up until you approve the proof. Once you approve and we deliver the high-resolution PDF, the digital order is final.'],
@@ -512,7 +512,7 @@ function HeroSection() {
             </div>
           )}
           <p className="mt-5 text-sm italic text-[#695f54]">
-            <b className="not-italic text-[#1f1a16]">Digital $14.99</b> · <b className="not-italic text-[#1f1a16]">Softcover $44.99</b> · <b className="not-italic text-[#1f1a16]">Hardcover $64.99</b>
+            <b className="not-italic text-[#1f1a16]">Digital $19</b> · <b className="not-italic text-[#1f1a16]">Softcover $39</b> · <b className="not-italic text-[#1f1a16]">Hardcover $64</b>
             <span className="block text-sm not-italic font-semibold text-[#a64c4c]">US shipping included on printed books</span>
           </p>
         </div>
@@ -638,7 +638,7 @@ function SamplePreviewSection() {
   return (
     <section className="bg-[#fff8ec]/45 pt-4 pb-20 md:pt-6 md:pb-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
-        <SectionHeader eyebrow="Website samples" title="Two proof packets, shown clearly." sub="These samples show the level of story, art, and proof review parents can expect. Each new paid book still gets its own proof and approval pass." />
+        <SectionHeader eyebrow="Website samples" title="Two full sample books." sub="These samples show the level of story, art, and proof review parents can expect. Each new paid book still gets its own proof and approval pass." />
         <div className="space-y-6">
           {digitalStorySamples.map((sample) => (
             <DigitalStoryFeature key={sample.id} sample={sample} compact />
@@ -648,7 +648,7 @@ function SamplePreviewSection() {
           <HardcoverPhotoSection compact />
         </div>
         <div className="mt-12">
-          <SectionHeader eyebrow="Previous print proof" title="Earlier dinosaur sample." sub="The older dinosaur proof stays available as supporting proof history while the Kind Dragon packet becomes the current website sample." />
+          <SectionHeader eyebrow="More sample art" title="A dinosaur book example." sub="Additional artwork from a printed sample shows another theme direction and how interior story pages can look in a finished book." />
         </div>
         <div className="grid gap-5 md:grid-cols-3">
           {sampleBooks.map((book) => <SampleCard key={book.title} {...book} />)}
@@ -683,10 +683,10 @@ function DigitalStoryFeature({
             />
           </figure>
           <p className="mt-4 text-sm leading-6 text-[#695f54]">
-            This is a website sample from a finished digital proof packet, not a live customer proof release or a delivery promise. Each paid book still gets its own proof and approval pass.
+            This is a finished sample shown to preview the level of story, art, and page design parents can expect. Each paid book still gets its own proof and approval pass.
           </p>
-          <a href={sample.contactSheet} className="mt-4 inline-flex text-sm font-semibold text-[#a64c4c] underline-offset-4 hover:underline">
-            Open the full contact sheet
+          <a href="/samples" className="mt-4 inline-flex text-sm font-semibold text-[#a64c4c] underline-offset-4 hover:underline">
+            See all pages
           </a>
         </div>
         <div>
@@ -856,13 +856,13 @@ function SeasonalCallout() {
     <section className="mx-auto max-w-6xl px-5 py-16 md:px-8">
       <div className="grid items-center gap-8 rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-7 md:grid-cols-[1fr_0.8fr] md:p-10">
         <div>
-          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">{FATHERS_DAY_OFFER.eyebrow}</div>
-          <h2 className="font-serif text-4xl font-medium leading-tight md:text-5xl">{FATHERS_DAY_OFFER.headline}</h2>
-          <p className="mt-4 text-base leading-7 text-[#695f54]">{FATHERS_DAY_OFFER.digitalLead}</p>
-          <p className="mt-3 text-sm leading-6 text-[#695f54]">{FATHERS_DAY_OFFER.printOptional}</p>
-          <p className="mt-3 text-sm font-medium leading-6 text-[#1f1a16]">{FATHERS_DAY_OFFER.proofNote}</p>
+          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">Gift-ready options</div>
+          <h2 className="font-serif text-4xl font-medium leading-tight md:text-5xl">A personalized book with no blind print order.</h2>
+          <p className="mt-4 text-base leading-7 text-[#695f54]">We email your digital proof first, usually within 2 business days. Once you approve, the Digital PDF is delivered the same day — no printing or shipping step.</p>
+          <p className="mt-3 text-sm leading-6 text-[#695f54]">Want a printed keepsake too? Add a softcover or hardcover as an optional upgrade. Printed books ship after proof approval, and carrier timing can vary.</p>
+          <p className="mt-3 text-sm font-medium leading-6 text-[#1f1a16]">Every order includes a full digital proof before anything prints, human story and art review, and no blind hardcover order.</p>
           <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
-            <PrimaryCta href={FATHERS_DAY_OFFER.ctaHref} size="md">{FATHERS_DAY_OFFER.ctaLabel}</PrimaryCta>
+            <PrimaryCta href="/checkout?format=digital" size="md">Start the digital book</PrimaryCta>
             <GhostCta href="/pricing">Compare digital &amp; print</GhostCta>
           </div>
           {fathersDay.tier !== 'past-event' && (
@@ -872,9 +872,9 @@ function SeasonalCallout() {
           )}
         </div>
         <div className="rounded-2xl bg-[#f5ead2] p-6 text-center">
-          <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Gift timing</div>
+          <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Delivery timing</div>
           <h3 className="font-serif text-3xl">Digital is fastest. Print is optional.</h3>
-          <p className="mt-3 text-sm leading-6 text-[#695f54]">Approve your proof (usually within 2 business days) and the Digital PDF arrives the same day — no shipping. Printed books ship 5–7 business days after approval, so order early if you want one in hand for Father&apos;s Day.</p>
+          <p className="mt-3 text-sm leading-6 text-[#695f54]">Approve your proof (usually within 2 business days) and the Digital PDF arrives the same day — no shipping. Printed books ship 5–7 business days after approval, so order early for dated gifts.</p>
         </div>
       </div>
     </section>
@@ -914,7 +914,7 @@ export function EditorialPricingPage() {
   return (
     <EditorialPageShell active="pricing">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Digital $14.99, Classic softcover $44.99, Premium hardcover $64.99. US shipping included for printed books. Digital proofs are usually ready within 2 business days; printed books ship 5–7 business days after approval." centered />
+        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Digital $19, Classic softcover $39, Premium hardcover $64. US shipping included for printed books. Digital proofs are usually ready within 2 business days; printed books ship 5–7 business days after approval." centered />
         <TierCards />
         <div className="mt-12 overflow-x-auto rounded-2xl border border-[#d8c6a2] bg-[#fff8ec]">
           <div className="grid min-w-[560px] grid-cols-[1.3fr_repeat(3,0.8fr)] border-b border-[#d8c6a2] bg-[#f5ead2] text-sm font-semibold text-[#1f1a16]">
@@ -942,17 +942,17 @@ export function EditorialFathersDayPage() {
         <div className="relative mx-auto grid max-w-6xl items-center gap-10 px-5 py-16 md:grid-cols-[1fr_0.9fr] md:px-8 md:py-24">
           <div>
             <div className="mb-5 inline-flex rounded-full border border-[#d8c6a2] bg-[#fff8ec]/65 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.22em] text-[#695f54]">
-              Father&apos;s Day gift
+              Personalized gift book
             </div>
             <h1 className="max-w-3xl font-serif text-[clamp(3rem,7vw,6.8rem)] font-medium leading-[0.88] tracking-[-0.04em] text-[#1f1a16]">
-              A story from them, ready for Dad.
+              A story from them, ready for someone they love.
             </h1>
             <p className="mt-7 max-w-xl text-lg leading-8 text-[#695f54] md:text-xl">
               Start with your child&apos;s photo, interests, and an optional 30-second voice note. We turn it into a personalized proof book you approve before anything prints.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <PrimaryCta href={FATHERS_DAY_OFFER.ctaHref} size="lg">
-                Start the Father&apos;s Day book
+              <PrimaryCta href="/checkout?format=digital" size="lg">
+                Start the digital book
               </PrimaryCta>
               <GhostCta href="/samples">See the proof sample</GhostCta>
             </div>
@@ -969,7 +969,7 @@ export function EditorialFathersDayPage() {
               className="aspect-[4/5] w-full rounded-2xl object-cover object-[30%_55%]"
             />
             <p className="mt-4 text-sm leading-6 text-[#695f54]">
-              Digital PDF is the safest Father&apos;s Day route: proof first, then same-day delivery after approval. Printed softcover and hardcover books are optional upgrades that ship after proof approval.
+              Digital PDF is the fastest gift route: proof first, then same-day delivery after approval. Printed softcover and hardcover books are optional upgrades that ship after proof approval.
             </p>
           </div>
         </div>
@@ -1014,7 +1014,7 @@ export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Samples" title="Peek inside two personalized proof books." sub="These story samples show completed proof packets as illustrative examples. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
+        <SectionHeader eyebrow="Samples" title="Peek inside two personalized sample books." sub="These story samples show completed books as examples of story depth, art direction, and page design. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
         <div className="space-y-8">
           {digitalStorySamples.map((sample) => (
             <DigitalStoryFeature key={sample.id} sample={sample} />
@@ -1024,7 +1024,7 @@ export function EditorialSamplesPage() {
           <HardcoverPhotoSection />
         </div>
         <div className="mt-14">
-          <SectionHeader eyebrow="Previous print proof" title="Earlier dinosaur sample." sub="This older Lukas dinosaur material remains here as supporting proof history, while the digital story samples above carry the current page." />
+          <SectionHeader eyebrow="More sample art" title="A dinosaur book example." sub="Additional artwork from a printed sample shows another theme direction and how interior story pages can look in a finished book." />
         </div>
         <div className="grid items-start gap-8 md:grid-cols-[0.9fr_1.1fr]">
           <div className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
