@@ -99,6 +99,15 @@ export type StorySource =
   | 'template'
   | 'template_after_openai_failure';
 
+export interface VoiceTranscriptMeta {
+  status: 'not_enabled' | 'transcribed' | 'failed' | string;
+  text?: string | null;
+  inspiration?: string | null;
+  model?: string | null;
+  transcribedAt?: string | null;
+  error?: string | null;
+}
+
 /** Persisted record of how the story for this order was produced. */
 export interface StoryMeta {
   source: StorySource;

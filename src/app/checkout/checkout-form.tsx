@@ -1,85 +1,158 @@
-'use client';
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import Link from 'next/link';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Progress } from '@/components/ui/progress';
-import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from '@/lib/checkout-flow';
-import { VoiceRecorderSection } from '@/components/checkout/VoiceRecorderSection';
-import { GuidedPhotoCapture } from '@/components/checkout/GuidedPhotoCapture';
-import { CHECKOUT_SAMPLE_IMAGES, STORY_OCCASIONS, STORY_THEMES } from '@/lib/story-catalog';
+"use client";
+import React, { useState, useRef, useCallback, useEffect } from "react";
+import Link from "next/link";
+import { motion, AnimatePresence } from "framer-motion";
+import { Progress } from "@/components/ui/progress";
+import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from "@/lib/checkout-flow";
+import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
+import { GuidedPhotoCapture } from "@/components/checkout/GuidedPhotoCapture";
 import {
   appendGuidedCaptureToFormData,
   isGuidedPhotoCaptureEnabled,
   type GuidedPhotoFile,
-} from '@/lib/guided-photo-capture';
+} from "@/lib/guided-photo-capture";
+import {
+  CHECKOUT_SAMPLE_IMAGES,
+  STORY_OCCASIONS,
+  STORY_THEMES,
+} from "@/lib/story-catalog";
+import { getFathersDayCountdown } from "@/lib/fathers-day";
+import { track } from "@/lib/analytics";
+import { buildAutoShrinkNotice, shrinkPhotoForUpload } from "@/lib/photo-upload";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
+const CHECKOUT_PHOTO_MAX_BYTES = 1.1 * 1024 * 1024;
+
 const LAUNCH_THEME_IDS = new Set([
-  'custom-voice-story',
-  'brave-explorer',
-  'space-voyager',
-  'ocean-dreams',
-  'dinosaur-discovery',
-  'dragon-quest',
-  'royal-adventure',
+  "custom-voice-story",
+  "brave-explorer",
+  "space-voyager",
+  "ocean-dreams",
+  "dinosaur-discovery",
+  "dragon-quest",
+  "royal-adventure",
 ]);
 
-const THEMES = STORY_THEMES
-  .filter((theme) => LAUNCH_THEME_IDS.has(theme.id))
-  .map((theme) => ({
-    id: theme.id,
-    label: theme.name,
-    emoji: theme.emoji,
-    desc: theme.description,
-  }));
+const THEMES = STORY_THEMES.filter((theme) =>
+  LAUNCH_THEME_IDS.has(theme.id),
+).map((theme) => ({
+  id: theme.id,
+  label: theme.name,
+  emoji: theme.emoji,
+  desc: theme.description,
+}));
+
+// Map a friendly URL `direction` token to a story-theme id. Entry points
+// like NamePreview pass /checkout?direction=dinosaur and we preselect the
+// matching launch theme on mount. Unknown directions fall through to an
+// empty selection (no surprise preselection).
+const DIRECTION_TO_THEME: Record<string, string> = {
+  dinosaur: "dinosaur-discovery",
+  prehistoric: "dinosaur-discovery",
+  space: "space-voyager",
+  voyager: "space-voyager",
+  ocean: "ocean-dreams",
+  dragon: "dragon-quest",
+  royal: "royal-adventure",
+  explorer: "brave-explorer",
+};
+
+function themeIdFromDirection(direction: string | null): string {
+  if (!direction) return "";
+  const themeId = DIRECTION_TO_THEME[direction.toLowerCase().trim()];
+  if (themeId && LAUNCH_THEME_IDS.has(themeId)) return themeId;
+  return "";
+}
 
 const LESSONS = [
-  { id: 'courage',       label: 'Courage',       emoji: '🦁' },
-  { id: 'kindness',      label: 'Kindness',       emoji: '💛' },
-  { id: 'friendship',    label: 'Friendship',     emoji: '🤝' },
-  { id: 'creativity',    label: 'Creativity',     emoji: '🎨' },
-  { id: 'perseverance',  label: 'Never Give Up',  emoji: '⭐' },
+  { id: "courage", label: "Courage", emoji: "🦁" },
+  { id: "kindness", label: "Kindness", emoji: "💛" },
+  { id: "friendship", label: "Friendship", emoji: "🤝" },
+  { id: "creativity", label: "Creativity", emoji: "🎨" },
+  { id: "perseverance", label: "Never Give Up", emoji: "⭐" },
 ];
 
 const OCCASIONS = STORY_OCCASIONS;
 
-// FORMATS — display copy aligned to the editorial landing tone:
-// no emoji-as-icon; proof-first promise (digital proof → parent approval
-// → final PDF / print). Prices match src/lib/orders.ts FORMAT_META
-// priceCents (1900 / 3900 / 6400) and src/lib/pricing.ts. Update all
-// three together if backend pricing changes.
 const FORMATS = [
   {
-    id: 'digital',
-    label: 'Digital',
-    price: '$19',
+    id: "digital",
+    label: "Digital instant",
+    icon: "Digital",
+    price: "$19.00",
     priceNum: 19,
-    delivery: 'Digital proof first, then final PDF after approval',
-    deliveryDetail: 'Proofs usually ready within 2 business days · Read on any device · Print at home',
+    badge: "Most flexible",
+    delivery: "Digital proof usually ready within 2 business days",
+    deliveryDetail:
+      "32-page high-res PDF delivered after you approve · No printing or shipping step",
   },
   {
-    id: 'classic',
-    label: 'Classic',
-    price: '$39',
+    id: "classic",
+    label: "Classic softcover",
+    icon: "Softcover",
+    price: "$39.00",
     priceNum: 39,
-    badge: 'Most Popular',
-    delivery: 'Softcover ships 5–7 business days after proof approval',
-    deliveryDetail: 'Digital proof first; final PDF included after you approve',
+    delivery: "Softcover ships in 5–7 business days",
+    deliveryDetail:
+      "32-page softcover · Free shipping included for US orders · Digital PDF included",
   },
   {
-    id: 'premium',
-    label: 'Premium',
-    price: '$64',
+    id: "premium",
+    label: "Premium hardcover",
+    icon: "Hardcover",
+    price: "$64.00",
     priceNum: 64,
-    delivery: 'Hardcover ships 5–7 business days after proof approval',
-    deliveryDetail: 'Digital proof first; final PDF included after you approve',
+    delivery: "Hardcover ships in 5–7 business days",
+    deliveryDetail:
+      "32-page premium hardcover · Free shipping included for US orders · Digital PDF included",
   },
 ];
 
-const VOICE_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_VOICE_BETA !== 'false';
+const DEFAULT_BOOK_FORMAT = "digital";
+const TOTAL_BOOK_PAGE_COUNT = 32;
+const ILLUSTRATED_STORY_PAGE_COUNT = 24;
 
-const STORAGE_KEY = 'hsb_order_v1';
+const SUPPORTING_CHARACTER_LIMIT = 4;
+const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings";
+const SUPPORTING_CHARACTER_PRESETS = [
+  { role: "co-hero", label: "Co-hero", relationshipLabel: "co-hero", pronouns: "", isGiftRecipient: false },
+  { role: "dad", label: "Dad", relationshipLabel: "Dad", pronouns: "Dad", isGiftRecipient: false },
+  { role: "mom", label: "Mom", relationshipLabel: "Mom", pronouns: "Mom", isGiftRecipient: false },
+  { role: "sibling", label: "Sibling", relationshipLabel: "sibling", pronouns: "", isGiftRecipient: false },
+  { role: "grandparent", label: "Grandparent", relationshipLabel: "grandparent", pronouns: "", isGiftRecipient: false },
+  { role: "pet", label: "Dog / pet", relationshipLabel: "family dog", pronouns: "family dog", isGiftRecipient: false },
+] as const;
+
+const CHECKOUT_PHOTO_ACCEPT_ATTR = "image/*";
+
+function supportingCharacterLabel(character: SupportingCharacter): string {
+  return (character.name || character.relationshipLabel || character.role || "family member").trim();
+}
+
+function isHumanSupportingCharacter(character: SupportingCharacter): boolean {
+  return character.role !== "pet";
+}
+
+function missingSupportingCharacterPhotoLabels(characters: SupportingCharacter[]): string[] {
+  return characters
+    .filter((character) => character.appearsInStory !== false)
+    .filter(isHumanSupportingCharacter)
+    .filter((character) => !character.photoFile)
+    .map(supportingCharacterLabel);
+}
+
+const VOICE_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_VOICE_BETA !== "false";
+// Phase-A story upload visibility. We deliberately do NOT flip the existing
+// NEXT_PUBLIC_HSB_VOICE_BETA flag (it also gates the family-review portal — see
+// review-portal.tsx). Instead a NEW, default-OFF env flag opens the
+// audio/document upload section on a documented preview path. Enable via
+// NEXT_PUBLIC_HSB_STORY_UPLOAD=true in preview after QA + Alexy sign-off.
+// Both flags default off, so production behavior is unchanged until set.
+const STORY_UPLOAD_ENABLED =
+  VOICE_BETA_ENABLED || process.env.NEXT_PUBLIC_HSB_STORY_UPLOAD === "true";
+
+const STORAGE_KEY = "hsb_order_v1";
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
 const RECOVERY_DEBOUNCE_MS = 1500;
 
@@ -89,11 +162,11 @@ function looksLikeEmail(e: string) {
 
 const SAMPLE_IMAGES = CHECKOUT_SAMPLE_IMAGES;
 const CHECKOUT_STEPS = [
-  { id: 'theme', label: 'Adventure' },
-  { id: 'hero', label: 'Hero' },
-  { id: 'format', label: 'Format' },
-  { id: 'email', label: 'Email' },
-  { id: 'photo', label: 'Photo' },
+  { id: "theme", label: "Story" },
+  { id: "hero", label: "Hero" },
+  { id: "format", label: "Format" },
+  { id: "email", label: "Email" },
+  { id: "photo", label: "Photo" },
 ];
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -102,12 +175,21 @@ interface FormState {
   photoFile: File | null;
   photoDataUrl: string | null;
   theme: string;
+  // `childName` remains the authoritative hero field submitted to the server
+  // (legacy compatibility). The fully-custom hero fields below are additive
+  // Phase-A groundwork — recipient context + multi-person photo disambiguation.
   childName: string;
   childAge: string;
+  childPronouns: string;
+  recipientName: string;
+  recipientRelationship: string;
+  heroPhotoFocusLabel: string;
+  heroPhotoCropHint: string;
   lesson: string;
   occasion: string;
   giftMessage: string;
   characterNotes: string;
+  familyCharacters: SupportingCharacter[];
   skinTone: string;
   hairStyle: string;
   eyewear: string;
@@ -115,25 +197,46 @@ interface FormState {
   email: string;
   voiceFile: File | null;
   voicePreviewUrl: string | null;
-  voiceSource: 'recorded' | 'uploaded' | null;
+  voiceSource: "recorded" | "uploaded" | null;
   voiceConsent: boolean;
+}
+
+interface SupportingCharacter {
+  id: string;
+  role: string;
+  name: string;
+  relationshipLabel: string;
+  pronouns: string;
+  notes: string;
+  isGiftRecipient: boolean;
+  appearsInStory: boolean;
+  photoFile: File | null;
+  photoDataUrl: string | null;
+  focusPersonLabel: string;
+  cropHint: string;
 }
 
 const emptyForm: FormState = {
   photoFile: null,
   photoDataUrl: null,
-  theme: '',
-  childName: '',
-  childAge: '',
-  lesson: '',
-  occasion: '',
-  giftMessage: '',
-  characterNotes: '',
-  skinTone: '',
-  hairStyle: '',
-  eyewear: '',
-  bookFormat: 'classic',
-  email: '',
+  theme: "",
+  childName: "",
+  childAge: "",
+  childPronouns: "",
+  recipientName: "",
+  recipientRelationship: "",
+  heroPhotoFocusLabel: "",
+  heroPhotoCropHint: "",
+  lesson: "",
+  occasion: "",
+  giftMessage: "",
+  characterNotes: "",
+  familyCharacters: [],
+  skinTone: "",
+  hairStyle: "",
+  eyewear: "",
+  bookFormat: DEFAULT_BOOK_FORMAT,
+  email: "",
   voiceFile: null,
   voicePreviewUrl: null,
   voiceSource: null,
@@ -144,22 +247,31 @@ const emptyForm: FormState = {
 
 function saveProgress(form: FormState) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      theme: form.theme,
-      childName: form.childName,
-      childAge: form.childAge,
-      lesson: form.lesson,
-      occasion: form.occasion,
-      giftMessage: form.giftMessage,
-      characterNotes: form.characterNotes,
-      skinTone: form.skinTone,
-      hairStyle: form.hairStyle,
-      eyewear: form.eyewear,
-      bookFormat: form.bookFormat,
-      email: form.email,
-      savedAt: Date.now(),
-    }));
-  } catch { /* localStorage unavailable */ }
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        theme: form.theme,
+        childName: form.childName,
+        childAge: form.childAge,
+        childPronouns: form.childPronouns,
+        recipientName: form.recipientName,
+        recipientRelationship: form.recipientRelationship,
+        lesson: form.lesson,
+        occasion: form.occasion,
+        giftMessage: form.giftMessage,
+        characterNotes: form.characterNotes,
+        familyCharacters: form.familyCharacters,
+        skinTone: form.skinTone,
+        hairStyle: form.hairStyle,
+        eyewear: form.eyewear,
+        bookFormat: form.bookFormat,
+        email: form.email,
+        savedAt: Date.now(),
+      }),
+    );
+  } catch {
+    /* localStorage unavailable */
+  }
 }
 
 function loadProgress(): Partial<FormState> | null {
@@ -172,19 +284,70 @@ function loadProgress(): Partial<FormState> | null {
       return null;
     }
     return data;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 const CHILD_NAME_PARAM_MAX_LEN = 24;
 const CHILD_NAME_PARAM_STRIP_PUNCTUATION_RE = /[<>{}`$&;]/g;
 const CHILD_NAME_PARAM_STRIP_CONTROL_CHARS_RE = /[\x00-\x1F\x7F]/g;
+const NAME_PREVIEW_HANDOFF_KEY = "hsb_name_preview_handoff";
 
 function sanitizeChildNameParam(value: string | null): string {
-  return (value ?? '')
-    .replace(CHILD_NAME_PARAM_STRIP_PUNCTUATION_RE, '')
-    .replace(CHILD_NAME_PARAM_STRIP_CONTROL_CHARS_RE, '')
+  return (value ?? "")
+    .replace(CHILD_NAME_PARAM_STRIP_PUNCTUATION_RE, "")
+    .replace(CHILD_NAME_PARAM_STRIP_CONTROL_CHARS_RE, "")
     .trim()
     .slice(0, CHILD_NAME_PARAM_MAX_LEN);
+}
+
+function readNamePreviewHandoff(): { childName: string; direction: string } | null {
+  try {
+    const raw = window.sessionStorage.getItem(NAME_PREVIEW_HANDOFF_KEY);
+    if (!raw) return null;
+    window.sessionStorage.removeItem(NAME_PREVIEW_HANDOFF_KEY);
+    const parsed = JSON.parse(raw);
+    const childName = sanitizeChildNameParam(
+      typeof parsed?.childName === "string" ? parsed.childName : "",
+    );
+    const direction =
+      typeof parsed?.direction === "string" ? parsed.direction.slice(0, 32) : "";
+    return childName || direction ? { childName, direction } : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeBookFormat(value: unknown): string {
+  return typeof value === "string" && FORMATS.some((fmt) => fmt.id === value)
+    ? value
+    : "";
+}
+
+function normalizeSavedFamilyCharacters(
+  characters: SupportingCharacter[] | undefined,
+): SupportingCharacter[] | undefined {
+  if (!Array.isArray(characters)) return characters;
+  return characters.map((character) => ({
+    ...character,
+    notes: character.notes === PET_NOTES_PLACEHOLDER ? "" : character.notes,
+    // Backfill Phase-A photo-assignment fields for progress saved by older
+    // builds so controlled inputs never receive undefined.
+    focusPersonLabel: character.focusPersonLabel ?? "",
+    cropHint: character.cropHint ?? "",
+  }));
+}
+
+function checkoutReferralCode(): string {
+  const fromUrl = new URLSearchParams(window.location.search).get("ref");
+  const fromCookie = document.cookie
+    .split("; ")
+    .find((row) => row.startsWith("hsb_ref="))
+    ?.split("=")[1];
+  const raw = fromUrl || (fromCookie ? decodeURIComponent(fromCookie) : "");
+  const code = raw.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9_-]{1,63}$/.test(code) ? code : "";
 }
 
 // ── Component ──────────────────────────────────────────────────────────────
@@ -193,6 +356,12 @@ export function CheckoutForm() {
   const [form, setForm] = useState<FormState>(emptyForm);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
+  // Specific, inline submit error. We use an in-page banner rather than
+  // window.alert so the exact server reason is visible/scrollable (alerts get
+  // dismissed instantly on mobile) and so we can reassure the customer that no
+  // charge was made and nothing was saved when submission fails before Stripe.
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [photoNotice, setPhotoNotice] = useState<string | null>(null);
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
@@ -201,32 +370,50 @@ export function CheckoutForm() {
   const [guidedConsent, setGuidedConsent] = useState(false);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Restore saved progress on mount + honor checkout query params.
-  // NamePreview passes ?childName=... as the only handoff into Checkout; if
-  // present, it should pre-fill/override the saved child name while leaving
-  // the rest of any recoverable checkout progress intact.
+  // Restore saved progress on mount + honor checkout entry context.
+  // NamePreview carries typed names through sessionStorage so a child's name
+  // is not put into server-visible query strings. `childName` query support is
+  // kept only for backward compatibility with older internal preview links.
   useEffect(() => {
     const saved = loadProgress();
     const params = new URLSearchParams(window.location.search);
-    const formatFromUrl = params.get('format');
-    const childNameFromUrl = sanitizeChildNameParam(params.get('childName'));
-    const nextFormat = formatFromUrl && FORMATS.some((fmt) => fmt.id === formatFromUrl)
-      ? formatFromUrl
-      : '';
+    const namePreviewHandoff = readNamePreviewHandoff();
+    const formatFromUrl = params.get("format");
+    const childNameFromUrl = sanitizeChildNameParam(params.get("childName"));
+    const childNameFromHandoff = namePreviewHandoff?.childName ?? "";
+    const directionFromUrl = params.get("direction") || namePreviewHandoff?.direction || "";
+    const themeFromDirection = themeIdFromDirection(directionFromUrl);
+    const nextFormat = normalizeBookFormat(formatFromUrl);
+    const savedWithDefaults = saved
+      ? {
+          ...saved,
+          bookFormat: normalizeBookFormat(saved.bookFormat) || DEFAULT_BOOK_FORMAT,
+          familyCharacters: normalizeSavedFamilyCharacters(saved.familyCharacters),
+        }
+      : null;
+    // NamePreview URL contract: childNameFromUrl ? { childName: childNameFromUrl }
+    const childNamePrefill = childNameFromHandoff || childNameFromUrl;
     const queryPrefill: Partial<FormState> = {
       ...(nextFormat ? { bookFormat: nextFormat } : {}),
-      ...(childNameFromUrl ? { childName: childNameFromUrl } : {}),
+      ...(childNamePrefill ? { childName: childNamePrefill } : {}),
+      ...(themeFromDirection ? { theme: themeFromDirection } : {}),
     };
 
-    if (saved && (saved.childName || saved.theme)) {
+    if (savedWithDefaults && (savedWithDefaults.childName || savedWithDefaults.theme)) {
       setShowRecovery(true);
-      setForm(prev => ({ ...prev, ...saved, ...queryPrefill }));
-      return;
+      setForm((prev) => ({ ...prev, ...savedWithDefaults, ...queryPrefill }));
+    } else if (nextFormat || childNamePrefill || themeFromDirection) {
+      setForm((prev) => ({ ...prev, ...queryPrefill }));
     }
 
-    if (nextFormat || childNameFromUrl) {
-      setForm(prev => ({ ...prev, ...queryPrefill }));
-    }
+    track("start_checkout", {
+      hadSavedProgress: Boolean(saved && (saved.childName || saved.theme)),
+      formatFromUrl: nextFormat || null,
+      childNameFromUrl: childNameFromUrl ? "yes" : "no",
+      childNameFromNamePreview: childNameFromHandoff ? "yes" : "no",
+      directionFromUrl: directionFromUrl ? directionFromUrl.slice(0, 32) : null,
+      themePreselected: themeFromDirection || null,
+    });
   }, []);
 
   // Auto-save on meaningful changes
@@ -234,24 +421,38 @@ export function CheckoutForm() {
     if (form.childName || form.theme || form.email) {
       saveProgress(form);
     }
-  }, [form.theme, form.childName, form.childAge, form.lesson, form.occasion,
-      form.giftMessage, form.characterNotes, form.skinTone, form.hairStyle, form.eyewear,
-      form.bookFormat, form.email]);
+  }, [
+    form.theme,
+    form.childName,
+    form.childAge,
+    form.recipientName,
+    form.recipientRelationship,
+    form.lesson,
+    form.occasion,
+    form.giftMessage,
+    form.characterNotes,
+    form.familyCharacters,
+    form.skinTone,
+    form.hairStyle,
+    form.eyewear,
+    form.bookFormat,
+    form.email,
+  ]);
 
   // Server-side recovery capture — debounced, fires when email + any key field is present
   useEffect(() => {
     if (!looksLikeEmail(form.email) || (!form.childName && !form.theme)) return;
     if (recoveryTimerRef.current) clearTimeout(recoveryTimerRef.current);
     recoveryTimerRef.current = setTimeout(() => {
-      fetch('/api/recovery', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      fetch("/api/recovery", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: form.email,
           childName: form.childName || undefined,
           bookFormat: form.bookFormat || undefined,
           theme: form.theme || undefined,
-          captureSource: 'checkout_form',
+          captureSource: "checkout_form",
         }),
       }).catch(() => {}); // fire-and-forget — never surface errors to the user
     }, RECOVERY_DEBOUNCE_MS);
@@ -261,9 +462,86 @@ export function CheckoutForm() {
   }, [form.email, form.childName, form.bookFormat, form.theme]);
 
   const set = (key: keyof FormState, value: string) =>
-    setForm(prev => ({ ...prev, [key]: value }));
+    setForm((prev) => ({ ...prev, [key]: value }));
 
-  const selectedFormat = FORMATS.find((fmt) => fmt.id == form.bookFormat) ?? FORMATS[1];
+  const addSupportingCharacter = (
+    preset: (typeof SUPPORTING_CHARACTER_PRESETS)[number],
+  ) => {
+    setForm((prev) => {
+      if (prev.familyCharacters.length >= SUPPORTING_CHARACTER_LIMIT) return prev;
+      return {
+        ...prev,
+        familyCharacters: [
+          ...prev.familyCharacters,
+          {
+            id: `${preset.role}-${Date.now()}-${prev.familyCharacters.length}`,
+            role: preset.role,
+            name: "",
+            relationshipLabel: preset.relationshipLabel,
+            pronouns: preset.pronouns,
+            notes: "",
+            isGiftRecipient: preset.isGiftRecipient,
+            appearsInStory: true,
+            photoFile: null,
+            photoDataUrl: null,
+            focusPersonLabel: "",
+            cropHint: "",
+          },
+        ],
+      };
+    });
+  };
+
+  const updateSupportingCharacter = (
+    id: string,
+    patch: Partial<SupportingCharacter>,
+  ) => {
+    setForm((prev) => ({
+      ...prev,
+      familyCharacters: prev.familyCharacters.map((character) =>
+        character.id === id ? { ...character, ...patch } : character,
+      ),
+    }));
+  };
+
+  const removeSupportingCharacter = (id: string) => {
+    setForm((prev) => ({
+      ...prev,
+      familyCharacters: prev.familyCharacters.filter((character) => character.id !== id),
+    }));
+  };
+
+  const selectedFormat =
+    FORMATS.find((fmt) => fmt.id == form.bookFormat) ?? null;
+  const selectedTheme = THEMES.find((theme) => theme.id === form.theme) ?? null;
+  const selectedLesson =
+    LESSONS.find((lesson) => lesson.id === form.lesson) ?? null;
+  const lessonSummary = selectedLesson?.label ?? form.lesson.trim();
+  const selectedOccasion =
+    OCCASIONS.find((occasion) => occasion.id === form.occasion) ?? null;
+  const occasionSummary = selectedOccasion?.label ?? form.occasion.trim();
+  const heroName = form.childName || "Your child";
+  const printFormat = selectedFormat?.label ?? "Choose a format";
+  const totalPrice = selectedFormat ? selectedFormat.price : "—";
+  const bookPageCount = TOTAL_BOOK_PAGE_COUNT;
+  const illustratedStoryPageCount = ILLUSTRATED_STORY_PAGE_COUNT;
+  const coverTitle = selectedTheme
+    ? `${heroName}'s ${selectedTheme.label}`
+    : "Your Wonderful Story";
+  const selectedSampleImage = form.photoDataUrl ?? SAMPLE_IMAGES[0];
+  const fathersDay = getFathersDayCountdown();
+  const showFathersDayReminder = fathersDay.tier !== "past-event";
+  const missingSupportingPhotoLabels = missingSupportingCharacterPhotoLabels(form.familyCharacters);
+  const isReadyToPay =
+    Boolean(form.theme) &&
+    Boolean(form.childName) &&
+    Boolean(form.bookFormat) &&
+    Boolean(form.email) &&
+    Boolean(form.skinTone) &&
+    Boolean(form.hairStyle) &&
+    Boolean(form.childPronouns) &&
+    missingSupportingPhotoLabels.length === 0 &&
+    (!STORY_UPLOAD_ENABLED || form.voiceFile == null || form.voiceConsent);
   const completedStepCount = [
     Boolean(form.theme),
     Boolean(form.childName),
@@ -273,28 +551,84 @@ export function CheckoutForm() {
   ].filter(Boolean).length;
   const progressValue = (completedStepCount / CHECKOUT_STEPS.length) * 100;
 
-  const processPhoto = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setForm(prev => ({
-        ...prev,
-        photoFile: file,
-        photoDataUrl: e.target?.result as string,
-      }));
-    };
-    reader.readAsDataURL(file);
+  const processPhoto = useCallback(async (file: File) => {
+    try {
+      const uploadFile = await shrinkPhotoForUpload(file);
+      if (uploadFile.size < file.size) {
+        setPhotoNotice(buildAutoShrinkNotice(file.size, uploadFile.size));
+      }
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setForm((prev) => ({
+          ...prev,
+          photoFile: uploadFile,
+          photoDataUrl: e.target?.result as string,
+        }));
+      };
+      reader.readAsDataURL(uploadFile);
+    } catch {
+      setSubmitError(
+        "That photo is too large for checkout on this device. Please choose a smaller JPG/PNG, screenshot/crop it, or continue without the child photo and add it later.",
+      );
+    }
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith('image/')) processPhoto(file);
-  }, [processPhoto]);
+  const processSupportingCharacterPhoto = useCallback(async (id: string, file: File) => {
+    try {
+      const uploadFile = await shrinkPhotoForUpload(file);
+      if (uploadFile.size < file.size) {
+        setPhotoNotice(buildAutoShrinkNotice(file.size, uploadFile.size));
+      }
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setForm((prev) => ({
+          ...prev,
+          familyCharacters: prev.familyCharacters.map((character) =>
+            character.id === id
+              ? {
+                  ...character,
+                  photoFile: uploadFile,
+                  photoDataUrl: e.target?.result as string,
+                }
+              : character,
+          ),
+        }));
+      };
+      reader.readAsDataURL(uploadFile);
+    } catch {
+      setSubmitError(
+        "That family/pet photo is too large for checkout on this device. Please choose a smaller JPG/PNG or crop/screenshot it before retrying.",
+      );
+    }
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      const file = e.dataTransfer.files[0];
+      if (file && file.type.startsWith("image/")) processPhoto(file);
+    },
+    [processPhoto],
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
+    setSubmitError(null);
+    // Fire BOTH the brief's "purchase_intent" alias and the more literal
+    // "order_submit_attempt" so downstream funnels can use either name.
+    // Network round-trip + payment success/failure live further along the
+    // pipeline; this event captures intent, not completion.
+    const attemptProps = {
+      theme: form.theme || null,
+      bookFormat: form.bookFormat || null,
+      hasPhoto: form.photoFile != null,
+      hasVoice: form.voiceFile != null,
+      familyCharacterCount: form.familyCharacters.length,
+    };
+    track("order_submit_attempt", attemptProps);
+    track("purchase_intent", attemptProps);
     if (recoveryTimerRef.current) {
       clearTimeout(recoveryTimerRef.current);
       recoveryTimerRef.current = null;
@@ -302,51 +636,130 @@ export function CheckoutForm() {
 
     try {
       const payload = new FormData();
-      payload.set('childName', form.childName);
-      payload.set('childAge', form.childAge);
-      payload.set('theme', form.theme);
-      payload.set('lesson', form.lesson);
-      payload.set('occasion', form.occasion);
-      payload.set('giftMessage', form.giftMessage);
-      payload.set('characterNotes', form.characterNotes);
-      payload.set('appearanceOptions', JSON.stringify({
-        skinTone: form.skinTone,
-        hairStyle: form.hairStyle,
-        eyewear: form.eyewear,
-      }));
-      payload.set('bookFormat', form.bookFormat);
-      payload.set('email', form.email);
+      const familyCharactersForOrder = form.familyCharacters
+        .filter((character) =>
+          Boolean(
+            character.name.trim() ||
+              character.relationshipLabel.trim() ||
+              character.notes.trim() ||
+              character.photoFile,
+          ),
+        )
+        .slice(0, SUPPORTING_CHARACTER_LIMIT);
+      payload.set("childName", form.childName);
+      // Fully-custom hero contract (Phase A). heroName mirrors childName today
+      // (child stays the hero); recipient + photo-focus fields are additive.
+      payload.set("heroName", form.childName);
+      payload.set("heroType", "child");
+      if (form.recipientName.trim()) payload.set("recipientName", form.recipientName.trim());
+      if (form.recipientRelationship.trim()) {
+        payload.set("recipientRelationship", form.recipientRelationship.trim());
+      }
+      if (form.heroPhotoFocusLabel.trim()) {
+        payload.set("heroPhotoFocusLabel", form.heroPhotoFocusLabel.trim());
+      }
+      if (form.heroPhotoCropHint.trim()) {
+        payload.set("heroPhotoCropHint", form.heroPhotoCropHint.trim());
+      }
+      payload.set("childAge", form.childAge);
+      payload.set("childPronouns", form.childPronouns);
+      payload.set("theme", form.theme);
+      payload.set("lesson", form.lesson);
+      payload.set("occasion", form.occasion);
+      payload.set("giftMessage", form.giftMessage);
+      payload.set("characterNotes", form.characterNotes);
+      payload.set(
+        "familyCharacters",
+        JSON.stringify(
+          familyCharactersForOrder
+            .map((character) => ({
+              role: character.role,
+              name: character.name,
+              relationshipLabel: character.relationshipLabel,
+              pronouns: character.pronouns,
+              notes: character.notes,
+              isGiftRecipient: character.isGiftRecipient,
+              appearsInStory: character.appearsInStory,
+              photoFileName: character.photoFile?.name ?? null,
+              focusPersonLabel: character.focusPersonLabel.trim() || null,
+              cropHint: character.cropHint.trim() || null,
+            })),
+        ),
+      );
+      familyCharactersForOrder.forEach((character, index) => {
+        if (character.photoFile) {
+          payload.set(`familyCharacterPhoto_${index}`, character.photoFile);
+        }
+      });
+      payload.set(
+        "appearanceOptions",
+        JSON.stringify({
+          skinTone: form.skinTone,
+          hairStyle: form.hairStyle,
+          eyewear: form.eyewear,
+        }),
+      );
+      payload.set("bookFormat", form.bookFormat);
+      payload.set("email", form.email);
+      const referralCode = checkoutReferralCode();
+      if (referralCode) payload.set("referralCode", referralCode);
       if (form.photoFile) {
-        payload.set('photo', form.photoFile);
+        payload.set("photo", form.photoFile);
+      }
+      if (STORY_UPLOAD_ENABLED && form.voiceFile) {
+        payload.set("voice", form.voiceFile);
+        payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
+        if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
       }
       // Optional guided child stills. Appends only parent-approved still photos; no video.
       if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
         appendGuidedCaptureToFormData(payload, guidedFrames);
       }
-      if (VOICE_BETA_ENABLED && form.voiceFile) {
-        payload.set('voice', form.voiceFile);
-        payload.set('voiceConsent', form.voiceConsent ? 'true' : 'false');
-        if (form.voiceSource) payload.set('voiceSource', form.voiceSource);
-      }
 
-      const response = await fetch('/api/order', {
-        method: 'POST',
+      const response = await fetch("/api/order", {
+        method: "POST",
         body: payload,
       });
 
       if (!response.ok) {
-        throw new Error('Order submission failed');
+        // Surface the server's SPECIFIC reason (e.g. the voice-save abort)
+        // rather than a generic message, so the customer knows exactly what
+        // failed and — critically — that nothing was saved or charged.
+        let message =
+          "We couldn't start your order. You have not been charged. Please try again.";
+        try {
+          const body = await response.json();
+          if (typeof body?.error === "string" && body.error.trim()) {
+            message = body.error;
+          }
+        } catch {
+          /* non-JSON response — keep the safe default */
+        }
+        throw new Error(message);
       }
 
       const result = await response.json();
+      // Only reached when the order was durably persisted AND a Stripe session
+      // was created. We are about to redirect to PAYMENT — do not claim the
+      // order/recording is finished here (see the interstitial copy below).
+      if (!result?.redirectTo) {
+        throw new Error(
+          "We couldn't reach secure payment. You have not been charged. Please try again.",
+        );
+      }
       setSuccess(true);
       localStorage.removeItem(STORAGE_KEY);
       setTimeout(() => {
-        window.location.href = result.redirectTo || '/thank-you';
+        window.location.href = result.redirectTo;
       }, 1200);
     } catch (error) {
       console.error(error);
-      alert('We could not save your order. Please try again.');
+      // Inline banner instead of window.alert — see submitError declaration.
+      setSubmitError(
+        error instanceof Error
+          ? error.message
+          : "We couldn't start your order. You have not been charged. Please try again.",
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -354,49 +767,94 @@ export function CheckoutForm() {
 
   if (success) {
     return (
-      <main className="min-h-screen bg-cream flex items-center justify-center px-4">
+      <main className="min-h-screen bg-cream flex items-center justify-center px-4 text-[#1f1a16]">
         <motion.div
           initial={{ opacity: 0, scale: 0.96 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="bg-white rounded-2xl border-2 border-green-200 p-12 text-center max-w-md w-full shadow-lg"
+          className="rounded-[2rem] border border-[#d8c6a2] bg-[#fff8ec] p-12 text-center max-w-md w-full shadow-[0_28px_80px_-55px_rgba(31,26,22,0.55)]"
         >
           <div className="text-6xl mb-4">✨</div>
-          <h2 className="font-serif text-3xl text-forest mb-2">Order Received!</h2>
-          <p className="text-gray-700 mb-2">
-            {form.childName ? `${form.childName}'s magical story` : 'Your magical story'} is being created.
+          <h2 className="font-serif text-3xl text-forest mb-2">
+            Taking you to secure payment…
+          </h2>
+          <p className="text-[#695f54] mb-2">
+            We saved your details for{" "}
+            {form.childName
+              ? `${form.childName}'s magical story`
+              : "your magical story"}
+            . You&apos;ll finish at Stripe — your book starts once payment
+            is complete.
           </p>
-          <p className="text-sm text-gray-500">Saving your order and sending confirmation…</p>
+          <p className="text-sm text-[#695f54]">
+            Redirecting to Stripe… please don&apos;t close this tab.
+          </p>
         </motion.div>
       </main>
     );
   }
 
   return (
-    <main className="w-full min-h-screen bg-cream py-10 px-4">
-      <div className="container mx-auto max-w-2xl">
-
-        {/* Nav */}
-        <div className="flex items-center justify-between mb-8">
-          <Link href="/" className="text-sm text-gray-500 hover:text-forest transition flex items-center gap-1">
-            ← Back
+    <main className="min-h-screen bg-[#f4ecd9] text-[#241914]">
+      <div className="border-b border-[#ded0b3] bg-[#f4ecd9]/95 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-4 sm:px-6">
+          <Link
+            href="/"
+            className="flex min-w-0 items-center gap-2 font-serif text-[13px] font-semibold uppercase tracking-[0.18em] text-[#241914] sm:text-base sm:tracking-[0.28em]"
+          >
+            <span className="h-2 w-2 flex-shrink-0 rounded-full bg-[#a64c4c]" />
+            <span className="truncate">HeroStoryBooks</span>
           </Link>
-          <span className="font-serif font-bold text-forest text-lg">HeroStoryBooks ✨</span>
-          <div className="w-12" />
+          {/* Hide the secondary badge below sm: brand text needs the full row
+              on narrow phones (≤ ~380px) or the truncate-ellipsis trims it. */}
+          <span className="hidden items-center gap-1.5 text-xs text-[#6e6154] sm:flex">
+            <span aria-hidden="true">⌘</span> Secure checkout
+          </span>
         </div>
+      </div>
 
-        {/* Saved-progress banner */}
+      <div className="border-b border-[#ded0b3] bg-[#efe3ca]">
+        <div className="mx-auto flex max-w-xl items-center justify-center gap-3 px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.22em] text-[#8c7b68] sm:gap-5">
+          {["Review", "Details", "Pay"].map((step, index) => {
+            const active = index === 1;
+            const done = index === 0;
+            return (
+              <React.Fragment key={step}>
+                <span
+                  className={`flex items-center gap-2 ${active ? "text-deep-gold" : done ? "text-[#241914]" : "text-[#9f927f]"}`}
+                >
+                  <span
+                    className={`flex h-5 w-5 items-center justify-center rounded-full border text-[10px] ${done ? "border-deep-gold bg-deep-gold text-navy" : active ? "border-deep-gold bg-cream text-deep-gold" : "border-[#cbbda4] bg-[#f8f0dd] text-[#9f927f]"}`}
+                  >
+                    {done ? "✓" : index + 1}
+                  </span>
+                  {step}
+                </span>
+                {index < 2 && <span className="h-px w-8 bg-[#cbbda4]" />}
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:py-10">
         <AnimatePresence>
           {showRecovery && (
             <motion.div
               initial={{ opacity: 0, y: -8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
-              className="mb-6 flex items-center justify-between gap-3 bg-deep-gold/10 border border-deep-gold/30 rounded-xl px-4 py-3 text-sm"
+              className="mb-6 flex items-center justify-between gap-3 rounded-2xl border border-[#a64c4c]/30 bg-[#a64c4c]/10 px-4 py-3 text-sm"
             >
-              <span className="text-forest font-medium">✨ We saved your progress — your details are filled in below.</span>
+              <span className="font-medium text-[#241914]">
+                We saved your progress — your details are filled in below.
+              </span>
               <button
-                onClick={() => { setForm(emptyForm); localStorage.removeItem(STORAGE_KEY); setShowRecovery(false); }}
-                className="text-xs text-gray-500 hover:text-forest underline"
+                onClick={() => {
+                  setForm(emptyForm);
+                  localStorage.removeItem(STORAGE_KEY);
+                  setShowRecovery(false);
+                }}
+                className="text-xs text-[#6e6154] underline hover:text-[#241914]"
               >
                 Start fresh
               </button>
@@ -404,522 +862,1248 @@ export function CheckoutForm() {
           )}
         </AnimatePresence>
 
-        {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-center mb-10"
-        >
-          <h1 className="font-serif text-4xl md:text-5xl text-forest mb-3">
-            Create Your Story
-          </h1>
-          <p className="text-gray-600 text-lg">
-            Choose the adventure · Tell us about your hero · Add a photo when you&apos;re ready
-          </p>
-        </motion.div>
-
-        <motion.section
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-8 rounded-2xl border border-deep-gold/20 bg-white/90 p-4 shadow-sm"
-        >
-          <div className="mb-3 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">
-            <span>Checkout progress</span>
-            <span>{completedStepCount}/{CHECKOUT_STEPS.length} complete</span>
+        {photoNotice && (
+          <div className="mb-6 rounded-2xl border border-[#4f7d58]/25 bg-[#e8f2df] px-4 py-3 text-sm font-medium text-[#31543a]">
+            {photoNotice}
           </div>
-          <Progress value={progressValue} className="h-2.5 bg-gray-100" />
-          <div className="mt-4 grid grid-cols-5 gap-2">
-            {CHECKOUT_STEPS.map((step, index) => {
-              const complete = completedStepCount > index;
-              return (
-                <div key={step.id} className="text-center">
-                  <div className={`mx-auto flex h-8 w-8 items-center justify-center rounded-full border text-xs font-bold ${complete ? 'border-deep-gold bg-deep-gold text-white' : 'border-gray-200 bg-white text-gray-400'}`}>
-                    {index + 1}
-                  </div>
-                  <p className={`mt-2 text-[11px] font-medium ${complete ? 'text-forest' : 'text-gray-400'}`}>{step.label}</p>
-                </div>
-              );
-            })}
-          </div>
-        </motion.section>
+        )}
 
-        <form onSubmit={handleSubmit} className="space-y-8">
-
-          {/* ── 1. Theme ── */}
-          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
-            <h2 className="font-serif text-xl text-forest">Choose the adventure</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {THEMES.map(theme => (
-                <button
-                  key={theme.id}
-                  type="button"
-                  onClick={() => set('theme', form.theme === theme.id ? '' : theme.id)}
-                  className={`
-                    flex items-start gap-3 p-4 rounded-xl border-2 text-left transition-all cursor-pointer
-                    ${form.theme === theme.id
-                      ? 'border-deep-gold bg-deep-gold/8 shadow-sm'
-                      : 'border-gray-200 hover:border-gray-300'
-                    }
-                  `}
-                >
-                  <span className="text-3xl flex-shrink-0">{theme.emoji}</span>
-                  <div>
-                    <p className="font-semibold text-forest text-sm">{theme.label}</p>
-                    <p className="text-xs text-gray-500 mt-0.5">{theme.desc}</p>
-                  </div>
-                  {form.theme === theme.id && (
-                    <span className="ml-auto text-xs bg-deep-gold text-white font-bold px-2 py-0.5 rounded-full flex-shrink-0">✓</span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </section>
-
-          {/* ── 2. Child Details ── */}
-          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-5">
-            <h2 className="font-serif text-xl text-forest">About the hero</h2>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="childName" className="block text-sm font-semibold text-forest mb-1.5">
-                  Child&apos;s Name <span className="text-red-400">*</span>
-                </label>
-                <input
-                  id="childName"
-                  type="text"
-                  value={form.childName}
-                  onChange={e => set('childName', e.target.value)}
-                  placeholder="e.g., Emma, Liam, Sofia"
-                  required
-                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white"
-                />
-              </div>
-              <div>
-                <label htmlFor="childAge" className="block text-sm font-semibold text-forest mb-1.5">
-                  Age <span className="text-gray-400 font-normal">(optional)</span>
-                </label>
-                <select
-                  id="childAge"
-                  value={form.childAge}
-                  onChange={e => set('childAge', e.target.value)}
-                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white"
-                >
-                  <option value="">Select age</option>
-                  {Array.from({ length: 11 }, (_, i) => i + 2).map(age => (
-                    <option key={age} value={age}>{age} years old</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* Lesson */}
-            <div>
-              <label className="block text-sm font-semibold text-forest mb-2">
-                Story lesson <span className="text-gray-400 font-normal">(what should the story teach?)</span>
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {LESSONS.map(l => (
+        <form
+          onSubmit={handleSubmit}
+          className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_340px]"
+        >
+          <div className="space-y-5">
+            {/* ── 1. Theme ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+              <h2 className="font-serif text-2xl text-[#1f1a16]">
+                Choose a story direction
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {THEMES.map((theme) => (
                   <button
-                    key={l.id}
-                    type="button"
-                    onClick={() => set('lesson', form.lesson === l.id ? '' : l.id)}
-                    className={`
-                      flex items-center gap-1.5 px-3 py-2 rounded-full border-2 text-sm font-semibold transition cursor-pointer
-                      ${form.lesson === l.id
-                        ? 'border-deep-gold bg-deep-gold/10 text-forest'
-                        : 'border-gray-200 text-gray-700 hover:border-gray-300'
-                      }
-                    `}
-                  >
-                    <span>{l.emoji}</span>{l.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Occasion */}
-            <div>
-              <label className="block text-sm font-semibold text-forest mb-2">
-                Occasion <span className="text-gray-400 font-normal">(optional)</span>
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {OCCASIONS.map(o => (
-                  <button
-                    key={o.id}
+                    key={theme.id}
                     type="button"
                     onClick={() => {
-                      const next = form.occasion === o.id ? '' : o.id;
-                      setForm(prev => ({ ...prev, occasion: next, giftMessage: next ? prev.giftMessage : '' }));
+                      const next = form.theme === theme.id ? "" : theme.id;
+                      set("theme", next);
+                      if (next) track("story_selected", { theme: next });
                     }}
                     className={`
-                      px-3 py-2 rounded-full border-2 text-sm font-semibold transition cursor-pointer
-                      ${form.occasion === o.id
-                        ? 'border-deep-gold bg-deep-gold/10 text-forest'
-                        : 'border-gray-200 text-gray-700 hover:border-gray-300'
-                      }
-                    `}
+                    flex items-start gap-3 p-4 rounded-2xl border-2 text-left transition-all cursor-pointer
+                    ${
+                      form.theme === theme.id
+                        ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30 shadow-sm"
+                        : "border-[#dfd2b8] hover:border-[#d8c6a2]"
+                    }
+                  `}
                   >
-                    {o.label}
+                    <span className="text-3xl flex-shrink-0">
+                      {theme.emoji}
+                    </span>
+                    <div>
+                      <p className="font-semibold text-[#1f1a16] text-sm">
+                        {theme.label}
+                      </p>
+                      <p className="text-xs text-[#695f54] mt-0.5">
+                        {theme.desc}
+                      </p>
+                    </div>
+                    {form.theme === theme.id && (
+                      <span className="ml-auto text-xs bg-deep-gold text-navy font-bold px-2 py-0.5 rounded-full flex-shrink-0">
+                        ✓
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
-            </div>
+            </section>
 
-            {/* Gift message — conditional */}
-            <AnimatePresence>
-              {form.occasion && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                >
-                  <label className="block text-sm font-semibold text-forest mb-1.5">
-                    Gift message <span className="text-gray-400 font-normal">(printed on the dedication page)</span>
-                  </label>
-                  <textarea
-                    value={form.giftMessage}
-                    onChange={e => set('giftMessage', e.target.value)}
-                    placeholder={`e.g. "To Emma — may every day be a new adventure. Love, Grandma"`}
-                    rows={2}
-                    maxLength={200}
-                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white resize-none text-sm"
-                  />
-                  <p className="text-xs text-gray-400 text-right mt-0.5">{form.giftMessage.length}/200</p>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </section>
-
-          {/* ── 2.5 Character details ── */}
-          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
-            <div>
-              <h2 className="font-serif text-xl text-forest mb-1">Character details</h2>
-              <p className="text-sm text-gray-500">
-                Tell us a few visible details so the art feels more like your child.
-              </p>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* ── 2. Hero / main character details ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-5">
               <div>
-                <label className="block text-sm font-semibold text-forest mb-1.5">Skin tone *</label>
-                <select
-                  value={form.skinTone}
-                  onChange={e => set('skinTone', e.target.value)}
-                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white"
-                  required
-                >
-                  <option value="">Select skin tone</option>
-                  <option value="fair">Fair</option>
-                  <option value="light">Light</option>
-                  <option value="medium">Medium</option>
-                  <option value="tan">Tan</option>
-                  <option value="deep">Deep</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-forest mb-1.5">Hair *</label>
-                <select
-                  value={form.hairStyle}
-                  onChange={e => set('hairStyle', e.target.value)}
-                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white"
-                  required
-                >
-                  <option value="">Select hair</option>
-                  <option value="straight-dark">Straight dark hair</option>
-                  <option value="straight-light">Straight light hair</option>
-                  <option value="wavy">Wavy hair</option>
-                  <option value="curly">Curly hair</option>
-                  <option value="coily">Coily hair</option>
-                  <option value="short-cropped">Short / cropped</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-forest mb-1.5">Glasses or aids</label>
-                <select
-                  value={form.eyewear}
-                  onChange={e => set('eyewear', e.target.value)}
-                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white"
-                >
-                  <option value="">None / not needed</option>
-                  <option value="glasses">Glasses</option>
-                  <option value="hearing-aid">Hearing aid</option>
-                  <option value="mobility-aid">Mobility aid</option>
-                  <option value="other">Other visible detail</option>
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-forest mb-1.5">
-                Anything else we should capture? <span className="text-gray-400 font-normal">(optional)</span>
-              </label>
-              <textarea
-                value={form.characterNotes}
-                onChange={e => set('characterNotes', e.target.value)}
-                placeholder="Examples: freckles, favorite hoodie color, wheelchair, curly bangs, hijab, braces..."
-                rows={3}
-                maxLength={240}
-                className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white resize-none text-sm"
-              />
-              <p className="text-xs text-gray-400 text-right mt-0.5">{form.characterNotes.length}/240</p>
-            </div>
-          </section>
-
-          {/* ── 3. Format + Delivery ── */}
-          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
-            <h2 className="font-serif text-xl text-forest">Choose your format</h2>
-            <div className="space-y-3">
-              {FORMATS.map(fmt => (
-                <button
-                  key={fmt.id}
-                  type="button"
-                  onClick={() => set('bookFormat', fmt.id)}
-                  className={`
-                    w-full flex items-start gap-4 p-4 rounded-xl border-2 text-left transition-all cursor-pointer
-                    ${form.bookFormat === fmt.id
-                      ? 'border-deep-gold bg-deep-gold/5 shadow-sm'
-                      : 'border-gray-200 hover:border-gray-300'
-                    }
-                  `}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <p className="font-bold text-forest">{fmt.label}</p>
-                      {fmt.badge && (
-                        <span className="text-xs bg-deep-gold text-white font-bold px-2 py-0.5 rounded-full">{fmt.badge}</span>
-                      )}
-                    </div>
-                    <p className="text-sm text-gray-600">{fmt.delivery}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">{fmt.deliveryDetail}</p>
-                  </div>
-                  <span className="font-bold text-xl text-forest flex-shrink-0">{fmt.price}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-
-          {/* ── 4. Email + Preview Promise ── */}
-          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
-            <div>
-              <h2 className="font-serif text-xl text-forest mb-1">Where should we send everything?</h2>
-              <p className="text-sm text-gray-500">
-                We&apos;ll send your confirmation, delivery updates, and any preview approval steps here.
-              </p>
-            </div>
-            <input
-              id="email"
-              type="email"
-              value={form.email}
-              onChange={e => set('email', e.target.value)}
-              placeholder="your@email.com — for confirmation & delivery"
-              required
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-deep-gold focus:ring-2 focus:ring-deep-gold/30 transition text-gray-900 bg-white"
-            />
-            <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-              {PRINT_PREVIEW_PROMISE}
-            </div>
-          </section>
-
-          {/* ── 5. Photo Upload ── */}
-          <section className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4">
-            <div>
-              <h2 className="font-serif text-xl text-forest mb-1">
-                Add a photo when you&apos;re ready
-              </h2>
-              <p className="text-sm text-gray-500">
-                AI-assisted illustration uses your photo as a reference. A clearer photo helps — and you review every page in a digital proof before any final PDF or printing.
-              </p>
-            </div>
-            <div className="rounded-xl border border-deep-gold/20 bg-deep-gold/5 px-4 py-3 text-sm text-forest">
-              {PHOTO_UPLOAD_HELP}
-            </div>
-
-            {/* Sample teaser — shown before upload */}
-            {!form.photoDataUrl && (
-              <div className="space-y-2">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest text-center">
-                  What your book looks like
+                <h2 className="font-serif text-2xl text-[#1f1a16]">
+                  Who this story celebrates
+                </h2>
+                <p className="mt-1 text-sm text-[#695f54]">
+                  Tell us about the main hero of the book. Right now every book
+                  stars a child as the hero — you can add parents, grandparents,
+                  siblings, and pets as co-heroes and family below. Adult-led
+                  hero stories are coming soon and are on a short preview hold.
                 </p>
-                <div className="grid grid-cols-3 gap-2">
-                  {SAMPLE_IMAGES.map((src, i) => (
-                    <div key={i} className="relative aspect-square rounded-xl overflow-hidden border border-gray-100 bg-gray-50">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={src} alt={`Sample page ${i + 1}`} className="w-full h-full object-cover" />
-                      {i === 1 && (
-                        <div className="absolute inset-x-0 bottom-2 flex justify-center">
-                          <span className="bg-deep-gold/90 text-white text-xs font-bold px-2 py-0.5 rounded-full shadow">
-                            Your child here ✨
-                          </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label
+                    htmlFor="childName"
+                    className="block text-sm font-semibold text-[#1f1a16] mb-1.5"
+                  >
+                    Main hero&apos;s name <span className="text-red-400">*</span>
+                  </label>
+                  <input
+                    id="childName"
+                    type="text"
+                    value={form.childName}
+                    onChange={(e) => set("childName", e.target.value)}
+                    placeholder="e.g., Emma, Liam, Sofia"
+                    required
+                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="childAge"
+                    className="block text-sm font-semibold text-[#1f1a16] mb-1.5"
+                  >
+                    Age{" "}
+                    <span className="text-[#8a7b6a] font-normal">
+                      (optional)
+                    </span>
+                  </label>
+                  <select
+                    id="childAge"
+                    value={form.childAge}
+                    onChange={(e) => set("childAge", e.target.value)}
+                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                  >
+                    <option value="">Select age</option>
+                    {Array.from({ length: 11 }, (_, i) => i + 2).map((age) => (
+                      <option key={age} value={age}>
+                        {age} years old
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Book recipient / audience — optional fully-custom context */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label
+                    htmlFor="recipientName"
+                    className="block text-sm font-semibold text-[#1f1a16] mb-1.5"
+                  >
+                    Who is the book for?{" "}
+                    <span className="text-[#8a7b6a] font-normal">(optional)</span>
+                  </label>
+                  <input
+                    id="recipientName"
+                    type="text"
+                    value={form.recipientName}
+                    onChange={(e) => set("recipientName", e.target.value)}
+                    placeholder="e.g., Emma, our whole family"
+                    maxLength={80}
+                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="recipientRelationship"
+                    className="block text-sm font-semibold text-[#1f1a16] mb-1.5"
+                  >
+                    Hero&apos;s relationship to them{" "}
+                    <span className="text-[#8a7b6a] font-normal">(optional)</span>
+                  </label>
+                  <input
+                    id="recipientRelationship"
+                    type="text"
+                    value={form.recipientRelationship}
+                    onChange={(e) => set("recipientRelationship", e.target.value)}
+                    placeholder="e.g., Grandpa to Emma, Mom to Lukas"
+                    maxLength={80}
+                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                  />
+                </div>
+              </div>
+
+              {/* Lesson */}
+              <div>
+                <label className="block text-sm font-semibold text-[#1f1a16] mb-2">
+                  Story lesson{" "}
+                  <span className="text-[#8a7b6a] font-normal">
+                    (what should the story teach?)
+                  </span>
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {LESSONS.map((l) => (
+                    <button
+                      key={l.id}
+                      type="button"
+                      onClick={() =>
+                        set("lesson", form.lesson === l.id ? "" : l.id)
+                      }
+                      className={`
+                      flex items-center gap-1.5 px-3 py-2 rounded-full border-2 text-sm font-semibold transition cursor-pointer
+                      ${
+                        form.lesson === l.id
+                          ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30 text-navy"
+                          : "border-[#dfd2b8] text-[#695f54] hover:border-[#d8c6a2]"
+                      }
+                    `}
+                    >
+                      <span>{l.emoji}</span>
+                      {l.label}
+                    </button>
+                  ))}
+                </div>
+                <label
+                  htmlFor="customLesson"
+                  className="mt-4 block text-xs font-semibold uppercase tracking-[0.16em] text-[#8a7663]"
+                >
+                  Custom story lesson
+                </label>
+                <input
+                  id="customLesson"
+                  type="text"
+                  value={selectedLesson ? "" : form.lesson}
+                  onChange={(e) => set("lesson", e.target.value.slice(0, 80))}
+                  placeholder="e.g. Dad always comes home, sharing bravely, asking for help"
+                  className="mt-2 w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                />
+              </div>
+
+              {/* Occasion */}
+              <div>
+                <label className="block text-sm font-semibold text-[#1f1a16] mb-2">
+                  Occasion{" "}
+                  <span className="text-[#8a7b6a] font-normal">(optional)</span>
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {OCCASIONS.map((o) => (
+                    <button
+                      key={o.id}
+                      type="button"
+                      onClick={() => {
+                        const next = form.occasion === o.id ? "" : o.id;
+                        setForm((prev) => ({
+                          ...prev,
+                          occasion: next,
+                          giftMessage: next ? prev.giftMessage : "",
+                        }));
+                      }}
+                      className={`
+                      px-3 py-2 rounded-full border-2 text-sm font-semibold transition cursor-pointer
+                      ${
+                        form.occasion === o.id
+                          ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30 text-navy"
+                          : "border-[#dfd2b8] text-[#695f54] hover:border-[#d8c6a2]"
+                      }
+                    `}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+                <label
+                  htmlFor="customOccasion"
+                  className="mt-4 block text-xs font-semibold uppercase tracking-[0.16em] text-[#8a7663]"
+                >
+                  Custom occasion
+                </label>
+                <input
+                  id="customOccasion"
+                  type="text"
+                  value={selectedOccasion ? "" : form.occasion}
+                  onChange={(e) => {
+                    const next = e.target.value.slice(0, 80);
+                    setForm((prev) => ({
+                      ...prev,
+                      occasion: next,
+                    }));
+                  }}
+                  placeholder="e.g. birthday, first day of school, big sibling gift"
+                  className="mt-2 w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                />
+              </div>
+
+              {/* Gift message — conditional */}
+              <AnimatePresence>
+                {form.occasion && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                  >
+                    <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
+                      Gift message{" "}
+                      <span className="text-[#8a7b6a] font-normal">
+                        (printed on the dedication page)
+                      </span>
+                    </label>
+                    <textarea
+                      value={form.giftMessage}
+                      onChange={(e) => set("giftMessage", e.target.value)}
+                      placeholder={`e.g. "To Emma — may every day be a new adventure. Love, Grandma"`}
+                      rows={2}
+                      maxLength={200}
+                      className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1] resize-none text-sm"
+                    />
+                    <p className="text-xs text-[#8a7b6a] text-right mt-0.5">
+                      {form.giftMessage.length}/200
+                    </p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </section>
+
+            {/* ── 2.5 Character details ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+              <div>
+                <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
+                  Character details
+                </h2>
+                <p className="text-sm text-[#695f54]">
+                  Tell us a few visible details so the art feels more like your
+                  child.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
+                    Pronouns <span className="text-[#a64c4c]">(required)</span>
+                  </label>
+                  <select
+                    value={form.childPronouns}
+                    onChange={(e) => set("childPronouns", e.target.value)}
+                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                    required
+                  >
+                    <option value="">Select pronouns</option>
+                    <option value="he/him">He/him</option>
+                    <option value="she/her">She/her</option>
+                    <option value="they/them">They/them</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
+                    Skin tone <span className="text-[#a64c4c]">(required)</span>
+                  </label>
+                  <select
+                    value={form.skinTone}
+                    onChange={(e) => set("skinTone", e.target.value)}
+                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                    required
+                  >
+                    <option value="">Select skin tone</option>
+                    <option value="fair">Fair</option>
+                    <option value="light">Light</option>
+                    <option value="medium">Medium</option>
+                    <option value="tan">Tan</option>
+                    <option value="deep">Deep</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
+                    Hair <span className="text-[#a64c4c]">(required)</span>
+                  </label>
+                  <select
+                    value={form.hairStyle}
+                    onChange={(e) => set("hairStyle", e.target.value)}
+                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                    required
+                  >
+                    <option value="">Select hair</option>
+                    <option value="straight-dark">Straight dark hair</option>
+                    <option value="straight-light">Straight light hair</option>
+                    <option value="wavy">Wavy hair</option>
+                    <option value="curly">Curly hair</option>
+                    <option value="coily">Coily hair</option>
+                    <option value="short-cropped">Short / cropped</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
+                    Glasses or aids
+                  </label>
+                  <select
+                    value={form.eyewear}
+                    onChange={(e) => set("eyewear", e.target.value)}
+                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                  >
+                    <option value="">None / not needed</option>
+                    <option value="glasses">Glasses</option>
+                    <option value="hearing-aid">Hearing aid</option>
+                    <option value="mobility-aid">Mobility aid</option>
+                    <option value="other">Other visible detail</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
+                  Anything else we should capture?{" "}
+                  <span className="text-[#8a7b6a] font-normal">(optional)</span>
+                </label>
+                <textarea
+                  value={form.characterNotes}
+                  onChange={(e) => set("characterNotes", e.target.value)}
+                  placeholder="Examples: freckles, favorite hoodie color, wheelchair, curly bangs, hijab, braces..."
+                  rows={3}
+                  maxLength={240}
+                  className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1] resize-none text-sm"
+                />
+                <p className="text-xs text-[#8a7b6a] text-right mt-0.5">
+                  {form.characterNotes.length}/240
+                </p>
+              </div>
+            </section>
+
+            {/* ── 2.75 Supporting characters ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+              <div>
+                <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
+                  People, pets, and family details
+                </h2>
+                <p className="text-sm text-[#695f54]">
+                  Add co-heroes, family members, gift recipients, or pets for the
+                  story text and scene notes. Everyone here can be part of the
+                  adventure — not just background characters.
+                  Human family members need their own still reference photo before payment; pet photos stay optional.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {SUPPORTING_CHARACTER_PRESETS.map((preset) => (
+                  <button
+                    key={preset.role}
+                    type="button"
+                    onClick={() => addSupportingCharacter(preset)}
+                    disabled={form.familyCharacters.length >= SUPPORTING_CHARACTER_LIMIT}
+                    className="rounded-full border-2 border-[#dfd2b8] px-3 py-2 text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    + {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              {form.familyCharacters.length > 0 && (
+                <div className="space-y-3">
+                  {form.familyCharacters.map((character, index) => (
+                    <div
+                      key={character.id}
+                      className="rounded-2xl border border-[#dfd2b8] bg-[#fffaf1] p-4"
+                    >
+                      <div className="mb-3 flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-[#1f1a16]">
+                            Character {index + 1}
+                            {character.name || character.relationshipLabel
+                              ? `: ${character.name || character.relationshipLabel}`
+                              : ""}
+                          </p>
+                          <p className="text-xs leading-5 text-[#8a7b6a]">
+                            Co-hero, family member, gift recipient, or pet. Use
+                            notes for pets: breed, color, markings, size,
+                            personality, or how the family talks about them.
+                          </p>
                         </div>
-                      )}
+                        <button
+                          type="button"
+                          onClick={() => removeSupportingCharacter(character.id)}
+                          className="rounded-full border border-[#dfd2b8] px-3 py-1 text-xs font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:text-[#a64c4c]"
+                        >
+                          Remove
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div>
+                          <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
+                            Name
+                          </label>
+                          <input
+                            type="text"
+                            value={character.name}
+                            onChange={(e) =>
+                              updateSupportingCharacter(character.id, {
+                                name: e.target.value,
+                              })
+                            }
+                            placeholder={character.role === "pet" ? "e.g., Brody" : "e.g., Alexy"}
+                            maxLength={80}
+                            className="w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
+                            Relationship / role
+                          </label>
+                          <input
+                            type="text"
+                            value={character.relationshipLabel}
+                            onChange={(e) =>
+                              updateSupportingCharacter(character.id, {
+                                relationshipLabel: e.target.value,
+                              })
+                            }
+                            placeholder="Dad, Grandma, big sister, family dog..."
+                            maxLength={80}
+                            className="w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
+                            Story wording
+                          </label>
+                          <input
+                            type="text"
+                            value={character.pronouns}
+                            onChange={(e) =>
+                              updateSupportingCharacter(character.id, {
+                                pronouns: e.target.value,
+                              })
+                            }
+                            placeholder="Dad, Mom, big brother, Grandma, family dog"
+                            maxLength={32}
+                            className="w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                          />
+                        </div>
+                        <label className="flex items-center gap-2 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] px-4 py-3 text-sm font-semibold text-[#1f1a16]">
+                          <input
+                            type="checkbox"
+                            checked={character.isGiftRecipient}
+                            onChange={(e) =>
+                              updateSupportingCharacter(character.id, {
+                                isGiftRecipient: e.target.checked,
+                              })
+                            }
+                          />
+                          Gift recipient
+                        </label>
+                      </div>
+
+                      <label className="mt-3 block text-sm font-semibold text-[#1f1a16]">
+                        Details to capture
+                      </label>
+                      <textarea
+                        value={character.notes}
+                        onChange={(e) =>
+                          updateSupportingCharacter(character.id, {
+                            notes: e.target.value,
+                          })
+                        }
+                        placeholder={
+                          character.role === "pet"
+                            ? PET_NOTES_PLACEHOLDER
+                            : "Personality, favorite activity, nickname, inside joke, or how this character should show up in the story..."
+                        }
+                        rows={2}
+                        maxLength={180}
+                        className="mt-1.5 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                      />
+                      <p className="mt-0.5 text-right text-xs text-[#8a7b6a]">
+                        {character.notes.length}/180
+                      </p>
+
+                      <div className="mt-3 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] p-3">
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-[#1f1a16]">
+                              Reference photo
+                              {character.name || character.relationshipLabel
+                                ? ` for ${character.name || character.relationshipLabel}`
+                                : ""}
+                            </p>
+                            <p className="text-xs leading-5 text-[#8a7b6a]">
+                              Required for human family members before payment. Optional for pets.
+                            </p>
+                          </div>
+                          {character.photoFile && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateSupportingCharacter(character.id, {
+                                  photoFile: null,
+                                  photoDataUrl: null,
+                                })
+                              }
+                              className="rounded-full border border-[#dfd2b8] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:text-[#a64c4c]"
+                            >
+                              Remove photo
+                            </button>
+                          )}
+                        </div>
+
+                        {character.photoDataUrl ? (
+                          <div className="grid gap-3 sm:grid-cols-[96px_1fr] sm:items-center">
+                            <div className="overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fffaf1]">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={character.photoDataUrl}
+                                alt={`${character.relationshipLabel || "Supporting character"} reference`}
+                                className="h-24 w-full object-cover"
+                              />
+                            </div>
+                            <div className="min-w-0 text-sm text-[#35564d]">
+                              <p className="truncate font-semibold">
+                                {character.photoFile?.name}
+                              </p>
+                              <p className="text-xs text-[#5f766f]">
+                                Saved with this character for operator review.
+                              </p>
+                            </div>
+                            <div className="sm:col-span-2 space-y-2">
+                              <p className="text-xs font-semibold text-[#1f1a16]">
+                                If this photo has multiple people, tell us who to use and where they are.
+                              </p>
+                              <div className="grid gap-2 sm:grid-cols-2">
+                                <input
+                                  type="text"
+                                  value={character.focusPersonLabel}
+                                  onChange={(e) =>
+                                    updateSupportingCharacter(character.id, {
+                                      focusPersonLabel: e.target.value.slice(0, 120),
+                                    })
+                                  }
+                                  placeholder="Who to use (e.g., Grandpa on the left)"
+                                  className="w-full rounded-xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-3 py-2 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                                />
+                                <select
+                                  value={character.cropHint}
+                                  onChange={(e) =>
+                                    updateSupportingCharacter(character.id, {
+                                      cropHint: e.target.value,
+                                    })
+                                  }
+                                  className="w-full rounded-xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-3 py-2 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                                >
+                                  <option value="">Where in the photo? (optional)</option>
+                                  <option value="only-person">Only one person</option>
+                                  <option value="left">Left</option>
+                                  <option value="center">Center</option>
+                                  <option value="right">Right</option>
+                                  <option value="top-left">Top-left</option>
+                                  <option value="top-right">Top-right</option>
+                                  <option value="bottom-left">Bottom-left</option>
+                                  <option value="bottom-right">Bottom-right</option>
+                                </select>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {isHumanSupportingCharacter(character) && (
+                              <p className="rounded-xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-3 py-2 text-xs font-semibold text-[#1f1a16]">
+                                Add a still reference photo for {character.name || character.relationshipLabel || "this family member"} before payment so we can draw them consistently.
+                              </p>
+                            )}
+                            <div className="grid gap-2 sm:grid-cols-2">
+                              <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-4 text-center text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
+                                <span>Upload picture</span>
+                                <span className="text-xs font-normal text-[#8a7b6a]">
+                                  JPG/PNG/WebP/HEIC
+                                </span>
+                                <input
+                                  type="file"
+                                  accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (f) processSupportingCharacterPhoto(character.id, f);
+                                    e.currentTarget.value = "";
+                                  }}
+                                />
+                              </label>
+                              <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-4 text-center text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
+                                <span>Take 1 picture</span>
+                                <span className="text-xs font-normal text-[#8a7b6a]">
+                                  Still photo only — never video
+                                </span>
+                                <input
+                                  type="file"
+                                  accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                                  capture="user"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (f) processSupportingCharacterPhoto(character.id, f);
+                                    e.currentTarget.value = "";
+                                  }}
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
-                <p className="text-xs text-center text-gray-400">
-                  Real AI output · Your child becomes the illustrated hero
+              )}
+            </section>
+
+            {/* ── 3. Hero photo + voice ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+              <div>
+                <h2 className="font-serif text-xl text-[#1f1a16] mb-1">
+                  Add a photo when you&apos;re ready
+                </h2>
+                <p className="text-sm text-[#695f54]">
+                  We use the photo as a reference for AI-assisted illustration,
+                  then hand-review the proof before anything prints.
                 </p>
               </div>
-            )}
+              <div className="rounded-2xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-4 py-3 text-sm text-[#1f1a16]">
+                {PHOTO_UPLOAD_HELP}
+              </div>
 
-            {/* Upload zone / preview */}
-            {form.photoDataUrl ? (
-              <div className="space-y-3">
-                <div className="relative rounded-xl overflow-hidden border-2 border-deep-gold shadow-md">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={form.photoDataUrl}
-                    alt="Uploaded photo"
-                    className="w-full max-h-72 object-contain bg-gray-50"
-                  />
-                  <div className="absolute inset-0 flex items-end p-3 pointer-events-none">
-                    <span className="bg-forest/80 text-white text-xs font-semibold px-3 py-1 rounded-full">
-                      ✨ {form.childName ? `${form.childName} becomes` : 'Your child becomes'} the hero
+              {/* Sample teaser — shown before upload */}
+              {!form.photoDataUrl && (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-[#8a7b6a] uppercase tracking-widest text-center">
+                    What your proof includes
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-[0.85fr_1.15fr]">
+                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src="/assets/real-photo-demo.png"
+                        alt="Example reference photo used for a personalized book"
+                        className="h-40 w-full object-cover sm:h-full"
+                      />
+                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                        Uploaded photo
+                      </div>
+                    </div>
+                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src="/assets/storybook-transform-demo.png"
+                        alt="Example storybook illustration created from the uploaded photo"
+                        className="h-40 w-full object-cover sm:h-full"
+                      />
+                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                        Illustration proof
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-xs text-center text-[#8a7b6a]">
+                    Uploaded photo → storybook illustration · hand-reviewed before print
+                  </p>
+                </div>
+              )}
+
+              {/* Upload zone / preview */}
+              {form.photoDataUrl ? (
+                <div className="space-y-3">
+                  <div className="relative rounded-2xl overflow-hidden border-2 border-[#a64c4c] shadow-md">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={form.photoDataUrl}
+                      alt="Uploaded photo"
+                      className="w-full max-h-72 object-contain bg-[#f5ead2]"
+                    />
+                    <div className="absolute inset-0 flex items-end p-3 pointer-events-none">
+                      <span className="bg-[#1f1a16]/80 text-white text-xs font-semibold px-3 py-1 rounded-full">
+                        ✨{" "}
+                        {form.childName
+                          ? `${form.childName} becomes`
+                          : "Your child becomes"}{" "}
+                        the hero
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForm((prev) => ({
+                          ...prev,
+                          photoFile: null,
+                          photoDataUrl: null,
+                        }));
+                      }}
+                      className="absolute top-2 right-2 bg-[#fffaf1]/90 hover:bg-[#fffaf1] text-[#1f1a16] text-xs font-semibold px-3 py-1.5 rounded-full shadow transition"
+                    >
+                      Change Photo
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm text-[#35564d] bg-[#eef4f1] border border-[#cfe0d8] rounded-lg px-3 py-2">
+                    <span>✅</span>
+                    <span className="font-medium">{form.photoFile?.name}</span>
+                    <span className="text-[#35564d] text-xs ml-auto">
+                      Ready for magic
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => { setForm(prev => ({ ...prev, photoFile: null, photoDataUrl: null })); }}
-                    className="absolute top-2 right-2 bg-white/90 hover:bg-white text-forest text-xs font-semibold px-3 py-1.5 rounded-full shadow transition"
+                  {/* Multi-person disambiguation for the main hero photo (text MVP) */}
+                  <div className="space-y-2 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] p-3">
+                    <p className="text-xs font-semibold text-[#1f1a16]">
+                      If this photo has multiple people, tell us who the hero is and where they are.
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <input
+                        type="text"
+                        value={form.heroPhotoFocusLabel}
+                        onChange={(e) =>
+                          set("heroPhotoFocusLabel", e.target.value.slice(0, 120))
+                        }
+                        placeholder={`Who is the hero? (e.g., ${form.childName || "Emma"} in the middle)`}
+                        className="w-full rounded-xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-3 py-2 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                      />
+                      <select
+                        value={form.heroPhotoCropHint}
+                        onChange={(e) => set("heroPhotoCropHint", e.target.value)}
+                        className="w-full rounded-xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-3 py-2 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                      >
+                        <option value="">Where in the photo? (optional)</option>
+                        <option value="only-person">Only one person</option>
+                        <option value="left">Left</option>
+                        <option value="center">Center</option>
+                        <option value="right">Right</option>
+                        <option value="top-left">Top-left</option>
+                        <option value="top-right">Top-right</option>
+                        <option value="bottom-left">Bottom-left</option>
+                        <option value="bottom-right">Bottom-right</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDragOver(true);
+                    }}
+                    onDragLeave={() => setDragOver(false)}
+                    onDrop={handleDrop}
+                    onClick={() => photoInputRef.current?.click()}
+                    className={`
+                    flex min-h-40 flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed cursor-pointer transition-all
+                    ${dragOver ? "border-[#a64c4c] bg-[#a64c4c]/10 scale-[1.01]" : "border-[#d8c6a2] hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]"}
+                  `}
                   >
-                    Change Photo
-                  </button>
-                </div>
-                <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
-                  <span>✅</span>
-                  <span className="font-medium">{form.photoFile?.name}</span>
-                  <span className="text-green-600 text-xs ml-auto">Ready for magic</span>
-                </div>
-              </div>
-            ) : (
-              <div
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={handleDrop}
-                onClick={() => photoInputRef.current?.click()}
-                className={`
-                  flex flex-col items-center justify-center gap-3 min-h-40 rounded-xl border-2 border-dashed cursor-pointer transition-all
-                  ${dragOver ? 'border-deep-gold bg-deep-gold/5 scale-[1.01]' : 'border-gray-300 hover:border-deep-gold/60 hover:bg-gray-50'}
-                `}
-              >
-                <input
-                  ref={photoInputRef}
-                  type="file"
-                  accept="image/*,.heic,.heif"
-                  className="hidden"
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) processPhoto(f); }}
-                />
-                <span className="text-5xl">{dragOver ? '🌟' : '📸'}</span>
-                <div className="text-center">
-                  <p className="font-semibold text-forest">{dragOver ? 'Drop it here!' : 'Click to Upload'}</p>
-                  <p className="text-sm text-gray-400 mt-0.5">or drag &amp; drop · JPG, PNG, WebP, HEIC</p>
-                </div>
-              </div>
-            )}
+                    <input
+                      ref={photoInputRef}
+                      type="file"
+                      accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) processPhoto(f);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                    <span className="text-5xl">{dragOver ? "🌟" : "📸"}</span>
+                    <div className="text-center">
+                      <p className="font-semibold text-[#1f1a16]">
+                        {dragOver ? "Drop it here!" : "Upload picture"}
+                      </p>
+                      <p className="mt-0.5 px-2 text-sm leading-5 text-[#8a7b6a]">
+                        Drag &amp; drop · JPG/PNG/WebP/HEIC
+                      </p>
+                    </div>
+                  </div>
 
-            <p className="text-xs text-center text-gray-400">
-              🔒 Photos processed securely · Used only for your order · Add it later if you need to
-            </p>
+                  <label className="flex min-h-40 cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-5 text-center transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
+                    <span className="text-5xl">🤳</span>
+                    <span className="font-semibold text-[#1f1a16]">Take a picture</span>
+                    <span className="px-2 text-sm leading-5 text-[#8a7b6a]">
+                      Opens your phone camera · still photo only, never video
+                    </span>
+                    <input
+                      type="file"
+                      accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                      capture="user"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) processPhoto(f);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
 
-            {guidedCaptureEnabled && (
-              <GuidedPhotoCapture
-                heroName={form.childName}
-                frames={guidedFrames}
-                consent={guidedConsent}
-                onConsentChange={setGuidedConsent}
-                onFramesChange={setGuidedFrames}
-              />
-            )}
-          </section>
-
-          {VOICE_BETA_ENABLED && (
-            <VoiceRecorderSection
-              voiceFile={form.voiceFile}
-              voicePreviewUrl={form.voicePreviewUrl}
-              voiceSource={form.voiceSource}
-              voiceConsent={form.voiceConsent}
-              onVoiceChange={(file, previewUrl, source) =>
-                setForm((prev) => ({
-                  ...prev,
-                  voiceFile: file,
-                  voicePreviewUrl: previewUrl,
-                  voiceSource: source,
-                  voiceConsent: file ? prev.voiceConsent : false,
-                }))
-              }
-              onConsentChange={(consent) => setForm((prev) => ({ ...prev, voiceConsent: consent }))}
-            />
-          )}
-
-          {/* ── 6. Order Summary ── */}
-          <section className="bg-lavender rounded-2xl border border-gray-200 p-6 shadow-sm">
-            <h3 className="font-semibold text-forest mb-4">Order Summary</h3>
-            <div className="space-y-2 text-sm text-gray-700">
-              {form.theme && (
-                <div className="flex justify-between">
-                  <span>Adventure</span>
-                  <span className="font-medium">{THEMES.find(t => t.id === form.theme)?.emoji} {THEMES.find(t => t.id === form.theme)?.label}</span>
-                </div>
-              )}
-              {form.childName && (
-                <div className="flex justify-between">
-                  <span>Hero</span>
-                  <span className="font-medium">{form.childName}{form.childAge ? `, age ${form.childAge}` : ''}</span>
-                </div>
-              )}
-              {form.lesson && (
-                <div className="flex justify-between">
-                  <span>Lesson</span>
-                  <span className="font-medium">{LESSONS.find(l => l.id === form.lesson)?.emoji} {LESSONS.find(l => l.id === form.lesson)?.label}</span>
-                </div>
-              )}
-              {form.occasion && (
-                <div className="flex justify-between">
-                  <span>Occasion</span>
-                  <span className="font-medium">{OCCASIONS.find(o => o.id === form.occasion)?.label}</span>
-                </div>
-              )}
-              <div className="flex justify-between">
-                <span>Format</span>
-                <span className="font-medium">{selectedFormat.label}</span>
-              </div>
-              <div className="mt-2 text-xs text-gray-500 bg-white/60 rounded-lg px-3 py-2">
-                {selectedFormat.delivery}
-              </div>
-              {guidedCaptureEnabled && guidedFrames.length > 0 && (
-                <div className="flex justify-between">
-                  <span>Guided stills</span>
-                  <span className="font-medium">{guidedFrames.length} reference photo{guidedFrames.length === 1 ? '' : 's'}</span>
-                </div>
-              )}
-              {form.bookFormat !== 'digital' && (
-                <div className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
-                  {PRINT_PREVIEW_PROMISE}
-                </div>
-              )}
-              <div className="flex justify-between pt-3 border-t border-gray-300 mt-2">
-                <span className="font-semibold text-base">Total</span>
-                <span className="font-bold text-xl text-deep-gold">{selectedFormat.price}</span>
-              </div>
+              <p className="text-xs text-center text-[#8a7b6a]">
+                🔒 Photos processed securely · Never used to train AI · Add it
+                later if you need to
+              </p>
               <div className="mt-3 rounded-lg border border-deep-gold/30 bg-deep-gold/5 px-3 py-2 text-xs text-forest">
                 <span className="font-semibold">🎟️ Promo code?</span> {PROMO_CODE_HELP}
               </div>
-            </div>
-          </section>
 
-          {/* ── 7. Submit ── */}
-          <div className="space-y-3 pb-10">
-            <button
-              type="submit"
-              disabled={isSubmitting || !form.theme || !form.childName || !form.email || !form.skinTone || !form.hairStyle || (VOICE_BETA_ENABLED && form.voiceFile != null && !form.voiceConsent)}
-              className="w-full py-4 rounded-xl font-bold text-lg transition-all
-                bg-deep-gold hover:bg-deep-gold/90 text-white shadow-md hover:shadow-lg hover:-translate-y-0.5
-                disabled:opacity-50 disabled:cursor-not-allowed disabled:translate-y-0 disabled:shadow-none"
-            >
-              {isSubmitting ? '⏳ Processing…' : `Continue to Preview & Payment — ${selectedFormat.price}`}
-            </button>
-            <p className="text-xs text-center text-gray-400">
-              🔒 Secured by Stripe &nbsp;·&nbsp; Print books include proof approval before printing &nbsp;·&nbsp; Your data is never shared
-            </p>
+              {guidedCaptureEnabled && (
+                <GuidedPhotoCapture
+                  heroName={form.childName}
+                  frames={guidedFrames}
+                  consent={guidedConsent}
+                  onConsentChange={setGuidedConsent}
+                  onFramesChange={setGuidedFrames}
+                />
+              )}
+            </section>
+
+            {STORY_UPLOAD_ENABLED && (
+              <VoiceRecorderSection
+                voiceFile={form.voiceFile}
+                voicePreviewUrl={form.voicePreviewUrl}
+                voiceSource={form.voiceSource}
+                voiceConsent={form.voiceConsent}
+                onVoiceChange={(file, previewUrl, source) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    theme: file && !prev.theme ? "custom-voice-story" : prev.theme,
+                    voiceFile: file,
+                    voicePreviewUrl: previewUrl,
+                    voiceSource: source,
+                    voiceConsent: file ? prev.voiceConsent : false,
+                  }))
+                }
+                onConsentChange={(consent) =>
+                  setForm((prev) => ({ ...prev, voiceConsent: consent }))
+                }
+              />
+            )}
+
+            {/* ── 4. Format + Delivery ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+              <h2 className="font-serif text-2xl text-[#1f1a16]">
+                Choose your format
+              </h2>
+              {showFathersDayReminder && (
+                <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
+                  <strong>Father&apos;s Day order-by date: {fathersDay.safeOrderDateLabel}.</strong>{" "}
+                  Digital arrives same-day after proof approval; printed books depend on proof timing and carrier delivery.
+                </div>
+              )}
+              <div className="space-y-3">
+                {FORMATS.map((fmt) => (
+                  <button
+                    key={fmt.id}
+                    type="button"
+                    onClick={() => {
+                      set("bookFormat", fmt.id);
+                      track("format_selected", { format: fmt.id });
+                    }}
+                    className={`
+                    w-full rounded-2xl border-2 p-4 text-left transition-all cursor-pointer
+                    ${
+                      form.bookFormat === fmt.id
+                        ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30 shadow-sm"
+                        : "border-[#dfd2b8] hover:border-[#d8c6a2]"
+                    }
+                  `}
+                  >
+                    <div className="flex items-start gap-3 sm:gap-4">
+                      <span className="min-w-[4.5rem] flex-shrink-0 rounded-full border border-[#dfd2b8] bg-[#fffaf1] px-2 py-1 text-center text-[10px] font-bold uppercase tracking-[0.12em] text-[#695f54] sm:min-w-[5.5rem] sm:text-xs">
+                        {fmt.icon}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <p className="font-bold leading-5 text-[#1f1a16]">
+                            {fmt.label}
+                          </p>
+                          {fmt.badge && (
+                            <span className="rounded-full bg-[#a64c4c] px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-white sm:text-xs">
+                              {fmt.badge}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm leading-5 text-[#695f54]">
+                          ⚡ {fmt.delivery}
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-[#8a7b6a]">
+                          {fmt.deliveryDetail}
+                        </p>
+                      </div>
+                      <span className="hidden flex-shrink-0 font-bold text-xl text-[#1f1a16] sm:block">
+                        {fmt.price}
+                      </span>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between border-t border-[#dfd2b8] pt-3 sm:hidden">
+                      <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[#695f54]">
+                        Total
+                      </span>
+                      <span className="font-bold text-xl text-[#1f1a16]">
+                        {fmt.price}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            {/* ── 5. Email + Preview Promise ── */}
+            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+              <div>
+                <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
+                  Where should we send everything?
+                </h2>
+                <p className="text-sm text-[#695f54]">
+                  We&apos;ll send your confirmation, delivery updates, and any
+                  preview approval steps here.
+                </p>
+              </div>
+              <input
+                id="email"
+                type="email"
+                value={form.email}
+                onChange={(e) => set("email", e.target.value)}
+                placeholder="your@email.com"
+                required
+                className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+              />
+              <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm text-[#35564d]">
+                ✨ {PRINT_PREVIEW_PROMISE}
+              </div>
+              {missingSupportingPhotoLabels.length > 0 && (
+                <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
+                  Add a still reference photo for {missingSupportingPhotoLabels.join(", ")} before payment. Pets are optional; human family members need a photo so the proof can match them.
+                </div>
+              )}
+
+            </section>
+
           </div>
 
+          <aside className="space-y-5 lg:sticky lg:top-6">
+            <section className="rounded-[1.5rem] border border-[#d8c6a2] bg-[#fbf6e9] p-5 shadow-[0_24px_70px_-58px_rgba(36,25,20,0.65)]">
+              <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.22em] text-[#8a7663]">
+                Your book
+              </p>
+              <h1 className="font-serif text-2xl font-semibold italic leading-tight text-[#a64c4c]">
+                {coverTitle}
+              </h1>
+
+              <div className="mt-5 grid grid-cols-[84px,1fr] gap-4">
+                <div className="relative aspect-[3/4] overflow-hidden rounded-lg border border-[#d8c6a2] bg-[#d8b98f] shadow-lg">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={selectedSampleImage}
+                    alt="Book preview"
+                    className="h-full w-full object-cover opacity-80"
+                  />
+                  <div className="absolute inset-0 bg-[#a66c43]/35" />
+                  <div className="absolute inset-x-2 top-4 text-center font-serif text-[11px] italic leading-4 text-[#fff8ec]">
+                    {coverTitle}
+                  </div>
+                  <div className="absolute inset-x-2 bottom-4 text-center text-[8px] uppercase tracking-[0.18em] text-[#fff8ec]/80">
+                    starring {heroName}
+                  </div>
+                </div>
+
+                <dl className="grid grid-cols-2 gap-x-5 gap-y-3 text-sm">
+                  <div>
+                    <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
+                      Occasion
+                    </dt>
+                    <dd className="mt-1 font-semibold text-[#241914]">
+                      {selectedOccasion?.label ?? "—"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
+                      Format
+                    </dt>
+                    <dd className="mt-1 font-semibold text-[#241914]">
+                      {printFormat}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
+                      Starring
+                    </dt>
+                    <dd className="mt-1 font-semibold text-[#241914]">
+                      {heroName}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
+                      Book pages
+                    </dt>
+                    <dd className="mt-1 font-semibold text-[#241914]">
+                      {bookPageCount} total · {illustratedStoryPageCount} illustrated
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
+                      Photos
+                    </dt>
+                    <dd className="mt-1 font-semibold text-[#241914]">
+                      {form.photoFile ? "1 photo" : "Add later"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
+                      Family
+                    </dt>
+                    <dd className="mt-1 font-semibold text-[#241914]">
+                      {form.familyCharacters.length
+                        ? `${form.familyCharacters.length} added`
+                        : "Optional"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
+                      Shipping
+                    </dt>
+                    <dd className="mt-1 font-semibold text-[#a64c4c]">
+                      {form.bookFormat === "digital" ? "None" : "US, included"}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] p-4">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="font-serif text-xl font-semibold text-[#241914]">
+                      Order summary
+                    </h2>
+                    <p className="mt-1 text-sm text-[#6e6154]">
+                      {lessonSummary
+                        ? `${lessonSummary} story`
+                        : "Personalized story"}
+                      {occasionSummary ? ` · ${occasionSummary}` : ""}
+                    </p>
+                  </div>
+                  <span className="font-bold text-[#241914]">
+                    {selectedFormat?.price ?? "—"}
+                  </span>
+                </div>
+                <div className="space-y-2 border-t border-[#d8c6a2] pt-3 text-sm text-[#6e6154]">
+                  <div className="flex justify-between gap-3">
+                    <span>{printFormat}</span>
+                    <span className="font-semibold text-[#241914]">
+                      {selectedFormat?.price ?? "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                      <span>Book pages</span>
+                    <span className="font-semibold text-[#241914]">
+                      {bookPageCount} total
+                      <span className="ml-1 font-normal text-[#6e6154]">
+                        ({illustratedStoryPageCount} illustrated story pages)
+                      </span>
+                    </span>
+                  </div>
+                  {form.familyCharacters.length > 0 && (
+                    <div className="flex justify-between gap-3">
+                      <span>Supporting characters</span>
+                      <span className="font-semibold text-[#241914]">
+                        {form.familyCharacters.length}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between gap-3">
+                    <span>
+                      Shipping {form.bookFormat === "digital" ? "" : "(US)"}
+                    </span>
+                    <span className="font-semibold text-[#a64c4c]">
+                      {form.bookFormat === "digital" ? "—" : "Included"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between border-t border-[#d8c6a2] pt-3 text-lg text-[#241914]">
+                    <span className="font-serif font-semibold">Total</span>
+                    <span className="font-bold">{totalPrice}</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-[1.5rem] border border-[#d8c6a2] bg-[#ead8b8] p-5 text-[#241914]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#a64c4c]">
+                What happens next
+              </p>
+              <h2 className="mt-2 font-serif text-2xl font-semibold leading-tight">
+                Nothing prints until <em className="text-[#a64c4c]">you</em> say
+                so.
+              </h2>
+              <ol className="mt-5 space-y-4 text-sm leading-6 text-[#4f4035]">
+                <li className="flex gap-3">
+                  <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">
+                    1
+                  </span>
+                  <span>
+                    <strong className="block text-[#241914]">
+                      We send a digital proof
+                    </strong>
+                    Within 2 business days, you get a private link to review
+                    every page.
+                  </span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">
+                    2
+                  </span>
+                  <span>
+                    <strong className="block text-[#241914]">
+                      You review and reply
+                    </strong>
+                    Approve it as-is or ask us to revise wording, photo
+                    placement, or art.
+                  </span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">
+                    3
+                  </span>
+                  <span>
+                    <strong className="block text-[#241914]">
+                      Then we print or deliver
+                    </strong>
+                    Print books ship after approval; digital books are delivered
+                    right away.
+                  </span>
+                </li>
+              </ol>
+            </section>
+
+            <div className="space-y-3 pb-10">
+              {/* Disabled-CTA reason. Listed before the button so a screen
+                  reader / sighted reviewer immediately knows WHY the button
+                  is greyed instead of guessing. Computed from the same
+                  inputs that gate isReadyToPay. */}
+              {!isReadyToPay && !isSubmitting && (() => {
+                const missing: string[] = [];
+                if (!form.theme) missing.push('story');
+                if (!form.childName) missing.push("child's name");
+                if (!form.bookFormat) missing.push('format');
+                if (!form.email) missing.push('email');
+                if (!form.skinTone) missing.push('skin tone');
+                if (!form.hairStyle) missing.push('hair');
+                if (STORY_UPLOAD_ENABLED && form.voiceFile != null && !form.voiceConsent) {
+                  missing.push('story inspiration consent');
+                }
+                return (
+                  <p className="rounded-xl border border-deep-gold/40 bg-deep-gold/10 px-3 py-2 text-center text-xs font-medium text-navy">
+                    Finish these before continuing: {missing.join(' · ')}
+                  </p>
+                );
+              })()}
+              {/* Inline submit error. Shows the SPECIFIC server reason and
+                  reassures the customer nothing was saved or charged — so a
+                  failed submission (e.g. a voice-save abort) never looks like
+                  it went through. */}
+              {submitError && (
+                <div
+                  role="alert"
+                  aria-live="assertive"
+                  data-testid="submit-error"
+                  className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700"
+                >
+                  <p className="font-semibold">We couldn&apos;t start your order.</p>
+                  <p className="mt-1">{submitError}</p>
+                  <p className="mt-1 text-xs text-red-600">
+                    You have not been charged. If you recorded a voice note,
+                    download it from the section above before retrying so it
+                    isn&apos;t lost.
+                  </p>
+                </div>
+              )}
+              <button
+                type="submit"
+                disabled={isSubmitting || !isReadyToPay}
+                className="w-full rounded-2xl bg-deep-gold py-4 text-lg font-bold text-navy shadow-md transition-all hover:-translate-y-0.5 hover:bg-deep-gold/90 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
+              >
+                {isSubmitting
+                  ? "Processing…"
+                  : `Continue to secure payment${selectedFormat ? ` — ${selectedFormat.price}` : ""}`}
+              </button>
+              <p className="text-center text-xs leading-5 text-[#8a7b6a]">
+                Secured by Stripe · Proof approval before printing · Your data
+                is never shared
+              </p>
+            </div>
+          </aside>
         </form>
       </div>
     </main>

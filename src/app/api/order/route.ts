@@ -7,7 +7,9 @@ import {
   MAX_VOICE_BYTES,
   OrderPersistenceError,
   persistOrder,
+  sanitizeFamilyCharacters,
   uploadOrderPhoto,
+  uploadOrderSupportingPhoto,
   uploadOrderVoice,
 } from '@/lib/orders';
 import {
@@ -17,7 +19,6 @@ import {
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
-import { collectGuidedReferencePhotos } from '@/lib/guided-photo-capture';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -27,11 +28,43 @@ function getStripe() {
   return new Stripe(getRequiredStripeSecretKey());
 }
 
-const VOICE_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|flac|mp4)$/i;
+function familyCharacterLabel(character: ReturnType<typeof sanitizeFamilyCharacters>[number]): string {
+  return (character.name || character.relationshipLabel || character.role || 'family member').trim();
+}
 
-function isAcceptedVoiceFile(file: File): boolean {
+function isHumanSupportingCharacter(character: ReturnType<typeof sanitizeFamilyCharacters>[number]): boolean {
+  return character.role !== 'pet';
+}
+
+function missingSupportingCharacterPhotoLabels(
+  familyCharacters: ReturnType<typeof sanitizeFamilyCharacters>,
+  form: FormData,
+): string[] {
+  return familyCharacters
+    .map((character, index) => ({ character, index }))
+    .filter(({ character }) => character.appearsInStory !== false)
+    .filter(({ character }) => isHumanSupportingCharacter(character))
+    .filter(({ character, index }) => {
+      if (character.photoFileName || character.photoBlobPath || character.photoBlobUrl) return false;
+      const file = form.get(`familyCharacterPhoto_${index}`);
+      return !(file instanceof File) || file.size <= 0;
+    })
+    .map(({ character }) => familyCharacterLabel(character));
+}
+
+const AUDIO_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i;
+const INSPIRATION_DOC_EXT_RE = /\.(txt|pdf|doc|docx)$/i;
+
+function isAudioInspirationFile(file: File): boolean {
   if (file.type && file.type.startsWith('audio/')) return true;
-  if (file.name && VOICE_EXT_RE.test(file.name)) return true;
+  if (file.name && AUDIO_EXT_RE.test(file.name)) return true;
+  return false;
+}
+
+function isAcceptedInspirationFile(file: File): boolean {
+  if (isAudioInspirationFile(file)) return true;
+  if (['text/plain', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type)) return true;
+  if (file.name && INSPIRATION_DOC_EXT_RE.test(file.name)) return true;
   return false;
 }
 
@@ -78,7 +111,6 @@ export async function POST(request: Request) {
     const bookFormat = String(form.get('bookFormat') || 'classic').trim();
     const theme = String(form.get('theme') || '').trim();
     const childPronouns = String(form.get('childPronouns') || '').trim();
-
     // Structured appearance fields ride along inside the JSON
     // appearanceOptions blob from the form (kept as-is for backward
     // compatibility) AND as discrete top-level fields. The launch spec
@@ -114,9 +146,9 @@ export async function POST(request: Request) {
       }
 
       const voiceFile = voiceRaw as File;
-      if (!isAcceptedVoiceFile(voiceFile)) {
+      if (!isAcceptedInspirationFile(voiceFile)) {
         return NextResponse.json(
-          { error: 'Voice attachment must be an audio file.', code: 'voice_invalid_type' },
+          { error: 'Story inspiration attachment must be an audio, text, PDF, or Word document.', code: 'voice_invalid_type' },
           { status: 400 },
         );
       }
@@ -129,7 +161,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const missing = missingRequiredField({ theme, childName, email, skinTone, hairStyle, childPronouns });
+    const missing = missingRequiredField({ theme, childName, childPronouns, email, skinTone, hairStyle });
     if (missing !== null || !isValidEmail(email)) {
       const code = missing ? missingFieldErrorCode(missing) : 'email_invalid';
       return NextResponse.json(
@@ -144,14 +176,49 @@ export async function POST(request: Request) {
       );
     }
 
+    const familyCharactersRaw = String(form.get('familyCharacters') || '');
+    const familyCharacters = sanitizeFamilyCharacters(familyCharactersRaw);
+    const missingSupportingPhotos = missingSupportingCharacterPhotoLabels(familyCharacters, form);
+    if (missingSupportingPhotos.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Add a still reference photo for ${missingSupportingPhotos.join(', ')} before payment. No charge was made.`,
+          code: 'supporting_character_photo_required',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Fully-custom hero contract (Phase A). All optional + backward compatible:
+    // when the client only sends the legacy childName these stay empty and the
+    // order record derives heroName from childName. Non-child hero TYPES are not
+    // enabled in the Phase-A UI, so heroType defaults to 'child' in the record.
+    const heroName = String(form.get('heroName') || '').trim();
+    const heroType = String(form.get('heroType') || '').trim();
+    const heroAgeOrStage = String(form.get('heroAgeOrStage') || '').trim();
+    const recipientName = String(form.get('recipientName') || '').trim();
+    const recipientRelationship = String(form.get('recipientRelationship') || '').trim();
+    const storyPerspective = String(form.get('storyPerspective') || '').trim();
+    const heroPhotoFocusLabel = String(form.get('heroPhotoFocusLabel') || '').trim();
+    const heroPhotoCropHint = String(form.get('heroPhotoCropHint') || '').trim();
+
     const draftOrder = createOrderRecord({
       childName,
+      heroName: heroName || null,
+      heroType: heroType || null,
+      heroAgeOrStage: heroAgeOrStage || null,
+      recipientName: recipientName || null,
+      recipientRelationship: recipientRelationship || null,
+      storyPerspective: storyPerspective || null,
+      heroPhotoFocusLabel: heroPhotoFocusLabel || null,
+      heroPhotoCropHint: heroPhotoCropHint || null,
       childAge: String(form.get('childAge') || ''),
       theme,
       lesson: String(form.get('lesson') || ''),
       occasion: String(form.get('occasion') || ''),
       giftMessage: String(form.get('giftMessage') || ''),
       characterNotes: String(form.get('characterNotes') || ''),
+      familyCharacters: familyCharactersRaw,
       childPronouns: childPronouns === 'he/him' || childPronouns === 'she/her' || childPronouns === 'they/them' ? childPronouns as 'he/him' | 'she/her' | 'they/them' : '',
       appearanceOptions: appearanceRaw,
       bookFormat,
@@ -190,14 +257,47 @@ export async function POST(request: Request) {
       }
     }
 
-    const guidedPhotos = await collectGuidedReferencePhotos(form, draftOrder.id, {
-      upload: (orderId, _index, file) => uploadOrderPhoto(orderId, file),
-    });
-    if (!guidedPhotos.ok) {
-      return NextResponse.json(
-        { error: guidedPhotos.error || 'We could not securely save your guided reference photos. Please retry — no charge was made.', code: guidedPhotos.code },
-        { status: guidedPhotos.status || 400 },
-      );
+    const familyCharactersWithPhotos = [];
+    for (const [index, character] of familyCharacters.entries()) {
+      const familyPhoto = form.get(`familyCharacterPhoto_${index}`);
+      if (!(familyPhoto instanceof File) || familyPhoto.size <= 0) {
+        familyCharactersWithPhotos.push(character);
+        continue;
+      }
+      try {
+        const uploaded = await uploadOrderSupportingPhoto(draftOrder.id, index, familyPhoto);
+        familyCharactersWithPhotos.push({
+          ...character,
+          photoFileName: familyPhoto.name,
+          photoBlobPath: uploaded?.pathname ?? null,
+          photoBlobUrl: uploaded?.url ?? null,
+        });
+      } catch (error) {
+        if (error instanceof OrderPersistenceError) {
+          console.error(
+            `[order] ABORT BEFORE STRIPE: supporting photo persistence failed for ${draftOrder.id}: ${error.message}`,
+            error.cause,
+          );
+          return NextResponse.json(
+            {
+              error:
+                'We could not securely save one of your family or pet photos. Please retry — no charge was made.',
+              code: 'supporting_photo_persist_failed',
+            },
+            { status: 503 },
+          );
+        }
+        console.error(
+          `[order] supporting photo upload failed for ${draftOrder.id}; continuing without that photo`,
+          error,
+        );
+        familyCharactersWithPhotos.push({
+          ...character,
+          photoFileName: familyPhoto.name,
+          photoBlobPath: null,
+          photoBlobUrl: null,
+        });
+      }
     }
 
     let voiceBlobPath: string | null = null;
@@ -221,13 +321,21 @@ export async function POST(request: Request) {
             error.cause,
           );
           return NextResponse.json(
-            { error: 'We could not securely save your voice recording. Please retry — no charge was made.' },
+            {
+              error:
+                'We could not securely save your voice recording, so we stopped before payment. No charge was made and the recording was not saved — please download it from the checkout page and try again.',
+              code: 'voice_persist_failed',
+            },
             { status: 503 },
           );
         }
         console.error(`[order] voice upload failed for ${draftOrder.id}; aborting`, error);
         return NextResponse.json(
-          { error: 'We could not securely save your voice recording. Please retry — no charge was made.' },
+          {
+            error:
+              'We could not securely save your voice recording, so we stopped before payment. No charge was made and the recording was not saved — please download it from the checkout page and try again.',
+            code: 'voice_persist_failed',
+          },
           { status: 503 },
         );
       }
@@ -240,9 +348,9 @@ export async function POST(request: Request) {
     try {
       order = await persistOrder({
         ...draftOrder,
+        familyCharacters: familyCharactersWithPhotos,
         photoBlobPath,
         photoBlobUrl,
-        guidedReferencePhotos: guidedPhotos.records,
         voiceBlobPath,
         voiceBlobUrl,
         voiceConsentAt,
@@ -281,7 +389,9 @@ export async function POST(request: Request) {
       allow_promotion_codes: true,
       customer_email: order.email,
       client_reference_id: order.id,
-      metadata: { orderId: order.id },
+      metadata: {
+        orderId: order.id,
+      },
       line_items: [
         {
           price_data: {

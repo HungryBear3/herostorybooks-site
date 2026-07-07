@@ -42,6 +42,31 @@ export default async function AdminOrderDetail({ params }: Props) {
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
   const diagnostics = buildOrderDiagnostics(order);
   const supportSummary = formatDiagnosticsSummary(diagnostics);
+  const familyCharacters = Array.isArray(order.familyCharacters) ? order.familyCharacters : [];
+  const previewText = (value: string | null | undefined, max = 240) => {
+    const text = (value ?? '').trim();
+    if (!text) return null;
+    return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  };
+  const storyInput = {
+    theme: order.theme ?? null,
+    hasCustomText: Boolean((order.lesson ?? '').trim() || (order.giftMessage ?? '').trim() || (order.characterNotes ?? '').trim()),
+    lesson: order.lesson ?? null,
+    occasion: order.occasion ?? null,
+    giftMessagePreview: previewText(order.giftMessage),
+    characterNotesPreview: previewText(order.characterNotes),
+    hasVoiceOrUpload: Boolean(order.voiceFileName || order.voiceBlobPath || order.voiceConsentAt || order.voiceTranscript),
+    voiceSource: order.voiceSource ?? null,
+    voiceFileName: order.voiceFileName ?? null,
+    voiceBlobPath: order.voiceBlobPath ?? null,
+    voiceConsentAt: order.voiceConsentAt ?? null,
+    transcriptStatus: order.voiceTranscript?.status ?? 'not_enabled',
+    transcriptModel: order.voiceTranscript?.model ?? null,
+    inspirationPreview: previewText(order.voiceTranscript?.inspiration, 400),
+    transcriptPreview: previewText(order.voiceTranscript?.text, 400),
+    transcriptChars: order.voiceTranscript?.text?.length ?? null,
+    transcriptError: order.voiceTranscript?.error ?? null,
+  };
 
   return (
     <div className="min-h-screen bg-cream px-4 py-8">
@@ -88,7 +113,14 @@ export default async function AdminOrderDetail({ params }: Props) {
         </section>
 
         <Section title="Order">
-          <Row label="Child name" value={order.childName} />
+          <Row label="Legacy child name" value={order.childName} />
+          <Row label="Hero name" value={order.heroName ?? order.childName} />
+          <Row label="Hero type" value={order.heroType ?? 'child'} />
+          <Row label="Hero age / stage" value={order.heroAgeOrStage ?? order.childAge ?? '—'} />
+          <Row label="Book recipient" value={order.recipientName ?? '—'} />
+          <Row label="Hero relationship to recipient" value={order.recipientRelationship ?? '—'} />
+          <Row label="Main photo focus" value={order.heroPhotoFocusLabel ?? '—'} />
+          <Row label="Main photo crop hint" value={order.heroPhotoCropHint ?? '—'} />
           <Row label="Email" value={order.email} />
           <Row label="Format" value={order.formatLabel} />
           <Row label="Price" value={`$${(order.priceCents / 100).toFixed(2)}`} />
@@ -102,6 +134,64 @@ export default async function AdminOrderDetail({ params }: Props) {
           <Row label="Created" value={order.createdAt} />
           <Row label="Updated" value={order.updatedAt} />
         </Section>
+
+        <Section title="Story source + input">
+          <Row label="Story source" value={diagnostics.story.source ?? 'unknown'} tone={diagnostics.story.source === 'template_after_openai_failure' ? 'bad' : 'neutral'} />
+          <Row label="Story model" value={diagnostics.story.model ?? '—'} mono />
+          <Row label="Story generated" value={diagnostics.story.generatedAt ?? '—'} />
+          {diagnostics.story.fallbackError && (
+            <Row label="Fallback reason" value={diagnostics.story.fallbackError} tone="bad" />
+          )}
+          <Row label="Custom story selected" value={storyInput.theme === 'custom-voice-story' ? 'yes' : 'no'} />
+          <Row label="Custom text present" value={storyInput.hasCustomText ? 'yes' : 'no'} />
+          <Row label="Story direction" value={storyInput.theme ?? '—'} />
+          <Row label="Custom story lesson" value={storyInput.lesson ?? '—'} />
+          <Row label="Occasion" value={storyInput.occasion ?? '—'} />
+          <Row label="Gift message" value={storyInput.giftMessagePreview ?? '—'} />
+          <Row label="Character notes" value={storyInput.characterNotesPreview ?? '—'} />
+          <Row label="Inspiration upload present" value={storyInput.hasVoiceOrUpload ? 'yes' : 'no'} />
+          {storyInput.hasVoiceOrUpload && (
+            <>
+              <Row label="Upload source" value={storyInput.voiceSource ?? 'uploaded/unknown'} />
+              <Row label="Upload file" value={storyInput.voiceFileName ?? '—'} />
+              <Row label="Upload blob path" value={storyInput.voiceBlobPath ?? '—'} mono />
+              <Row label="Consent recorded" value={storyInput.voiceConsentAt ?? '—'} />
+              <Row label="Transcript status" value={storyInput.transcriptStatus} tone={storyInput.transcriptStatus === 'failed' ? 'bad' : 'neutral'} />
+              <Row label="Transcript model" value={storyInput.transcriptModel ?? '—'} mono />
+              <Row label="Story inspiration" value={storyInput.inspirationPreview ?? '—'} />
+              <Row
+                label="Transcript preview"
+                value={
+                  storyInput.transcriptPreview
+                    ? `${storyInput.transcriptPreview}${storyInput.transcriptChars != null ? ` (${storyInput.transcriptChars} chars)` : ''}`
+                    : '—'
+                }
+              />
+              {storyInput.transcriptError && (
+                <Row label="Transcript error" value={storyInput.transcriptError} tone="bad" />
+              )}
+            </>
+          )}
+        </Section>
+
+        {familyCharacters.length > 0 && (
+          <Section title="People, pets, and identity inputs">
+            {familyCharacters.map((character, index) => (
+              <div key={`${character.role}-${character.name}-${index}`} className="mb-3 rounded-lg border border-gray-100 p-3 last:mb-0">
+                <Row label={`Character ${index + 1}`} value={character.name || character.relationshipLabel || character.role} />
+                <Row label="Role / relationship" value={`${character.role} · ${character.relationshipLabel || '—'}`} />
+                <Row label="Story wording" value={character.pronouns || '—'} />
+                <Row label="Appears in story" value={character.appearsInStory ? 'yes' : 'no'} />
+                <Row label="Gift recipient" value={character.isGiftRecipient ? 'yes' : 'no'} />
+                <Row label="Notes" value={character.notes || '—'} />
+                <Row label="Reference photo" value={character.photoFileName || character.photoBlobPath || '—'} mono={Boolean(character.photoBlobPath)} />
+                <Row label="Photo focus" value={character.focusPersonLabel ?? '—'} />
+                <Row label="Photo crop hint" value={character.cropHint ?? '—'} />
+              </div>
+            ))}
+          </Section>
+        )}
+
 
         <Section title="Payment">
           <Row label="Status" value={order.paymentStatus} tone={order.paymentStatus === 'paid' ? 'good' : 'neutral'} />
@@ -164,15 +254,20 @@ export default async function AdminOrderDetail({ params }: Props) {
                     {p.generationProvider && (
                       <span className="text-gray-500">last: {p.generationProvider}/{p.generationModel ?? '—'}</span>
                     )}
+                    {p.customerReviewStatus === 'changes_requested' && (
+                      <span className="inline-block px-2 py-0.5 rounded-full bg-amber-100 text-amber-900">customer changes</span>
+                    )}
                   </summary>
-                  <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <div className="mt-2 grid gap-3 sm:grid-cols-3">
                     <div>
                       <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Current image</p>
-                      {p.currentImageUrl ? (
+                      {p.currentImageUrl ? (<>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={p.currentImageUrl} alt={`Current page ${p.pageIndex + 1}`} className="mb-1 h-28 w-full rounded border border-gray-100 object-cover" />
                         <a href={p.currentImageUrl} target="_blank" rel="noopener" className="text-forest underline break-all">
                           {p.currentImageUrl}
                         </a>
-                      ) : <span className="text-gray-400">—</span>}
+                      </>) : <span className="text-gray-400">—</span>}
                       {p.acceptedImageUrl && p.acceptedImageUrl !== p.currentImageUrl && (
                         <p className="mt-1 text-gray-500">accepted: <a className="underline break-all" href={p.acceptedImageUrl} target="_blank" rel="noopener">{p.acceptedImageUrl}</a></p>
                       )}
@@ -180,6 +275,16 @@ export default async function AdminOrderDetail({ params }: Props) {
                     <div>
                       <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Story text</p>
                       <p className="text-gray-700 line-clamp-4">{p.storyText}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Requested change</p>
+                      {p.customerRequestedChange ? (
+                        <div className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-950">
+                          <p className="font-semibold">{p.customerRequestedChange.lifecycleStatus.replace(/_/g, ' ')}</p>
+                          <p className="mt-1">{p.customerRequestedChange.note}</p>
+                          <p className="mt-1 text-[10px] text-amber-800">{new Date(p.customerRequestedChange.requestedAt).toLocaleString()}</p>
+                        </div>
+                      ) : <span className="text-gray-400">—</span>}
                     </div>
                   </div>
                   {p.feedbackHistory.length > 0 && (
@@ -198,6 +303,26 @@ export default async function AdminOrderDetail({ params }: Props) {
                   {p.versionHistory.length > 0 && (
                     <div className="mt-3">
                       <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">Version history ({p.versionHistory.length})</p>
+                      <div className="mb-2 grid gap-2 sm:grid-cols-2">
+                        {p.versionHistory.slice(-2).map((v, i, versions) => (
+                          <div key={`${v.createdAt}-${i}`} className="rounded border border-gray-100 bg-gray-50 p-2">
+                            <p className="mb-1 text-[10px] uppercase tracking-wider text-gray-400">
+                              {versions.length === 1 || i === versions.length - 1 ? 'Current render' : 'Prior render'}
+                            </p>
+                            {v.imageUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={v.imageUrl} alt={`Render ${i + 1} for page ${p.pageIndex + 1}`} className="h-32 w-full rounded object-cover" />
+                            ) : (
+                              <div className="flex h-32 items-center justify-center rounded bg-white text-gray-400">no image</div>
+                            )}
+                            {v.referencePhotoUrl && (
+                              <a href={v.referencePhotoUrl} target="_blank" rel="noopener" className="mt-1 block truncate text-forest underline">
+                                reference/photo/context
+                              </a>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                       <ul className="space-y-1 font-mono text-[10px] text-gray-600">
                         {p.versionHistory.map((v, i) => (
                           <li key={i} className="break-all">

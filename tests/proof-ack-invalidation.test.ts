@@ -27,6 +27,7 @@ import type { ImageProvider } from '../src/lib/image-provider-types.ts';
 function makeTmp() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-ack-invalidation-'));
   process.env.HSB_ORDER_STORE_DIR = dir;
+  process.env.HSB_ENABLE_OPENAI_IMAGE = 'true';
   delete process.env.BLOB_READ_WRITE_TOKEN;
   delete process.env.HSB_REQUIRE_DURABLE_PERSISTENCE;
   return dir;
@@ -34,6 +35,7 @@ function makeTmp() {
 function cleanup(dir: string) {
   rmSync(dir, { recursive: true, force: true });
   delete process.env.HSB_ORDER_STORE_DIR;
+  delete process.env.HSB_ENABLE_OPENAI_IMAGE;
 }
 
 function pageFixture(i: number, overrides: Partial<PageArtifact> = {}): PageArtifact {

@@ -200,18 +200,19 @@ test('checkout source reads NEXT_PUBLIC_HSB_VOICE_BETA feature flag', () => {
   assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_VOICE_BETA/);
 });
 
-test('checkout source mounts VoiceRecorderSection ONLY when flag is on', () => {
-  assert.match(CHECKOUT_SRC, /VOICE_BETA_ENABLED && \(\s*<VoiceRecorderSection/);
+test('checkout source mounts VoiceRecorderSection ONLY when a story-upload flag is on', () => {
+  assert.match(CHECKOUT_SRC, /STORY_UPLOAD_ENABLED && \(\s*<VoiceRecorderSection/);
+  assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
 });
 
-test('checkout source attaches voice fields to FormData only when flag is on', () => {
-  // The single FormData wiring block must be guarded by VOICE_BETA_ENABLED.
+test('checkout source attaches voice fields to FormData only when story upload is on', () => {
+  // The single FormData wiring block must be guarded by STORY_UPLOAD_ENABLED.
   assert.match(
     CHECKOUT_SRC,
-    /if \(VOICE_BETA_ENABLED && form\.voiceFile\) \{[\s\S]*?payload\.set\('voice',/,
+    /if \(STORY_UPLOAD_ENABLED && form\.voiceFile\) \{[\s\S]*?payload\.set\(['"]voice['"],/,
   );
-  assert.match(CHECKOUT_SRC, /payload\.set\('voiceConsent'/);
-  assert.match(CHECKOUT_SRC, /payload\.set\('voiceSource'/);
+  assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceConsent['"]/);
+  assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceSource['"]/);
 });
 
 test('checkout source blocks submit when voice attached without consent', () => {

@@ -421,6 +421,108 @@ export function firstNameOnly(order: OrderRecord): string {
   return sanitizeInput(order.childName, 60).split(/\s+/)[0] || 'Your Child';
 }
 
+/**
+ * Hero-type-aware display name. Phase-A groundwork for the fully-custom
+ * checkout: reads the new `heroName` contract field but falls back to the
+ * legacy `childName` so existing orders are unchanged. Non-child hero TYPES
+ * are NOT enabled in checkout yet, so in practice this resolves to the child's
+ * name today. When adult/grandparent heroes are later enabled, the generator
+ * templates must be made hero-type aware BEFORE those options ship (see
+ * heroDescriptor + docs/plans/2026-07-06-fully-custom-checkout.md).
+ */
+export function heroDisplayName(order: OrderRecord): string {
+  const hero = sanitizeInput(order.heroName ?? '', 60).trim();
+  if (hero) return hero;
+  return sanitizeInput(order.childName, 60) || 'Your Child';
+}
+
+/**
+ * Neutral, hero-type-aware descriptor phrase used to stop hardcoded
+ * "child named X" framing from leaking onto a non-child hero. Phase A only
+ * enables the 'child' branch in checkout; every other branch is groundwork and
+ * MUST be validated end-to-end before the matching hero type is exposed.
+ */
+export function heroDescriptor(order: OrderRecord): string {
+  const type = sanitizeInput(order.heroType ?? 'child', 24).toLowerCase();
+  switch (type) {
+    case 'parent':
+    case 'grandparent':
+    case 'other':
+      // Groundwork only — not reachable from Phase-A checkout.
+      return 'the hero';
+    case 'pet':
+      return 'the animal hero';
+    case 'whole-family':
+      return 'the family';
+    case 'sibling':
+    case 'child':
+    default:
+      return 'the child hero';
+  }
+}
+
+/**
+ * Bounded "voice inspiration" prompt block for the optional consented voice
+ * note (see voice-transcription.ts). Returns '' whenever there is no usable
+ * inspiration — feature off, no voice, or a failed transcription (error marker
+ * with null inspiration) — so the prompt is byte-identical to the pre-voice
+ * behavior in every existing path. When present, it instructs the prose model
+ * to mine the bounded text for preferences, favorite phrases, emotional tone,
+ * adventure ideas, and people/objects mentioned, while forbidding verbatim
+ * quoting or referencing the recording in the story.
+ */
+export function voiceInspirationBlock(order: OrderRecord): string {
+  const inspiration = sanitizeInput(order.voiceTranscript?.inspiration, 600);
+  if (!inspiration) return '';
+  return (
+    `\n\nVOICE NOTE INSPIRATION (optional, consent-given source material — ` +
+    `use it to shape the child's preferences, favorite phrases, emotional tone, ` +
+    `adventure ideas, and any people or objects they mention; do NOT quote it ` +
+    `verbatim, do NOT invent facts beyond it, and never mention a recording, ` +
+    `microphone, or audio in the story): ${inspiration}`
+  );
+}
+
+export function familyCharactersBlock(order: OrderRecord): string {
+  const characters = Array.isArray(order.familyCharacters)
+    ? order.familyCharacters
+        .filter((character) => character?.appearsInStory !== false)
+        .slice(0, 4)
+    : [];
+  if (characters.length === 0) return '';
+
+  const lines = characters.map((character) => {
+    const name = sanitizeInput(character.name, 80);
+    const relationship = sanitizeInput(character.relationshipLabel, 80) || sanitizeInput(character.role, 40);
+    const pronouns = sanitizeInput(character.pronouns, 32);
+    const notes = sanitizeInput(character.notes, 180);
+    const gift = character.isGiftRecipient ? ' Gift recipient.' : '';
+    const focus = sanitizeInput(character.focusPersonLabel ?? '', 120);
+    const crop = sanitizeInput(character.cropHint ?? '', 40);
+    const focusNote = focus || crop
+      ? ` Photo focus: ${[focus, crop && `(${crop})`].filter(Boolean).join(' ')}.`
+      : '';
+    const photo = character.photoBlobUrl || character.photoBlobPath || character.photoFileName
+      ? ` Supporting reference photo attached for operator review.${focusNote}`
+      : '';
+    return [
+      relationship ? `- ${relationship}` : '- Supporting character',
+      name ? `named ${name}` : '',
+      pronouns ? `(${pronouns})` : '',
+      notes ? `— ${notes}` : '',
+      gift,
+      photo,
+    ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  });
+
+  return (
+    `\n\nSUPPORTING FAMILY / PET CHARACTERS (optional — weave these into ` +
+    `the prose naturally without turning every page into a cast list; the ` +
+    `uploaded child photo remains the visual identity anchor, so do not promise ` +
+    `exact likeness for supporting people or pets):\n${lines.join('\n')}`
+  );
+}
+
 function inferPronouns(order: OrderRecord): 'he/him' | 'she/her' | 'they/them' {
   if (order.childPronouns === 'he/him' || order.childPronouns === 'she/her' || order.childPronouns === 'they/them') {
     return order.childPronouns;
@@ -517,6 +619,10 @@ export function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage
     `KEY DETAIL: ${beat.key_object_or_detail}`,
     `OTHER PRESENCE: ${beat.who_else_in_frame}`,
     special,
+    // Additive + bounded: empty string when there's no voice inspiration, so
+    // existing prompts are unchanged. filter(Boolean) drops the '' case.
+    voiceInspirationBlock(order).trim() || null,
+    familyCharactersBlock(order).trim() || null,
   ].filter(Boolean).join('\n');
 }
 
@@ -816,7 +922,7 @@ function buildStoryArcInstruction(pageCount: number): string {
   );
 }
 
-function buildUserPrompt(order: OrderRecord): string {
+export function buildUserPrompt(order: OrderRecord): string {
   const theme = STORY_THEMES.find(t => t.id === order.theme);
   const childName = sanitizeInput(order.childName, 60);
   const giftMessage = sanitizeInput(order.giftMessage, 200);
@@ -833,6 +939,7 @@ function buildUserPrompt(order: OrderRecord): string {
 - Character notes: ${characterNotes || 'none'}
 - Appearance: ${appearanceOptions || 'not specified'}
 - Format: ${order.bookFormat}
+${familyCharactersBlock(order).trim() || '- Supporting family / pet characters: none'}
 
 Visual identity hard rules for this child:
 - If pronouns are he/him, describe and illustrate the hero as a young boy.
@@ -855,7 +962,7 @@ Respond ONLY with a valid JSON object matching this exact schema:
   ]
 }
 
-Write exactly ${pageCount} pages. ${buildStoryArcInstruction(pageCount)}`;
+Write exactly ${pageCount} pages. ${buildStoryArcInstruction(pageCount)}${voiceInspirationBlock(order)}`;
 }
 
 export interface FetchDep {

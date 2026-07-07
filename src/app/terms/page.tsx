@@ -1,6 +1,10 @@
 import { EditorialPageShell } from '@/components/editorial-site';
 
 export default function TermsPage() {
+  // LEGAL REVIEW REQUIRED (Phase A fully-custom checkout): the upload
+  // authorization and no-voice-cloning language below is engineering
+  // groundwork and must be reviewed by counsel before new media intake is
+  // enabled in production. This is NOT a claim of legal compliance.
   return (
     <EditorialPageShell>
       <section className="mx-auto max-w-3xl px-5 py-16 md:px-8 md:py-24">
