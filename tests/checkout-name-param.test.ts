@@ -22,6 +22,28 @@ test('homepage pricing does not advertise stale $24 digital footnote', () => {
   assert.doesNotMatch(homepageSources, /Prefer a digital copy\?\s*Available from \$24/);
 });
 
+test('checkout default buyer copy does not advertise stale Father\'s Day framing', () => {
+  assert.doesNotMatch(checkoutFormSource, /Father's Day pick|e\.g\. Father's Day/);
+
+  const voiceRecorderSource = readFileSync('src/components/checkout/VoiceRecorderSection.tsx', 'utf8');
+  assert.doesNotMatch(voiceRecorderSource, /Father(&apos;|')s Day book feel/);
+});
+
+test('checkout form renders and submits required hero pronouns', () => {
+  assert.match(checkoutFormSource, /childPronouns: string/);
+  assert.match(checkoutFormSource, /value=\{form\.childPronouns\}/);
+  assert.match(checkoutFormSource, /set\("childPronouns", e\.target\.value\)/);
+  assert.match(checkoutFormSource, /payload\.set\("childPronouns", form\.childPronouns\)/);
+  assert.match(checkoutFormSource, /Boolean\(form\.childPronouns\)/);
+});
+
+test('checkout visible format pricing matches server-side order pricing', () => {
+  assert.match(checkoutFormSource, /label: ["']Digital instant["'][\s\S]*?price: ["']\$19\.00["'][\s\S]*?priceNum: 19/);
+  assert.match(checkoutFormSource, /label: ["']Classic softcover["'][\s\S]*?price: ["']\$39\.00["'][\s\S]*?priceNum: 39/);
+  assert.match(checkoutFormSource, /label: ["']Premium hardcover["'][\s\S]*?price: ["']\$64\.00["'][\s\S]*?priceNum: 64/);
+  assert.doesNotMatch(checkoutFormSource, /\$14\.99|\$44\.99|\$64\.99/);
+});
+
 test('NamePreview CTA links to /checkout with encoded childName when a name was typed', () => {
   // Carries the typed name as a URL-encoded query param so checkout can
   // prefill the Child's Name input via the params.get('childName') path above.

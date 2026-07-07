@@ -194,8 +194,8 @@ function stableIndex(input: string, modulo: number): number {
 }
 
 export function personalizeTemplate(template: string, order: OrderRecord): string {
-  const childName = sanitizeInput(order.childName, 60) || 'Your Child';
-  const age = sanitizeInput(order.childAge, 10);
+  const childName = heroDisplayName(order);
+  const age = sanitizeInput(order.heroAgeOrStage ?? order.childAge, 24);
   const notes = sanitizeInput(order.characterNotes, 200);
   const appearance = describeAppearanceOptions(order.appearanceOptions);
   return template
@@ -203,6 +203,17 @@ export function personalizeTemplate(template: string, order: OrderRecord): strin
     .replaceAll('{{ageClause}}', age ? `, age ${age}` : '')
     .replaceAll('{{notes}}', notes || '')
     .replaceAll('{{appearance}}', appearance || '');
+}
+
+function isNonChildPrimaryHero(order: OrderRecord): boolean {
+  const heroType = sanitizeInput(order.heroType, 40).toLowerCase();
+  return Boolean(heroType && heroType !== 'child');
+}
+
+function assertTemplateFallbackAllowed(order: OrderRecord): void {
+  if (isNonChildPrimaryHero(order)) {
+    throw new Error('template fallback is disabled for non-child primary heroes until the per-type QA gate passes');
+  }
 }
 
 function chooseTemplateVariant(order: OrderRecord): TemplateVariantProfile {
@@ -418,7 +429,109 @@ function getOllamaBaseUrl(): string {
 }
 
 export function firstNameOnly(order: OrderRecord): string {
-  return sanitizeInput(order.childName, 60).split(/\s+/)[0] || 'Your Child';
+  const hero = sanitizeInput(order.heroName ?? '', 60).trim() || sanitizeInput(order.childName, 60);
+  return hero.split(/\s+/)[0] || 'Your Child';
+}
+
+/**
+ * Hero-type-aware display name. Phase-A groundwork for the fully-custom
+ * checkout: reads the new `heroName` contract field but falls back to the
+ * legacy `childName` so existing orders are unchanged. Non-child hero types
+ * remain behind a private checkout/server beta gate until preview QA + legal
+ * approval are complete.
+ */
+export function heroDisplayName(order: OrderRecord): string {
+  const hero = sanitizeInput(order.heroName ?? '', 60).trim();
+  if (hero) return hero;
+  return sanitizeInput(order.childName, 60) || 'Your Child';
+}
+
+/**
+ * Neutral, hero-type-aware descriptor phrase used to stop hardcoded
+ * "child named X" framing from leaking onto a non-child hero. Non-child
+ * branches remain behind checkout/server beta gates and must be validated
+ * end-to-end before broad production exposure.
+ */
+export function heroDescriptor(order: OrderRecord): string {
+  const type = sanitizeInput(order.heroType ?? 'child', 24).toLowerCase();
+  switch (type) {
+    case 'parent':
+      return 'the parent hero';
+    case 'grandparent':
+      return 'the grandparent hero';
+    case 'other':
+      return 'the hero';
+    case 'pet':
+      return 'the animal hero';
+    case 'whole-family':
+      return 'the family';
+    case 'sibling':
+    case 'child':
+    default:
+      return 'the child hero';
+  }
+}
+
+/**
+ * Bounded "voice inspiration" prompt block for the optional consented voice
+ * note (see voice-transcription.ts). Returns '' whenever there is no usable
+ * inspiration — feature off, no voice, or a failed transcription (error marker
+ * with null inspiration) — so the prompt is byte-identical to the pre-voice
+ * behavior in every existing path. When present, it instructs the prose model
+ * to mine the bounded text for preferences, favorite phrases, emotional tone,
+ * adventure ideas, and people/objects mentioned, while forbidding verbatim
+ * quoting or referencing the recording in the story.
+ */
+export function voiceInspirationBlock(order: OrderRecord): string {
+  const inspiration = sanitizeInput(order.voiceTranscript?.inspiration, 600);
+  if (!inspiration) return '';
+  return (
+    `\n\nVOICE NOTE INSPIRATION (optional, consent-given source material — ` +
+    `use it to shape the hero/recipient preferences, favorite phrases, emotional tone, ` +
+    `adventure ideas, and any people or objects they mention; do NOT quote it ` +
+    `verbatim, do NOT invent facts beyond it, and never mention a recording, ` +
+    `microphone, or audio in the story): ${inspiration}`
+  );
+}
+
+export function familyCharactersBlock(order: OrderRecord): string {
+  const characters = Array.isArray(order.familyCharacters)
+    ? order.familyCharacters
+        .filter((character) => character?.appearsInStory !== false)
+        .slice(0, 4)
+    : [];
+  if (characters.length === 0) return '';
+
+  const lines = characters.map((character) => {
+    const name = sanitizeInput(character.name, 80);
+    const relationship = sanitizeInput(character.relationshipLabel, 80) || sanitizeInput(character.role, 40);
+    const pronouns = sanitizeInput(character.pronouns, 32);
+    const notes = sanitizeInput(character.notes, 180);
+    const gift = character.isGiftRecipient ? ' Gift recipient.' : '';
+    const focus = sanitizeInput(character.focusPersonLabel ?? '', 120);
+    const crop = sanitizeInput(character.cropHint ?? '', 40);
+    const focusNote = focus || crop
+      ? ` Photo focus: ${[focus, crop && `(${crop})`].filter(Boolean).join(' ')}.`
+      : '';
+    const photo = character.photoBlobUrl || character.photoBlobPath || character.photoFileName
+      ? ` Supporting reference photo attached for operator review.${focusNote}`
+      : '';
+    return [
+      relationship ? `- ${relationship}` : '- Supporting character',
+      name ? `named ${name}` : '',
+      pronouns ? `(${pronouns})` : '',
+      notes ? `— ${notes}` : '',
+      gift,
+      photo,
+    ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  });
+
+  return (
+    `\n\nSUPPORTING FAMILY / PET CHARACTERS (optional — weave these into ` +
+    `the prose naturally without turning every page into a cast list; the ` +
+    `uploaded primary-hero photo remains the visual identity anchor, so do not promise ` +
+    `exact likeness for supporting people or pets):\n${lines.join('\n')}`
+  );
 }
 
 function inferPronouns(order: OrderRecord): 'he/him' | 'she/her' | 'they/them' {
@@ -507,7 +620,10 @@ export function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage
   return [
     `PROTAGONIST: ${firstNameOnly(order)}`,
     `PRONOUNS: ${inferPronouns(order)}`,
-    `AGE: ${sanitizeInput(order.childAge, 10) || 'unspecified'}`,
+    `HERO TYPE: ${heroDescriptor(order)}`,
+    `AGE / LIFE STAGE: ${sanitizeInput(order.heroAgeOrStage ?? order.childAge, 24) || 'unspecified'}`,
+    order.recipientName ? `RECIPIENT / AUDIENCE: ${sanitizeInput(order.recipientName, 80)}` : null,
+    order.recipientRelationship ? `HERO RELATIONSHIP: ${sanitizeInput(order.recipientRelationship, 80)}` : null,
     `THEME: ${(theme?.description ?? sanitizeInput(order.theme, 80)) || 'personalized picture book'}`,
     `PAGE NUMBER: ${beat.page} of ${pageCount}`,
     `SETTING: ${beat.setting}`,
@@ -517,6 +633,10 @@ export function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage
     `KEY DETAIL: ${beat.key_object_or_detail}`,
     `OTHER PRESENCE: ${beat.who_else_in_frame}`,
     special,
+    // Additive + bounded: empty string when there's no voice inspiration, so
+    // existing prompts are unchanged. filter(Boolean) drops the '' case.
+    voiceInspirationBlock(order).trim() || null,
+    familyCharactersBlock(order).trim() || null,
   ].filter(Boolean).join('\n');
 }
 
@@ -795,7 +915,7 @@ function buildTemplateFallbackWithVariant(
 // ── OpenAI generation ──────────────────────────────────────────────────────────
 
 function buildSystemPrompt(): string {
-  return `You are a professional children's book author. You write personalized, age-appropriate storybooks (ages 2-10). Stories should be warm, adventurous, educational, and about 100 words per page. Always write in the third person with the child as the hero.`;
+  return `You are a professional children's book author. You write personalized, age-appropriate storybooks (ages 2-10). Stories should be warm, adventurous, educational, and about 100 words per page. Always write in the third person with the specified hero as the protagonist of a child-safe family story.`;
 }
 
 /**
@@ -816,16 +936,19 @@ function buildStoryArcInstruction(pageCount: number): string {
   );
 }
 
-function buildUserPrompt(order: OrderRecord): string {
+export function buildUserPrompt(order: OrderRecord): string {
   const theme = STORY_THEMES.find(t => t.id === order.theme);
-  const childName = sanitizeInput(order.childName, 60);
+  const childName = heroDisplayName(order);
   const giftMessage = sanitizeInput(order.giftMessage, 200);
   const characterNotes = sanitizeInput(order.characterNotes, 200);
   const appearanceOptions = sanitizeInput(order.appearanceOptions, 200);
   const pageCount = getStoryPageCount(order.bookFormat);
   return `Write a ${pageCount}-page personalized children's storybook with the following details:
 - Hero's name: ${childName}
-- Age: ${sanitizeInput(order.childAge, 10) || 'not specified'}
+- Hero type: ${heroDescriptor(order)}
+- Age / life stage: ${sanitizeInput(order.heroAgeOrStage ?? order.childAge, 24) || 'not specified'}
+- Recipient/audience: ${sanitizeInput(order.recipientName ?? '', 80) || 'the family'}
+- Hero relationship: ${sanitizeInput(order.recipientRelationship ?? '', 80) || 'not specified'}
 - Theme: ${theme?.name ?? sanitizeInput(order.theme, 60) ?? 'adventure'}. ${theme?.description ?? ''}
 - Core lesson: ${sanitizeInput(order.lesson, 100) || 'courage and bravery'}
 - Occasion: ${sanitizeInput(order.occasion, 60) || 'general'}
@@ -833,12 +956,13 @@ function buildUserPrompt(order: OrderRecord): string {
 - Character notes: ${characterNotes || 'none'}
 - Appearance: ${appearanceOptions || 'not specified'}
 - Format: ${order.bookFormat}
+${familyCharactersBlock(order).trim() || '- Supporting family / pet characters: none'}
 
-Visual identity hard rules for this child:
+Visual identity hard rules for this hero:
 - If pronouns are he/him, describe and illustrate the hero as a young boy.
 - For Lukas with straight-dark hair, the canonical description must say short straight dark boy haircut, above the ears/neck.
 - Never give the hero long hair, a bob, pigtails, hair ribbons, makeup, dress-like styling, or feminine-coded presentation unless the customer explicitly requested it.
-- The child must keep the same haircut, age, face, skin tone, and boyish presentation on every page.
+- The hero must keep the same haircut, age or life stage, face, skin tone, and overall presentation on every page.
 
 Respond ONLY with a valid JSON object matching this exact schema:
 {
@@ -855,7 +979,7 @@ Respond ONLY with a valid JSON object matching this exact schema:
   ]
 }
 
-Write exactly ${pageCount} pages. ${buildStoryArcInstruction(pageCount)}`;
+Write exactly ${pageCount} pages. ${buildStoryArcInstruction(pageCount)}${voiceInspirationBlock(order)}`;
 }
 
 export interface FetchDep {
@@ -898,6 +1022,7 @@ export async function generateStoryWithMeta(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[story-generator] Falling back to templates after Gemini page-prose failure for order ${order.id}: ${message}`);
+      assertTemplateFallbackAllowed(order);
       const { story, variant } = buildTemplateFallbackWithVariant(order);
       return {
         story,
@@ -927,6 +1052,7 @@ export async function generateStoryWithMeta(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[story-generator] Falling back to templates after Ollama page-prose failure for order ${order.id}: ${message}`);
+      assertTemplateFallbackAllowed(order);
       const { story, variant } = buildTemplateFallbackWithVariant(order);
       return {
         story,
@@ -956,6 +1082,7 @@ export async function generateStoryWithMeta(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[story-generator] Falling back to templates after page-prose failure for order ${order.id}: ${message}`);
+      assertTemplateFallbackAllowed(order);
       const { story, variant } = buildTemplateFallbackWithVariant(order);
       return {
         story,
@@ -970,6 +1097,7 @@ export async function generateStoryWithMeta(
   }
 
   if (!apiKey || !isOpenAiStoryEnabled()) {
+    assertTemplateFallbackAllowed(order);
     const { story, variant } = buildTemplateFallbackWithVariant(order);
     return {
       story,
@@ -1029,6 +1157,7 @@ export async function generateStoryWithMeta(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`[story-generator] Falling back to templates for order ${order.id}: ${message}`);
+    assertTemplateFallbackAllowed(order);
     const { story, variant } = buildTemplateFallbackWithVariant(order);
     return {
       story,

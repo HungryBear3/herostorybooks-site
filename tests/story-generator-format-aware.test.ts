@@ -266,3 +266,66 @@ test('template fallback: character anchor carries structured appearance details 
     assert.match(result.story.characterDescription, /short curly black hair/i);
   });
 });
+
+
+test('OpenAI prompt: parent hero is not framed as a child and includes recipient context', async () => {
+  await withEnv(
+    { OPENAI_API_KEY: 'sk-test', HSB_ENABLE_OPENAI_STORY: 'true' },
+    async () => {
+      const { fetch, captured } = makeOpenAiSpyFetch();
+      const order = createOrderRecord(
+        {
+          heroName: 'Dad',
+          childName: 'Dad',
+          heroType: 'parent',
+          heroAgeOrStage: 'adult',
+          recipientName: 'Lukas',
+          recipientRelationship: 'Dad to Lukas',
+          bookFormat: 'digital',
+          email: 'parent@example.com',
+          theme: 'brave-explorer',
+          lesson: 'courage',
+          occasion: 'birthday',
+        },
+        { id: 'ord_parent_prompt', now: '2026-07-07T10:00:00Z' },
+      );
+      await generateStoryWithMeta(order, { fetch });
+      const prompt = userPromptOf(captured);
+      assert.match(prompt, /Hero's name: Dad/);
+      assert.match(prompt, /Hero type: the parent hero/);
+      assert.match(prompt, /Age \/ life stage: adult/);
+      assert.match(prompt, /Recipient\/audience: Lukas/);
+      assert.match(prompt, /Hero relationship: Dad to Lukas/);
+      assert.doesNotMatch(prompt, /Age: adult/);
+    },
+  );
+});
+
+
+test('template fallback is blocked for non-child primary heroes', async () => {
+  await withEnv(
+    { OPENAI_API_KEY: undefined, HSB_ENABLE_OPENAI_STORY: undefined },
+    async () => {
+      const order = createOrderRecord(
+        {
+          heroName: 'Grandma Rose',
+          childName: 'Grandma Rose',
+          heroType: 'grandparent',
+          heroAgeOrStage: 'grandparent',
+          recipientName: 'Lukas',
+          recipientRelationship: 'Grandma to Lukas',
+          bookFormat: 'digital',
+          email: 'grandma@example.com',
+          theme: 'brave-explorer',
+          lesson: 'courage',
+          occasion: 'birthday',
+        },
+        { id: 'ord_grandparent_no_template', now: '2026-07-07T10:00:00Z' },
+      );
+      await assert.rejects(
+        () => generateStoryWithMeta(order),
+        /template fallback is disabled for non-child primary heroes/,
+      );
+    },
+  );
+});
