@@ -9,6 +9,14 @@ export type { FulfillmentStatus, PageTextLayout };
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
 export type BookFormat = 'digital' | 'classic' | 'premium';
 export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded';
+export type PrintUpgradeStatus =
+  | 'offered'
+  | 'checkout_open'
+  | 'paid'
+  | 'proof_required'
+  | 'print_pending'
+  | 'declined'
+  | 'expired';
 export type InternalOrderDisposition =
   | 'abandoned_internal_test'
   | 'superseded_internal_smoke';
@@ -219,6 +227,14 @@ export interface OrderRecord extends OrderInput {
    *  through the processor. Null on legacy orders or refunds that fell
    *  back to manual processing. */
   stripeRefundId?: string | null;
+  /** Digital-to-print upgrade bookkeeping. Upgrade payment is intentionally
+   *  separate from the original order payment lifecycle: a paid upgrade never
+   *  releases a proof or submits a print job by itself. */
+  printUpgradeStatus?: PrintUpgradeStatus | null;
+  printUpgradeTargetFormat?: BookFormat | null;
+  printUpgradeStripeSessionId?: string | null;
+  printUpgradePaidAt?: string | null;
+  printUpgradeOfferedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1066,6 +1082,31 @@ export async function updateOrderPayment(
     ...existing,
     paymentStatus,
     ...(opts.stripeSessionId != null ? { stripeSessionId: opts.stripeSessionId } : {}),
+    ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await persistOrder(updated);
+  return updated;
+}
+
+export async function updatePrintUpgradePayment(
+  orderId: string,
+  opts: { stripeSessionId: string; targetFormat: BookFormat; shippingAddress?: ShippingAddress },
+) {
+  const existing = await getOrder(orderId);
+  if (!existing) return null;
+
+  if (existing.printUpgradeStatus === 'paid') {
+    return existing;
+  }
+
+  const updated: OrderRecord = {
+    ...existing,
+    printUpgradeStatus: 'paid',
+    printUpgradeStripeSessionId: opts.stripeSessionId,
+    printUpgradeTargetFormat: opts.targetFormat,
+    printUpgradePaidAt: new Date().toISOString(),
     ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
     updatedAt: new Date().toISOString(),
   };

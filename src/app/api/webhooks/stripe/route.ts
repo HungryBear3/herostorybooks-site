@@ -2,7 +2,8 @@ import { NextResponse, after } from 'next/server';
 import Stripe from 'stripe';
 
 import { sendOrderConfirmationEmail } from '@/lib/order-email';
-import { isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
+import { isPrintFormat, updateOrderPayment, updatePrintUpgradePayment, type ShippingAddress } from '@/lib/orders';
+import { PRINT_UPGRADE_TARGETS, type PrintUpgradeTargetFormat } from '@/lib/print-upgrade';
 import { scheduleFulfillmentKickoff } from '@/lib/fulfillment-kickoff';
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
 
@@ -78,6 +79,34 @@ export async function POST(request: Request) {
     if (!orderId) {
       console.error('Stripe webhook: no orderId in session metadata');
       return NextResponse.json({ received: true });
+    }
+
+    if (session.metadata?.kind === 'print_upgrade') {
+      const targetFormat = session.metadata?.targetFormat;
+      if (!targetFormat || !PRINT_UPGRADE_TARGETS.includes(targetFormat as PrintUpgradeTargetFormat)) {
+        console.error(`Stripe webhook: print upgrade ${session.id} missing/invalid targetFormat`);
+        return NextResponse.json({ received: true, invalidPrintUpgrade: true });
+      }
+
+      const shipping = extractShipping(session);
+      const updated = await updatePrintUpgradePayment(orderId, {
+        stripeSessionId: session.id,
+        targetFormat: targetFormat as PrintUpgradeTargetFormat,
+        ...(shipping ? { shippingAddress: shipping } : {}),
+      });
+
+      if (!updated) {
+        console.error(`[webhook] CRITICAL: print upgrade paid for missing order ${orderId} via Stripe session ${session.id}`);
+        return NextResponse.json(
+          { error: `Order ${orderId} not found in durable store for print upgrade` },
+          { status: 500 },
+        );
+      }
+
+      console.warn(
+        `Stripe webhook: recorded print upgrade payment for ${orderId} targetFormat=${targetFormat}; proof/QA/owner print-go gates still required`,
+      );
+      return NextResponse.json({ received: true, printUpgrade: true });
     }
 
     try {
