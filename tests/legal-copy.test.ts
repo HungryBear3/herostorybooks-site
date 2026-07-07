@@ -20,3 +20,13 @@ test('privacy copy keeps legal-review marker and avoids compliance overclaiming'
   assert.match(src, /Illinois Biometric Information Privacy Act \(BIPA\)/);
   assert.match(src, /do <strong>not<\/strong> clone anyone&apos;s voice/);
 });
+
+
+test('Fable-required legal copy covers no templates, no voiceprints, and transcription disclosure', () => {
+  const privacy = readFileSync('src/app/privacy/page.tsx', 'utf8');
+  const terms = readFileSync('src/app/terms/page.tsx', 'utf8');
+  assert.match(privacy, /do <strong>not<\/strong> create face-recognition templates/);
+  assert.match(privacy, /do <strong>not<\/strong> create voiceprints/);
+  assert.match(terms, /transcribed/);
+  assert.match(terms, /story inspiration/);
+});

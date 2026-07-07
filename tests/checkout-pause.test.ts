@@ -63,3 +63,32 @@ test('checkout hides primary-hero selector unless private beta flag is enabled',
   assert.match(src, /Primary hero type/);
   assert.match(src, /Preview hold: non-child primary heroes require recipient context/);
 });
+
+
+test('story upload section is default-off and no longer inherits the broad voice beta flag', () => {
+  const src = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  assert.match(src, /const STORY_UPLOAD_ENABLED =\s*process\.env\.NEXT_PUBLIC_HSB_STORY_UPLOAD === ["']true["'];/);
+  assert.doesNotMatch(src, /STORY_UPLOAD_ENABLED =\s*VOICE_BETA_ENABLED \|\|/);
+});
+
+test('primary hero beta exposes only parent and grandparent as sellable non-child types', () => {
+  const formSrc = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  const routeSrc = readFileSync('src/app/api/order/route.ts', 'utf8');
+  assert.match(formSrc, /id: "parent"/);
+  assert.match(formSrc, /id: "grandparent"/);
+  assert.doesNotMatch(formSrc, /id: "pet"/);
+  assert.doesNotMatch(formSrc, /id: "whole-family"/);
+  assert.doesNotMatch(formSrc, /id: "other"/);
+  assert.match(routeSrc, /PRIMARY_HERO_TYPES = new Set\(\['child', 'parent', 'grandparent'\]\)/);
+});
+
+test('supporting photo upload failures fail before Stripe for every error path', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const supportIdx = src.indexOf('supporting photo persistence failed');
+  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
+  assert.ok(supportIdx > -1, 'route must have an explicit supporting-photo failure branch');
+  assert.ok(stripeIdx > -1, 'route creates Stripe after validation/persistence');
+  assert.ok(supportIdx < stripeIdx, 'supporting photo failure must happen before Stripe');
+  assert.doesNotMatch(src, /supporting photo upload failed[\s\S]{0,160}continuing without that photo/);
+  assert.match(src, /supporting_photo_persist_failed/);
+});

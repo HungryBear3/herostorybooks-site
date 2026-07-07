@@ -205,6 +205,17 @@ export function personalizeTemplate(template: string, order: OrderRecord): strin
     .replaceAll('{{appearance}}', appearance || '');
 }
 
+function isNonChildPrimaryHero(order: OrderRecord): boolean {
+  const heroType = sanitizeInput(order.heroType, 40).toLowerCase();
+  return Boolean(heroType && heroType !== 'child');
+}
+
+function assertTemplateFallbackAllowed(order: OrderRecord): void {
+  if (isNonChildPrimaryHero(order)) {
+    throw new Error('template fallback is disabled for non-child primary heroes until the per-type QA gate passes');
+  }
+}
+
 function chooseTemplateVariant(order: OrderRecord): TemplateVariantProfile {
   const key = [order.theme, order.childName, order.id, order.occasion, order.giftMessage]
     .map((value) => sanitizeInput(value, 120))
@@ -1011,6 +1022,7 @@ export async function generateStoryWithMeta(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[story-generator] Falling back to templates after Gemini page-prose failure for order ${order.id}: ${message}`);
+      assertTemplateFallbackAllowed(order);
       const { story, variant } = buildTemplateFallbackWithVariant(order);
       return {
         story,
@@ -1040,6 +1052,7 @@ export async function generateStoryWithMeta(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[story-generator] Falling back to templates after Ollama page-prose failure for order ${order.id}: ${message}`);
+      assertTemplateFallbackAllowed(order);
       const { story, variant } = buildTemplateFallbackWithVariant(order);
       return {
         story,
@@ -1069,6 +1082,7 @@ export async function generateStoryWithMeta(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[story-generator] Falling back to templates after page-prose failure for order ${order.id}: ${message}`);
+      assertTemplateFallbackAllowed(order);
       const { story, variant } = buildTemplateFallbackWithVariant(order);
       return {
         story,
@@ -1083,6 +1097,7 @@ export async function generateStoryWithMeta(
   }
 
   if (!apiKey || !isOpenAiStoryEnabled()) {
+    assertTemplateFallbackAllowed(order);
     const { story, variant } = buildTemplateFallbackWithVariant(order);
     return {
       story,
@@ -1142,6 +1157,7 @@ export async function generateStoryWithMeta(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`[story-generator] Falling back to templates for order ${order.id}: ${message}`);
+    assertTemplateFallbackAllowed(order);
     const { story, variant } = buildTemplateFallbackWithVariant(order);
     return {
       story,

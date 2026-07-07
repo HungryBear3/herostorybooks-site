@@ -300,3 +300,32 @@ test('OpenAI prompt: parent hero is not framed as a child and includes recipient
     },
   );
 });
+
+
+test('template fallback is blocked for non-child primary heroes', async () => {
+  await withEnv(
+    { OPENAI_API_KEY: undefined, HSB_ENABLE_OPENAI_STORY: undefined },
+    async () => {
+      const order = createOrderRecord(
+        {
+          heroName: 'Grandma Rose',
+          childName: 'Grandma Rose',
+          heroType: 'grandparent',
+          heroAgeOrStage: 'grandparent',
+          recipientName: 'Lukas',
+          recipientRelationship: 'Grandma to Lukas',
+          bookFormat: 'digital',
+          email: 'grandma@example.com',
+          theme: 'brave-explorer',
+          lesson: 'courage',
+          occasion: 'birthday',
+        },
+        { id: 'ord_grandparent_no_template', now: '2026-07-07T10:00:00Z' },
+      );
+      await assert.rejects(
+        () => generateStoryWithMeta(order),
+        /template fallback is disabled for non-child primary heroes/,
+      );
+    },
+  );
+});

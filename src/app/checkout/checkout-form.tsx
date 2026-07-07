@@ -117,12 +117,8 @@ const SUPPORTING_CHARACTER_LIMIT = 4;
 const PRIMARY_HERO_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === "true";
 const PRIMARY_HERO_TYPES = [
   { id: "child", label: "Child", helper: "Current live-safe path" },
-  { id: "parent", label: "Parent", helper: "Preview only" },
-  { id: "grandparent", label: "Grandparent", helper: "Preview only" },
-  { id: "sibling", label: "Sibling", helper: "Preview only" },
-  { id: "pet", label: "Pet", helper: "Preview only" },
-  { id: "whole-family", label: "Whole family", helper: "Preview only" },
-  { id: "other", label: "Custom", helper: "Preview only" },
+  { id: "parent", label: "Parent", helper: "Private beta after QA gate" },
+  { id: "grandparent", label: "Grandparent", helper: "Private beta after QA gate" },
 ] as const;
 const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings";
 const SUPPORTING_CHARACTER_PRESETS = [
@@ -152,15 +148,10 @@ function missingSupportingCharacterPhotoLabels(characters: SupportingCharacter[]
     .map(supportingCharacterLabel);
 }
 
-const VOICE_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_VOICE_BETA !== "false";
-// Phase-A story upload visibility. We deliberately do NOT flip the existing
-// NEXT_PUBLIC_HSB_VOICE_BETA flag (it also gates the family-review portal — see
-// review-portal.tsx). Instead a NEW, default-OFF env flag opens the
-// audio/document upload section on a documented preview path. Enable via
-// NEXT_PUBLIC_HSB_STORY_UPLOAD=true in preview after QA + Alexy sign-off.
-// Both flags default off, so production behavior is unchanged until set.
-const STORY_UPLOAD_ENABLED =
-  VOICE_BETA_ENABLED || process.env.NEXT_PUBLIC_HSB_STORY_UPLOAD === "true";
+// Phase-A story upload visibility. This is intentionally default-OFF and is
+// not tied to NEXT_PUBLIC_HSB_VOICE_BETA. Enable only with
+// NEXT_PUBLIC_HSB_STORY_UPLOAD=true after legal/product QA.
+const STORY_UPLOAD_ENABLED = process.env.NEXT_PUBLIC_HSB_STORY_UPLOAD === "true";
 
 const STORAGE_KEY = "hsb_order_v1";
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;

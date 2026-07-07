@@ -54,7 +54,7 @@ function missingSupportingCharacterPhotoLabels(
 
 const AUDIO_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i;
 const INSPIRATION_DOC_EXT_RE = /\.(txt|pdf|doc|docx)$/i;
-const PRIMARY_HERO_TYPES = new Set(['child', 'parent', 'grandparent', 'sibling', 'pet', 'whole-family', 'other']);
+const PRIMARY_HERO_TYPES = new Set(['child', 'parent', 'grandparent']);
 const PRIMARY_HERO_BETA_ENABLED =
   process.env.HSB_PRIMARY_HERO_BETA === 'true' || process.env.NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === 'true';
 
@@ -294,30 +294,20 @@ export async function POST(request: Request) {
           photoBlobUrl: uploaded?.url ?? null,
         });
       } catch (error) {
-        if (error instanceof OrderPersistenceError) {
-          console.error(
-            `[order] ABORT BEFORE STRIPE: supporting photo persistence failed for ${draftOrder.id}: ${error.message}`,
-            error.cause,
-          );
-          return NextResponse.json(
-            {
-              error:
-                'We could not securely save one of your family or pet photos. Please retry — no charge was made.',
-              code: 'supporting_photo_persist_failed',
-            },
-            { status: 503 },
-          );
-        }
+        const message = error instanceof Error ? error.message : String(error);
+        const cause = error instanceof OrderPersistenceError ? error.cause : error;
         console.error(
-          `[order] supporting photo upload failed for ${draftOrder.id}; continuing without that photo`,
-          error,
+          `[order] ABORT BEFORE STRIPE: supporting photo persistence failed for ${draftOrder.id}: ${message}`,
+          cause,
         );
-        familyCharactersWithPhotos.push({
-          ...character,
-          photoFileName: familyPhoto.name,
-          photoBlobPath: null,
-          photoBlobUrl: null,
-        });
+        return NextResponse.json(
+          {
+            error:
+              'We could not securely save one of your family or pet photos. Please retry — no charge was made.',
+            code: 'supporting_photo_persist_failed',
+          },
+          { status: 503 },
+        );
       }
     }
 
