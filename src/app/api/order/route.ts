@@ -54,6 +54,9 @@ function missingSupportingCharacterPhotoLabels(
 
 const AUDIO_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i;
 const INSPIRATION_DOC_EXT_RE = /\.(txt|pdf|doc|docx)$/i;
+const PRIMARY_HERO_TYPES = new Set(['child', 'parent', 'grandparent', 'sibling', 'pet', 'whole-family', 'other']);
+const PRIMARY_HERO_BETA_ENABLED =
+  process.env.HSB_PRIMARY_HERO_BETA === 'true' || process.env.NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === 'true';
 
 function isAudioInspirationFile(file: File): boolean {
   if (file.type && file.type.startsWith('audio/')) return true;
@@ -194,11 +197,29 @@ export async function POST(request: Request) {
     // order record derives heroName from childName. Non-child hero TYPES are not
     // enabled in the Phase-A UI, so heroType defaults to 'child' in the record.
     const heroName = String(form.get('heroName') || '').trim();
-    const heroType = String(form.get('heroType') || '').trim();
+    const rawHeroType = String(form.get('heroType') || '').trim();
+    const heroType = PRIMARY_HERO_TYPES.has(rawHeroType) ? rawHeroType : 'child';
     const heroAgeOrStage = String(form.get('heroAgeOrStage') || '').trim();
     const recipientName = String(form.get('recipientName') || '').trim();
     const recipientRelationship = String(form.get('recipientRelationship') || '').trim();
     const storyPerspective = String(form.get('storyPerspective') || '').trim();
+    if (heroType !== 'child') {
+      if (!PRIMARY_HERO_BETA_ENABLED) {
+        return NextResponse.json(
+          { error: 'Non-child primary hero checkout is still in private preview.', code: 'primary_hero_beta_required' },
+          { status: 400 },
+        );
+      }
+      if (!recipientName || !recipientRelationship) {
+        return NextResponse.json(
+          {
+            error: 'For a non-child primary hero, add who the book is for and the hero relationship before payment. No charge was made.',
+            code: 'primary_hero_recipient_context_required',
+          },
+          { status: 400 },
+        );
+      }
+    }
     const heroPhotoFocusLabel = String(form.get('heroPhotoFocusLabel') || '').trim();
     const heroPhotoCropHint = String(form.get('heroPhotoCropHint') || '').trim();
 

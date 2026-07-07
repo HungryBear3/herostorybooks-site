@@ -114,6 +114,16 @@ const TOTAL_BOOK_PAGE_COUNT = 32;
 const ILLUSTRATED_STORY_PAGE_COUNT = 24;
 
 const SUPPORTING_CHARACTER_LIMIT = 4;
+const PRIMARY_HERO_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === "true";
+const PRIMARY_HERO_TYPES = [
+  { id: "child", label: "Child", helper: "Current live-safe path" },
+  { id: "parent", label: "Parent", helper: "Preview only" },
+  { id: "grandparent", label: "Grandparent", helper: "Preview only" },
+  { id: "sibling", label: "Sibling", helper: "Preview only" },
+  { id: "pet", label: "Pet", helper: "Preview only" },
+  { id: "whole-family", label: "Whole family", helper: "Preview only" },
+  { id: "other", label: "Custom", helper: "Preview only" },
+] as const;
 const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings";
 const SUPPORTING_CHARACTER_PRESETS = [
   { role: "co-hero", label: "Co-hero", relationshipLabel: "co-hero", pronouns: "", isGiftRecipient: false },
@@ -179,6 +189,7 @@ interface FormState {
   // (legacy compatibility). The fully-custom hero fields below are additive
   // Phase-A groundwork — recipient context + multi-person photo disambiguation.
   childName: string;
+  heroType: string;
   childAge: string;
   childPronouns: string;
   recipientName: string;
@@ -221,6 +232,7 @@ const emptyForm: FormState = {
   photoDataUrl: null,
   theme: "",
   childName: "",
+  heroType: "child",
   childAge: "",
   childPronouns: "",
   recipientName: "",
@@ -252,6 +264,7 @@ function saveProgress(form: FormState) {
       JSON.stringify({
         theme: form.theme,
         childName: form.childName,
+        heroType: form.heroType,
         childAge: form.childAge,
         childPronouns: form.childPronouns,
         recipientName: form.recipientName,
@@ -647,10 +660,11 @@ export function CheckoutForm() {
         )
         .slice(0, SUPPORTING_CHARACTER_LIMIT);
       payload.set("childName", form.childName);
-      // Fully-custom hero contract (Phase A). heroName mirrors childName today
-      // (child stays the hero); recipient + photo-focus fields are additive.
+      // Fully-custom hero contract. In production the server still fails closed
+      // for non-child primary heroes unless the matching server env gate is on.
       payload.set("heroName", form.childName);
-      payload.set("heroType", "child");
+      payload.set("heroType", form.heroType || "child");
+      if (form.childAge.trim()) payload.set("heroAgeOrStage", `${form.childAge.trim()} years old`);
       if (form.recipientName.trim()) payload.set("recipientName", form.recipientName.trim());
       if (form.recipientRelationship.trim()) {
         payload.set("recipientRelationship", form.recipientRelationship.trim());
@@ -925,12 +939,41 @@ export function CheckoutForm() {
                   Who this story celebrates
                 </h2>
                 <p className="mt-1 text-sm text-[#695f54]">
-                  Tell us about the main hero of the book. Right now every book
-                  stars a child as the hero — you can add parents, grandparents,
-                  siblings, and pets as co-heroes and family below. Adult-led
-                  hero stories are coming soon and are on a short preview hold.
+                  {PRIMARY_HERO_BETA_ENABLED
+                    ? "Choose who leads the book. Non-child primary heroes are preview-only until generator/legal approval is complete; every paid order is still proof-reviewed before printing."
+                    : "Tell us about the main hero of the book. Right now every book stars a child as the hero — you can add parents, grandparents, siblings, and pets as co-heroes and family below. Adult-led hero stories are coming soon and are on a short preview hold."}
                 </p>
               </div>
+
+              {PRIMARY_HERO_BETA_ENABLED && (
+                <div>
+                  <label className="block text-sm font-semibold text-[#1f1a16] mb-2">
+                    Primary hero type <span className="text-red-400">*</span>
+                  </label>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {PRIMARY_HERO_TYPES.map((type) => (
+                      <button
+                        key={type.id}
+                        type="button"
+                        onClick={() => set("heroType", type.id)}
+                        className={`rounded-2xl border-2 px-3 py-2 text-left text-sm font-semibold transition ${
+                          form.heroType === type.id
+                            ? "border-deep-gold bg-deep-gold/15 text-navy ring-2 ring-deep-gold/30"
+                            : "border-[#dfd2b8] text-[#695f54] hover:border-[#d8c6a2]"
+                        }`}
+                      >
+                        <span className="block">{type.label}</span>
+                        <span className="block text-[11px] font-normal text-[#8a7b6a]">{type.helper}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {form.heroType !== "child" && (
+                    <p className="mt-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">
+                      Preview hold: non-child primary heroes require recipient context, a pinned usable reference photo, legal/owner approval, and generator QA before production enablement.
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -945,7 +988,7 @@ export function CheckoutForm() {
                     type="text"
                     value={form.childName}
                     onChange={(e) => set("childName", e.target.value)}
-                    placeholder="e.g., Emma, Liam, Sofia"
+                    placeholder={PRIMARY_HERO_BETA_ENABLED ? "e.g., Emma, Dad, Grandpa Joe, the Rivera family" : "e.g., Emma, Liam, Sofia"}
                     required
                     className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
                   />
@@ -955,24 +998,35 @@ export function CheckoutForm() {
                     htmlFor="childAge"
                     className="block text-sm font-semibold text-[#1f1a16] mb-1.5"
                   >
-                    Age{" "}
+                    {form.heroType === "child" ? "Age" : "Age / life stage"}{" "}
                     <span className="text-[#8a7b6a] font-normal">
                       (optional)
                     </span>
                   </label>
-                  <select
-                    id="childAge"
-                    value={form.childAge}
-                    onChange={(e) => set("childAge", e.target.value)}
-                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
-                  >
-                    <option value="">Select age</option>
-                    {Array.from({ length: 11 }, (_, i) => i + 2).map((age) => (
-                      <option key={age} value={age}>
-                        {age} years old
-                      </option>
-                    ))}
-                  </select>
+                  {form.heroType === "child" ? (
+                    <select
+                      id="childAge"
+                      value={form.childAge}
+                      onChange={(e) => set("childAge", e.target.value)}
+                      className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                    >
+                      <option value="">Select age</option>
+                      {Array.from({ length: 11 }, (_, i) => i + 2).map((age) => (
+                        <option key={age} value={age}>
+                          {age} years old
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      id="childAge"
+                      type="text"
+                      value={form.childAge}
+                      onChange={(e) => set("childAge", e.target.value.slice(0, 40))}
+                      placeholder="e.g., dad, grandma, 40s, family group"
+                      className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                    />
+                  )}
                 </div>
               </div>
 
@@ -1153,8 +1207,8 @@ export function CheckoutForm() {
                   Character details
                 </h2>
                 <p className="text-sm text-[#695f54]">
-                  Tell us a few visible details so the art feels more like your
-                  child.
+                  Tell us a few visible details so the art feels more like the
+                  hero.
                 </p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">

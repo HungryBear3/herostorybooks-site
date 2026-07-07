@@ -194,8 +194,8 @@ function stableIndex(input: string, modulo: number): number {
 }
 
 export function personalizeTemplate(template: string, order: OrderRecord): string {
-  const childName = sanitizeInput(order.childName, 60) || 'Your Child';
-  const age = sanitizeInput(order.childAge, 10);
+  const childName = heroDisplayName(order);
+  const age = sanitizeInput(order.heroAgeOrStage ?? order.childAge, 24);
   const notes = sanitizeInput(order.characterNotes, 200);
   const appearance = describeAppearanceOptions(order.appearanceOptions);
   return template
@@ -418,17 +418,16 @@ function getOllamaBaseUrl(): string {
 }
 
 export function firstNameOnly(order: OrderRecord): string {
-  return sanitizeInput(order.childName, 60).split(/\s+/)[0] || 'Your Child';
+  const hero = sanitizeInput(order.heroName ?? '', 60).trim() || sanitizeInput(order.childName, 60);
+  return hero.split(/\s+/)[0] || 'Your Child';
 }
 
 /**
  * Hero-type-aware display name. Phase-A groundwork for the fully-custom
  * checkout: reads the new `heroName` contract field but falls back to the
- * legacy `childName` so existing orders are unchanged. Non-child hero TYPES
- * are NOT enabled in checkout yet, so in practice this resolves to the child's
- * name today. When adult/grandparent heroes are later enabled, the generator
- * templates must be made hero-type aware BEFORE those options ship (see
- * heroDescriptor + docs/plans/2026-07-06-fully-custom-checkout.md).
+ * legacy `childName` so existing orders are unchanged. Non-child hero types
+ * remain behind a private checkout/server beta gate until preview QA + legal
+ * approval are complete.
  */
 export function heroDisplayName(order: OrderRecord): string {
   const hero = sanitizeInput(order.heroName ?? '', 60).trim();
@@ -438,17 +437,18 @@ export function heroDisplayName(order: OrderRecord): string {
 
 /**
  * Neutral, hero-type-aware descriptor phrase used to stop hardcoded
- * "child named X" framing from leaking onto a non-child hero. Phase A only
- * enables the 'child' branch in checkout; every other branch is groundwork and
- * MUST be validated end-to-end before the matching hero type is exposed.
+ * "child named X" framing from leaking onto a non-child hero. Non-child
+ * branches remain behind checkout/server beta gates and must be validated
+ * end-to-end before broad production exposure.
  */
 export function heroDescriptor(order: OrderRecord): string {
   const type = sanitizeInput(order.heroType ?? 'child', 24).toLowerCase();
   switch (type) {
     case 'parent':
+      return 'the parent hero';
     case 'grandparent':
+      return 'the grandparent hero';
     case 'other':
-      // Groundwork only — not reachable from Phase-A checkout.
       return 'the hero';
     case 'pet':
       return 'the animal hero';
@@ -476,7 +476,7 @@ export function voiceInspirationBlock(order: OrderRecord): string {
   if (!inspiration) return '';
   return (
     `\n\nVOICE NOTE INSPIRATION (optional, consent-given source material — ` +
-    `use it to shape the child's preferences, favorite phrases, emotional tone, ` +
+    `use it to shape the hero/recipient preferences, favorite phrases, emotional tone, ` +
     `adventure ideas, and any people or objects they mention; do NOT quote it ` +
     `verbatim, do NOT invent facts beyond it, and never mention a recording, ` +
     `microphone, or audio in the story): ${inspiration}`
@@ -518,7 +518,7 @@ export function familyCharactersBlock(order: OrderRecord): string {
   return (
     `\n\nSUPPORTING FAMILY / PET CHARACTERS (optional — weave these into ` +
     `the prose naturally without turning every page into a cast list; the ` +
-    `uploaded child photo remains the visual identity anchor, so do not promise ` +
+    `uploaded primary-hero photo remains the visual identity anchor, so do not promise ` +
     `exact likeness for supporting people or pets):\n${lines.join('\n')}`
   );
 }
@@ -609,7 +609,10 @@ export function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage
   return [
     `PROTAGONIST: ${firstNameOnly(order)}`,
     `PRONOUNS: ${inferPronouns(order)}`,
-    `AGE: ${sanitizeInput(order.childAge, 10) || 'unspecified'}`,
+    `HERO TYPE: ${heroDescriptor(order)}`,
+    `AGE / LIFE STAGE: ${sanitizeInput(order.heroAgeOrStage ?? order.childAge, 24) || 'unspecified'}`,
+    order.recipientName ? `RECIPIENT / AUDIENCE: ${sanitizeInput(order.recipientName, 80)}` : null,
+    order.recipientRelationship ? `HERO RELATIONSHIP: ${sanitizeInput(order.recipientRelationship, 80)}` : null,
     `THEME: ${(theme?.description ?? sanitizeInput(order.theme, 80)) || 'personalized picture book'}`,
     `PAGE NUMBER: ${beat.page} of ${pageCount}`,
     `SETTING: ${beat.setting}`,
@@ -901,7 +904,7 @@ function buildTemplateFallbackWithVariant(
 // ── OpenAI generation ──────────────────────────────────────────────────────────
 
 function buildSystemPrompt(): string {
-  return `You are a professional children's book author. You write personalized, age-appropriate storybooks (ages 2-10). Stories should be warm, adventurous, educational, and about 100 words per page. Always write in the third person with the child as the hero.`;
+  return `You are a professional children's book author. You write personalized, age-appropriate storybooks (ages 2-10). Stories should be warm, adventurous, educational, and about 100 words per page. Always write in the third person with the specified hero as the protagonist of a child-safe family story.`;
 }
 
 /**
@@ -924,14 +927,17 @@ function buildStoryArcInstruction(pageCount: number): string {
 
 export function buildUserPrompt(order: OrderRecord): string {
   const theme = STORY_THEMES.find(t => t.id === order.theme);
-  const childName = sanitizeInput(order.childName, 60);
+  const childName = heroDisplayName(order);
   const giftMessage = sanitizeInput(order.giftMessage, 200);
   const characterNotes = sanitizeInput(order.characterNotes, 200);
   const appearanceOptions = sanitizeInput(order.appearanceOptions, 200);
   const pageCount = getStoryPageCount(order.bookFormat);
   return `Write a ${pageCount}-page personalized children's storybook with the following details:
 - Hero's name: ${childName}
-- Age: ${sanitizeInput(order.childAge, 10) || 'not specified'}
+- Hero type: ${heroDescriptor(order)}
+- Age / life stage: ${sanitizeInput(order.heroAgeOrStage ?? order.childAge, 24) || 'not specified'}
+- Recipient/audience: ${sanitizeInput(order.recipientName ?? '', 80) || 'the family'}
+- Hero relationship: ${sanitizeInput(order.recipientRelationship ?? '', 80) || 'not specified'}
 - Theme: ${theme?.name ?? sanitizeInput(order.theme, 60) ?? 'adventure'}. ${theme?.description ?? ''}
 - Core lesson: ${sanitizeInput(order.lesson, 100) || 'courage and bravery'}
 - Occasion: ${sanitizeInput(order.occasion, 60) || 'general'}
@@ -941,11 +947,11 @@ export function buildUserPrompt(order: OrderRecord): string {
 - Format: ${order.bookFormat}
 ${familyCharactersBlock(order).trim() || '- Supporting family / pet characters: none'}
 
-Visual identity hard rules for this child:
+Visual identity hard rules for this hero:
 - If pronouns are he/him, describe and illustrate the hero as a young boy.
 - For Lukas with straight-dark hair, the canonical description must say short straight dark boy haircut, above the ears/neck.
 - Never give the hero long hair, a bob, pigtails, hair ribbons, makeup, dress-like styling, or feminine-coded presentation unless the customer explicitly requested it.
-- The child must keep the same haircut, age, face, skin tone, and boyish presentation on every page.
+- The hero must keep the same haircut, age or life stage, face, skin tone, and overall presentation on every page.
 
 Respond ONLY with a valid JSON object matching this exact schema:
 {

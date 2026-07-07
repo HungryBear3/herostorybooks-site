@@ -12,7 +12,7 @@ export default function PrivacyPage() {
       <section className="mx-auto max-w-3xl px-5 py-16 md:px-8 md:py-24">
         <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">Privacy</div>
         <h1 className="font-serif text-5xl font-medium leading-tight tracking-[-0.02em] text-[#1f1a16]">Privacy Policy</h1>
-        <p className="mt-4 text-sm text-[#695f54]">Last updated May 16, 2026</p>
+        <p className="mt-4 text-sm text-[#695f54]">Last updated July 7, 2026</p>
         <div className="mt-10 space-y-7 text-base leading-8 text-[#695f54]">
           <p>HeroStoryBooks uses the information you provide only to create, proof, fulfill, and support your personalized book order.</p>
           <section><h2 className="font-serif text-2xl text-[#1f1a16]">What we collect</h2><p className="mt-2">We may collect the purchaser&apos;s contact information; the names, ages or life stages, and appearance details of the people the book is about (which may include children and adults such as parents or grandparents); story preferences; dedication text; uploaded reference photos of one or more people; optional voice notes or memory recordings and text/PDF/Word documents; shipping details; and payment status. Payments are processed by Stripe; we do not store full card numbers.</p></section>

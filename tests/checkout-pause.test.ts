@@ -41,3 +41,25 @@ test('order route checks pause before parsing form data or creating Stripe check
   assert.equal(CHECKOUT_PAUSED_CODE, 'checkout_paused');
   assert.match(CHECKOUT_PAUSED_MESSAGE, /Checkout is temporarily paused/);
 });
+
+
+test('order route fails closed for non-child primary heroes unless beta gate is enabled', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const gateIdx = src.indexOf("if (heroType !== 'child')");
+  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
+
+  assert.ok(gateIdx > -1, 'route must explicitly gate non-child primary hero orders');
+  assert.ok(stripeIdx > -1, 'route must still create Stripe sessions after validation');
+  assert.ok(gateIdx < stripeIdx, 'non-child hero gate must run before Stripe checkout creation');
+  assert.match(src, /PRIMARY_HERO_BETA_ENABLED/);
+  assert.match(src, /primary_hero_beta_required/);
+  assert.match(src, /primary_hero_recipient_context_required/);
+});
+
+test('checkout hides primary-hero selector unless private beta flag is enabled', () => {
+  const src = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  assert.match(src, /NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === ["']true["']/);
+  assert.match(src, /PRIMARY_HERO_BETA_ENABLED && \(/);
+  assert.match(src, /Primary hero type/);
+  assert.match(src, /Preview hold: non-child primary heroes require recipient context/);
+});
