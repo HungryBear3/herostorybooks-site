@@ -98,6 +98,7 @@ export type ReviewAuditEventType =
   | 'page_accepted'
   | 'whole_book_approved'
   | 'whole_book_approval_rejected'
+  | 'print_upgrade_paid'
   | 'refund_issued'
   | 'refund_refused'
   | 'internal_disposition_marked';
@@ -196,6 +197,15 @@ export interface OrderRecord extends OrderInput {
   proofReviewedAt?: string | null;
   printJobId?: string | null;
   printJobStatus?: string | null;
+  /** Internal-admin print upgrade state. Slice A only records payment + desired
+   *  print target; it must NOT auto-submit a print job. */
+  printUpgradeStatus?: 'pending' | 'paid' | 'cancelled' | null;
+  printUpgradeSourceFormat?: BookFormat | null;
+  printUpgradeTargetFormat?: BookFormat | null;
+  printUpgradeAmountCents?: number | null;
+  printUpgradeStripeSessionId?: string | null;
+  printUpgradePaidAt?: string | null;
+  printUpgradePrintProvider?: 'rpi' | 'lulu' | string | null;
   trackingNumber?: string | null;
   trackingUrl?: string | null;
   shippedAt?: string | null;
@@ -334,6 +344,10 @@ const FORMAT_META: Record<BookFormat, { label: string; priceCents: number }> = {
   classic: { label: 'Classic softcover', priceCents: 3900 },
   premium: { label: 'Premium hardcover', priceCents: 6400 },
 };
+
+export function getBookFormatMeta(bookFormat: BookFormat): { label: string; priceCents: number } {
+  return FORMAT_META[bookFormat];
+}
 
 /**
  * Vercel Blob access mode for order JSON + photo writes/reads.

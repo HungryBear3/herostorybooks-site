@@ -5,6 +5,7 @@ import { sendOrderConfirmationEmail } from '@/lib/order-email';
 import { isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
 import { scheduleFulfillmentKickoff } from '@/lib/fulfillment-kickoff';
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
+import { parsePrintUpgradeTargetFormat, recordPrintUpgradePayment } from '@/lib/print-upgrades';
 
 // kept for future use (print-vs-digital branching); referenced by tests
 void isPrintFormat;
@@ -13,6 +14,8 @@ interface StripeCheckoutSession {
   id: string;
   metadata?: Record<string, string> | null;
   client_reference_id?: string | null;
+  amount_total?: number | null;
+  customer_email?: string | null;
   shipping_details?: {
     address?: {
       line1?: string | null;
@@ -73,6 +76,50 @@ export async function POST(request: Request) {
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as StripeCheckoutSession;
+    const kind = session.metadata?.kind ?? null;
+
+    if (kind === 'print_upgrade') {
+      const upgradeOrderId = (session.metadata?.orderId ?? session.client_reference_id) || null;
+      const targetFormat = parsePrintUpgradeTargetFormat(session.metadata?.targetFormat);
+      if (!upgradeOrderId || !targetFormat) {
+        console.error('Stripe webhook: invalid print upgrade metadata', {
+          sessionId: session.id,
+          orderId: upgradeOrderId,
+          targetFormat: session.metadata?.targetFormat ?? null,
+        });
+        return NextResponse.json({ received: true, printUpgradeSkipped: true });
+      }
+
+      try {
+        const updated = await recordPrintUpgradePayment(upgradeOrderId, {
+          stripeSessionId: session.id,
+          amountCents: session.amount_total ?? 0,
+          targetFormat,
+          printProvider: session.metadata?.printProvider ?? 'rpi',
+          ...(extractShipping(session) ? { shippingAddress: extractShipping(session) } : {}),
+        });
+        if (!updated) {
+          console.error(
+            `[webhook] CRITICAL: print upgrade order ${upgradeOrderId} not found after paid Stripe session ${session.id} ` +
+              `(amount=${session.amount_total ?? '?'}, customer_email=${session.customer_email ?? '?'}).`,
+          );
+          return NextResponse.json(
+            { error: `Order ${upgradeOrderId} not found in durable store` },
+            { status: 500 },
+          );
+        }
+        console.warn(
+          `Stripe webhook: recorded print upgrade for ${upgradeOrderId} session=${session.id}; ` +
+            `manual print-go still required after QA`,
+        );
+      } catch (err) {
+        console.error(`Stripe webhook: failed to process print upgrade for ${upgradeOrderId}:`, err);
+        return NextResponse.json({ error: 'Processing failed' }, { status: 500 });
+      }
+
+      return NextResponse.json({ received: true, printUpgradeRecorded: true });
+    }
+
     const orderId = (session.metadata?.orderId ?? session.client_reference_id) || null;
 
     if (!orderId) {
