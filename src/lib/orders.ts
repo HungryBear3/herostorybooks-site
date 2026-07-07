@@ -289,15 +289,6 @@ export interface OrderRecord extends OrderInput {
   proofReviewedAt?: string | null;
   printJobId?: string | null;
   printJobStatus?: string | null;
-  /** Internal-admin print upgrade state. Slice A only records payment + desired
-   *  print target; it must NOT auto-submit a print job. */
-  printUpgradeStatus?: 'pending' | 'paid' | 'cancelled' | null;
-  printUpgradeSourceFormat?: BookFormat | null;
-  printUpgradeTargetFormat?: BookFormat | null;
-  printUpgradeAmountCents?: number | null;
-  printUpgradeStripeSessionId?: string | null;
-  printUpgradePaidAt?: string | null;
-  printUpgradePrintProvider?: 'rpi' | 'lulu' | string | null;
   trackingNumber?: string | null;
   trackingUrl?: string | null;
   shippedAt?: string | null;
@@ -326,15 +317,20 @@ export interface OrderRecord extends OrderInput {
    *  customer explicitly pays a separate upgrade checkout; never by itself
    *  releases a proof or submits a print job. */
   printUpgradeStatus?: PrintUpgradeStatus | null;
+  printUpgradeSourceFormat?: BookFormat | null;
   printUpgradeTargetFormat?: BookFormat | null;
+  printUpgradeAmountCents?: number | null;
   printUpgradeStripeSessionId?: string | null;
   printUpgradePaidAt?: string | null;
   printUpgradeOfferedAt?: string | null;
+  printUpgradePrintProvider?: 'rpi' | 'lulu' | string | null;
   createdAt: string;
   updatedAt: string;
 }
 
 export type PrintUpgradeStatus =
+  | 'pending'
+  | 'cancelled'
   | 'offered'
   | 'checkout_open'
   | 'paid'
