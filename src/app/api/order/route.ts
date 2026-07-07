@@ -390,7 +390,7 @@ export async function POST(request: Request) {
     const baseUrl = getReturnBaseUrl(request);
     const successParams = new URLSearchParams({
       orderId: order.id,
-      childName: order.childName,
+      childName: order.heroName ?? order.childName,
       format: order.formatLabel,
       email: order.email,
     });
@@ -409,7 +409,7 @@ export async function POST(request: Request) {
             currency: 'usd',
             unit_amount: order.priceCents,
             product_data: {
-              name: `${order.formatLabel} HeroStoryBook — ${order.childName}`,
+              name: `${order.formatLabel} HeroStoryBook — ${order.heroName ?? order.childName}`,
               description: order.deliveryExpectation,
             },
           },
@@ -417,7 +417,7 @@ export async function POST(request: Request) {
         },
       ],
       ...(isPrintFormat(order.bookFormat)
-        ? { shipping_address_collection: { allowed_countries: ['US', 'CA', 'GB', 'AU', 'NZ'] } }
+        ? { shipping_address_collection: { allowed_countries: ['US'] } }
         : {}),
       success_url: `${baseUrl}/thank-you?${successParams.toString()}`,
       cancel_url: `${baseUrl}/checkout`,

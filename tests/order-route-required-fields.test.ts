@@ -85,3 +85,24 @@ test('server contract: /api/order POST imports + calls missingRequiredField', ()
   assert.match(src, /missingFieldErrorCode\(/);
   assert.match(src, /childPronouns/);
 });
+
+// P1: Stripe shipping must match the site's US-only fulfillment copy
+// ("Free shipping included for US orders" / "Shipping (US)"). Allowing
+// CA/GB/AU/NZ let non-US buyers complete a print order we don't promise
+// to ship. Pin the allow-list to US so checkout can't outrun the copy.
+test('server contract: print shipping is restricted to US only', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  assert.match(src, /allowed_countries:\s*\[\s*['"]US['"]\s*\]/);
+  assert.doesNotMatch(src, /allowed_countries:[^\]]*['"](?:CA|GB|AU|NZ)['"]/);
+});
+
+// P2: receipts + the thank-you handoff must name the hero, not assume the
+// legacy childName field. heroName is always populated (falls back to
+// childName in createOrderRecord), so this is correct today and stays
+// correct once a non-child primary hero can make heroName != childName.
+test('server contract: Stripe product name + success param use heroName ?? childName', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  assert.match(src, /childName:\s*order\.heroName\s*\?\?\s*order\.childName/);
+  assert.match(src, /HeroStoryBook — \$\{order\.heroName \?\? order\.childName\}/);
+  assert.doesNotMatch(src, /HeroStoryBook — \$\{order\.childName\}/);
+});
