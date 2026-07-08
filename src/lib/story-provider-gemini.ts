@@ -209,6 +209,7 @@ export async function buildStoryFromGeminiPageProse(
         story: lockedProse,
         imagePrompt: buildSafeImagePrompt({
           childName: protagonist,
+          heroType: order.heroType ?? undefined,
           themeDescription,
           page: index + 1,
           beat,
@@ -266,6 +267,7 @@ export async function buildStoryFromGeminiPageProse(
       story: prose,
       imagePrompt: buildSafeImagePrompt({
         childName: protagonist,
+        heroType: order.heroType ?? undefined,
         themeDescription,
         page: index + 1,
         beat,

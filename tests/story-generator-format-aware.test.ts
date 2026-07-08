@@ -16,8 +16,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { generateStoryWithMeta } from '../src/lib/story-generator.ts';
+import {
+  generateStoryWithMeta,
+  buildSafeImagePrompt,
+  getLockedPageProse,
+} from '../src/lib/story-generator.ts';
 import { createOrderRecord, type BookFormat, type OrderRecord } from '../src/lib/orders.ts';
+import type { StoryPlanPage } from '../src/lib/story-planner.ts';
 
 function makeOrder(bookFormat: BookFormat): OrderRecord {
   return createOrderRecord(
@@ -328,4 +333,139 @@ test('template fallback is blocked for non-child primary heroes', async () => {
       );
     },
   );
+});
+
+
+// ── C1: hero-type-aware generator prompts (parent/grandparent beta) ───────────
+//
+// Contract: adult primary heroes (parent/grandparent) must never be framed or
+// illustrated as a child, and the child path must keep its existing child-safe
+// behavior byte-for-byte.
+
+// Child-coded PROTAGONIST framing that must not appear for an adult hero. The
+// adult rules are written positively (no "young boy"/"young girl"/"child named"
+// tokens) precisely so this token check is unambiguous.
+const CHILD_PROTAGONIST_FRAMING = /young boy|young girl|child named/i;
+const HERO_IS_A_CHILD = /\bhero (?:is|as) a (?:child|kid|young)\b/i;
+
+function systemPromptOf(captured: CapturedRequest): string {
+  const systemMessage = captured.body?.messages?.find((m) => m.role === 'system');
+  return systemMessage?.content ?? '';
+}
+
+function makeBeat(page: number): StoryPlanPage {
+  return {
+    page,
+    arc_position: 'resolution',
+    beat_summary: 'the hero finds a smooth stone',
+    setting: 'a jungle path',
+    emotional_tone: 'wonder',
+    shot_type: 'wide',
+    key_object_or_detail: 'a smooth stone',
+    who_else_in_frame: 'a small bird',
+    text_layout: 'bottom',
+  } as unknown as StoryPlanPage;
+}
+
+function adultHeroOrder(heroType: 'parent' | 'grandparent'): OrderRecord {
+  return createOrderRecord(
+    {
+      heroName: heroType === 'parent' ? 'Dad' : 'Grandma Rose',
+      childName: heroType === 'parent' ? 'Dad' : 'Grandma Rose',
+      heroType,
+      heroAgeOrStage: heroType === 'parent' ? 'adult' : 'grandparent',
+      recipientName: 'Lukas',
+      recipientRelationship: heroType === 'parent' ? 'Dad to Lukas' : 'Grandma to Lukas',
+      childPronouns: heroType === 'parent' ? 'he/him' : 'she/her',
+      bookFormat: 'digital',
+      email: 'hero@example.com',
+      theme: 'brave-explorer',
+      lesson: 'courage',
+      occasion: 'birthday',
+    },
+    { id: `ord_c1_${heroType}`, now: '2026-07-07T10:00:00Z' },
+  );
+}
+
+for (const heroType of ['parent', 'grandparent'] as const) {
+  test(`OpenAI prompt: ${heroType} hero is written as an adult, never as a child`, async () => {
+    await withEnv(
+      { OPENAI_API_KEY: 'sk-test', HSB_ENABLE_OPENAI_STORY: 'true' },
+      async () => {
+        const { fetch, captured } = makeOpenAiSpyFetch();
+        await generateStoryWithMeta(adultHeroOrder(heroType), { fetch });
+        const user = userPromptOf(captured);
+        const system = systemPromptOf(captured);
+
+        // No child-coded protagonist framing leaks onto the adult hero...
+        assert.doesNotMatch(user, CHILD_PROTAGONIST_FRAMING);
+        assert.doesNotMatch(user, HERO_IS_A_CHILD);
+        // ...and the prompt affirmatively frames the hero as an adult.
+        assert.match(user, /is a grown ADULT/);
+        assert.match(user, /do not infantilize the hero/);
+        // System prompt carries the adult clause too.
+        assert.match(system, /hero of THIS book is a grown adult/i);
+      },
+    );
+  });
+}
+
+test('OpenAI prompt: child hero keeps its child-safe visual rules (child path preserved)', async () => {
+  await withEnv(
+    { OPENAI_API_KEY: 'sk-test', HSB_ENABLE_OPENAI_STORY: 'true' },
+    async () => {
+      const { fetch, captured } = makeOpenAiSpyFetch();
+      const order = createOrderRecord(
+        {
+          childName: 'Lukas',
+          childPronouns: 'he/him',
+          childAge: '5',
+          bookFormat: 'digital',
+          email: 'child@example.com',
+          theme: 'brave-explorer',
+          lesson: 'courage',
+          occasion: 'birthday',
+        },
+        { id: 'ord_c1_child', now: '2026-07-07T10:00:00Z' },
+      );
+      await generateStoryWithMeta(order, { fetch });
+      const user = userPromptOf(captured);
+      const system = systemPromptOf(captured);
+
+      // Existing child-safe behavior must survive untouched.
+      assert.match(user, /describe and illustrate the hero as a young boy/);
+      assert.doesNotMatch(user, /is a grown ADULT/);
+      // Child system prompt is the original, without the adult clause.
+      assert.doesNotMatch(system, /grown adult/i);
+    },
+  );
+});
+
+test('buildSafeImagePrompt: adult hero renders as adult; child/default keep child-safe guidance', () => {
+  const beat = makeBeat(3);
+  const adult = buildSafeImagePrompt({ childName: 'Dad', heroType: 'parent', themeDescription: 'a space voyage', page: 3, beat });
+  const child = buildSafeImagePrompt({ childName: 'Luna', heroType: 'child', themeDescription: 'a space voyage', page: 3, beat });
+  const noHeroType = buildSafeImagePrompt({ childName: 'Luna', themeDescription: 'a space voyage', page: 3, beat });
+
+  assert.match(adult, /Render the hero as a grown adult/);
+  assert.match(adult, /adult explorer\/astronaut clothing/);
+  assert.doesNotMatch(adult, /child-safe explorer/);
+  assert.doesNotMatch(adult, /Keep the child’s face/);
+
+  assert.match(child, /Keep the child’s face fully visible/);
+  assert.match(child, /child-safe explorer\/astronaut clothing/);
+  // Omitting heroType must behave exactly like an explicit child hero.
+  assert.equal(noHeroType, child);
+});
+
+test('getLockedPageProse: child hero gets the locked sample; non-child hero gets null', () => {
+  const beat = makeBeat(23); // pageCount 24 → pageCount - 1, where the lock applies
+  const child = createOrderRecord(
+    { childName: 'Lukas', bookFormat: 'digital', email: 'child@example.com', theme: 'brave-explorer', lesson: 'courage', occasion: 'birthday' },
+    { id: 'ord_c1_lock_child', now: '2026-07-07T10:00:00Z' },
+  );
+  const grandparent = adultHeroOrder('grandparent');
+
+  assert.ok((getLockedPageProse(child, beat, 24) ?? '').length > 0, 'child hero should still receive the locked brave-explorer prose');
+  assert.equal(getLockedPageProse(grandparent, beat, 24), null, 'non-child hero must never receive the child-coded locked prose');
 });
