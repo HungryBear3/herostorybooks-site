@@ -458,6 +458,39 @@ test('buildSafeImagePrompt: adult hero renders as adult; child/default keep chil
   assert.equal(noHeroType, child);
 });
 
+
+function makePageProseFetch(kind: 'openai' | 'ollama'): typeof globalThis.fetch {
+  return (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === 'string' ? init.body : '{}';
+    const body = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
+    const user = body.messages?.find((m) => m.role === 'user')?.content ?? '';
+    const protagonist = user.match(/^PROTAGONIST:\s*(.+)$/m)?.[1]?.trim() ?? 'Dad';
+    const prose = `${protagonist} steps onto the bright trail and lifts a small brass compass. Lukas watches nearby as he chooses the brave path forward.`;
+    if (kind === 'openai') {
+      return new Response(JSON.stringify({ choices: [{ message: { content: prose } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ message: { content: prose } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof globalThis.fetch;
+}
+
+for (const provider of ['openai', 'ollama'] as const) {
+  test(`${provider} page-prose path: parent hero image prompts keep adult guidance`, async () => {
+    const env = provider === 'openai'
+      ? { OPENAI_API_KEY: 'sk-test', HSB_ENABLE_OPENAI_PAGE_PROSE: 'true', HSB_ENABLE_OLLAMA_PAGE_PROSE: undefined }
+      : { OPENAI_API_KEY: undefined, HSB_ENABLE_OPENAI_PAGE_PROSE: undefined, HSB_ENABLE_OLLAMA_PAGE_PROSE: 'true', HSB_OLLAMA_PAGE_PROSE_MODEL: 'synthetic-test' };
+
+    await withEnv(env, async () => {
+      const result = await generateStoryWithMeta(adultHeroOrder('parent'), { fetch: makePageProseFetch(provider) });
+      const prompts = result.story.pages.map((p) => p.imagePrompt).join('\n');
+      assert.equal(result.story.pages.length, 24);
+      assert.match(prompts, /Render the hero as a grown adult/);
+      assert.match(prompts, /adult explorer\/astronaut clothing|grown adult/);
+      assert.doesNotMatch(prompts, /child-safe explorer/);
+      assert.doesNotMatch(prompts, /Keep the child’s face/);
+    });
+  });
+}
+
 test('getLockedPageProse: child hero gets the locked sample; non-child hero gets null', () => {
   const beat = makeBeat(23); // pageCount 24 → pageCount - 1, where the lock applies
   const child = createOrderRecord(

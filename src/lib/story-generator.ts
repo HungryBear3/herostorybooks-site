@@ -743,6 +743,7 @@ async function buildStoryFromPageProse(
         story: lockedProse,
         imagePrompt: buildSafeImagePrompt({
           childName: firstNameOnly(order),
+          heroType: order.heroType ?? undefined,
           themeDescription: theme?.description ?? 'a grand adventure',
           page: index + 1,
           beat,
@@ -786,6 +787,7 @@ async function buildStoryFromPageProse(
       story: prose,
       imagePrompt: buildSafeImagePrompt({
         childName: firstNameOnly(order),
+        heroType: order.heroType ?? undefined,
         themeDescription: theme?.description ?? 'a grand adventure',
         page: index + 1,
         beat,
@@ -828,6 +830,7 @@ async function buildStoryFromOllamaPageProse(
         story: lockedProse,
         imagePrompt: buildSafeImagePrompt({
           childName: firstNameOnly(order),
+          heroType: order.heroType ?? undefined,
           themeDescription: theme?.description ?? 'a grand adventure',
           page: index + 1,
           beat,
@@ -892,6 +895,7 @@ async function buildStoryFromOllamaPageProse(
       story: prose,
       imagePrompt: buildSafeImagePrompt({
         childName: firstNameOnly(order),
+        heroType: order.heroType ?? undefined,
         themeDescription: theme?.description ?? 'a grand adventure',
         page: index + 1,
         beat,
