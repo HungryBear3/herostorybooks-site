@@ -289,7 +289,12 @@ export function buildSafeImagePrompt(input: {
   themeDescription: string;
   page: number;
   beat: StoryPlanPage;
+  /** Primary hero type. When 'parent'/'grandparent', the guidance renders an
+   *  adult hero instead of applying child-coded face/clothing defaults. Absent
+   *  or 'child' preserves the original child-safe image rules. */
+  heroType?: string;
 }): string {
+  const adultHero = input.heroType === 'parent' || input.heroType === 'grandparent';
   return [
     `A children's book illustration of ${input.childName} in ${input.themeDescription || 'a grand adventure'}.`,
     `Page ${input.page}. ${input.beat.beat_summary}.`,
@@ -300,8 +305,12 @@ export function buildSafeImagePrompt(input: {
     `The emotional tone is ${input.beat.emotional_tone}.`,
     'Composition: keep the important action, face, hands, key prop, horizon detail, creature, moon, planet, crystal, doorway, or other paid-for story detail in the upper 75% of the frame; leave the lowest edge visually simple because the book layout places prose in a separate cream caption margin below the illustration.',
     'No text, no writing, no letters, no numbers, no signs, no labels, no glyphs, no readable or unreadable marks anywhere in the artwork; maps, charts, books, scrolls, screens, and papers must be blank, blurred, folded, or cropped so they do not contain fake writing.',
-    'Keep the child’s face fully visible and consistent with the reference photo; no masks and no face-obscuring accessories.',
-    'For space scenes, use child-safe explorer/astronaut clothing with the face visible; no opaque helmet, no floating helmet, no duplicated head, no cutaway helmet, and no face hidden by glass glare unless the page beat explicitly requires a worn clear-visor helmet.',
+    adultHero
+      ? 'Render the hero as a grown adult at their life stage; keep the hero’s adult face fully visible and consistent with the reference photo; no masks and no face-obscuring accessories.'
+      : 'Keep the child’s face fully visible and consistent with the reference photo; no masks and no face-obscuring accessories.',
+    adultHero
+      ? 'For space scenes, use adult explorer/astronaut clothing sized for a grown adult with the face visible; no opaque helmet, no floating helmet, no duplicated head, no cutaway helmet, and no face hidden by glass glare unless the page beat explicitly requires a worn clear-visor helmet.'
+      : 'For space scenes, use child-safe explorer/astronaut clothing with the face visible; no opaque helmet, no floating helmet, no duplicated head, no cutaway helmet, and no face hidden by glass glare unless the page beat explicitly requires a worn clear-visor helmet.',
     'Warm, colorful, age-appropriate painterly children’s book art style.',
   ].join(' ');
 }
@@ -473,6 +482,49 @@ export function heroDescriptor(order: OrderRecord): string {
 }
 
 /**
+ * True only for ADULT primary heroes (parent / grandparent) — the beta hero
+ * types that must never be framed or illustrated as a child. Every other value
+ * (child, sibling, unset) keeps the existing child-safe prompt behavior, so
+ * the child path is preserved byte-for-byte.
+ */
+function isAdultHero(order: OrderRecord): boolean {
+  const type = sanitizeInput(order.heroType ?? 'child', 24).toLowerCase();
+  return type === 'parent' || type === 'grandparent';
+}
+
+/**
+ * Hero-type-aware "visual identity" rule block for the OpenAI story prompt.
+ *
+ * Child path returns the original rules verbatim (young-boy default + child
+ * grooming constraints). Parent/grandparent heroes get adult, life-stage-driven
+ * rules so an adult hero is never described or illustrated as a young boy/girl,
+ * the hero is never infantilized, and the child AUDIENCE stays separate from
+ * the hero's IDENTITY.
+ */
+function buildVisualIdentityRules(order: OrderRecord): string {
+  if (!isAdultHero(order)) {
+    return `Visual identity hard rules for this hero:
+- If pronouns are he/him, describe and illustrate the hero as a young boy.
+- For Lukas with straight-dark hair, the canonical description must say short straight dark boy haircut, above the ears/neck.
+- Never give the hero long hair, a bob, pigtails, hair ribbons, makeup, dress-like styling, or feminine-coded presentation unless the customer explicitly requested it.
+- The hero must keep the same haircut, age or life stage, face, skin tone, and overall presentation on every page.`;
+  }
+  const heroName = heroDisplayName(order);
+  const isGrandparent = sanitizeInput(order.heroType ?? '', 24).toLowerCase() === 'grandparent';
+  const lifeStage =
+    sanitizeInput(order.heroAgeOrStage ?? '', 40) ||
+    (isGrandparent ? 'an older adult / grandparent' : 'an adult');
+  const pronouns = inferPronouns(order);
+  const relationship = sanitizeInput(order.recipientRelationship ?? '', 80) || 'not specified';
+  return `Visual identity hard rules for this hero:
+- ${heroDescriptor(order)} is a grown ADULT. Portray ${heroName} at their stated life stage (${lifeStage}), at their real adult age; do not reduce the hero's apparent age and do not infantilize the hero.
+- Keep the picture-book audience (young readers) separate from the hero's identity: the audience only sets the warm, age-appropriate tone — it does not change the hero's grown-adult age.
+- Derive hair, build, age, and overall presentation from the hero's pronouns (${pronouns}), age or life stage, relationship (${relationship}), appearance selections, and customer notes — do NOT apply juvenile body, age, or hair defaults.
+- Any child or grandchild in the book is the recipient/audience or a supporting character, never the protagonist.
+- The hero must keep the same face, hair, age or life stage, skin tone, and overall grown-adult presentation on every page.`;
+}
+
+/**
  * Bounded "voice inspiration" prompt block for the optional consented voice
  * note (see voice-transcription.ts). Returns '' whenever there is no usable
  * inspiration — feature off, no voice, or a failed transcription (error marker
@@ -581,7 +633,7 @@ QUALITY BAR
 
 function buildPageSpecificInstruction(beat: StoryPlanPage, pageCount: number): string | null {
   if (beat.page === pageCount - 3) {
-    return 'SPECIAL REQUIREMENT: this is the climax payoff page. The child must receive the answer or reward on this page and clearly choose or take the smooth stone before the story turns homeward.';
+    return 'SPECIAL REQUIREMENT: this is the climax payoff page. The hero must receive the answer or reward on this page and clearly choose or take the smooth stone before the story turns homeward.';
   }
   if (beat.page === pageCount - 2) {
     return 'SPECIAL REQUIREMENT: this is the first homeward-resolution page. Mention the discovered smooth stone or answer clearly so the transition home feels earned.';
@@ -608,6 +660,9 @@ function buildPageSpecificInstruction(beat: StoryPlanPage, pageCount: number): s
 }
 
 export function getLockedPageProse(order: OrderRecord, beat: StoryPlanPage, pageCount: number): string | null {
+  // The locked prose is a child-specific sample ("Lukas ... his family"). Never
+  // emit it for a non-child hero — an adult hero would be misframed as a child.
+  if (isNonChildPrimaryHero(order)) return null;
   if (order.theme === 'brave-explorer' && beat.page === pageCount - 1) {
     return 'Lukas places the smooth stone from the jungle on the porch rail. His family gathers around, leaning in to listen. The stone hums softly, echoing the sounds of the day\'s adventure. Everyone gasps as they hear the distant calls of birds and rustling leaves.';
   }
@@ -632,6 +687,9 @@ export function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage
     `EMOTIONAL TONE: ${beat.emotional_tone}`,
     `KEY DETAIL: ${beat.key_object_or_detail}`,
     `OTHER PRESENCE: ${beat.who_else_in_frame}`,
+    isAdultHero(order)
+      ? `PROTAGONIST IDENTITY: the hero is a grown adult (${heroDescriptor(order)}); write the hero at their real adult age and do not reduce their apparent age or infantilize them. Any child or grandchild is the audience or a supporting character, not the protagonist.`
+      : null,
     special,
     // Additive + bounded: empty string when there's no voice inspiration, so
     // existing prompts are unchanged. filter(Boolean) drops the '' case.
@@ -914,8 +972,10 @@ function buildTemplateFallbackWithVariant(
 
 // ── OpenAI generation ──────────────────────────────────────────────────────────
 
-function buildSystemPrompt(): string {
-  return `You are a professional children's book author. You write personalized, age-appropriate storybooks (ages 2-10). Stories should be warm, adventurous, educational, and about 100 words per page. Always write in the third person with the specified hero as the protagonist of a child-safe family story.`;
+function buildSystemPrompt(order: OrderRecord): string {
+  const base = `You are a professional children's book author. You write personalized, age-appropriate storybooks (ages 2-10). Stories should be warm, adventurous, educational, and about 100 words per page. Always write in the third person with the specified hero as the protagonist of a child-safe family story.`;
+  if (!isAdultHero(order)) return base;
+  return `${base} The hero of THIS book is a grown adult (a parent or grandparent): write and portray the hero at their real adult life stage and do not infantilize the hero. The young audience governs tone and safety only, not the hero's age.`;
 }
 
 /**
@@ -958,15 +1018,11 @@ export function buildUserPrompt(order: OrderRecord): string {
 - Format: ${order.bookFormat}
 ${familyCharactersBlock(order).trim() || '- Supporting family / pet characters: none'}
 
-Visual identity hard rules for this hero:
-- If pronouns are he/him, describe and illustrate the hero as a young boy.
-- For Lukas with straight-dark hair, the canonical description must say short straight dark boy haircut, above the ears/neck.
-- Never give the hero long hair, a bob, pigtails, hair ribbons, makeup, dress-like styling, or feminine-coded presentation unless the customer explicitly requested it.
-- The hero must keep the same haircut, age or life stage, face, skin tone, and overall presentation on every page.
+${buildVisualIdentityRules(order)}
 
 Respond ONLY with a valid JSON object matching this exact schema:
 {
-  "title": "string — catchy book title with child's name",
+  "title": "string — catchy book title with the hero's name",
   "dedication": "string — one sentence dedication",
   "characterDescription": "string — RICH, STABLE visual description of the hero used as a canonical anchor for every page illustration. Include: face shape, eye color, eye spacing, eyebrow style, hair color/length/texture/style, skin tone, build, approximate age, and any standout features. Write it once here and never restate it inside per-page imagePrompt.",
   "pages": [
@@ -1120,7 +1176,7 @@ export async function generateStoryWithMeta(
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [
-          { role: 'system', content: buildSystemPrompt() },
+          { role: 'system', content: buildSystemPrompt(order) },
           { role: 'user', content: buildUserPrompt(order) },
         ],
         temperature: 0.8,
