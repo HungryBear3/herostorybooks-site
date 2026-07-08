@@ -492,6 +492,28 @@ function isAdultHero(order: OrderRecord): boolean {
   return type === 'parent' || type === 'grandparent';
 }
 
+function buildCharacterDescription(order: OrderRecord, variant: TemplateVariantProfile, outfit?: string): string {
+  if (!isAdultHero(order)) {
+    const base = personalizeTemplate(variant.characterTemplate, order).replace(/\s+/g, ' ').trim();
+    return outfit ? `${base} Outfit: ${outfit}.` : base;
+  }
+
+  const heroName = heroDisplayName(order);
+  const lifeStage = sanitizeInput(order.heroAgeOrStage ?? '', 60) || 'adult';
+  const appearance = describeAppearanceOptions(order.appearanceOptions);
+  const notes = sanitizeInput(order.characterNotes, 220);
+  const relationship = sanitizeInput(order.recipientRelationship ?? '', 100);
+  const parts = [
+    `${heroName} is a grown adult ${heroDescriptor(order)} at their stated life stage (${lifeStage}), with a warm expressive face, confident adult posture, and steady family-story presence.`,
+    appearance ? `Appearance notes: ${appearance}.` : '',
+    relationship ? `Relationship context: ${relationship}.` : '',
+    notes ? `Customer notes: ${notes}.` : '',
+    `Keep ${heroName}'s adult age, face, hair, build, skin tone, and overall grown-adult presentation consistent on every page; do not reduce or infantilize the hero.`,
+    outfit ? `Outfit: ${outfit}.` : '',
+  ];
+  return parts.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+}
+
 /**
  * Hero-type-aware "visual identity" rule block for the OpenAI story prompt.
  *
@@ -799,7 +821,7 @@ async function buildStoryFromPageProse(
   return {
     title: storyPlan.title,
     dedication: personalizeTemplate(variant.dedicationTemplate, order),
-    characterDescription: `${personalizeTemplate(variant.characterTemplate, order).replace(/\s+/g, ' ').trim()} Outfit: ${storyPlan.protagonist_outfit}.`,
+    characterDescription: buildCharacterDescription(order, variant, storyPlan.protagonist_outfit),
     pages,
   };
 }
@@ -907,7 +929,7 @@ async function buildStoryFromOllamaPageProse(
   return {
     title: storyPlan.title,
     dedication: personalizeTemplate(variant.dedicationTemplate, order),
-    characterDescription: `${personalizeTemplate(variant.characterTemplate, order).replace(/\s+/g, ' ').trim()} Outfit: ${storyPlan.protagonist_outfit}.`,
+    characterDescription: buildCharacterDescription(order, variant, storyPlan.protagonist_outfit),
     pages,
   };
 }
@@ -937,7 +959,7 @@ function buildTemplateFallbackWithVariant(
       story: {
         title: storyPlan.title,
         dedication: personalizeTemplate(variant.dedicationTemplate, order),
-        characterDescription: `${personalizeTemplate(variant.characterTemplate, order).replace(/\s+/g, ' ').trim()} Outfit: ${storyPlan.protagonist_outfit}.`,
+        characterDescription: buildCharacterDescription(order, variant, storyPlan.protagonist_outfit),
         pages: buildLongFormTemplatePages(
           order,
           variant,
@@ -967,7 +989,7 @@ function buildTemplateFallbackWithVariant(
     story: {
       title: `${childName}'s ${theme?.name ?? 'Great'} ${variant.titleSuffix}`,
       dedication: personalizeTemplate(variant.dedicationTemplate, order),
-      characterDescription: personalizeTemplate(variant.characterTemplate, order).replace(/\s+/g, ' ').trim(),
+      characterDescription: buildCharacterDescription(order, variant),
       pages,
     },
     variant,

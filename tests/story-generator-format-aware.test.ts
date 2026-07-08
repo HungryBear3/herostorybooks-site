@@ -487,6 +487,9 @@ for (const provider of ['openai', 'ollama'] as const) {
       assert.match(prompts, /adult explorer\/astronaut clothing|grown adult/);
       assert.doesNotMatch(prompts, /child-safe explorer/);
       assert.doesNotMatch(prompts, /Keep the child’s face/);
+      assert.match(result.story.characterDescription, /grown adult/);
+      assert.doesNotMatch(result.story.characterDescription, CHILD_PROTAGONIST_FRAMING);
+      assert.doesNotMatch(result.story.characterDescription, HERO_IS_A_CHILD);
     });
   });
 }
