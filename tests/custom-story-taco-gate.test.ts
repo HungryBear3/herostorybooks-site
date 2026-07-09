@@ -24,7 +24,7 @@ import {
 const planText = TACO_GATE_PLAN_LINES.join(' \n ').toLowerCase();
 
 test('fixture is sanitized: no raw transcript field, provenance sanitized', () => {
-  assert.ok(!('rawTranscript' in (TACO_GATE_BRIEF as Record<string, unknown>)));
+  assert.ok(!('rawTranscript' in (TACO_GATE_BRIEF as unknown as Record<string, unknown>)));
   assert.equal(TACO_GATE_BRIEF.provenance.voiceMemoDerived, true);
   assert.equal(TACO_GATE_BRIEF.provenance.transcriptSanitized, true);
   assert.ok(TACO_GATE_BRIEF.sanitizedSourceSummary.length > 0);

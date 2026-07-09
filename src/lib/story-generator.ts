@@ -3,6 +3,7 @@ import { getStoryPageCount } from './orders.ts';
 import type { StoryContent, StoryMeta, StoryPage } from './fulfillment-types.ts';
 import { STORY_THEMES } from './story-catalog.ts';
 import { SAMPLE_ADVENTURES } from './sample-adventures.ts';
+import { statusForShape, validateCustomStoryBrief } from './custom-story/index.ts';
 import { planStorybook, validateStoryPlan, type StoryPlanPage } from './story-planner.ts';
 import {
   buildStoryFromGeminiPageProse,
@@ -210,7 +211,27 @@ function isNonChildPrimaryHero(order: OrderRecord): boolean {
   return Boolean(heroType && heroType !== 'child');
 }
 
+
+
+function hasCustomStoryBrief(order: OrderRecord): boolean {
+  return Boolean(order.customStoryBrief);
+}
+
+function customStoryGenerationGate(order: OrderRecord): void {
+  const brief = order.customStoryBrief;
+  if (!brief) return;
+  const validation = validateCustomStoryBrief(brief);
+  const shapeStatus = statusForShape(brief.storyShape);
+  if (!validation.ok || !shapeStatus.conciergeAllowed || !brief.provenance?.briefApprovedByOperator) {
+    const reasons = validation.failures.map((f) => f.code).join(', ') || `shape:${shapeStatus.lane}`;
+    throw new Error(`custom story requires manual_queue before generation (${reasons})`);
+  }
+}
+
 function assertTemplateFallbackAllowed(order: OrderRecord): void {
+  if (hasCustomStoryBrief(order)) {
+    throw new Error('template fallback is disabled for custom-story briefs; route to manual_queue');
+  }
   if (isNonChildPrimaryHero(order)) {
     throw new Error('template fallback is disabled for non-child primary heroes until the per-type QA gate passes');
   }
@@ -1082,6 +1103,8 @@ export async function generateStoryWithMeta(
   const apiKey = process.env.OPENAI_API_KEY;
   const nowIso = (deps.now ?? (() => new Date()))().toISOString();
   const _fetch = deps.fetch ?? globalThis.fetch;
+
+  customStoryGenerationGate(order);
 
   // Gemini per-page prose (PR2). Highest priority among LLM paths when the
   // gate is on AND the key is present. Failures fall through to the same

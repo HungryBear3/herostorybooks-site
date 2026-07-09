@@ -19,6 +19,7 @@ import {
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
+import { statusForShape, validateCustomStoryBrief, type CustomStoryBrief, type ValidationResult } from '@/lib/custom-story';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -57,6 +58,16 @@ const INSPIRATION_DOC_EXT_RE = /\.(txt|pdf|doc|docx)$/i;
 const PRIMARY_HERO_TYPES = new Set(['child', 'parent', 'grandparent']);
 const PRIMARY_HERO_BETA_ENABLED =
   process.env.HSB_PRIMARY_HERO_BETA === 'true' || process.env.NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === 'true';
+
+
+function parseCustomStoryBrief(raw: FormDataEntryValue | null): CustomStoryBrief | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    return JSON.parse(raw) as CustomStoryBrief;
+  } catch {
+    throw new Error('custom_story_brief_invalid_json');
+  }
+}
 
 function isAudioInspirationFile(file: File): boolean {
   if (file.type && file.type.startsWith('audio/')) return true;
@@ -223,6 +234,43 @@ export async function POST(request: Request) {
     const heroPhotoFocusLabel = String(form.get('heroPhotoFocusLabel') || '').trim();
     const heroPhotoCropHint = String(form.get('heroPhotoCropHint') || '').trim();
 
+    let customStoryBrief: CustomStoryBrief | null = null;
+    let customStoryValidation: ValidationResult | null = null;
+    try {
+      customStoryBrief = parseCustomStoryBrief(form.get('customStoryBrief'));
+    } catch {
+      return NextResponse.json(
+        { error: 'Custom story brief must be valid sanitized JSON. No charge was made.', code: 'custom_story_brief_invalid_json' },
+        { status: 400 },
+      );
+    }
+    if (customStoryBrief) {
+      customStoryValidation = validateCustomStoryBrief(customStoryBrief);
+      const shapeStatus = statusForShape(customStoryBrief.storyShape);
+      if (!customStoryValidation.ok || !shapeStatus.conciergeAllowed) {
+        return NextResponse.json(
+          {
+            error: 'This custom story brief needs manual concierge review before checkout. No charge was made.',
+            code: 'custom_story_manual_review_required',
+            route: 'manual_queue',
+            failures: customStoryValidation.failures,
+            shapeLane: shapeStatus.lane,
+          },
+          { status: 400 },
+        );
+      }
+      if (!shapeStatus.sellableSelfServe && !PRIMARY_HERO_BETA_ENABLED) {
+        return NextResponse.json(
+          {
+            error: 'This custom story shape is concierge/private-beta only. Enable the private beta gate before checkout. No charge was made.',
+            code: 'custom_story_shape_private_beta_required',
+            shapeLane: shapeStatus.lane,
+          },
+          { status: 400 },
+        );
+      }
+    }
+
     const draftOrder = createOrderRecord({
       childName,
       heroName: heroName || null,
@@ -246,6 +294,8 @@ export async function POST(request: Request) {
       email,
       photoFileName: form.get('photo') instanceof File ? (form.get('photo') as File).name : null,
       voiceFileName: hasVoiceUpload ? (voiceRaw as File).name : null,
+      customStoryBrief,
+      customStoryValidation,
     });
 
     const photo = form.get('photo');
