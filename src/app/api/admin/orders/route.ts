@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { isAdminAuthedFromRequest } from '@/lib/admin-auth';
+import { buildFulfillmentOpsDigest } from '@/lib/fulfillment-backlog';
 import { classifyPaidOrderOpsIssue } from '@/lib/order-diagnostics';
 import { listOrders } from '@/lib/orders';
 
@@ -12,6 +13,7 @@ export async function GET(request: Request) {
   }
 
   let orders = await listOrders();
+  const opsDigest = buildFulfillmentOpsDigest(orders);
   const url = new URL(request.url);
   if (url.searchParams.get('opsIssue') === 'paid_artifact') {
     orders = orders.filter((order) => {
@@ -21,5 +23,5 @@ export async function GET(request: Request) {
   }
   // Newest first
   orders.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
-  return NextResponse.json({ orders });
+  return NextResponse.json({ orders, opsDigest });
 }

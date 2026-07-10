@@ -68,6 +68,36 @@ export function findFulfillmentBacklog(
   return eligible.slice(0, limit);
 }
 
+export interface FulfillmentOpsDigest {
+  paidStuck: number;
+  failedManualReview: number;
+  deliveryEmailFailed: number;
+  orderIds: {
+    paidStuck: string[];
+    failedManualReview: string[];
+    deliveryEmailFailed: string[];
+  };
+}
+
+export function buildFulfillmentOpsDigest(
+  orders: readonly OrderRecord[],
+  opts: BacklogOptions = {},
+): FulfillmentOpsDigest {
+  const paidStuckOrders = findFulfillmentBacklog(orders, opts);
+  const failedManualReview = orders.filter((o) => o.paymentStatus === 'paid' && o.fulfillmentStatus === 'failed_manual_review');
+  const deliveryEmailFailed = orders.filter((o) => o.paymentStatus === 'paid' && o.fulfillmentStatus === 'delivery_email_failed');
+  return {
+    paidStuck: paidStuckOrders.length,
+    failedManualReview: failedManualReview.length,
+    deliveryEmailFailed: deliveryEmailFailed.length,
+    orderIds: {
+      paidStuck: paidStuckOrders.map((o) => o.id),
+      failedManualReview: failedManualReview.map((o) => o.id),
+      deliveryEmailFailed: deliveryEmailFailed.map((o) => o.id),
+    },
+  };
+}
+
 /**
  * Fail-closed cron auth for the fulfillment sweep.
  *
@@ -101,7 +131,12 @@ export interface SweepDeps {
 
 export interface SweepResult {
   status: number;
-  body: { error?: string; swept?: number; results?: Array<{ orderId: string; status: string }> };
+  body: {
+    error?: string;
+    swept?: number;
+    results?: Array<{ orderId: string; status: string }>;
+    opsDigest?: FulfillmentOpsDigest;
+  };
 }
 
 /**
@@ -118,6 +153,11 @@ export async function runFulfillmentSweep(deps: SweepDeps): Promise<SweepResult>
   }
 
   const orders = await deps.listOrders();
+  const opsDigest = buildFulfillmentOpsDigest(orders, {
+    excludeOrderIds: deps.excludeOrderIds,
+    limit: deps.limit,
+    now: deps.now,
+  });
   const backlog = findFulfillmentBacklog(orders, {
     excludeOrderIds: deps.excludeOrderIds,
     limit: deps.limit,
@@ -136,5 +176,5 @@ export async function runFulfillmentSweep(deps: SweepDeps): Promise<SweepResult>
     }
   }
 
-  return { status: 200, body: { swept: backlog.length, results } };
+  return { status: 200, body: { swept: backlog.length, results, opsDigest } };
 }

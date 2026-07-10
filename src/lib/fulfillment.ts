@@ -26,6 +26,7 @@ import {
 import {
   evaluateProofSubmissionGate,
   formatProofSubmissionGateReasons,
+  hasUsableShippingAddress,
   isCustomProofGatedOrder,
   isValidProofReleaseOverride,
 } from './proof-submission-gate.ts';
@@ -733,9 +734,7 @@ async function runWithRetry(
         console.error(`[fulfillment] orderId=${orderId} moved to failed_manual_review after ${attempt} attempts`);
         const failedOrder = await getOrder(orderId);
         if (failedOrder) {
-          sendOperatorFailureAlert(failedOrder, errMsg).catch(e =>
-            console.error(`[fulfillment] operator alert failed for ${orderId}:`, e),
-          );
+          await recordOperatorAlertAttempt(failedOrder, errMsg, 'runWithRetry:failed_manual_review');
         }
         return;
       }
@@ -746,6 +745,41 @@ async function runWithRetry(
       });
       await _sleep(backoffMs(attempt));
     }
+  }
+}
+
+async function recordOperatorAlertAttempt(
+  order: OrderRecord,
+  lastError: string,
+  source: string,
+): Promise<void> {
+  let outcome: 'sent' | 'skipped' | 'failed' = 'sent';
+  let detail: string | null = null;
+
+  try {
+    const result = await sendOperatorFailureAlert(order, lastError);
+    if (result && 'skipped' in result && result.skipped) {
+      outcome = 'skipped';
+      detail = result.reason;
+    }
+  } catch (err) {
+    outcome = 'failed';
+    detail = redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 240);
+    console.error(`[fulfillment] operator alert failed for ${order.id}:`, err);
+  }
+
+  try {
+    await appendAuditEvent(order.id, {
+      type: 'operator_alert_recorded',
+      reason: outcome,
+      meta: {
+        source,
+        fulfillmentStatus: order.fulfillmentStatus ?? 'unknown',
+        detail,
+      },
+    }, order);
+  } catch (err) {
+    console.error(`[fulfillment] operator alert audit failed for ${order.id}:`, err);
   }
 }
 
@@ -1012,7 +1046,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[fulfillment] delivery email failed for ${order.id}: ${message}`);
-    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    const failed = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'delivery_email_failed',
       fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
       storyArtifactUrl: pdfUrl,
@@ -1022,6 +1056,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
       ...artDirectionPatch,
       auditEvents: [...routePatch.auditEvents, proofGeneratedEvent],
     }));
+    await recordOperatorAlertAttempt(failed ?? { ...order, fulfillmentStatus: 'delivery_email_failed' }, message, 'runDigitalFulfillment:delivery_email_failed');
   }
 }
 
@@ -1280,7 +1315,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[fulfillment] proof-ready email failed for ${order.id}: ${message}`);
-    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    const failed = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'delivery_email_failed',
       fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
       storyArtifactUrl: proofUrl,
@@ -1291,6 +1326,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
       ...artDirectionPatch,
       auditEvents: [...routePatch.auditEvents, proofGeneratedEvent],
     }));
+    await recordOperatorAlertAttempt(failed ?? { ...order, fulfillmentStatus: 'delivery_email_failed' }, message, 'runPrintFulfillment:delivery_email_failed');
   }
 }
 
@@ -1327,6 +1363,9 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
 
   if (!order.printInteriorArtifactUrl || !order.printInteriorMd5 || !order.printInteriorPageCount || !order.printTitle) {
     throw new Error('Missing print interior artifacts — cannot submit to print without interior PDF metadata');
+  }
+  if (!hasUsableShippingAddress(order)) {
+    throw new Error('Refusing print: missing usable shippingAddress');
   }
 
   // Generation Operating Policy §6 — independent print-submission guard.
@@ -1744,6 +1783,7 @@ export type OwnerPrintGoFailureCode =
   | 'QA_NOT_PASSED'
   | 'CUSTOMER_APPROVAL_REQUIRED'
   | 'WRONG_FULFILLMENT_STATUS'
+  | 'MISSING_SHIPPING_ADDRESS'
   | 'ALREADY_OWNER_GO'
   | 'ALREADY_SUBMITTED'
   | 'ALREADY_SHIPPED'
@@ -1889,6 +1929,13 @@ export async function submitPrintAfterOwnerGo(
       error: `Cannot record owner go: fulfillmentStatus=${order.fulfillmentStatus}`,
     };
   }
+  if (isPrintFormat(order.bookFormat) && !hasUsableShippingAddress(order)) {
+    return {
+      ok: false,
+      failureCode: 'MISSING_SHIPPING_ADDRESS',
+      error: 'Cannot record owner go: print order is missing a usable shipping address',
+    };
+  }
   const providerKs2 = await enforceKillSwitch('print_provider_hold');
   if (providerKs2.kind === 'active') {
     return {
@@ -1973,10 +2020,11 @@ export async function submitPrintAfterOwnerGo(
   } catch (err) {
     const errMsg = redactSecrets(err instanceof Error ? err.message : String(err));
     console.error(`[fulfillment] orderId=${orderId} owner-go print submit failed: ${errMsg}`);
-    await updateFulfillmentState(orderId, {
+    const failedOrder = await updateFulfillmentState(orderId, {
       fulfillmentStatus: 'failed_manual_review',
       fulfillmentLastError: `owner_print_go_submit_failed: ${errMsg}`,
     });
+    await recordOperatorAlertAttempt(failedOrder ?? verify, errMsg, 'submitPrintAfterOwnerGo:print_submit_failed');
     return {
       ok: false,
       failureCode: 'PRINT_SUBMIT_FAILED',

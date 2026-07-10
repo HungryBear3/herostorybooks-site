@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { findFulfillmentBacklog } from '../src/lib/fulfillment-backlog.ts';
+import { buildFulfillmentOpsDigest, findFulfillmentBacklog } from '../src/lib/fulfillment-backlog.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 
 const NOW = new Date('2026-06-04T12:00:00.000Z');
@@ -75,4 +75,25 @@ test('FIFO oldest-first and respects limit', () => {
   ];
   const r = findFulfillmentBacklog(orders, { now: NOW, limit: 2 });
   assert.deepEqual(r.map((o) => o.id), ['ord_oldest', 'ord_mid']);
+});
+
+test('ops digest summarizes actionable paid fulfillment buckets for dashboard/cron hooks', () => {
+  const digest = buildFulfillmentOpsDigest([
+    order({ id: 'ord_paid_stuck', fulfillmentStatus: 'not_started' }),
+    order({ id: 'ord_manual', fulfillmentStatus: 'failed_manual_review' }),
+    order({ id: 'ord_email', fulfillmentStatus: 'delivery_email_failed' }),
+    order({ id: 'ord_complete', fulfillmentStatus: 'complete' }),
+    order({ id: 'ord_unpaid_manual', paymentStatus: 'pending', fulfillmentStatus: 'failed_manual_review' }),
+  ], { now: NOW });
+
+  assert.deepEqual(digest, {
+    paidStuck: 1,
+    failedManualReview: 1,
+    deliveryEmailFailed: 1,
+    orderIds: {
+      paidStuck: ['ord_paid_stuck'],
+      failedManualReview: ['ord_manual'],
+      deliveryEmailFailed: ['ord_email'],
+    },
+  });
 });
