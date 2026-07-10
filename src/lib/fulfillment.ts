@@ -1443,6 +1443,10 @@ export async function rebuildProofFromPageArtifacts(
           sceneTitle: '',
           story: p.storyText,
           imagePrompt: p.basePrompt,
+          // Carry any saved per-page text layout override into the rebuilt
+          // proof/print PDF. Without this the editor's saved placement would be
+          // silently dropped on every refresh.
+          ...(p.textLayout ? { textLayout: p.textLayout } : {}),
         })),
       };
     }

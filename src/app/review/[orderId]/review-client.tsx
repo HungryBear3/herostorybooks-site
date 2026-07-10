@@ -5,6 +5,12 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { PageArtifact } from '@/lib/orders';
 import { InlineProofPreview } from './inline-proof-preview';
+import { ProofTextEditor, type ProofTextLayoutPatch } from './proof-text-editor';
+
+/** Constrained proof text editor — off by default. Enabled only when this
+ *  public flag is explicitly set, so the feature ships dark. */
+const PROOF_TEXT_EDITOR_ENABLED =
+  process.env.NEXT_PUBLIC_HSB_PROOF_TEXT_EDITOR_ENABLED === 'true';
 
 const FEEDBACK_HELPER =
   'Tell us what to change on this page — for example: fix the hands, make the child look happier, brighten the garden, or make the face look more like the uploaded photo.';
@@ -30,7 +36,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [snapshot, setSnapshot] = useState<Snapshot>(initial);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [feedback, setFeedback] = useState('');
-  const [busy, setBusy] = useState<'idle' | 'requesting' | 'accepting' | 'approving' | 'acknowledging'>('idle');
+  const [busy, setBusy] = useState<'idle' | 'requesting' | 'accepting' | 'approving' | 'acknowledging' | 'savingLayout'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [proofAck, setProofAck] = useState<boolean>(Boolean(initial.proofReviewedAt));
@@ -160,6 +166,49 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
           p.customerRequestedChange?.lifecycleStatus !== 'resolved',
         ),
       }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error');
+    } finally {
+      setBusy('idle');
+    }
+  }
+
+  async function saveTextLayout(patch: ProofTextLayoutPatch) {
+    if (!selected) return;
+    setBusy('savingLayout');
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/order/${snapshot.orderId}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'update_text_layout',
+          pageIndex: selected.pageIndex,
+          textLayout: patch,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setError('We couldn’t save that placement just now. Please try again in a moment.');
+        return;
+      }
+      setSnapshot((s) => ({
+        ...s,
+        pageArtifacts: s.pageArtifacts.map((p) =>
+          p.pageIndex === selected.pageIndex ? data.page : p,
+        ),
+        // A layout edit rebuilds the proof, so the prior acknowledgment no
+        // longer matches the new PDF — clear it locally to keep the approve
+        // gate honest, mirroring the server's stale-ack invalidation.
+        proofReviewedAt: null,
+      }));
+      setProofAck(false);
+      setNotice(
+        data.proofRefreshed === false
+          ? 'Saved your placement. Your updated proof will refresh shortly.'
+          : 'Saved your placement and refreshed your proof.',
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Network error');
     } finally {
@@ -305,6 +354,17 @@ No image yet
                 </div>
               )}
             </div>
+
+            {PROOF_TEXT_EDITOR_ENABLED && (
+              <ProofTextEditor
+                pageIndex={selected.pageIndex}
+                imageUrl={selected.currentImageUrl}
+                storyText={selected.storyText}
+                layout={selected.textLayout}
+                saving={busy === 'savingLayout'}
+                onSave={saveTextLayout}
+              />
+            )}
 
             <div className="sticky bottom-3 z-10 mb-4 flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white/95 p-2 shadow-sm backdrop-blur sm:static sm:bg-transparent sm:p-0 sm:shadow-none sm:backdrop-blur-none">
               <button

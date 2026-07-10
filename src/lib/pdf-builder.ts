@@ -9,7 +9,9 @@ import type {
   StoryContent,
   TextColorMode,
   TextPanelStyle,
+  TextSizePreset,
 } from './fulfillment-types.ts';
+import { clamp, MAX_RIGHT_EDGE_PCT, TEXT_POSITION_BOUNDS } from './proof-text-layout.ts';
 
 // Import the standalone PDFKit build directly. The default 'pdfkit' entry
 // (js/pdfkit.js) reads its AFM font metrics from node_modules/pdfkit/js/data
@@ -140,7 +142,21 @@ export interface FitPictureBookTextOptions {
    *  the story body alone inside the panel safe zone. When true, it
    *  budgets for the title and centers the title+body group. */
   renderTitle?: boolean;
+  /** Optional size preset. Biases the starting font size and shrink floor.
+   *  `medium` reproduces the historical default exactly. The fitter still
+   *  guarantees the text fits the safe zone, so a preset can only nudge size
+   *  within what fits — it never forces overflow. */
+  sizePreset?: TextSizePreset;
 }
+
+/** Starting and minimum story font sizes per preset. `medium` is the legacy
+ *  default (start 15, floor 12). `large`'s floor is kept at the medium floor so
+ *  a larger preset never clips more aggressively than the default. */
+const SIZE_PRESET_FONT_BANDS: Record<TextSizePreset, { start: number; storyFloor: number }> = {
+  small: { start: 13, storyFloor: 11 },
+  medium: { start: 15, storyFloor: 12 },
+  large: { start: 18, storyFloor: 12 },
+};
 
 /** Resolve a PageTextLayout's auto fields against the panel style so the
  *  renderer never has to guess. Pure — exposed for tests. */
@@ -162,6 +178,60 @@ export function resolvePageTextLayout(layout?: PageTextLayout): {
   return { panelStyle, colorMode, zone: layout?.zone ?? 'natural' };
 }
 
+/**
+ * Apply an optional, customer-saved position override to a default band layout.
+ * The override is expressed in page percentages; here it is mapped into the
+ * concrete coordinate space (`pageW`/`pageH`) and clamped so the panel rectangle
+ * stays fully inside the safe printable zone. When `position` is absent the base
+ * layout is returned unchanged — preserving legacy/default rendering exactly.
+ */
+function applyTextPositionOverride(
+  base: PictureBookStoryLayout,
+  position: PageTextLayout['position'],
+  pageW: number,
+  pageH: number,
+): PictureBookStoryLayout {
+  if (!position) return base;
+
+  // Side/edge margins in points, mirroring the default band insets.
+  const sideMargin = base.textPanelX;
+  const bottomMargin = pageH - (base.textPanelY + base.textPanelHeight);
+  const topMargin = Math.min(base.imageY + 24, pageH * 0.04);
+
+  const x = clamp(
+    (position.xPct / 100) * pageW,
+    sideMargin,
+    pageW - sideMargin - TEXT_POSITION_BOUNDS.widthPct.min / 100 * pageW,
+  );
+
+  const defaultWidthPct = (base.textPanelWidth / pageW) * 100;
+  const widthPct = clamp(
+    position.widthPct ?? defaultWidthPct,
+    TEXT_POSITION_BOUNDS.widthPct.min,
+    TEXT_POSITION_BOUNDS.widthPct.max,
+  );
+  // Keep the right edge inside the safe margin.
+  const maxWidth = Math.min((widthPct / 100) * pageW, (MAX_RIGHT_EDGE_PCT / 100) * pageW - x);
+  const width = Math.max((TEXT_POSITION_BOUNDS.widthPct.min / 100) * pageW, maxWidth);
+
+  // Preserve the default band height, but never let it run off the bottom.
+  const height = Math.min(base.textPanelHeight, pageH - bottomMargin / 2);
+  const y = clamp(
+    (position.yPct / 100) * pageH,
+    topMargin,
+    pageH - bottomMargin - height,
+  );
+
+  return {
+    ...base,
+    textPanelX: x,
+    textPanelY: y,
+    textPanelWidth: width,
+    textPanelHeight: height,
+    sceneTitleY: y + 12,
+  };
+}
+
 export function getPictureBookStoryLayout(
   kind: 'proof' | 'print',
   textLayout?: PageTextLayout,
@@ -181,7 +251,7 @@ export function getPictureBookStoryLayout(
     const bandHeight = 132;
     const bandX = 36;
     const bandWidth = trimWidth - 72;
-    return {
+    const printBase: PictureBookStoryLayout = {
       imageX: 0,
       imageY: 0,
       imageWidth: trimWidth,
@@ -198,13 +268,14 @@ export function getPictureBookStoryLayout(
       textPanelHeight: bandHeight,
       sceneTitleY: imageHeight + 12,
     };
+    return applyTextPositionOverride(printBase, textLayout?.position, trimWidth, trimHeight);
   }
 
   const imageHeight = 650;
   const bandHeight = 156;
   const bandX = 42;
   const bandWidth = PAGE_WIDTH - 84;
-  return {
+  const proofBase: PictureBookStoryLayout = {
     imageX: 0,
     imageY: 0,
     imageWidth: PAGE_WIDTH,
@@ -221,6 +292,7 @@ export function getPictureBookStoryLayout(
     textPanelHeight: bandHeight,
     sceneTitleY: imageHeight + 12,
   };
+  return applyTextPositionOverride(proofBase, textLayout?.position, PAGE_WIDTH, PAGE_HEIGHT);
 }
 
 function estimateWrappedLineCount(text: string, fontSize: number, width: number, weight: number): number {
@@ -255,6 +327,7 @@ export function fitPictureBookText(
   options: FitPictureBookTextOptions = {},
 ): FittedPictureBookText {
   const renderTitle = options.renderTitle ?? true;
+  const fontBand = SIZE_PRESET_FONT_BANDS[options.sizePreset ?? 'medium'];
   const textWidth = layout.textPanelWidth - layout.textInset * 2;
 
   // Safe zone = panel rect minus the textInset on each side and the
@@ -264,8 +337,8 @@ export function fitPictureBookText(
   const safeBottom = layout.textPanelY + layout.textPanelHeight - layout.panelVerticalInset;
   const safeHeight = safeBottom - safeTop;
 
-  let sceneTitleFontSize = 15;
-  let storyFontSize = 15;
+  let sceneTitleFontSize = fontBand.start;
+  let storyFontSize = fontBand.start;
   let storyLineGap = 5;
 
   // Iterative shrink loop — same shape as before, but now considers
@@ -313,7 +386,7 @@ export function fitPictureBookText(
       };
     }
 
-    if (storyFontSize > 12) storyFontSize -= 1;
+    if (storyFontSize > fontBand.storyFloor) storyFontSize -= 1;
     else if (storyLineGap > 3) storyLineGap -= 1;
     else if (renderTitle) sceneTitleFontSize -= 1;
     else break; // body-only path can't shrink further once font/lineGap bottoms out
@@ -693,7 +766,10 @@ function drawStoryPage(
   // so we ask the fitter not to budget any vertical room for it. That
   // lets the story body use the whole safe zone and removes the
   // top-anchor whitespace bug.
-  const fitted = fitPictureBookText(layout, sceneTitle, storyText, { renderTitle: false });
+  const fitted = fitPictureBookText(layout, sceneTitle, storyText, {
+    renderTitle: false,
+    sizePreset: textLayout?.sizePreset ?? undefined,
+  });
   doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill(CREAM);
 
   if (imageBuffer) {
@@ -1060,7 +1136,10 @@ export async function buildPrintInteriorPdf(
       // story pages, so the fitter must not budget for a title or the
       // story copy sits in the upper half of the cream band with
       // unbalanced bottom whitespace.
-      const fitted = fitPictureBookText(layout, page.sceneTitle, page.story, { renderTitle: false });
+      const fitted = fitPictureBookText(layout, page.sceneTitle, page.story, {
+        renderTitle: false,
+        sizePreset: page.textLayout?.sizePreset ?? undefined,
+      });
       doc.rect(0, 0, trimWidth, trimHeight).fill(CREAM);
 
       const image = imageBuffers[index + 1] ?? null;

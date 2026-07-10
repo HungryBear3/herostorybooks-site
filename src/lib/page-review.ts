@@ -14,6 +14,8 @@ import type {
 import { generatePageImage, type ImageProvider } from './image-generator.ts';
 import { buildRegeneratePrompt } from './image-prompt-builder.ts';
 import { rebuildProofFromPageArtifacts } from './fulfillment.ts';
+import { sanitizeTextLayoutPatch } from './proof-text-layout.ts';
+import type { PageTextLayout } from './fulfillment-types.ts';
 import { sendRegenManualReviewAlert } from './order-email.ts';
 import { evaluateProofSubmissionGate } from './proof-submission-gate.ts';
 
@@ -467,6 +469,122 @@ export async function requestPageChanges(
 
     return { ok: true, status: 200, page };
   });
+}
+
+// ── Proof text layout edit (feature-flagged editor) ──────────────────────────
+
+export interface UpdateTextLayoutInput {
+  orderId: string;
+  pageIndex: number;
+  /** Untrusted layout patch from the client. Sanitized/clamped server-side. */
+  textLayout: unknown;
+}
+
+export interface UpdateTextLayoutResult {
+  ok: boolean;
+  status: 200 | 400 | 404 | 409;
+  page?: PageArtifact;
+  error?: string;
+  /** True iff the proof PDF was successfully refreshed from the saved layout. */
+  proofRefreshed?: boolean;
+  /** Populated when the layout saved but the proof rebuild failed. */
+  proofRefreshError?: string;
+  /** The validated/clamped layout actually persisted (handy for clients/tests). */
+  savedLayout?: PageTextLayout;
+}
+
+export interface UpdateTextLayoutDeps {
+  rebuildProof?: typeof rebuildProofFromPageArtifacts;
+  /** Skip the proof rebuild (tests that only assert persistence). */
+  skipProofRebuild?: boolean;
+}
+
+/**
+ * Pure: validate + clamp a layout patch onto the matching page artifact.
+ * Crucially this does NOT touch `accepted` / `customerReviewStatus` — a layout
+ * edit is a placement tweak, never an approval.
+ */
+export function applyUpdateTextLayout(
+  artifacts: PageArtifact[],
+  pageIndex: number,
+  patch: unknown,
+): { artifacts: PageArtifact[]; page?: PageArtifact; layout?: PageTextLayout; error?: string } {
+  const idx = artifacts.findIndex((p) => p.pageIndex === pageIndex);
+  if (idx === -1) return { artifacts, error: 'page_not_found' };
+  const current = artifacts[idx];
+  const layout = sanitizeTextLayoutPatch(patch, current.textLayout ?? null);
+  const next = artifacts.slice();
+  next[idx] = { ...current, textLayout: layout };
+  return { artifacts: next, page: next[idx], layout };
+}
+
+/**
+ * Persist a per-page text layout edit and refresh the proof PDF from it.
+ * Does not approve/release/print anything. Mirrors regeneratePage's
+ * rebuild-and-audit pattern so saved placement shows up in the refreshed proof.
+ */
+export async function updatePageTextLayout(
+  input: UpdateTextLayoutInput,
+  deps: UpdateTextLayoutDeps = {},
+): Promise<UpdateTextLayoutResult> {
+  const order = await getOrder(input.orderId);
+  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  if (order.reviewStatus === 'approved') {
+    // The book is already locked; layout edits must not silently mutate a
+    // finished/approved proof.
+    return { ok: false, status: 409, error: 'Order is already approved' };
+  }
+  if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
+    return { ok: false, status: 409, error: 'Page review not yet ready for this order' };
+  }
+
+  const { artifacts, page, layout, error } = applyUpdateTextLayout(
+    order.pageArtifacts,
+    input.pageIndex,
+    input.textLayout,
+  );
+  if (error || !page || !layout) {
+    return { ok: false, status: 400, error: error ?? 'update_text_layout_failed' };
+  }
+
+  const savedOrder = await updateFulfillmentState(order.id, { pageArtifacts: artifacts });
+
+  let proofRefreshed = false;
+  let proofRefreshError: string | undefined;
+  if (!deps.skipProofRebuild) {
+    try {
+      const rebuild = deps.rebuildProof ?? rebuildProofFromPageArtifacts;
+      const rb = await rebuild(order.id, {}, savedOrder ?? undefined);
+      if (rb.ok) {
+        proofRefreshed = true;
+      } else {
+        proofRefreshError = rb.error ?? 'proof_rebuild_failed';
+      }
+      await appendAuditEvent(order.id, {
+        type: 'proof_rebuilt',
+        pageIndex: input.pageIndex,
+        reason: proofRefreshError ?? null,
+        meta: { triggeredBy: 'text_layout_update', success: proofRefreshed },
+      }, rb.updatedOrder ?? savedOrder ?? undefined);
+    } catch (err) {
+      proofRefreshError = err instanceof Error ? err.message : String(err);
+      await appendAuditEvent(order.id, {
+        type: 'proof_rebuilt',
+        pageIndex: input.pageIndex,
+        reason: proofRefreshError,
+        meta: { triggeredBy: 'text_layout_update', success: false },
+      }, savedOrder ?? undefined);
+    }
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    page,
+    savedLayout: layout,
+    proofRefreshed,
+    ...(proofRefreshError ? { proofRefreshError } : {}),
+  };
 }
 
 // ── Approve whole book ───────────────────────────────────────────────────────
