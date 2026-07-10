@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 
 import type { OrderRecord } from '@/lib/orders';
+import { deriveOrderStage, deriveOrderAttention } from '@/lib/order-stage';
 
 /** Client-side mirror of preprintRefundRefusalReason (kept inline to
  *  avoid pulling Stripe into the client bundle through admin-actions).
@@ -222,6 +223,10 @@ function Row({
   const created = order.createdAt ? new Date(order.createdAt) : null;
   const createdShort = created ? `${created.toISOString().slice(0, 10)} ${created.toISOString().slice(11, 16)}Z` : '—';
   const needsPaidArtifactAttention = paidArtifactNeedsAttention(order);
+  // Read-only truth layer: derived stage + attention are display-only signals;
+  // no action is taken here.
+  const stage = deriveOrderStage(order);
+  const attention = deriveOrderAttention(order);
 
   return (
     <tr className="border-t border-gray-100 align-top">
@@ -258,7 +263,15 @@ function Row({
           </p>
         )}
       </td>
-      <td className="px-3 py-3 text-xs">{order.status}</td>
+      <td className="px-3 py-3 text-xs">
+        {order.status}
+        <div className="mt-1 text-[10px] text-gray-400">Derived stage: {stage}</div>
+        {attention.severity !== 'none' && (
+          <div className="mt-0.5 text-[10px] text-coral-dark max-w-[220px]">
+            {attention.severity}: {attention.reason} · queue: {attention.queue} · owner: {attention.nextActionOwner}
+          </div>
+        )}
+      </td>
       <td className="px-3 py-3">
         <div className="flex flex-col gap-1">
           {order.storyArtifactUrl && (
