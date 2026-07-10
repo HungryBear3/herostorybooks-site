@@ -4,6 +4,7 @@ import { get, list, put } from '@vercel/blob';
 
 import type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
+import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts';
 export type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
@@ -91,6 +92,10 @@ export interface OrderInput {
    * never for voice cloning.
    */
   voiceTranscript?: VoiceTranscriptMeta | null;
+  /** Sanitized, operator-approved custom-story brief. Never raw transcript/audio. */
+  customStoryBrief?: CustomStoryBrief | null;
+  /** Latest fail-closed validation result for the sanitized custom-story brief. */
+  customStoryValidation?: ValidationResult | null;
 }
 
 export type ReviewStatus =
@@ -784,6 +789,8 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     // so this is normally null here and set later in the persist call. We
     // still pass it through when supplied so the field round-trips cleanly.
     voiceTranscript: input.voiceTranscript ?? null,
+    customStoryBrief: input.customStoryBrief ?? null,
+    customStoryValidation: input.customStoryValidation ?? null,
     status: 'order_received',
     paymentStatus: 'pending',
     stripeSessionId: null,

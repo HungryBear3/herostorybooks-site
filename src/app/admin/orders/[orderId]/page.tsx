@@ -66,6 +66,15 @@ export default async function AdminOrderDetail({ params }: Props) {
     transcriptPreview: previewText(order.voiceTranscript?.text, 400),
     transcriptChars: order.voiceTranscript?.text?.length ?? null,
     transcriptError: order.voiceTranscript?.error ?? null,
+    customBriefTitle: order.customStoryBrief?.workingTitle ?? null,
+    customBriefShape: order.customStoryBrief
+      ? `${order.customStoryBrief.storyShape.heroStructure} / ${order.customStoryBrief.storyShape.storySource} / ${order.customStoryBrief.storyShape.childRole}`
+      : null,
+    customBriefApproved: order.customStoryBrief?.provenance?.briefApprovedByOperator ?? null,
+    customBriefSanitized: order.customStoryBrief?.provenance?.transcriptSanitized ?? null,
+    customBriefSummary: previewText(order.customStoryBrief?.sanitizedSourceSummary, 400),
+    customBriefValidationRoute: order.customStoryValidation?.route ?? null,
+    customBriefValidationFailures: order.customStoryValidation?.failures ?? [],
   };
 
   return (
@@ -169,6 +178,19 @@ export default async function AdminOrderDetail({ params }: Props) {
               />
               {storyInput.transcriptError && (
                 <Row label="Transcript error" value={storyInput.transcriptError} tone="bad" />
+              )}
+            </>
+          )}
+          {storyInput.customBriefTitle && (
+            <>
+              <Row label="Custom brief title" value={storyInput.customBriefTitle} />
+              <Row label="Custom story shape" value={storyInput.customBriefShape ?? '—'} />
+              <Row label="Brief sanitized" value={storyInput.customBriefSanitized ? 'yes' : 'no'} tone={storyInput.customBriefSanitized ? 'good' : 'bad'} />
+              <Row label="Operator approved" value={storyInput.customBriefApproved ? 'yes' : 'no'} tone={storyInput.customBriefApproved ? 'good' : 'bad'} />
+              <Row label="Validation route" value={storyInput.customBriefValidationRoute ?? 'not_run'} tone={storyInput.customBriefValidationRoute === 'manual_queue' ? 'bad' : 'neutral'} />
+              <Row label="Sanitized source summary" value={storyInput.customBriefSummary ?? '—'} />
+              {storyInput.customBriefValidationFailures.length > 0 && (
+                <Row label="Validation failures" value={storyInput.customBriefValidationFailures.map((failure) => failure.code).join(', ')} tone="bad" />
               )}
             </>
           )}
