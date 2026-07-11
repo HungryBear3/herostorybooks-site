@@ -4,6 +4,9 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   metadataBase: new URL('https://herostorybooks.com'),
   title: 'Hero Story Books',
+  other: {
+    'facebook-domain-verification': 'dzkmx7nu5p61nc7end6o4xj4cl5qvo',
+  },
   description: 'Personalized hero story books that help children feel brave, seen, and celebrated.',
   icons: {
     icon: '/assets/logo-icon-only.png',
