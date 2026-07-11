@@ -32,12 +32,16 @@ function CheckoutPaused() {
   );
 }
 
+function envFlag(name: string): boolean {
+  const value = process.env[name];
+  return value === 'true' || value === '"true"';
+}
+
 export default function CustomMemoryPaidBetaPage() {
   if (isCheckoutPaused()) return <CheckoutPaused />;
 
   const paidBetaEnabled =
-    process.env.HSB_CUSTOM_STORY_PAID_BETA === 'true' ||
-    process.env.NEXT_PUBLIC_HSB_CUSTOM_STORY_PAID_BETA === 'true';
+    envFlag('HSB_CUSTOM_STORY_PAID_BETA') || envFlag('NEXT_PUBLIC_HSB_CUSTOM_STORY_PAID_BETA');
 
   return <PaidMemoryBetaForm paidBetaEnabled={paidBetaEnabled} />;
 }
