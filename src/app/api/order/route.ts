@@ -53,13 +53,16 @@ function missingSupportingCharacterPhotoLabels(
     .map(({ character }) => familyCharacterLabel(character));
 }
 
+function envFlag(name: string): boolean {
+  const value = process.env[name];
+  return value === 'true' || value === '"true"';
+}
+
 const AUDIO_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i;
 const INSPIRATION_DOC_EXT_RE = /\.(txt|pdf|doc|docx)$/i;
 const PRIMARY_HERO_TYPES = new Set(['child', 'parent', 'grandparent']);
-const PRIMARY_HERO_BETA_ENABLED =
-  process.env.HSB_PRIMARY_HERO_BETA === 'true' || process.env.NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === 'true';
-const CUSTOM_STORY_PAID_BETA_ENABLED =
-  process.env.HSB_CUSTOM_STORY_PAID_BETA === 'true' || process.env.NEXT_PUBLIC_HSB_CUSTOM_STORY_PAID_BETA === 'true';
+const PRIMARY_HERO_BETA_ENABLED = envFlag('HSB_PRIMARY_HERO_BETA') || envFlag('NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA');
+const CUSTOM_STORY_PAID_BETA_ENABLED = envFlag('HSB_CUSTOM_STORY_PAID_BETA') || envFlag('NEXT_PUBLIC_HSB_CUSTOM_STORY_PAID_BETA');
 
 
 function parseCustomStoryBrief(raw: FormDataEntryValue | null): CustomStoryBrief | null {

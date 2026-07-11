@@ -16,6 +16,7 @@ test('order route validates sanitized customStoryBrief before Stripe and returns
   assert.match(source, /custom_story_manual_review_required/);
   assert.match(source, /custom_story_paid_beta_required/);
   assert.match(source, /CUSTOM_STORY_PAID_BETA_ENABLED/);
+  assert.match(source, /value === '\"true\"'/);
 });
 
 test('order route does not call statusForShape on malformed customStoryBrief', () => {
