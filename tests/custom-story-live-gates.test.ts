@@ -14,7 +14,8 @@ test('order route validates sanitized customStoryBrief before Stripe and returns
   assert.ok(stripeIdx > 0, 'stripe creation is present');
   assert.ok(validateIdx < stripeIdx, 'custom brief validation must happen before Stripe creation');
   assert.match(source, /custom_story_manual_review_required/);
-  assert.match(source, /custom_story_shape_private_beta_required/);
+  assert.match(source, /custom_story_paid_beta_required/);
+  assert.match(source, /CUSTOM_STORY_PAID_BETA_ENABLED/);
 });
 
 test('order route does not call statusForShape on malformed customStoryBrief', () => {

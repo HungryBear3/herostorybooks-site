@@ -58,6 +58,8 @@ const INSPIRATION_DOC_EXT_RE = /\.(txt|pdf|doc|docx)$/i;
 const PRIMARY_HERO_TYPES = new Set(['child', 'parent', 'grandparent']);
 const PRIMARY_HERO_BETA_ENABLED =
   process.env.HSB_PRIMARY_HERO_BETA === 'true' || process.env.NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === 'true';
+const CUSTOM_STORY_PAID_BETA_ENABLED =
+  process.env.HSB_CUSTOM_STORY_PAID_BETA === 'true' || process.env.NEXT_PUBLIC_HSB_CUSTOM_STORY_PAID_BETA === 'true';
 
 
 function parseCustomStoryBrief(raw: FormDataEntryValue | null): CustomStoryBrief | null {
@@ -261,11 +263,11 @@ export async function POST(request: Request) {
           { status: 400 },
         );
       }
-      if (!shapeStatus.sellableSelfServe && !PRIMARY_HERO_BETA_ENABLED) {
+      if (!shapeStatus.sellableSelfServe && !CUSTOM_STORY_PAID_BETA_ENABLED) {
         return NextResponse.json(
           {
-            error: 'This custom story shape is concierge/private-beta only. Enable the private beta gate before checkout. No charge was made.',
-            code: 'custom_story_shape_private_beta_required',
+            error: 'This custom story shape is concierge/private-beta only. Enable the custom-story paid beta gate before checkout. No charge was made.',
+            code: 'custom_story_paid_beta_required',
             shapeLane: shapeStatus.lane,
           },
           { status: 400 },
