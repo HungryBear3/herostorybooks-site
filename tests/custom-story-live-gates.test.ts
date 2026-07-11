@@ -17,6 +17,15 @@ test('order route validates sanitized customStoryBrief before Stripe and returns
   assert.match(source, /custom_story_shape_private_beta_required/);
 });
 
+test('order route does not call statusForShape on malformed customStoryBrief', () => {
+  const source = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const validationIdx = source.indexOf('customStoryValidation = validateCustomStoryBrief(customStoryBrief)');
+  const gatedStatusIdx = source.indexOf('customStoryValidation.ok\n        ? statusForShape(customStoryBrief.storyShape)');
+  assert.ok(validationIdx > 0, 'validation assignment is present');
+  assert.ok(gatedStatusIdx > validationIdx, 'status lookup is gated on a passing validation result');
+  assert.match(source, /shapeStatus\?\.lane \?\? 'not-accepted'/);
+});
+
 test('createOrderRecord preserves sanitized customStoryBrief and validation snapshot', () => {
   const order = createOrderRecord({
     childName: 'Lukas',

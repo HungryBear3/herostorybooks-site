@@ -246,15 +246,17 @@ export async function POST(request: Request) {
     }
     if (customStoryBrief) {
       customStoryValidation = validateCustomStoryBrief(customStoryBrief);
-      const shapeStatus = statusForShape(customStoryBrief.storyShape);
-      if (!customStoryValidation.ok || !shapeStatus.conciergeAllowed) {
+      const shapeStatus = customStoryValidation.ok
+        ? statusForShape(customStoryBrief.storyShape)
+        : null;
+      if (!customStoryValidation.ok || !shapeStatus?.conciergeAllowed) {
         return NextResponse.json(
           {
             error: 'This custom story brief needs manual concierge review before checkout. No charge was made.',
             code: 'custom_story_manual_review_required',
             route: 'manual_queue',
             failures: customStoryValidation.failures,
-            shapeLane: shapeStatus.lane,
+            shapeLane: shapeStatus?.lane ?? 'not-accepted',
           },
           { status: 400 },
         );
