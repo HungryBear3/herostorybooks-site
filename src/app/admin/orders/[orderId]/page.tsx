@@ -5,6 +5,7 @@ import { getConfiguredAdminKey } from '@/lib/admin-auth';
 import { isAdminAuthedFromCookie } from '@/lib/admin-auth-server';
 import { getOrder } from '@/lib/orders';
 import { buildOrderDiagnostics, formatDiagnosticsSummary } from '@/lib/order-diagnostics';
+import { CUSTOMER_QUEUE_STATUS_LABELS } from '@/lib/order-queue';
 
 import OrderDetailActions from './detail-client';
 import PageReviewGrid from './page-review-grid';
@@ -135,6 +136,19 @@ export default async function AdminOrderDetail({ params }: Props) {
           <Row label="Price" value={`$${(order.priceCents / 100).toFixed(2)}`} />
           <Row label="Checkout cohort" value={order.checkoutTracking?.cohort ?? '—'} mono={Boolean(order.checkoutTracking?.cohort)} />
           <Row label="Checkout invite" value={order.checkoutTracking?.invite ?? '—'} mono={Boolean(order.checkoutTracking?.invite)} />
+          <Row
+            label="Queue status"
+            value={
+              order.customerQueueStatus
+                ? `${order.customerQueueStatus} — ${CUSTOMER_QUEUE_STATUS_LABELS[order.customerQueueStatus]}`
+                : order.paymentStatus === 'paid' && order.status === 'order_received'
+                  ? 'in manual queue (status unset)'
+                  : '—'
+            }
+          />
+          <Row label="Manual queue entered" value={order.manualQueueEnteredAt ?? '—'} mono={Boolean(order.manualQueueEnteredAt)} />
+          <Row label="Queue status updated" value={order.lastQueueStatusUpdateAt ?? '—'} />
+          <Row label="Queue note (internal)" value={order.queueStatusNote ?? '—'} />
           {order.internalDisposition && (
             <>
               <Row label="Internal disposition" value={order.internalDisposition} tone="neutral" />
