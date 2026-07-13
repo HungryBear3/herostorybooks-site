@@ -133,6 +133,8 @@ export default async function AdminOrderDetail({ params }: Props) {
           <Row label="Email" value={order.email} />
           <Row label="Format" value={order.formatLabel} />
           <Row label="Price" value={`$${(order.priceCents / 100).toFixed(2)}`} />
+          <Row label="Checkout cohort" value={order.checkoutTracking?.cohort ?? '—'} mono={Boolean(order.checkoutTracking?.cohort)} />
+          <Row label="Checkout invite" value={order.checkoutTracking?.invite ?? '—'} mono={Boolean(order.checkoutTracking?.invite)} />
           {order.internalDisposition && (
             <>
               <Row label="Internal disposition" value={order.internalDisposition} tone="neutral" />

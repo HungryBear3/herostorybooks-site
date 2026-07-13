@@ -16,6 +16,7 @@ import {
   missingFieldErrorCode,
   missingRequiredField,
 } from '@/lib/checkout-flow';
+import { buildCheckoutTracking } from '@/lib/checkout-tracking';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
@@ -125,6 +126,10 @@ export async function POST(request: Request) {
     }
 
     const form = await request.formData();
+    const checkoutTracking = buildCheckoutTracking({
+      cohort: form.get('cohort'),
+      invite: form.get('invite'),
+    });
     const childName = String(form.get('childName') || '').trim();
     const email = String(form.get('email') || '').trim();
     const bookFormat = String(form.get('bookFormat') || 'classic').trim();
@@ -303,6 +308,7 @@ export async function POST(request: Request) {
       voiceFileName: hasVoiceUpload ? (voiceRaw as File).name : null,
       customStoryBrief,
       customStoryValidation,
+      checkoutTracking,
     });
 
     const photo = form.get('photo');
@@ -459,6 +465,8 @@ export async function POST(request: Request) {
       client_reference_id: order.id,
       metadata: {
         orderId: order.id,
+        ...(order.checkoutTracking?.cohort ? { cohort: order.checkoutTracking.cohort } : {}),
+        ...(order.checkoutTracking?.invite ? { invite: order.checkoutTracking.invite } : {}),
       },
       line_items: [
         {

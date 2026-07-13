@@ -16,10 +16,12 @@ import {
   scanStaleCopy,
   detectCustomStoryBrief,
   evaluatePaidOrderSafety,
+  buildReport,
+  formatReport,
   parseArgs,
   STALE_COPY_PATTERNS,
 } from '../scripts/verify-paid-order-safety.ts';
-import type { SafetyInputs } from '../scripts/verify-paid-order-safety.ts';
+import type { SafetyInputs, StripeFacts } from '../scripts/verify-paid-order-safety.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 
 // Baseline: the live Lukas order — paid, held, no artifacts, stale copy, no brief.
@@ -201,4 +203,56 @@ test('parseArgs handles space and = forms', () => {
   assert.equal(parseArgs(['--print-go']).printGo, true);
   assert.equal(parseArgs(['--artifacts-intended']).artifactsIntended, true);
   assert.equal(parseArgs(['-h']).help, true);
+});
+
+test('buildReport + formatReport include normal-checkout tracking without raw order dump', () => {
+  const stripe: StripeFacts = {
+    available: true,
+    reason: null,
+    sessionId: 'cs_live_trackingtest123456',
+    sessionStatus: 'complete',
+    paymentStatus: 'paid',
+    amountTotal: 0,
+    amountSubtotal: 1900,
+    amountDiscount: 1900,
+    currency: 'usd',
+    promoEvidence: ['discount amount=1900 promo=promo_…abcdef'],
+    paymentIntentId: 'pi_trackingtest123456',
+    paymentIntentStatus: 'succeeded',
+    chargePaid: true,
+    amountCaptured: 0,
+    lineItemDescriptions: [],
+    metadataKeys: ['orderId', 'cohort', 'invite'],
+    metadataTracking: { cohort: 'ff-beta', invite: 'alexfriend01' },
+    webhook: null,
+  };
+  const report = buildReport(
+    { orderId: 'ord_track', email: null, stripeSession: null, json: false, help: false, printGo: false, artifactsIntended: false },
+    {
+      matchedBy: 'order-id',
+      candidates: 1,
+      order: {
+        id: 'ord_track',
+        childName: 'Mia',
+        email: 'mia@example.com',
+        bookFormat: 'digital',
+        formatLabel: 'Digital proof',
+        priceCents: 1900,
+        paymentStatus: 'paid',
+        status: 'order_received',
+        stripeSessionId: 'cs_live_trackingtest123456',
+        checkoutTracking: { cohort: 'ff-beta', invite: 'alexfriend01' },
+        createdAt: '2026-07-13T18:00:00Z',
+        updatedAt: '2026-07-13T18:00:00Z',
+      } as unknown as OrderRecord,
+    },
+    null,
+    stripe,
+  );
+
+  assert.deepEqual(report.order.checkoutTracking, { cohort: 'ff-beta', invite: 'alexfriend01' });
+  assert.deepEqual(report.stripe.metadataTracking, { cohort: 'ff-beta', invite: 'alexfriend01' });
+  const text = formatReport(report);
+  assert.match(text, /checkout track\s*: cohort=ff-beta invite=alexfriend01/);
+  assert.match(text, /metadata track\s*: cohort=ff-beta invite=alexfriend01/);
 });
