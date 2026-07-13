@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { get, list, put } from '@vercel/blob';
 
 import type { CheckoutTracking } from './checkout-tracking.ts';
+import type { CustomerQueueStatus } from './order-queue.ts';
 import type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts';
@@ -311,6 +312,14 @@ export interface OrderRecord extends OrderInput {
   pageArtifacts?: PageArtifact[];
   /** Private F&F/pilot checkout tracking captured from ?cohort= and ?invite=. */
   checkoutTracking?: CheckoutTracking | null;
+  /** Internal manual-queue + customer-status tracking for F&F/concierge orders.
+   *  All additive + optional; legacy AND new orders default to null. Populated by
+   *  ops tooling only — never by automated fulfillment. See lib/order-queue.ts. */
+  manualQueueEnteredAt?: string | null;
+  customerQueueStatus?: CustomerQueueStatus | null;
+  lastQueueStatusUpdateAt?: string | null;
+  /** Internal-only free-text note for ops; not shown to customers. */
+  queueStatusNote?: string | null;
   /** Append-only audit log of review/approval events. Optional on legacy orders. */
   auditEvents?: ReviewAuditEvent[];
   /** Pre-print refund state. Set when admin issues a Stripe refund for an
@@ -796,6 +805,11 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     customStoryBrief: input.customStoryBrief ?? null,
     customStoryValidation: input.customStoryValidation ?? null,
     checkoutTracking: input.checkoutTracking ?? null,
+    // Internal queue/status tracking starts empty; ops tooling populates it later.
+    manualQueueEnteredAt: null,
+    customerQueueStatus: null,
+    lastQueueStatusUpdateAt: null,
+    queueStatusNote: null,
     status: 'order_received',
     paymentStatus: 'pending',
     stripeSessionId: null,
