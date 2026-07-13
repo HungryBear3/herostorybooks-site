@@ -35,7 +35,7 @@ test('calculatePrintUpgrade: paid digital to premium charges only hardcover delt
   assert.equal(result.amountCents, 4500);
   assert.equal(result.sourceFormat, 'digital');
   assert.equal(result.targetFormat, 'premium');
-  assert.match(result.description, /Digital instant/i);
+  assert.match(result.description, /Digital proof/i);
   assert.match(result.description, /Premium hardcover/i);
 });
 

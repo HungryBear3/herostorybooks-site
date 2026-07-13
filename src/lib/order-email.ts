@@ -132,7 +132,7 @@ export function buildOrderConfirmationEmail(
 ) {
   const supportEmail = options.supportEmail || getSupportEmail();
   const previewNote = order.bookFormat === 'digital'
-    ? 'Your PDF will be delivered to this email in about 15 minutes.'
+    ? 'Your digital proof is usually ready in 2–3 business days; we send the final PDF after you approve it.'
     : 'Your digital preview will arrive first so you can approve it before it prints.';
 
   const subject = `${order.childName}'s Hero Story Books order is in`;

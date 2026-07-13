@@ -567,7 +567,7 @@ interface CreateOrderOptions {
 }
 
 const FORMAT_META: Record<BookFormat, { label: string; priceCents: number }> = {
-  digital: { label: 'Digital instant', priceCents: 1900 },
+  digital: { label: 'Digital proof', priceCents: 1900 },
   classic: { label: 'Classic softcover', priceCents: 3900 },
   premium: { label: 'Premium hardcover', priceCents: 6400 },
 };
@@ -723,7 +723,7 @@ export function buildDeliveryExpectation(bookFormat: string): string {
   const format = normalizeFormat(bookFormat);
 
   if (format === 'digital') {
-    return 'PDF by email in ~15 minutes';
+    return 'Digital proof usually ready in 2–3 business days; final PDF delivered after approval.';
   }
 
   if (format === 'premium') {

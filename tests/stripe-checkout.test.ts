@@ -38,7 +38,7 @@ test('digital order also starts with paymentStatus pending', () => {
   });
   assert.equal(order.paymentStatus, 'pending');
   assert.equal(order.priceCents, 1900);
-  assert.equal(order.formatLabel, 'Digital instant');
+  assert.equal(order.formatLabel, 'Digital proof');
 });
 
 // ── updateOrderPayment ───────────────────────────────────────────────────────
