@@ -171,12 +171,13 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
                 <th className="text-left px-3 py-2">Derived stage</th>
                 <th className="text-left px-3 py-2">Attention</th>
                 <th className="text-left px-3 py-2">Order status</th>
+                <th className="text-left px-3 py-2">F&amp;F / Queue</th>
                 <th className="text-left px-3 py-2">Actions</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 && (
-                <tr><td colSpan={10} className="text-center py-8 text-gray-400">No orders match.</td></tr>
+                <tr><td colSpan={11} className="text-center py-8 text-gray-400">No orders match.</td></tr>
               )}
               {filtered.map(o => (
                 <Row
@@ -279,6 +280,20 @@ function Row({
         )}
       </td>
       <td className="px-3 py-3 text-xs">{order.status}</td>
+      <td className="px-3 py-3 text-xs whitespace-nowrap">
+        {order.checkoutTracking?.cohort && (
+          <span className="inline-block rounded bg-forest/10 text-forest px-1.5 py-0.5 mr-1">{order.checkoutTracking.cohort}</span>
+        )}
+        {order.checkoutTracking?.invite && (
+          <span className="inline-block rounded bg-lavender text-purple px-1.5 py-0.5">{order.checkoutTracking.invite}</span>
+        )}
+        {order.customerQueueStatus && (
+          <div className="mt-1 text-gray-500">{order.customerQueueStatus}</div>
+        )}
+        {!order.checkoutTracking?.cohort && !order.checkoutTracking?.invite && !order.customerQueueStatus && (
+          <span className="text-gray-300">—</span>
+        )}
+      </td>
       <td className="px-3 py-3">
         <div className="flex flex-col gap-1">
           {order.storyArtifactUrl && (
