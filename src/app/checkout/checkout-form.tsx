@@ -4,6 +4,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from "@/lib/checkout-flow";
+import { checkoutTrackingFromSearchParams } from "@/lib/checkout-tracking";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
 import { GuidedPhotoCapture } from "@/components/checkout/GuidedPhotoCapture";
 import {
@@ -708,6 +709,9 @@ export function CheckoutForm() {
       payload.set("email", form.email);
       const referralCode = checkoutReferralCode();
       if (referralCode) payload.set("referralCode", referralCode);
+      const checkoutTracking = checkoutTrackingFromSearchParams(new URLSearchParams(window.location.search));
+      if (checkoutTracking?.cohort) payload.set("cohort", checkoutTracking.cohort);
+      if (checkoutTracking?.invite) payload.set("invite", checkoutTracking.invite);
       if (form.photoFile) {
         payload.set("photo", form.photoFile);
       }

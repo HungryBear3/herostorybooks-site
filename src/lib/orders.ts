@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { get, list, put } from '@vercel/blob';
 
+import type { CheckoutTracking } from './checkout-tracking.ts';
 import type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts';
@@ -96,6 +97,8 @@ export interface OrderInput {
   customStoryBrief?: CustomStoryBrief | null;
   /** Latest fail-closed validation result for the sanitized custom-story brief. */
   customStoryValidation?: ValidationResult | null;
+  /** Sanitized private tester/source tracking from normal checkout URL params. */
+  checkoutTracking?: CheckoutTracking | null;
 }
 
 export type ReviewStatus =
@@ -306,7 +309,8 @@ export interface OrderRecord extends OrderInput {
   internalDispositionNote?: string | null;
   internalDispositionAt?: string | null;
   pageArtifacts?: PageArtifact[];
-  /** Influencer / partner attribution captured from ?ref= or hsb_ref cookie. */
+  /** Private F&F/pilot checkout tracking captured from ?cohort= and ?invite=. */
+  checkoutTracking?: CheckoutTracking | null;
   /** Append-only audit log of review/approval events. Optional on legacy orders. */
   auditEvents?: ReviewAuditEvent[];
   /** Pre-print refund state. Set when admin issues a Stripe refund for an
@@ -791,6 +795,7 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     voiceTranscript: input.voiceTranscript ?? null,
     customStoryBrief: input.customStoryBrief ?? null,
     customStoryValidation: input.customStoryValidation ?? null,
+    checkoutTracking: input.checkoutTracking ?? null,
     status: 'order_received',
     paymentStatus: 'pending',
     stripeSessionId: null,

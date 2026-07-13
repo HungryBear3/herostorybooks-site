@@ -32,6 +32,7 @@ import Stripe from 'stripe';
 
 import { getOrder, listOrders } from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
+import { sanitizeCheckoutTrackingValue, type CheckoutTracking } from '../src/lib/checkout-tracking.ts';
 import { buildOrderDiagnostics } from '../src/lib/order-diagnostics.ts';
 import type { OrderDiagnostics } from '../src/lib/order-diagnostics.ts';
 
@@ -293,6 +294,7 @@ export interface StripeFacts {
   amountCaptured: number | null;
   lineItemDescriptions: Array<{ name: string | null; description: string | null }>;
   metadataKeys: string[];
+  metadataTracking: CheckoutTracking | null;
   webhook: {
     scanned: number;
     relatedEventTypes: string[];
@@ -319,6 +321,7 @@ function emptyStripeFacts(reason: string | null): StripeFacts {
     amountCaptured: null,
     lineItemDescriptions: [],
     metadataKeys: [],
+    metadataTracking: null,
     webhook: null,
   };
 }
@@ -354,6 +357,14 @@ async function loadStripeFacts(sessionId: string | null): Promise<StripeFacts> {
     facts.amountDiscount = session.total_details?.amount_discount ?? null;
     facts.currency = session.currency ?? null;
     facts.metadataKeys = Object.keys(session.metadata ?? {});
+    const metadataCohort = sanitizeCheckoutTrackingValue(session.metadata?.cohort);
+    const metadataInvite = sanitizeCheckoutTrackingValue(session.metadata?.invite);
+    facts.metadataTracking = metadataCohort || metadataInvite
+      ? {
+          ...(metadataCohort ? { cohort: metadataCohort } : {}),
+          ...(metadataInvite ? { invite: metadataInvite } : {}),
+        }
+      : null;
 
     // Promo evidence — presence only, redacted; never dump full discount objects.
     const breakdownDiscounts = session.total_details?.breakdown?.discounts ?? [];
@@ -517,6 +528,7 @@ export interface VerifierReport {
     updatedAt: string | null;
     stripeSessionId: string | null;
     internalDisposition: string | null;
+    checkoutTracking: CheckoutTracking | null;
   };
   artifacts: {
     storyArtifactPresent: boolean;
@@ -606,6 +618,7 @@ export function buildReport(
       updatedAt: order?.updatedAt ?? null,
       stripeSessionId: order?.stripeSessionId ? redactId(order.stripeSessionId) : null,
       internalDisposition: order?.internalDisposition ?? null,
+      checkoutTracking: order?.checkoutTracking ?? null,
     },
     artifacts: {
       storyArtifactPresent: Boolean(order?.storyArtifactUrl),
@@ -658,6 +671,9 @@ export function formatReport(r: VerifierReport): string {
     L.push(`  fulfillment     : ${r.order.fulfillmentStatus ?? 'n/a'}`);
     L.push(`  reviewStatus    : ${r.order.reviewStatus ?? 'n/a'}`);
     L.push(`  stripe session  : ${r.order.stripeSessionId ?? '(none stored)'}`);
+    if (r.order.checkoutTracking?.cohort || r.order.checkoutTracking?.invite) {
+      L.push(`  checkout track  : cohort=${r.order.checkoutTracking.cohort ?? 'n/a'} invite=${r.order.checkoutTracking.invite ?? 'n/a'}`);
+    }
     L.push(`  created/updated : ${r.order.createdAt ?? '?'} / ${r.order.updatedAt ?? '?'}`);
     if (r.order.internalDisposition) L.push(`  internalDisp    : ${r.order.internalDisposition}`);
   }
@@ -675,6 +691,9 @@ export function formatReport(r: VerifierReport): string {
     if (r.stripe.promoEvidence.length) L.push(`  promo evidence  : ${r.stripe.promoEvidence.join(' | ')}`);
     L.push(`  paymentIntent   : ${redactId(r.stripe.paymentIntentId)} status=${r.stripe.paymentIntentStatus ?? '?'} captured=${money(r.stripe.amountCaptured, r.stripe.currency)}`);
     if (r.stripe.metadataKeys.length) L.push(`  metadata keys   : ${r.stripe.metadataKeys.join(', ')}`);
+    if (r.stripe.metadataTracking?.cohort || r.stripe.metadataTracking?.invite) {
+      L.push(`  metadata track  : cohort=${r.stripe.metadataTracking.cohort ?? 'n/a'} invite=${r.stripe.metadataTracking.invite ?? 'n/a'}`);
+    }
     if (r.stripe.webhook) {
       L.push(`  webhook events  : scanned ${r.stripe.webhook.scanned}, related types [${r.stripe.webhook.relatedEventTypes.join(', ') || 'none'}], maxPending=${r.stripe.webhook.maxPendingWebhooks}${r.stripe.webhook.note ? ` — ${r.stripe.webhook.note}` : ''}`);
     }
