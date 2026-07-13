@@ -78,12 +78,12 @@ const OCCASIONS = STORY_OCCASIONS;
 const FORMATS = [
   {
     id: "digital",
-    label: "Digital instant",
+    label: "Digital proof",
     icon: "Digital",
     price: "$19.00",
     priceNum: 19,
     badge: "Most flexible",
-    delivery: "Digital proof usually ready within 2 business days",
+    delivery: "Digital proof usually ready in 2–3 business days",
     deliveryDetail:
       "32-page high-res PDF delivered after you approve · No printing or shipping step",
   },

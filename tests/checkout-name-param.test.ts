@@ -38,7 +38,7 @@ test('checkout form renders and submits required hero pronouns', () => {
 });
 
 test('checkout visible format pricing matches server-side order pricing', () => {
-  assert.match(checkoutFormSource, /label: ["']Digital instant["'][\s\S]*?price: ["']\$19\.00["'][\s\S]*?priceNum: 19/);
+  assert.match(checkoutFormSource, /label: ["']Digital proof["'][\s\S]*?price: ["']\$19\.00["'][\s\S]*?priceNum: 19/);
   assert.match(checkoutFormSource, /label: ["']Classic softcover["'][\s\S]*?price: ["']\$39\.00["'][\s\S]*?priceNum: 39/);
   assert.match(checkoutFormSource, /label: ["']Premium hardcover["'][\s\S]*?price: ["']\$64\.00["'][\s\S]*?priceNum: 64/);
   assert.doesNotMatch(checkoutFormSource, /\$14\.99|\$44\.99|\$64\.99/);
