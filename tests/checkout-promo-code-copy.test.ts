@@ -7,8 +7,8 @@
  *   src/app/api/order/route.ts). A buyer entered a code expecting a discount
  *   and paid full price because the code has to be applied on Stripe's page,
  *   not this app's form. To prevent that confusion, the checkout flow must
- *   carry clear copy telling buyers where/when to apply a promo code and to
- *   stop if the discount is not visible before paying.
+ *   carry clear copy telling buyers where/when to apply a promo code without
+ *   making the discount flow sound broken.
  *
  *   These tests assert the guidance exists in the shared copy constant AND
  *   that the checkout form actually renders it, so the callout cannot be
@@ -33,14 +33,10 @@ test('PROMO_CODE_HELP names Stripe as where the code is applied', () => {
   assert.match(PROMO_CODE_HELP, /Stripe/);
 });
 
-test('PROMO_CODE_HELP tells buyers to Apply the code before paying', () => {
-  assert.match(PROMO_CODE_HELP, /Apply/);
-  assert.match(PROMO_CODE_HELP, /before paying/i);
-});
-
-test('PROMO_CODE_HELP gives a stop-and-contact-support path if no discount shows', () => {
-  assert.match(PROMO_CODE_HELP, /stop/i);
-  assert.match(PROMO_CODE_HELP, /support@herostorybooks\.com/);
+test('PROMO_CODE_HELP tells buyers when to enter the code before payment', () => {
+  assert.match(PROMO_CODE_HELP, /before payment/i);
+  assert.doesNotMatch(PROMO_CODE_HELP, /stop/i);
+  assert.doesNotMatch(PROMO_CODE_HELP, /support@herostorybooks\.com/);
 });
 
 test('PROMO_CODE_HELP does not name an active/public promo code (avoid overpromising)', () => {

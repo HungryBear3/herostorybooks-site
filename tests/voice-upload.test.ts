@@ -238,6 +238,15 @@ test('voice section copy explicitly disclaims voice cloning', () => {
   assert.match(VOICE_UI_SRC, /not.*clone/i);
 });
 
+test('voice section avoids beta/data-loss confidence killers', () => {
+  assert.match(VOICE_UI_SRC, /30 seconds is plenty, and up to 3 minutes is supported/);
+  assert.match(VOICE_UI_SRC, /Voice notes stay private/);
+  assert.doesNotMatch(VOICE_UI_SRC, /Beta · Optional/i);
+  assert.doesNotMatch(VOICE_UI_SRC, /Notes and uploads are in beta/i);
+  assert.doesNotMatch(VOICE_UI_SRC, /checkout hits an\s+unexpected error/i);
+  assert.doesNotMatch(VOICE_UI_SRC, /avoid losing/i);
+});
+
 test('voice section releases mic tracks on stop AND on unmount', () => {
   assert.match(VOICE_UI_SRC, /getTracks\(\)\.forEach\(\(t\) => t\.stop\(\)\)/);
 });

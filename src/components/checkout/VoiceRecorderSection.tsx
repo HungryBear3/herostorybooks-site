@@ -183,27 +183,12 @@ export function VoiceRecorderSection({
       <div>
         <div className="flex items-center gap-2">
           <h2 className="font-serif text-xl text-forest">🎙️ Add a story voice note or family memory</h2>
-          <span className="text-xs font-semibold uppercase tracking-widest text-deep-gold bg-deep-gold/10 px-2 py-0.5 rounded-full">
-            Beta · Optional
-          </span>
         </div>
         <p className="text-sm text-gray-500 mt-1">
-          Optional: record a 30-second story idea — your child, or anyone in the family,
-          describing the adventure they&apos;d love — or upload a note, PDF, Word doc, or audio file. It&apos;s a sweet way to make the
-          book feel like it came from them. We use it only to help
-          personalize the writing.
+          This helps us capture the memory — 30 seconds is plenty, and up to 3 minutes is supported. Record a voice note or upload a note, PDF, Word doc, or audio file.
         </p>
         <p className="text-xs text-gray-500 mt-1">
-          We do <strong>not</strong> clone anyone&apos;s voice, and the recording is{' '}
-          <strong>never published</strong> or shared — it just inspires the words on the page.
-        </p>
-        <p className="text-xs text-gray-500 mt-1">
-          Used only to help our writer match the story&apos;s voice — we never share it or clone it.
-          Want it removed? Email support@herostorybooks.com and we&apos;ll delete it.
-        </p>
-        <p className="text-xs text-gray-500 mt-1">
-          Notes and uploads are in beta. To avoid losing something special if checkout hits an
-          unexpected error, save it first on your device, then upload the saved file here.
+          Voice notes stay private — used only to write your book, never cloned or published, and deleted on request.
         </p>
       </div>
 

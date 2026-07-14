@@ -549,8 +549,6 @@ export function CheckoutForm() {
   const fathersDay = getFathersDayCountdown();
   const showFathersDayReminder = fathersDay.tier !== "past-event";
   const missingSupportingPhotoLabels = missingSupportingCharacterPhotoLabels(form.familyCharacters);
-  const uploadedPhotoCount = [form.photoFile, ...form.familyCharacters.map((character) => character.photoFile)].filter(Boolean).length;
-  const requiredHumanPhotoCount = 1 + form.familyCharacters.filter((character) => character.appearsInStory !== false && isHumanSupportingCharacter(character)).length;
   const isCustomStorySelected = form.theme === CUSTOM_STORY_THEME_ID;
   const customStoryTheme = THEMES.find((theme) => theme.id === CUSTOM_STORY_THEME_ID) ?? null;
   const templateThemes = THEMES.filter((theme) => theme.id !== CUSTOM_STORY_THEME_ID);
@@ -558,7 +556,7 @@ export function CheckoutForm() {
   const customStorySourceMode = form.customStorySourceMode || (form.voiceFile ? "audio" : form.customStoryMemory.trim() ? "written" : "");
   const guidedPhotoSummary = guidedFrames.length > 0
     ? `${guidedFrames.length} guided photo${guidedFrames.length === 1 ? "" : "s"} added`
-    : "2–3 quick optional shots from different angles.";
+    : "5 quick angles, about a minute (optional).";
   const isReadyToPay =
     Boolean(form.theme) &&
     Boolean(form.childName) &&
@@ -921,6 +919,9 @@ export function CheckoutForm() {
                 <p className="mt-1 text-sm leading-6 text-[#695f54]">
                   Start with a fully custom story from your own memory, or use one of the ready adventure templates below.
                 </p>
+                <p className="mt-2 rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-3 py-2 text-xs leading-5 text-[#695f54]">
+                  Only a few things are required to start — story direction, child name, format, email, and basic appearance. Everything else helps us make the proof better.
+                </p>
               </div>
 
               {customStoryTheme && (
@@ -949,7 +950,7 @@ export function CheckoutForm() {
                         Custom Story
                       </span>
                       <span className="mt-1 block text-sm leading-6 text-[#695f54]">
-                        Built from your voice note, written memory, family details, and story ideas.
+                        Built from your written memory, optional voice note, family details, and story ideas.
                       </span>
                     </span>
                     {form.theme === customStoryTheme.id && (
@@ -1123,7 +1124,7 @@ export function CheckoutForm() {
                 <p className="mt-1 text-sm text-[#695f54]">
                   {PRIMARY_HERO_BETA_ENABLED
                     ? "Choose who leads the book. Non-child primary heroes are preview-only until generator/legal approval is complete; every paid order is still proof-reviewed before printing."
-                    : "Tell us about the main hero of the book. Right now every book stars a child as the hero — you can add parents, grandparents, siblings, and pets as co-heroes and family below. Adult-led hero stories are coming soon and are on a short preview hold."}
+                    : "Tell us about the main hero of the book. Right now every book stars a child as the hero — you can add parents, grandparents, siblings, and pets as co-heroes and family below. Adult-led hero stories are coming soon."}
                 </p>
               </div>
 
@@ -1747,7 +1748,7 @@ export function CheckoutForm() {
                 </p>
               </div>
               <div className="inline-flex w-fit rounded-full border border-[#d8c6a2] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54]">
-                {form.photoFile ? "Main character photo added" : "1 main character photo needed"}
+                {form.photoFile ? "Main character photo added" : "1 main character photo — add now or before your proof starts"}
               </div>
 
               {/* Sample teaser — shown before upload */}
@@ -1923,11 +1924,8 @@ export function CheckoutForm() {
               )}
 
               <p className="text-xs text-center leading-5 text-[#8a7b6a]">
-                🔒 Photos stay private — used only to illustrate your book, never to train AI. You can review before print. {uploadedPhotoCount}/{requiredHumanPhotoCount} required people photos added
+                🔒 Photos stay private — used only to illustrate your book, never to train AI. You can review before print.
               </p>
-              <div className="mt-3 rounded-lg border border-deep-gold/30 bg-deep-gold/5 px-3 py-2 text-xs text-forest">
-                <span className="font-semibold">🎟️ Promo code?</span> {PROMO_CODE_HELP}
-              </div>
 
               {guidedCaptureEnabled && (
                 <div className="space-y-3">
@@ -1943,11 +1941,11 @@ export function CheckoutForm() {
                           Want an even better likeness? Take guided photos
                         </span>
                         <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
-                          {guidedPhotoSummary} Optional — open only if you want extra likeness help.
+                          {guidedPhotoSummary}
                         </span>
                       </span>
                       <span className="rounded-full border border-[#d8c6a2] bg-[#f8f0dd] px-2 py-0.5 text-xs font-bold text-[#695f54]">
-                        {showGuidedPhotos ? "Hide" : "Optional"}
+                        {showGuidedPhotos ? "Hide" : "Show"}
                       </span>
                     </span>
                   </button>
@@ -1976,6 +1974,9 @@ export function CheckoutForm() {
                   Digital arrives same-day after proof approval; printed books depend on proof timing and carrier delivery.
                 </div>
               )}
+              <div className="rounded-lg border border-deep-gold/30 bg-deep-gold/5 px-3 py-2 text-xs text-forest">
+                <span className="font-semibold">🎟️ Promo code?</span> {PROMO_CODE_HELP}
+              </div>
               <div className="space-y-3">
                 {FORMATS.map((fmt) => (
                   <button
@@ -2010,7 +2011,7 @@ export function CheckoutForm() {
                           )}
                         </div>
                         <p className="text-sm leading-5 text-[#695f54]">
-                          ⚡ {fmt.delivery}
+                          {fmt.delivery}
                         </p>
                         <p className="mt-1 text-xs leading-5 text-[#8a7b6a]">
                           {fmt.deliveryDetail}
@@ -2088,7 +2089,7 @@ export function CheckoutForm() {
                     {coverTitle}
                   </div>
                   <div className="absolute inset-x-2 bottom-4 text-center text-[8px] uppercase tracking-[0.18em] text-[#fff8ec]/80">
-                    starring {heroName}
+                    starring {form.childName || "your child"}
                   </div>
                 </div>
 
@@ -2130,7 +2131,7 @@ export function CheckoutForm() {
                       Photos
                     </dt>
                     <dd className="mt-1 font-semibold text-[#241914]">
-                      {form.photoFile ? "1 photo" : "Add later"}
+                      {form.photoFile ? "Main photo added" : "Add before proof"}
                     </dd>
                   </div>
                   <div>
@@ -2191,7 +2192,7 @@ export function CheckoutForm() {
                     <div className="flex justify-between gap-3">
                       <span>Supporting characters</span>
                       <span className="font-semibold text-[#241914]">
-                        {form.familyCharacters.length}
+                        {form.familyCharacters.length} included
                       </span>
                     </div>
                   )}
@@ -2228,8 +2229,7 @@ export function CheckoutForm() {
                     <strong className="block text-[#241914]">
                       We send a digital proof
                     </strong>
-                    Within 2 business days, you get a private link to review
-                    every page.
+                    Usually within 2–3 business days after we have the needed photos, you get a private link to review every page.
                   </span>
                 </li>
                 <li className="flex gap-3">
@@ -2266,7 +2266,7 @@ export function CheckoutForm() {
                   inputs that gate isReadyToPay. */}
               {!isReadyToPay && !isSubmitting && (() => {
                 const missing: string[] = [];
-                if (!form.theme) missing.push('story');
+                if (!form.theme) missing.push('story direction');
                 if (!form.childName) missing.push("child's name");
                 if (!form.bookFormat) missing.push('format');
                 if (!form.email) missing.push('email');
