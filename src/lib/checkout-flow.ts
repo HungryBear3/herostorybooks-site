@@ -22,7 +22,7 @@ export const PHOTO_UPLOAD_HELP =
 // paying. Kept general — no active code names — to avoid implying any code
 // is publicly available.
 export const PROMO_CODE_HELP =
-  'Have a promo code? You will enter it on the secure Stripe payment page (the next step) — type the code and tap Apply before paying so the discount shows in your total. If the discount does not appear before payment, stop and email support@herostorybooks.com instead of paying full price.';
+  'Enter promo codes on the next secure Stripe page before payment.';
 
 // ── Required-field gating for checkout submit ────────────────────────────────
 //

@@ -15,11 +15,26 @@ test('Custom Story is the primary story direction and templates are secondary', 
 
 test('required main photo intake uses simple audio-style choice cards', () => {
   assert.match(checkoutFormSource, /Add one clear photo for the main character/);
-  assert.match(checkoutFormSource, /1 main character photo needed/);
+  assert.match(checkoutFormSource, /1 main character photo — add now or before your proof starts/);
   assert.match(checkoutFormSource, /Main character photo added/);
   assert.match(checkoutFormSource, /Choose an existing photo from your phone\./);
   assert.match(checkoutFormSource, /Open your camera for a still photo\./);
   assert.doesNotMatch(checkoutFormSource, /Drag &amp; drop · JPG\/PNG\/WebP\/HEIC/);
+});
+
+test('CD/Cowork checkout polish avoids contradictory or nervous copy', () => {
+  assert.match(checkoutFormSource, /Only a few things are required to start/);
+  assert.match(checkoutFormSource, /story direction/);
+  assert.match(checkoutFormSource, /5 quick angles, about a minute \(optional\)/);
+  assert.match(checkoutFormSource, /PROMO_CODE_HELP/);
+  assert.match(checkoutFormSource, /Usually within 2–3 business days after we have the needed photos/);
+  assert.match(checkoutFormSource, /form\.childName \|\| "your child"/);
+  assert.doesNotMatch(checkoutFormSource, /required people photos/);
+  assert.doesNotMatch(checkoutFormSource, /0 of \$\{requiredHumanPhotoCount\} added/);
+  assert.doesNotMatch(checkoutFormSource, /Add later/);
+  assert.doesNotMatch(checkoutFormSource, /Optional — open only if you want extra likeness help/);
+  assert.doesNotMatch(checkoutFormSource, /Within 2 business days/);
+  assert.doesNotMatch(checkoutFormSource, /⚡ \{fmt\.delivery\}/);
 });
 
 test('optional guided photos stay collapsed behind a likeness link', () => {
