@@ -9,7 +9,7 @@ test('story upload is controlled by the story-upload flag and scoped to Custom S
     checkoutFormSource,
     /const STORY_UPLOAD_ENABLED = process\.env\.NEXT_PUBLIC_HSB_STORY_UPLOAD === ['"]true['"];/,
   );
-  assert.match(checkoutFormSource, /STORY_UPLOAD_ENABLED && isCustomStorySelected && \(/);
+  assert.match(checkoutFormSource, /STORY_UPLOAD_ENABLED && customStorySourceMode === ['"]audio['"] && \(/);
   assert.doesNotMatch(
     checkoutFormSource,
     /STORY_UPLOAD_ENABLED =\s*process\.env\.NEXT_PUBLIC_HSB_VOICE_BETA/,
