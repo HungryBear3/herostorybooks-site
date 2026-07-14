@@ -62,8 +62,7 @@ export interface VoiceRecorderSectionProps {
 /**
  * Optional UI for attaching a short story voice note or family memory note
  * (audio, or a text/PDF/Word document). Mounts only when the checkout form's
- * `STORY_UPLOAD_ENABLED` gate is on (legacy `NEXT_PUBLIC_HSB_VOICE_BETA` OR the
- * new default-off `NEXT_PUBLIC_HSB_STORY_UPLOAD` preview flag). The microphone
+ * `STORY_UPLOAD_ENABLED` gate is on and the customer selected Custom Story. The microphone
  * is requested only after the user taps Record; tracks are released as soon as
  * recording stops.
  *
@@ -199,7 +198,7 @@ export function VoiceRecorderSection({
           <strong>never published</strong> or shared — it just inspires the words on the page.
         </p>
         <p className="text-xs text-gray-500 mt-1">
-          Used only to help our writer match the story&apos;s voice — we never share it.
+          Used only to help our writer match the story&apos;s voice — we never share it or clone it.
           Want it removed? Email support@herostorybooks.com and we&apos;ll delete it.
         </p>
         <p className="text-xs text-gray-500 mt-1">
@@ -243,7 +242,7 @@ export function VoiceRecorderSection({
               onClick={() => audioFileInputRef.current?.click()}
               className="px-4 py-2 rounded-full border-2 border-gray-200 text-forest font-semibold text-sm hover:border-deep-gold transition"
             >
-              Upload audio file
+              Upload voice memo
             </button>
             <input
               ref={audioFileInputRef}
@@ -281,7 +280,7 @@ export function VoiceRecorderSection({
 
       {!voiceFile && !isRecording && (
         <p className="text-xs text-gray-500">
-          Use <strong>Record audio</strong> for a new voice note, <strong>Upload audio file</strong>{' '}
+          Use <strong>Record audio</strong> for a new voice note, <strong>Upload voice memo</strong>{' '}
           for a saved recording, or <strong>Upload text/document</strong> for text, PDF, or Word
           notes.
         </p>
