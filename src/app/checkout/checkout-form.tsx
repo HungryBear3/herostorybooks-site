@@ -382,6 +382,7 @@ export function CheckoutForm() {
   const guidedCaptureEnabled = isGuidedPhotoCaptureEnabled();
   const [guidedFrames, setGuidedFrames] = useState<GuidedPhotoFile[]>([]);
   const [guidedConsent, setGuidedConsent] = useState(false);
+  const [showGuidedPhotos, setShowGuidedPhotos] = useState(false);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Restore saved progress on mount + honor checkout entry context.
@@ -555,6 +556,9 @@ export function CheckoutForm() {
   const templateThemes = THEMES.filter((theme) => theme.id !== CUSTOM_STORY_THEME_ID);
   const hasCustomStoryInput = Boolean(form.voiceFile || form.customStoryMemory.trim());
   const customStorySourceMode = form.customStorySourceMode || (form.voiceFile ? "audio" : form.customStoryMemory.trim() ? "written" : "");
+  const guidedPhotoSummary = guidedFrames.length > 0
+    ? `${guidedFrames.length} guided photo${guidedFrames.length === 1 ? "" : "s"} added`
+    : "2–3 quick optional shots from different angles.";
   const isReadyToPay =
     Boolean(form.theme) &&
     Boolean(form.childName) &&
@@ -1926,13 +1930,38 @@ export function CheckoutForm() {
               </div>
 
               {guidedCaptureEnabled && (
-                <GuidedPhotoCapture
-                  heroName={form.childName}
-                  frames={guidedFrames}
-                  consent={guidedConsent}
-                  onConsentChange={setGuidedConsent}
-                  onFramesChange={setGuidedFrames}
-                />
+                <div className="space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowGuidedPhotos((open) => !open)}
+                    aria-expanded={showGuidedPhotos}
+                    className="w-full rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-4 py-3 text-left transition hover:border-[#a64c4c]/60 hover:bg-[#f8f0dd]"
+                  >
+                    <span className="flex items-start justify-between gap-3">
+                      <span>
+                        <span className="block text-sm font-bold text-[#1f1a16]">
+                          Want an even better likeness? Take guided photos
+                        </span>
+                        <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
+                          {guidedPhotoSummary} Optional — open only if you want extra likeness help.
+                        </span>
+                      </span>
+                      <span className="rounded-full border border-[#d8c6a2] bg-[#f8f0dd] px-2 py-0.5 text-xs font-bold text-[#695f54]">
+                        {showGuidedPhotos ? "Hide" : "Optional"}
+                      </span>
+                    </span>
+                  </button>
+
+                  {showGuidedPhotos && (
+                    <GuidedPhotoCapture
+                      heroName={form.childName}
+                      frames={guidedFrames}
+                      consent={guidedConsent}
+                      onConsentChange={setGuidedConsent}
+                      onFramesChange={setGuidedFrames}
+                    />
+                  )}
+                </div>
               )}
             </section>
 
