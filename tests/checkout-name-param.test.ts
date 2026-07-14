@@ -29,12 +29,14 @@ test('checkout default buyer copy does not advertise stale Father\'s Day framing
   assert.doesNotMatch(voiceRecorderSource, /Father(&apos;|')s Day book feel/);
 });
 
-test('checkout form renders and submits required hero pronouns', () => {
-  assert.match(checkoutFormSource, /childPronouns: string/);
-  assert.match(checkoutFormSource, /value=\{form\.childPronouns\}/);
-  assert.match(checkoutFormSource, /set\("childPronouns", e\.target\.value\)/);
-  assert.match(checkoutFormSource, /payload\.set\("childPronouns", form\.childPronouns\)/);
-  assert.match(checkoutFormSource, /Boolean\(form\.childPronouns\)/);
+test('checkout form does not ask buyers for hero pronouns', () => {
+  assert.doesNotMatch(checkoutFormSource, /childPronouns: string/);
+  assert.doesNotMatch(checkoutFormSource, /value=\{form\.childPronouns\}/);
+  assert.doesNotMatch(checkoutFormSource, /set\("childPronouns", e\.target\.value\)/);
+  assert.doesNotMatch(checkoutFormSource, /payload\.set\("childPronouns", form\.childPronouns\)/);
+  assert.doesNotMatch(checkoutFormSource, /Boolean\(form\.childPronouns\)/);
+  assert.doesNotMatch(checkoutFormSource, />\s*Pronouns\s*</i);
+  assert.doesNotMatch(checkoutFormSource, /Select pronouns/i);
 });
 
 test('checkout visible format pricing matches server-side order pricing', () => {
