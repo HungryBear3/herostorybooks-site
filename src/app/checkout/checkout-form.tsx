@@ -3,7 +3,7 @@ import React, { useState, useRef, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
-import { PHOTO_UPLOAD_HELP, PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from "@/lib/checkout-flow";
+import { PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from "@/lib/checkout-flow";
 import { checkoutTrackingFromSearchParams } from "@/lib/checkout-tracking";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
 import { GuidedPhotoCapture } from "@/components/checkout/GuidedPhotoCapture";
@@ -551,6 +551,8 @@ export function CheckoutForm() {
   const uploadedPhotoCount = [form.photoFile, ...form.familyCharacters.map((character) => character.photoFile)].filter(Boolean).length;
   const requiredHumanPhotoCount = 1 + form.familyCharacters.filter((character) => character.appearsInStory !== false && isHumanSupportingCharacter(character)).length;
   const isCustomStorySelected = form.theme === CUSTOM_STORY_THEME_ID;
+  const customStoryTheme = THEMES.find((theme) => theme.id === CUSTOM_STORY_THEME_ID) ?? null;
+  const templateThemes = THEMES.filter((theme) => theme.id !== CUSTOM_STORY_THEME_ID);
   const hasCustomStoryInput = Boolean(form.voiceFile || form.customStoryMemory.trim());
   const customStorySourceMode = form.customStorySourceMode || (form.voiceFile ? "audio" : form.customStoryMemory.trim() ? "written" : "");
   const isReadyToPay =
@@ -908,46 +910,90 @@ export function CheckoutForm() {
           <div className="space-y-5">
             {/* ── 1. Theme ── */}
             <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
-              <h2 className="font-serif text-2xl text-[#1f1a16]">
-                Choose a story direction
-              </h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {THEMES.map((theme) => (
-                  <button
-                    key={theme.id}
-                    type="button"
-                    onClick={() => {
-                      const next = form.theme === theme.id ? "" : theme.id;
-                      set("theme", next);
-                      if (next) track("story_selected", { theme: next });
-                    }}
-                    className={`
-                    flex items-start gap-3 p-4 rounded-2xl border-2 text-left transition-all cursor-pointer
-                    ${
-                      form.theme === theme.id
-                        ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30 shadow-sm"
-                        : "border-[#dfd2b8] hover:border-[#d8c6a2]"
-                    }
-                  `}
-                  >
-                    <span className="text-3xl flex-shrink-0">
-                      {theme.emoji}
+              <div>
+                <h2 className="font-serif text-2xl text-[#1f1a16]">
+                  Choose a story direction
+                </h2>
+                <p className="mt-1 text-sm leading-6 text-[#695f54]">
+                  Start with a fully custom story from your own memory, or use one of the ready adventure templates below.
+                </p>
+              </div>
+
+              {customStoryTheme && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = form.theme === customStoryTheme.id ? "" : customStoryTheme.id;
+                    set("theme", next);
+                    if (next) track("story_selected", { theme: next });
+                  }}
+                  className={`w-full rounded-[1.5rem] border-2 p-4 text-left transition-all ${
+                    form.theme === customStoryTheme.id
+                      ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30 shadow-sm"
+                      : "border-[#d8c6a2] bg-[#fffaf1] hover:border-deep-gold/70 hover:bg-[#f8f0dd]"
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border border-[#d8c6a2] bg-[#f8f0dd] text-2xl">
+                      {customStoryTheme.emoji}
                     </span>
-                    <div>
-                      <p className="font-semibold text-[#1f1a16] text-sm">
-                        {theme.label}
-                      </p>
-                      <p className="text-xs text-[#695f54] mt-0.5">
-                        {theme.desc}
-                      </p>
-                    </div>
-                    {form.theme === theme.id && (
-                      <span className="ml-auto text-xs bg-deep-gold text-navy font-bold px-2 py-0.5 rounded-full flex-shrink-0">
-                        ✓
+                    <span className="min-w-0 flex-1">
+                      <span className="mb-1 inline-flex rounded-full bg-[#241914] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-[#fff8ec]">
+                        Fully custom
+                      </span>
+                      <span className="block font-serif text-xl font-semibold text-[#1f1a16]">
+                        Custom Story
+                      </span>
+                      <span className="mt-1 block text-sm leading-6 text-[#695f54]">
+                        Built from your voice note, written memory, family details, and story ideas.
+                      </span>
+                    </span>
+                    {form.theme === customStoryTheme.id && (
+                      <span className="rounded-full bg-deep-gold px-2.5 py-1 text-xs font-bold text-navy">
+                        ✓ Added
                       </span>
                     )}
-                  </button>
-                ))}
+                  </div>
+                </button>
+              )}
+
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#8a7663]">
+                  Or pick a ready adventure template
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {templateThemes.map((theme) => (
+                    <button
+                      key={theme.id}
+                      type="button"
+                      onClick={() => {
+                        const next = form.theme === theme.id ? "" : theme.id;
+                        set("theme", next);
+                        if (next) track("story_selected", { theme: next });
+                      }}
+                      className={`flex items-start gap-3 rounded-2xl border-2 p-4 text-left transition-all ${
+                        form.theme === theme.id
+                          ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30 shadow-sm"
+                          : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2]"
+                      }`}
+                    >
+                      <span className="flex-shrink-0 text-2xl">{theme.emoji}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-semibold text-[#1f1a16]">
+                          {theme.label}
+                        </span>
+                        <span className="mt-0.5 block text-xs leading-5 text-[#695f54]">
+                          {theme.desc}
+                        </span>
+                      </span>
+                      {form.theme === theme.id && (
+                        <span className="ml-auto flex-shrink-0 rounded-full bg-deep-gold px-2 py-0.5 text-xs font-bold text-navy">
+                          ✓
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
             </section>
 
@@ -1686,19 +1732,18 @@ export function CheckoutForm() {
               )}
             </section>
 
-            {/* ── 3. Hero photo + voice ── */}
+            {/* ── 3. Hero photo ── */}
             <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
               <div>
-                <h2 className="font-serif text-xl text-[#1f1a16] mb-1">
-                  Add a photo when you&apos;re ready
+                <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
+                  Add one clear photo for the main character
                 </h2>
-                <p className="text-sm text-[#695f54]">
-                  We use the photo as a reference for AI-assisted illustration,
-                  then hand-review the proof before anything prints.
+                <p className="text-sm leading-6 text-[#695f54]">
+                  Choose the easiest way to send it now. We turn the photo into a storybook-style illustration and hand-review the proof before print.
                 </p>
               </div>
-              <div className="rounded-2xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-4 py-3 text-sm text-[#1f1a16]">
-                {PHOTO_UPLOAD_HELP}
+              <div className="inline-flex w-fit rounded-full border border-[#d8c6a2] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54]">
+                {form.photoFile ? "Main character photo added" : "1 main character photo needed"}
               </div>
 
               {/* Sample teaser — shown before upload */}
@@ -1820,10 +1865,11 @@ export function CheckoutForm() {
                     onDragLeave={() => setDragOver(false)}
                     onDrop={handleDrop}
                     onClick={() => photoInputRef.current?.click()}
-                    className={`
-                    flex min-h-40 flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed cursor-pointer transition-all
-                    ${dragOver ? "border-[#a64c4c] bg-[#a64c4c]/10 scale-[1.01]" : "border-[#d8c6a2] hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]"}
-                  `}
+                    className={`flex cursor-pointer items-start gap-3 rounded-2xl border-2 p-4 text-left transition-all ${
+                      dragOver
+                        ? "border-[#a64c4c] bg-[#a64c4c]/10 scale-[1.01]"
+                        : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2] hover:bg-[#f8f0dd]"
+                    }`}
                   >
                     <input
                       ref={photoInputRef}
@@ -1836,22 +1882,26 @@ export function CheckoutForm() {
                         e.currentTarget.value = "";
                       }}
                     />
-                    <span className="text-5xl">{dragOver ? "🌟" : "📸"}</span>
-                    <div className="text-center">
-                      <p className="font-semibold text-[#1f1a16]">
-                        {dragOver ? "Drop it here!" : "Use camera roll"}
-                      </p>
-                      <p className="mt-0.5 px-2 text-sm leading-5 text-[#8a7b6a]">
-                        Drag &amp; drop · JPG/PNG/WebP/HEIC
-                      </p>
-                    </div>
+                    <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-[#d8c6a2] bg-[#f8f0dd] text-2xl">
+                      {dragOver ? "🌟" : "📸"}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-bold text-[#1f1a16]">
+                        {dragOver ? "Drop it here" : "Use camera roll"}
+                      </span>
+                      <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
+                        Choose an existing photo from your phone.
+                      </span>
+                    </span>
                   </div>
 
-                  <label className="flex min-h-40 cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-5 text-center transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
-                    <span className="text-5xl">🤳</span>
-                    <span className="font-semibold text-[#1f1a16]">Take a new picture</span>
-                    <span className="px-2 text-sm leading-5 text-[#8a7b6a]">
-                      Opens your phone camera · still photo only, never video
+                  <label className="flex cursor-pointer items-start gap-3 rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] p-4 text-left transition hover:border-[#d8c6a2] hover:bg-[#f8f0dd]">
+                    <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-[#d8c6a2] bg-[#f8f0dd] text-2xl">🤳</span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-bold text-[#1f1a16]">Take a new picture</span>
+                      <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
+                        Open your camera for a still photo.
+                      </span>
                     </span>
                     <input
                       type="file"
@@ -1868,8 +1918,8 @@ export function CheckoutForm() {
                 </div>
               )}
 
-              <p className="text-xs text-center text-[#8a7b6a]">
-                🔒 Photos processed securely · Never used to train AI · {uploadedPhotoCount}/{requiredHumanPhotoCount} required people photos added
+              <p className="text-xs text-center leading-5 text-[#8a7b6a]">
+                🔒 Photos stay private — used only to illustrate your book, never to train AI. You can review before print. {uploadedPhotoCount}/{requiredHumanPhotoCount} required people photos added
               </p>
               <div className="mt-3 rounded-lg border border-deep-gold/30 bg-deep-gold/5 px-3 py-2 text-xs text-forest">
                 <span className="font-semibold">🎟️ Promo code?</span> {PROMO_CODE_HELP}
