@@ -196,12 +196,12 @@ test('order route handles OrderPersistenceError from voice upload (aborts before
 
 const CHECKOUT_SRC = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
 
-test('checkout source reads NEXT_PUBLIC_HSB_VOICE_BETA feature flag', () => {
-  assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_VOICE_BETA/);
+test('checkout source reads NEXT_PUBLIC_HSB_STORY_UPLOAD feature flag', () => {
+  assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
 });
 
-test('checkout source mounts VoiceRecorderSection ONLY when a story-upload flag is on', () => {
-  assert.match(CHECKOUT_SRC, /STORY_UPLOAD_ENABLED && \(\s*<VoiceRecorderSection/);
+test('checkout source mounts VoiceRecorderSection only for Custom Story when story upload is on', () => {
+  assert.match(CHECKOUT_SRC, /STORY_UPLOAD_ENABLED && isCustomStorySelected && \(\s*<VoiceRecorderSection/);
   assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
 });
 

@@ -25,8 +25,10 @@ import { buildAutoShrinkNotice, shrinkPhotoForUpload } from "@/lib/photo-upload"
 
 const CHECKOUT_PHOTO_MAX_BYTES = 1.1 * 1024 * 1024;
 
+const CUSTOM_STORY_THEME_ID = "custom-voice-story";
+
 const LAUNCH_THEME_IDS = new Set([
-  "custom-voice-story",
+  CUSTOM_STORY_THEME_ID,
   "brave-explorer",
   "space-voyager",
   "ocean-dreams",
@@ -86,7 +88,7 @@ const FORMATS = [
     badge: "Most flexible",
     delivery: "Digital proof usually ready in 2–3 business days",
     deliveryDetail:
-      "32-page high-res PDF delivered after you approve · No printing or shipping step",
+      "32-page proof first · Final high-res PDF delivered after approval · No printing or shipping step",
   },
   {
     id: "classic",
@@ -94,9 +96,9 @@ const FORMATS = [
     icon: "Softcover",
     price: "$39.00",
     priceNum: 39,
-    delivery: "Softcover ships in 5–7 business days",
+    delivery: "Proof first, then softcover ships after approval",
     deliveryDetail:
-      "32-page softcover · Free shipping included for US orders · Digital PDF included",
+      "Proof usually ready in 2–3 business days · Softcover ships 5–7 business days after approval · Digital PDF included",
   },
   {
     id: "premium",
@@ -104,9 +106,9 @@ const FORMATS = [
     icon: "Hardcover",
     price: "$64.00",
     priceNum: 64,
-    delivery: "Hardcover ships in 5–7 business days",
+    delivery: "Proof first, then hardcover ships after approval",
     deliveryDetail:
-      "32-page premium hardcover · Free shipping included for US orders · Digital PDF included",
+      "Proof usually ready in 2–3 business days · Hardcover ships 5–7 business days after approval · Digital PDF included",
   },
 ];
 
@@ -124,11 +126,11 @@ const PRIMARY_HERO_TYPES = [
 const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings";
 const SUPPORTING_CHARACTER_PRESETS = [
   { role: "co-hero", label: "Co-hero", relationshipLabel: "co-hero", pronouns: "", isGiftRecipient: false },
-  { role: "dad", label: "Dad", relationshipLabel: "Dad", pronouns: "Dad", isGiftRecipient: false },
-  { role: "mom", label: "Mom", relationshipLabel: "Mom", pronouns: "Mom", isGiftRecipient: false },
+  { role: "dad", label: "Dad", relationshipLabel: "Dad", pronouns: "", isGiftRecipient: false },
+  { role: "mom", label: "Mom", relationshipLabel: "Mom", pronouns: "", isGiftRecipient: false },
   { role: "sibling", label: "Sibling", relationshipLabel: "sibling", pronouns: "", isGiftRecipient: false },
   { role: "grandparent", label: "Grandparent", relationshipLabel: "grandparent", pronouns: "", isGiftRecipient: false },
-  { role: "pet", label: "Dog / pet", relationshipLabel: "family dog", pronouns: "family dog", isGiftRecipient: false },
+  { role: "pet", label: "Dog / pet", relationshipLabel: "family dog", pronouns: "", isGiftRecipient: false },
 ] as const;
 
 const CHECKOUT_PHOTO_ACCEPT_ATTR = "image/*";
@@ -191,6 +193,7 @@ interface FormState {
   occasion: string;
   giftMessage: string;
   characterNotes: string;
+  customStoryMemory: string;
   familyCharacters: SupportingCharacter[];
   skinTone: string;
   hairStyle: string;
@@ -233,6 +236,7 @@ const emptyForm: FormState = {
   occasion: "",
   giftMessage: "",
   characterNotes: "",
+  customStoryMemory: "",
   familyCharacters: [],
   skinTone: "",
   hairStyle: "",
@@ -262,7 +266,11 @@ function saveProgress(form: FormState) {
         occasion: form.occasion,
         giftMessage: form.giftMessage,
         characterNotes: form.characterNotes,
-        familyCharacters: form.familyCharacters,
+        customStoryMemory: form.customStoryMemory,
+        familyCharacters: form.familyCharacters.map((character) => ({
+          ...character,
+          pronouns: "",
+        })),
         skinTone: form.skinTone,
         hairStyle: form.hairStyle,
         eyewear: form.eyewear,
@@ -333,6 +341,7 @@ function normalizeSavedFamilyCharacters(
   if (!Array.isArray(characters)) return characters;
   return characters.map((character) => ({
     ...character,
+    pronouns: "",
     notes: character.notes === PET_NOTES_PLACEHOLDER ? "" : character.notes,
     // Backfill Phase-A photo-assignment fields for progress saved by older
     // builds so controlled inputs never receive undefined.
@@ -433,6 +442,7 @@ export function CheckoutForm() {
     form.occasion,
     form.giftMessage,
     form.characterNotes,
+    form.customStoryMemory,
     form.familyCharacters,
     form.skinTone,
     form.hairStyle,
@@ -534,6 +544,10 @@ export function CheckoutForm() {
   const fathersDay = getFathersDayCountdown();
   const showFathersDayReminder = fathersDay.tier !== "past-event";
   const missingSupportingPhotoLabels = missingSupportingCharacterPhotoLabels(form.familyCharacters);
+  const uploadedPhotoCount = [form.photoFile, ...form.familyCharacters.map((character) => character.photoFile)].filter(Boolean).length;
+  const requiredHumanPhotoCount = 1 + form.familyCharacters.filter((character) => character.appearsInStory !== false && isHumanSupportingCharacter(character)).length;
+  const isCustomStorySelected = form.theme === CUSTOM_STORY_THEME_ID;
+  const hasCustomStoryInput = Boolean(form.voiceFile || form.customStoryMemory.trim());
   const isReadyToPay =
     Boolean(form.theme) &&
     Boolean(form.childName) &&
@@ -668,7 +682,17 @@ export function CheckoutForm() {
       payload.set("lesson", form.lesson);
       payload.set("occasion", form.occasion);
       payload.set("giftMessage", form.giftMessage);
-      payload.set("characterNotes", form.characterNotes);
+      payload.set(
+        "characterNotes",
+        [
+          form.characterNotes.trim(),
+          form.customStoryMemory.trim()
+            ? `Custom story memory / typed fallback: ${form.customStoryMemory.trim()}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      );
       payload.set(
         "familyCharacters",
         JSON.stringify(
@@ -677,7 +701,7 @@ export function CheckoutForm() {
               role: character.role,
               name: character.name,
               relationshipLabel: character.relationshipLabel,
-              pronouns: character.pronouns,
+              pronouns: "",
               notes: character.notes,
               isGiftRecipient: character.isGiftRecipient,
               appearsInStory: character.appearsInStory,
@@ -921,6 +945,34 @@ export function CheckoutForm() {
                 ))}
               </div>
             </section>
+
+            {isCustomStorySelected && (
+              <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+                <div className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] p-4">
+                  <label
+                    htmlFor="customStoryMemory"
+                    className="block text-sm font-semibold text-[#1f1a16]"
+                  >
+                    Tell us the memory in your own words
+                  </label>
+                  <p className="mt-1 text-xs leading-5 text-[#8a7b6a]">
+                    Rambling is perfect. Record/upload audio below, or type the story idea here so the Custom Story has real source material.
+                  </p>
+                  <textarea
+                    id="customStoryMemory"
+                    value={form.customStoryMemory}
+                    onChange={(e) => set("customStoryMemory", e.target.value.slice(0, 1200))}
+                    placeholder="e.g. Lukas and Dad found a tiny dinosaur footprint at the park, then Brody helped track it through the woods..."
+                    rows={4}
+                    className="mt-3 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                  />
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[#8a7b6a]">
+                    <span>{hasCustomStoryInput ? "✓ Custom Story source added" : "Add a voice note, audio upload, or typed memory before checkout feels complete."}</span>
+                    <span>{form.customStoryMemory.length}/1200</span>
+                  </div>
+                </div>
+              </section>
+            )}
 
             {/* ── 2. Hero / main character details ── */}
             <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-5">
@@ -1285,7 +1337,7 @@ export function CheckoutForm() {
                   Add co-heroes, family members, gift recipients, or pets for the
                   story text and scene notes. Everyone here can be part of the
                   adventure — not just background characters.
-                  Human family members need their own still reference photo before payment; pet photos stay optional.
+                  Add photos anytime before you place the order. Each human family member gets a still reference photo slot; pet photos stay optional.
                 </p>
               </div>
 
@@ -1353,7 +1405,7 @@ export function CheckoutForm() {
                         </div>
                         <div>
                           <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
-                            Relationship / role
+                            Who are they in the story?
                           </label>
                           <input
                             type="text"
@@ -1367,23 +1419,9 @@ export function CheckoutForm() {
                             maxLength={80}
                             className="w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
                           />
-                        </div>
-                        <div>
-                          <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
-                            Story wording
-                          </label>
-                          <input
-                            type="text"
-                            value={character.pronouns}
-                            onChange={(e) =>
-                              updateSupportingCharacter(character.id, {
-                                pronouns: e.target.value,
-                              })
-                            }
-                            placeholder="Dad, Mom, big brother, Grandma, family dog"
-                            maxLength={32}
-                            className="w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                          />
+                          <p className="mt-1 text-xs leading-5 text-[#8a7b6a]">
+                            Example: “Dad” means this person is the hero’s dad. “Grandma” means the hero’s grandma.
+                          </p>
                         </div>
                         <label className="flex items-center gap-2 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] px-4 py-3 text-sm font-semibold text-[#1f1a16]">
                           <input
@@ -1432,7 +1470,7 @@ export function CheckoutForm() {
                                 : ""}
                             </p>
                             <p className="text-xs leading-5 text-[#8a7b6a]">
-                              Required for human family members before payment. Optional for pets.
+                              Required for human family members before checkout. Optional for pets.
                             </p>
                           </div>
                           {character.photoFile && (
@@ -1511,12 +1549,12 @@ export function CheckoutForm() {
                           <div className="space-y-2">
                             {isHumanSupportingCharacter(character) && (
                               <p className="rounded-xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-3 py-2 text-xs font-semibold text-[#1f1a16]">
-                                Add a still reference photo for {character.name || character.relationshipLabel || "this family member"} before payment so we can draw them consistently.
+                                Add a still reference photo for {character.name || character.relationshipLabel || "this family member"} before checkout so we can draw them consistently.
                               </p>
                             )}
                             <div className="grid gap-2 sm:grid-cols-2">
                               <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-4 text-center text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
-                                <span>Upload picture</span>
+                                <span>Use camera roll</span>
                                 <span className="text-xs font-normal text-[#8a7b6a]">
                                   JPG/PNG/WebP/HEIC
                                 </span>
@@ -1532,7 +1570,7 @@ export function CheckoutForm() {
                                 />
                               </label>
                               <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-4 text-center text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
-                                <span>Take 1 picture</span>
+                                <span>Take a new picture</span>
                                 <span className="text-xs font-normal text-[#8a7b6a]">
                                   Still photo only — never video
                                 </span>
@@ -1711,7 +1749,7 @@ export function CheckoutForm() {
                     <span className="text-5xl">{dragOver ? "🌟" : "📸"}</span>
                     <div className="text-center">
                       <p className="font-semibold text-[#1f1a16]">
-                        {dragOver ? "Drop it here!" : "Upload picture"}
+                        {dragOver ? "Drop it here!" : "Use camera roll"}
                       </p>
                       <p className="mt-0.5 px-2 text-sm leading-5 text-[#8a7b6a]">
                         Drag &amp; drop · JPG/PNG/WebP/HEIC
@@ -1721,7 +1759,7 @@ export function CheckoutForm() {
 
                   <label className="flex min-h-40 cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-5 text-center transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
                     <span className="text-5xl">🤳</span>
-                    <span className="font-semibold text-[#1f1a16]">Take a picture</span>
+                    <span className="font-semibold text-[#1f1a16]">Take a new picture</span>
                     <span className="px-2 text-sm leading-5 text-[#8a7b6a]">
                       Opens your phone camera · still photo only, never video
                     </span>
@@ -1741,8 +1779,7 @@ export function CheckoutForm() {
               )}
 
               <p className="text-xs text-center text-[#8a7b6a]">
-                🔒 Photos processed securely · Never used to train AI · Add it
-                later if you need to
+                🔒 Photos processed securely · Never used to train AI · {uploadedPhotoCount}/{requiredHumanPhotoCount} required people photos added
               </p>
               <div className="mt-3 rounded-lg border border-deep-gold/30 bg-deep-gold/5 px-3 py-2 text-xs text-forest">
                 <span className="font-semibold">🎟️ Promo code?</span> {PROMO_CODE_HELP}
@@ -1759,7 +1796,7 @@ export function CheckoutForm() {
               )}
             </section>
 
-            {STORY_UPLOAD_ENABLED && (
+            {STORY_UPLOAD_ENABLED && isCustomStorySelected && (
               <VoiceRecorderSection
                 voiceFile={form.voiceFile}
                 voicePreviewUrl={form.voicePreviewUrl}
@@ -1768,7 +1805,7 @@ export function CheckoutForm() {
                 onVoiceChange={(file, previewUrl, source) =>
                   setForm((prev) => ({
                     ...prev,
-                    theme: file && !prev.theme ? "custom-voice-story" : prev.theme,
+                    theme: file && !prev.theme ? CUSTOM_STORY_THEME_ID : prev.theme,
                     voiceFile: file,
                     voicePreviewUrl: previewUrl,
                     voiceSource: source,
