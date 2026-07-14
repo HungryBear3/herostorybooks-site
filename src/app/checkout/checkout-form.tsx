@@ -194,6 +194,7 @@ interface FormState {
   giftMessage: string;
   characterNotes: string;
   customStoryMemory: string;
+  customStorySourceMode: "audio" | "written" | "";
   familyCharacters: SupportingCharacter[];
   skinTone: string;
   hairStyle: string;
@@ -237,6 +238,7 @@ const emptyForm: FormState = {
   giftMessage: "",
   characterNotes: "",
   customStoryMemory: "",
+  customStorySourceMode: "",
   familyCharacters: [],
   skinTone: "",
   hairStyle: "",
@@ -267,6 +269,7 @@ function saveProgress(form: FormState) {
         giftMessage: form.giftMessage,
         characterNotes: form.characterNotes,
         customStoryMemory: form.customStoryMemory,
+        customStorySourceMode: form.customStorySourceMode,
         familyCharacters: form.familyCharacters.map((character) => ({
           ...character,
           pronouns: "",
@@ -443,6 +446,7 @@ export function CheckoutForm() {
     form.giftMessage,
     form.characterNotes,
     form.customStoryMemory,
+    form.customStorySourceMode,
     form.familyCharacters,
     form.skinTone,
     form.hairStyle,
@@ -548,6 +552,7 @@ export function CheckoutForm() {
   const requiredHumanPhotoCount = 1 + form.familyCharacters.filter((character) => character.appearsInStory !== false && isHumanSupportingCharacter(character)).length;
   const isCustomStorySelected = form.theme === CUSTOM_STORY_THEME_ID;
   const hasCustomStoryInput = Boolean(form.voiceFile || form.customStoryMemory.trim());
+  const customStorySourceMode = form.customStorySourceMode || (form.voiceFile ? "audio" : form.customStoryMemory.trim() ? "written" : "");
   const isReadyToPay =
     Boolean(form.theme) &&
     Boolean(form.childName) &&
@@ -948,29 +953,114 @@ export function CheckoutForm() {
 
             {isCustomStorySelected && (
               <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
-                <div className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] p-4">
-                  <label
-                    htmlFor="customStoryMemory"
-                    className="block text-sm font-semibold text-[#1f1a16]"
-                  >
+                <div>
+                  <h2 className="font-serif text-2xl text-[#1f1a16]">
                     Tell us the memory in your own words
-                  </label>
-                  <p className="mt-1 text-xs leading-5 text-[#8a7b6a]">
-                    Rambling is perfect. Record/upload audio below, or type the story idea here so the Custom Story has real source material.
+                  </h2>
+                  <p className="mt-1 text-sm leading-6 text-[#695f54]">
+                    Rambling is perfect. We turn it into the story. Choose the easiest way to send it now.
                   </p>
-                  <textarea
-                    id="customStoryMemory"
-                    value={form.customStoryMemory}
-                    onChange={(e) => set("customStoryMemory", e.target.value.slice(0, 1200))}
-                    placeholder="e.g. Lukas and Dad found a tiny dinosaur footprint at the park, then Brody helped track it through the woods..."
-                    rows={4}
-                    className="mt-3 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                  />
-                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[#8a7b6a]">
-                    <span>{hasCustomStoryInput ? "✓ Custom Story source added" : "Add a voice note, audio upload, or typed memory before checkout feels complete."}</span>
-                    <span>{form.customStoryMemory.length}/1200</span>
-                  </div>
                 </div>
+
+                <div className="grid gap-3 md:grid-cols-3">
+                  <button
+                    type="button"
+                    onClick={() => set("customStorySourceMode", "audio")}
+                    className={`rounded-2xl border-2 p-4 text-left transition ${
+                      customStorySourceMode === "audio"
+                        ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30"
+                        : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2]"
+                    }`}
+                  >
+                    <span className="block text-sm font-bold text-[#1f1a16]">🎙️ Record a voice note</span>
+                    <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
+                      Up to 3 minutes · tap to start, tap to stop.
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => set("customStorySourceMode", "audio")}
+                    className={`rounded-2xl border-2 p-4 text-left transition ${
+                      customStorySourceMode === "audio"
+                        ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30"
+                        : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2]"
+                    }`}
+                  >
+                    <span className="block text-sm font-bold text-[#1f1a16]">⬆️ Upload a voice memo</span>
+                    <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
+                      From Voice Memos or any audio file.
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => set("customStorySourceMode", "written")}
+                    className={`rounded-2xl border-2 p-4 text-left transition ${
+                      customStorySourceMode === "written"
+                        ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30"
+                        : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2]"
+                    }`}
+                  >
+                    <span className="block text-sm font-bold text-[#1f1a16]">✍️ Prefer typing?</span>
+                    <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
+                      Write the memory instead.
+                    </span>
+                  </button>
+                </div>
+
+                {STORY_UPLOAD_ENABLED && customStorySourceMode === "audio" && (
+                  <VoiceRecorderSection
+                    voiceFile={form.voiceFile}
+                    voicePreviewUrl={form.voicePreviewUrl}
+                    voiceSource={form.voiceSource}
+                    voiceConsent={form.voiceConsent}
+                    onVoiceChange={(file, previewUrl, source) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        theme: file && !prev.theme ? CUSTOM_STORY_THEME_ID : prev.theme,
+                        customStorySourceMode: "audio",
+                        voiceFile: file,
+                        voicePreviewUrl: previewUrl,
+                        voiceSource: source,
+                        voiceConsent: file ? prev.voiceConsent : false,
+                      }))
+                    }
+                    onConsentChange={(consent) =>
+                      setForm((prev) => ({ ...prev, voiceConsent: consent }))
+                    }
+                  />
+                )}
+
+                {customStorySourceMode === "written" && (
+                  <div className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] p-4">
+                    <label
+                      htmlFor="customStoryMemory"
+                      className="block text-sm font-semibold text-[#1f1a16]"
+                    >
+                      Tell us the memory in your own words
+                    </label>
+                    <p className="mt-1 text-xs leading-5 text-[#8a7b6a]">
+                      Rambling is perfect. Type the story idea, funny quote, family moment, or scene you want us to build from.
+                    </p>
+                    <textarea
+                      id="customStoryMemory"
+                      value={form.customStoryMemory}
+                      onChange={(e) => set("customStoryMemory", e.target.value.slice(0, 1200))}
+                      placeholder="e.g. Lukas and Dad found a tiny dinosaur footprint at the park, then Brody helped track it through the woods..."
+                      rows={4}
+                      className="mt-3 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                    />
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[#8a7b6a]">
+                      <span>{hasCustomStoryInput ? "✓ Custom Story source added" : "Add the memory before checkout feels complete."}</span>
+                      <span>{form.customStoryMemory.length}/1200</span>
+                    </div>
+                  </div>
+                )}
+
+                {!customStorySourceMode && (
+                  <p className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-4 py-3 text-xs leading-5 text-[#8a7b6a]">
+                    Voice notes stay private — used only to write your book, never to train anything, deleted on request. Written memories stay private to this order.
+                  </p>
+                )}
               </section>
             )}
 
@@ -1795,28 +1885,6 @@ export function CheckoutForm() {
                 />
               )}
             </section>
-
-            {STORY_UPLOAD_ENABLED && isCustomStorySelected && (
-              <VoiceRecorderSection
-                voiceFile={form.voiceFile}
-                voicePreviewUrl={form.voicePreviewUrl}
-                voiceSource={form.voiceSource}
-                voiceConsent={form.voiceConsent}
-                onVoiceChange={(file, previewUrl, source) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    theme: file && !prev.theme ? CUSTOM_STORY_THEME_ID : prev.theme,
-                    voiceFile: file,
-                    voicePreviewUrl: previewUrl,
-                    voiceSource: source,
-                    voiceConsent: file ? prev.voiceConsent : false,
-                  }))
-                }
-                onConsentChange={(consent) =>
-                  setForm((prev) => ({ ...prev, voiceConsent: consent }))
-                }
-              />
-            )}
 
             {/* ── 4. Format + Delivery ── */}
             <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">

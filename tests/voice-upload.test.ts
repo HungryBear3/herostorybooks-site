@@ -200,9 +200,12 @@ test('checkout source reads NEXT_PUBLIC_HSB_STORY_UPLOAD feature flag', () => {
   assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
 });
 
-test('checkout source mounts VoiceRecorderSection only for Custom Story when story upload is on', () => {
-  assert.match(CHECKOUT_SRC, /STORY_UPLOAD_ENABLED && isCustomStorySelected && \(\s*<VoiceRecorderSection/);
+test('checkout source mounts VoiceRecorderSection in the Custom Story source section', () => {
+  assert.match(CHECKOUT_SRC, /Tell us the memory in your own words[\s\S]*?STORY_UPLOAD_ENABLED && customStorySourceMode === ["']audio["'] && \(\s*<VoiceRecorderSection/);
   assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
+  assert.match(CHECKOUT_SRC, /Record a voice note/);
+  assert.match(CHECKOUT_SRC, /Upload a voice memo/);
+  assert.match(CHECKOUT_SRC, /Prefer typing\?/);
 });
 
 test('checkout source attaches voice fields to FormData only when story upload is on', () => {
