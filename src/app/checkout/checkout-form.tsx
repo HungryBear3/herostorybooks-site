@@ -183,7 +183,6 @@ interface FormState {
   childName: string;
   heroType: string;
   childAge: string;
-  childPronouns: string;
   recipientName: string;
   recipientRelationship: string;
   heroPhotoFocusLabel: string;
@@ -226,7 +225,6 @@ const emptyForm: FormState = {
   childName: "",
   heroType: "child",
   childAge: "",
-  childPronouns: "",
   recipientName: "",
   recipientRelationship: "",
   heroPhotoFocusLabel: "",
@@ -258,7 +256,6 @@ function saveProgress(form: FormState) {
         childName: form.childName,
         heroType: form.heroType,
         childAge: form.childAge,
-        childPronouns: form.childPronouns,
         recipientName: form.recipientName,
         recipientRelationship: form.recipientRelationship,
         lesson: form.lesson,
@@ -544,7 +541,6 @@ export function CheckoutForm() {
     Boolean(form.email) &&
     Boolean(form.skinTone) &&
     Boolean(form.hairStyle) &&
-    Boolean(form.childPronouns) &&
     missingSupportingPhotoLabels.length === 0 &&
     (!STORY_UPLOAD_ENABLED || form.voiceFile == null || form.voiceConsent);
   const completedStepCount = [
@@ -668,7 +664,6 @@ export function CheckoutForm() {
         payload.set("heroPhotoCropHint", form.heroPhotoCropHint.trim());
       }
       payload.set("childAge", form.childAge);
-      payload.set("childPronouns", form.childPronouns);
       payload.set("theme", form.theme);
       payload.set("lesson", form.lesson);
       payload.set("occasion", form.occasion);
@@ -1206,23 +1201,7 @@ export function CheckoutForm() {
                   hero.
                 </p>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
-                    Pronouns <span className="text-[#a64c4c]">(required)</span>
-                  </label>
-                  <select
-                    value={form.childPronouns}
-                    onChange={(e) => set("childPronouns", e.target.value)}
-                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
-                    required
-                  >
-                    <option value="">Select pronouns</option>
-                    <option value="he/him">He/him</option>
-                    <option value="she/her">She/her</option>
-                    <option value="they/them">They/them</option>
-                  </select>
-                </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
                     Skin tone <span className="text-[#a64c4c]">(required)</span>

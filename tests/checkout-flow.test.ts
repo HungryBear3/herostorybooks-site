@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   CHECKOUT_SECTION_ORDER,
@@ -11,6 +12,8 @@ import {
   missingFieldPrompt,
   currentCheckoutStep,
 } from '../src/lib/checkout-flow.ts';
+
+const CHECKOUT_FORM_SRC = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
 
 test('checkout flow leads with story and hero details before photo upload', () => {
   assert.deepEqual(CHECKOUT_SECTION_ORDER, [
@@ -42,7 +45,6 @@ const FULL = {
   email: 'a@b.com',
   skinTone: 'medium',
   hairStyle: 'curly',
-  childPronouns: 'she/her',
 };
 
 test('canSubmitCheckoutForm: blocks submit when no adventure is selected', () => {
@@ -64,9 +66,14 @@ test('canSubmitCheckoutForm: blocks submit when hairStyle is missing', () => {
   assert.equal(canSubmitCheckoutForm({ ...FULL, hairStyle: '   ' }), false);
 });
 
-test('canSubmitCheckoutForm: blocks submit when hero pronouns are missing', () => {
-  assert.equal(canSubmitCheckoutForm({ ...FULL, childPronouns: '' }), false);
-  assert.equal(canSubmitCheckoutForm({ ...FULL, childPronouns: '   ' }), false);
+test('canSubmitCheckoutForm: does not require hero pronouns', () => {
+  assert.equal(canSubmitCheckoutForm(FULL), true);
+});
+
+test('checkout buyer UI does not ask for pronouns', () => {
+  assert.doesNotMatch(CHECKOUT_FORM_SRC, />\s*Pronouns\s*</i);
+  assert.doesNotMatch(CHECKOUT_FORM_SRC, /Select pronouns/i);
+  assert.doesNotMatch(CHECKOUT_FORM_SRC, /childPronouns/i);
 });
 
 test('canSubmitCheckoutForm: allows submit only when every required field is present', () => {
@@ -79,7 +86,6 @@ test('missingRequiredField: reports the first gap for the disabled-state label',
   assert.equal(missingRequiredField({ ...FULL, email: '' }), 'email');
   assert.equal(missingRequiredField({ ...FULL, skinTone: '' }), 'skin_tone');
   assert.equal(missingRequiredField({ ...FULL, hairStyle: '' }), 'hair_style');
-  assert.equal(missingRequiredField({ ...FULL, childPronouns: '' }), 'pronouns');
   assert.equal(missingRequiredField(FULL), null);
 });
 
@@ -89,25 +95,24 @@ test('missingFieldPrompt: gives clear next-action copy for the checkout CTA/help
   assert.match(missingFieldPrompt('email'), /enter.*email/i);
   assert.match(missingFieldPrompt('skin_tone'), /select.*skin tone/i);
   assert.match(missingFieldPrompt('hair_style'), /select.*hair/i);
-  assert.match(missingFieldPrompt('pronouns'), /select.*boy|select.*girl|pronouns/i);
   assert.equal(missingFieldPrompt(null), null);
 });
 
 test('currentCheckoutStep: surfaces the current step and completed count clearly', () => {
   assert.deepEqual(currentCheckoutStep({
-    theme: '', childName: '', email: '', skinTone: '', hairStyle: '', childPronouns: '', photoReady: false,
+    theme: '', childName: '', email: '', skinTone: '', hairStyle: '', photoReady: false,
   }), { current: 'Adventure', completedCount: 0, totalCount: 5 });
 
   assert.deepEqual(currentCheckoutStep({
-    theme: 'brave-explorer', childName: '', email: '', skinTone: '', hairStyle: '', childPronouns: '', photoReady: false,
+    theme: 'brave-explorer', childName: '', email: '', skinTone: '', hairStyle: '', photoReady: false,
   }), { current: 'Hero', completedCount: 1, totalCount: 5 });
 
   assert.deepEqual(currentCheckoutStep({
-    theme: 'brave-explorer', childName: 'Emma', email: 'a@b.com', skinTone: 'medium', hairStyle: 'curly', childPronouns: 'she/her', photoReady: false,
+    theme: 'brave-explorer', childName: 'Emma', email: 'a@b.com', skinTone: 'medium', hairStyle: 'curly', photoReady: false,
   }), { current: 'Photo', completedCount: 4, totalCount: 5 });
 
   assert.deepEqual(currentCheckoutStep({
-    theme: 'brave-explorer', childName: 'Emma', email: 'a@b.com', skinTone: 'medium', hairStyle: 'curly', childPronouns: 'she/her', photoReady: true,
+    theme: 'brave-explorer', childName: 'Emma', email: 'a@b.com', skinTone: 'medium', hairStyle: 'curly', photoReady: true,
   }), { current: 'Ready to checkout', completedCount: 5, totalCount: 5 });
 });
 
