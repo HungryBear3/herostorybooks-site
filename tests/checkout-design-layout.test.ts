@@ -21,3 +21,13 @@ test('required main photo intake uses simple audio-style choice cards', () => {
   assert.match(checkoutFormSource, /Open your camera for a still photo\./);
   assert.doesNotMatch(checkoutFormSource, /Drag &amp; drop · JPG\/PNG\/WebP\/HEIC/);
 });
+
+test('optional guided photos stay collapsed behind a likeness link', () => {
+  const linkIndex = checkoutFormSource.indexOf('Want an even better likeness? Take guided photos');
+  const panelIndex = checkoutFormSource.indexOf('showGuidedPhotos && (');
+  const componentIndex = checkoutFormSource.indexOf('<GuidedPhotoCapture');
+  assert.ok(linkIndex > -1, 'optional guided photo link should render');
+  assert.ok(panelIndex > -1, 'guided photo panel should be gated by showGuidedPhotos');
+  assert.ok(componentIndex > panelIndex, 'GuidedPhotoCapture should mount only inside the expanded panel');
+  assert.match(checkoutFormSource, /aria-expanded=\{showGuidedPhotos\}/);
+});
