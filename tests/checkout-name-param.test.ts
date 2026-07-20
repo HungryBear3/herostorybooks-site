@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 
 const checkoutFormSource = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
 const namePreviewSource = readFileSync('src/components/name-preview.tsx', 'utf8');
+const analyticsSource = readFileSync('src/lib/analytics.ts', 'utf8');
+const layoutSource = readFileSync('src/app/layout.tsx', 'utf8');
 
 test('checkout reads childName query param for NamePreview handoff', () => {
   assert.match(checkoutFormSource, /params\.get\(['"]childName['"]\)/);
@@ -57,4 +59,22 @@ test('NamePreview CTA links to /checkout with encoded childName when a name was 
   // overwrite saved progress with the placeholder DEFAULT_NAME ("Lukas").
   assert.match(namePreviewSource, /trimmedName\s*\n?\s*\?\s*`\/checkout\?childName/);
   assert.match(namePreviewSource, /:\s*["']\/checkout["']/);
+});
+
+test('NamePreview + checkout fire shared analytics events', () => {
+  assert.match(namePreviewSource, /track\(["']name_preview_submitted["']/);
+  assert.match(checkoutFormSource, /track\(["']start_checkout["']/);
+  assert.match(checkoutFormSource, /track\(["']format_selected["']/);
+  assert.match(checkoutFormSource, /track\(["']story_selected["']/);
+  assert.match(checkoutFormSource, /track\(["']order_submit_attempt["']/);
+  assert.match(checkoutFormSource, /track\(["']purchase_intent["']/);
+});
+
+test('HSB mounts Vercel Analytics and forwards campaign params without full href', () => {
+  assert.match(layoutSource, /from ['"]@vercel\/analytics\/next['"]/);
+  assert.match(layoutSource, /<Analytics \/>/);
+  assert.match(analyticsSource, /utm_source/);
+  assert.match(analyticsSource, /utm_campaign/);
+  assert.match(analyticsSource, /window\.va\(['"]track['"], event, vercelSafeProps\(record\)\)/);
+  assert.match(analyticsSource, /href: _href/);
 });

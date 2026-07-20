@@ -1,5 +1,9 @@
 import './globals.css';
 import type { Metadata } from 'next';
+import Script from 'next/script';
+import { Analytics } from '@vercel/analytics/next';
+
+const googleAnalyticsMeasurementId = 'G-68FKEDZEG3';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://herostorybooks.com'),
@@ -39,7 +43,26 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="font-sans">
-      <body className="bg-cream text-gray-900">{children}</body>
+      <head>
+        <Script
+          async
+          src={`https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsMeasurementId}`}
+          strategy="afterInteractive"
+        />
+        <Script id="google-analytics-gtag" strategy="afterInteractive">
+          {`
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            window.gtag = window.gtag || gtag;
+            gtag('js', new Date());
+            gtag('config', '${googleAnalyticsMeasurementId}');
+          `}
+        </Script>
+      </head>
+      <body className="bg-cream text-gray-900">
+        {children}
+        <Analytics />
+      </body>
     </html>
   );
 }

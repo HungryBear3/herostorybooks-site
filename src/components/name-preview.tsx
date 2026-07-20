@@ -3,6 +3,7 @@
 import { useId, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
+import { track } from "@/lib/analytics";
 
 /**
  * Frontend-only "name preview" - a low-risk conversion touch that lets a
@@ -127,6 +128,12 @@ export function NamePreview() {
           >
             <Link
               href={checkoutHref}
+              onClick={() => {
+                track("name_preview_submitted", {
+                  has_name: Boolean(trimmedName),
+                  preview_name_length: trimmedName.length,
+                });
+              }}
               className="inline-block bg-navy text-cream px-8 py-3.5 rounded-xl font-semibold text-base shadow-sm hover:bg-navy/90 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200"
             >
               Start {displayName}&apos;s book
