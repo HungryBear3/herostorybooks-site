@@ -3,6 +3,7 @@
 import { useId, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
+import { track } from "@/lib/analytics";
 
 /**
  * Frontend-only "name preview" - a low-risk conversion touch that lets a
@@ -11,7 +12,9 @@ import { motion } from "framer-motion";
  *
  * Hard rules carried from the prompt:
  *   - Zero backend calls; no AI, Stripe, Lulu, blob, or external fetch.
- *   - No persistence (no localStorage, no cookies).
+ *   - No durable persistence (no localStorage, cookies, or backend writes).
+ *     Checkout prefill uses one-time sessionStorage handoff so names stay out
+ *     of URLs and analytics.
  *   - No checkout or pricing changes.
  *   - Hydration-safe: initial server render uses DEFAULT_NAME so the first
  *     client render matches before any user input.
@@ -20,6 +23,7 @@ import { motion } from "framer-motion";
 
 const DEFAULT_NAME = "Lukas";
 const MAX_NAME_LEN = 24;
+const NAME_PREVIEW_HANDOFF_KEY = "hsb_name_preview_handoff";
 
 // Strip injection-risk punctuation and ASCII control characters. Letters,
 // spaces, hyphens, and apostrophes pass through so "Anne-Marie" / "Mary Jane"
@@ -35,17 +39,28 @@ function sanitizeName(input: string): string {
     .slice(0, MAX_NAME_LEN);
 }
 
+function writeNamePreviewHandoff(childName: string): void {
+  try {
+    if (!childName) {
+      window.sessionStorage.removeItem(NAME_PREVIEW_HANDOFF_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(
+      NAME_PREVIEW_HANDOFF_KEY,
+      JSON.stringify({ childName, direction: "custom" }),
+    );
+  } catch {
+    /* sessionStorage unavailable; checkout remains usable without prefill */
+  }
+}
+
 export function NamePreview() {
   const [name, setName] = useState(DEFAULT_NAME);
+  const [nameEdited, setNameEdited] = useState(false);
   const inputId = useId();
   const trimmedName = name.trim();
   const displayName = trimmedName || DEFAULT_NAME;
-  // Only carry childName into checkout when the visitor actually typed
-  // something; otherwise we would falsely prefill the placeholder DEFAULT_NAME
-  // and overwrite any saved progress on the checkout side.
-  const checkoutHref = trimmedName
-    ? `/checkout?childName=${encodeURIComponent(trimmedName)}`
-    : "/checkout";
+  const checkoutName = nameEdited ? trimmedName : "";
 
   return (
     <section id="name-preview" className="py-20 bg-cream">
@@ -76,7 +91,10 @@ export function NamePreview() {
             id={inputId}
             type="text"
             value={name}
-            onChange={(e) => setName(sanitizeName(e.target.value))}
+            onChange={(e) => {
+              setNameEdited(true);
+              setName(sanitizeName(e.target.value));
+            }}
             placeholder="e.g., Emma"
             maxLength={MAX_NAME_LEN}
             autoComplete="off"
@@ -89,7 +107,7 @@ export function NamePreview() {
             id={`${inputId}-help`}
             className="text-xs text-navy/50 mt-2"
           >
-            Just for the preview &mdash; nothing is saved or sent anywhere.
+            The name is used only for this preview and checkout prefill; analytics never receives it.
           </p>
 
           <motion.div
@@ -126,7 +144,14 @@ export function NamePreview() {
             className="mt-8 text-center"
           >
             <Link
-              href={checkoutHref}
+              href="/checkout"
+              onClick={() => {
+                writeNamePreviewHandoff(checkoutName);
+                track("name_preview_submitted", {
+                  has_name: Boolean(checkoutName),
+                  preview_name_length: checkoutName.length,
+                });
+              }}
               className="inline-block bg-navy text-cream px-8 py-3.5 rounded-xl font-semibold text-base shadow-sm hover:bg-navy/90 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200"
             >
               Start {displayName}&apos;s book

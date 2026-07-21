@@ -1,22 +1,22 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { usePathname } from "next/navigation";
 import { trackPageView } from "@/lib/analytics";
 
 /**
- * Fires the `page_view` HSB analytics event exactly once per mount.
+ * Fires one sanitized `page_view` HSB analytics event per pathname.
  *
- * Wire it from a server component (page.tsx or a shared shell) and it
- * pushes via the vendor-free analytics layer (`window.dataLayer` +
- * `window.hsbEvents`). Safe with React strict mode — the `useRef`
- * latch prevents the double-mount in dev from causing duplicate
- * events.
+ * Mounted once from the root layout. Query strings are deliberately excluded
+ * so checkout-prefill values such as childName never reach analytics.
+ * The previous-path latch also prevents React strict-mode duplicates.
  */
-export function AnalyticsPageView({ pathname }: { pathname?: string }) {
-  const firedRef = useRef(false);
+export function AnalyticsPageView() {
+  const pathname = usePathname();
+  const lastPathnameRef = useRef<string | null>(null);
   useEffect(() => {
-    if (firedRef.current) return;
-    firedRef.current = true;
+    if (!pathname || lastPathnameRef.current === pathname) return;
+    lastPathnameRef.current = pathname;
     trackPageView(pathname);
   }, [pathname]);
   return null;
