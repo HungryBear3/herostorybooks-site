@@ -6,6 +6,10 @@ const checkoutFormSource = readFileSync('src/app/checkout/checkout-form.tsx', 'u
 const namePreviewSource = readFileSync('src/components/name-preview.tsx', 'utf8');
 const analyticsSource = readFileSync('src/lib/analytics.ts', 'utf8');
 const layoutSource = readFileSync('src/app/layout.tsx', 'utf8');
+const safeVercelAnalyticsSource = readFileSync(
+  'src/components/safe-vercel-analytics.tsx',
+  'utf8',
+);
 
 test('checkout reads childName query param for NamePreview handoff', () => {
   assert.match(checkoutFormSource, /params\.get\(['"]childName['"]\)/);
@@ -48,17 +52,14 @@ test('checkout visible format pricing matches server-side order pricing', () => 
   assert.doesNotMatch(checkoutFormSource, /\$14\.99|\$44\.99|\$64\.99/);
 });
 
-test('NamePreview CTA links to /checkout with encoded childName when a name was typed', () => {
-  // Carries the typed name as a URL-encoded query param so checkout can
-  // prefill the Child's Name input via the params.get('childName') path above.
-  assert.match(
-    namePreviewSource,
-    /\/checkout\?childName=\$\{encodeURIComponent\(trimmedName\)\}/,
-  );
-  // Empty/whitespace-only input goes to bare /checkout — we don't want to
-  // overwrite saved progress with the placeholder DEFAULT_NAME ("Lukas").
-  assert.match(namePreviewSource, /trimmedName\s*\n?\s*\?\s*`\/checkout\?childName/);
-  assert.match(namePreviewSource, /:\s*["']\/checkout["']/);
+test('NamePreview hands checkout prefill through sessionStorage without putting childName in the URL', () => {
+  assert.match(namePreviewSource, /const NAME_PREVIEW_HANDOFF_KEY = ["']hsb_name_preview_handoff["']/);
+  assert.match(namePreviewSource, /window\.sessionStorage\.setItem\(/);
+  assert.match(namePreviewSource, /JSON\.stringify\(\{ childName, direction: ["']custom["'] \}\)/);
+  assert.match(namePreviewSource, /href=["']\/checkout["']/);
+  assert.doesNotMatch(namePreviewSource, /\/checkout\?childName|encodeURIComponent\(trimmedName\)/);
+  assert.match(checkoutFormSource, /readNamePreviewHandoff\(\)/);
+  assert.match(checkoutFormSource, /window\.sessionStorage\.removeItem\(NAME_PREVIEW_HANDOFF_KEY\)/);
 });
 
 test('NamePreview + checkout fire shared analytics events', () => {
@@ -70,11 +71,21 @@ test('NamePreview + checkout fire shared analytics events', () => {
   assert.match(checkoutFormSource, /track\(["']purchase_intent["']/);
 });
 
-test('HSB mounts Vercel Analytics and forwards campaign params without full href', () => {
-  assert.match(layoutSource, /from ['"]@vercel\/analytics\/next['"]/);
-  assert.match(layoutSource, /<Analytics \/>/);
+test('HSB mounts privacy-sanitized Vercel Analytics and forwards campaign params', () => {
+  assert.match(layoutSource, /<SafeVercelAnalytics \/>/);
+  assert.match(safeVercelAnalyticsSource, /from ["']@vercel\/analytics\/next["']/);
+  assert.match(safeVercelAnalyticsSource, /beforeSend=/);
+  assert.match(safeVercelAnalyticsSource, /`\$\{url\.origin\}\$\{url\.pathname\}`/);
   assert.match(analyticsSource, /utm_source/);
   assert.match(analyticsSource, /utm_campaign/);
-  assert.match(analyticsSource, /window\.va\(['"]track['"], event, vercelSafeProps\(record\)\)/);
-  assert.match(analyticsSource, /href: _href/);
+  assert.match(analyticsSource, /event !== ['"]page_view['"]/);
+  assert.match(analyticsSource, /trackVercelEvent\(event, vercelSafeProps\(record\)\)/);
+  assert.match(analyticsSource, /key === ['"]href['"]/);
+});
+
+test('NamePreview analytics sends only derived metrics, never the child name', () => {
+  const eventBlock = namePreviewSource.match(/track\(["']name_preview_submitted["'][\s\S]*?\}\);/)?.[0] ?? '';
+  assert.match(eventBlock, /has_name/);
+  assert.match(eventBlock, /preview_name_length/);
+  assert.doesNotMatch(eventBlock, /childName\s*:|displayName\s*:|\bname\s*:/);
 });
