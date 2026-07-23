@@ -29,7 +29,7 @@ export function buildAbandonedCheckoutEmail(
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1f2937;line-height:1.6;">
       <h1 style="font-size:24px;color:#1F3A5F;margin-bottom:12px;">Your storybook is ready to finish ✨</h1>
       <p style="margin:0 0 14px;">${contextLine}</p>
-      <p style="margin:0 0 20px;">It only takes a few minutes to complete — and every book is made just for ${lead.childName ? `<strong>${name}</strong>` : 'your child'}, with their name woven into every page.</p>
+      <p style="margin:0 0 20px;">When you are ready, you can return to the details you were sharing. We create a private digital proof first, and nothing enters print until you approve the full proof.</p>
       <a href="${CHECKOUT_URL}" style="display:inline-block;background:#1F3A5F;color:#fff;text-decoration:none;padding:14px 28px;border-radius:6px;font-size:16px;font-weight:600;">Finish the book</a>
       <p style="margin:24px 0 0;font-size:14px;color:#6b7280;">Questions? Reply to this email or reach us at <a href="mailto:${escapeHtml(supportEmail)}" style="color:#1F3A5F;">${escapeHtml(supportEmail)}</a>.</p>
     </div>
@@ -40,7 +40,8 @@ export function buildAbandonedCheckoutEmail(
     '',
     contextLine.replace(/<[^>]+>/g, ''),
     '',
-    `It only takes a few minutes to complete your order.`,
+    `When you are ready, return to the details you were sharing.`,
+    `We create a private digital proof first, and nothing enters print until you approve the full proof.`,
     `Finish here: ${CHECKOUT_URL}`,
     '',
     `Questions? Email ${supportEmail}`,

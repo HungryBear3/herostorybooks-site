@@ -123,6 +123,14 @@ test('buildAbandonedCheckoutEmail: no fake discounts in html', () => {
   assert.doesNotMatch(html, /promo/i);
 });
 
+test('buildAbandonedCheckoutEmail: explains proof-first approval before print', () => {
+  const lead: RecoveryLead = { ...makeLeadAt(OLD), email: 'p@example.com', childName: 'Avery' };
+  const { html, text } = buildAbandonedCheckoutEmail(lead);
+  assert.match(html, /private digital proof first/i);
+  assert.match(html, /nothing enters print until you approve/i);
+  assert.match(text, /private digital proof first/i);
+});
+
 // ── runRecoverySweep ──────────────────────────────────────────────────────────
 
 function makeLead(id: string, updatedAt: string, status: RecoveryLead['status'] = 'active'): RecoveryLead {

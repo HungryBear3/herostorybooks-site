@@ -397,6 +397,7 @@ export function CheckoutForm() {
     const childNameFromUrl = sanitizeChildNameParam(params.get("childName"));
     const childNameFromHandoff = namePreviewHandoff?.childName ?? "";
     const directionFromUrl = params.get("direction") || namePreviewHandoff?.direction || "";
+    const occasionFromUrl = (params.get("occasion") || "").trim().slice(0, 100);
     const themeFromDirection = themeIdFromDirection(directionFromUrl);
     const nextFormat = normalizeBookFormat(formatFromUrl);
     const savedWithDefaults = saved
@@ -412,12 +413,13 @@ export function CheckoutForm() {
       ...(nextFormat ? { bookFormat: nextFormat } : {}),
       ...(childNamePrefill ? { childName: childNamePrefill } : {}),
       ...(themeFromDirection ? { theme: themeFromDirection } : {}),
+      ...(occasionFromUrl ? { occasion: occasionFromUrl } : {}),
     };
 
     if (savedWithDefaults && (savedWithDefaults.childName || savedWithDefaults.theme)) {
       setShowRecovery(true);
       setForm((prev) => ({ ...prev, ...savedWithDefaults, ...queryPrefill }));
-    } else if (nextFormat || childNamePrefill || themeFromDirection) {
+    } else if (nextFormat || childNamePrefill || themeFromDirection || occasionFromUrl) {
       setForm((prev) => ({ ...prev, ...queryPrefill }));
     }
 
@@ -427,6 +429,7 @@ export function CheckoutForm() {
       childNameFromUrl: childNameFromUrl ? "yes" : "no",
       childNameFromNamePreview: childNameFromHandoff ? "yes" : "no",
       directionFromUrl: directionFromUrl ? directionFromUrl.slice(0, 32) : null,
+      occasionFromUrl: occasionFromUrl || null,
       themePreselected: themeFromDirection || null,
     });
   }, []);
