@@ -241,6 +241,16 @@ export interface PageArtifact {
   reviewedAt?: string | null;
 }
 
+/**
+ * Fulfillment routing intent. Set EXPLICITLY by the creating workflow — never
+ * defaulted, never inferred from product type or payment state. `'auto'` = the
+ * order is expected to auto-fulfill after the paid webhook (and is therefore a
+ * candidate for stranded-order detection); `'manual_hold'` = produced on the
+ * manual path and must never be treated as stranded. Legacy orders (and any
+ * order whose workflow did not set this) are `undefined` and MUST fail closed.
+ */
+export type FulfillmentMode = 'auto' | 'manual_hold';
+
 export interface OrderRecord extends OrderInput {
   id: string;
   bookFormat: BookFormat;
@@ -248,6 +258,15 @@ export interface OrderRecord extends OrderInput {
   priceCents: number;
   status: OrderStatus;
   paymentStatus: PaymentStatus;
+  /**
+   * Authoritative ISO timestamp of the Stripe webhook's transition to
+   * paymentStatus='paid'. Written once, idempotently, only by updateOrderPayment
+   * on that transition; preserved across replays and later updates. Never derived
+   * from updatedAt or any scan clock. Absent on legacy/unpaid orders.
+   */
+  paidAt?: string | null;
+  /** Fulfillment routing intent — see FulfillmentMode. Undefined = fail closed. */
+  fulfillmentMode?: FulfillmentMode;
   stripeSessionId?: string | null;
   shippingAddress?: ShippingAddress | null;
   fulfillmentStatus?: FulfillmentStatus;
@@ -577,6 +596,14 @@ export function applyPageReviewPatch(
 interface CreateOrderOptions {
   now?: string;
   id?: string;
+  /**
+   * Fulfillment routing intent, supplied by the creating WORKFLOW (not the
+   * customer form). Pass-through only: when omitted the order's fulfillmentMode
+   * stays undefined and fails closed. Current authorized creation workflows
+   * explicitly pass `manual_hold`; any future `auto` workflow requires a
+   * separate product/policy decision.
+   */
+  fulfillmentMode?: FulfillmentMode;
 }
 
 const FORMAT_META: Record<BookFormat, { label: string; priceCents: number }> = {
@@ -812,6 +839,8 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     queueStatusNote: null,
     status: 'order_received',
     paymentStatus: 'pending',
+    // Explicit workflow intent only; no default. Undefined ⇒ fail closed.
+    ...(options.fulfillmentMode ? { fulfillmentMode: options.fulfillmentMode } : {}),
     stripeSessionId: null,
     shippingAddress: null,
     deliveryExpectation: buildDeliveryExpectation(format),
@@ -1457,12 +1486,18 @@ export async function updateOrderPayment(
   const existing = await getOrder(orderId);
   if (!existing) return null;
 
+  const now = new Date().toISOString();
   const updated: OrderRecord = {
     ...existing,
     paymentStatus,
     ...(opts.stripeSessionId != null ? { stripeSessionId: opts.stripeSessionId } : {}),
     ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
-    updatedAt: new Date().toISOString(),
+    // Authoritative + idempotent paidAt: stamped ONLY on the transition to
+    // 'paid', and ONLY if not already set. `...existing` above preserves an
+    // existing paidAt across replays / later updates; we never overwrite it and
+    // never derive it from updatedAt or a scan clock.
+    ...(paymentStatus === 'paid' && !existing.paidAt ? { paidAt: now } : {}),
+    updatedAt: now,
   };
 
   await persistOrder(updated);

@@ -309,6 +309,11 @@ export async function POST(request: Request) {
       customStoryBrief,
       customStoryValidation,
       checkoutTracking,
+    }, {
+      // Explicit workflow intent (NOT a default): every current customer-checkout
+      // order is produced on the manual path — no HSB workflow is approved as
+      // automatic (DECISIONS.md:51). Never inferred from product/payment/cohort.
+      fulfillmentMode: 'manual_hold',
     });
 
     const photo = form.get('photo');

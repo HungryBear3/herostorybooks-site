@@ -10,7 +10,7 @@ import {
   formatRecoverySummary,
   uploadOrderPhotoFromPath,
 } from '../src/lib/order-recovery.ts';
-import { getOrder } from '../src/lib/orders.ts';
+import { createOrderRecord, getOrder, persistOrder } from '../src/lib/orders.ts';
 
 function makeTmp() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-recovery-'));
@@ -155,6 +155,42 @@ test('recoverOrder: warns when stripeSessionId is missing', async () => {
       email: 'a@b.com',
     });
     assert.ok(s.warnings.some((w) => /stripeSessionId/.test(w)));
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('recoverOrder: refuses an existing order and preserves its auto fulfillment mode', async () => {
+  const dir = makeTmp();
+  try {
+    const existing = createOrderRecord(
+      {
+        childName: 'Existing',
+        bookFormat: 'digital',
+        email: 'existing@example.com',
+      },
+      {
+        id: 'ord_existing_auto',
+        fulfillmentMode: 'auto',
+      },
+    );
+    await persistOrder(existing);
+
+    await assert.rejects(
+      recoverOrder({
+        id: existing.id,
+        childName: 'Replacement',
+        bookFormat: 'digital',
+        email: 'replacement@example.com',
+      }),
+      /already exists; recovery refuses to overwrite/,
+    );
+
+    const after = await getOrder(existing.id);
+    assert.ok(after);
+    assert.equal(after.fulfillmentMode, 'auto');
+    assert.equal(after.childName, 'Existing');
+    assert.equal(after.paymentStatus, 'pending');
   } finally {
     cleanup(dir);
   }
