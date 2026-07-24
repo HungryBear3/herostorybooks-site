@@ -20,7 +20,8 @@ export async function POST(request: Request) {
   try {
     const order = createOrderRecord(
       { childName: 'Lulu Sandbox', bookFormat: 'classic', email: 'support@herostorybooks.com' },
-      { id: `ord_sandbox_${Date.now()}`, now: new Date().toISOString() },
+      // Sandbox/test utility order — explicit manual_hold (no auto workflow exists).
+      { id: `ord_sandbox_${Date.now()}`, now: new Date().toISOString(), fulfillmentMode: 'manual_hold' },
     );
 
     order.paymentStatus = 'paid';

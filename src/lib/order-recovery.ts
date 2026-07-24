@@ -12,6 +12,7 @@ import { put } from '@vercel/blob';
 import {
   createOrderRecord,
   getBlobAccessMode,
+  getOrder,
   persistOrder,
   withBlobNamespace,
   type OrderInput,
@@ -53,7 +54,9 @@ export interface RecoverySummary {
  * No I/O. Safe to call from tests without a tmp dir.
  */
 export function buildRecoveryOrderRecord(input: RecoveryInput): OrderRecord {
-  const base = createOrderRecord(input, { id: input.id, now: input.now });
+  // Recovery reconstructs manual-path orders — explicit manual_hold (fail closed;
+  // no auto workflow exists). Not inferred; preserved by the spread below.
+  const base = createOrderRecord(input, { id: input.id, now: input.now, fulfillmentMode: 'manual_hold' });
   return {
     ...base,
     paymentStatus: 'paid',
@@ -116,6 +119,16 @@ export async function uploadOrderPhotoFromPath(
  * review flow once fulfillment generates pageArtifacts.
  */
 export async function recoverOrder(input: RecoveryInput): Promise<RecoverySummary> {
+  // Recovery reconstructs records that are missing from the order store. Refuse
+  // an existing id before uploading a photo or writing anything: rerunning a
+  // recovery must never replace an existing order (including its routing intent).
+  const existing = await getOrder(input.id);
+  if (existing) {
+    throw new Error(
+      `order ${input.id} already exists; recovery refuses to overwrite existing records`,
+    );
+  }
+
   const warnings: string[] = [];
   let photoBlobPath = input.photoBlobPath ?? null;
   let photoBlobUrl = input.photoBlobUrl ?? null;
