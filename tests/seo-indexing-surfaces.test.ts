@@ -53,6 +53,12 @@ test('gift index is internally linked from the current editorial surface', () =>
   assert.match(editorialSource, /['"]Gift ideas['"]\s*,\s*['"]\/gifts['"]/);
 });
 
+test('public editorial identity says Chicago and contains no stale California claim', () => {
+  const editorialSource = read('src/components/editorial-site.tsx');
+  assert.match(editorialSource, /small (?:independent )?team in Chicago/i);
+  assert.doesNotMatch(editorialSource, /California/i);
+});
+
 test('operational and customer-specific pages receive response-level noindex headers', () => {
   assert.match(middlewareSource, /OPERATIONAL_NOINDEX_PATH/);
   for (const path of ['admin', 'api', 'checkout', 'order', 'partner', 'review', 'status', 'thank-you']) {
