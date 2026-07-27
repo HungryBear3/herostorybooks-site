@@ -48,6 +48,17 @@ test('every public index page declares a self-canonical and unique legal titles'
   assert.match(read('src/app/terms/page.tsx'), /Terms of Service \| HeroStoryBooks/);
 });
 
+test('homepage social metadata does not leak into child routes', () => {
+  const rootLayoutSource = read('src/app/layout.tsx');
+  const homeSource = read('src/app/page.tsx');
+
+  assert.doesNotMatch(rootLayoutSource, /\bopenGraph\s*:/);
+  assert.doesNotMatch(rootLayoutSource, /\btwitter\s*:/);
+  assert.match(homeSource, /\bopenGraph\s*:/);
+  assert.match(homeSource, /url:\s*['"]https:\/\/herostorybooks\.com['"]/);
+  assert.match(homeSource, /\btwitter\s*:/);
+});
+
 test('gift index is internally linked from the current editorial surface', () => {
   const editorialSource = read('src/components/editorial-site.tsx');
   assert.match(editorialSource, /['"]Gift ideas['"]\s*,\s*['"]\/gifts['"]/);
