@@ -16,7 +16,9 @@ test('gift page foundation avoids forbidden promises and private promo codes', (
   const files = ['src/lib/gift-occasions.ts', 'src/app/gifts/page.tsx', 'src/app/gifts/[occasion]/page.tsx'];
   const source = files.map((file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')).join('\n');
   assert.doesNotMatch(source, /ERIC50|same-day|instant delivery|guaranteed delivery/i);
-  assert.match(source, /usually ready in 2–3 business days/i);
+  // Turnaround aligned with the homepage wording (Cowork finding #4).
+  assert.match(source, /usually ready within 2 business days/i);
+  assert.doesNotMatch(source, /2–3 business days/);
   assert.match(source, /before approval|before fulfillment/i);
 });
 

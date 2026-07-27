@@ -1,9 +1,12 @@
 import type { MetadataRoute } from 'next';
 import { GIFT_OCCASIONS } from '@/lib/gift-occasions';
-import { getSiteOrigin } from '@/lib/site-url';
+import { PRODUCTION_ORIGIN } from '@/lib/site-url';
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const origin = getSiteOrigin();
+  // Sitemap <loc> values must always be production-host so preview deployments
+  // never emit preview URLs into a crawlable sitemap. Use the shared production
+  // origin, NOT the preview-aware getSiteOrigin helper.
+  const origin = PRODUCTION_ORIGIN;
 
   return [
     {

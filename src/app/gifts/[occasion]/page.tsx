@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
+import { EditorialPageShell } from '@/components/editorial-site';
 import { APPROVED_SAMPLE, GIFT_OCCASIONS, getGiftOccasion, giftCheckoutHref } from '@/lib/gift-occasions';
 
 export function generateStaticParams() {
@@ -25,7 +26,7 @@ export default async function GiftOccasionPage({ params }: { params: Promise<{ o
   if (!occasion) notFound();
 
   return (
-    <main className="min-h-screen bg-[#f8f0dd] text-[#1f1a16]">
+    <EditorialPageShell>
       <section className="mx-auto grid max-w-6xl gap-10 px-5 py-16 md:grid-cols-[1.05fr_0.95fr] md:px-8 md:py-24">
         <div className="self-center">
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#a64c4c]">{occasion.eyebrow}</p>
@@ -54,12 +55,12 @@ export default async function GiftOccasionPage({ params }: { params: Promise<{ o
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#a64c4c]">What happens next</p>
             <ol className="mt-5 grid gap-4 text-sm leading-7 text-[#695f54]">
               <li><strong className="text-[#1f1a16]">1. Share the details.</strong> Add the child&apos;s photo, interests, dedication, and optional voice note.</li>
-              <li><strong className="text-[#1f1a16]">2. Review the private proof.</strong> Proofs are usually ready in 2–3 business days after we have the needed photos.</li>
+              <li><strong className="text-[#1f1a16]">2. Review the private proof.</strong> Proofs are usually ready within 2 business days after we have the needed photos.</li>
               <li><strong className="text-[#1f1a16]">3. Approve before fulfillment.</strong> The final digital PDF follows approval. Printed books enter production only after approval; carrier timing can vary.</li>
             </ol>
           </div>
         </div>
       </section>
-    </main>
+    </EditorialPageShell>
   );
 }
