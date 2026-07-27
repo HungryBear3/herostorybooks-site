@@ -122,3 +122,38 @@ test('server-side non-child primary-hero gate remains intact', () => {
   // The client still only gates the selector behind the beta flag.
   assert.match(checkoutForm, /NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === ["']true["']/);
 });
+
+// ── 6. Gift detail pages are text/CTA-led — no occasion illustration ──────────
+// CD found no complete, privacy-safe occasion-art set (private-name crop risk on
+// pets/holidays, no safe birthday/grandparents/siblings/hero asset), so the
+// repeated APPROVED_SAMPLE illustration is removed. No replacement image is added.
+test('gift-detail template renders no APPROVED_SAMPLE and no occasion illustration', () => {
+  assert.doesNotMatch(giftDetail, /APPROVED_SAMPLE/, 'gift detail must not reference APPROVED_SAMPLE');
+  assert.doesNotMatch(giftDetail, /<img[\s>]/i, 'gift detail must not render an <img>');
+  assert.doesNotMatch(giftDetail, /<figure[\s>]/i, 'gift detail must not render an illustration <figure>');
+});
+
+test('no gift page references a caution / private-name / occasion image asset', () => {
+  for (const [label, source] of [['index', giftIndex], ['detail', giftDetail]] as const) {
+    assert.doesNotMatch(source, /\/assets\//, `${label} must not reference any /assets/ image`);
+    assert.doesNotMatch(source, /<img[\s>]/i, `${label} must not render an <img>`);
+  }
+});
+
+test('gift detail stays complete: headline, story directions, checkout CTA, shared chrome, proof-first steps', () => {
+  // Shared chrome
+  assert.match(giftDetail, /<EditorialPageShell[\s>]/);
+  // Headline (occasion title)
+  assert.match(giftDetail, /<h1[^>]*>\{occasion\.title\}<\/h1>/);
+  // Story directions
+  assert.match(giftDetail, /Story directions/);
+  assert.match(giftDetail, /occasion\.storyIdeas\.map/);
+  // Checkout CTA / occasion handoff
+  assert.match(giftDetail, /giftCheckoutHref\(occasion\)/);
+  assert.match(giftDetail, /Start a custom story/);
+  // Proof-first steps preserved
+  assert.match(giftDetail, /What happens next/);
+  assert.match(giftDetail, /Review the private proof/);
+  assert.match(giftDetail, /Approve before fulfillment/);
+  assert.match(giftDetail, /usually ready within 2 business days/i);
+});
