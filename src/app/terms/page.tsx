@@ -1,4 +1,11 @@
 import { EditorialPageShell } from '@/components/editorial-site';
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  title: 'Terms of Service | HeroStoryBooks',
+  description: 'HeroStoryBooks terms for ordering, proof approval, revisions, refunds, shipping, and uploaded media.',
+  alternates: { canonical: '/terms' },
+};
 
 export default function TermsPage() {
   // LEGAL REVIEW REQUIRED (Phase A fully-custom checkout): the upload

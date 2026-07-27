@@ -7,6 +7,7 @@ export const metadata: Metadata = {
   title: 'Personalized Storybook Gift Ideas | HeroStoryBooks',
   description:
     'Explore proof-first personalized storybook ideas for birthdays, grandparents, siblings, pets, holidays, and everyday child-as-hero gifts.',
+  alternates: { canonical: '/gifts' },
 };
 
 export default function GiftsPage() {

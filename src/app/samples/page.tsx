@@ -8,6 +8,7 @@ export const metadata: Metadata = {
   title: 'Sample Personalized Story Books | HeroStoryBooks',
   description:
     'Peek inside two digital sample story proofs with real watercolor pages, proof-first review, and digital or printed keepsake options.',
+  alternates: { canonical: '/samples' },
   openGraph: {
     title: 'HeroStoryBooks digital sample story proofs',
     description:

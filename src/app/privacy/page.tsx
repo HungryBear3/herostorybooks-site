@@ -1,4 +1,11 @@
 import { EditorialPageShell } from '@/components/editorial-site';
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  title: 'Privacy Policy | HeroStoryBooks',
+  description: 'How HeroStoryBooks handles order details, uploaded media, children’s information, and data requests.',
+  alternates: { canonical: '/privacy' },
+};
 
 export default function PrivacyPage() {
   // LEGAL REVIEW REQUIRED (Phase A fully-custom checkout): the adult/family

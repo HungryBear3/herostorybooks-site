@@ -1,4 +1,5 @@
 import type { MetadataRoute } from 'next';
+import { GIFT_OCCASIONS } from '@/lib/gift-occasions';
 import { getSiteOrigin } from '@/lib/site-url';
 
 export default function sitemap(): MetadataRoute.Sitemap {
@@ -15,6 +16,21 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: 'monthly',
       priority: 0.8,
     },
+    {
+      url: `${origin}/about`,
+      changeFrequency: 'yearly',
+      priority: 0.6,
+    },
+    {
+      url: `${origin}/gifts`,
+      changeFrequency: 'monthly',
+      priority: 0.8,
+    },
+    ...GIFT_OCCASIONS.map(({ id }) => ({
+      url: `${origin}/gifts/${id}`,
+      changeFrequency: 'monthly' as const,
+      priority: 0.7,
+    })),
     {
       url: `${origin}/privacy`,
       changeFrequency: 'yearly',

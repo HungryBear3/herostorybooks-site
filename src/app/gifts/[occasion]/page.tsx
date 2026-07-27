@@ -12,7 +12,11 @@ export async function generateMetadata({ params }: { params: Promise<{ occasion:
   const { occasion: id } = await params;
   const occasion = getGiftOccasion(id);
   if (!occasion) return {};
-  return { title: `${occasion.title} | HeroStoryBooks`, description: occasion.description };
+  return {
+    title: `${occasion.title} | HeroStoryBooks`,
+    description: occasion.description,
+    alternates: { canonical: `/gifts/${occasion.id}` },
+  };
 }
 
 export default async function GiftOccasionPage({ params }: { params: Promise<{ occasion: string }> }) {

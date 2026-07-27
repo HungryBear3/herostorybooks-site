@@ -417,7 +417,7 @@ function EditorialFooter() {
             Personalized children&apos;s books, made from your child&apos;s photo, interests, and family story. Approved by you before we print.
           </p>
         </div>
-        <FooterLinks title="Product" items={[['How it works', '/#how'], ['See a sample', '/samples'], ['Pricing', '/pricing'], ['About', '/about'], ['Start your book', '/checkout']]} />
+        <FooterLinks title="Product" items={[["How it works", "/#how"], ["See a sample", "/samples"], ["Pricing", "/pricing"], ["Gift ideas", "/gifts"], ["About", "/about"], ["Start your book", "/checkout"]]} />
         <FooterLinks title="Help" items={[['FAQ', '/#faq'], ['support@herostorybooks.com', 'mailto:support@herostorybooks.com'], ['Privacy', '/privacy'], ['Terms', '/terms']]} />
       </div>
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 border-t border-[#dfd2b8] px-5 py-5 text-xs text-[#695f54] md:px-8">
