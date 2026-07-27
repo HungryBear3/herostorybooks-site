@@ -4,6 +4,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from "@/lib/checkout-flow";
+import { PROOF_TURNAROUND_WINDOW } from "@/lib/proof-turnaround";
 import { checkoutTrackingFromSearchParams } from "@/lib/checkout-tracking";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
 import { GuidedPhotoCapture } from "@/components/checkout/GuidedPhotoCapture";
@@ -86,7 +87,7 @@ const FORMATS = [
     price: "$19.00",
     priceNum: 19,
     badge: "Most flexible",
-    delivery: "Digital proof usually ready within 2 business days",
+    delivery: `Digital proof usually ready in ${PROOF_TURNAROUND_WINDOW}`,
     deliveryDetail:
       "32-page proof first · Final high-res PDF delivered after approval · No printing or shipping step",
   },
@@ -98,7 +99,7 @@ const FORMATS = [
     priceNum: 39,
     delivery: "Proof first, then softcover ships after approval",
     deliveryDetail:
-      "Proof usually ready within 2 business days · Softcover ships 5–7 business days after approval · Digital PDF included",
+      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · Softcover ships 5–7 business days after approval · Digital PDF included`,
   },
   {
     id: "premium",
@@ -108,7 +109,7 @@ const FORMATS = [
     priceNum: 64,
     delivery: "Proof first, then hardcover ships after approval",
     deliveryDetail:
-      "Proof usually ready within 2 business days · Hardcover ships 5–7 business days after approval · Digital PDF included",
+      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · Hardcover ships 5–7 business days after approval · Digital PDF included`,
   },
 ];
 
@@ -2232,7 +2233,7 @@ export function CheckoutForm() {
                     <strong className="block text-[#241914]">
                       We send a digital proof
                     </strong>
-                    Usually within 2 business days after we have the needed photos, you get a private link to review every page.
+                    Usually in {PROOF_TURNAROUND_WINDOW} after we have the needed photos, you get a private link to review every page.
                   </span>
                 </li>
                 <li className="flex gap-3">

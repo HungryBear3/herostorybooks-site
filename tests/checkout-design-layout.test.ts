@@ -27,7 +27,7 @@ test('CD/Cowork checkout polish avoids contradictory or nervous copy', () => {
   assert.match(checkoutFormSource, /story direction/);
   assert.match(checkoutFormSource, /5 quick angles, about a minute \(optional\)/);
   assert.match(checkoutFormSource, /PROMO_CODE_HELP/);
-  assert.match(checkoutFormSource, /Usually within 2 business days after we have the needed photos/);
+  assert.match(checkoutFormSource, /Usually in \{PROOF_TURNAROUND_WINDOW\} after we have the needed photos/);
   assert.match(checkoutFormSource, /form\.childName \|\| "your child"/);
   assert.doesNotMatch(checkoutFormSource, /required people photos/);
   assert.doesNotMatch(checkoutFormSource, /0 of \$\{requiredHumanPhotoCount\} added/);

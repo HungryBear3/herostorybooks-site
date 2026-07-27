@@ -6,8 +6,8 @@
  *  2. Sitemap <loc> values use the exported production-origin constant, never the
  *     preview-aware getSiteOrigin().
  *  3. Customer-visible internal engineering phrases are gone from checkout.
- *  4. Checkout + gift proof timing matches the homepage ("within 2 business
- *     days"); "2–3 business days" is absent from those touched public surfaces.
+ *  4. Checkout + gift proof timing carries no tightened 2-day promise and
+ *     sources the shared authoritative window (see turnaround-consistency.test).
  *  5. The existing server-side non-child primary-hero gate is preserved.
  *
  * Source-text regression style (matches the repo's node:test convention).
@@ -87,17 +87,19 @@ test('checkout uses calm customer language for hero availability', () => {
   assert.match(checkoutForm, /confirm the recipient details and reference photo before production/i);
 });
 
-// ── 4. Turnaround consistency on touched public surfaces ──────────────────────
-test('touched checkout + gift surfaces drop "2–3 business days"', () => {
-  assert.doesNotMatch(checkoutForm, /2–3 business days/, 'checkout must not say 2–3 business days');
-  assert.doesNotMatch(giftDetail, /2–3 business days/, 'gift detail must not say 2–3 business days');
-  assert.doesNotMatch(giftIndex, /2–3 business days/, 'gift index must not say 2–3 business days');
+// ── 4. Turnaround consistency — Alexy authoritative "2–3 business days" ───────
+// Full turnaround policy coverage lives in tests/turnaround-consistency.test.ts.
+// Here we only lock that the touched gift/checkout surfaces carry no tightened
+// 2-day proof promise and source the shared window constant.
+test('touched checkout + gift surfaces carry no tightened 2-day proof promise', () => {
+  for (const [label, src] of [['checkout', checkoutForm], ['gift detail', giftDetail], ['gift index', giftIndex]] as const) {
+    assert.doesNotMatch(src, /(within|in)\s+2 business days/i, `${label} must not promise a 2-day proof window`);
+  }
 });
 
-test('touched checkout + gift surfaces use the approved "within 2 business days" wording', () => {
-  assert.match(checkoutForm, /usually ready within 2 business days/i);
-  assert.match(checkoutForm, /within 2 business days after we have the needed photos/i);
-  assert.match(giftDetail, /usually ready within 2 business days/i);
+test('touched checkout + gift surfaces source the shared proof-turnaround window', () => {
+  assert.match(checkoutForm, /PROOF_TURNAROUND_WINDOW/);
+  assert.match(giftDetail, /PROOF_TURNAROUND_WINDOW/);
 });
 
 test('turnaround change adds no guaranteed/instant/same-day/holiday-delivery promise', () => {
@@ -155,5 +157,6 @@ test('gift detail stays complete: headline, story directions, checkout CTA, shar
   assert.match(giftDetail, /What happens next/);
   assert.match(giftDetail, /Review the private proof/);
   assert.match(giftDetail, /Approve before fulfillment/);
-  assert.match(giftDetail, /usually ready within 2 business days/i);
+  // Proof-timing sourced from the shared authoritative window (2–3 business days).
+  assert.match(giftDetail, /usually ready in \{PROOF_TURNAROUND_WINDOW\}/);
 });

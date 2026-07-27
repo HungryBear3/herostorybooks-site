@@ -1,4 +1,5 @@
 import { getOrder } from '@/lib/orders';
+import { PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
 
 // This page MUST be honest about payment state. Do not show success copy
 // based on URL params alone — Stripe redirects here on completion AND a
@@ -90,7 +91,7 @@ function SuccessView({
               <p className="font-semibold text-[var(--forest)]">Confirmation + proof-first delivery</p>
               <p className="text-gray-500">
                 {email ? `A confirmation was sent to ${email}. ` : ''}
-                We email a digital proof first, usually within 2 business days. Once you approve the proof, you receive the final high-resolution PDF for digital orders, or the printed book ships for softcover/hardcover orders.
+                We email a digital proof first, usually in {PROOF_TURNAROUND_WINDOW}. Once you approve the proof, you receive the final high-resolution PDF for digital orders, or the printed book ships for softcover/hardcover orders.
               </p>
             </div>
           </div>
