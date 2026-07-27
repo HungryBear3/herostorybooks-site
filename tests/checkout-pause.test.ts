@@ -61,7 +61,11 @@ test('checkout hides primary-hero selector unless private beta flag is enabled',
   assert.match(src, /NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === ["']true["']/);
   assert.match(src, /PRIMARY_HERO_BETA_ENABLED && \(/);
   assert.match(src, /Primary hero type/);
-  assert.match(src, /Preview hold: non-child primary heroes require recipient context/);
+  // Calm customer-facing review-only copy (Cowork finding #3) still surfaces the
+  // non-child hold; internal engineering language ("Preview hold") is gone.
+  assert.match(src, /available by review only/i);
+  assert.match(src, /confirm the recipient details and reference photo before production/i);
+  assert.doesNotMatch(src, /Preview hold/);
 });
 
 

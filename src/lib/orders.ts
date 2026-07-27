@@ -7,6 +7,7 @@ import type { CustomerQueueStatus } from './order-queue.ts';
 import type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts';
+import { PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
 export type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
@@ -763,14 +764,14 @@ export function buildDeliveryExpectation(bookFormat: string): string {
   const format = normalizeFormat(bookFormat);
 
   if (format === 'digital') {
-    return 'Digital proof usually ready in 2–3 business days; final PDF delivered after approval.';
+    return `Digital proof ${PROOF_TURNAROUND_PHRASE}; final PDF delivered after approval.`;
   }
 
   if (format === 'premium') {
-    return 'Digital proof usually ready in 2–3 business days. After approval, hardcover ships in 5–7 business days — free shipping included.';
+    return `Digital proof ${PROOF_TURNAROUND_PHRASE}. After approval, hardcover ships in 5–7 business days — free shipping included.`;
   }
 
-  return 'Digital proof usually ready in 2–3 business days. After approval, softcover ships in 5–7 business days — free shipping included.';
+  return `Digital proof ${PROOF_TURNAROUND_PHRASE}. After approval, softcover ships in 5–7 business days — free shipping included.`;
 }
 
 export function createOrderRecord(input: OrderInput, options: CreateOrderOptions = {}): OrderRecord {

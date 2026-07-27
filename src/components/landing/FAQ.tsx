@@ -1,6 +1,7 @@
 'use client';
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
+import { PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
 
 const faqs = [
   {
@@ -16,7 +17,7 @@ const faqs = [
   {
     question: 'How long does delivery take?',
     answer:
-      'We email a digital proof first, usually within 2 business days. Once you approve the proof, digital orders receive the final high-resolution PDF and printed softcover/hardcover books ship within 5-7 business days via standard US shipping.',
+      `We email a digital proof first, usually in ${PROOF_TURNAROUND_WINDOW}. Once you approve the proof, digital orders receive the final high-resolution PDF and printed softcover/hardcover books ship within 5-7 business days via standard US shipping.`,
   },
   {
     question: 'Can I customize the story theme?',

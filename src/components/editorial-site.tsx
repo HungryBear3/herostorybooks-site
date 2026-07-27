@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { NamePreview } from '@/components/name-preview';
 import { getFathersDayCountdown, type FathersDayCountdown } from '@/lib/fathers-day';
+import { PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
 
 type TierId = 'digital' | 'softcover' | 'hardcover';
 
@@ -25,7 +26,7 @@ const tiers: Tier[] = [
     name: 'Digital PDF',
     price: 19,
     sub: 'Proof first, then high-resolution PDF',
-    blurb: 'We email a digital proof first, usually within 2 business days. Once you approve, you receive the final high-resolution PDF to print at home, share, or read on any screen. No printing or shipping step.',
+    blurb: `We email a digital proof first, usually in ${PROOF_TURNAROUND_WINDOW}. Once you approve, you receive the final high-resolution PDF to print at home, share, or read on any screen. No printing or shipping step.`,
     badge: 'Most loved',
     featured: true,
   },
@@ -263,7 +264,7 @@ const hardcoverPhotoSample = {
 const faqs: Array<[string, string]> = [
   ['How personalized is the book?', 'Fully customizable. Every book can use your child’s name, age, interests, dedication, photo/character notes, and an optional 30-second voice note so the story can reflect their own ideas and phrases. We make the child the hero of the story instead of dropping their name into a generic template.'],
   ['Do I approve it before printing? Can I request changes?', 'Yes — and always. Physical books are not printed until you approve the digital proof. Reply to the proof email with any changes: story wording, photo placement, dedication, character details, scene tone. Revisions before approval are included, not an upsell.'],
-  ['How long does it take from order to delivery?', 'Digital proofs are usually ready within 2 business days. After you approve, digital PDFs are delivered the same day; printed books ship 5–7 business days after approval, then US delivery is typically 3–5 days. We don’t guarantee specific holiday-delivery dates because carriers can vary.'],
+  ['How long does it take from order to delivery?', `Digital proofs are usually ready in ${PROOF_TURNAROUND_WINDOW}. After you approve, digital PDFs are delivered the same day; printed books ship 5–7 business days after approval, then US delivery is typically 3–5 days. We don’t guarantee specific holiday-delivery dates because carriers can vary.`],
   ['Will it arrive in time for a birthday or gift deadline?', 'Most US printed orders that approve their proof at least 9–12 days before the date arrive in time, but we don’t promise specific dates — shipping carriers vary. If timing is tight, the Digital PDF is a reliable fallback you can print at home or share instantly.'],
   ['Which option is safest for a gift with a deadline?', 'The Digital PDF. Once you approve the proof, it’s delivered the same day with no printing or shipping step, so there’s no carrier timing risk — you can print it at home or share it instantly. A printed softcover or hardcover is an optional upgrade that ships after approval; arrival depends on the order date, proof approval timing, and your carrier.'],
   ['What if my photo isn’t ready yet — can I still order?', 'Yes. Place the order when you are ready; the proof clock starts when we receive your photo. Digital orders have no shipping step — you can approve and download as soon as the proof is ready.'],
@@ -290,12 +291,15 @@ function cx(...classes: Array<string | false | undefined>) {
 }
 
 export function EditorialPageShell({ active, children }: { active?: 'home' | 'sample' | 'pricing'; children: React.ReactNode }) {
+  // Neutral outer wrapper keeps the page visuals (min-height, background, text
+  // color) while the global banner and contentinfo landmarks sit as siblings of
+  // the page main region — not nested inside it — so header/footer keep roles.
   return (
-    <main className="min-h-screen bg-[#f8f0dd] text-[#1f1a16]">
+    <div className="min-h-screen bg-[#f8f0dd] text-[#1f1a16]">
       <EditorialHeader active={active} />
-      {children}
+      <main>{children}</main>
       <EditorialFooter />
-    </main>
+    </div>
   );
 }
 
@@ -417,11 +421,11 @@ function EditorialFooter() {
             Personalized children&apos;s books, made from your child&apos;s photo, interests, and family story. Approved by you before we print.
           </p>
         </div>
-        <FooterLinks title="Product" items={[['How it works', '/#how'], ['See a sample', '/samples'], ['Pricing', '/pricing'], ['About', '/about'], ['Start your book', '/checkout']]} />
+        <FooterLinks title="Product" items={[["How it works", "/#how"], ["See a sample", "/samples"], ["Pricing", "/pricing"], ["Gift ideas", "/gifts"], ["About", "/about"], ["Start your book", "/checkout"]]} />
         <FooterLinks title="Help" items={[['FAQ', '/#faq'], ['support@herostorybooks.com', 'mailto:support@herostorybooks.com'], ['Privacy', '/privacy'], ['Terms', '/terms']]} />
       </div>
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 border-t border-[#dfd2b8] px-5 py-5 text-xs text-[#695f54] md:px-8">
-        <span>© 2026 HeroStoryBooks · Made by a small team in California · <a href="mailto:support@herostorybooks.com" className="hover:text-[#a64c4c]">support@herostorybooks.com</a></span>
+        <span>© 2026 HeroStoryBooks · Made by a small team in Chicago · <a href="mailto:support@herostorybooks.com" className="hover:text-[#a64c4c]">support@herostorybooks.com</a></span>
         <span>SSL-encrypted · Stripe-secured · US shipping included on printed books</span>
       </div>
     </footer>
@@ -854,7 +858,7 @@ function SeasonalCallout() {
         <div>
           <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">Gift-ready options</div>
           <h2 className="font-serif text-4xl font-medium leading-tight md:text-5xl">A personalized book with no blind print order.</h2>
-          <p className="mt-4 text-base leading-7 text-[#695f54]">We email your digital proof first, usually within 2 business days. Once you approve, the Digital PDF is delivered the same day — no printing or shipping step.</p>
+          <p className="mt-4 text-base leading-7 text-[#695f54]">We email your digital proof first, usually in {PROOF_TURNAROUND_WINDOW}. Once you approve, the Digital PDF is delivered the same day — no printing or shipping step.</p>
           <p className="mt-3 text-sm leading-6 text-[#695f54]">Want a printed keepsake too? Add a softcover or hardcover as an optional upgrade. Printed books ship after proof approval, and carrier timing can vary.</p>
           <p className="mt-3 text-sm font-medium leading-6 text-[#1f1a16]">Every order includes a full digital proof before anything prints, human story and art review, and no blind hardcover order.</p>
           <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -870,7 +874,7 @@ function SeasonalCallout() {
         <div className="rounded-2xl bg-[#f5ead2] p-6 text-center">
           <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Delivery timing</div>
           <h3 className="font-serif text-3xl">Digital is fastest. Print is optional.</h3>
-          <p className="mt-3 text-sm leading-6 text-[#695f54]">Approve your proof (usually within 2 business days) and the Digital PDF arrives the same day — no shipping. Printed books ship 5–7 business days after approval, so order early for dated gifts.</p>
+          <p className="mt-3 text-sm leading-6 text-[#695f54]">Approve your proof (usually in {PROOF_TURNAROUND_WINDOW}) and the Digital PDF arrives the same day — no shipping. Printed books ship 5–7 business days after approval, so order early for dated gifts.</p>
         </div>
       </div>
     </section>
@@ -910,7 +914,7 @@ export function EditorialPricingPage() {
   return (
     <EditorialPageShell active="pricing">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Digital $19, Classic softcover $39, Premium hardcover $64. US shipping included for printed books. Digital proofs are usually ready within 2 business days; printed books ship 5–7 business days after approval." centered />
+        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub={`Digital $19, Classic softcover $39, Premium hardcover $64. US shipping included for printed books. Digital proofs are usually ready in ${PROOF_TURNAROUND_WINDOW}; printed books ship 5–7 business days after approval.`} centered />
         <TierCards />
         <div className="mt-12 overflow-x-auto rounded-2xl border border-[#d8c6a2] bg-[#fff8ec]">
           <div className="grid min-w-[560px] grid-cols-[1.3fr_repeat(3,0.8fr)] border-b border-[#d8c6a2] bg-[#f5ead2] text-sm font-semibold text-[#1f1a16]">
@@ -986,7 +990,7 @@ export function EditorialAboutPage() {
         <h1 className="font-serif text-5xl font-medium leading-tight text-[#1f1a16] md:text-7xl">A small team making proof-first keepsake books.</h1>
         <div className="mt-8 space-y-5 text-base leading-8 text-[#695f54]">
           <p>
-            HeroStoryBooks is built by a small independent team in California. We make personalized children&apos;s books for adults buying gifts for children: parents, grandparents, relatives, and family friends.
+            HeroStoryBooks is built by a small independent team in Chicago. We make personalized children&apos;s books for adults buying gifts for children: parents, grandparents, relatives, and family friends.
           </p>
           <p>
             The core promise is simple: you never blindly send a custom book to print. Every order starts with the child&apos;s name, photo, story details, and optional voice note, then we prepare a digital proof for review before any physical copy is printed.

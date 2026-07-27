@@ -1,6 +1,7 @@
 import { Resend } from 'resend';
 
 import type { OrderRecord } from './orders';
+import { PROOF_TURNAROUND_WINDOW } from './proof-turnaround.ts';
 
 const DEFAULT_SUPPORT_EMAIL = 'support@herostorybooks.com';
 const DEFAULT_FROM_EMAIL = 'Hero Story Books <onboarding@resend.dev>';
@@ -132,7 +133,7 @@ export function buildOrderConfirmationEmail(
 ) {
   const supportEmail = options.supportEmail || getSupportEmail();
   const previewNote = order.bookFormat === 'digital'
-    ? 'Your digital proof is usually ready in 2–3 business days; we send the final PDF after you approve it.'
+    ? `Your digital proof is usually ready in ${PROOF_TURNAROUND_WINDOW}; we send the final PDF after you approve it.`
     : 'Your digital preview will arrive first so you can approve it before it prints.';
 
   const subject = `${order.childName}'s Hero Story Books order is in`;

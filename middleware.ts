@@ -33,6 +33,7 @@ import {
  */
 
 const FAMILY_REVIEW_PATH = /^\/(?:api\/)?family-review(?:\/|$)/;
+const OPERATIONAL_NOINDEX_PATH = /^\/(?:admin|api|checkout|order|partner|review|status|thank-you)(?:\/|$)/;
 
 const FAMILY_REVIEW_CSP = [
   "default-src 'self'",
@@ -64,19 +65,32 @@ function applyFamilyReviewPrivacyHeaders(response: NextResponse): void {
   }
 }
 
-export function middleware(request: NextRequest) {
-  const isFamilyReview = FAMILY_REVIEW_PATH.test(request.nextUrl.pathname);
+function applyNoIndexHeaders(response: NextResponse): void {
+  response.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet');
+}
 
-  // Existing cover-variant logic — only applies on non-family-review
-  // public pages (we never want the variant cookie to follow a parent
-  // around their private review URL).
-  if (!isFamilyReview) {
-    const existing = parseVariantCookie(
-      request.cookies.get(COVER_VARIANT_COOKIE)?.value,
-    );
-    if (existing) return NextResponse.next();
-    const assigned = pickVariant();
+export function middleware(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
+  const isFamilyReview = FAMILY_REVIEW_PATH.test(pathname);
+
+  if (isFamilyReview) {
     const response = NextResponse.next();
+    applyFamilyReviewPrivacyHeaders(response);
+    return response;
+  }
+
+  const response = NextResponse.next();
+  if (OPERATIONAL_NOINDEX_PATH.test(pathname)) {
+    applyNoIndexHeaders(response);
+  }
+
+  // Preserve the sticky public-page cover variant without allowing the
+  // existing-cookie fast path to bypass operational noindex headers.
+  const existing = parseVariantCookie(
+    request.cookies.get(COVER_VARIANT_COOKIE)?.value,
+  );
+  if (!existing) {
+    const assigned = pickVariant();
     response.cookies.set({
       name: COVER_VARIANT_COOKIE,
       value: assigned,
@@ -85,12 +99,7 @@ export function middleware(request: NextRequest) {
       sameSite: 'lax',
     });
     response.headers.set('x-cover-variant', assigned);
-    return response;
   }
-
-  // Family-review surface: apply the privacy headers and pass through.
-  const response = NextResponse.next();
-  applyFamilyReviewPrivacyHeaders(response);
   return response;
 }
 

@@ -1,4 +1,8 @@
-const PRODUCTION_ORIGIN = 'https://herostorybooks.com';
+// The canonical production origin. Reused by canonical/self-canonical logic and
+// by the sitemap, whose <loc> values must ALWAYS be production-host (never the
+// preview-aware getSiteOrigin(), which returns the Vercel preview URL on
+// preview deployments).
+export const PRODUCTION_ORIGIN = 'https://herostorybooks.com';
 
 function normalizeOrigin(value: string | undefined): string | null {
   const trimmed = value?.trim().replace(/\/+$/, '');

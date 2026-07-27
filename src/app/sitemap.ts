@@ -1,8 +1,12 @@
 import type { MetadataRoute } from 'next';
-import { getSiteOrigin } from '@/lib/site-url';
+import { GIFT_OCCASIONS } from '@/lib/gift-occasions';
+import { PRODUCTION_ORIGIN } from '@/lib/site-url';
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const origin = getSiteOrigin();
+  // Sitemap <loc> values must always be production-host so preview deployments
+  // never emit preview URLs into a crawlable sitemap. Use the shared production
+  // origin, NOT the preview-aware getSiteOrigin helper.
+  const origin = PRODUCTION_ORIGIN;
 
   return [
     {
@@ -15,6 +19,21 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: 'monthly',
       priority: 0.8,
     },
+    {
+      url: `${origin}/about`,
+      changeFrequency: 'yearly',
+      priority: 0.6,
+    },
+    {
+      url: `${origin}/gifts`,
+      changeFrequency: 'monthly',
+      priority: 0.8,
+    },
+    ...GIFT_OCCASIONS.map(({ id }) => ({
+      url: `${origin}/gifts/${id}`,
+      changeFrequency: 'monthly' as const,
+      priority: 0.7,
+    })),
     {
       url: `${origin}/privacy`,
       changeFrequency: 'yearly',

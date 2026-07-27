@@ -4,6 +4,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from "@/lib/checkout-flow";
+import { PROOF_TURNAROUND_WINDOW } from "@/lib/proof-turnaround";
 import { checkoutTrackingFromSearchParams } from "@/lib/checkout-tracking";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
 import { GuidedPhotoCapture } from "@/components/checkout/GuidedPhotoCapture";
@@ -86,7 +87,7 @@ const FORMATS = [
     price: "$19.00",
     priceNum: 19,
     badge: "Most flexible",
-    delivery: "Digital proof usually ready in 2–3 business days",
+    delivery: `Digital proof usually ready in ${PROOF_TURNAROUND_WINDOW}`,
     deliveryDetail:
       "32-page proof first · Final high-res PDF delivered after approval · No printing or shipping step",
   },
@@ -98,7 +99,7 @@ const FORMATS = [
     priceNum: 39,
     delivery: "Proof first, then softcover ships after approval",
     deliveryDetail:
-      "Proof usually ready in 2–3 business days · Softcover ships 5–7 business days after approval · Digital PDF included",
+      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · Softcover ships 5–7 business days after approval · Digital PDF included`,
   },
   {
     id: "premium",
@@ -108,7 +109,7 @@ const FORMATS = [
     priceNum: 64,
     delivery: "Proof first, then hardcover ships after approval",
     deliveryDetail:
-      "Proof usually ready in 2–3 business days · Hardcover ships 5–7 business days after approval · Digital PDF included",
+      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · Hardcover ships 5–7 business days after approval · Digital PDF included`,
   },
 ];
 
@@ -119,9 +120,9 @@ const ILLUSTRATED_STORY_PAGE_COUNT = 24;
 const SUPPORTING_CHARACTER_LIMIT = 4;
 const PRIMARY_HERO_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === "true";
 const PRIMARY_HERO_TYPES = [
-  { id: "child", label: "Child", helper: "Current live-safe path" },
-  { id: "parent", label: "Parent", helper: "Private beta after QA gate" },
-  { id: "grandparent", label: "Grandparent", helper: "Private beta after QA gate" },
+  { id: "child", label: "Child", helper: "Available now" },
+  { id: "parent", label: "Parent", helper: "Available by review only" },
+  { id: "grandparent", label: "Grandparent", helper: "Available by review only" },
 ] as const;
 const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings";
 const SUPPORTING_CHARACTER_PRESETS = [
@@ -1126,7 +1127,7 @@ export function CheckoutForm() {
                 </h2>
                 <p className="mt-1 text-sm text-[#695f54]">
                   {PRIMARY_HERO_BETA_ENABLED
-                    ? "Choose who leads the book. Non-child primary heroes are preview-only until generator/legal approval is complete; every paid order is still proof-reviewed before printing."
+                    ? "Choose who leads the book. Some story types are available by review only — we’ll confirm the recipient details and reference photo before production. Every paid order is still proof-reviewed before printing."
                     : "Tell us about the main hero of the book. Right now every book stars a child as the hero — you can add parents, grandparents, siblings, and pets as co-heroes and family below. Adult-led hero stories are coming soon."}
                 </p>
               </div>
@@ -1155,7 +1156,7 @@ export function CheckoutForm() {
                   </div>
                   {form.heroType !== "child" && (
                     <p className="mt-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">
-                      Preview hold: non-child primary heroes require recipient context, a pinned usable reference photo, legal/owner approval, and generator QA before production enablement.
+                      This story type is currently available by review only. We&apos;ll confirm the recipient details and reference photo before production.
                     </p>
                   )}
                 </div>
@@ -2232,7 +2233,7 @@ export function CheckoutForm() {
                     <strong className="block text-[#241914]">
                       We send a digital proof
                     </strong>
-                    Usually within 2–3 business days after we have the needed photos, you get a private link to review every page.
+                    Usually in {PROOF_TURNAROUND_WINDOW} after we have the needed photos, you get a private link to review every page.
                   </span>
                 </li>
                 <li className="flex gap-3">

@@ -2,6 +2,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import Link from 'next/link';
+import { PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 30 },
@@ -23,7 +24,7 @@ const plans = [
       'Read on any device',
       'Print at home',
       'AI-assisted illustration',
-      'Digital proof first, usually within 2 business days',
+      `Digital proof first, usually in ${PROOF_TURNAROUND_WINDOW}`,
     ],
     popular: false,
     cta: 'Get Digital Copy',

@@ -1,3 +1,5 @@
+import { PROOF_TURNAROUND_WINDOW } from './proof-turnaround.ts';
+
 export interface PublicPricingPlan {
   id: 'digital' | 'classic' | 'premium';
   name: string;
@@ -16,7 +18,7 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
     name: 'Digital PDF',
     price: '$19',
     description: 'Digital proof first, then high-resolution PDF',
-    promise: 'Digital proof usually ready in 2–3 business days; final high-res PDF delivered after approval. No printing or shipping step.',
+    promise: `Digital proof usually ready in ${PROOF_TURNAROUND_WINDOW}; final high-res PDF delivered after approval. No printing or shipping step.`,
     features: [
       'Personalized digital storybook PDF',
       'Read on any device',
@@ -30,7 +32,7 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
     name: 'Classic softcover',
     price: '$39',
     description: 'Softcover keepsake with digital preview',
-    promise: 'Digital preview/proof usually ready in 2–3 business days. You approve before it prints; after approval, ships in 5–7 business days. Free shipping included for US orders.',
+    promise: `Digital preview/proof usually ready in ${PROOF_TURNAROUND_WINDOW}. You approve before it prints; after approval, ships in 5–7 business days. Free shipping included for US orders.`,
     features: [
       'Premium softcover printed book',
       'Free shipping included for US orders',
@@ -45,7 +47,7 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
     name: 'Premium hardcover',
     price: '$64',
     description: 'Hardcover keepsake edition',
-    promise: 'Digital preview/proof usually ready in 2–3 business days. You approve before it prints; after approval, ships in 5–7 business days. Free shipping included for US orders.',
+    promise: `Digital preview/proof usually ready in ${PROOF_TURNAROUND_WINDOW}. You approve before it prints; after approval, ships in 5–7 business days. Free shipping included for US orders.`,
     features: [
       'Beautiful hardcover printed book',
       'Free shipping included for US orders',

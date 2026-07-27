@@ -16,7 +16,10 @@ test('gift page foundation avoids forbidden promises and private promo codes', (
   const files = ['src/lib/gift-occasions.ts', 'src/app/gifts/page.tsx', 'src/app/gifts/[occasion]/page.tsx'];
   const source = files.map((file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')).join('\n');
   assert.doesNotMatch(source, /ERIC50|same-day|instant delivery|guaranteed delivery/i);
-  assert.match(source, /usually ready in 2–3 business days/i);
+  // Turnaround: no tightened 2-day promise; the proof window is sourced from the
+  // shared authoritative constant (Alexy decision: "2–3 business days" everywhere).
+  assert.doesNotMatch(source, /(within|in)\s+2 business days/i);
+  assert.match(source, /PROOF_TURNAROUND_WINDOW/);
   assert.match(source, /before approval|before fulfillment/i);
 });
 
