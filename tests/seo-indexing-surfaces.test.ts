@@ -11,6 +11,7 @@ const canonicalPages: Array<[string, RegExp]> = [
   ['src/app/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/['"]/s],
   ['src/app/samples/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/samples['"]/s],
   ['src/app/about/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/about['"]/s],
+  ['src/app/photo-guide/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/photo-guide['"]/s],
   ['src/app/privacy/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/privacy['"]/s],
   ['src/app/terms/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/terms['"]/s],
   ['src/app/gifts/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/gifts['"]/s],
@@ -26,7 +27,7 @@ test('about route uses the existing editorial About page and has unique index me
 });
 
 test('sitemap lists every intentional public index route and excludes operational routes', () => {
-  for (const path of ['/samples', '/about', '/privacy', '/terms', '/gifts']) {
+  for (const path of ['/samples', '/photo-guide', '/about', '/privacy', '/terms', '/gifts']) {
     assert.match(sitemapSource, new RegExp(`\\$\\{origin\\}${path.replace('/', '\\/')}`), `missing ${path}`);
   }
   assert.match(sitemapSource, /GIFT_OCCASIONS/);
