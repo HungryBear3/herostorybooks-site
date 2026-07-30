@@ -1,0 +1,117 @@
+Hero Story Books — photo submission walkthrough
+Homepage 16:9 derivative — full text transcript
+
+Media: hsb-photo-submission-walkthrough-homepage-16x9
+Format: 16:9 landscape, 1920 × 1080
+Duration: 36.0 seconds
+Audio: None — the video is silent by design
+
+This transcript reproduces every on-screen text element in playback order. The walkthrough can be fully understood without playing the video.
+
+There is no spoken dialogue, narration, music, or sound effect anywhere in this video, so no speech is transcribed and no WebVTT caption track is required.
+
+A brand label reading “HERO STORY BOOKS” and a step counter appear in the upper corners of sections 2 through 7. They are persistent furniture and are not repeated below.
+
+00:00–00:04 — Section 1 of 7 — Opening question
+
+Visual: A photograph of two adults, a child, and a dog standing together on a tree-lined pavement. Text bands sit across the top and bottom of the frame.
+
+On-screen text:
+Not sure which photos to upload?
+Here’s how Hero Story Books works.
+
+00:04–00:09 — Section 2 of 7 — Group and full-body photos
+
+Step counter: 1 / 5
+
+Visual: The same family photograph, shown beside the text.
+
+On-screen text:
+Full-body and group photos can help
+when each face is clear, well-lit, and not too small.
+
+00:09–00:15 — Section 3 of 7 — Four tips for likeness
+
+Step counter: 2 / 5
+
+Visual: A heading above four numbered cards.
+
+On-screen text:
+For the best likeness
+1. Start with one clear, front-facing photo
+2. Use natural light and skip filters
+3. Add family, siblings, and pets separately
++ Optional guided angles can improve consistency
+
+The fourth card is marked with a plus sign rather than a number, indicating an optional extra step.
+
+00:15–00:19.5 — Section 4 of 7 — Who appears in the story
+
+Step counter: 3 / 5
+
+Visual: A phone showing the Hero Story Books order form, open on a section titled “People, pets, and family details” with buttons to add a co-hero, dad, mom, sibling, grandparent, or dog / pet.
+
+On-screen text:
+Add the people and pets in the story
+Tell us who should appear—then add clear references.
+
+00:19.5–00:24.5 — Section 5 of 7 — Uploading a photo
+
+Step counter: 3 / 5 — see discrepancy note 1
+
+Visual: A phone showing the order form section titled “Add one clear photo for the main character.”
+
+On-screen text:
+Upload from your phone
+Your photos stay private and are used only for your book.
+
+00:24.5–00:30 — Section 6 of 7 — Photo becomes story
+
+Step counter: 4 / 5
+
+Visual: Two panels side by side. On the left, the family photograph. On the right, the same family painted as a storybook illustration, standing in a moonlit library while the child holds a glowing open book. A label sits between the two panels.
+
+On-screen text:
+PHOTO → STORY
+We create the character and story
+then hand-review the proof before print.
+
+00:30–00:36 — Section 7 of 7 — Review and approval
+
+Step counter: 5 / 5
+
+Visual: A heading above four numbered steps, with the storybook illustration and a closing call-to-action panel alongside.
+
+On-screen text:
+You stay in control
+1. Receive a private digital proof
+2. Review every page
+3. Approve it—or request changes
+4. Printing waits for your approval
+Start your story
+herostorybooks.com/checkout
+
+End of transcript
+
+Notes on source and accuracy
+
+All on-screen wording above is reproduced verbatim from the approved source generator (build_walkthrough.py) for the 9:16 master. The 16:9 derivative is an editorial re-layout: it changes composition and framing only. No line of copy was added, removed, reworded, shortened, or paraphrased for the landscape version.
+
+Every person and pet shown is synthetic. No customer, family, or private media appears in the walkthrough.
+
+Discrepancy notes
+
+1. Duplicate step counter. Sections 4 and 5 both display “3 / 5” in the approved source. The on-screen counter therefore runs 1, 2, 3, 3, 4, 5 rather than 1 through 5. This is carried through from the 9:16 master and is reproduced unchanged in the 16:9 shot board. It is recorded here as an accurate description of what is on screen, not corrected. If the editor renumbers it, this transcript needs one line updated.
+
+2. Section count versus counter. There are seven timed sections but the counter reads out of five, because the opening hook and one of the two phone sections are not counted. This matches the approved master and is left as-is.
+
+3. No other differences were found between the shot board, the source generator, and this transcript.
+
+Finality
+
+This transcript is final for the sequence as approved and as laid out in the 16:9 shot board, subject to two open items:
+
+- If the editor renumbers the duplicate “3 / 5” counter noted above, the step-counter line in section 5 must be updated to match.
+- If the encode changes section boundaries or the total duration, the timestamps must be re-checked against the final cut. The wording would not change.
+
+If the delivered edit remains 36.0 seconds with the seven sections at the timings shown, this file is final as written.

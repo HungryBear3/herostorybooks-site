@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { PhotoSubmissionGuide } from '@/components/photo-submission-guide';
+import { HomepageWalkthrough } from '@/components/homepage-walkthrough';
 import { NamePreview } from '@/components/name-preview';
 import { getFathersDayCountdown, type FathersDayCountdown } from '@/lib/fathers-day';
 import { PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
@@ -477,6 +478,7 @@ export function EditorialHomePage() {
       <TrustStrip />
       <NamePreview />
       <HowItWorksSection />
+      <HomepageWalkthrough />
       <PhotoSubmissionGuide />
       <SamplePreviewSection />
       <PrivacyBand />
