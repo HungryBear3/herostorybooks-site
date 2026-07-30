@@ -79,6 +79,10 @@ export function HomepageWalkthrough() {
   const [mounted, setMounted] = useState(false);
   const [started, setStarted] = useState(false);
   const [errored, setErrored] = useState(false);
+  // `videoReady` gates the poster/loading layer: it stays on top of the <video>
+  // until the video has an actual painted frame (loadeddata/canplay/playing), so
+  // there is never a black frame between poster removal and first paint.
+  const [videoReady, setVideoReady] = useState(false);
 
   // Play once the <video> element exists after an explicit play interaction.
   const wantPlayRef = useRef(false);
@@ -211,19 +215,23 @@ export function HomepageWalkthrough() {
     emitOnce('video_complete');
   }, [emitOnce]);
 
+  // First real frame is available — safe to fade the poster/loading layer out.
+  const handleReady = useCallback(() => {
+    setVideoReady(true);
+  }, []);
+
   const handleError = useCallback(() => {
     // Whole-video failure (both sources unusable): drop back to the poster with
     // the transcript still available. A failed <source> that still has a working
     // fallback source does not bubble here.
     setErrored(true);
     setStarted(false);
+    setVideoReady(false);
   }, []);
 
   const handleCtaClick = useCallback(() => {
     emitOnce('video_cta_click');
   }, [emitOnce]);
-
-  const showVideo = mounted && !errored;
 
   return (
     <section
@@ -252,7 +260,8 @@ export function HomepageWalkthrough() {
         {/* Reserved 16:9 box — poster and video share the same frame, so mounting
             the video causes no layout shift. */}
         <div className="hsb-vw-jsonly relative w-full overflow-hidden rounded-[1.75rem] border border-[#d8c6a2] bg-[#1f1a16] shadow-[0_28px_65px_-40px_rgba(31,26,22,0.6)] aspect-video">
-          {showVideo ? (
+          {/* Video layer — underneath. Mounted only after interaction/near-viewport. */}
+          {mounted && !errored && (
             <video
               ref={videoRef}
               className="absolute inset-0 h-full w-full object-contain bg-[#1f1a16]"
@@ -261,6 +270,9 @@ export function HomepageWalkthrough() {
               preload="metadata"
               poster={POSTER_JPG}
               aria-label="Silent 36-second photo-to-story walkthrough"
+              onLoadedData={handleReady}
+              onCanPlay={handleReady}
+              onPlaying={handleReady}
               onTimeUpdate={handleTimeUpdate}
               onEnded={handleEnded}
               onError={handleError}
@@ -268,7 +280,13 @@ export function HomepageWalkthrough() {
               <source src={VIDEO_WEBM} type="video/webm" />
               <source src={VIDEO_MP4} type="video/mp4" />
             </video>
-          ) : (
+          )}
+
+          {/* Poster / loading layer — on top, in the same reserved box (absolute,
+              so fading it causes no layout shift). Stays fully opaque until the
+              video reports a painted frame, then fades out. Removed only on hard
+              video error, where the error notice below takes over. */}
+          {!errored && (
             <picture>
               <source srcSet={POSTER_AVIF} type="image/avif" />
               <source srcSet={POSTER_WEBP} type="image/webp" />
@@ -277,7 +295,10 @@ export function HomepageWalkthrough() {
                 width={POSTER_WIDTH}
                 height={POSTER_HEIGHT}
                 alt="Opening frame of the walkthrough: a family standing together, with the text “Not sure which photos to upload? Here’s how Hero Story Books works.”"
-                className="absolute inset-0 h-full w-full object-cover"
+                aria-hidden={videoReady ? true : undefined}
+                className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ease-out motion-reduce:transition-none ${
+                  videoReady ? 'opacity-0 pointer-events-none' : 'opacity-100'
+                }`}
                 decoding="async"
               />
             </picture>

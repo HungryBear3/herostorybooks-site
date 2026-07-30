@@ -74,12 +74,30 @@ test('poster-first: <picture> with AVIF/WebP/JPG and reserved 16:9 box', () => {
 test('video mounts only on interaction or near-viewport, never eager, never loading=lazy', () => {
   // Video element is conditionally rendered behind `mounted` state.
   assert.match(componentSource, /const \[mounted, setMounted\] = useState\(false\)/);
-  assert.match(componentSource, /showVideo \? \(/);
+  assert.match(componentSource, /\{mounted && !errored && \(/); // video layer gated on mount
   assert.match(componentSource, /new IntersectionObserver/);
   assert.match(componentSource, /rootMargin: '200px 0px'/); // near-viewport mount
   assert.match(componentSource, /preload="metadata"/);
   // native <video> has no loading="lazy"; it must not be used or documented.
   assert.doesNotMatch(componentSource, /loading=["']lazy["']/);
+});
+
+test('poster/loading layer stays until the video paints a frame (no black flash), no layout shift', () => {
+  // Readiness state + handlers that flip it on a real frame.
+  assert.match(componentSource, /const \[videoReady, setVideoReady\] = useState\(false\)/);
+  assert.match(componentSource, /onLoadedData=\{handleReady\}/);
+  assert.match(componentSource, /onCanPlay=\{handleReady\}/);
+  assert.match(componentSource, /onPlaying=\{handleReady\}/);
+  assert.match(componentSource, /setVideoReady\(true\)/);
+  // Poster is NOT swapped out when the video mounts — it co-exists on top and
+  // fades only when videoReady. (No showVideo ternary that unmounts the poster.)
+  assert.doesNotMatch(componentSource, /showVideo/);
+  assert.match(componentSource, /videoReady \? 'opacity-0 pointer-events-none' : 'opacity-100'/);
+  // Fade is opacity-only over an absolutely-positioned layer => no layout shift,
+  // and is suppressed under reduced motion.
+  assert.match(componentSource, /transition-opacity[^`']*motion-reduce:transition-none/);
+  // Hard error resets readiness so the poster/notice path is correct.
+  assert.match(componentSource, /setVideoReady\(false\)/);
 });
 
 test('sources are WebM then MP4 (WebM→MP4 fallback)', () => {
