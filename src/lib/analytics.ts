@@ -80,7 +80,17 @@ export type HsbEventName =
   | 'order_submit_attempt'
   // Aliased name kept for the brief's "purchase_intent" terminology;
   // emitted alongside order_submit_attempt for downstream flexibility.
-  | 'purchase_intent';
+  | 'purchase_intent'
+  // Homepage 16:9 photo-to-story walkthrough (src/components/homepage-walkthrough.tsx).
+  // One-shot per page view; carry non-PII props video_id/placement/duration_seconds/
+  // muted/source_format.
+  | 'video_impression'
+  | 'video_play'
+  | 'video_25'
+  | 'video_50'
+  | 'video_75'
+  | 'video_complete'
+  | 'video_cta_click';
 
 export interface HsbEventRecord {
   event: HsbEventName;
