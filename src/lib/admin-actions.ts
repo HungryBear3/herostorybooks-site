@@ -3,7 +3,7 @@ import Stripe from 'stripe';
 import { getOptionalStripeSecretKey } from './stripe-env.ts';
 
 import { appendAuditEvent, getOrder, updateFulfillmentState, updateOrderStatus, type OrderRecord } from './orders.ts';
-import { triggerFulfillment, approvePrintProof } from './fulfillment.ts';
+import { triggerFulfillment, approvePrintProof, type FulfillmentDeps } from './fulfillment.ts';
 import {
   sendProofReadyEmail,
   sendLifecycleEmail,
@@ -18,7 +18,10 @@ export type RetryResult = ActionResult;
 
 // ── Retry ─────────────────────────────────────────────────────────────────────
 
-export async function retryOrderFulfillment(orderId: string): Promise<ActionResult> {
+export async function retryOrderFulfillment(
+  orderId: string,
+  fulfillmentDeps: FulfillmentDeps = {},
+): Promise<ActionResult> {
   const order = await getOrder(orderId);
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
   if (order.paymentStatus !== 'paid') {
@@ -88,11 +91,21 @@ export async function retryOrderFulfillment(orderId: string): Promise<ActionResu
   // On Vercel/serverless a fire-and-forget promise gets dropped when the
   // request returns, leaving the order stuck at not_started.
   try {
-    await triggerFulfillment(orderId);
+    await triggerFulfillment(orderId, fulfillmentDeps);
   } catch (err) {
     console.error(`[admin] retry trigger failed for ${orderId}:`, err);
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, status: 502, error: `Fulfillment retry failed: ${message.slice(0, 240)}` };
   }
 
+  const afterRetry = await getOrder(orderId);
+  if (afterRetry?.fulfillmentStatus === 'failed_manual_review') {
+    return {
+      ok: false,
+      status: 502,
+      error: `Fulfillment retry failed: ${(afterRetry.fulfillmentLastError ?? 'manual review required').slice(0, 240)}`,
+    };
+  }
   return { ok: true };
 }
 

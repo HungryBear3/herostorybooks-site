@@ -152,7 +152,7 @@ test('retryOrderFulfillment: unpaid order → 400, no state change', async () =>
   } finally { cleanup(dir); }
 });
 
-test('retryOrderFulfillment: failed paid order → ok and resets counters', async () => {
+test('retryOrderFulfillment: provider failure stays failed and returns an honest 502', async () => {
   const dir = makeTmp();
   try {
     await seed({
@@ -163,17 +163,19 @@ test('retryOrderFulfillment: failed paid order → ok and resets counters', asyn
     }, 'ord_retry_failed');
 
     const { retryOrderFulfillment } = await import('../src/lib/admin-actions.ts');
-    const result = await retryOrderFulfillment('ord_retry_failed');
-    assert.equal(result.ok, true);
-
-    // Allow fire-and-forget trigger to flush
-    await new Promise(r => setTimeout(r, 10));
+    const result = await retryOrderFulfillment('ord_retry_failed', {
+      generateImages: async (prompts) => prompts.map(() => null),
+      sleep: async () => {},
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.status, 502);
+    assert.match(result.error, /image_generation_incomplete/);
 
     const { getOrder } = await import('../src/lib/orders.ts');
     const after = await getOrder('ord_retry_failed');
-    // After reset, triggerFulfillment will also advance state; we only assert that
-    // the retry cleared the previous error (it should no longer be the old message).
-    assert.notEqual(after?.fulfillmentStatus, 'failed_manual_review');
+    assert.equal(after?.fulfillmentStatus, 'failed_manual_review');
     assert.notEqual(after?.fulfillmentLastError, 'OpenAI rate limit');
+    assert.match(after?.fulfillmentLastError ?? '', /image_generation_incomplete/);
   } finally { cleanup(dir); }
 });

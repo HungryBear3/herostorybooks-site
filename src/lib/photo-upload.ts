@@ -5,13 +5,11 @@ const MIN_JPEG_QUALITY = 0.55;
 const INITIAL_JPEG_QUALITY = 0.86;
 const RESIZABLE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const RESIZABLE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp']);
-export const ALLOWED_PHOTO_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'];
+export const ALLOWED_PHOTO_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'];
 export const ALLOWED_PHOTO_MIME_TYPES = new Set([
   'image/jpeg',
   'image/png',
   'image/webp',
-  'image/heic',
-  'image/heif',
 ]);
 
 export type BasicPhotoFile = {
@@ -24,12 +22,6 @@ export function getPhotoExtension(fileName: string) {
   return fileName.split('.').pop()?.trim().toLowerCase() ?? '';
 }
 
-export function isHeicLikePhoto(file: BasicPhotoFile) {
-  const extension = getPhotoExtension(file.name);
-  const mimeType = file.type.toLowerCase();
-  return mimeType === 'image/heic' || mimeType === 'image/heif' || extension === 'heic' || extension === 'heif';
-}
-
 export function isBrowserResizablePhoto(file: BasicPhotoFile) {
   const extension = getPhotoExtension(file.name);
   const mimeType = file.type.toLowerCase();
@@ -37,7 +29,7 @@ export function isBrowserResizablePhoto(file: BasicPhotoFile) {
 }
 
 export function shouldAutoShrinkPhoto(file: BasicPhotoFile, maxBytes = MAX_PHOTO_BYTES) {
-  return file.size > maxBytes && isBrowserResizablePhoto(file) && !isHeicLikePhoto(file);
+  return file.size > maxBytes && isBrowserResizablePhoto(file);
 }
 
 function formatMb(bytes: number) {

@@ -29,13 +29,17 @@ import {
   getPrintInteriorPageCount,
 } from './pdf-builder.ts';
 import type { GeneratedImageResult } from './image-generator.ts';
-import { generateStoryImageResults as defaultGenerateImageResults } from './image-generator.ts';
+import {
+  generateStoryImageResults as defaultGenerateImageResults,
+  requireCompleteImageResults,
+} from './image-generator.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import {
   getOrder,
   getOrderPhotoUrl,
   getStoryPageCount,
   isPrintFormat,
+  orderRequiresReferenceImage,
   persistOrder,
   withBlobNamespace,
   type OrderRecord,
@@ -97,7 +101,10 @@ export interface RebuildDeps {
   generateStoryWithMeta?: (order: OrderRecord) => Promise<StoryWithMeta>;
   generateImageResults?: (
     prompts: string[],
-    deps?: { referenceImageUrl?: string | null },
+    deps?: {
+      referenceImageUrl?: string | null;
+      referenceImageRequired?: boolean;
+    },
   ) => Promise<GeneratedImageResult[]>;
   buildPdf?: typeof defaultBuildPdf;
   buildPrintInteriorPdf?: typeof defaultBuildPrintInteriorPdf;
@@ -228,7 +235,14 @@ export async function rebuildPrintOrder(
     }),
   );
   const referenceImageUrl = getOrderPhotoUrl(order);
-  const imageResults = await _generateImageResults(imagePrompts, { referenceImageUrl });
+  const imageResults = requireCompleteImageResults(
+    await _generateImageResults(imagePrompts, {
+      referenceImageUrl,
+      referenceImageRequired: orderRequiresReferenceImage(order),
+    }),
+    story.pages.length,
+    'print_rebuild',
+  );
 
   // Clean rebuild: discard prior pageArtifacts. The legacy 6-page artifacts
   // do not map onto the new long-form arc (different scenes, different

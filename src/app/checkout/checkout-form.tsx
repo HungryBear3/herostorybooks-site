@@ -125,6 +125,14 @@ const PRIMARY_HERO_TYPES = [
   { id: "grandparent", label: "Grandparent", helper: "Available by review only" },
 ] as const;
 const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings";
+const MUST_INCLUDE_OPTIONS = [
+  { id: "glasses", label: "Glasses" },
+  { id: "hearing-aid", label: "Hearing aid" },
+  { id: "wheelchair", label: "Wheelchair" },
+  { id: "head-covering", label: "Head covering" },
+  { id: "braces", label: "Braces" },
+  { id: "custom-detail", label: "Custom detail" },
+] as const;
 const SUPPORTING_CHARACTER_PRESETS = [
   { role: "co-hero", label: "Co-hero", relationshipLabel: "co-hero", pronouns: "", isGiftRecipient: false },
   { role: "dad", label: "Dad", relationshipLabel: "Dad", pronouns: "", isGiftRecipient: false },
@@ -134,7 +142,7 @@ const SUPPORTING_CHARACTER_PRESETS = [
   { role: "pet", label: "Dog / pet", relationshipLabel: "family dog", pronouns: "", isGiftRecipient: false },
 ] as const;
 
-const CHECKOUT_PHOTO_ACCEPT_ATTR = "image/*";
+const CHECKOUT_PHOTO_ACCEPT_ATTR = "image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp";
 
 function supportingCharacterLabel(character: SupportingCharacter): string {
   return (character.name || character.relationshipLabel || character.role || "family member").trim();
@@ -144,11 +152,12 @@ function isHumanSupportingCharacter(character: SupportingCharacter): boolean {
   return character.role !== "pet";
 }
 
-function missingSupportingCharacterPhotoLabels(characters: SupportingCharacter[]): string[] {
+function missingSupportingCharacterDescriptionLabels(characters: SupportingCharacter[]): string[] {
   return characters
     .filter((character) => character.appearsInStory !== false)
     .filter(isHumanSupportingCharacter)
     .filter((character) => !character.photoFile)
+    .filter((character) => !character.notes.trim())
     .map(supportingCharacterLabel);
 }
 
@@ -197,9 +206,8 @@ interface FormState {
   customStoryMemory: string;
   customStorySourceMode: "audio" | "written" | "";
   familyCharacters: SupportingCharacter[];
-  skinTone: string;
-  hairStyle: string;
-  eyewear: string;
+  mustInclude: string[];
+  mustIncludeOther: string;
   bookFormat: string;
   email: string;
   voiceFile: File | null;
@@ -219,6 +227,8 @@ interface SupportingCharacter {
   appearsInStory: boolean;
   photoFile: File | null;
   photoDataUrl: string | null;
+  mustInclude: string[];
+  mustIncludeOther: string;
   focusPersonLabel: string;
   cropHint: string;
 }
@@ -241,9 +251,8 @@ const emptyForm: FormState = {
   customStoryMemory: "",
   customStorySourceMode: "",
   familyCharacters: [],
-  skinTone: "",
-  hairStyle: "",
-  eyewear: "",
+  mustInclude: [],
+  mustIncludeOther: "",
   bookFormat: DEFAULT_BOOK_FORMAT,
   email: "",
   voiceFile: null,
@@ -275,9 +284,8 @@ function saveProgress(form: FormState) {
           ...character,
           pronouns: "",
         })),
-        skinTone: form.skinTone,
-        hairStyle: form.hairStyle,
-        eyewear: form.eyewear,
+        mustInclude: form.mustInclude,
+        mustIncludeOther: form.mustIncludeOther,
         bookFormat: form.bookFormat,
         email: form.email,
         savedAt: Date.now(),
@@ -347,6 +355,8 @@ function normalizeSavedFamilyCharacters(
     ...character,
     pronouns: "",
     notes: character.notes === PET_NOTES_PLACEHOLDER ? "" : character.notes,
+    mustInclude: Array.isArray(character.mustInclude) ? character.mustInclude : [],
+    mustIncludeOther: character.mustIncludeOther ?? "",
     // Backfill Phase-A photo-assignment fields for progress saved by older
     // builds so controlled inputs never receive undefined.
     focusPersonLabel: character.focusPersonLabel ?? "",
@@ -406,6 +416,8 @@ export function CheckoutForm() {
           ...saved,
           bookFormat: normalizeBookFormat(saved.bookFormat) || DEFAULT_BOOK_FORMAT,
           familyCharacters: normalizeSavedFamilyCharacters(saved.familyCharacters),
+          mustInclude: Array.isArray(saved.mustInclude) ? saved.mustInclude : [],
+          mustIncludeOther: saved.mustIncludeOther ?? "",
         }
       : null;
     // NamePreview URL contract: childNameFromUrl ? { childName: childNameFromUrl }
@@ -453,9 +465,8 @@ export function CheckoutForm() {
     form.customStoryMemory,
     form.customStorySourceMode,
     form.familyCharacters,
-    form.skinTone,
-    form.hairStyle,
-    form.eyewear,
+    form.mustInclude,
+    form.mustIncludeOther,
     form.bookFormat,
     form.email,
   ]);
@@ -505,6 +516,8 @@ export function CheckoutForm() {
             appearsInStory: true,
             photoFile: null,
             photoDataUrl: null,
+            mustInclude: [],
+            mustIncludeOther: "",
             focusPersonLabel: "",
             cropHint: "",
           },
@@ -552,7 +565,7 @@ export function CheckoutForm() {
   const selectedSampleImage = form.photoDataUrl ?? SAMPLE_IMAGES[0];
   const fathersDay = getFathersDayCountdown();
   const showFathersDayReminder = fathersDay.tier !== "past-event";
-  const missingSupportingPhotoLabels = missingSupportingCharacterPhotoLabels(form.familyCharacters);
+  const missingSupportingDescriptionLabels = missingSupportingCharacterDescriptionLabels(form.familyCharacters);
   const isCustomStorySelected = form.theme === CUSTOM_STORY_THEME_ID;
   const customStoryTheme = THEMES.find((theme) => theme.id === CUSTOM_STORY_THEME_ID) ?? null;
   const templateThemes = THEMES.filter((theme) => theme.id !== CUSTOM_STORY_THEME_ID);
@@ -566,16 +579,15 @@ export function CheckoutForm() {
     Boolean(form.childName) &&
     Boolean(form.bookFormat) &&
     Boolean(form.email) &&
-    Boolean(form.skinTone) &&
-    Boolean(form.hairStyle) &&
-    missingSupportingPhotoLabels.length === 0 &&
+    Boolean(form.photoFile || form.characterNotes.trim()) &&
+    missingSupportingDescriptionLabels.length === 0 &&
     (!STORY_UPLOAD_ENABLED || form.voiceFile == null || form.voiceConsent);
   const completedStepCount = [
     Boolean(form.theme),
     Boolean(form.childName),
     Boolean(form.bookFormat),
     looksLikeEmail(form.email),
-    Boolean(form.photoFile),
+    Boolean(form.photoFile || form.characterNotes.trim()),
   ].filter(Boolean).length;
   const progressValue = (completedStepCount / CHECKOUT_STEPS.length) * 100;
 
@@ -719,6 +731,8 @@ export function CheckoutForm() {
               isGiftRecipient: character.isGiftRecipient,
               appearsInStory: character.appearsInStory,
               photoFileName: character.photoFile?.name ?? null,
+              mustInclude: character.mustInclude,
+              mustIncludeOther: character.mustIncludeOther.trim(),
               focusPersonLabel: character.focusPersonLabel.trim() || null,
               cropHint: character.cropHint.trim() || null,
             })),
@@ -732,9 +746,10 @@ export function CheckoutForm() {
       payload.set(
         "appearanceOptions",
         JSON.stringify({
-          skinTone: form.skinTone,
-          hairStyle: form.hairStyle,
-          eyewear: form.eyewear,
+          description: form.characterNotes.trim(),
+          mustInclude: form.mustInclude,
+          mustIncludeOther: form.mustIncludeOther.trim(),
+          likenessIntent: form.photoFile ? "match" : "storybook",
         }),
       );
       payload.set("bookFormat", form.bookFormat);
@@ -924,7 +939,7 @@ export function CheckoutForm() {
                   Start with a fully custom story from your own memory, or use one of the ready adventure templates below.
                 </p>
                 <p className="mt-2 rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-3 py-2 text-xs leading-5 text-[#695f54]">
-                  Only a few things are required to start — story direction, child name, format, email, and basic appearance. Everything else helps us make the proof better.
+                  Only a few things are required to start — story direction, child name, format, email, and either a hero photo or a written description. Everything else helps us make the proof better.
                 </p>
               </div>
 
@@ -932,7 +947,7 @@ export function CheckoutForm() {
                 <button
                   type="button"
                   onClick={() => {
-                    const next = form.theme === customStoryTheme.id ? "" : customStoryTheme.id;
+                    const next = customStoryTheme.id;
                     set("theme", next);
                     if (next) track("story_selected", { theme: next });
                   }}
@@ -976,7 +991,7 @@ export function CheckoutForm() {
                       key={theme.id}
                       type="button"
                       onClick={() => {
-                        const next = form.theme === theme.id ? "" : theme.id;
+                        const next = theme.id;
                         set("theme", next);
                         if (next) track("story_selected", { theme: next });
                       }}
@@ -1387,88 +1402,99 @@ export function CheckoutForm() {
               </AnimatePresence>
             </section>
 
-            {/* ── 2.5 Character details ── */}
+            {/* ── 2.5 Hero appearance ── */}
             <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
               <div>
                 <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
-                  Character details
+                  How should the hero look?
                 </h2>
                 <p className="text-sm text-[#695f54]">
-                  Tell us a few visible details so the art feels more like the
-                  hero.
+                  {form.photoFile
+                    ? "We'll use the uploaded photo as the hero's visual reference."
+                    : "No photo is required. Describe the hero and we'll draw them as a storybook character."}
                 </p>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
-                    Skin tone <span className="text-[#a64c4c]">(required)</span>
-                  </label>
-                  <select
-                    value={form.skinTone}
-                    onChange={(e) => set("skinTone", e.target.value)}
-                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
-                    required
-                  >
-                    <option value="">Select skin tone</option>
-                    <option value="fair">Fair</option>
-                    <option value="light">Light</option>
-                    <option value="medium">Medium</option>
-                    <option value="tan">Tan</option>
-                    <option value="deep">Deep</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
-                    Hair <span className="text-[#a64c4c]">(required)</span>
-                  </label>
-                  <select
-                    value={form.hairStyle}
-                    onChange={(e) => set("hairStyle", e.target.value)}
-                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
-                    required
-                  >
-                    <option value="">Select hair</option>
-                    <option value="straight-dark">Straight dark hair</option>
-                    <option value="straight-light">Straight light hair</option>
-                    <option value="wavy">Wavy hair</option>
-                    <option value="curly">Curly hair</option>
-                    <option value="coily">Coily hair</option>
-                    <option value="short-cropped">Short / cropped</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
-                    Glasses or aids
-                  </label>
-                  <select
-                    value={form.eyewear}
-                    onChange={(e) => set("eyewear", e.target.value)}
-                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
-                  >
-                    <option value="">None / not needed</option>
-                    <option value="glasses">Glasses</option>
-                    <option value="hearing-aid">Hearing aid</option>
-                    <option value="mobility-aid">Mobility aid</option>
-                    <option value="other">Other visible detail</option>
-                  </select>
-                </div>
+
+              <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm font-semibold text-[#35564d]">
+                {form.photoFile
+                  ? "✓ Drawn to look like the uploaded photo"
+                  : "Drawn as a storybook character from your description"}
               </div>
+
+              {form.photoFile ? (
+                <details className="rounded-2xl border border-[#dfd2b8] bg-[#fffaf1] p-4">
+                  <summary className="cursor-pointer text-sm font-semibold text-[#1f1a16]">
+                    Add anything the photo doesn&apos;t show (optional)
+                  </summary>
+                  <textarea
+                    value={form.characterNotes}
+                    onChange={(e) => set("characterNotes", e.target.value)}
+                    placeholder="Examples: freckles, favorite hoodie color, curly bangs, braces, or another important detail"
+                    rows={3}
+                    maxLength={240}
+                    className="mt-3 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                  />
+                </details>
+              ) : (
+                <div>
+                  <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
+                    Describe the hero <span className="text-[#a64c4c]">(required without a photo)</span>
+                  </label>
+                  <textarea
+                    value={form.characterNotes}
+                    onChange={(e) => set("characterNotes", e.target.value)}
+                    placeholder="Example: 6 years old, warm brown skin, short curly dark hair, bright green hoodie"
+                    rows={3}
+                    maxLength={240}
+                    required
+                    className="w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                  />
+                  <p className="mt-1 text-xs text-[#8a7b6a]">
+                    We&apos;ll match the details you provide, but not a real face.
+                  </p>
+                </div>
+              )}
+
               <div>
-                <label className="block text-sm font-semibold text-[#1f1a16] mb-1.5">
-                  Anything else we should capture?{" "}
-                  <span className="text-[#8a7b6a] font-normal">(optional)</span>
-                </label>
-                <textarea
-                  value={form.characterNotes}
-                  onChange={(e) => set("characterNotes", e.target.value)}
-                  placeholder="Examples: freckles, favorite hoodie color, wheelchair, curly bangs, hijab, braces..."
-                  rows={3}
-                  maxLength={240}
-                  className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1] resize-none text-sm"
-                />
-                <p className="text-xs text-[#8a7b6a] text-right mt-0.5">
-                  {form.characterNotes.length}/240
+                <p className="mb-2 text-sm font-semibold text-[#1f1a16]">
+                  Must include <span className="font-normal text-[#8a7b6a]">(optional)</span>
                 </p>
+                <div className="flex flex-wrap gap-2">
+                  {MUST_INCLUDE_OPTIONS.map((option) => {
+                    const selected = form.mustInclude.includes(option.id);
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() =>
+                          setForm((prev) => ({
+                            ...prev,
+                            mustInclude: selected
+                              ? prev.mustInclude.filter((item) => item !== option.id)
+                              : [...prev.mustInclude, option.id],
+                          }))
+                        }
+                        className={`rounded-full border-2 px-3 py-2 text-sm font-semibold transition ${
+                          selected
+                            ? "border-deep-gold bg-deep-gold/15 text-navy"
+                            : "border-[#dfd2b8] text-[#695f54] hover:border-[#a64c4c]/60"
+                        }`}
+                      >
+                        {selected ? "✓ " : ""}{option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {form.mustInclude.includes("custom-detail") && (
+                  <input
+                    type="text"
+                    value={form.mustIncludeOther}
+                    onChange={(e) => set("mustIncludeOther", e.target.value.slice(0, 80))}
+                    placeholder="Another must-include detail"
+                    className="mt-3 w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                  />
+                )}
               </div>
             </section>
 
@@ -1481,8 +1507,10 @@ export function CheckoutForm() {
                 <p className="text-sm text-[#695f54]">
                   Add co-heroes, family members, gift recipients, or pets for the
                   story text and scene notes. Everyone here can be part of the
-                  adventure — not just background characters.
-                  Add photos anytime before you place the order. Each human family member gets a still reference photo slot; pet photos stay optional.
+                  adventure — not just background characters. Photos are optional
+                  and used as operator-review references only, not guaranteed
+                  exact likeness. If a visible person has no photo, add written
+                  details so we can draw them as a storybook character.
                 </p>
               </div>
 
@@ -1605,6 +1633,51 @@ export function CheckoutForm() {
                         {character.notes.length}/180
                       </p>
 
+                      <div className="mt-3">
+                        <p className="mb-2 text-sm font-semibold text-[#1f1a16]">
+                          Must include <span className="font-normal text-[#8a7b6a]">(optional)</span>
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {MUST_INCLUDE_OPTIONS.map((option) => {
+                            const selected = character.mustInclude.includes(option.id);
+                            return (
+                              <button
+                                key={option.id}
+                                type="button"
+                                aria-pressed={selected}
+                                onClick={() =>
+                                  updateSupportingCharacter(character.id, {
+                                    mustInclude: selected
+                                      ? character.mustInclude.filter((item) => item !== option.id)
+                                      : [...character.mustInclude, option.id],
+                                  })
+                                }
+                                className={`rounded-full border-2 px-3 py-2 text-xs font-semibold transition ${
+                                  selected
+                                    ? "border-deep-gold bg-deep-gold/15 text-navy"
+                                    : "border-[#dfd2b8] text-[#695f54] hover:border-[#a64c4c]/60"
+                                }`}
+                              >
+                                {selected ? "✓ " : ""}{option.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {character.mustInclude.includes("custom-detail") && (
+                          <input
+                            type="text"
+                            value={character.mustIncludeOther}
+                            onChange={(e) =>
+                              updateSupportingCharacter(character.id, {
+                                mustIncludeOther: e.target.value.slice(0, 80),
+                              })
+                            }
+                            placeholder="Another must-include detail"
+                            className="mt-3 w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                          />
+                        )}
+                      </div>
+
                       <div className="mt-3 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] p-3">
                         <div className="mb-2 flex items-center justify-between gap-3">
                           <div>
@@ -1615,7 +1688,7 @@ export function CheckoutForm() {
                                 : ""}
                             </p>
                             <p className="text-xs leading-5 text-[#8a7b6a]">
-                              Required for human family members before checkout. Optional for pets.
+                              Optional. If you add one, our team uses it as a visual reference during review.
                             </p>
                           </div>
                           {character.photoFile && (
@@ -1692,16 +1765,16 @@ export function CheckoutForm() {
                           </div>
                         ) : (
                           <div className="space-y-2">
-                            {isHumanSupportingCharacter(character) && (
+                            {isHumanSupportingCharacter(character) && !character.notes.trim() && (
                               <p className="rounded-xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-3 py-2 text-xs font-semibold text-[#1f1a16]">
-                                Add a still reference photo for {character.name || character.relationshipLabel || "this family member"} before checkout so we can draw them consistently.
+                                Add a few written details for {character.name || character.relationshipLabel || "this family member"} before checkout if you aren&apos;t uploading a photo.
                               </p>
                             )}
                             <div className="grid gap-2 sm:grid-cols-2">
                               <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-4 text-center text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
                                 <span>Use camera roll</span>
                                 <span className="text-xs font-normal text-[#8a7b6a]">
-                                  JPG/PNG/WebP/HEIC
+                                  JPG/PNG/WebP
                                 </span>
                                 <input
                                   type="file"
@@ -1748,11 +1821,11 @@ export function CheckoutForm() {
                   Add one clear photo for the main character
                 </h2>
                 <p className="text-sm leading-6 text-[#695f54]">
-                  Choose the easiest way to send it now. We turn the photo into a storybook-style illustration and hand-review the proof before print.
+                  Optional, but best for the closest hero likeness. If you skip it, we&apos;ll use the written description above and hand-review the proof before print.
                 </p>
               </div>
               <div className="inline-flex w-fit rounded-full border border-[#d8c6a2] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54]">
-                {form.photoFile ? "Main character photo added" : "1 main character photo — add now or before your proof starts"}
+                {form.photoFile ? "Main character photo added" : "No hero photo required"}
               </div>
 
               {/* Sample teaser — shown before upload */}
@@ -2061,9 +2134,9 @@ export function CheckoutForm() {
               <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm text-[#35564d]">
                 ✨ {PRINT_PREVIEW_PROMISE}
               </div>
-              {missingSupportingPhotoLabels.length > 0 && (
+              {missingSupportingDescriptionLabels.length > 0 && (
                 <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
-                  Add a still reference photo for {missingSupportingPhotoLabels.join(", ")} before payment. Pets are optional; human family members need a photo so the proof can match them.
+                  Add a few written details for {missingSupportingDescriptionLabels.join(", ")} before payment if you aren&apos;t uploading a supporting photo.
                 </div>
               )}
 
@@ -2233,7 +2306,7 @@ export function CheckoutForm() {
                     <strong className="block text-[#241914]">
                       We send a digital proof
                     </strong>
-                    Usually in {PROOF_TURNAROUND_WINDOW} after we have the needed photos, you get a private link to review every page.
+                    Usually in {PROOF_TURNAROUND_WINDOW}, you get a private link to review every page before anything prints.
                   </span>
                 </li>
                 <li className="flex gap-3">
@@ -2274,8 +2347,12 @@ export function CheckoutForm() {
                 if (!form.childName) missing.push("child's name");
                 if (!form.bookFormat) missing.push('format');
                 if (!form.email) missing.push('email');
-                if (!form.skinTone) missing.push('skin tone');
-                if (!form.hairStyle) missing.push('hair');
+                if (!form.photoFile && !form.characterNotes.trim()) {
+                  missing.push('hero photo or description');
+                }
+                if (missingSupportingDescriptionLabels.length > 0) {
+                  missing.push('supporting character details');
+                }
                 if (STORY_UPLOAD_ENABLED && form.voiceFile != null && !form.voiceConsent) {
                   missing.push('story inspiration consent');
                 }
@@ -2302,6 +2379,16 @@ export function CheckoutForm() {
                     You have not been charged. If you recorded a voice note,
                     download it from the section above before retrying so it
                     isn&apos;t lost.
+                  </p>
+                  <p className="mt-2 text-xs font-medium text-red-700">
+                    If the issue continues, email{" "}
+                    <a
+                      href="mailto:support@herostorybooks.com"
+                      className="underline decoration-red-400 underline-offset-2 hover:text-red-900"
+                    >
+                      support@herostorybooks.com
+                    </a>{" "}
+                    and we&apos;ll help you finish the order manually.
                   </p>
                 </div>
               )}

@@ -1,13 +1,13 @@
 import crypto from 'node:crypto';
 import { put } from '@vercel/blob';
 
-import { getOrder, getOrderPhotoUrl, isPrintFormat, updateFulfillmentState, withBlobNamespace } from './orders.ts';
+import { getOrder, getOrderPhotoUrl, isPrintFormat, orderRequiresReferenceImage, updateFulfillmentState, withBlobNamespace } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { OrderRecord } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
 import { generateStory, generateStoryWithMeta } from './story-generator.ts';
 import type { StoryWithMeta } from './story-generator.ts';
-import { generateStoryImageResults } from './image-generator.ts';
+import { generateStoryImageResults, requireCompleteImageResults } from './image-generator.ts';
 import type { GeneratedImageResult } from './image-generator.ts';
 import { buildPdf, buildPrintCoverPdf, buildPrintInteriorPdf, getPrintInteriorPageCount } from './pdf-builder.ts';
 import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';
@@ -194,15 +194,19 @@ async function runImageGeneration(
       error: url ? null : 'no image url returned',
     }));
   }
-  // Real default path: try photo-conditioned FAL when we have a photo URL,
-  // else text-only. Fallback chain inside generatePageImage handles the rest.
+  // Real default path: explicit reference orders stay photo-conditioned and
+  // fail closed if their durable URL is missing; explicit storybook orders
+  // use the text-only lane.
   // TODO(voice-beta): when order.voiceBlobUrl is present and a server-flagged
   // transcription path is wired up (HSB_VOICE_TRANSCRIPTION_ENABLED), call the
   // transcription provider here, extract reviewed personalization signals, and feed
   // them into the story planner — NOT into voice cloning. Until then the audio
   // remains optional source material only.
   const referenceImageUrl = getOrderPhotoUrl(order);
-  return generateStoryImageResults(imagePrompts, { referenceImageUrl });
+  return generateStoryImageResults(imagePrompts, {
+    referenceImageUrl,
+    referenceImageRequired: orderRequiresReferenceImage(order),
+  });
 }
 
 // ── Retry wrapper ─────────────────────────────────────────────────────────────
@@ -294,7 +298,11 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
       textLayout: p.textLayout,
     }),
   );
-  const imageResults = await runImageGeneration(imagePrompts, order, deps);
+  const imageResults = requireCompleteImageResults(
+    await runImageGeneration(imagePrompts, order, deps),
+    story.pages.length,
+    'digital_fulfillment',
+  );
   const imageUrls = imageResults.map((r) => r.imageUrl);
 
   // Seed pageArtifacts so the customer review page can render even before the PDF builds.
@@ -438,7 +446,11 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
       textLayout: p.textLayout,
     }),
   );
-  const imageResults = await runImageGeneration(imagePrompts, order, deps);
+  const imageResults = requireCompleteImageResults(
+    await runImageGeneration(imagePrompts, order, deps),
+    story.pages.length,
+    'print_fulfillment',
+  );
   const imageUrls = imageResults.map((r) => r.imageUrl);
 
   // Compute + PERSIST pageArtifacts BEFORE the slow PDF build steps so a

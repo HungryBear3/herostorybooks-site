@@ -7,6 +7,7 @@ import {
   MAX_VOICE_BYTES,
   OrderPersistenceError,
   persistOrder,
+  rollbackOrderMediaUploads,
   sanitizeFamilyCharacters,
   uploadOrderPhoto,
   uploadOrderSupportingPhoto,
@@ -14,13 +15,19 @@ import {
 } from '@/lib/orders';
 import {
   missingFieldErrorCode,
+  likenessIntentForPhoto,
   missingRequiredField,
 } from '@/lib/checkout-flow';
+import {
+  clearUntrustedSupportingPhotoMetadata,
+  missingSupportingCharacterDescriptionLabels,
+} from '@/lib/checkout-photo-policy';
 import { buildCheckoutTracking } from '@/lib/checkout-tracking';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 import { statusForShape, validateCustomStoryBrief, type CustomStoryBrief, type ValidationResult } from '@/lib/custom-story';
+import { validateOrderPhotoFile } from '@/lib/photo-file-validation';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -28,30 +35,6 @@ function isValidEmail(value: string) {
 
 function getStripe() {
   return new Stripe(getRequiredStripeSecretKey());
-}
-
-function familyCharacterLabel(character: ReturnType<typeof sanitizeFamilyCharacters>[number]): string {
-  return (character.name || character.relationshipLabel || character.role || 'family member').trim();
-}
-
-function isHumanSupportingCharacter(character: ReturnType<typeof sanitizeFamilyCharacters>[number]): boolean {
-  return character.role !== 'pet';
-}
-
-function missingSupportingCharacterPhotoLabels(
-  familyCharacters: ReturnType<typeof sanitizeFamilyCharacters>,
-  form: FormData,
-): string[] {
-  return familyCharacters
-    .map((character, index) => ({ character, index }))
-    .filter(({ character }) => character.appearsInStory !== false)
-    .filter(({ character }) => isHumanSupportingCharacter(character))
-    .filter(({ character, index }) => {
-      if (character.photoFileName || character.photoBlobPath || character.photoBlobUrl) return false;
-      const file = form.get(`familyCharacterPhoto_${index}`);
-      return !(file instanceof File) || file.size <= 0;
-    })
-    .map(({ character }) => familyCharacterLabel(character));
 }
 
 function envFlag(name: string): boolean {
@@ -135,20 +118,49 @@ export async function POST(request: Request) {
     const bookFormat = String(form.get('bookFormat') || 'classic').trim();
     const theme = String(form.get('theme') || '').trim();
     const childPronouns = String(form.get('childPronouns') || '').trim();
-    // Structured appearance fields ride along inside the JSON
-    // appearanceOptions blob from the form (kept as-is for backward
-    // compatibility) AND as discrete top-level fields. The launch spec
-    // says skinTone + hairStyle MUST be explicit (no "Prefer AI to
-    // decide"). We accept either shape so the server is robust to
-    // future client refactors but enforce the same minimum.
+    // Appearance details ride inside appearanceOptions. The server derives
+    // hero likeness intent from actual photo presence rather than a buyer
+    // toggle, so checkout cannot claim a photo-backed match when no usable
+    // upload exists.
     const appearanceRaw = String(form.get('appearanceOptions') || '');
-    let appearance: { skinTone?: string; hairStyle?: string } = {};
+    let appearance: {
+      skinTone?: string;
+      hairStyle?: string;
+      eyewear?: string;
+      description?: string;
+      mustInclude?: unknown;
+      mustIncludeOther?: string;
+    } = {};
     if (appearanceRaw) {
       try { appearance = JSON.parse(appearanceRaw) as typeof appearance; }
       catch { appearance = {}; }
     }
-    const skinTone = String(form.get('skinTone') || appearance.skinTone || '').trim();
-    const hairStyle = String(form.get('hairStyle') || appearance.hairStyle || '').trim();
+    const appearanceDescription = String(
+      appearance.description || form.get('characterNotes') || '',
+    ).trim();
+    const photo = form.get('photo');
+    const hasPhotoUpload = photo instanceof File && photo.size > 0;
+    const photoValidation = hasPhotoUpload
+      ? await validateOrderPhotoFile(photo)
+      : { ok: false as const, code: 'photo_missing' as const };
+    if (hasPhotoUpload && photoValidation.ok === false) {
+      const tooLarge = photoValidation.code === 'photo_too_large';
+      return NextResponse.json(
+        {
+          error: tooLarge
+            ? 'Your hero photo is too large (max 12 MB). Please choose a smaller still image. No charge was made.'
+            : 'Your hero photo must be a valid JPEG, PNG, or WebP still image. No charge was made.',
+          code: photoValidation.code,
+        },
+        { status: tooLarge ? 413 : 400 },
+      );
+    }
+    const photoReady = photoValidation.ok === true;
+    const normalizedAppearanceRaw = JSON.stringify({
+      ...appearance,
+      description: appearanceDescription,
+      likenessIntent: likenessIntentForPhoto(photoReady),
+    });
 
     const voiceRaw = form.get('voice');
     const hasVoiceUpload = voiceRaw instanceof File && voiceRaw.size > 0;
@@ -185,7 +197,13 @@ export async function POST(request: Request) {
       }
     }
 
-    const missing = missingRequiredField({ theme, childName, email, skinTone, hairStyle });
+    const missing = missingRequiredField({
+      theme,
+      childName,
+      email,
+      appearanceDescription,
+      photoReady,
+    });
     if (missing !== null || !isValidEmail(email)) {
       const code = missing ? missingFieldErrorCode(missing) : 'email_invalid';
       return NextResponse.json(
@@ -201,13 +219,37 @@ export async function POST(request: Request) {
     }
 
     const familyCharactersRaw = String(form.get('familyCharacters') || '');
-    const familyCharacters = sanitizeFamilyCharacters(familyCharactersRaw);
-    const missingSupportingPhotos = missingSupportingCharacterPhotoLabels(familyCharacters, form);
-    if (missingSupportingPhotos.length > 0) {
+    const familyCharacters = clearUntrustedSupportingPhotoMetadata(
+      sanitizeFamilyCharacters(familyCharactersRaw),
+    );
+    const supportingPhotoFiles = new Map<number, { file: File; extension: string }>();
+    for (const [index] of familyCharacters.entries()) {
+      const candidate = form.get(`familyCharacterPhoto_${index}`);
+      if (!(candidate instanceof File) || candidate.size <= 0) continue;
+      const validation = await validateOrderPhotoFile(candidate);
+      if (validation.ok === false) {
+        const tooLarge = validation.code === 'photo_too_large';
+        return NextResponse.json(
+          {
+            error: tooLarge
+              ? 'A family or pet photo is too large (max 12 MB). Please choose a smaller still image. No charge was made.'
+              : 'Family and pet photos must be valid JPEG, PNG, or WebP still images. No charge was made.',
+            code: `supporting_${validation.code}`,
+          },
+          { status: tooLarge ? 413 : 400 },
+        );
+      }
+      supportingPhotoFiles.set(index, { file: candidate, extension: validation.extension });
+    }
+    const missingSupportingDescriptions = missingSupportingCharacterDescriptionLabels(
+      familyCharacters,
+      new Set(supportingPhotoFiles.keys()),
+    );
+    if (missingSupportingDescriptions.length > 0) {
       return NextResponse.json(
         {
-          error: `Add a still reference photo for ${missingSupportingPhotos.join(', ')} before payment. No charge was made.`,
-          code: 'supporting_character_photo_required',
+          error: `Add a few written details for ${missingSupportingDescriptions.join(', ')} before payment. No charge was made.`,
+          code: 'supporting_character_details_required',
         },
         { status: 400 },
       );
@@ -299,12 +341,12 @@ export async function POST(request: Request) {
       occasion: String(form.get('occasion') || ''),
       giftMessage: String(form.get('giftMessage') || ''),
       characterNotes: String(form.get('characterNotes') || ''),
-      familyCharacters: familyCharactersRaw,
+      familyCharacters,
       childPronouns: childPronouns === 'he/him' || childPronouns === 'she/her' || childPronouns === 'they/them' ? childPronouns as 'he/him' | 'she/her' | 'they/them' : '',
-      appearanceOptions: appearanceRaw,
+      appearanceOptions: normalizedAppearanceRaw,
       bookFormat,
       email,
-      photoFileName: form.get('photo') instanceof File ? (form.get('photo') as File).name : null,
+      photoFileName: photoValidation.ok ? `hero.${photoValidation.extension}` : null,
       voiceFileName: hasVoiceUpload ? (voiceRaw as File).name : null,
       customStoryBrief,
       customStoryValidation,
@@ -316,7 +358,40 @@ export async function POST(request: Request) {
       fulfillmentMode: 'manual_hold',
     });
 
-    const photo = form.get('photo');
+    // Create the durable owner record before uploading any public customer
+    // media. If cleanup itself later fails, the deterministic orders/<id>/
+    // Blob prefix still has an owning record for retention/deletion handling.
+    try {
+      await persistOrder(draftOrder);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[order] ABORT BEFORE MEDIA/STRIPE: durable draft persistence failed for ${draftOrder.id}: ${message}`);
+      return NextResponse.json(
+        {
+          error:
+            'We could not securely save your order. No charge was made. Please retry in a moment, and contact support@herostorybooks.com if it keeps happening.',
+        },
+        { status: 503 },
+      );
+    }
+
+    const uploadedMediaPaths: string[] = [];
+    const rollbackUploadedMedia = async (reason: string) => {
+      if (uploadedMediaPaths.length === 0) return;
+      try {
+        await rollbackOrderMediaUploads(draftOrder.id, uploadedMediaPaths);
+        uploadedMediaPaths.length = 0;
+      } catch (rollbackError) {
+        // The durable draft above remains the owner-of-record even when Blob
+        // deletion fails after its retry. Keep the original checkout failure
+        // response while surfacing the cleanup incident for manual follow-up.
+        console.error(
+          `[order] MEDIA ROLLBACK FAILED for ${draftOrder.id} after ${reason}:`,
+          rollbackError,
+        );
+      }
+    };
+
     let photoBlobPath: string | null = null;
     let photoBlobUrl: string | null = null;
     if (photo instanceof File && photo.size > 0) {
@@ -325,6 +400,13 @@ export async function POST(request: Request) {
         if (uploaded) {
           photoBlobPath = uploaded.pathname;
           photoBlobUrl = uploaded.url;
+          uploadedMediaPaths.push(uploaded.pathname);
+        } else {
+          console.error(`[order] ABORT BEFORE STRIPE: photo upload failed for ${draftOrder.id}`);
+          return NextResponse.json(
+            { error: 'We could not securely save your photo. Please retry — no charge was made.' },
+            { status: 503 },
+          );
         }
       } catch (error) {
         // In production, OrderPersistenceError from photo upload must abort
@@ -340,34 +422,49 @@ export async function POST(request: Request) {
             { status: 503 },
           );
         }
-        console.error(`[order] photo upload failed for ${draftOrder.id}; continuing without photo`, error);
-        photoBlobPath = null;
-        photoBlobUrl = null;
+        console.error(`[order] ABORT BEFORE STRIPE: photo upload failed for ${draftOrder.id}`, error);
+        return NextResponse.json(
+          { error: 'We could not securely save your photo. Please retry — no charge was made.' },
+          { status: 503 },
+        );
       }
     }
 
     const familyCharactersWithPhotos = [];
     for (const [index, character] of familyCharacters.entries()) {
-      const familyPhoto = form.get(`familyCharacterPhoto_${index}`);
-      if (!(familyPhoto instanceof File) || familyPhoto.size <= 0) {
+      const validatedFamilyPhoto = supportingPhotoFiles.get(index);
+      const familyPhoto = validatedFamilyPhoto?.file;
+      if (!familyPhoto || !validatedFamilyPhoto) {
         familyCharactersWithPhotos.push(character);
         continue;
       }
       try {
         const uploaded = await uploadOrderSupportingPhoto(draftOrder.id, index, familyPhoto);
+        if (!uploaded) {
+          console.error(`[order] ABORT BEFORE STRIPE: supporting photo upload failed; supporting photo persistence failed for ${draftOrder.id}`);
+          await rollbackUploadedMedia('supporting photo upload returned no durable reference');
+          return NextResponse.json(
+            {
+              error:
+                'We could not securely save one of your family or pet photos. Please retry — no charge was made.',
+              code: 'supporting_photo_persist_failed',
+            },
+            { status: 503 },
+          );
+        }
+        uploadedMediaPaths.push(uploaded.pathname);
         familyCharactersWithPhotos.push({
           ...character,
-          photoFileName: familyPhoto.name,
-          photoBlobPath: uploaded?.pathname ?? null,
-          photoBlobUrl: uploaded?.url ?? null,
+          photoFileName: `supporting-${index + 1}.${validatedFamilyPhoto.extension}`,
+          photoBlobPath: uploaded.pathname,
+          photoBlobUrl: uploaded.url,
+          likenessIntent: 'reference' as const,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const cause = error instanceof OrderPersistenceError ? error.cause : error;
-        console.error(
-          `[order] ABORT BEFORE STRIPE: supporting photo persistence failed for ${draftOrder.id}: ${message}`,
-          cause,
-        );
+        console.error(`[order] ABORT BEFORE STRIPE: supporting photo persistence failed for ${draftOrder.id}: ${message}`, cause);
+        await rollbackUploadedMedia('supporting photo persistence failure');
         return NextResponse.json(
           {
             error:
@@ -389,6 +486,7 @@ export async function POST(request: Request) {
           voiceBlobPath = uploadedVoice.pathname;
           voiceBlobUrl = uploadedVoice.url;
           voiceConsentAt = new Date().toISOString();
+          uploadedMediaPaths.push(uploadedVoice.pathname);
         }
       } catch (error) {
         // Match the photo path: an OrderPersistenceError on voice persistence
@@ -399,6 +497,7 @@ export async function POST(request: Request) {
             `[order] ABORT BEFORE STRIPE: voice persistence failed for ${draftOrder.id}: ${error.message}`,
             error.cause,
           );
+          await rollbackUploadedMedia('voice persistence failure');
           return NextResponse.json(
             {
               error:
@@ -409,6 +508,7 @@ export async function POST(request: Request) {
           );
         }
         console.error(`[order] voice upload failed for ${draftOrder.id}; aborting`, error);
+        await rollbackUploadedMedia('voice upload failure');
         return NextResponse.json(
           {
             error:
@@ -436,6 +536,7 @@ export async function POST(request: Request) {
         voiceSource: hasVoiceUpload ? voiceSource : null,
       });
     } catch (error) {
+      await rollbackUploadedMedia('final order persistence failure');
       if (error instanceof OrderPersistenceError) {
         console.error(
           `[order] ABORT BEFORE STRIPE: durable order persistence failed for ${draftOrder.id}: ${error.message}`,

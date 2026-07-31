@@ -109,6 +109,79 @@ test('buildPagePrompt: bans pseudo-text, signage, labels, glyphs, readable lette
   );
 });
 
+test('buildPagePrompt: carries hero likeness intent and every must-include detail into art direction', () => {
+  const prompt = buildPagePrompt({
+    basePrompt: BASE_PROMPT,
+    storyText: STORY_TEXT,
+    order: {
+      ...ORDER,
+      photoBlobPath: null,
+      appearanceOptions: JSON.stringify({
+        description: 'warm brown skin and short curly dark hair',
+        likenessIntent: 'storybook',
+        mustInclude: ['glasses', 'hearing-aid', 'wheelchair'],
+        mustIncludeOther: 'purple birthmark on left cheek',
+      }),
+    },
+  });
+
+  assert.match(prompt, /storybook character/i);
+  assert.match(prompt, /warm brown skin and short curly dark hair/i);
+  assert.match(prompt, /glasses/i);
+  assert.match(prompt, /hearing aid/i);
+  assert.match(prompt, /wheelchair/i);
+  assert.match(prompt, /purple birthmark on left cheek/i);
+});
+
+test('buildPagePrompt: no-photo appearance details are not contradicted by legacy identity locks', () => {
+  const prompt = buildPagePrompt({
+    basePrompt: 'Ava explores a moonlit garden.',
+    storyText: 'Ava follows a trail of fireflies.',
+    order: {
+      ...ORDER,
+      childName: 'Ava',
+      childPronouns: '',
+      photoBlobPath: null,
+      appearanceOptions: JSON.stringify({
+        description: 'a girl with long red hair and a yellow dress',
+        likenessIntent: 'storybook',
+      }),
+    },
+    characterAnchor: 'Ava is a girl with long red hair and a yellow dress.',
+  });
+
+  assert.match(prompt, /girl with long red hair and a yellow dress/i);
+  assert.doesNotMatch(prompt, /same short dark haircut/i);
+  assert.doesNotMatch(prompt, /never change the child into a girl/i);
+  assert.doesNotMatch(prompt, /never add long hair/i);
+  assert.doesNotMatch(prompt, /boyish presentation/i);
+});
+
+test('buildPagePrompt: he/him plus long hair remains customer-driven and non-contradictory', () => {
+  const prompt = buildPagePrompt({
+    basePrompt: 'Kai explores a moonlit garden.',
+    storyText: 'Kai follows a trail of fireflies.',
+    order: {
+      ...ORDER,
+      childName: 'Kai',
+      childPronouns: 'he/him',
+      characterNotes: 'a boy with waist-length blond hair',
+      photoBlobPath: null,
+      appearanceOptions: JSON.stringify({
+        description: 'a boy with waist-length blond hair',
+        hairStyle: 'straight-dark',
+        likenessIntent: 'storybook',
+      }),
+    },
+    characterAnchor: 'Kai is a boy with waist-length blond hair.',
+  });
+
+  assert.match(prompt, /Kai is a boy with waist-length blond hair/i);
+  assert.match(prompt, /do not infer hairstyle, hair length, clothing/i);
+  assert.doesNotMatch(prompt, /straight dark hair/i);
+  assert.doesNotMatch(prompt, /Lukas is a young boy|short straight dark boy|do not give him long hair|never shoulder-length/i);
+});
+
 // ── Layout-hint section still works when provided ──────────────────────────
 
 test('buildPagePrompt: layout hint adds zone-specific text-safe guidance on top of the always-on rules', () => {

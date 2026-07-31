@@ -19,7 +19,7 @@ test('shouldAutoShrinkPhoto returns true for oversized browser-resizable photos'
   assert.equal(shouldAutoShrinkPhoto(file), true);
 });
 
-test('shouldAutoShrinkPhoto stays false for oversized HEIC files we cannot safely resize in-browser', () => {
+test('checkout upload helper excludes HEIC from browser-resizable formats', () => {
   const file = {
     name: 'hero-photo.heic',
     size: MAX_PHOTO_BYTES + 1024,

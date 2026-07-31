@@ -4,14 +4,16 @@
 //   - When a referenceImageUrl (or imageUrls) is supplied, try the primary
 //     photo-conditioned Seedream edit provider first, then the secondary
 //     Nano Banana edit provider.
-//   - When no reference image is supplied, do not degrade to a text-only lane.
-//     Return a structured failure instead.
+//   - Explicit storybook orders without a reference use the text-only FAL lane.
+//   - Reference orders whose durable photo URL is missing fail closed instead
+//     of silently degrading to text-only art.
 //
 // Fallback ordering is deliberate: Seedream is cheaper and preferred for
 // launch-quality output. Nano Banana edit is the recovery lane if Seedream
 // fails. We do not silently ship text-only art for photo-based books.
 
 import { falEditImageProvider } from './image-provider-fal-edit.ts';
+import { falImageProvider } from './image-provider-fal.ts';
 import {
   geminiImageProvider,
   hasGeminiImageApiKey,
@@ -40,7 +42,8 @@ export interface OrchestratorDeps {
   /**
    * Override the provider order. Defaults are derived from input:
    *   - input.referenceImageUrl set → [seedream_edit, fal_edit]
-   *   - otherwise                    → [] (no text-only fallback)
+   *   - no photo + reference required → [] (fail closed)
+   *   - no photo + storybook intent   → [fal] (deliberate text-only lane)
    *
    * OpenAI image providers are not in the default chain. A caller may
    * include one explicitly, but it will be filtered out unless
@@ -61,6 +64,7 @@ export interface OrchestratorDeps {
 
 const PHOTO_EDIT_CHAIN: ImageProvider[] = [seedreamEditImageProvider, falEditImageProvider];
 const NO_TEXT_ONLY_FALLBACK: ImageProvider[] = [];
+const STORYBOOK_TEXT_CHAIN: ImageProvider[] = [falImageProvider];
 
 /**
  * Build the default provider chain based on input + env flags.
@@ -74,8 +78,9 @@ const NO_TEXT_ONLY_FALLBACK: ImageProvider[] = [];
  *       the intended primary while operator credits permit.
  *   - Otherwise: legacy `[seedream_edit, fal_edit]` chain.
  *
- * When no reference photo is present: empty chain. We never silently
- * degrade a photo-based book to text-only art.
+ * When no reference photo is present:
+ *   - `referenceImageRequired=true`: empty chain, fail closed.
+ *   - otherwise: explicit storybook text-to-image chain.
  *
  * Exported for tests so the chain-composition contract can be asserted
  * without going through the full orchestrator.
@@ -84,7 +89,9 @@ export function defaultProviderOrder(input: ImageProviderInput): ImageProvider[]
   const hasReference = Boolean(
     (input.imageUrls && input.imageUrls.length > 0) || input.referenceImageUrl,
   );
-  if (!hasReference) return NO_TEXT_ONLY_FALLBACK;
+  if (!hasReference) {
+    return input.referenceImageRequired ? NO_TEXT_ONLY_FALLBACK : STORYBOOK_TEXT_CHAIN;
+  }
   if (isGeminiImageEnabled() && hasGeminiImageApiKey()) {
     return isGeminiImageFalFallbackEnabled()
       ? [geminiImageProvider, ...PHOTO_EDIT_CHAIN]
@@ -233,7 +240,8 @@ export async function generatePageImage(
   }
   if (last) return last;
 
-  // No providers in the chain at all (typical: no-photo branch). Emit a
+  // No providers in the chain at all (reference order with a missing photo
+  // URL, or an explicitly empty caller chain). Emit a
   // synthetic failure line so the absence of generation is still visible
   // in the log stream — silence here would look like "didn't run" rather
   // than "ran with no chain".
@@ -261,6 +269,30 @@ export async function generatePageImage(
   return synthetic;
 }
 
+export type CompleteGeneratedImageResult = GeneratedImageResult & { imageUrl: string };
+
+/**
+ * Fail closed before any page artifact, proof PDF, or print PDF is persisted.
+ * Provider failures are represented as structured null-image results, so every
+ * production caller must cross this completeness gate before releasing output.
+ */
+export function requireCompleteImageResults(
+  results: GeneratedImageResult[],
+  expectedCount: number,
+  context: string,
+): CompleteGeneratedImageResult[] {
+  const missingIndexes: number[] = [];
+  for (let index = 0; index < expectedCount; index += 1) {
+    if (!results[index]?.imageUrl) missingIndexes.push(index);
+  }
+  if (results.length !== expectedCount || missingIndexes.length > 0) {
+    throw new Error(
+      `image_generation_incomplete:${context}:expected=${expectedCount}:received=${results.length}:missing=${missingIndexes.slice(0, 8).join(',')}`,
+    );
+  }
+  return results as CompleteGeneratedImageResult[];
+}
+
 // ── Legacy URL-only API (used by fulfillment proof generation) ───────────────
 
 interface FetchDep {
@@ -274,10 +306,18 @@ interface FetchDep {
  */
 export async function generateImage(
   prompt: string,
-  deps: { fetch?: FetchDep; referenceImageUrl?: string | null } = {},
+  deps: {
+    fetch?: FetchDep;
+    referenceImageUrl?: string | null;
+    referenceImageRequired?: boolean;
+  } = {},
 ): Promise<string | null> {
   const result = await generatePageImage(
-    { prompt, referenceImageUrl: deps.referenceImageUrl ?? null },
+    {
+      prompt,
+      referenceImageUrl: deps.referenceImageUrl ?? null,
+      referenceImageRequired: deps.referenceImageRequired ?? false,
+    },
     { fetch: deps.fetch as typeof globalThis.fetch | undefined },
   );
   return result.imageUrl;
@@ -310,7 +350,11 @@ async function mapWithConcurrency<T, R>(
 
 export async function generateStoryImages(
   imagePrompts: string[],
-  deps: { fetch?: FetchDep; referenceImageUrl?: string | null } = {},
+  deps: {
+    fetch?: FetchDep;
+    referenceImageUrl?: string | null;
+    referenceImageRequired?: boolean;
+  } = {},
 ): Promise<(string | null)[]> {
   return mapWithConcurrency(
     imagePrompts,
@@ -326,14 +370,22 @@ export async function generateStoryImages(
  */
 export async function generateStoryImageResults(
   imagePrompts: string[],
-  deps: { fetch?: FetchDep; referenceImageUrl?: string | null } = {},
+  deps: {
+    fetch?: FetchDep;
+    referenceImageUrl?: string | null;
+    referenceImageRequired?: boolean;
+  } = {},
 ): Promise<GeneratedImageResult[]> {
   return mapWithConcurrency(
     imagePrompts,
     getImageGenConcurrency(),
     (p) =>
       generatePageImage(
-        { prompt: p, referenceImageUrl: deps.referenceImageUrl ?? null },
+        {
+          prompt: p,
+          referenceImageUrl: deps.referenceImageUrl ?? null,
+          referenceImageRequired: deps.referenceImageRequired ?? false,
+        },
         { fetch: deps.fetch as typeof globalThis.fetch | undefined },
       ),
   );

@@ -13,9 +13,10 @@ test('Custom Story is the primary story direction and templates are secondary', 
   assert.match(checkoutFormSource, /templateThemes = THEMES\.filter\(\(theme\) => theme\.id !== CUSTOM_STORY_THEME_ID\)/);
 });
 
-test('required main photo intake uses simple audio-style choice cards', () => {
+test('optional main photo intake uses simple audio-style choice cards', () => {
   assert.match(checkoutFormSource, /Add one clear photo for the main character/);
-  assert.match(checkoutFormSource, /1 main character photo — add now or before your proof starts/);
+  assert.match(checkoutFormSource, /Optional, but best for the closest hero likeness/);
+  assert.match(checkoutFormSource, /No hero photo required/);
   assert.match(checkoutFormSource, /Main character photo added/);
   assert.match(checkoutFormSource, /Choose an existing photo from your phone\./);
   assert.match(checkoutFormSource, /Open your camera for a still photo\./);
@@ -27,7 +28,7 @@ test('CD/Cowork checkout polish avoids contradictory or nervous copy', () => {
   assert.match(checkoutFormSource, /story direction/);
   assert.match(checkoutFormSource, /5 quick angles, about a minute \(optional\)/);
   assert.match(checkoutFormSource, /PROMO_CODE_HELP/);
-  assert.match(checkoutFormSource, /Usually in \{PROOF_TURNAROUND_WINDOW\} after we have the needed photos/);
+  assert.match(checkoutFormSource, /Usually in \{PROOF_TURNAROUND_WINDOW\}, you get a private link/);
   assert.match(checkoutFormSource, /form\.childName \|\| "your child"/);
   assert.doesNotMatch(checkoutFormSource, /required people photos/);
   assert.doesNotMatch(checkoutFormSource, /0 of \$\{requiredHumanPhotoCount\} added/);
@@ -35,6 +36,13 @@ test('CD/Cowork checkout polish avoids contradictory or nervous copy', () => {
   assert.doesNotMatch(checkoutFormSource, /Optional — open only if you want extra likeness help/);
   assert.doesNotMatch(checkoutFormSource, /Within 2 business days/);
   assert.doesNotMatch(checkoutFormSource, /⚡ \{fmt\.delivery\}/);
+});
+
+test('checkout errors stay specific, visible near payment, and include manual support contact', () => {
+  assert.match(checkoutFormSource, /data-testid="submit-error"/);
+  assert.match(checkoutFormSource, /\{submitError\}/);
+  assert.match(checkoutFormSource, /mailto:support@herostorybooks\.com/);
+  assert.match(checkoutFormSource, /help you finish the order manually/);
 });
 
 test('optional guided photos stay collapsed behind a likeness link', () => {

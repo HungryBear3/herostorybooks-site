@@ -536,21 +536,18 @@ function buildCharacterDescription(order: OrderRecord, variant: TemplateVariantP
 }
 
 /**
- * Hero-type-aware "visual identity" rule block for the OpenAI story prompt.
- *
- * Child path returns the original rules verbatim (young-boy default + child
- * grooming constraints). Parent/grandparent heroes get adult, life-stage-driven
- * rules so an adult hero is never described or illustrated as a young boy/girl,
- * the hero is never infantilized, and the child AUDIENCE stays separate from
- * the hero's IDENTITY.
+ * Hero-type-aware visual identity rules for the story prompt.
+ * Customer-provided age, appearance, and presentation always outrank defaults.
  */
 function buildVisualIdentityRules(order: OrderRecord): string {
   if (!isAdultHero(order)) {
+    const heroName = heroDisplayName(order);
+    const statedAge = sanitizeInput(order.childAge ?? order.heroAgeOrStage ?? '', 40) || 'the stated child age';
     return `Visual identity hard rules for this hero:
-- If pronouns are he/him, describe and illustrate the hero as a young boy.
-- For Lukas with straight-dark hair, the canonical description must say short straight dark boy haircut, above the ears/neck.
-- Never give the hero long hair, a bob, pigtails, hair ribbons, makeup, dress-like styling, or feminine-coded presentation unless the customer explicitly requested it.
-- The hero must keep the same haircut, age or life stage, face, skin tone, and overall presentation on every page.`;
+- Portray ${heroName} as a child at ${statedAge}; preserve the customer's supplied appearance and presentation.
+- Derive hair length, hair style, clothing, accessories, and gender presentation only from the uploaded reference and written customer details; never infer them from the hero's name or pronouns.
+- Long hair, short hair, dresses, trousers, and any other presentation are all valid when supplied by the customer; do not add or remove gender-coded details.
+- Keep the same face, hairstyle and length, apparent age, skin tone, visible accessibility details, and overall presentation on every page.`;
   }
   const heroName = heroDisplayName(order);
   const isGrandparent = sanitizeInput(order.heroType ?? '', 24).toLowerCase() === 'grandparent';
@@ -603,13 +600,25 @@ export function familyCharactersBlock(order: OrderRecord): string {
     const pronouns = sanitizeInput(character.pronouns, 32);
     const notes = sanitizeInput(character.notes, 180);
     const gift = character.isGiftRecipient ? ' Gift recipient.' : '';
+    const hasPhoto = Boolean(
+      character.photoBlobUrl || character.photoBlobPath || character.photoFileName,
+    );
+    const likeness = hasPhoto
+      ? ' Supporting photo is for operator review/reference only; do not promise exact likeness.'
+      : ' Storybook-character treatment; use the written details without implying a real-photo match.';
+    const mustInclude = [
+      ...((character.mustInclude ?? []).filter((item) => item !== 'custom-detail')),
+      character.mustIncludeOther,
+    ]
+      .filter(Boolean)
+      .map((item) => sanitizeInput(item, 80));
+    const mustIncludeText = mustInclude.length > 0
+      ? ` Must include: ${mustInclude.join(', ')}.`
+      : '';
     const focus = sanitizeInput(character.focusPersonLabel ?? '', 120);
     const crop = sanitizeInput(character.cropHint ?? '', 40);
     const focusNote = focus || crop
       ? ` Photo focus: ${[focus, crop && `(${crop})`].filter(Boolean).join(' ')}.`
-      : '';
-    const photo = character.photoBlobUrl || character.photoBlobPath || character.photoFileName
-      ? ` Supporting reference photo attached for operator review.${focusNote}`
       : '';
     return [
       relationship ? `- ${relationship}` : '- Supporting character',
@@ -617,15 +626,17 @@ export function familyCharactersBlock(order: OrderRecord): string {
       pronouns ? `(${pronouns})` : '',
       notes ? `— ${notes}` : '',
       gift,
-      photo,
+      likeness,
+      hasPhoto ? ` Reference attached for operator review.${focusNote}` : '',
+      mustIncludeText,
     ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
   });
 
   return (
     `\n\nSUPPORTING FAMILY / PET CHARACTERS (optional — weave these into ` +
     `the prose naturally without turning every page into a cast list; the ` +
-    `uploaded primary-hero photo remains the visual identity anchor, so do not promise ` +
-    `exact likeness for supporting people or pets):\n${lines.join('\n')}`
+    `uploaded primary-hero photo remains the visual identity anchor, and supporting ` +
+    `photos are only operator-review references rather than exact-likeness guarantees):\n${lines.join('\n')}`
   );
 }
 

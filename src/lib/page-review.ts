@@ -4,7 +4,7 @@
 // updateFulfillmentState() at the end. Tests can also call the pure helpers
 // directly via applyAcceptPage()/applyRegeneratePage().
 
-import { appendAuditEvent, getOrder, getOrderPhotoUrl, updateFulfillmentState } from './orders.ts';
+import { appendAuditEvent, getOrder, getOrderPhotoUrl, orderRequiresReferenceImage, updateFulfillmentState } from './orders.ts';
 import type {
   OrderRecord,
   PageArtifact,
@@ -174,7 +174,11 @@ export async function regeneratePage(
   // initial generation, with no text-only fallback.
   const referenceImageUrl = getOrderPhotoUrl(order);
   const result = await generate(
-    { prompt, referenceImageUrl },
+    {
+      prompt,
+      referenceImageUrl,
+      referenceImageRequired: orderRequiresReferenceImage(order),
+    },
     { providers: deps.providers },
   );
   const now = (deps.now ?? (() => new Date()))();
