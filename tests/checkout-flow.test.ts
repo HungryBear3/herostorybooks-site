@@ -7,10 +7,11 @@ import {
   PRINT_PREVIEW_PROMISE,
   PHOTO_UPLOAD_HELP,
   canSubmitCheckoutForm,
-  selectAdventureValue,
-  missingRequiredField,
-  missingFieldPrompt,
   currentCheckoutStep,
+  likenessIntentForPhoto,
+  missingFieldPrompt,
+  missingRequiredField,
+  selectAdventureValue,
 } from '../src/lib/checkout-flow.ts';
 
 const CHECKOUT_FORM_SRC = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
@@ -31,20 +32,25 @@ test('print preview promise clearly says approval happens before printing', () =
   assert.match(PRINT_PREVIEW_PROMISE, /before it prints/i);
 });
 
-test('photo upload help supports gift buyers who want to start before finding a photo', () => {
-  assert.match(PHOTO_UPLOAD_HELP, /start now/i);
-  assert.match(PHOTO_UPLOAD_HELP, /add a photo later/i);
+test('photo upload help explains the photo-or-description path', () => {
+  assert.match(PHOTO_UPLOAD_HELP, /look like them/i);
+  assert.match(PHOTO_UPLOAD_HELP, /without a photo/i);
+  assert.match(PHOTO_UPLOAD_HELP, /description/i);
   assert.match(PHOTO_UPLOAD_HELP, /automatically reduced/i);
+  assert.doesNotMatch(PHOTO_UPLOAD_HELP, /required before production starts/i);
 });
 
-// ── Required adventure + submit gating ───────────────────────────────────────
+test('likeness intent is derived from photo presence', () => {
+  assert.equal(likenessIntentForPhoto(true), 'match');
+  assert.equal(likenessIntentForPhoto(false), 'storybook');
+});
 
 const FULL = {
   theme: 'brave-explorer',
   childName: 'Emma',
   email: 'a@b.com',
-  skinTone: 'medium',
-  hairStyle: 'curly',
+  appearanceDescription: 'warm brown skin and short curly dark hair',
+  photoReady: false,
 };
 
 test('canSubmitCheckoutForm: blocks submit when no adventure is selected', () => {
@@ -56,14 +62,17 @@ test('canSubmitCheckoutForm: blocks submit when childName or email is missing', 
   assert.equal(canSubmitCheckoutForm({ ...FULL, email: '' }), false);
 });
 
-test('canSubmitCheckoutForm: blocks submit when skinTone is missing (launch spec requires explicit value)', () => {
-  assert.equal(canSubmitCheckoutForm({ ...FULL, skinTone: '' }), false);
-  assert.equal(canSubmitCheckoutForm({ ...FULL, skinTone: '   ' }), false);
+test('canSubmitCheckoutForm: no-photo hero requires a written appearance description', () => {
+  assert.equal(canSubmitCheckoutForm({ ...FULL, appearanceDescription: '' }), false);
+  assert.equal(canSubmitCheckoutForm({ ...FULL, appearanceDescription: '   ' }), false);
 });
 
-test('canSubmitCheckoutForm: blocks submit when hairStyle is missing', () => {
-  assert.equal(canSubmitCheckoutForm({ ...FULL, hairStyle: '' }), false);
-  assert.equal(canSubmitCheckoutForm({ ...FULL, hairStyle: '   ' }), false);
+test('canSubmitCheckoutForm: a hero photo satisfies the appearance gate without written details', () => {
+  assert.equal(canSubmitCheckoutForm({
+    ...FULL,
+    appearanceDescription: '',
+    photoReady: true,
+  }), true);
 });
 
 test('canSubmitCheckoutForm: does not require hero pronouns', () => {
@@ -84,8 +93,12 @@ test('missingRequiredField: reports the first gap for the disabled-state label',
   assert.equal(missingRequiredField({ ...FULL, theme: '' }), 'adventure');
   assert.equal(missingRequiredField({ ...FULL, childName: '' }), 'name');
   assert.equal(missingRequiredField({ ...FULL, email: '' }), 'email');
-  assert.equal(missingRequiredField({ ...FULL, skinTone: '' }), 'skin_tone');
-  assert.equal(missingRequiredField({ ...FULL, hairStyle: '' }), 'hair_style');
+  assert.equal(missingRequiredField({ ...FULL, appearanceDescription: '' }), 'appearance_description');
+  assert.equal(missingRequiredField({
+    ...FULL,
+    appearanceDescription: '',
+    photoReady: true,
+  }), null);
   assert.equal(missingRequiredField(FULL), null);
 });
 
@@ -93,26 +106,25 @@ test('missingFieldPrompt: gives clear next-action copy for the checkout CTA/help
   assert.match(missingFieldPrompt('adventure'), /choose an adventure/i);
   assert.match(missingFieldPrompt('name'), /enter.*child.?s name/i);
   assert.match(missingFieldPrompt('email'), /enter.*email/i);
-  assert.match(missingFieldPrompt('skin_tone'), /select.*skin tone/i);
-  assert.match(missingFieldPrompt('hair_style'), /select.*hair/i);
+  assert.match(missingFieldPrompt('appearance_description'), /describe.*hero/i);
   assert.equal(missingFieldPrompt(null), null);
 });
 
 test('currentCheckoutStep: surfaces the current step and completed count clearly', () => {
   assert.deepEqual(currentCheckoutStep({
-    theme: '', childName: '', email: '', skinTone: '', hairStyle: '', photoReady: false,
+    theme: '', childName: '', email: '', appearanceDescription: '', photoReady: false,
   }), { current: 'Adventure', completedCount: 0, totalCount: 5 });
 
   assert.deepEqual(currentCheckoutStep({
-    theme: 'brave-explorer', childName: '', email: '', skinTone: '', hairStyle: '', photoReady: false,
+    theme: 'brave-explorer', childName: '', email: '', appearanceDescription: '', photoReady: false,
   }), { current: 'Hero', completedCount: 1, totalCount: 5 });
 
   assert.deepEqual(currentCheckoutStep({
-    theme: 'brave-explorer', childName: 'Emma', email: 'a@b.com', skinTone: 'medium', hairStyle: 'curly', photoReady: false,
+    theme: 'brave-explorer', childName: 'Emma', email: 'a@b.com', appearanceDescription: 'short curly dark hair', photoReady: false,
   }), { current: 'Photo', completedCount: 4, totalCount: 5 });
 
   assert.deepEqual(currentCheckoutStep({
-    theme: 'brave-explorer', childName: 'Emma', email: 'a@b.com', skinTone: 'medium', hairStyle: 'curly', photoReady: true,
+    theme: 'brave-explorer', childName: 'Emma', email: 'a@b.com', appearanceDescription: '', photoReady: true,
   }), { current: 'Ready to checkout', completedCount: 5, totalCount: 5 });
 });
 

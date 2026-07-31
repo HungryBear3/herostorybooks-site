@@ -1,12 +1,13 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
-import { get, list, put } from '@vercel/blob';
+import { del, get, list, put } from '@vercel/blob';
 
 import type { CheckoutTracking } from './checkout-tracking.ts';
 import type { CustomerQueueStatus } from './order-queue.ts';
 import type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts';
+import { validateOrderPhotoFile } from './photo-file-validation.ts';
 import { PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
 export type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta };
 
@@ -388,6 +389,15 @@ export type FamilyCharacterRole =
   | 'whole-family'
   | 'other';
 
+export type CharacterLikenessIntent = 'reference' | 'storybook';
+export type CharacterMustInclude =
+  | 'glasses'
+  | 'hearing-aid'
+  | 'wheelchair'
+  | 'head-covering'
+  | 'braces'
+  | 'custom-detail';
+
 export interface FamilyCharacterInput {
   role?: FamilyCharacterRole | string | null;
   name?: string | null;
@@ -399,6 +409,9 @@ export interface FamilyCharacterInput {
   photoFileName?: string | null;
   photoBlobPath?: string | null;
   photoBlobUrl?: string | null;
+  likenessIntent?: CharacterLikenessIntent | string | null;
+  mustInclude?: CharacterMustInclude[] | string[] | null;
+  mustIncludeOther?: string | null;
   /** Phase-A photo-assignment MVP: who to use from a multi-person photo. */
   focusPersonLabel?: string | null;
   /** Where that person sits in the photo, e.g. "center", "top-left". */
@@ -416,6 +429,9 @@ export interface FamilyCharacter {
   photoFileName: string | null;
   photoBlobPath: string | null;
   photoBlobUrl: string | null;
+  likenessIntent: CharacterLikenessIntent;
+  mustInclude: CharacterMustInclude[];
+  mustIncludeOther: string;
   focusPersonLabel: string | null;
   cropHint: string | null;
 }
@@ -459,6 +475,27 @@ const FAMILY_CHARACTER_ROLES = new Set<FamilyCharacterRole>([
   'whole-family',
   'other',
 ]);
+const CHARACTER_MUST_INCLUDE = new Set<CharacterMustInclude>([
+  'glasses',
+  'hearing-aid',
+  'wheelchair',
+  'head-covering',
+  'braces',
+  'custom-detail',
+]);
+
+function sanitizeMustInclude(value: unknown): CharacterMustInclude[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((item) => cleanShortText(item, 40).toLowerCase())
+        .filter((item): item is CharacterMustInclude =>
+          CHARACTER_MUST_INCLUDE.has(item as CharacterMustInclude),
+        ),
+    ),
+  ).slice(0, CHARACTER_MUST_INCLUDE.size);
+}
 
 function cleanShortText(value: unknown, max = FAMILY_CHARACTER_MAX_FIELD): string {
   return String(value ?? '')
@@ -498,6 +535,11 @@ export function sanitizeFamilyCharacters(input: OrderInput['familyCharacters']):
         (role === 'whole-family' ? 'whole family' : role);
       const notes = cleanShortText(character?.notes, FAMILY_CHARACTER_MAX_NOTES);
       const pronouns = cleanShortText(character?.pronouns, 32);
+      const photoFileName = cleanShortText(character?.photoFileName, 120) || null;
+      const photoBlobPath = cleanShortText(character?.photoBlobPath, 500) || null;
+      const photoBlobUrl = cleanShortText(character?.photoBlobUrl, 500) || null;
+      const likenessIntent: CharacterLikenessIntent =
+        photoFileName || photoBlobPath || photoBlobUrl ? 'reference' : 'storybook';
       return {
         role,
         name,
@@ -506,9 +548,12 @@ export function sanitizeFamilyCharacters(input: OrderInput['familyCharacters']):
         notes,
         isGiftRecipient: Boolean(character?.isGiftRecipient),
         appearsInStory: character?.appearsInStory === false ? false : true,
-        photoFileName: cleanShortText(character?.photoFileName, 120) || null,
-        photoBlobPath: cleanShortText(character?.photoBlobPath, 500) || null,
-        photoBlobUrl: cleanShortText(character?.photoBlobUrl, 500) || null,
+        photoFileName,
+        photoBlobPath,
+        photoBlobUrl,
+        likenessIntent,
+        mustInclude: sanitizeMustInclude(character?.mustInclude),
+        mustIncludeOther: cleanShortText(character?.mustIncludeOther, 80),
         focusPersonLabel: cleanShortText(character?.focusPersonLabel, 120) || null,
         cropHint: cleanShortText(character?.cropHint, 40) || null,
       };
@@ -1007,7 +1052,8 @@ function getOrdersListPrefix() {
  *      sometimes store a full URL there).
  *   3. Reconstruct from process.env.HSB_PUBLIC_BLOB_BASE + photoBlobPath
  *      (legacy path for orders persisted before photoBlobUrl was added).
- *   4. Otherwise null — the orchestrator will fall through to text-only FAL.
+ *   4. Otherwise null — the orchestrator decides whether this is an explicit
+ *      storybook lane or a missing-reference failure from persisted order intent.
  *
  * Returning null is by design: it signals "we cannot photo-condition this
  * order safely" rather than fabricating a URL the FAL provider would 404 on.
@@ -1029,8 +1075,19 @@ export function getOrderPhotoUrl(
   const explicit = process.env.HSB_PUBLIC_BLOB_BASE?.replace(/\/$/, '');
   if (explicit) return `${explicit}/${blobPath}`;
 
-  // 4. No way to resolve — caller falls back to text-only.
+  // 4. No way to resolve — caller must consult orderRequiresReferenceImage.
   return null;
+}
+
+/** True when the persisted order contract says customer-photo conditioning is required. */
+export function orderRequiresReferenceImage(
+  order: Pick<OrderRecord, 'photoFileName' | 'photoBlobPath' | 'photoBlobUrl'>,
+): boolean {
+  return Boolean(
+    order.photoFileName?.trim() ||
+      order.photoBlobPath?.trim() ||
+      order.photoBlobUrl?.trim(),
+  );
 }
 
 /**
@@ -1136,19 +1193,23 @@ async function uploadOrderPhotoAtPath(
     return null;
   }
 
-  const safeName = (file.name || 'photo')
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'photo';
+  const validation = await validateOrderPhotoFile(file);
+  if (!validation.ok) return null;
+
+  // Never reuse caller-controlled bytes, filename, or content type in public
+  // Blob storage. Validation above fully decodes and re-encodes one canonical
+  // metadata-free JPEG before returning these bytes.
+  const safeName = `upload.${validation.extension}`;
 
   const pathname = withBlobNamespace(pathnameForSafeName(safeName));
-  const buffer = Buffer.from(await file.arrayBuffer());
+  const buffer = validation.normalizedBytes;
 
   try {
     const blob = await put(pathname, buffer, {
       access: getBlobAccessMode(),
       allowOverwrite: true,
       addRandomSuffix: false,
-      contentType: file.type || 'application/octet-stream',
+      contentType: validation.contentType,
       token,
     });
     return { pathname: blob.pathname, url: blob.url };
@@ -1185,6 +1246,73 @@ export async function uploadOrderSupportingPhoto(
     file,
     (safeName) => `orders/${orderId}/supporting-${safeIndex}-photo-${safeName}`,
   );
+}
+
+export interface OrderMediaRollbackDeps {
+  deleteBlob?: (pathname: string) => Promise<void>;
+}
+
+/**
+ * Delete media uploaded during a checkout that failed before its final order
+ * record was persisted. Paths are constrained to the deterministic namespace
+ * for this order so a caller can never turn cleanup into arbitrary Blob
+ * deletion. Each object gets one retry before the failure is surfaced.
+ */
+export async function rollbackOrderMediaUploads(
+  orderId: string,
+  pathnames: readonly string[],
+  deps: OrderMediaRollbackDeps = {},
+): Promise<number> {
+  const uniquePaths = [...new Set(pathnames.filter(Boolean))];
+  if (uniquePaths.length === 0) return 0;
+
+  const expectedPrefix = withBlobNamespace(`orders/${orderId}/`);
+  for (const pathname of uniquePaths) {
+    if (!pathname.startsWith(expectedPrefix)) {
+      throw new OrderPersistenceError(
+        orderId,
+        `Refusing checkout-media rollback outside the order namespace: ${pathname}`,
+      );
+    }
+  }
+
+  const token = getBlobToken();
+  const deleteBlob = deps.deleteBlob ?? (token
+    ? async (pathname: string) => { await del(pathname, { token }); }
+    : null);
+  if (!deleteBlob) {
+    if (requiresDurablePersistence()) {
+      throw new OrderPersistenceError(
+        orderId,
+        'BLOB_READ_WRITE_TOKEN missing in production — cannot roll back uploaded customer media',
+      );
+    }
+    return 0;
+  }
+
+  const failures: Array<{ pathname: string; cause: unknown }> = [];
+  for (const pathname of uniquePaths) {
+    let deleted = false;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2 && !deleted; attempt += 1) {
+      try {
+        await deleteBlob(pathname);
+        deleted = true;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!deleted) failures.push({ pathname, cause: lastError });
+  }
+
+  if (failures.length > 0) {
+    throw new OrderPersistenceError(
+      orderId,
+      `Customer media rollback failed for ${failures.length} Blob object(s)`,
+      failures,
+    );
+  }
+  return uniquePaths.length;
 }
 
 export async function persistOrder(order: OrderRecord) {

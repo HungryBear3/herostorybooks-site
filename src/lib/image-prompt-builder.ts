@@ -124,35 +124,79 @@ function characterAnchorSection(anchor: string | null | undefined): string {
   ].join('\n');
 }
 
-function parseAppearanceOptions(raw: string | undefined): Record<string, string> {
+type ParsedAppearanceOptions = Record<string, string | string[]>;
+
+function parseAppearanceOptions(raw: string | undefined): ParsedAppearanceOptions {
   if (!raw?.trim()) return {};
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return Object.fromEntries(
-      Object.entries(parsed)
-        .filter(([, value]) => typeof value === 'string' && value.trim())
-        .map(([key, value]) => [key, String(value).trim()]),
+      Object.entries(parsed).flatMap<[string, string | string[]]>(([key, value]) => {
+        if (typeof value === 'string' && value.trim()) {
+          return [[key, value.trim()]];
+        }
+        if (Array.isArray(value)) {
+          const items = value
+            .filter((item): item is string => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .slice(0, 8);
+          return items.length > 0 ? [[key, items]] : [];
+        }
+        return [];
+      }),
     );
   } catch {
     return { raw: raw.trim() };
   }
 }
 
+function appearanceText(options: ParsedAppearanceOptions, key: string): string {
+  const value = options[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function appearanceList(options: ParsedAppearanceOptions, key: string): string[] {
+  const value = options[key];
+  return Array.isArray(value) ? value : [];
+}
+
 function describeLockedAppearance(order: PagePromptInput['order']): string[] {
   const options = parseAppearanceOptions(order.appearanceOptions);
   const lines: string[] = [];
-  const pronouns = (order.childPronouns ?? '').toLowerCase();
-  if (pronouns.includes('he/him')) {
-    lines.push('Gender presentation lock: Lukas is a young boy; do not feminize him, do not give him long hair, a bob, pigtails, hair ribbons, makeup, dresses, or feminine-coded styling.');
+  const skinTone = appearanceText(options, 'skinTone');
+  const hairStyle = appearanceText(options, 'hairStyle');
+  const eyewear = appearanceText(options, 'eyewear');
+  const description = appearanceText(options, 'description');
+  const likenessIntent = appearanceText(options, 'likenessIntent');
+  const mustInclude = appearanceList(options, 'mustInclude')
+    .filter((item) => item !== 'custom-detail')
+    .map((item) => item.replace(/-/g, ' '));
+  const mustIncludeOther = appearanceText(options, 'mustIncludeOther');
+  const pronouns = (order.childPronouns ?? '').trim();
+  if (pronouns) {
+    lines.push(`Pronouns context: ${pronouns}. Do not infer hairstyle, hair length, clothing, accessories, or gender-coded details from pronouns alone.`);
   }
-  if (options.skinTone) lines.push(`Skin tone: ${options.skinTone}.`);
-  if (options.hairStyle === 'straight-dark') {
-    lines.push('Hair lock: short straight dark boy haircut, hair above the ears/neck, neat and childlike; never shoulder-length or long.');
-  } else if (options.hairStyle) {
-    lines.push(`Hair lock: ${options.hairStyle}; keep the same hair length and style on every page.`);
+  const descriptionMentionsHair = /\b(hair|bald|braid|curl|locs?|locks?|afro|ponytail|pigtail|bob|buzz cut)\b/i.test(description);
+  if (skinTone) lines.push(`Skin tone: ${skinTone}.`);
+  if (!descriptionMentionsHair && hairStyle === 'straight-dark') {
+    lines.push('Hair lock: straight dark hair; preserve the customer-supplied length and styling on every page, and do not invent a restrictive haircut when length is unspecified.');
+  } else if (!descriptionMentionsHair && hairStyle) {
+    lines.push(`Hair lock: ${hairStyle}; keep the same hair length and style on every page.`);
   }
-  if (options.eyewear) lines.push(`Eyewear: ${options.eyewear}.`);
-  if (options.raw) lines.push(`Appearance: ${options.raw}.`);
+  if (eyewear) lines.push(`Eyewear: ${eyewear}.`);
+  if (description) lines.push(`Appearance description: ${description}.`);
+  if (likenessIntent === 'storybook') {
+    lines.push('Identity treatment: illustrate as a storybook character from the written description; do not imply a real-face match.');
+  } else if (likenessIntent === 'match') {
+    lines.push('Identity treatment: preserve the uploaded hero photo likeness closely.');
+  }
+  const requiredVisibleDetails = [...mustInclude, mustIncludeOther].filter(Boolean);
+  if (requiredVisibleDetails.length > 0) {
+    lines.push(`Mandatory visible details on every applicable page: ${requiredVisibleDetails.join(', ')}.`);
+  }
+  const raw = appearanceText(options, 'raw');
+  if (raw) lines.push(`Appearance: ${raw}.`);
   return lines;
 }
 
@@ -164,7 +208,7 @@ function childIdentitySection(order: PagePromptInput['order']): string {
     lines.push(`Character notes: ${order.characterNotes.trim()}.`);
   }
   if (order.photoBlobPath) {
-    lines.push('Reference photo of the child is provided; preserve facial likeness, age, haircut, and boyish presentation across every page.');
+    lines.push('Reference photo of the child is provided; preserve facial likeness, apparent age, hairstyle, skin tone, and gender presentation across every page.');
   }
   return lines.join(' ');
 }
@@ -173,8 +217,8 @@ function continuitySection(order: PagePromptInput['order']): string {
   return [
     'Maintain visual continuity with prior pages of the same book:',
     `same child (${order.childName.trim()})`,
-    'same apparent age, same short dark haircut, same hair length, same skin tone, and same outfit unless the story explicitly calls for a change',
-    'never change the child into a girl, never add long hair, never add feminine hair accessories, never soften the face into a different child',
+    'preserve the supplied appearance description, same apparent age, hairstyle and color, skin tone, visible accessibility details, and outfit unless the story explicitly calls for a change',
+    'do not invent a different gender presentation, hairstyle, facial structure, assistive device, or different child',
     'no masks, no face-obscuring accessories, no logo costume treatment unless the story explicitly requires it',
     'same illustration style, same painterly rendering language, and same color palette',
     'the style does not change for indoor, nighttime, cave, or moonlit scenes',

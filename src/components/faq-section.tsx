@@ -19,7 +19,7 @@ const faqs = [
   },
   {
     question: "What format do I need for photos?",
-    answer: "We accept JPEG, PNG, and HEIC formats. For best results, use a clear, well-lit photo with your child's face visible. Our team will optimize your photo to look beautiful in the book. Portrait-oriented photos work best.",
+    answer: "We accept JPEG, PNG, and WebP formats. For best results, use a clear, well-lit photo with your child's face visible. Our team will optimize your photo to look beautiful in the book. Portrait-oriented photos work best.",
   },
   {
     question: "Is this suitable for different age groups?",

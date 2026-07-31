@@ -50,14 +50,20 @@ function withEnv<T>(
   }
 }
 
-test('routing: photo absent → empty chain regardless of Gemini gate state', () => {
+test('routing: explicit storybook order without a photo uses text-only FAL', () => {
   withEnv(
     { HSB_ENABLE_GEMINI_IMAGE: 'true', GOOGLE_GEMINI_API_KEY: 'k' },
     () => {
-      const chain = defaultProviderOrder({ prompt: 'p' });
-      assert.equal(chain.length, 0, 'photo-absent branch must never produce a chain');
+      const chain = defaultProviderOrder({ prompt: 'p', referenceImageRequired: false });
+      assert.equal(chain.length, 1);
+      assert.equal(chain[0]!.name, 'fal');
     },
   );
+});
+
+test('routing: reference order with a missing photo URL fails closed with an empty chain', () => {
+  const chain = defaultProviderOrder({ prompt: 'p', referenceImageRequired: true });
+  assert.equal(chain.length, 0);
 });
 
 test('routing: gate OFF → legacy [seedream, fal_edit] chain unchanged', () => {

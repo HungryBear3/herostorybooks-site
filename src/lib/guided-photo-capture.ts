@@ -66,15 +66,13 @@ export interface GuidedReferencePhotoRecord {
 }
 
 // ── Capture/upload guardrails ────────────────────────────────────────────────
-// Still images only — NEVER video. Mobile cameras commonly emit HEIC/HEIF, so
-// those are allowed alongside the web-standard still formats.
+// Still images only — NEVER video. Keep this list aligned with formats that the
+// deployed Sharp runtime is proven to decode and normalize.
 export const ACCEPTED_GUIDED_PHOTO_MIME = [
   'image/jpeg',
   'image/jpg',
   'image/png',
   'image/webp',
-  'image/heic',
-  'image/heif',
 ] as const;
 export const MAX_GUIDED_PHOTOS = 8;
 export const MAX_GUIDED_PHOTO_BYTES = 12 * 1024 * 1024; // 12 MB per still
@@ -256,7 +254,7 @@ export async function collectGuidedReferencePhotos(
         records: [],
         status: 400,
         code: 'guided_photo_invalid_type',
-        error: 'Guided reference photos must be still images (JPEG, PNG, WebP, or HEIC) — never video. No charge was made.',
+        error: 'Guided reference photos must be JPEG, PNG, or WebP still images — never video. No charge was made.',
       };
     }
     if (file.size > MAX_GUIDED_PHOTO_BYTES) {

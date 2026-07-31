@@ -42,6 +42,21 @@ export const falImageProvider: ImageProvider = {
     deps: ImageProviderDeps = {},
   ): Promise<GeneratedImageResult> {
     const startedAt = Date.now();
+    const hasReference = Boolean(
+      input.referenceImageUrl || (input.imageUrls && input.imageUrls.length > 0),
+    );
+    if (input.referenceImageRequired && !hasReference) {
+      return {
+        imageUrl: null,
+        provider: 'fal',
+        model: DEFAULT_MODEL,
+        promptUsed: input.prompt,
+        conditioning: 'photo_edit',
+        referencePhotoUrl: null,
+        latencyMs: Date.now() - startedAt,
+        error: 'Reference image required but missing',
+      };
+    }
     const apiKey = process.env.FAL_KEY;
     if (!apiKey) {
       return {

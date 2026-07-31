@@ -32,7 +32,7 @@ const MOCK_PDF = Buffer.from('%PDF-1.4 mock');
 
 const PASS_DEPS: FulfillmentDeps = {
   generateStory: async () => MOCK_STORY,
-  generateImages: async (prompts) => prompts.map(() => null),
+  generateImages: async (prompts) => prompts.map((_, index) => `https://cdn.example.com/page-${index + 1}.jpg`),
   buildPdf: async () => MOCK_PDF,
   buildPrintInteriorPdf: async () => Buffer.from('%PDF-1.4 mock-interior'),
   buildPrintCoverPdf: () => Buffer.from('%PDF-1.4 mock-cover'),
@@ -200,6 +200,41 @@ test('digital fulfillment final write preserves proof audit event and page artif
     assert.equal(after?.auditEvents?.filter((e) => e.type === 'proof_generated').length, 1);
     assert.equal(after?.auditEvents?.[0]?.meta?.pageCount, MOCK_STORY.pages.length);
     assert.ok(after?.storyArtifactUrl?.includes('.pdf'));
+  } finally {
+    cleanupTmpDir(dir);
+  }
+});
+
+test('digital fulfillment fails closed before PDF/upload when any generated image is missing', async () => {
+  const dir = makeTmpDir();
+  let buildCalls = 0;
+  let uploadCalls = 0;
+  try {
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'digital',
+      photoBlobPath: 'orders/reference/photo-upload.jpg',
+      photoBlobUrl: null,
+    }, dir);
+    await triggerFulfillment(order.id, {
+      ...PASS_DEPS,
+      generateImages: async (prompts) => prompts.map(() => null),
+      buildPdf: async () => {
+        buildCalls += 1;
+        return MOCK_PDF;
+      },
+      uploadArtifact: async () => {
+        uploadCalls += 1;
+        return 'https://cdn.example.com/should-not-exist.pdf';
+      },
+    });
+    const after = await getOrder(order.id);
+    assert.equal(after?.fulfillmentStatus, 'failed_manual_review');
+    assert.match(after?.fulfillmentLastError ?? '', /image_generation_incomplete:digital_fulfillment/);
+    assert.ok(!after?.storyArtifactUrl);
+    assert.equal(after?.pageArtifacts?.length ?? 0, 0);
+    assert.equal(buildCalls, 0);
+    assert.equal(uploadCalls, 0);
   } finally {
     cleanupTmpDir(dir);
   }
@@ -465,7 +500,10 @@ test('digital fulfillment: duplicate triggerFulfillment is idempotent (no double
     const counting: FulfillmentDeps = {
       ...PASS_DEPS,
       generateStory: async () => { storyCalls++; return MOCK_STORY; },
-      generateImages: async (prompts) => { imageCalls++; return prompts.map(() => null); },
+      generateImages: async (prompts) => {
+        imageCalls++;
+        return prompts.map((_, index) => `https://cdn.example.com/idempotent-${index + 1}.jpg`);
+      },
       buildPdf: async () => { pdfCalls++; return MOCK_PDF; },
       submitPrint: async () => { submitPrintCalls++; return { jobId: 'never' }; },
     };

@@ -19,7 +19,7 @@ test('shouldAutoShrinkPhoto returns true for oversized browser-resizable photos'
   assert.equal(shouldAutoShrinkPhoto(file), true);
 });
 
-test('shouldAutoShrinkPhoto stays false for oversized HEIC files we cannot safely resize in-browser', () => {
+test('checkout upload helper excludes HEIC from browser-resizable formats', () => {
   const file = {
     name: 'hero-photo.heic',
     size: MAX_PHOTO_BYTES + 1024,
@@ -39,6 +39,20 @@ test('shouldAutoShrinkPhoto stays false for already-small uploads', () => {
 
   assert.equal(isBrowserResizablePhoto(file), true);
   assert.equal(shouldAutoShrinkPhoto(file), false);
+});
+
+test('shouldAutoShrinkPhoto honors a checkout-specific byte budget', () => {
+  assert.equal(
+    shouldAutoShrinkPhoto(
+      {
+        name: 'family-photo.jpg',
+        type: 'image/jpeg',
+        size: 2 * 1024 * 1024,
+      },
+      1.1 * 1024 * 1024,
+    ),
+    true,
+  );
 });
 
 test('buildAutoShrinkNotice explains that the phone photo was reduced automatically', () => {

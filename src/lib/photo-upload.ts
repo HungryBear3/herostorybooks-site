@@ -5,13 +5,11 @@ const MIN_JPEG_QUALITY = 0.55;
 const INITIAL_JPEG_QUALITY = 0.86;
 const RESIZABLE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const RESIZABLE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp']);
-export const ALLOWED_PHOTO_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'];
+export const ALLOWED_PHOTO_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'];
 export const ALLOWED_PHOTO_MIME_TYPES = new Set([
   'image/jpeg',
   'image/png',
   'image/webp',
-  'image/heic',
-  'image/heif',
 ]);
 
 export type BasicPhotoFile = {
@@ -24,20 +22,14 @@ export function getPhotoExtension(fileName: string) {
   return fileName.split('.').pop()?.trim().toLowerCase() ?? '';
 }
 
-export function isHeicLikePhoto(file: BasicPhotoFile) {
-  const extension = getPhotoExtension(file.name);
-  const mimeType = file.type.toLowerCase();
-  return mimeType === 'image/heic' || mimeType === 'image/heif' || extension === 'heic' || extension === 'heif';
-}
-
 export function isBrowserResizablePhoto(file: BasicPhotoFile) {
   const extension = getPhotoExtension(file.name);
   const mimeType = file.type.toLowerCase();
   return RESIZABLE_MIME_TYPES.has(mimeType) || RESIZABLE_EXTENSIONS.has(extension);
 }
 
-export function shouldAutoShrinkPhoto(file: BasicPhotoFile) {
-  return file.size > MAX_PHOTO_BYTES && isBrowserResizablePhoto(file) && !isHeicLikePhoto(file);
+export function shouldAutoShrinkPhoto(file: BasicPhotoFile, maxBytes = MAX_PHOTO_BYTES) {
+  return file.size > maxBytes && isBrowserResizablePhoto(file);
 }
 
 function formatMb(bytes: number) {
@@ -99,8 +91,8 @@ async function canvasToFile(canvas: HTMLCanvasElement, type: string, quality: nu
   return new File([blob], `${baseName}.${extension}`, { type, lastModified: Date.now() });
 }
 
-export async function shrinkPhotoForUpload(file: File) {
-  if (!shouldAutoShrinkPhoto(file)) {
+export async function shrinkPhotoForUpload(file: File, maxBytes = MAX_PHOTO_BYTES) {
+  if (!shouldAutoShrinkPhoto(file, maxBytes)) {
     return file;
   }
 
@@ -127,7 +119,7 @@ export async function shrinkPhotoForUpload(file: File) {
 
     const candidate = await canvasToFile(canvas, outputType, currentQuality, file.name);
     best = candidate;
-    if (candidate.size <= MAX_PHOTO_BYTES) {
+    if (candidate.size <= maxBytes) {
       return candidate;
     }
 
@@ -139,7 +131,7 @@ export async function shrinkPhotoForUpload(file: File) {
     currentMaxDimension = Math.max(900, Math.round(currentMaxDimension * 0.85));
   }
 
-  if (best && best.size <= MAX_PHOTO_BYTES) {
+  if (best && best.size <= maxBytes) {
     return best;
   }
 

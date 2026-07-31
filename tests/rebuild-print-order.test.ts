@@ -311,6 +311,52 @@ test('rebuildPrintOrder: classic full rebuild updates artifacts + resets review 
   } finally { cleanup(dir); }
 });
 
+test('rebuildPrintOrder: missing generated image aborts before PDF/upload/persistence', async () => {
+  const dir = makeTmp();
+  let buildCalls = 0;
+  let uploadCalls = 0;
+  try {
+    const before = await seed({
+      bookFormat: 'classic',
+      photoBlobPath: 'orders/ord_rebuild_test/photo-upload.jpg',
+      photoBlobUrl: null,
+    });
+    const deps = fakeDeps();
+    deps.generateImageResults = async (prompts) => prompts.map((prompt) => ({
+      imageUrl: null,
+      provider: 'fal_edit',
+      model: 'missing-reference',
+      promptUsed: prompt,
+      latencyMs: 0,
+      error: 'reference unavailable',
+    }));
+    deps.buildPdf = async () => {
+      buildCalls += 1;
+      return Buffer.from('%PDF should not build');
+    };
+    deps.buildPrintInteriorPdf = async () => {
+      buildCalls += 1;
+      return Buffer.from('%PDF should not build');
+    };
+    deps.uploadArtifact = async () => {
+      uploadCalls += 1;
+      return 'https://rebuilt.example/should-not-upload.pdf';
+    };
+
+    await assert.rejects(
+      () => rebuildPrintOrder('ord_rebuild_test', { dryRun: false }, deps),
+      /image_generation_incomplete:print_rebuild/,
+    );
+    const after = (await getOrder('ord_rebuild_test'))!;
+    assert.equal(after.storyArtifactUrl, before.storyArtifactUrl);
+    assert.equal(after.printInteriorArtifactUrl, before.printInteriorArtifactUrl);
+    assert.equal(after.pageArtifacts?.length, 6);
+    assert.equal(after.proofApprovalToken, 'legacy-token');
+    assert.equal(buildCalls, 0);
+    assert.equal(uploadCalls, 0);
+  } finally { cleanup(dir); }
+});
+
 test('rebuildPrintOrder: premium full rebuild produces 32 story pages + 38 interior page count', async () => {
   const dir = makeTmp();
   try {

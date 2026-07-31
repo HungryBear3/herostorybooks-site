@@ -410,16 +410,18 @@ for (const heroType of ['parent', 'grandparent'] as const) {
   });
 }
 
-test('OpenAI prompt: child hero keeps its child-safe visual rules (child path preserved)', async () => {
+test('OpenAI prompt: child identity follows customer appearance instead of pronoun/name defaults', async () => {
   await withEnv(
     { OPENAI_API_KEY: 'sk-test', HSB_ENABLE_OPENAI_STORY: 'true' },
     async () => {
       const { fetch, captured } = makeOpenAiSpyFetch();
       const order = createOrderRecord(
         {
-          childName: 'Lukas',
+          childName: 'Kai',
           childPronouns: 'he/him',
           childAge: '5',
+          characterNotes: 'a boy with waist-length blond hair',
+          appearanceOptions: JSON.stringify({ description: 'waist-length blond hair' }),
           bookFormat: 'digital',
           email: 'child@example.com',
           theme: 'brave-explorer',
@@ -432,10 +434,11 @@ test('OpenAI prompt: child hero keeps its child-safe visual rules (child path pr
       const user = userPromptOf(captured);
       const system = systemPromptOf(captured);
 
-      // Existing child-safe behavior must survive untouched.
-      assert.match(user, /describe and illustrate the hero as a young boy/);
+      assert.match(user, /Kai/);
+      assert.match(user, /waist-length blond hair/);
+      assert.match(user, /never infer them from the hero's name or pronouns/);
+      assert.doesNotMatch(user, /Lukas is a young boy|short straight dark boy|do not give him long hair/i);
       assert.doesNotMatch(user, /is a grown ADULT/);
-      // Child system prompt is the original, without the adult clause.
       assert.doesNotMatch(system, /grown adult/i);
     },
   );

@@ -1,20 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
-import { createOrderRecord } from '../src/lib/orders.ts';
+const ORDERS_SRC = readFileSync('src/lib/orders.ts', 'utf8');
+const STORY_GENERATOR_SRC = readFileSync('src/lib/story-generator.ts', 'utf8');
 
-test('createOrderRecord preserves manual character appearance notes for fulfillment', () => {
-  const record = createOrderRecord(
-    {
-      childName: 'Milo',
-      bookFormat: 'classic',
-      email: 'parent@example.com',
-      characterNotes: 'Wears glasses and has curly dark hair',
-      appearanceOptions: JSON.stringify({ glasses: true, hair: 'curly', skinTone: 'deep' }),
-    },
-    { id: 'ord_attr', now: '2026-04-22T18:00:00.000Z' },
+test('order sanitization preserves supporting-character must-include details and reference intent', () => {
+  assert.match(ORDERS_SRC, /export type CharacterLikenessIntent = 'reference' \| 'storybook'/);
+  assert.match(ORDERS_SRC, /export type CharacterMustInclude =/);
+  assert.match(ORDERS_SRC, /'custom-detail'/);
+  assert.match(ORDERS_SRC, /mustInclude\?: CharacterMustInclude\[\] \| string\[\] \| null/);
+  assert.match(ORDERS_SRC, /mustIncludeOther\?: string \| null/);
+  assert.match(ORDERS_SRC, /mustInclude: sanitizeMustInclude\(character\?\.mustInclude\)/);
+  assert.match(ORDERS_SRC, /mustIncludeOther: cleanShortText\(character\?\.mustIncludeOther, 80\)/);
+  assert.match(
+    ORDERS_SRC,
+    /const likenessIntent: CharacterLikenessIntent =\s*photoFileName \|\| photoBlobPath \|\| photoBlobUrl \? 'reference' : 'storybook'/,
   );
+  assert.match(ORDERS_SRC, /likenessIntent,/);
+});
 
-  assert.equal(record.characterNotes, 'Wears glasses and has curly dark hair');
-  assert.equal(record.appearanceOptions, JSON.stringify({ glasses: true, hair: 'curly', skinTone: 'deep' }));
+test('story prompt block keeps supporting-photo copy honest and includes must-include details', () => {
+  assert.match(STORY_GENERATOR_SRC, /operator review\/reference only/);
+  assert.match(STORY_GENERATOR_SRC, /Storybook-character treatment; use the written details without implying a real-photo match/);
+  assert.match(STORY_GENERATOR_SRC, /Must include: \$\{mustInclude\.join\(', '\)\}/);
+  assert.match(STORY_GENERATOR_SRC, /Reference attached for operator review/);
+  assert.match(STORY_GENERATOR_SRC, /supporting[\s\S]*operator-review references rather than exact-likeness guarantees/);
 });

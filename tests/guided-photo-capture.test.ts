@@ -35,7 +35,7 @@ test('guided capture appends still photos and consent metadata only', () => {
 
 test('guided capture accepts still images and rejects video files', () => {
   assert.equal(isAcceptedGuidedPhotoFile({ type: 'image/jpeg', name: 'front.jpg' }), true);
-  assert.equal(isAcceptedGuidedPhotoFile({ type: 'image/heic', name: 'front.heic' }), true);
+  assert.equal(isAcceptedGuidedPhotoFile({ type: 'image/heic', name: 'front.heic' }), false);
   assert.equal(isAcceptedGuidedPhotoFile({ type: 'video/mp4', name: 'front.mp4' }), false);
 });
 
