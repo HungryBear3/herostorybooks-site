@@ -41,6 +41,20 @@ test('shouldAutoShrinkPhoto stays false for already-small uploads', () => {
   assert.equal(shouldAutoShrinkPhoto(file), false);
 });
 
+test('shouldAutoShrinkPhoto honors a checkout-specific byte budget', () => {
+  assert.equal(
+    shouldAutoShrinkPhoto(
+      {
+        name: 'family-photo.jpg',
+        type: 'image/jpeg',
+        size: 2 * 1024 * 1024,
+      },
+      1.1 * 1024 * 1024,
+    ),
+    true,
+  );
+});
+
 test('buildAutoShrinkNotice explains that the phone photo was reduced automatically', () => {
   const notice = buildAutoShrinkNotice(6 * 1024 * 1024, 2 * 1024 * 1024);
 

@@ -581,7 +581,7 @@ export function CheckoutForm() {
 
   const processPhoto = useCallback(async (file: File) => {
     try {
-      const uploadFile = await shrinkPhotoForUpload(file);
+      const uploadFile = await shrinkPhotoForUpload(file, CHECKOUT_PHOTO_MAX_BYTES);
       if (uploadFile.size < file.size) {
         setPhotoNotice(buildAutoShrinkNotice(file.size, uploadFile.size));
       }
@@ -603,7 +603,7 @@ export function CheckoutForm() {
 
   const processSupportingCharacterPhoto = useCallback(async (id: string, file: File) => {
     try {
-      const uploadFile = await shrinkPhotoForUpload(file);
+      const uploadFile = await shrinkPhotoForUpload(file, CHECKOUT_PHOTO_MAX_BYTES);
       if (uploadFile.size < file.size) {
         setPhotoNotice(buildAutoShrinkNotice(file.size, uploadFile.size));
       }
