@@ -1,9 +1,9 @@
 import { NextResponse, after } from 'next/server';
 import Stripe from 'stripe';
 
-import { sendOrderConfirmationEmail } from '@/lib/order-email';
 import { isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
 import { scheduleFulfillmentKickoff } from '@/lib/fulfillment-kickoff';
+import { scheduleOrderConfirmationEmail } from '@/lib/order-confirmation-kickoff';
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
 import { parsePrintUpgradeTargetFormat, recordPrintUpgradePayment } from '@/lib/print-upgrades';
 
@@ -143,6 +143,7 @@ export async function POST(request: Request) {
       if (existing?.stripeSessionId === session.id) {
         if (existing.paymentStatus === 'paid') {
           console.warn(`Stripe webhook: session ${session.id} already processed — skipping payment update`);
+          scheduleOrderConfirmationEmail(existing, { afterImpl: after });
           if (!existing.fulfillmentStatus || existing.fulfillmentStatus === 'not_started') {
             // Repair path: a prior webhook/replay marked the order paid but
             // fulfillment never started. Schedule a kickoff via the
@@ -206,12 +207,15 @@ export async function POST(request: Request) {
         );
       }
 
-      await sendOrderConfirmationEmail(updated);
+      scheduleOrderConfirmationEmail(updated, { afterImpl: after });
 
       // Webhook contract:
       //   - The payment write (above) is awaited so the order is durably
       //     paid BEFORE we return 200 — a Stripe retry must never observe
       //     "still pending" after we've ack'd.
+      //   - Confirmation email and fulfillment are deferred after the durable
+      //     payment write. Resend uses a deterministic per-order idempotency
+      //     key so fallback/webhook overlap cannot duplicate the email.
       //   - Fulfillment is decoupled via scheduleFulfillmentKickoff which
       //     uses `setImmediate` (reliable in `next start`) plus
       //     `next/server after()` (serverless backup). Whichever scheduler

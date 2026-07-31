@@ -107,8 +107,17 @@ async function sendWithFallback(
     text: string;
     replyTo?: string;
   },
+  options: {
+    primaryIdempotencyKey?: string;
+    fallbackIdempotencyKey?: string;
+  } = {},
 ) {
-  const primary = await resend.emails.send(payload);
+  const primary = await resend.emails.send(
+    payload,
+    options.primaryIdempotencyKey
+      ? { idempotencyKey: options.primaryIdempotencyKey }
+      : undefined,
+  );
   if (!primary.error) {
     return assertResendSuccess(primary, context, payload.from);
   }
@@ -118,7 +127,12 @@ async function sendWithFallback(
     console.warn(
       `[order-email] ${context}: primary sender ${payload.from} unverified — retrying with HSB_EMAIL_FROM_FALLBACK=${fallback}`,
     );
-    const retry = await resend.emails.send({ ...payload, from: fallback });
+    const retry = await resend.emails.send(
+      { ...payload, from: fallback },
+      options.fallbackIdempotencyKey
+        ? { idempotencyKey: options.fallbackIdempotencyKey }
+        : undefined,
+    );
     return assertResendSuccess(retry, context, fallback);
   }
 
@@ -189,6 +203,9 @@ export async function sendOrderConfirmationEmail(order: OrderRecord) {
     html: email.html,
     text: email.text,
     replyTo: supportEmail,
+  }, {
+    primaryIdempotencyKey: `order-confirmation-${order.id}-primary-v1`,
+    fallbackIdempotencyKey: `order-confirmation-${order.id}-fallback-v1`,
   });
 }
 
