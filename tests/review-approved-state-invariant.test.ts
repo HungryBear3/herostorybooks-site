@@ -67,7 +67,7 @@ function page(i: number, o: Partial<PageArtifact> = {}): PageArtifact {
 
 async function seed(id: string, o: Partial<OrderRecord> = {}): Promise<OrderRecord> {
   const order: OrderRecord = {
-    ...createOrderRecord({ childName: 'Benny', bookFormat: 'digital', email: 'a@b.com' }, { id, now: NOW }),
+    ...createOrderRecord({ childName: 'Testkid', bookFormat: 'digital', email: 'a@b.com' }, { id, now: NOW }),
     paymentStatus: 'paid',
     reviewStatus: 'in_review',
     storyArtifactUrl: 'https://example.com/proof.pdf',

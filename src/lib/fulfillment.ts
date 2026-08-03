@@ -3,7 +3,7 @@ import { put } from '@vercel/blob';
 
 import { getOrder, getOrderPhotoUrl, isPrintFormat, orderRequiresReferenceImage, updateFulfillmentState, withBlobNamespace } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
-import type { OrderRecord } from './orders.ts';
+import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
 import { generateStory, generateStoryWithMeta } from './story-generator.ts';
 import type { StoryWithMeta } from './story-generator.ts';
@@ -629,9 +629,67 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
  * Fire-and-forget: errors are captured on the order record.
  */
 /**
- * Rebuild the proof PDF from the latest accepted/current per-page images.
- * Call this after the customer approves the whole book OR (optionally) after
- * any individual regenerate to keep the proof URL fresh.
+ * Stable fingerprint of the page-artifact set a proof PDF was built from.
+ *
+ * Building a proof is slow, so it necessarily happens OUTSIDE the guarded
+ * commit. This binds the produced artifact to the exact source it came from:
+ * a caller persists the proof only if the freshly-read order still has this
+ * same fingerprint. If a concurrent accept/regenerate changed any page in the
+ * meantime, the proof is stale and must be discarded or rebuilt — never
+ * written over newer state.
+ *
+ * Covers everything the PDF actually renders from: page order, story text, and
+ * the effective (accepted-or-current) image URL per page.
+ */
+export function proofSourceFingerprint(pages: PageArtifact[]): string {
+  const canonical = [...pages]
+    .sort((a, b) => a.pageIndex - b.pageIndex)
+    .map((p) => [
+      p.pageIndex,
+      p.storyText ?? '',
+      p.acceptedImageUrl ?? p.currentImageUrl ?? '',
+    ].join(' '))
+    .join('');
+  return `pf_${crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 32)}`;
+}
+
+export interface ProofBuildResult {
+  ok: boolean;
+  proofUrl?: string;
+  error?: string;
+  /** Fingerprint of the artifact set this PDF was built from. */
+  sourceFingerprint?: string;
+}
+
+/**
+ * Build + upload the proof PDF WITHOUT persisting anything to the order.
+ *
+ * This is the half of the rebuild that is safe to run outside a transaction.
+ * Persisting `storyArtifactUrl` (and clearing `proofReviewedAt`) is the
+ * caller's responsibility and must happen through a conditional commit that
+ * re-checks `sourceFingerprint`.
+ */
+export async function buildProofArtifactFromPageArtifacts(
+  orderId: string,
+  deps: FulfillmentDeps = {},
+): Promise<ProofBuildResult> {
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, error: 'Order not found' };
+  if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
+    return { ok: false, error: 'Order has no page artifacts to rebuild from' };
+  }
+  return buildProofArtifactFromOrder(order, deps);
+}
+
+/**
+ * Rebuild the proof PDF from the latest accepted/current per-page images and
+ * persist it unconditionally.
+ *
+ * NOTE: the persist below is a last-write-wins `updateFulfillmentState`. That is
+ * fine for the operator/fulfillment callers this exists for, but it is NOT safe
+ * for the customer editable-review flows, which race with each other. Those use
+ * `buildProofArtifactFromPageArtifacts` and persist inside their own guarded,
+ * fingerprint-checked transaction instead.
  */
 export async function rebuildProofFromPageArtifacts(
   orderId: string,
@@ -643,20 +701,45 @@ export async function rebuildProofFromPageArtifacts(
     return { ok: false, error: 'Order has no page artifacts to rebuild from' };
   }
 
+  const built = await buildProofArtifactFromOrder(order, deps);
+  if (!built.ok || !built.proofUrl) return built;
+
+  // Stale-ack invalidation: every successful rebuild produces a NEW PDF the
+  // customer has not yet acknowledged. Clearing proofReviewedAt forces the
+  // approve-whole-book gate to require a fresh ack against the new proof.
+  // approveWholeBook reads proofReviewedAt BEFORE calling this rebuild, so
+  // its in-progress happy path is unaffected — the clear only impacts
+  // subsequent approval attempts.
+  await updateFulfillmentState(order.id, {
+    storyArtifactUrl: built.proofUrl,
+    proofReviewedAt: null,
+  });
+  return { ok: true, proofUrl: built.proofUrl };
+}
+
+/** Shared builder body: renders + uploads the proof PDF, persists nothing. */
+async function buildProofArtifactFromOrder(
+  order: OrderRecord,
+  deps: FulfillmentDeps,
+): Promise<ProofBuildResult> {
   const _generateStory = deps.generateStory ?? generateStory;
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
+  const pages = order.pageArtifacts!;
+
+  // Capture the fingerprint of exactly the artifact set we are about to render.
+  const sourceFingerprint = proofSourceFingerprint(pages);
 
   // We need a StoryContent shape for the PDF builder. Reconstruct it from artifacts.
   const story: StoryContent = await (async () => {
     // Prefer a fresh story regeneration ONLY if we don't have stored text — otherwise
     // reuse what's persisted to keep deterministic output.
-    const haveAllText = order.pageArtifacts!.every((p) => p.storyText && p.basePrompt);
+    const haveAllText = pages.every((p) => p.storyText && p.basePrompt);
     if (haveAllText) {
       return {
         title: order.printTitle ?? `${order.childName}'s Hero Story Book`,
         characterDescription: '',
-        pages: order.pageArtifacts!.map((p) => ({
+        pages: pages.map((p) => ({
           pageNum: p.pageIndex + 1,
           sceneTitle: '',
           story: p.storyText,
@@ -667,24 +750,14 @@ export async function rebuildProofFromPageArtifacts(
     return _generateStory(order);
   })();
 
-  const pageUrls = pageImageUrlsFromArtifacts(order.pageArtifacts);
+  const pageUrls = pageImageUrlsFromArtifacts(pages);
   const allUrls: (string | null)[] = [pageUrls[0] ?? null, ...pageUrls];
 
   const pdfBuffer = await _buildPdf(story, order, allUrls);
   const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);
   const proofUrl = await _upload(order.id, pdfBuffer, `${safeSlug}-proof.pdf`);
 
-  // Stale-ack invalidation: every successful rebuild produces a NEW PDF the
-  // customer has not yet acknowledged. Clearing proofReviewedAt forces the
-  // approve-whole-book gate to require a fresh ack against the new proof.
-  // approveWholeBook reads proofReviewedAt BEFORE calling this rebuild, so
-  // its in-progress happy path is unaffected — the clear only impacts
-  // subsequent approval attempts.
-  await updateFulfillmentState(order.id, {
-    storyArtifactUrl: proofUrl,
-    proofReviewedAt: null,
-  });
-  return { ok: true, proofUrl };
+  return { ok: true, proofUrl, sourceFingerprint };
 }
 
 export interface TriggerFulfillmentOptions {

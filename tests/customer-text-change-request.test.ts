@@ -26,7 +26,7 @@ const LATER = '2026-07-31T13:00:00.000Z';
 function makePage(overrides: Partial<PageArtifact> = {}): PageArtifact {
   return {
     pageIndex: 0,
-    storyText: 'Benny found an enormous footprint.',
+    storyText: 'The hero found an enormous footprint.',
     basePrompt: 'frozen-base-prompt',
     characterAnchor: 'frozen-character-anchor',
     currentImageUrl: 'blob://current',
@@ -69,7 +69,7 @@ test('never sets an approval state and is explicitly not an approval action', ()
 
 test('does not advance order review/fulfillment state', () => {
   const order: OrderRecord = {
-    ...createOrderRecord({ childName: 'Benny', bookFormat: 'digital', email: 'a@b.com' },
+    ...createOrderRecord({ childName: 'Testkid', bookFormat: 'digital', email: 'a@b.com' },
       { id: 'ord_contract_test', now: NOW }),
     reviewStatus: 'in_review',
     pageArtifacts: [makePage()],

@@ -176,7 +176,7 @@ function page(i: number, o: Partial<PageArtifact> = {}): PageArtifact {
 
 function makeOrder(id: string, o: Partial<OrderRecord> = {}): OrderRecord {
   return {
-    ...createOrderRecord({ childName: 'Benny', bookFormat: 'digital', email: 'a@b.invalid' }, { id, now: NOW }),
+    ...createOrderRecord({ childName: 'Testkid', bookFormat: 'digital', email: 'a@b.invalid' }, { id, now: NOW }),
     paymentStatus: 'paid',
     reviewStatus: 'in_review',
     storyArtifactUrl: 'https://example.invalid/proof.pdf',

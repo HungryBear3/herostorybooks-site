@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { regeneratePage } from '@/lib/page-review';
+import { customerReviewActor, regeneratePage } from '@/lib/page-review';
 import { authorizeCustomerReviewWrite } from '@/lib/review-route-auth';
 
 export const dynamic = 'force-dynamic';
@@ -22,7 +22,12 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid pageIndex' }, { status: 400 });
   }
 
-  const result = await regeneratePage({ orderId, pageIndex, feedback });
+  const result = await regeneratePage({
+    orderId,
+    pageIndex,
+    feedback,
+    actor: customerReviewActor(auth.reviewToken),
+  });
   const status = result.status ?? (result.ok ? 200 : 500);
   if (!result.ok) {
     return NextResponse.json(

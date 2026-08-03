@@ -27,7 +27,12 @@ import type {
 } from './orders.ts';
 import { generatePageImage, type ImageProvider } from './image-generator.ts';
 import { buildRegeneratePrompt } from './image-prompt-builder.ts';
-import { rebuildProofFromPageArtifacts } from './fulfillment.ts';
+import {
+  buildProofArtifactFromPageArtifacts,
+  proofSourceFingerprint,
+  rebuildProofFromPageArtifacts,
+  type ProofBuildResult,
+} from './fulfillment.ts';
 import { sendRegenManualReviewAlert } from './order-email.ts';
 import {
   recordCustomerTextChangeRequest,
@@ -38,7 +43,7 @@ import {
 export const REGEN_WARNING_THRESHOLD = 3;
 export const REGEN_MANUAL_REVIEW_THRESHOLD = 5;
 
-export interface RegenerateInput {
+export interface RegenerateInput extends ReviewActorInput {
   orderId: string;
   pageIndex: number;
   feedback: string;
@@ -46,7 +51,7 @@ export interface RegenerateInput {
 
 export interface RegenerateResult {
   ok: boolean;
-  status: 200 | 400 | 404 | 409 | 502;
+  status: 200 | 400 | 403 | 404 | 409 | 502;
   page?: PageArtifact;
   warning?: 'regen_threshold_warning' | 'regen_manual_review_threshold';
   error?: string;
@@ -56,16 +61,87 @@ export interface RegenerateResult {
   proofRefreshError?: string;
 }
 
-export interface AcceptInput {
+export interface AcceptInput extends ReviewActorInput {
   orderId: string;
   pageIndex: number;
 }
 
 export interface AcceptResult {
   ok: boolean;
-  status: 200 | 400 | 404 | 409;
+  status: 200 | 400 | 403 | 404 | 409;
   page?: PageArtifact;
   error?: string;
+}
+
+// ── Review capability + eligibility (revalidated inside every transaction) ───
+
+/**
+ * Who is performing a review mutation.
+ *
+ * `customer` carries the capability token from the /review/<orderId>?token=…
+ * link. It is passed all the way into the mutator so it can be revalidated
+ * against the order as read INSIDE the guarded transaction — route-level
+ * preauthorization is only an early-refusal optimization, never the gate of
+ * record. A token can be rotated, or the order refunded, between the route
+ * check and the commit.
+ *
+ * `internal` is for operator/system/service callers that never present a
+ * capability. It is explicit and must be stated at the call site; it is not a
+ * customer-surface bypass, because every customer route constructs a `customer`
+ * actor (locked by tests/review-route-actor-source.test.ts). Internal actors are
+ * still subject to every non-capability gate below.
+ */
+export type ReviewActor =
+  | { kind: 'customer'; reviewToken?: string | null }
+  | { kind: 'internal'; reason: string };
+
+export const INTERNAL_REVIEW_ACTOR: ReviewActor = {
+  kind: 'internal',
+  reason: 'direct_service_call',
+};
+
+export function customerReviewActor(reviewToken?: string | null): ReviewActor {
+  return { kind: 'customer', reviewToken };
+}
+
+export interface ReviewActorInput {
+  /** Defaults to the internal actor when a service caller omits it. */
+  actor?: ReviewActor;
+}
+
+export interface ReviewMutationRefusal {
+  status: 403 | 409;
+  error: string;
+}
+
+/**
+ * Authoritative per-mutation gate, evaluated against the order as read inside
+ * the transaction on every attempt.
+ *
+ * Fails closed on:
+ *   - a customer actor whose capability token is missing/absent/mismatched (403)
+ *   - anything other than a paid order (403)
+ *   - any refund marker, even if paymentStatus still reads 'paid' (403)
+ *
+ * A refunded order is terminal for customer review: no review state, proof,
+ * audit, print, email, or provider work may follow it. The refund check applies
+ * to internal actors too — it is an order-state invariant, not a capability one.
+ */
+export function evaluateReviewMutationEligibility(
+  order: OrderRecord,
+  actor: ReviewActor = INTERNAL_REVIEW_ACTOR,
+): ReviewMutationRefusal | null {
+  if (actor.kind === 'customer' && !hasReviewWriteAccess(order, { reviewToken: actor.reviewToken })) {
+    return { status: 403, error: 'invalid_or_missing_token' };
+  }
+  if (order.paymentStatus !== 'paid') {
+    return { status: 403, error: 'order_not_eligible' };
+  }
+  // Belt-and-braces: a refund can be recorded before paymentStatus flips.
+  if (order.refundedAt || order.stripeRefundId) {
+    return { status: 403, error: 'order_refunded' };
+  }
+  return null;
 }
 
 // ── Pure helpers (testable without prisma/blob) ──────────────────────────────
@@ -139,6 +215,106 @@ export function regenWarningFor(count: number): RegenerateResult['warning'] | un
   return undefined;
 }
 
+// ── Guarded proof refresh ────────────────────────────────────────────────────
+
+export interface GuardedProofRefreshResult {
+  refreshed: boolean;
+  error?: string;
+  /** True when a built proof was thrown away because the source moved under it. */
+  discardedStale?: boolean;
+}
+
+/**
+ * Build a proof PDF and persist it through a CONDITIONAL, fingerprint-checked
+ * commit.
+ *
+ * Why this exists: `rebuildProofFromPageArtifacts` finishes with an
+ * unconditional `updateFulfillmentState`, which last-write-wins over any
+ * concurrent review mutation. Every customer review flow uses this instead.
+ *
+ * Sequence:
+ *   1. build + upload the PDF outside any transaction, capturing the
+ *      fingerprint of the artifact set it rendered from;
+ *   2. inside a guarded transaction, re-read the order and compare that
+ *      fingerprint against the CURRENT artifacts;
+ *   3. on match, commit storyArtifactUrl + the ack invalidation + the audit
+ *      entry in one conditional write;
+ *   4. on mismatch, discard the built proof — a newer proof is owed to the
+ *      newer artifacts and whoever made that change is responsible for it.
+ *
+ * Bounded rebuild retries are deliberately NOT attempted here: a regenerate
+ * storm would otherwise chain PDF builds indefinitely. Discarding is safe —
+ * `storyArtifactUrl` simply keeps pointing at the previous proof, and the
+ * approval gate independently requires a fresh acknowledgment.
+ */
+export async function refreshProofGuarded(
+  orderId: string,
+  opts: {
+    buildProof?: typeof buildProofArtifactFromPageArtifacts;
+    auditPageIndex?: number;
+    triggeredBy: 'page_regenerated' | 'whole_book_approved';
+  },
+): Promise<GuardedProofRefreshResult> {
+  let built: Awaited<ReturnType<typeof buildProofArtifactFromPageArtifacts>>;
+  try {
+    const build = opts.buildProof ?? buildProofArtifactFromPageArtifacts;
+    built = await build(orderId);
+  } catch (err) {
+    return { refreshed: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (!built.ok || !built.proofUrl) {
+    return { refreshed: false, error: built.error ?? 'proof_rebuild_failed' };
+  }
+  const proofUrl = built.proofUrl;
+  const builtFrom = built.sourceFingerprint;
+
+  try {
+    return await withOrderMutationLock(orderId, async (lock) =>
+      withOrderTransaction<GuardedProofRefreshResult>(
+        orderId,
+        (order) => {
+          const current = proofSourceFingerprint(order.pageArtifacts ?? []);
+          if (builtFrom && current !== builtFrom) {
+            // The artifact set moved while we rendered. Discard: writing this
+            // URL would advertise a proof that does not match the live pages.
+            return {
+              commit: appendAuditEventTo(order, {
+                type: 'proof_rebuilt',
+                ...(opts.auditPageIndex != null ? { pageIndex: opts.auditPageIndex } : {}),
+                reason: 'stale_source_discarded',
+                meta: { triggeredBy: opts.triggeredBy, success: false, discardedStale: true },
+              }),
+              result: {
+                refreshed: false,
+                discardedStale: true,
+                error: 'proof_source_changed_during_rebuild',
+              },
+            };
+          }
+          let next = applyFulfillmentPatchTo(order, {
+            storyArtifactUrl: proofUrl,
+            // Stale-ack invalidation: a new PDF has not been acknowledged.
+            proofReviewedAt: null,
+          });
+          next = appendAuditEventTo(next, {
+            type: 'proof_rebuilt',
+            ...(opts.auditPageIndex != null ? { pageIndex: opts.auditPageIndex } : {}),
+            reason: null,
+            meta: { triggeredBy: opts.triggeredBy, success: true },
+          });
+          return { commit: next, result: { refreshed: true } };
+        },
+        { lock, notFound: () => ({ refreshed: false, error: 'order_not_found' }) },
+      ),
+    );
+  } catch (err) {
+    if (err instanceof OrderMutationLockError || err instanceof OrderVersionConflictError) {
+      return { refreshed: false, error: 'order_mutation_busy' };
+    }
+    return { refreshed: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // ── Service entry points ─────────────────────────────────────────────────────
 
 export interface RegenerateDeps {
@@ -148,8 +324,10 @@ export interface RegenerateDeps {
   generatePageImage?: typeof generatePageImage;
   /** Optional clock injection (tests). */
   now?: () => Date;
-  /** Inject proof rebuilder (tests). */
+  /** @deprecated TEST-ONLY legacy shim: persists unconditionally on its own. */
   rebuildProof?: typeof rebuildProofFromPageArtifacts;
+  /** Inject the build-only proof step (tests). Persisting is guarded. */
+  buildProof?: typeof buildProofArtifactFromPageArtifacts;
   /** Inject operator alert sender (tests). */
   sendManualReviewAlert?: typeof sendRegenManualReviewAlert;
   /** Skip auto-rebuild entirely (used by tests that don't care). */
@@ -165,6 +343,11 @@ export async function regeneratePage(
   // result under the lock afterwards, so a concurrent mutation can't be lost.
   const preOrder = await getOrder(input.orderId);
   if (!preOrder) return { ok: false, status: 404, error: 'Order not found' };
+  // Capability + paid/non-refunded gate BEFORE any provider work. This is the
+  // early-refusal optimization; the authoritative copy runs against the order
+  // re-read inside the guarded transaction below.
+  const preRefusal = evaluateReviewMutationEligibility(preOrder, input.actor);
+  if (preRefusal) return { ok: false, status: preRefusal.status, error: preRefusal.error };
   // Cheap pre-flight rejection so an already-approved book does not burn a
   // provider call. This is an optimization ONLY — it is not the safety check.
   // The authoritative approved-state guard is the re-read under the lock below,
@@ -235,6 +418,13 @@ export async function regeneratePage(
         withOrderTransaction<{ error: RegenerateResult } | RegenApplied>(
           input.orderId,
           (order) => {
+            // AUTHORITATIVE capability + paid/non-refunded gate, re-evaluated
+            // against the freshly-read order on every attempt. The token could
+            // have been rotated, or the order refunded, while the provider ran.
+            const refusal = evaluateReviewMutationEligibility(order, input.actor);
+            if (refusal) {
+              return { abort: { error: { ok: false, status: refusal.status, error: refusal.error } } };
+            }
             if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
               return {
                 abort: { error: { ok: false, status: 409, error: 'Page review not yet ready for this order' } },
@@ -329,28 +519,45 @@ export async function regeneratePage(
   }
 
   // Auto-refresh the proof PDF using accepted/current per-page URLs.
-  // Successful regen still returns ok:true even if the proof rebuild fails —
-  // we surface proofRefreshError so callers can log/alert without blocking the customer.
+  //
+  // The build is slow, so it runs outside the transaction — but it is BOUND to
+  // the exact artifact set it rendered from (sourceFingerprint). Persisting the
+  // resulting storyArtifactUrl (and the ack invalidation) happens through a
+  // conditional commit that re-checks that fingerprint against the freshly-read
+  // order. If a concurrent accept/regenerate/approve changed any page in the
+  // meantime, the built proof is stale and is DISCARDED rather than written over
+  // newer state. Nothing here uses an unconditional updateFulfillmentState.
+  //
+  // A successful regen still returns ok:true even if the proof refresh fails —
+  // proofRefreshError is surfaced so callers can log/alert without blocking.
   let proofRefreshed = false;
   let proofRefreshError: string | undefined;
   if (!deps.skipProofRebuild) {
-    try {
-      const rebuild = deps.rebuildProof ?? rebuildProofFromPageArtifacts;
-      const rb = await rebuild(order.id);
-      if (rb.ok) {
-        proofRefreshed = true;
-      } else {
-        proofRefreshError = rb.error ?? 'proof_rebuild_failed';
+    if (deps.rebuildProof) {
+      // Legacy TEST-ONLY injection: the stub persists on its own. No production
+      // caller supplies this; the default path below is the guarded one.
+      try {
+        const rb = await deps.rebuildProof(order.id);
+        proofRefreshed = rb.ok;
+        if (!rb.ok) proofRefreshError = rb.error ?? 'proof_rebuild_failed';
+      } catch (err) {
+        proofRefreshError = err instanceof Error ? err.message : String(err);
       }
-    } catch (err) {
-      proofRefreshError = err instanceof Error ? err.message : String(err);
+      await appendAuditEvent(order.id, {
+        type: 'proof_rebuilt',
+        pageIndex: input.pageIndex,
+        reason: proofRefreshError ?? null,
+        meta: { triggeredBy: 'page_regenerated', success: proofRefreshed },
+      });
+    } else {
+      const outcome = await refreshProofGuarded(order.id, {
+        buildProof: deps.buildProof,
+        auditPageIndex: input.pageIndex,
+        triggeredBy: 'page_regenerated',
+      });
+      proofRefreshed = outcome.refreshed;
+      proofRefreshError = outcome.error;
     }
-    await appendAuditEvent(order.id, {
-      type: 'proof_rebuilt',
-      pageIndex: input.pageIndex,
-      reason: proofRefreshError ?? null,
-      meta: { triggeredBy: 'page_regenerated', success: proofRefreshed },
-    });
   }
 
   // One-shot operator alert when this regeneration crosses the manual-review threshold.
@@ -388,10 +595,15 @@ export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
       withOrderTransaction<AcceptResult>(
         input.orderId,
         (order) => {
+          // AUTHORITATIVE capability + paid/non-refunded gate, re-evaluated
+          // against the freshly-read record on every attempt.
+          const refusal = evaluateReviewMutationEligibility(order, input.actor);
+          if (refusal) {
+            return { abort: { ok: false, status: refusal.status, error: refusal.error } };
+          }
           // Approved books are frozen. An accept mutates pageArtifacts, so
           // letting it through after approval would rewrite the artifact set the
           // approved (and possibly already-printing) proof was built from.
-          // Re-evaluated against the freshly-read record on every attempt.
           if (order.reviewStatus === 'approved') {
             return {
               commit: appendAuditEventTo(order, {
@@ -529,7 +741,7 @@ function evaluateApprovalGateRejection(
 
 export interface ApproveWholeBookResult {
   ok: boolean;
-  status: 200 | 400 | 404 | 409 | 502;
+  status: 200 | 400 | 403 | 404 | 409 | 502;
   proofUrl?: string;
   error?: string;
   /** True iff the book was passed into the print-approval flow (print orders only). */
@@ -537,7 +749,10 @@ export interface ApproveWholeBookResult {
 }
 
 export interface ApproveWholeBookDeps {
+  /** @deprecated TEST-ONLY legacy shim: persists unconditionally on its own. */
   rebuildProof?: typeof rebuildProofFromPageArtifacts;
+  /** Inject the build-only proof step; persisting stays guarded. */
+  buildProof?: typeof buildProofArtifactFromPageArtifacts;
   /** Optional injection point for the print-approval handoff (tests). */
   approvePrint?: (orderId: string, token: string) => Promise<{ ok: boolean; error?: string }>;
 }
@@ -556,6 +771,7 @@ export interface ApproveWholeBookDeps {
 export async function approveWholeBook(
   orderId: string,
   deps: ApproveWholeBookDeps = {},
+  opts: ReviewActorInput = {},
 ): Promise<ApproveWholeBookResult> {
   type Proceed = { proofUrl: string | undefined; isPrint: boolean; token: string | null };
   let outcome: { done: ApproveWholeBookResult } | { proceed: Proceed };
@@ -564,15 +780,25 @@ export async function approveWholeBook(
     // run under the single per-order lock, so a concurrent wording-save can't
     // slip an unresolved request past the gate and be silently overwritten. The
     // slow print handoff is deliberately performed AFTER the lock (see below).
-    outcome = await withOrderMutationLock<{ done: ApproveWholeBookResult } | { proceed: Proceed }>(
+    // Phase 1 — gate check under the lock. The lock is RELEASED before the slow
+    // proof render so a concurrent review mutation is not blocked for the whole
+    // duration; phase 3 re-acquires it and re-validates everything.
+    const gateOutcome = await withOrderMutationLock<{ done: ApproveWholeBookResult } | { ready: true }>(
       orderId,
       async (lock) => {
-        // Phase 1 — validate the approval gates against the latest record. A
+        // Validate the approval gates against the latest record. A
         // rejection is itself committed conditionally (it appends an audit
         // event), so it cannot clobber a concurrent change either.
         const pre = await withOrderTransaction<{ done: ApproveWholeBookResult } | { ready: true }>(
           orderId,
           (order) => {
+            // AUTHORITATIVE capability + paid/non-refunded gate first.
+            const refusal = evaluateReviewMutationEligibility(order, opts.actor);
+            if (refusal) {
+              // Abort, do NOT commit: an ineligible caller must leave no audit
+              // trace and must not be able to append rows to the order.
+              return { abort: { done: { ok: false, status: refusal.status, error: refusal.error } } };
+            }
             const gate = evaluateApprovalGateRejection(order);
             if (gate) {
               return {
@@ -588,15 +814,30 @@ export async function approveWholeBook(
           },
           { lock, notFound: () => ({ done: { ok: false, status: 404, error: 'Order not found' } }) },
         );
-        if ('done' in pre) return pre;
+        return pre;
+      },
+    );
+    if ('done' in gateOutcome) return gateOutcome.done;
 
-        // Phase 2 — rebuild the proof. This writes the order out-of-band (it
-        // persists the fresh storyArtifactUrl), so it MUST happen outside the
-        // committing transaction; the version we read before it would be stale.
-        const rebuild = deps.rebuildProof ?? rebuildProofFromPageArtifacts;
-        const rb = await rebuild(orderId);
-        if (!rb.ok) {
-          await withOrderTransaction<null>(
+    // Phase 2 — produce the proof PDF with NO lock held. Rendering is slow, so it
+    // happens outside both the lock and the committing transaction. By default it
+    // is BUILD-ONLY (`buildProofArtifactFromPageArtifacts`) and persists nothing:
+    // the resulting storyArtifactUrl is written by the guarded commit in phase 3,
+    // bound to the artifact fingerprint it was rendered from. An earlier
+    // unconditional rebuild would NOT have been made safe by a later guarded
+    // approval write.
+    //
+    // `deps.rebuildProof` is a legacy TEST-ONLY injection point that persists on
+    // its own; no production caller supplies it.
+    const legacyPersisted = Boolean(deps.rebuildProof);
+    const rb = legacyPersisted
+      ? await deps.rebuildProof!(orderId)
+      : await (deps.buildProof ?? buildProofArtifactFromPageArtifacts)(orderId);
+    const builtFrom = legacyPersisted ? undefined : (rb as ProofBuildResult).sourceFingerprint;
+    if (!rb.ok) {
+      try {
+        await withOrderMutationLock(orderId, async (lock) =>
+          withOrderTransaction<null>(
             orderId,
             (order) => ({
               commit: appendAuditEventTo(order, {
@@ -607,24 +848,55 @@ export async function approveWholeBook(
               result: null,
             }),
             { lock, notFound: () => null },
-          );
-          return { done: { ok: false, status: 502, error: rb.error ?? 'proof_rebuild_failed' } };
-        }
+          ),
+        );
+      } catch {
+        /* audit is best-effort; the refusal below is what matters */
+      }
+      return { ok: false, status: 502, error: rb.error ?? 'proof_rebuild_failed' };
+    }
 
-        // Phase 3 — the guarded commit. Re-read post-rebuild, RE-VALIDATE every
-        // gate against that fresh record (so a wording request or an approval
-        // that landed during the rebuild still blocks/short-circuits us), then
-        // write reviewStatus='approved' plus both audit entries in ONE
-        // conditional write. A holder whose lease lapsed during the rebuild is
-        // rejected by the store's ifMatch, not by a preceding check.
-        return await withOrderTransaction<{ done: ApproveWholeBookResult } | { proceed: Proceed }>(
+    // Phase 3 — re-acquire the lock and commit. Re-read post-render, RE-VALIDATE
+    // every gate against that fresh record (so a wording request, an un-accept,
+    // a refund, a rotated token, or a competing approval that landed during the
+    // render still blocks us), verify the proof still matches the artifact set it
+    // was rendered from, then write reviewStatus='approved' + storyArtifactUrl +
+    // both audit entries in ONE conditional write.
+    outcome = await withOrderMutationLock<{ done: ApproveWholeBookResult } | { proceed: Proceed }>(
+      orderId,
+      async (lock) =>
+        withOrderTransaction<{ done: ApproveWholeBookResult } | { proceed: Proceed }>(
           orderId,
           (order) => {
-            // requireProofAck: false — our own rebuild (just above) legitimately
-            // cleared the ack. Every OTHER gate is re-validated against this
-            // fresh record, so a concurrent approval, un-accept, or new wording
-            // request still blocks the commit.
-            const gate = evaluateApprovalGateRejection(order, { requireProofAck: false });
+            // Re-check the capability/paid/refund gate on the fresh record too.
+            const refusal2 = evaluateReviewMutationEligibility(order, opts.actor);
+            if (refusal2) {
+              return { abort: { done: { ok: false, status: refusal2.status, error: refusal2.error } } };
+            }
+            // The proof was rendered outside this transaction. If the artifact
+            // set moved underneath it, the built PDF no longer represents the
+            // book — refuse rather than approve against a stale proof.
+            if (builtFrom && proofSourceFingerprint(order.pageArtifacts ?? []) !== builtFrom) {
+              return {
+                commit: appendAuditEventTo(order, {
+                  type: 'whole_book_approval_rejected',
+                  reason: 'proof_source_changed_during_rebuild',
+                }),
+                result: {
+                  done: {
+                    ok: false,
+                    status: 409,
+                    error: 'proof_source_changed_during_rebuild',
+                  },
+                },
+              };
+            }
+            // requireProofAck is false ONLY on the legacy path, where the
+            // injected rebuild cleared the ack itself. On the guarded path
+            // nothing cleared it, so the ack stays enforced here too.
+            const gate = evaluateApprovalGateRejection(order, {
+              requireProofAck: !legacyPersisted,
+            });
             if (gate) {
               return {
                 commit: appendAuditEventTo(order, {
@@ -640,7 +912,13 @@ export async function approveWholeBook(
               reason: null,
               meta: { triggeredBy: 'whole_book_approved', success: true },
             });
-            next = applyFulfillmentPatchTo(next, { reviewStatus: 'approved' });
+            // Guarded path: the freshly-built proof URL is persisted HERE, in the
+            // same conditional write as the approval — never through an earlier
+            // unconditional updateFulfillmentState.
+            next = applyFulfillmentPatchTo(next, {
+              reviewStatus: 'approved',
+              ...(legacyPersisted ? {} : { storyArtifactUrl: rb.proofUrl }),
+            });
             next = appendAuditEventTo(next, {
               type: 'whole_book_approved',
               meta: { bookFormat: order.bookFormat, proofUrl: rb.proofUrl ?? null },
@@ -654,8 +932,7 @@ export async function approveWholeBook(
             };
           },
           { lock, notFound: () => ({ done: { ok: false, status: 404, error: 'Order not found' } }) },
-        );
-      },
+        ),
     );
   } catch (error) {
     // A lost lock OR an exhausted CAS retry budget both mean: we could not
@@ -714,7 +991,7 @@ export async function approveWholeBook(
 
 export interface AckProofResult {
   ok: boolean;
-  status: 200 | 404 | 409;
+  status: 200 | 403 | 404 | 409;
   proofReviewedAt?: string;
   error?: string;
 }
@@ -727,12 +1004,18 @@ export interface AckProofResult {
 export async function acknowledgeProofReview(
   orderId: string,
   now: Date = new Date(),
+  opts: ReviewActorInput = {},
 ): Promise<AckProofResult> {
   try {
     return await withOrderMutationLock(orderId, async (lock) =>
       withOrderTransaction<AckProofResult>(
         orderId,
         (order) => {
+          // AUTHORITATIVE capability + paid/non-refunded gate.
+          const refusal = evaluateReviewMutationEligibility(order, opts.actor);
+          if (refusal) {
+            return { abort: { ok: false, status: refusal.status, error: refusal.error } };
+          }
           if (!order.storyArtifactUrl) {
             return {
               abort: {
@@ -947,11 +1230,12 @@ export async function saveTextChangeRequest(
           // Every security and approval invariant is re-evaluated against the
           // freshly-read record on each attempt — a retry can never inherit a
           // stale authorization or a stale reviewStatus.
-          if (!hasReviewWriteAccess(order, { reviewToken: input.reviewToken })) {
-            return { abort: { ok: false, status: 403, error: 'invalid_or_missing_token' } };
-          }
-          if (order.paymentStatus !== 'paid') {
-            return { abort: { ok: false, status: 403, error: 'order_not_eligible' } };
+          const refusal = evaluateReviewMutationEligibility(
+            order,
+            customerReviewActor(input.reviewToken),
+          );
+          if (refusal) {
+            return { abort: { ok: false, status: refusal.status, error: refusal.error } };
           }
           // Once approved, the book is locked: a wording request must not
           // downgrade reviewStatus back to 'customer_changes_requested'.
@@ -1040,6 +1324,11 @@ export async function prepareCustomerReviewLink(
         (order) => {
           if (order.paymentStatus !== 'paid') {
             return { abort: { ok: false, status: 409, error: 'order_not_paid' } };
+          }
+          // A refunded order is terminal: never mint or hand back a review
+          // capability for it, even idempotently.
+          if (order.refundedAt || order.stripeRefundId) {
+            return { abort: { ok: false, status: 409, error: 'order_refunded' } };
           }
           if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
             return { abort: { ok: false, status: 409, error: 'review_not_ready' } };

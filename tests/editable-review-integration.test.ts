@@ -60,7 +60,7 @@ function pageFixture(i: number, overrides: Partial<PageArtifact> = {}): PageArti
 
 async function seedOrder(overrides: Partial<OrderRecord> = {}): Promise<OrderRecord> {
   const order: OrderRecord = {
-    ...createOrderRecord({ childName: 'Benny', bookFormat: 'digital', email: 'a@b.com' },
+    ...createOrderRecord({ childName: 'Testkid', bookFormat: 'digital', email: 'a@b.com' },
       { id: `ord_${Math.abs(hashCode(JSON.stringify(overrides))).toString(16)}`, now: NOW }),
     paymentStatus: 'paid',
     reviewStatus: 'in_review',

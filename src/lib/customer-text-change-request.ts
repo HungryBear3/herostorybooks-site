@@ -2,9 +2,9 @@
  * Editable-review workflow contract: capture a customer's text-change request on
  * a single page/spread SEPARATELY from canonical book content.
  *
- * This is the narrowest local support for the private editable review described
- * in the Peter/Benny (ord_217450cb153f4543) review package. It deliberately does
- * NOT reach into the existing proof-release / approval / fulfillment machinery.
+ * This is the narrowest local support for the tokenized customer review flow.
+ * It deliberately does NOT reach into the existing proof-release / approval /
+ * fulfillment machinery.
  *
  * Boundaries (enforced by pure construction here, exercised by
  * tests/customer-text-change-request.test.ts):

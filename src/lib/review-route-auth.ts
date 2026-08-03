@@ -6,6 +6,13 @@ export interface ReviewWriteAuth {
   /** Present when ok === false. */
   status?: 403 | 404;
   error?: string;
+  /**
+   * The capability token this request presented, when it validated. Routes pass
+   * it into the mutator so the SERVICE can revalidate it against the order as
+   * read inside its guarded transaction. This route check is an early-refusal
+   * optimization, not the authoritative gate.
+   */
+  reviewToken?: string | null;
 }
 
 /**
@@ -32,5 +39,5 @@ export async function authorizeCustomerReviewWrite(
   if (!hasReviewWriteAccess(order, { reviewToken: token })) {
     return { ok: false, status: 403, error: 'invalid_or_missing_token' };
   }
-  return { ok: true };
+  return { ok: true, reviewToken: token };
 }
