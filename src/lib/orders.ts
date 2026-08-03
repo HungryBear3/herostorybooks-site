@@ -84,7 +84,8 @@ export interface OrderInput {
   // Optional child-voice-note beta (NEXT_PUBLIC_HSB_VOICE_BETA). The audio is
   // NOT used for voice cloning; it's stored as inspiration/source material for
   // later operator-reviewed story personalization.
-  voiceFileName?: string | null;
+  // The original client filename is intentionally neither accepted nor
+  // persisted: recording-app filenames can contain names, dates, and places.
   voiceBlobPath?: string | null;
   voiceBlobUrl?: string | null;
   voiceConsentAt?: string | null;
@@ -255,6 +256,8 @@ export type FulfillmentMode = 'auto' | 'manual_hold';
 
 export interface OrderRecord extends OrderInput {
   id: string;
+  /** Non-PII compatibility signal derived while reading retired legacy data. */
+  legacyVoiceUploadPresent?: boolean;
   bookFormat: BookFormat;
   formatLabel: string;
   priceCents: number;
@@ -863,7 +866,6 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     photoFileName: input.photoFileName?.trim() || null,
     photoBlobPath: input.photoBlobPath?.trim() || null,
     photoBlobUrl: input.photoBlobUrl?.trim() || null,
-    voiceFileName: input.voiceFileName?.trim() || null,
     voiceBlobPath: input.voiceBlobPath?.trim() || null,
     voiceBlobUrl: input.voiceBlobUrl?.trim() || null,
     voiceConsentAt: input.voiceConsentAt?.trim() || null,
@@ -1109,6 +1111,21 @@ export interface UploadedVoiceRef {
   url: string;
 }
 
+function voiceExtForMime(mime: string): string {
+  const normalized = mime.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (normalized === 'audio/webm') return 'webm';
+  if (normalized === 'audio/ogg') return 'ogg';
+  if (normalized === 'audio/mp4' || normalized === 'audio/x-m4a') return 'm4a';
+  if (normalized === 'audio/aac') return 'aac';
+  if (normalized === 'audio/mpeg' || normalized === 'audio/mp3') return 'mp3';
+  if (normalized === 'audio/wav' || normalized === 'audio/x-wav') return 'wav';
+  if (normalized === 'text/plain') return 'txt';
+  if (normalized === 'application/pdf') return 'pdf';
+  if (normalized === 'application/msword') return 'doc';
+  if (normalized === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
+  return 'bin';
+}
+
 /**
  * Upload an attached child-voice audio file to durable blob storage. Mirrors
  * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
@@ -1133,11 +1150,9 @@ export async function uploadOrderVoice(orderId: string, file: File): Promise<Upl
     return null;
   }
 
-  const safeName = (file.name || 'voice')
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'voice';
-
-  const pathname = withBlobNamespace(`orders/${orderId}/voice-${safeName}`);
+  // Never derive durable identifiers from the caller-controlled filename.
+  const assetId = crypto.randomBytes(12).toString('base64url');
+  const pathname = withBlobNamespace(`orders/${orderId}/voice-${assetId}.${voiceExtForMime(file.type)}`);
   const buffer = Buffer.from(await file.arrayBuffer());
 
   try {
@@ -1315,9 +1330,27 @@ export async function rollbackOrderMediaUploads(
   return uniquePaths.length;
 }
 
+function scrubRetiredPrivateFields(order: OrderRecord): OrderRecord {
+  const sanitized = { ...order } as OrderRecord & Record<string, unknown>;
+  // Legacy records can still carry the removed original voice filename. Derive
+  // only a non-PII presence signal, then delete the value before generic order
+  // code can copy, log, render, or persist it again.
+  const retiredVoiceName = sanitized['voiceFileName'];
+  if (typeof retiredVoiceName === 'string' && retiredVoiceName.trim()) {
+    sanitized.legacyVoiceUploadPresent = true;
+  }
+  delete sanitized['voiceFileName'];
+  return sanitized;
+}
+
+function parseOrderRecord(serialized: string): OrderRecord {
+  return scrubRetiredPrivateFields(JSON.parse(serialized) as OrderRecord);
+}
+
 export async function persistOrder(order: OrderRecord) {
   const token = getBlobToken();
-  const serialized = JSON.stringify(order, null, 2);
+  const sanitized = scrubRetiredPrivateFields(order);
+  const serialized = JSON.stringify(sanitized, null, 2);
   const requireDurable = requiresDurablePersistence();
 
   if (token) {
@@ -1329,7 +1362,7 @@ export async function persistOrder(order: OrderRecord) {
         contentType: 'application/json',
         token,
       });
-      return order;
+      return sanitized;
     } catch (err) {
       // In production-like envs we MUST NOT silently fall back to ephemeral
       // tmp filesystem — that's how a customer pays Stripe and the webhook
@@ -1365,7 +1398,7 @@ export async function persistOrder(order: OrderRecord) {
   const dir = getOrderStoreDir();
   await mkdir(dir, { recursive: true });
   await writeFile(`${dir}/${order.id}.json`, `${serialized}\n`, 'utf8');
-  return order;
+  return sanitized;
 }
 
 export async function getOrder(orderId: string) {
@@ -1379,11 +1412,11 @@ export async function getOrder(orderId: string) {
         const blob = blobs.find((b) => b.pathname === getOrderBlobPath(orderId));
         if (!blob?.url) return null;
         const text = await readBlobText({ pathname: blob.pathname, url: blob.url, token });
-        return text ? (JSON.parse(text) as OrderRecord) : null;
+        return text ? parseOrderRecord(text) : null;
       }
 
       const text = await readBlobText({ pathname: getOrderBlobPath(orderId), token });
-      return text ? (JSON.parse(text) as OrderRecord) : null;
+      return text ? parseOrderRecord(text) : null;
     } catch (err) {
       if (requireDurable) {
         // In production, blob errors must NOT silently fall back to ephemeral
@@ -1410,7 +1443,7 @@ export async function getOrder(orderId: string) {
 
   try {
     const file = await readFile(`${getOrderStoreDir()}/${orderId}.json`, 'utf8');
-    return JSON.parse(file) as OrderRecord;
+    return parseOrderRecord(file);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
@@ -1432,7 +1465,7 @@ export async function listOrders(): Promise<OrderRecord[]> {
         try {
           const text = await readBlobText({ pathname: blob.pathname, url: blob.url, token });
           if (!text) continue;
-          orders.push(JSON.parse(text) as OrderRecord);
+          orders.push(parseOrderRecord(text));
         } catch {
           // skip corrupt/unreadable blobs
         }
@@ -1450,7 +1483,7 @@ export async function listOrders(): Promise<OrderRecord[]> {
     for (const file of files.filter(f => f.endsWith('.json'))) {
       try {
         const text = await readFile(`${dir}/${file}`, 'utf8');
-        orders.push(JSON.parse(text) as OrderRecord);
+        orders.push(parseOrderRecord(text));
       } catch {
         // skip corrupt files
       }
