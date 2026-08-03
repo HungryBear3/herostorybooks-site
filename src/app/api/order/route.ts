@@ -347,7 +347,6 @@ export async function POST(request: Request) {
       bookFormat,
       email,
       photoFileName: photoValidation.ok ? `hero.${photoValidation.extension}` : null,
-      voiceFileName: hasVoiceUpload ? (voiceRaw as File).name : null,
       customStoryBrief,
       customStoryValidation,
       checkoutTracking,
