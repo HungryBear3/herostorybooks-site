@@ -24,14 +24,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import {
-  createOrderRecord,
-  getOrder,
-  persistOrder,
-  __setOrderStoreAdapterFactoryForTests,
-  __resetOrderStoreAdapterFactoryForTests,
-} from '../src/lib/orders.ts';
-import type { OrderRecord, OrderStoreAdapter, PageArtifact } from '../src/lib/orders.ts';
+import { createOrderRecord, getOrder, persistOrder } from '../src/lib/orders.ts';
+import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
 import type { ImageProvider } from '../src/lib/image-provider-types.ts';
 import {
   acceptPage,
@@ -91,7 +85,6 @@ function makeTmp() {
   return dir;
 }
 function cleanup(dir: string) {
-  __resetOrderStoreAdapterFactoryForTests();
   rmSync(dir, { recursive: true, force: true });
   delete process.env.HSB_ORDER_STORE_DIR;
 }
@@ -135,23 +128,13 @@ test(
         'route-level preauthorization passes at request time',
       );
 
-      // Interpose the rotation at exactly the moment the mutation is about to
-      // read the order inside its transaction. Gate-driven, not timing-driven.
-      let rotated = false;
-      const realAdapterFactory = (): OrderStoreAdapter => {
-        // Re-resolve the genuine local adapter by clearing the override for the
-        // duration of the inner call.
-        __resetOrderStoreAdapterFactoryForTests();
-        throw new Error('unreachable');
-      };
-      void realAdapterFactory;
-
-      // Simpler and equally deterministic: rotate the token on disk before the
-      // mutation runs, while the caller still holds the old (now stale) one.
+      // Rotate the capability AFTER the route-level check passed, while the
+      // caller still holds the old token. This covers the route-preauth-then-
+      // revoked case; the genuinely mid-flight cases (rotation during the
+      // provider call / during the proof render, where only the
+      // in-transaction revalidation can catch it) are the two tests below.
       const current = await getOrder(orderId);
       await persistOrder({ ...current!, proofApprovalToken: ROTATED });
-      rotated = true;
-      assert.equal(rotated, true);
 
       const res = await acceptPage({
         orderId,
@@ -177,7 +160,7 @@ test(
   },
 );
 
-test('stale-token interleaving is enforced for every capability-bearing mutation', async () => {
+test('a stale capability is refused by every capability-bearing mutation', async () => {
   const dir = makeTmp();
   try {
     const cases: Array<{ name: string; run: (id: string) => Promise<{ ok: boolean; status?: number; error?: string }> }> = [
@@ -402,3 +385,122 @@ test('the internal actor skips the capability check but never the paid/refund ga
     cleanup(dir);
   }
 });
+
+// ── Genuinely mid-flight capability revocation ─────────────────────────────
+//
+// These are the cases the pre-flight check CANNOT catch: the token is still
+// valid when the mutation starts and is rotated while slow work is in flight.
+// Only the revalidation inside the guarded transaction can refuse them, so
+// deleting that check would fail these two tests and nothing else.
+
+test(
+  'DETERMINISTIC: capability rotated DURING the provider call — regeneration is refused ' +
+    'by the in-transaction revalidation, after pre-flight already passed',
+  async () => {
+    const dir = makeTmp();
+    try {
+      const orderId = 'ord_rotate_midprovider';
+      await persistOrder(makeOrder(orderId));
+
+      let releaseProvider!: () => void;
+      const mayFinish = new Promise<void>((r) => { releaseProvider = r; });
+      let started!: () => void;
+      const hasStarted = new Promise<void>((r) => { started = r; });
+
+      const gated: ImageProvider = {
+        name: 'fal',
+        async generate({ prompt }) {
+          started();
+          await mayFinish;
+          return {
+            imageUrl: 'https://example.invalid/regen.png',
+            provider: 'fal',
+            model: 'stub',
+            promptUsed: prompt,
+            latencyMs: 1,
+            error: null,
+          };
+        },
+      };
+
+      const inflight = regeneratePage(
+        { orderId, pageIndex: 1, feedback: 'brighter', actor: customerReviewActor(TOKEN) },
+        { providers: [gated], skipProofRebuild: true, now: () => new Date(NOW) },
+      );
+
+      // Pre-flight already accepted the token; rotate it now.
+      await hasStarted;
+      const cur = await getOrder(orderId);
+      await persistOrder({ ...cur!, proofApprovalToken: ROTATED });
+      releaseProvider();
+
+      const res = await inflight;
+      assert.equal(res.ok, false, 'a revoked capability must not persist a regeneration');
+      assert.equal(res.status, 403);
+      assert.equal(res.error, 'invalid_or_missing_token');
+
+      const after = await getOrder(orderId);
+      assert.equal(after?.pageArtifacts?.[1].regenerateCount, 0, 'nothing persisted');
+      assert.equal(after?.reviewStatus, 'in_review');
+      assert.equal(
+        (after?.auditEvents ?? []).some((e) => e.type === 'page_regenerated'),
+        false,
+      );
+    } finally {
+      cleanup(dir);
+    }
+  },
+);
+
+test(
+  'DETERMINISTIC: capability rotated DURING the approval proof render — approval is refused ' +
+    'by the in-transaction revalidation',
+  async () => {
+    const dir = makeTmp();
+    try {
+      const orderId = 'ord_rotate_midrender';
+      await persistOrder(makeOrder(orderId));
+
+      let releaseBuild!: () => void;
+      const mayFinish = new Promise<void>((r) => { releaseBuild = r; });
+      let started!: () => void;
+      const hasStarted = new Promise<void>((r) => { started = r; });
+
+      const gatedBuild = async () => {
+        started();
+        await mayFinish;
+        return {
+          ok: true as const,
+          proofUrl: 'https://example.invalid/rebuilt.pdf',
+          sourceFingerprint: undefined,
+        };
+      };
+
+      const inflight = approveWholeBook(
+        orderId,
+        { buildProof: gatedBuild, approvePrint: async () => { throw new Error('print must not run'); } },
+        { actor: customerReviewActor(TOKEN) },
+      );
+
+      // Phase 1 gate already passed with the valid token; rotate mid-render.
+      await hasStarted;
+      const cur = await getOrder(orderId);
+      await persistOrder({ ...cur!, proofApprovalToken: ROTATED });
+      releaseBuild();
+
+      const res = await inflight;
+      assert.equal(res.ok, false, 'a revoked capability must not approve the book');
+      assert.equal(res.status, 403);
+      assert.equal(res.error, 'invalid_or_missing_token');
+
+      const after = await getOrder(orderId);
+      assert.notEqual(after?.reviewStatus, 'approved');
+      assert.equal(
+        (after?.auditEvents ?? []).some((e) => e.type === 'whole_book_approved'),
+        false,
+      );
+    } finally {
+      cleanup(dir);
+    }
+  },
+);

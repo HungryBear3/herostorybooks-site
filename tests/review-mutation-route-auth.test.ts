@@ -2,10 +2,16 @@
  * Route-level authorization for every customer review mutation.
  *
  * Route handlers pull `next/server` and can't run in the plain node test
- * runner, so these tests exercise the exact composition each route uses —
- * the shared server-side `authorizeCustomerReviewWrite` gate followed by the
- * service function — with real `Request` objects. The live HTTP routes are
- * additionally smoke-tested against `next dev` during verification.
+ * runner, so these tests exercise the route's AUTHORIZATION step — the shared
+ * server-side `authorizeCustomerReviewWrite` gate — with real `Request`
+ * objects, followed by the service function.
+ *
+ * Scope note: these calls do NOT pass the `actor` the real routes pass, so they
+ * cover the route gate only. That the routes actually forward the capability is
+ * enforced statically by tests/review-source-guards.test.ts, and that the
+ * service revalidates it inside the transaction is covered by
+ * tests/review-capability-and-eligibility.test.ts. The live HTTP routes are
+ * additionally smoke-tested against a production build during verification.
  *
  * Proven for accept / regenerate / acknowledge / request-wording-change /
  * approve: a missing or invalid token is rejected (403) and no order state is

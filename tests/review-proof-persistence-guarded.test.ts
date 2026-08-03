@@ -153,8 +153,8 @@ test('regenerate with proof rebuild ENABLED persists the proof through a guarded
 });
 
 test(
-  'DETERMINISTIC: a concurrent accept lands while the proof renders — the stale proof is ' +
-    'DISCARDED and never overwrites the newer artifact state',
+  'DETERMINISTIC: a concurrent regeneration lands while the proof renders — the stale proof ' +
+    'is DISCARDED and never overwrites the newer artifact state',
   async () => {
     const dir = makeTmp();
     try {
@@ -352,4 +352,120 @@ test('the proof fingerprint changes when any rendered page input changes', () =>
     proofSourceFingerprint(acceptedNow),
     'a render-neutral accept must not invalidate an in-flight proof',
   );
+});
+
+// ── Regressions for defects found in independent review ────────────────────
+
+test('REGRESSION: a refund landing during the proof render blocks the proof write entirely', async () => {
+  const dir = makeTmp();
+  try {
+    const orderId = 'ord_refund_during_render';
+    await persistOrder(makeOrder(orderId));
+
+    let releaseBuild!: () => void;
+    const mayFinish = new Promise<void>((r) => { releaseBuild = r; });
+    let started!: () => void;
+    const hasStarted = new Promise<void>((r) => { started = r; });
+    const build = makeGatedBuildProof({ onStart: () => started(), wait: mayFinish });
+
+    const inflight = regeneratePage(
+      { orderId, pageIndex: 1, feedback: 'brighter', actor: customerReviewActor(TOKEN) },
+      { providers: [stubProvider], now: () => new Date(NOW), buildProof: build.fn },
+    );
+
+    await hasStarted;
+    const cur = await getOrder(orderId);
+    await persistOrder({ ...cur!, refundedAt: NOW, stripeRefundId: 're_synthetic' });
+    releaseBuild();
+    const res = await inflight;
+
+    assert.equal(res.proofRefreshed, false, 'no proof may be written after a refund');
+    const after = await getOrder(orderId);
+    assert.equal(after?.storyArtifactUrl, OLD_PROOF, 'proof URL untouched');
+    assert.equal(
+      (after?.auditEvents ?? []).some((e) => e.type === 'proof_rebuilt'),
+      false,
+      'a refunded order must receive NO proof_rebuilt audit row, not even a discard row',
+    );
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('REGRESSION: an approval landing during the proof render blocks the proof write', async () => {
+  const dir = makeTmp();
+  try {
+    const orderId = 'ord_approved_during_render';
+    await persistOrder(makeOrder(orderId));
+
+    let releaseBuild!: () => void;
+    const mayFinish = new Promise<void>((r) => { releaseBuild = r; });
+    let started!: () => void;
+    const hasStarted = new Promise<void>((r) => { started = r; });
+    const build = makeGatedBuildProof({ onStart: () => started(), wait: mayFinish });
+
+    const inflight = regeneratePage(
+      { orderId, pageIndex: 1, feedback: 'brighter', actor: customerReviewActor(TOKEN) },
+      { providers: [stubProvider], now: () => new Date(NOW), buildProof: build.fn },
+    );
+
+    await hasStarted;
+    // Approve the book (and re-ack, since the regeneration invalidated it) while
+    // the earlier regeneration's proof is still rendering.
+    const cur = await getOrder(orderId);
+    await persistOrder({
+      ...cur!,
+      pageArtifacts: (cur!.pageArtifacts ?? []).map((pp) => ({ ...pp, accepted: true, acceptedImageUrl: pp.currentImageUrl })),
+      proofReviewedAt: NOW,
+      reviewStatus: 'approved',
+    });
+    releaseBuild();
+    const res = await inflight;
+
+    assert.equal(res.proofRefreshed, false, 'an approved book must not have its proof replaced');
+    const after = await getOrder(orderId);
+    assert.equal(after?.reviewStatus, 'approved', 'approval stands');
+    assert.equal(after?.storyArtifactUrl, OLD_PROOF, 'approved proof URL untouched');
+    assert.notEqual(after?.proofReviewedAt, null, 'the approved acknowledgment was not cleared');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('REGRESSION: a failed proof build still invalidates the acknowledgment for the changed pages', async () => {
+  const dir = makeTmp();
+  try {
+    const orderId = 'ord_ack_after_failed_build';
+    await persistOrder(makeOrder(orderId));
+    assert.equal((await getOrder(orderId))?.proofReviewedAt, NOW, 'starts acknowledged');
+
+    const res = await regeneratePage(
+      { orderId, pageIndex: 1, feedback: 'brighter', actor: customerReviewActor(TOKEN) },
+      {
+        providers: [stubProvider],
+        now: () => new Date(NOW),
+        buildProof: async () => ({ ok: false as const, error: 'render_failed' }),
+      },
+    );
+    assert.equal(res.ok, true, 'the regeneration itself succeeds');
+    assert.equal(res.proofRefreshed, false, 'the proof build failed');
+
+    const after = await getOrder(orderId);
+    assert.equal(
+      after?.proofReviewedAt,
+      null,
+      'the ack must be invalidated by the CONTENT change, not by a successful proof write — ' +
+        'otherwise approval could pass on an ack the customer gave for different pages',
+    );
+
+    // And approval is consequently blocked until a fresh ack.
+    const approved = await approveWholeBook(
+      orderId,
+      { buildProof: async () => ({ ok: true as const, proofUrl: NEW_PROOF, sourceFingerprint: undefined }) },
+      { actor: customerReviewActor(TOKEN) },
+    );
+    assert.equal(approved.ok, false, 'approval must be blocked by the missing ack');
+  } finally {
+    cleanup(dir);
+  }
 });

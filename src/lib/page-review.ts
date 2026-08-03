@@ -89,7 +89,7 @@ export interface AcceptResult {
  * `internal` is for operator/system/service callers that never present a
  * capability. It is explicit and must be stated at the call site; it is not a
  * customer-surface bypass, because every customer route constructs a `customer`
- * actor (locked by tests/review-route-actor-source.test.ts). Internal actors are
+ * actor (locked by tests/review-source-guards.test.ts). Internal actors are
  * still subject to every non-capability gate below.
  */
 export type ReviewActor =
@@ -254,6 +254,8 @@ export async function refreshProofGuarded(
     buildProof?: typeof buildProofArtifactFromPageArtifacts;
     auditPageIndex?: number;
     triggeredBy: 'page_regenerated' | 'whole_book_approved';
+    /** Revalidated against the freshly-read order before the proof is written. */
+    actor?: ReviewActor;
   },
 ): Promise<GuardedProofRefreshResult> {
   let built: Awaited<ReturnType<typeof buildProofArtifactFromPageArtifacts>>;
@@ -274,6 +276,23 @@ export async function refreshProofGuarded(
       withOrderTransaction<GuardedProofRefreshResult>(
         orderId,
         (order) => {
+          // The refresh runs AFTER its triggering mutation committed, and the
+          // render is slow — the order can have been refunded or approved in
+          // that window. Re-evaluate both here, against the freshly-read record,
+          // and ABORT (never commit, not even an audit row) if either fails.
+          // A refunded order is terminal: no proof and no audit may follow it.
+          const refusal = evaluateReviewMutationEligibility(order, opts.actor);
+          if (refusal) {
+            return { abort: { refreshed: false, error: refusal.error } };
+          }
+          // An approved book is frozen. A refresh still in flight from an
+          // earlier mutation must not replace the approved proof or clear the
+          // acknowledgment — the print handoff may already have run. Note a
+          // render-neutral change can still fingerprint-match here, so the
+          // fingerprint check alone would not catch this.
+          if (order.reviewStatus === 'approved') {
+            return { abort: { refreshed: false, error: 'already_approved' } };
+          }
           const current = proofSourceFingerprint(order.pageArtifacts ?? []);
           if (builtFrom && current !== builtFrom) {
             // The artifact set moved while we rendered. Discard: writing this
@@ -469,6 +488,12 @@ export async function regeneratePage(
             let next = applyFulfillmentPatchTo(order, {
               pageArtifacts: updatedArtifacts,
               reviewStatus: 'customer_changes_requested',
+              // Invalidate the proof acknowledgment HERE, with the content
+              // change that caused it. Doing it only on a successful proof
+              // refresh would leave a stale ack in force whenever the rebuild
+              // fails or is discarded, letting approval pass on an ack the
+              // customer gave for different pages.
+              proofReviewedAt: null,
             });
             next = appendAuditEventTo(next, {
               type: 'page_regenerated',
@@ -555,6 +580,7 @@ export async function regeneratePage(
         buildProof: deps.buildProof,
         auditPageIndex: input.pageIndex,
         triggeredBy: 'page_regenerated',
+        actor: input.actor,
       });
       proofRefreshed = outcome.refreshed;
       proofRefreshError = outcome.error;
@@ -673,14 +699,13 @@ interface ApprovalGateRejection {
  * an un-accept, or a competing approval that lands during the rebuild still
  * blocks the commit. The client's disabled button is never trusted.
  *
- * `requireProofAck` exists because the production rebuilder CLEARS
- * proofReviewedAt as part of its own update (a rebuilt proof has not been
- * acknowledged yet). Re-checking the ack after this operation's own rebuild
- * would therefore reject the very approval that triggered it. The ack is
- * validated once, pre-rebuild, against the proof the customer actually
- * reviewed — which is the semantically correct moment. Skipping it in the
- * post-rebuild pass does not weaken the gate: clearing an ack only makes
- * approval harder, and setting one requires the review token.
+ * `requireProofAck` is false ONLY on the legacy `deps.rebuildProof` path, where
+ * the injected rebuilder clears proofReviewedAt as part of its own update, so
+ * re-checking the ack afterwards would reject the very approval that triggered
+ * it. On the production (build-only) path nothing clears the ack before the
+ * commit, so it stays enforced in the committing transaction. Skipping it on the
+ * legacy path does not weaken the gate: clearing an ack only makes approval
+ * harder, and setting one requires the review token.
  */
 function evaluateApprovalGateRejection(
   order: OrderRecord,

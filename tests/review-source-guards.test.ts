@@ -15,34 +15,32 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 const REPO = process.cwd();
 
-function walk(dir: string, out: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    if (
-      entry === 'node_modules' ||
-      entry === '.next' ||
-      entry === '.git' ||
-      entry.startsWith('.venv') ||
-      entry.startsWith('evidence-')
-    ) {
-      continue;
-    }
-    const full = path.join(dir, entry);
-    const st = statSync(full);
-    if (st.isDirectory()) walk(full, out);
-    else out.push(full);
-  }
-  return out;
-}
-
-/** Source we are responsible for: the app + its tests + scripts. */
+/**
+ * The files this guard is responsible for: everything GIT TRACKS under src/,
+ * tests/ and scripts/.
+ *
+ * Deliberately the git index, not a filesystem walk. The guard is about what
+ * gets COMMITTED; untracked local tooling, virtualenvs and QA evidence
+ * directories are not committed source and must not fail the build for whoever
+ * happens to have them on disk.
+ */
 function sourceFiles(): string[] {
-  const roots = ['src', 'tests'].map((d) => path.join(REPO, d));
-  return roots.flatMap((r) => walk(r)).filter((f) => /\.(ts|tsx|js|mjs|json|md)$/.test(f));
+  const tracked = execFileSync('git', ['ls-files', '-z', 'src', 'tests', 'scripts'], {
+    cwd: REPO,
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  })
+    .split('\0')
+    .filter(Boolean);
+  return tracked
+    .filter((f) => /\.(ts|tsx|js|mjs|json|md)$/.test(f))
+    .map((f) => path.join(REPO, f));
 }
 
 // ── 1. No real customer / order identifiers ────────────────────────────────

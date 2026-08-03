@@ -648,8 +648,8 @@ export function proofSourceFingerprint(pages: PageArtifact[]): string {
       p.pageIndex,
       p.storyText ?? '',
       p.acceptedImageUrl ?? p.currentImageUrl ?? '',
-    ].join(' '))
-    .join('');
+    ].join('\u0000'))
+    .join('\u0001');
   return `pf_${crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 32)}`;
 }
 
@@ -685,11 +685,12 @@ export async function buildProofArtifactFromPageArtifacts(
  * Rebuild the proof PDF from the latest accepted/current per-page images and
  * persist it unconditionally.
  *
- * NOTE: the persist below is a last-write-wins `updateFulfillmentState`. That is
- * fine for the operator/fulfillment callers this exists for, but it is NOT safe
- * for the customer editable-review flows, which race with each other. Those use
- * `buildProofArtifactFromPageArtifacts` and persist inside their own guarded,
- * fingerprint-checked transaction instead.
+ * NOTE: the persist below is a last-write-wins `updateFulfillmentState`, so it is
+ * NOT safe for concurrent callers. It currently has NO production callers — the
+ * customer editable-review flows use `buildProofArtifactFromPageArtifacts` and
+ * persist inside their own guarded, fingerprint-checked transaction. It is kept
+ * as the unguarded reference implementation exercised by tests/proof-rebuild and
+ * tests/proof-ack-invalidation; any future caller must justify last-write-wins.
  */
 export async function rebuildProofFromPageArtifacts(
   orderId: string,
