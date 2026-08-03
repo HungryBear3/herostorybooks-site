@@ -25,3 +25,12 @@ tmp_*.jsonl
 
 # Knowledge-graph output (regenerated from source)
 graphify-out/
+
+# Order-scoped local review tooling and its virtualenv. Never committed: it is
+# scoped to a single real order and carries customer-identifying strings.
+scripts/hsb-review-builder/
+.venv-hsb-review/
+
+# QA evidence bundles. Local artifacts only: they quote real order ids and
+# server logs verbatim and must never be committed.
+evidence-*/

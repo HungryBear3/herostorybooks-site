@@ -21,36 +21,83 @@ interface Snapshot {
   proofReviewedAt: string | null;
 }
 
+function pageHasUnresolvedChange(p: PageArtifact): boolean {
+  return (
+    p.customerReviewStatus === 'changes_requested' ||
+    (p.customerRequestedChange != null &&
+      p.customerRequestedChange.lifecycleStatus !== 'resolved')
+  );
+}
+
+/**
+ * Build an order API URL carrying the review token. The token lives only in the
+ * tokenized review URL and is forwarded on every customer mutation; it is never
+ * rendered into page content. Every mutation route rejects a bare order id
+ * server-side, so a missing token fails closed.
+ */
+function reviewApiUrl(orderId: string, path: string): string {
+  const token =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('token')
+      : null;
+  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `/api/order/${orderId}/${path}${qs}`;
+}
+
+function tokenErrorMessage(error: unknown): string | null {
+  return error === 'invalid_or_missing_token'
+    ? 'This review link is missing its secure token. Please reopen the link from your proof email.'
+    : null;
+}
+
 export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [snapshot, setSnapshot] = useState<Snapshot>(initial);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [feedback, setFeedback] = useState('');
-  const [busy, setBusy] = useState<'idle' | 'regenerating' | 'accepting' | 'approving' | 'acknowledging'>('idle');
+  const [changeNote, setChangeNote] = useState('');
+  const [busy, setBusy] = useState<'idle' | 'regenerating' | 'accepting' | 'approving' | 'acknowledging' | 'saving_change'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [proofAck, setProofAck] = useState<boolean>(Boolean(initial.proofReviewedAt));
+  // Cache-buster for the proof preview: the rebuilt PDF reuses the same blob URL.
+  const [proofNonce, setProofNonce] = useState(0);
   const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
+
+  // Every surface that opens the proof PDF must use this, not the raw snapshot
+  // URL: the rebuilt proof reuses the same blob path, so an un-busted link can
+  // serve a cached pre-regeneration render — and the customer may then
+  // acknowledge content they never saw.
+  const proofUrl =
+    snapshot.storyArtifactUrl && proofNonce > 0
+      ? `${snapshot.storyArtifactUrl}${snapshot.storyArtifactUrl.includes('?') ? '&' : '?'}v=${proofNonce}`
+      : snapshot.storyArtifactUrl;
 
   const selected = snapshot.pageArtifacts[selectedIdx];
   const acceptedCount = snapshot.pageArtifacts.filter((p) => p.accepted).length;
   const allAccepted =
     snapshot.pageArtifacts.length > 0 &&
     acceptedCount === snapshot.pageArtifacts.length;
+  const unresolvedChangeCount = snapshot.pageArtifacts.filter(pageHasUnresolvedChange).length;
 
-  async function regenerate() {
+  async function saveTextChange() {
     if (!selected) return;
-    setBusy('regenerating');
+    setBusy('saving_change');
     setError(null);
     setNotice(null);
     try {
-      const res = await fetch(`/api/order/${snapshot.orderId}/regenerate-page`, {
+      const res = await fetch(reviewApiUrl(snapshot.orderId, 'request-text-change'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pageIndex: selected.pageIndex, feedback }),
+        body: JSON.stringify({ pageIndex: selected.pageIndex, note: changeNote }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setError(data?.error ?? `Regeneration failed (${res.status})`);
+        setError(
+          tokenErrorMessage(data?.error) ??
+            (data?.error === 'empty_or_invalid_note'
+              ? 'Please enter the wording change you would like.'
+              : `Could not save your change request (${res.status}).`),
+        );
         return;
       }
       setSnapshot((s) => ({
@@ -60,6 +107,53 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
         ),
         reviewStatus: 'customer_changes_requested',
       }));
+      setChangeNote('');
+      setNotice('Saved. We’ve recorded your wording change request — this does not approve your book.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error');
+    } finally {
+      setBusy('idle');
+    }
+  }
+
+  async function regenerate() {
+    if (!selected) return;
+    setBusy('regenerating');
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(reviewApiUrl(snapshot.orderId, 'regenerate-page'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pageIndex: selected.pageIndex, feedback }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setError(tokenErrorMessage(data?.error) ?? data?.error ?? `Regeneration failed (${res.status})`);
+        return;
+      }
+      setSnapshot((s) => ({
+        ...s,
+        pageArtifacts: s.pageArtifacts.map((p) =>
+          p.pageIndex === selected.pageIndex ? data.page : p,
+        ),
+        reviewStatus: 'customer_changes_requested',
+        // The server invalidates the proof acknowledgment with the content
+        // change itself, so the assembled PDF the customer ticked no longer
+        // matches these pages. Mirror that here: leaving the tick in place kept
+        // Approve enabled, produced a server 409 on click, and left the customer
+        // unable to re-acknowledge without a page reload (unticking is a
+        // client-only revoke, and re-ticking short-circuits on a stale
+        // proofReviewedAt).
+        proofReviewedAt: null,
+      }));
+      setProofAck(false);
+      // The rebuilt proof reuses the SAME blob URL (addRandomSuffix:false,
+      // allowOverwrite:true), so the preview iframe would keep serving the
+      // pre-regeneration render from cache. Re-ticking "I reviewed the full
+      // proof PDF" against that stale view would acknowledge content the
+      // customer never saw. Bump a nonce to force a refetch.
+      setProofNonce((n) => n + 1);
       setFeedback('');
       if (data.warning === 'regen_manual_review_threshold') {
         setNotice('We\u2019ve regenerated this page several times. Our team will also take a look to make sure it lands right.');
@@ -78,14 +172,14 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
     setBusy('accepting');
     setError(null);
     try {
-      const res = await fetch(`/api/order/${snapshot.orderId}/accept-page`, {
+      const res = await fetch(reviewApiUrl(snapshot.orderId, 'accept-page'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pageIndex: selected.pageIndex }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setError(data?.error ?? `Accept failed (${res.status})`);
+        setError(tokenErrorMessage(data?.error) ?? data?.error ?? `Accept failed (${res.status})`);
         return;
       }
       setSnapshot((s) => ({
@@ -172,6 +266,14 @@ No image yet
                   ✓
                 </span>
               )}
+              {pageHasUnresolvedChange(p) && (
+                <span
+                  className="absolute bottom-1 right-1 rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] font-bold text-white"
+                  title="Change requested — pending review"
+                >
+                  ✎
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -255,6 +357,51 @@ No image yet
               </button>
             </div>
 
+            {/* Request a wording change — distinct from the artwork regenerate
+                above. This records a requested wording change; it does NOT edit
+                the book text directly and does NOT approve the book. */}
+            <div className="mt-5 rounded-xl border border-violet-200 bg-violet-50 p-4" data-testid="text-change-request">
+              <label htmlFor="text-change-note" className="block text-sm font-semibold text-[#10263d]">
+                Request a wording change on this page
+              </label>
+              <p className="mt-1 text-xs text-violet-900">
+                Tell us the exact wording you’d like on page {selected.pageIndex + 1}. This is a
+                <strong> requested change to the words</strong> — it does not edit your book directly and
+                <strong> does not approve your book</strong>. Our team reviews it before anything changes.
+              </p>
+              {pageHasUnresolvedChange(selected) && (
+                <p
+                  className="mt-2 inline-flex items-center gap-1 rounded-full bg-violet-600 px-2.5 py-0.5 text-xs font-semibold text-white"
+                  data-testid="page-change-pending"
+                >
+                  ✎ Change requested — pending review
+                </p>
+              )}
+              {selected.customerRequestedChange?.note && (
+                <p className="mt-2 rounded-md border border-violet-200 bg-white px-3 py-2 text-xs text-gray-700">
+                  <span className="font-semibold">Your last request:</span> {selected.customerRequestedChange.note}
+                </p>
+              )}
+              <textarea
+                id="text-change-note"
+                value={changeNote}
+                onChange={(e) => setChangeNote(e.target.value)}
+                maxLength={1000}
+                rows={3}
+                placeholder="e.g. Please change “giant track” to “dinosaur track.”"
+                className="mt-3 w-full rounded-xl border-2 border-violet-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={saveTextChange}
+                disabled={busy !== 'idle' || changeNote.trim().length === 0}
+                className="mt-3 rounded-xl border-2 border-violet-600 bg-white px-5 py-2.5 text-sm font-semibold text-violet-700 disabled:opacity-50"
+                data-testid="save-text-change"
+              >
+                {busy === 'saving_change' ? 'Saving…' : 'Save change request (does not approve)'}
+              </button>
+            </div>
+
             {selected.feedbackHistory.length > 0 && (
               <details className="mt-4 text-xs text-gray-500">
                 <summary className="cursor-pointer">Past feedback ({selected.feedbackHistory.length})</summary>
@@ -274,7 +421,7 @@ No image yet
         {/* Inline full-proof preview — distinct from the per-page section above. */}
         <div className="mt-8">
           <InlineProofPreview
-            proofUrl={snapshot.storyArtifactUrl}
+            proofUrl={proofUrl}
             isPrint={snapshot.isPrint}
             illustratedPageCount={snapshot.pageArtifacts.length}
           />
@@ -289,7 +436,7 @@ No image yet
                 Step 1 — open the full {snapshot.isPrint ? 'printed-book proof' : 'storybook PDF'}
               </p>
               <a
-                href={snapshot.storyArtifactUrl}
+                href={proofUrl ?? undefined}
                 target="_blank"
                 rel="noopener"
                 className="inline-flex w-full items-center justify-center gap-2 rounded-xl border-2 border-[#10263d] bg-[#10263d] px-5 py-3 text-base font-semibold text-white sm:w-auto"
@@ -345,7 +492,7 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
                   setError(null);
                   try {
                     const res = await fetch(
-                      `/api/order/${snapshot.orderId}/acknowledge-proof`,
+                      reviewApiUrl(snapshot.orderId, 'acknowledge-proof'),
                       { method: 'POST' },
                     );
                     const data = await res.json();
@@ -382,6 +529,7 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
                 !allAccepted ||
                 !proofAck ||
                 !snapshot.storyArtifactUrl ||
+                unresolvedChangeCount > 0 ||
                 busy !== 'idle' ||
                 snapshot.reviewStatus === 'approved'
               }
@@ -402,7 +550,13 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
 Accept each illustrated page first — your progress is saved, so you can come back later.
               </p>
             )}
-            {allAccepted && !proofAck && snapshot.storyArtifactUrl && (
+            {unresolvedChangeCount > 0 && (
+              <p className="mt-2 text-xs text-violet-700" data-testid="unresolved-changes-hint">
+                You have {unresolvedChangeCount} pending wording change{unresolvedChangeCount === 1 ? '' : 's'} awaiting
+                our review. Approval opens once those are resolved — you won’t lose your place.
+              </p>
+            )}
+            {allAccepted && unresolvedChangeCount === 0 && !proofAck && snapshot.storyArtifactUrl && (
               <p className="mt-2 text-xs text-gray-500" data-testid="ack-required-hint">
 Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to enable approval.
               </p>
@@ -447,7 +601,7 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
                   setError(null);
                   setNotice(null);
                   try {
-                    const res = await fetch(`/api/order/${snapshot.orderId}/approve-whole-book`, {
+                    const res = await fetch(reviewApiUrl(snapshot.orderId, 'approve-whole-book'), {
                       method: 'POST',
                     });
                     const data = await res.json();
