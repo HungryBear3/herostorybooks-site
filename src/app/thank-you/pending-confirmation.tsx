@@ -84,38 +84,40 @@ export function PendingConfirmation({
   if (stripeConfirmed) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--cream)] px-4 py-10 sm:py-16 space-y-6 sm:space-y-8">
+        <span className="text-6xl sm:text-7xl" aria-hidden>✅</span>
         <div className="text-center" role="status" aria-live="polite">
-          <span className="text-6xl sm:text-7xl" aria-hidden>✅</span>
-          <h1 className="text-3xl sm:text-4xl font-bold text-[var(--forest)] mt-4 mb-2">
+          <h1 className="text-3xl sm:text-4xl font-bold text-[var(--forest)] mb-2">
             Payment confirmed
           </h1>
-          <p className="text-base sm:text-lg text-gray-600 max-w-md mx-auto">
+          <p className="text-base sm:text-lg text-gray-700 max-w-md mx-auto text-pretty">
             Stripe confirmed the payment for {childName}&apos;s order.
           </p>
         </div>
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 sm:p-6 w-full max-w-md space-y-3 text-sm text-gray-700">
-          <p className="font-semibold text-[var(--forest)]">Do not submit another payment.</p>
+        <div className="bg-white rounded-2xl border border-gray-300 shadow-md p-5 sm:p-6 w-full max-w-md space-y-3 text-sm text-gray-700">
+          <p className="border-l-4 border-amber-600 bg-amber-50 px-4 py-3 text-base font-bold text-gray-900 text-pretty">
+            Don&apos;t pay again — you&apos;d be charged a second time.
+          </p>
           <p>
             Order ID: <span className="font-mono break-all text-[var(--forest)]">{orderId}</span>
           </p>
-          <p className="text-gray-500">
-            We are finalizing your saved order status now. Your confirmation email and proof-first delivery steps follow from the secure payment update.
+          <p className="text-gray-700">
+            Your payment went through. We&apos;re finishing the order record now. Your confirmation email and digital proof follow from there; nothing else is needed from you.
           </p>
-          <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
-            Questions? <a className="underline" href={`mailto:support@herostorybooks.com?subject=Order ${encodeURIComponent(orderId ?? '')}`}>support@herostorybooks.com</a>
+          <p className="text-sm text-center text-gray-700 pt-3 border-t border-gray-200">
+            Questions? <a className="font-semibold underline underline-offset-2" href={`mailto:support@herostorybooks.com?subject=Order ${encodeURIComponent(orderId ?? '')}`}>support@herostorybooks.com</a>
           </p>
         </div>
         <div className="flex flex-col sm:flex-row gap-3 w-full max-w-md sm:justify-center">
           <a
             href={`/status/${orderId}`}
-            className="px-6 py-3 rounded-xl font-semibold text-sm text-center"
+            className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border border-[#8A6F12] font-semibold text-sm text-center"
             style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}
           >
             View Order Status
           </a>
           <a
             href="/"
-            className="px-6 py-3 rounded-xl border-2 border-gray-200 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
+            className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border-2 border-gray-300 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
           >
             Back to Home
           </a>
@@ -126,53 +128,84 @@ export function PendingConfirmation({
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--cream)] px-4 py-10 sm:py-16 space-y-6 sm:space-y-8">
+      <div
+        className="h-14 w-14 rounded-full border-4 border-amber-200 border-t-amber-600 animate-spin"
+        aria-hidden="true"
+      />
       <div className="text-center" role="status" aria-live="polite">
-        <span className="text-6xl sm:text-7xl" aria-hidden>⏳</span>
-        <h1 className="text-3xl sm:text-4xl font-bold text-[var(--forest)] mt-4 mb-2">
-          {showSupportState ? 'Your order is saved — we are checking it' : 'Confirming your payment…'}
+        <h1 className="text-3xl sm:text-4xl font-bold text-[var(--forest)] mb-2 text-balance">
+          {showSupportState ? 'Your order is saved — we are checking it' : 'Checking your payment…'}
         </h1>
-        <p className="text-base sm:text-lg text-gray-600 max-w-md mx-auto">
+        <p className="text-base sm:text-lg text-gray-700 max-w-md mx-auto text-pretty">
           {showSupportState
             ? `We could not display the final confirmation yet for ${childName}'s order.`
             : `Stripe returned you to us. We are checking ${childName}'s order now.`}
         </p>
       </div>
 
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 sm:p-6 w-full max-w-md space-y-3 text-sm text-gray-700">
-        <p className="font-semibold text-[var(--forest)]">
-          Do not submit another payment while we verify this one.
+      <div className="bg-white rounded-2xl border border-gray-300 shadow-md p-5 sm:p-6 w-full max-w-md space-y-3 text-sm text-gray-700">
+        <p className="border-l-4 border-amber-600 bg-amber-50 px-4 py-3 text-base font-bold text-gray-900 text-pretty">
+          Don&apos;t pay again — it could create a duplicate charge.
         </p>
         {orderId ? (
           <p>
             Order ID: <span className="font-mono break-all text-[var(--forest)]">{orderId}</span>
           </p>
         ) : null}
-        <p className="text-gray-500">
+        <p className="text-gray-700 text-pretty">
           {showSupportState
-            ? 'Keep this page or your order ID and contact us. We will verify the Stripe payment before asking you to do anything else.'
+            ? 'Save your order ID and email us. We will check the payment with Stripe first, and we will not ask you to pay again.'
             : 'This usually resolves within a few seconds. The page updates automatically.'}
         </p>
-        <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
-          Questions? <a className="underline" href={`mailto:support@herostorybooks.com${orderId ? `?subject=Order ${encodeURIComponent(orderId)}` : ''}`}>support@herostorybooks.com</a>
+        <p className="text-sm text-center text-gray-700 pt-3 border-t border-gray-200">
+          Questions? <a className="font-semibold underline underline-offset-2" href={`mailto:support@herostorybooks.com${orderId ? `?subject=Order ${encodeURIComponent(orderId)}` : ''}`}>support@herostorybooks.com</a>
         </p>
       </div>
 
       <div className="flex flex-col sm:flex-row gap-3 w-full max-w-md sm:justify-center">
-        {orderId ? (
-          <a
-            href={`/status/${orderId}`}
-            className="px-6 py-3 rounded-xl font-semibold text-sm text-center"
-            style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}
-          >
-            View Order Status
-          </a>
-        ) : null}
-        <a
-          href="/"
-          className="px-6 py-3 rounded-xl border-2 border-gray-200 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
-        >
-          Back to Home
-        </a>
+        {showSupportState ? (
+          <>
+            <a
+              href={`mailto:support@herostorybooks.com?subject=${encodeURIComponent(orderId ? `Payment check — Order ${orderId}` : 'Payment check')}`}
+              className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border border-[#8A6F12] font-semibold text-sm text-center"
+              style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}
+            >
+              Email Us About This Order
+            </a>
+            {orderId ? (
+              <a
+                href={`/status/${orderId}`}
+                className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border-2 border-gray-300 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
+              >
+                View Order Status
+              </a>
+            ) : (
+              <a
+                href="/"
+                className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border-2 border-gray-300 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
+              >
+                Back to Home
+              </a>
+            )}
+          </>
+        ) : (
+          <>
+            {orderId ? (
+              <a
+                href={`/status/${orderId}`}
+                className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border-2 border-gray-300 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
+              >
+                View Order Status
+              </a>
+            ) : null}
+            <a
+              href="/"
+              className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border-2 border-gray-300 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
+            >
+              Back to Home
+            </a>
+          </>
+        )}
       </div>
     </div>
   );

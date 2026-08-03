@@ -78,7 +78,7 @@ function SuccessView({
           {childName}&apos;s Storybook Is In Motion!
         </h1>
         <p className="text-lg text-gray-600 max-w-md mx-auto">
-          We saved your {format} order and kicked off the first delivery step.
+          Your {format} order is saved. We&apos;ll prepare your proof next.
         </p>
       </div>
 
@@ -110,7 +110,7 @@ function SuccessView({
             </div>
           </div>
         </div>
-        <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
+        <p className="text-sm text-center text-gray-700 pt-3 border-t border-gray-200">
           Questions? support@herostorybooks.com · Print books move to production only after proof approval
         </p>
       </div>
@@ -119,7 +119,7 @@ function SuccessView({
         {orderId ? (
           <a
             href={`/status/${orderId}`}
-            className="px-6 py-3 rounded-xl font-semibold text-sm text-center"
+            className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border border-[#8A6F12] font-semibold text-sm text-center"
             style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}
           >
             View Order Status
@@ -127,7 +127,7 @@ function SuccessView({
         ) : null}
         <a
           href="/"
-          className="px-6 py-3 rounded-xl border-2 border-gray-200 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
+          className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border-2 border-gray-300 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
         >
           Back to Home
         </a>
@@ -142,7 +142,7 @@ function FailedView({ orderId }: { orderId: string | undefined }) {
       <div className="text-center">
         <span className="text-7xl">⚠️</span>
         <h1 className="text-4xl font-bold text-[var(--forest)] mt-4 mb-2">
-          We couldn&apos;t confirm your payment
+          Your payment didn&apos;t go through
         </h1>
         <p className="text-lg text-gray-600 max-w-md mx-auto">
           Stripe reported a failed payment for this order. No book has been started yet.
@@ -160,7 +160,7 @@ function FailedView({ orderId }: { orderId: string | undefined }) {
             <span className="font-mono text-[var(--forest)]">{orderId}</span>.
           </p>
         ) : null}
-        <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
+        <p className="text-sm text-center text-gray-700 pt-3 border-t border-gray-200">
           Questions? support@herostorybooks.com
         </p>
       </div>
@@ -168,14 +168,14 @@ function FailedView({ orderId }: { orderId: string | undefined }) {
       <div className="flex flex-col sm:flex-row gap-3">
         <a
           href="/checkout"
-          className="px-6 py-3 rounded-xl font-semibold text-sm text-center"
+          className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border border-[#8A6F12] font-semibold text-sm text-center"
           style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}
         >
           Try Checkout Again
         </a>
         <a
           href="/"
-          className="px-6 py-3 rounded-xl border-2 border-gray-200 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
+          className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border-2 border-gray-300 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
         >
           Back to Home
         </a>
@@ -191,22 +191,25 @@ function RefundedView({ orderId }: { orderId: string | undefined }) {
         <span className="text-7xl">↩️</span>
         <h1 className="text-4xl font-bold text-[var(--forest)] mt-4 mb-2">This order was refunded</h1>
         <p className="text-lg text-gray-600 max-w-md mx-auto">
-          Do not submit another payment for this order. Contact us if you need help with the refund or want to place a separate new order.
+          Contact us if you need help with the refund or want to place a separate new order.
         </p>
       </div>
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 w-full max-w-md space-y-3 text-sm text-gray-700">
+      <div className="bg-white rounded-2xl border border-gray-300 shadow-md p-6 w-full max-w-md space-y-3 text-sm text-gray-700">
+        <p className="border-l-4 border-amber-600 bg-amber-50 px-4 py-3 text-base font-bold text-gray-900">
+          Don&apos;t pay again for this order.
+        </p>
         {orderId ? <p>Order ID: <span className="font-mono break-all text-[var(--forest)]">{orderId}</span></p> : null}
-        <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
-          Questions? <a className="underline" href="mailto:support@herostorybooks.com">support@herostorybooks.com</a>
+        <p className="text-sm text-center text-gray-700 pt-3 border-t border-gray-200">
+          Questions? <a className="font-semibold underline underline-offset-2" href="mailto:support@herostorybooks.com">support@herostorybooks.com</a>
         </p>
       </div>
       <div className="flex flex-col sm:flex-row gap-3">
         {orderId ? (
-          <a href={`/status/${orderId}`} className="px-6 py-3 rounded-xl font-semibold text-sm text-center" style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}>
+          <a href={`/status/${orderId}`} className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border border-[#8A6F12] font-semibold text-sm text-center" style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}>
             View Order Status
           </a>
         ) : null}
-        <a href="/" className="px-6 py-3 rounded-xl border-2 border-gray-200 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition">
+        <a href="/" className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border-2 border-gray-300 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition">
           Back to Home
         </a>
       </div>

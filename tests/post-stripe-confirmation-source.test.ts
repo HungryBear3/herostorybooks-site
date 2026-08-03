@@ -5,6 +5,8 @@ import { readFileSync } from 'node:fs';
 const orderRoute = readFileSync('src/app/api/order/route.ts', 'utf8');
 const webhookRoute = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
 const thankYouPage = readFileSync('src/app/thank-you/page.tsx', 'utf8');
+const pendingConfirmation = readFileSync('src/app/thank-you/pending-confirmation.tsx', 'utf8');
+const proofTurnaround = readFileSync('src/lib/proof-turnaround.ts', 'utf8');
 const orderEmail = readFileSync('src/lib/order-email.ts', 'utf8');
 
 test('checkout success URL includes Stripe opaque session placeholder for server fallback', () => {
@@ -30,17 +32,30 @@ test('thank-you pending surface delegates to client polling and does not invite 
   assert.doesNotMatch(thankYouPage, /safely re-try checkout/i);
 });
 
-test('confirmation client has reassuring no-repay, order link, support timeout, and mobile-safe layout', () => {
-  const client = readFileSync('src/app/thank-you/pending-confirmation.tsx', 'utf8');
-  assert.match(client, /Do not submit another payment/i);
-  assert.match(client, /support@herostorybooks\.com/);
-  assert.match(client, /\/status\/\$\{orderId\}/);
-  assert.match(client, /CONFIRMATION_POLL_INTERVAL_MS/);
-  assert.match(client, /getConfirmationPollDecision/);
-  assert.match(client, /flex flex-col sm:flex-row/);
-  assert.match(client, /requestInFlight/);
-  assert.match(client, /if \(requestInFlight\) return/);
-  assert.doesNotMatch(client, /Try Checkout Again|retry checkout/i);
+test('confirmation client prioritizes waiting, duplicate-charge prevention, and actionable support', () => {
+  assert.match(pendingConfirmation, /Checking your payment/);
+  assert.doesNotMatch(pendingConfirmation, /Confirming your payment/);
+  assert.match(pendingConfirmation, /duplicate charge/);
+  assert.match(pendingConfirmation, /border-l-4 border-amber-600 bg-amber-50/);
+  assert.match(pendingConfirmation, /animate-spin/);
+  assert.match(pendingConfirmation, /Email Us About This Order/);
+  assert.match(pendingConfirmation, /text-sm text-center text-gray-700/);
+  assert.match(pendingConfirmation, /support@herostorybooks\.com/);
+  assert.match(pendingConfirmation, /\/status\/\$\{orderId\}/);
+  assert.match(pendingConfirmation, /CONFIRMATION_POLL_INTERVAL_MS/);
+  assert.match(pendingConfirmation, /getConfirmationPollDecision/);
+  assert.match(pendingConfirmation, /flex flex-col sm:flex-row/);
+  assert.match(pendingConfirmation, /requestInFlight/);
+  assert.match(pendingConfirmation, /if \(requestInFlight\) return/);
+  assert.doesNotMatch(pendingConfirmation, /Try Checkout Again|retry checkout/i);
+});
+
+test('terminal thank-you states use distinct headings and render the real proof window', () => {
+  assert.match(thankYouPage, /Your payment didn&apos;t go through/);
+  assert.doesNotMatch(thankYouPage, /We couldn&apos;t confirm your payment/);
+  assert.match(thankYouPage, /PROOF_TURNAROUND_WINDOW/);
+  assert.match(proofTurnaround, /PROOF_TURNAROUND_WINDOW = '2–3 business days'/);
+  assert.doesNotMatch(thankYouPage, /configured proof-turnaround window/);
 });
 
 test('public confirmation route is read-only and leaves all durable side effects to the webhook', () => {
