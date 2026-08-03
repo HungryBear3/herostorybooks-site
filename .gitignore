@@ -30,3 +30,7 @@ graphify-out/
 # scoped to a single real order and carries customer-identifying strings.
 scripts/hsb-review-builder/
 .venv-hsb-review/
+
+# QA evidence bundles. Local artifacts only: they quote real order ids and
+# server logs verbatim and must never be committed.
+evidence-*/

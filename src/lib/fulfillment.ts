@@ -644,10 +644,15 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
 export function proofSourceFingerprint(pages: PageArtifact[]): string {
   const canonical = [...pages]
     .sort((a, b) => a.pageIndex - b.pageIndex)
+    // Use imageUrlForPage so the fingerprint is computed from EXACTLY what the
+    // renderer consumes. `acceptedImageUrl ?? currentImageUrl` would diverge for
+    // an (accepted:false, acceptedImageUrl:non-null) page and under-invalidate.
+    // No writer produces that state today; keeping the two in lockstep means a
+    // future one cannot silently break staleness detection.
     .map((p) => [
       p.pageIndex,
       p.storyText ?? '',
-      p.acceptedImageUrl ?? p.currentImageUrl ?? '',
+      imageUrlForPage(p) ?? '',
     ].join('\u0000'))
     .join('\u0001');
   return `pf_${crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 32)}`;

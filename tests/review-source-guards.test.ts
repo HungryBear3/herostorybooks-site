@@ -22,29 +22,29 @@ import path from 'node:path';
 const REPO = process.cwd();
 
 /**
- * The files this guard is responsible for: everything GIT TRACKS under src/,
- * tests/ and scripts/.
+ * Everything that could end up in a commit: git-tracked files PLUS
+ * untracked-but-not-ignored ones, across the WHOLE repository — not just
+ * src/tests/scripts, because QA artifacts and scratch notes at the repo root
+ * are exactly where verbatim customer strings tend to land.
  *
- * Deliberately the git index, not a filesystem walk. The guard is about what
- * gets COMMITTED; untracked local tooling, virtualenvs and QA evidence
- * directories are not committed source and must not fail the build for whoever
- * happens to have them on disk.
+ * Paths excluded by .gitignore are skipped deliberately and visibly there
+ * (the order-scoped review tool, its virtualenv, evidence bundles). Relying on
+ * a tracked-only scan would instead make the guard depend on staging order:
+ * `npm test` before `git add` would pass, and the commit would still carry the
+ * identifier.
  */
+const SCANNED_EXTENSIONS =
+  /\.(ts|tsx|js|mjs|cjs|json|md|txt|patch|diff|log|ya?ml|py|sh|html|css)$/;
+
 function sourceFiles(): string[] {
-  // Tracked files PLUS untracked-but-not-ignored ones: anything a `git add .`
-  // could sweep into a commit. Paths excluded by .gitignore are excluded
-  // deliberately and visibly there, rather than by staging accident — which is
-  // what a tracked-only scan would depend on.
   const listed = execFileSync(
     'git',
-    ['ls-files', '-z', '--cached', '--others', '--exclude-standard', 'src', 'tests', 'scripts'],
-    { cwd: REPO, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+    ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+    { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   )
     .split('\0')
     .filter(Boolean);
-  return listed
-    .filter((f) => /\.(ts|tsx|js|mjs|json|md)$/.test(f))
-    .map((f) => path.join(REPO, f));
+  return listed.filter((f) => SCANNED_EXTENSIONS.test(f)).map((f) => path.join(REPO, f));
 }
 
 // ── 1. No real customer / order identifiers ────────────────────────────────
@@ -55,8 +55,8 @@ function sourceFiles(): string[] {
  * greppable copy of the identifier it bans.
  */
 const BANNED: Array<{ label: string; pattern: RegExp }> = [
-  { label: 'real recipient first name', pattern: new RegExp(['P', 'eter'].join(''), 'i') },
-  { label: 'real child name', pattern: new RegExp(['B', 'enny'].join(''), 'i') },
+  { label: 'real recipient first name', pattern: new RegExp(`\\b${['P', 'eter'].join('')}\\b`, 'i') },
+  { label: 'real child name', pattern: new RegExp(`\\b${['B', 'enny'].join('')}\\b`, 'i') },
   {
     label: 'real order id',
     pattern: new RegExp(['ord_', '217450cb153f4543'].join(''), 'i'),
@@ -211,8 +211,15 @@ test('buildProofArtifactFromPageArtifacts persists nothing', () => {
 test('the review client clears the proof acknowledgment when a page is regenerated', () => {
   const rel = 'src/app/review/[orderId]/review-client.tsx';
   const text = readFileSync(path.join(REPO, rel), 'utf8');
-  const regen = text.slice(text.indexOf('async function regenerate'), text.indexOf('async function acceptPage'));
-  assert.ok(regen.length > 0, 'regenerate handler must exist');
+  const start = text.indexOf('async function regenerate');
+  const end = text.indexOf('async function accept(');
+  assert.ok(start >= 0, `${rel}: regenerate handler must exist`);
+  assert.ok(
+    end > start,
+    `${rel}: could not bound the regenerate handler (start=${start}, end=${end}) — ` +
+      'a slice that runs to EOF would make the assertions below vacuous',
+  );
+  const regen = text.slice(start, end);
   assert.match(
     regen,
     /proofReviewedAt: null/,

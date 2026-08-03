@@ -59,6 +59,8 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [proofAck, setProofAck] = useState<boolean>(Boolean(initial.proofReviewedAt));
+  // Cache-buster for the proof preview: the rebuilt PDF reuses the same blob URL.
+  const [proofNonce, setProofNonce] = useState(0);
   const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
 
   const selected = snapshot.pageArtifacts[selectedIdx];
@@ -137,6 +139,12 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
         proofReviewedAt: null,
       }));
       setProofAck(false);
+      // The rebuilt proof reuses the SAME blob URL (addRandomSuffix:false,
+      // allowOverwrite:true), so the preview iframe would keep serving the
+      // pre-regeneration render from cache. Re-ticking "I reviewed the full
+      // proof PDF" against that stale view would acknowledge content the
+      // customer never saw. Bump a nonce to force a refetch.
+      setProofNonce((n) => n + 1);
       setFeedback('');
       if (data.warning === 'regen_manual_review_threshold') {
         setNotice('We\u2019ve regenerated this page several times. Our team will also take a look to make sure it lands right.');
@@ -404,7 +412,11 @@ No image yet
         {/* Inline full-proof preview — distinct from the per-page section above. */}
         <div className="mt-8">
           <InlineProofPreview
-            proofUrl={snapshot.storyArtifactUrl}
+            proofUrl={
+              snapshot.storyArtifactUrl && proofNonce > 0
+                ? `${snapshot.storyArtifactUrl}${snapshot.storyArtifactUrl.includes('?') ? '&' : '?'}v=${proofNonce}`
+                : snapshot.storyArtifactUrl
+            }
             isPrint={snapshot.isPrint}
             illustratedPageCount={snapshot.pageArtifacts.length}
           />
