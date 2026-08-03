@@ -1,10 +1,12 @@
 // Customer page-review service helpers.
 //
 // All functions operate on PageArtifact[] in a pure, predictable way. Every
-// customer mutation commits through withOrderTransaction (conditional CAS on the
-// order record) — this module never persists order state through an
-// unconditional updateFulfillmentState. Tests can also call the pure helpers
-// directly via applyAcceptPage()/applyRegeneratePage().
+// customer mutation on the PRODUCTION path commits through withOrderTransaction
+// (conditional CAS on the order record); this module never calls
+// updateFulfillmentState. The one exception is the legacy `deps.rebuildProof`
+// test shim, whose audit write goes through appendAuditEvent (an unconditional
+// persistOrder) — no production caller supplies that dep. Tests can also call
+// the pure helpers directly via applyAcceptPage()/applyRegeneratePage().
 
 import crypto from 'node:crypto';
 
@@ -231,7 +233,10 @@ export interface GuardedProofRefreshResult {
  *
  * Why this exists: `rebuildProofFromPageArtifacts` finishes with an
  * unconditional `updateFulfillmentState`, which last-write-wins over any
- * concurrent review mutation. Every customer review flow uses this instead.
+ * concurrent review mutation. Regeneration uses this instead.
+ * `approveWholeBook` does NOT call this — it inlines the same build-then-
+ * guarded-commit shape so the proof URL lands in the SAME conditional write as
+ * the approval; see phase 3 there.
  *
  * Sequence:
  *   1. build + upload the PDF outside any transaction, capturing the
@@ -253,7 +258,7 @@ export async function refreshProofGuarded(
   opts: {
     buildProof?: typeof buildProofArtifactFromPageArtifacts;
     auditPageIndex?: number;
-    triggeredBy: 'page_regenerated' | 'whole_book_approved';
+    triggeredBy: 'page_regenerated';
     /** Revalidated against the freshly-read order before the proof is written. */
     actor?: ReviewActor;
   },
@@ -293,6 +298,10 @@ export async function refreshProofGuarded(
           if (order.reviewStatus === 'approved') {
             return { abort: { refreshed: false, error: 'already_approved' } };
           }
+          // NOTE the `builtFrom &&` guard is fail-OPEN by construction: a
+          // builder that returns no fingerprint skips the staleness check.
+          // `buildProofArtifactFromOrder` always sets one, so no production path
+          // reaches that; only test stubs omit it. Any new builder MUST set it.
           const current = proofSourceFingerprint(order.pageArtifacts ?? []);
           if (builtFrom && current !== builtFrom) {
             // The artifact set moved while we rendered. Discard: writing this
@@ -865,14 +874,23 @@ export async function approveWholeBook(
         await withOrderMutationLock(orderId, async (lock) =>
           withOrderTransaction<null>(
             orderId,
-            (order) => ({
-              commit: appendAuditEventTo(order, {
-                type: 'whole_book_approval_rejected',
-                reason: 'proof_rebuild_failed',
-                meta: { error: rb.error ?? 'proof_rebuild_failed' },
-              }),
-              result: null,
-            }),
+            (order) => {
+              // Same gate as every other commit on this path: the render can
+              // take tens of seconds, and a refund (or a token rotation, or an
+              // approval) can land while it runs. An ineligible caller must not
+              // append even a rejection row, so abort rather than commit.
+              if (evaluateReviewMutationEligibility(order, opts.actor)) {
+                return { abort: null };
+              }
+              return {
+                commit: appendAuditEventTo(order, {
+                  type: 'whole_book_approval_rejected',
+                  reason: 'proof_rebuild_failed',
+                  meta: { error: rb.error ?? 'proof_rebuild_failed' },
+                }),
+                result: null,
+              };
+            },
             { lock, notFound: () => null },
           ),
         );
@@ -902,6 +920,8 @@ export async function approveWholeBook(
             // The proof was rendered outside this transaction. If the artifact
             // set moved underneath it, the built PDF no longer represents the
             // book — refuse rather than approve against a stale proof.
+            // Fail-open on a missing fingerprint — see the note in
+            // refreshProofGuarded. Production builders always set one.
             if (builtFrom && proofSourceFingerprint(order.pageArtifacts ?? []) !== builtFrom) {
               return {
                 commit: appendAuditEventTo(order, {

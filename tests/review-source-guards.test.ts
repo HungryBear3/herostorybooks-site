@@ -31,14 +31,18 @@ const REPO = process.cwd();
  * happens to have them on disk.
  */
 function sourceFiles(): string[] {
-  const tracked = execFileSync('git', ['ls-files', '-z', 'src', 'tests', 'scripts'], {
-    cwd: REPO,
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-  })
+  // Tracked files PLUS untracked-but-not-ignored ones: anything a `git add .`
+  // could sweep into a commit. Paths excluded by .gitignore are excluded
+  // deliberately and visibly there, rather than by staging accident — which is
+  // what a tracked-only scan would depend on.
+  const listed = execFileSync(
+    'git',
+    ['ls-files', '-z', '--cached', '--others', '--exclude-standard', 'src', 'tests', 'scripts'],
+    { cwd: REPO, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+  )
     .split('\0')
     .filter(Boolean);
-  return tracked
+  return listed
     .filter((f) => /\.(ts|tsx|js|mjs|json|md)$/.test(f))
     .map((f) => path.join(REPO, f));
 }
@@ -90,7 +94,12 @@ test('review fixtures use obviously synthetic names and hosts', () => {
   const reviewTests = sourceFiles().filter((f) => /tests\/(review|order-guarded|editable-review|customer-text)/.test(f));
   assert.ok(reviewTests.length >= 5, 'expected the review test suite to be present');
   for (const file of reviewTests) {
-    const text = readFileSync(file, 'utf8');
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      continue; // tracked-but-deleted, mid-rebase, etc.
+    }
     // Fixture addresses must be unmistakably synthetic. The risk being guarded
     // is a REAL customer address landing in a committed fixture, so reserved
     // test domains and trivial placeholders (a@b.com) both qualify; anything
@@ -195,4 +204,21 @@ test('buildProofArtifactFromPageArtifacts persists nothing', () => {
     /updateFulfillmentState|persistOrder/,
     'the build-only proof helper must not persist anything',
   );
+});
+
+// ── 4. The review client mirrors the server's ack invalidation ─────────────
+
+test('the review client clears the proof acknowledgment when a page is regenerated', () => {
+  const rel = 'src/app/review/[orderId]/review-client.tsx';
+  const text = readFileSync(path.join(REPO, rel), 'utf8');
+  const regen = text.slice(text.indexOf('async function regenerate'), text.indexOf('async function acceptPage'));
+  assert.ok(regen.length > 0, 'regenerate handler must exist');
+  assert.match(
+    regen,
+    /proofReviewedAt: null/,
+    `${rel}: regenerate must clear the persisted ack in local snapshot state — the server ` +
+      'invalidates it with the content change, and a stale client value leaves Approve ' +
+      'enabled, 409s on click, and blocks re-acknowledgment without a page reload',
+  );
+  assert.match(regen, /setProofAck\(false\)/, `${rel}: regenerate must untick the ack checkbox`);
 });

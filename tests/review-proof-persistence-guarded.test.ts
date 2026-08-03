@@ -469,3 +469,52 @@ test('REGRESSION: a failed proof build still invalidates the acknowledgment for 
     cleanup(dir);
   }
 });
+
+test('REGRESSION: a refund landing during a FAILING approval render writes no rejection row', async () => {
+  const dir = makeTmp();
+  try {
+    const orderId = 'ord_refund_during_failed_render';
+    await persistOrder(makeOrder(orderId));
+    const before = (await getOrder(orderId))?.auditEvents?.length ?? 0;
+
+    let releaseBuild!: () => void;
+    const mayFinish = new Promise<void>((r) => { releaseBuild = r; });
+    let started!: () => void;
+    const hasStarted = new Promise<void>((r) => { started = r; });
+
+    const failingGatedBuild = async () => {
+      started();
+      await mayFinish;
+      return { ok: false as const, error: 'render_failed' };
+    };
+
+    const inflight = approveWholeBook(
+      orderId,
+      { buildProof: failingGatedBuild, approvePrint: async () => { throw new Error('print must not run'); } },
+      { actor: customerReviewActor(TOKEN) },
+    );
+
+    // Phase 1 already passed; refund lands while the (doomed) render runs.
+    await hasStarted;
+    const cur = await getOrder(orderId);
+    await persistOrder({ ...cur!, refundedAt: NOW, stripeRefundId: 're_synthetic' });
+    releaseBuild();
+
+    const res = await inflight;
+    assert.equal(res.ok, false);
+
+    const after = await getOrder(orderId);
+    assert.equal(
+      (after?.auditEvents ?? []).length,
+      before,
+      'a refunded order must receive NO whole_book_approval_rejected row from the failed render',
+    );
+    assert.equal(
+      (after?.auditEvents ?? []).some((e) => e.reason === 'proof_rebuild_failed'),
+      false,
+    );
+    assert.notEqual(after?.reviewStatus, 'approved');
+  } finally {
+    cleanup(dir);
+  }
+});

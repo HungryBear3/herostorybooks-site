@@ -127,7 +127,16 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
           p.pageIndex === selected.pageIndex ? data.page : p,
         ),
         reviewStatus: 'customer_changes_requested',
+        // The server invalidates the proof acknowledgment with the content
+        // change itself, so the assembled PDF the customer ticked no longer
+        // matches these pages. Mirror that here: leaving the tick in place kept
+        // Approve enabled, produced a server 409 on click, and left the customer
+        // unable to re-acknowledge without a page reload (unticking is a
+        // client-only revoke, and re-ticking short-circuits on a stale
+        // proofReviewedAt).
+        proofReviewedAt: null,
       }));
+      setProofAck(false);
       setFeedback('');
       if (data.warning === 'regen_manual_review_threshold') {
         setNotice('We\u2019ve regenerated this page several times. Our team will also take a look to make sure it lands right.');
