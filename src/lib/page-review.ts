@@ -1,7 +1,9 @@
 // Customer page-review service helpers.
 //
-// All functions operate on PageArtifact[] in a pure, predictable way and call
-// updateFulfillmentState() at the end. Tests can also call the pure helpers
+// All functions operate on PageArtifact[] in a pure, predictable way. Every
+// customer mutation commits through withOrderTransaction (conditional CAS on the
+// order record) — this module never persists order state through an
+// unconditional updateFulfillmentState. Tests can also call the pure helpers
 // directly via applyAcceptPage()/applyRegeneratePage().
 
 import crypto from 'node:crypto';
@@ -15,7 +17,6 @@ import {
   OrderMutationLockError,
   OrderVersionConflictError,
   orderRequiresReferenceImage,
-  updateFulfillmentState,
   withOrderMutationLock,
   withOrderTransaction,
 } from './orders.ts';
