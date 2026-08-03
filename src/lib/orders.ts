@@ -1,6 +1,13 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
-import { del, get, list, put } from '@vercel/blob';
+import {
+  BlobNotFoundError,
+  BlobPreconditionFailedError,
+  del,
+  get,
+  list,
+  put,
+} from '@vercel/blob';
 
 import type { CheckoutTracking } from './checkout-tracking.ts';
 import type { CustomerQueueStatus } from './order-queue.ts';
@@ -161,8 +168,12 @@ export type ReviewAuditEventType =
   | 'proof_release_override_recorded'
   | 'proof_review_acknowledged'
   | 'page_regenerated'
+  | 'page_regenerate_rejected'
   | 'page_accepted'
+  | 'page_accept_rejected'
   | 'page_changes_requested'
+  | 'customer_text_change_requested'
+  | 'review_link_prepared'
   | 'whole_book_approved'
   | 'whole_book_approval_rejected'
   | 'print_upgrade_paid'
@@ -1000,6 +1011,17 @@ export class OrderPersistenceError extends Error {
   }
 }
 
+export class OrderMutationLockError extends Error {
+  readonly orderId: string;
+
+  constructor(orderId: string, message = 'Order mutation is already in progress', cause?: unknown) {
+    super(message);
+    this.name = 'OrderMutationLockError';
+    this.orderId = orderId;
+    this.cause = cause;
+  }
+}
+
 /**
  * Production-like = any environment where ephemeral tmpfs is unsafe for order
  * persistence: Vercel (always), explicit production NODE_ENV, or an explicit
@@ -1040,6 +1062,551 @@ function getOrderBlobPath(orderId: string) {
  */
 function getOrdersListPrefix() {
   return withBlobNamespace('orders/');
+}
+
+// ── Order mutation lock: generation-based atomic ownership ───────────────────
+//
+// ATOMICITY INVARIANT
+// -------------------
+// The ONLY atomic primitive this project has is an exclusive create:
+//   * Vercel Blob : put(..., allowOverwrite: false) — the store rejects the
+//                   write with a 409/"already exists" if the key is taken.
+//   * local FS    : link(tmp, target) — POSIX link() is atomic and fails
+//                   EEXIST if the target exists. The record body is fully
+//                   written to `tmp` BEFORE the link, so the key becomes
+//                   visible already carrying its complete contents (no
+//                   create-then-fill window a racing reader could observe).
+//
+// There is NO compare-and-swap and NO conditional overwrite. Therefore the lock
+// NEVER overwrites and NEVER deletes-then-recreates a contended key. Instead,
+// lock ownership is expressed as a monotonically increasing *generation*, each
+// living at its own immutable key:
+//
+//     order-mutation-locks/<orderId>/000000000001.lock
+//     order-mutation-locks/<orderId>/000000000002.lock   ← reclaim after expiry
+//
+// To acquire, a worker reads the highest existing generation G and then
+// exclusively creates generation G+1. Exactly one worker can win that create;
+// every other contender gets 'exists' and backs off. Mutual exclusion is
+// therefore decided by the store's atomic create, never by a read.
+//
+// This is what makes the design correct under an eventually-consistent list:
+// a stale list can only make a worker guess a generation that is already taken,
+// and that guess is rejected by the atomic create. A stale list can cause extra
+// retries; it can NEVER admit two winners.
+//
+// The previous implementation overwrote the single lock key and then re-read it
+// after a delay to "confirm" ownership. That is not mutual exclusion: read-back
+// is not CAS, and under read-after-write lag two contenders could each observe
+// their own write and both enter. That path is removed entirely.
+//
+// FENCING
+// -------
+// A generation is valid only while its lease is unexpired AND no higher
+// generation exists. OrderLockHandle.assertHeld() re-verifies both immediately
+// before a critical section commits, so a holder whose lease lapsed (and was
+// reclaimed at a higher generation) fails closed instead of writing. This
+// bounds the unsafe window to the gap between assertHeld() and the write rather
+// than the whole critical section. See the qa-report for the residual limit.
+
+const LOCK_GENERATION_DIGITS = 12;
+
+function getOrderMutationLockPrefix(orderId: string) {
+  return withBlobNamespace(`order-mutation-locks/${orderId}/`);
+}
+
+function getOrderMutationLockBlobPath(orderId: string, generation: number) {
+  const padded = String(generation).padStart(LOCK_GENERATION_DIGITS, '0');
+  return `${getOrderMutationLockPrefix(orderId)}${padded}.lock`;
+}
+
+function parseLockGeneration(pathname: string): number | null {
+  const match = /(\d{12})\.lock$/.exec(pathname);
+  if (!match) return null;
+  const n = Number(match[1]);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+function highestGeneration(pathnames: string[]): number {
+  let highest = 0;
+  for (const p of pathnames) {
+    const g = parseLockGeneration(p);
+    if (g !== null && g > highest) highest = g;
+  }
+  return highest;
+}
+
+// Bounded acquisition + a bounded lease so a crashed holder cannot strand the
+// lock forever.
+//
+// INVARIANT: the lease (LEASE_MS) must comfortably exceed the longest critical
+// section ever run under the lock, so a still-live holder is never mistaken for
+// a crashed one and reclaimed underneath itself. The longest critical section is
+// approveWholeBook's proof-PDF rebuild; the slow provider call (regenerate) and
+// the slow print handoff (approve) are deliberately kept OUTSIDE the lock. 60s is
+// well above the rebuild, and acquisition is bounded to TIMEOUT_MS.
+const ORDER_MUTATION_LOCK_WAIT_MS = 25;
+const ORDER_MUTATION_LOCK_TIMEOUT_MS = 10_000;
+const ORDER_MUTATION_LOCK_LEASE_MS = 60_000;
+
+// Timings are overridable via env (read at call time) so tests can exercise
+// bounded acquisition and lease expiry deterministically without long waits.
+function lockTimeoutMs(): number {
+  return Number(process.env.HSB_ORDER_LOCK_TIMEOUT_MS) || ORDER_MUTATION_LOCK_TIMEOUT_MS;
+}
+function lockLeaseMs(): number {
+  return Number(process.env.HSB_ORDER_LOCK_LEASE_MS) || ORDER_MUTATION_LOCK_LEASE_MS;
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+export interface OrderLockRecord {
+  owner: string;
+  generation: number;
+  acquiredAt: string;
+  expiresAt: number;
+}
+
+function isOrderLockRecord(value: unknown): value is OrderLockRecord {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.owner === 'string' &&
+    v.owner.length > 0 &&
+    typeof v.generation === 'number' &&
+    Number.isSafeInteger(v.generation) &&
+    v.generation > 0 &&
+    typeof v.acquiredAt === 'string' &&
+    typeof v.expiresAt === 'number' &&
+    Number.isFinite(v.expiresAt)
+  );
+}
+
+/**
+ * The result of reading a lock key.
+ *
+ * CRITICAL: 'absent' and 'unreadable' are distinct and must never be collapsed
+ * into a single nullish value. The previous implementation returned `null` for
+ * "missing", "I/O error" and "unparseable" alike, which let a transient read
+ * failure be read as "nobody owns this" — and release then deleted a lock it
+ * had not proven it owned. Every consumer here fails closed on 'unreadable'.
+ */
+export type OrderLockReadOutcome =
+  | { state: 'present'; record: OrderLockRecord }
+  | { state: 'absent' }
+  | { state: 'unreadable'; reason: 'io_error' | 'malformed'; detail: string };
+
+/** Why a release did (or deliberately did not) delete the lock key. */
+export type OrderLockReleaseOutcome =
+  | 'released'      // positive read, owner matched → deleted
+  | 'superseded'    // owner matched but our lease had lapsed and a newer generation exists
+  | 'not_owner'     // positive read, different owner → NOT deleted
+  | 'absent'        // key already gone → nothing deleted
+  | 'read_failed'   // read threw → NOT deleted (fail closed)
+  | 'malformed'     // unparseable/invalid record → NOT deleted (fail closed)
+  | 'delete_failed';
+
+export interface OrderLockHandle {
+  readonly orderId: string;
+  readonly owner: string;
+  readonly generation: number;
+  /**
+   * Re-prove ownership. Throws OrderMutationLockError unless the lock key is
+   * positively readable, still carries OUR owner token, the lease has not
+   * lapsed, and no higher generation has superseded us. Call this immediately
+   * before a critical section commits.
+   */
+  assertHeld(): Promise<void>;
+  release(): Promise<OrderLockReleaseOutcome>;
+}
+
+/**
+ * Storage seam for the lock. Two adapters ship: Vercel Blob (production) and
+ * local filesystem (dev/test). `createIfAbsent` MUST be atomic and MUST report
+ * 'exists' rather than overwriting — that single guarantee is what the whole
+ * mutual-exclusion argument rests on.
+ */
+export interface OrderLockStoreAdapter {
+  readonly kind: string;
+  /** Atomic exclusive create. Never overwrites. */
+  createIfAbsent(pathname: string, body: string): Promise<'created' | 'exists'>;
+  /** Returns null ONLY for a genuinely absent key; throws on I/O failure. */
+  readText(pathname: string): Promise<string | null>;
+  listLockPaths(prefix: string): Promise<string[]>;
+  remove(pathname: string): Promise<void>;
+}
+
+function isBlobAlreadyExistsError(message: string): boolean {
+  return /already exists|blob.*exist|409|conflict/i.test(message);
+}
+
+function isBlobNotFoundError(message: string): boolean {
+  return /not ?found|404|BlobNotFound/i.test(message);
+}
+
+function blobLockAdapter(token: string): OrderLockStoreAdapter {
+  return {
+    kind: 'blob',
+    async createIfAbsent(pathname, body) {
+      try {
+        await put(pathname, body, {
+          access: getBlobAccessMode(),
+          token,
+          allowOverwrite: false, // ← the atomic primitive; do not relax
+          addRandomSuffix: false,
+          contentType: 'application/json',
+        });
+        return 'created';
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (isBlobAlreadyExistsError(message)) return 'exists';
+        throw error;
+      }
+    },
+    async readText(pathname) {
+      try {
+        // No `url` is passed, so this goes straight to the authenticated,
+        // uncached SDK read — the authoritative view of the key.
+        return await readBlobText({ pathname, token });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (isBlobNotFoundError(message)) return null;
+        throw error;
+      }
+    },
+    async listLockPaths(prefix) {
+      const result = await list({ prefix, token, limit: 1000 });
+      return result.blobs.map((b) => b.pathname);
+    },
+    async remove(pathname) {
+      await del(pathname, { token });
+    },
+  };
+}
+
+function localLockRoot() {
+  return `${getOrderStoreDir()}/.mutation-locks`;
+}
+
+function localLockFsPath(pathname: string) {
+  return `${localLockRoot()}/${pathname}`;
+}
+
+function parentDirOf(p: string) {
+  const i = p.lastIndexOf('/');
+  return i === -1 ? '.' : p.slice(0, i);
+}
+
+function localLockAdapter(): OrderLockStoreAdapter {
+  return {
+    kind: 'local',
+    async createIfAbsent(pathname, body) {
+      const target = localLockFsPath(pathname);
+      await mkdir(parentDirOf(target), { recursive: true });
+      // Write the full body to a private temp file FIRST, then link() it into
+      // place. link() is atomic and fails EEXIST when taken, so the lock key
+      // never exists in a half-written state a racing reader could misread.
+      const tmp = `${target}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+      await writeFile(tmp, body, 'utf8');
+      try {
+        await link(tmp, target);
+        return 'created';
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return 'exists';
+        throw error;
+      } finally {
+        await unlink(tmp).catch(() => { /* temp already gone */ });
+      }
+    },
+    async readText(pathname) {
+      try {
+        return await readFile(localLockFsPath(pathname), 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error; // EACCES/EIO etc. must surface, never masquerade as absent
+      }
+    },
+    async listLockPaths(prefix) {
+      try {
+        const entries = await readdir(localLockFsPath(prefix));
+        return entries.map((name) => `${prefix}${name}`);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+        throw error;
+      }
+    },
+    async remove(pathname) {
+      try {
+        await unlink(localLockFsPath(pathname));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    },
+  };
+}
+
+let orderLockAdapterFactoryOverride:
+  | ((token: string | undefined) => OrderLockStoreAdapter)
+  | null = null;
+
+/**
+ * Test seam: substitute the lock's storage adapter so the production Blob
+ * semantics (atomic create-only put, eventually-consistent list, read failures)
+ * can be exercised deterministically without a live Blob store.
+ */
+export function __setOrderLockAdapterFactoryForTests(
+  factory: ((token: string | undefined) => OrderLockStoreAdapter) | null,
+): void {
+  orderLockAdapterFactoryOverride = factory;
+}
+
+export function __resetOrderLockAdapterFactoryForTests(): void {
+  orderLockAdapterFactoryOverride = null;
+}
+
+function resolveOrderLockAdapter(token: string | undefined): OrderLockStoreAdapter {
+  if (orderLockAdapterFactoryOverride) return orderLockAdapterFactoryOverride(token);
+  if (token) return blobLockAdapter(token);
+  return localLockAdapter();
+}
+
+async function readLockRecord(
+  adapter: OrderLockStoreAdapter,
+  pathname: string,
+): Promise<OrderLockReadOutcome> {
+  let text: string | null;
+  try {
+    text = await adapter.readText(pathname);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { state: 'unreadable', reason: 'io_error', detail: sanitizeBlobErrorMessage(message) };
+  }
+  if (text === null) return { state: 'absent' };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { state: 'unreadable', reason: 'malformed', detail: 'lock record is not valid JSON' };
+  }
+  if (!isOrderLockRecord(parsed)) {
+    return { state: 'unreadable', reason: 'malformed', detail: 'lock record shape is invalid' };
+  }
+  return { state: 'present', record: parsed };
+}
+
+function makeOrderLockHandle(
+  orderId: string,
+  owner: string,
+  record: OrderLockRecord,
+  adapter: OrderLockStoreAdapter,
+): OrderLockHandle {
+  const prefix = getOrderMutationLockPrefix(orderId);
+  const pathname = getOrderMutationLockBlobPath(orderId, record.generation);
+
+  return {
+    orderId,
+    owner,
+    generation: record.generation,
+
+    async assertHeld() {
+      const outcome = await readLockRecord(adapter, pathname);
+      if (outcome.state !== 'present') {
+        const detail = outcome.state === 'absent' ? 'lock key is gone' : outcome.detail;
+        throw new OrderMutationLockError(
+          orderId,
+          `Order lock ownership could not be confirmed (${detail})`,
+        );
+      }
+      if (outcome.record.owner !== owner) {
+        throw new OrderMutationLockError(orderId, 'Order lock ownership lost (owner changed)');
+      }
+      if (outcome.record.expiresAt <= Date.now()) {
+        throw new OrderMutationLockError(orderId, 'Order lock lease expired mid-transaction');
+      }
+      // A higher generation means someone reclaimed the lock from under us.
+      let paths: string[];
+      try {
+        paths = await adapter.listLockPaths(prefix);
+      } catch (error) {
+        throw new OrderMutationLockError(
+          orderId,
+          'Order lock ownership could not be confirmed (generation list failed)',
+          error,
+        );
+      }
+      if (highestGeneration(paths) > record.generation) {
+        throw new OrderMutationLockError(
+          orderId,
+          'Order lock superseded by a newer generation',
+        );
+      }
+    },
+
+    async release() {
+      // Delete ONLY after a positive, successful, parsed ownership read whose
+      // owner token is ours. Absent / I/O failure / malformed all fail closed
+      // WITHOUT deleting — the lease is what guarantees eventual reclaim.
+      const outcome = await readLockRecord(adapter, pathname);
+      if (outcome.state === 'absent') return 'absent';
+      if (outcome.state === 'unreadable') {
+        return outcome.reason === 'malformed' ? 'malformed' : 'read_failed';
+      }
+      if (outcome.record.owner !== owner) return 'not_owner';
+
+      // Positively ours. Deleting our OWN generation key can never remove
+      // another holder's lock: reclaim always creates a NEW generation key and
+      // leaves ours untouched, and this owner token is unique to this
+      // acquisition.
+      let superseded = false;
+      if (outcome.record.expiresAt <= Date.now()) {
+        try {
+          superseded = highestGeneration(await adapter.listLockPaths(prefix)) > record.generation;
+        } catch {
+          // Best-effort classification only; it does not gate the delete.
+        }
+      }
+      try {
+        await adapter.remove(pathname);
+      } catch {
+        return 'delete_failed';
+      }
+      return superseded ? 'superseded' : 'released';
+    },
+  };
+}
+
+async function tryAcquireOrderLock(
+  orderId: string,
+  owner: string,
+  adapter: OrderLockStoreAdapter,
+): Promise<OrderLockHandle | null> {
+  const prefix = getOrderMutationLockPrefix(orderId);
+
+  let paths: string[];
+  try {
+    paths = await adapter.listLockPaths(prefix);
+  } catch (error) {
+    throw new OrderMutationLockError(orderId, 'Order lock store unavailable (list failed)', error);
+  }
+  const highest = highestGeneration(paths);
+
+  if (highest > 0) {
+    const incumbent = await readLockRecord(adapter, getOrderMutationLockBlobPath(orderId, highest));
+    if (incumbent.state === 'unreadable') {
+      // We cannot PROVE the incumbent is dead, so we must not contend for the
+      // next generation. Back off and retry; acquisition stays bounded.
+      return null;
+    }
+    if (incumbent.state === 'present' && incumbent.record.expiresAt > Date.now()) {
+      return null; // live holder — wait
+    }
+    // 'absent' (deleted between list and read) or an expired lease: contend.
+  }
+
+  const generation = highest + 1;
+  const record: OrderLockRecord = {
+    owner,
+    generation,
+    acquiredAt: new Date().toISOString(),
+    expiresAt: Date.now() + lockLeaseMs(),
+  };
+
+  let created: 'created' | 'exists';
+  try {
+    created = await adapter.createIfAbsent(
+      getOrderMutationLockBlobPath(orderId, generation),
+      JSON.stringify(record),
+    );
+  } catch (error) {
+    throw new OrderMutationLockError(orderId, 'Order lock store unavailable (create failed)', error);
+  }
+  // 'exists' means another contender won this generation — including the case
+  // where our list was stale. Back off and retry; we never overwrite.
+  if (created === 'exists') return null;
+
+  // Hygiene: every generation BELOW the one we just won is provably expired. A
+  // generation is only ever created once the one before it has lapsed, and a
+  // lease is never renewed — so no key below `generation` can belong to a live
+  // holder. Removing them keeps the per-order prefix from growing without bound
+  // after crashes. Best-effort and never fatal: a stale holder that finds its
+  // key gone fails closed at assertHeld()/release() either way.
+  for (const stale of paths) {
+    const g = parseLockGeneration(stale);
+    if (g !== null && g < generation) {
+      try {
+        await adapter.remove(stale);
+      } catch {
+        /* hygiene only — never blocks acquisition */
+      }
+    }
+  }
+
+  return makeOrderLockHandle(orderId, owner, record, adapter);
+}
+
+/**
+ * Run one read-modify-write transaction for an order at a time.
+ *
+ * Mutual exclusion comes from an atomic exclusive create of a per-generation
+ * lock key (create-only Blob put / POSIX link) — never from an overwrite and
+ * never from a read-back "confirmation". A bounded lease means a crashed holder
+ * cannot strand the lock forever; a new holder reclaims by creating the NEXT
+ * generation rather than by deleting or overwriting the incumbent's key.
+ *
+ * The operation receives an OrderLockHandle; call `assertHeld()` right before
+ * committing anything durable in a long or provider-interleaved critical
+ * section. Acquisition is bounded, and unexpected storage errors fail closed
+ * (never an unlocked mutation), surfacing as OrderMutationLockError.
+ */
+export async function withOrderMutationLock<T>(
+  orderId: string,
+  operation: (lock: OrderLockHandle) => Promise<T>,
+): Promise<T> {
+  if (!/^[A-Za-z0-9_-]+$/.test(orderId)) {
+    throw new OrderMutationLockError(orderId, 'Invalid order id for mutation lock');
+  }
+
+  const token = getBlobToken();
+  if (!token && requiresDurablePersistence()) {
+    throw new OrderMutationLockError(
+      orderId,
+      'Durable order lock unavailable: BLOB_READ_WRITE_TOKEN missing',
+    );
+  }
+
+  const adapter = resolveOrderLockAdapter(token);
+  const owner = crypto.randomBytes(16).toString('hex');
+  const deadline = Date.now() + lockTimeoutMs();
+  let handle: OrderLockHandle | null = null;
+
+  while (!handle && Date.now() < deadline) {
+    handle = await tryAcquireOrderLock(orderId, owner, adapter);
+    if (!handle) await sleep(ORDER_MUTATION_LOCK_WAIT_MS);
+  }
+
+  if (!handle) {
+    throw new OrderMutationLockError(orderId, 'Timed out acquiring order mutation lock');
+  }
+
+  try {
+    return await operation(handle);
+  } finally {
+    // Ownership-safe release. Anything other than 'released' means we
+    // deliberately did NOT delete a key we could not prove was ours; the lease
+    // guarantees it is still reclaimable.
+    try {
+      const outcome = await handle.release();
+      if (outcome !== 'released') {
+        console.warn(
+          `[orders] mutation lock for ${orderId} not deleted on release (outcome=${outcome}); lease expiry will reclaim it`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[orders] mutation lock release failed for ${orderId}:`, err);
+    }
+  }
 }
 
 /**
@@ -1605,6 +2172,389 @@ export async function appendAuditEvent(
   };
   await persistOrder(updated);
   return updated;
+}
+
+// ── Guarded commit: optimistic CAS on the order record ──────────────────────
+//
+// THE CONCURRENCY INVARIANT
+// -------------------------
+// The order-mutation lock gives ATOMIC ACQUISITION, but a lock alone cannot
+// fence a durable write: a holder can pause past its lease, a newer generation
+// can acquire and commit, and the paused holder can then resume and clobber it.
+// `assertHeld()` before a separate unconditional write is a check→write TOCTOU
+// window — it is NOT fencing and must never be described as such.
+//
+// The fix is that the DURABLE COMMIT ITSELF is conditional. Every editable-
+// review mutation reads the order together with an opaque version token and
+// writes back only if the stored version is still exactly that token:
+//
+//   * Vercel Blob : put(..., { ifMatch: <etag> }) — the store compares the ETag
+//                   server-side and throws BlobPreconditionFailedError on
+//                   mismatch. get() returns body + etag in ONE operation, so
+//                   the version always corresponds to the bytes we read.
+//   * local FS    : an exclusive link()-claim keyed on the expected version,
+//                   plus a re-verify of the on-disk content hash under that
+//                   claim, then an atomic rename.
+//
+// WHY A STALE HOLDER CANNOT COMMIT AFTER A NEWER ONE
+// ---------------------------------------------------
+// Let A hold generation 1 and read the order at version V0. A pauses past its
+// lease. B acquires generation 2, reads V0, and commits — the store advances
+// the record to V1. A now resumes and attempts its commit with ifMatch=V0.
+// The stored version is V1, so the STORE rejects the write. A never overwrites
+// B, and the rejection is produced by the commit itself, not by any check A
+// performed beforehand. There is no window between A's decision and A's write
+// in which the outcome could change, because the comparison and the write are
+// one server-side operation.
+//
+// On conflict, `withOrderTransaction` re-verifies lock ownership BEFORE
+// retrying. A live holder that merely lost a benign race re-reads the latest
+// record, recomputes its mutation against it (so unrelated concurrent changes
+// are preserved and every approval/security invariant is re-evaluated on fresh
+// state), and retries. A stale holder fails `assertHeld()` and is refused the
+// retry, so it can neither clobber nor loop.
+
+export class OrderVersionConflictError extends Error {
+  readonly orderId: string;
+  readonly attempts: number;
+  constructor(orderId: string, attempts: number) {
+    super(`Order ${orderId} was modified concurrently; gave up after ${attempts} attempt(s)`);
+    this.name = 'OrderVersionConflictError';
+    this.orderId = orderId;
+    this.attempts = attempts;
+  }
+}
+
+/** An order read together with the opaque version token needed to commit it. */
+export interface VersionedOrder {
+  order: OrderRecord;
+  /** Opaque CAS token (Blob ETag / local content hash). */
+  version: string;
+}
+
+export type ConditionalCommitResult =
+  | { ok: true; version: string }
+  | { ok: false; reason: 'version_conflict' };
+
+/**
+ * Storage seam for versioned order reads and conditional commits.
+ *
+ * `replaceIfVersion` MUST perform the comparison and the write as ONE atomic
+ * store-side operation. An implementation that reads, compares in application
+ * code, and then writes unconditionally reintroduces the exact TOCTOU gap this
+ * design exists to close.
+ */
+export interface OrderStoreAdapter {
+  readonly kind: string;
+  readVersioned(pathname: string): Promise<{ body: string; version: string } | null>;
+  createIfAbsent(pathname: string, body: string): Promise<ConditionalCommitResult | { ok: false; reason: 'exists' }>;
+  replaceIfVersion(pathname: string, body: string, expectedVersion: string): Promise<ConditionalCommitResult>;
+}
+
+function isPreconditionFailure(error: unknown): boolean {
+  if (error instanceof BlobPreconditionFailedError) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /precondition|412|if-match|ifMatch/i.test(message);
+}
+
+function blobOrderStoreAdapter(token: string): OrderStoreAdapter {
+  return {
+    kind: 'blob',
+    async readVersioned(pathname) {
+      try {
+        // get() returns the body stream AND the etag in a single call, so the
+        // version token always describes exactly the bytes we just read.
+        const result = await get(pathname, {
+          access: getBlobAccessMode(),
+          token,
+          useCache: false,
+        });
+        if (!result || !result.stream) return null;
+        const body = await new Response(result.stream).text();
+        // The ETag lives on result.blob (GetBlobResultBlobBase), not on the
+        // envelope. It describes exactly the bytes streamed above.
+        return { body, version: result.blob.etag };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof BlobNotFoundError || isBlobNotFoundError(message)) return null;
+        throw new OrderPersistenceError(
+          pathname,
+          `Versioned order read failed: ${sanitizeBlobErrorMessage(message)}`,
+          error,
+        );
+      }
+    },
+    async createIfAbsent(pathname, body) {
+      try {
+        const res = await put(pathname, body, {
+          access: getBlobAccessMode(),
+          token,
+          allowOverwrite: false, // atomic exclusive create
+          addRandomSuffix: false,
+          contentType: 'application/json',
+        });
+        return { ok: true, version: res.etag };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (isBlobAlreadyExistsError(message)) return { ok: false, reason: 'exists' };
+        throw error;
+      }
+    },
+    async replaceIfVersion(pathname, body, expectedVersion) {
+      try {
+        // THE atomic primitive: the store compares the stored ETag with
+        // `ifMatch` and performs the write only if they are equal.
+        const res = await put(pathname, body, {
+          access: getBlobAccessMode(),
+          token,
+          allowOverwrite: true,
+          addRandomSuffix: false,
+          contentType: 'application/json',
+          ifMatch: expectedVersion,
+        });
+        return { ok: true, version: res.etag };
+      } catch (error) {
+        if (isPreconditionFailure(error)) return { ok: false, reason: 'version_conflict' };
+        throw error;
+      }
+    },
+  };
+}
+
+function orderVersionOf(body: string): string {
+  return `sha256:${crypto.createHash('sha256').update(body).digest('hex')}`;
+}
+
+function localOrderStoreAdapter(): OrderStoreAdapter {
+  // MUST mirror the layout persistOrder()/getOrder() use for the local store:
+  // the blob pathname is `<namespace>/orders/<id>.json`, and on disk that same
+  // record lives at `<storeDir>/<id>.json`. Using a different mapping here would
+  // silently CAS against a file nobody else reads.
+  const basenameOf = (pathname: string) => pathname.slice(pathname.lastIndexOf('/') + 1);
+  const fileFor = (pathname: string) => `${getOrderStoreDir()}/${basenameOf(pathname)}`;
+  const claimFor = (pathname: string, version: string) =>
+    `${getOrderStoreDir()}/.cas/${basenameOf(pathname)}.${version.replace(/[^a-z0-9]/gi, '')}.claim`;
+
+  const readRaw = async (file: string): Promise<string | null> => {
+    try {
+      return await readFile(file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  };
+
+  return {
+    kind: 'local',
+    async readVersioned(pathname) {
+      const body = await readRaw(fileFor(pathname));
+      if (body === null) return null;
+      return { body, version: orderVersionOf(body) };
+    },
+    async createIfAbsent(pathname, body) {
+      const file = fileFor(pathname);
+      await mkdir(parentDirOf(file), { recursive: true });
+      const tmp = `${file}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+      await writeFile(tmp, body, 'utf8');
+      try {
+        await link(tmp, file); // atomic exclusive create
+        return { ok: true, version: orderVersionOf(body) };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return { ok: false, reason: 'exists' };
+        throw error;
+      } finally {
+        await unlink(tmp).catch(() => {});
+      }
+    },
+    async replaceIfVersion(pathname, body, expectedVersion) {
+      const file = fileFor(pathname);
+      const claim = claimFor(pathname, expectedVersion);
+      await mkdir(parentDirOf(claim), { recursive: true });
+      await mkdir(parentDirOf(file), { recursive: true });
+
+      // Exclusively claim the right to advance FROM `expectedVersion`. Two
+      // writers holding the same expected version cannot both claim it, so at
+      // most one of them can proceed to the verify+rename below.
+      const claimTmp = `${claim}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+      await writeFile(claimTmp, expectedVersion, 'utf8');
+      let claimed = false;
+      try {
+        try {
+          await link(claimTmp, claim);
+          claimed = true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+            return { ok: false, reason: 'version_conflict' };
+          }
+          throw error;
+        }
+
+        // Under the claim, confirm the stored record is still exactly the
+        // version we based our mutation on. Any writer that advanced it holds a
+        // different version and therefore a different claim.
+        const current = await readRaw(file);
+        if (current === null || orderVersionOf(current) !== expectedVersion) {
+          return { ok: false, reason: 'version_conflict' };
+        }
+
+        const tmp = `${file}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+        await writeFile(tmp, body, 'utf8');
+        await rename(tmp, file); // atomic replace
+        return { ok: true, version: orderVersionOf(body) };
+      } finally {
+        await unlink(claimTmp).catch(() => {});
+        if (claimed) await unlink(claim).catch(() => {});
+      }
+    },
+  };
+}
+
+let orderStoreAdapterFactoryOverride:
+  | ((token: string | undefined) => OrderStoreAdapter)
+  | null = null;
+
+/**
+ * Test seam: substitute the versioned order store so the exact conditional-write
+ * semantics (ETag returned on read, ifMatch compared server-side, precondition
+ * failure on mismatch) can be exercised deterministically.
+ */
+export function __setOrderStoreAdapterFactoryForTests(
+  factory: ((token: string | undefined) => OrderStoreAdapter) | null,
+): void {
+  orderStoreAdapterFactoryOverride = factory;
+}
+
+export function __resetOrderStoreAdapterFactoryForTests(): void {
+  orderStoreAdapterFactoryOverride = null;
+}
+
+function resolveOrderStoreAdapter(): OrderStoreAdapter {
+  const token = getBlobToken();
+  if (orderStoreAdapterFactoryOverride) return orderStoreAdapterFactoryOverride(token);
+  if (token) return blobOrderStoreAdapter(token);
+  if (requiresDurablePersistence()) {
+    throw new OrderPersistenceError(
+      'unknown',
+      'BLOB_READ_WRITE_TOKEN missing in production — cannot perform a guarded order commit',
+    );
+  }
+  return localOrderStoreAdapter();
+}
+
+/** Read an order together with its CAS version token. */
+export async function readOrderVersioned(orderId: string): Promise<VersionedOrder | null> {
+  const adapter = resolveOrderStoreAdapter();
+  const raw = await adapter.readVersioned(getOrderBlobPath(orderId));
+  if (!raw) return null;
+  let parsed: OrderRecord;
+  try {
+    parsed = JSON.parse(raw.body) as OrderRecord;
+  } catch (error) {
+    throw new OrderPersistenceError(orderId, 'Stored order record is not valid JSON', error);
+  }
+  return { order: parsed, version: raw.version };
+}
+
+/** Commit an order record only if the stored version is still `expectedVersion`. */
+export async function commitOrderConditional(
+  order: OrderRecord,
+  expectedVersion: string,
+): Promise<ConditionalCommitResult> {
+  const adapter = resolveOrderStoreAdapter();
+  return adapter.replaceIfVersion(
+    getOrderBlobPath(order.id),
+    JSON.stringify(order, null, 2),
+    expectedVersion,
+  );
+}
+
+// ── Pure record transforms (compose a whole mutation before committing) ─────
+
+/** Pure equivalent of updateFulfillmentState's merge. Performs no I/O. */
+export function applyFulfillmentPatchTo(
+  existing: OrderRecord,
+  patch: FulfillmentPatch,
+  now: string = new Date().toISOString(),
+): OrderRecord {
+  const effectivePaymentStatus = patch.paymentStatus ?? existing.paymentStatus;
+  if (patchRequiresPaidOrder(patch) && effectivePaymentStatus !== 'paid') {
+    throw new Error(
+      `[orders] Refusing fulfillment mutation for ${existing.id}: paymentStatus=${effectivePaymentStatus}`,
+    );
+  }
+  return { ...existing, ...patch, updatedAt: now };
+}
+
+/** Pure equivalent of appendAuditEvent's append. Performs no I/O. */
+export function appendAuditEventTo(
+  existing: OrderRecord,
+  event: Omit<ReviewAuditEvent, 'at'> & { at?: string },
+  now: string = new Date().toISOString(),
+): OrderRecord {
+  const entry: ReviewAuditEvent = {
+    at: event.at ?? now,
+    type: event.type,
+    ...(event.pageIndex != null ? { pageIndex: event.pageIndex } : {}),
+    ...(event.reason ? { reason: event.reason } : {}),
+    ...(event.meta ? { meta: event.meta } : {}),
+  };
+  return {
+    ...existing,
+    auditEvents: [...(existing.auditEvents ?? []), entry],
+    updatedAt: now,
+  };
+}
+
+// ── The guarded transaction ─────────────────────────────────────────────────
+
+export type OrderTransactionOutcome<T> =
+  | { commit: OrderRecord; result: T }
+  | { abort: T };
+
+export const ORDER_TRANSACTION_MAX_ATTEMPTS = 5;
+
+/**
+ * Whole-mutation optimistic CAS with bounded retry.
+ *
+ * On every attempt the order is re-read WITH its version, the caller recomputes
+ * the entire intended mutation against that fresh record (so all approval,
+ * ownership and security invariants are re-evaluated on the latest state, and
+ * unrelated concurrent changes are carried forward rather than clobbered), and
+ * the result is committed conditionally on that version.
+ *
+ * `lock` is optional but strongly recommended: on a version conflict its
+ * ownership is re-proved BEFORE retrying, so a holder whose lease has lapsed
+ * and been superseded is refused the retry instead of looping until it wins.
+ *
+ * Returns whatever the mutator returns. `notFound` is returned when the order
+ * does not exist.
+ */
+export async function withOrderTransaction<T>(
+  orderId: string,
+  mutate: (order: OrderRecord) => Promise<OrderTransactionOutcome<T>> | OrderTransactionOutcome<T>,
+  opts: { lock?: OrderLockHandle; maxAttempts?: number; notFound?: () => T } = {},
+): Promise<T> {
+  const maxAttempts = opts.maxAttempts ?? ORDER_TRANSACTION_MAX_ATTEMPTS;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const current = await readOrderVersioned(orderId);
+    if (!current) {
+      if (opts.notFound) return opts.notFound();
+      throw new OrderPersistenceError(orderId, 'Order not found for guarded commit');
+    }
+
+    const outcome = await mutate(current.order);
+    if ('abort' in outcome) return outcome.abort;
+
+    const committed = await commitOrderConditional(outcome.commit, current.version);
+    if (committed.ok) return outcome.result;
+
+    // Someone else advanced the record. Before retrying, PROVE we still hold
+    // the lock. A stale/superseded holder throws here and can never commit.
+    if (opts.lock) await opts.lock.assertHeld();
+  }
+
+  throw new OrderVersionConflictError(orderId, maxAttempts);
 }
 
 export async function updateOrderPayment(
