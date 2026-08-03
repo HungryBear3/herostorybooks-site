@@ -63,6 +63,15 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [proofNonce, setProofNonce] = useState(0);
   const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
 
+  // Every surface that opens the proof PDF must use this, not the raw snapshot
+  // URL: the rebuilt proof reuses the same blob path, so an un-busted link can
+  // serve a cached pre-regeneration render — and the customer may then
+  // acknowledge content they never saw.
+  const proofUrl =
+    snapshot.storyArtifactUrl && proofNonce > 0
+      ? `${snapshot.storyArtifactUrl}${snapshot.storyArtifactUrl.includes('?') ? '&' : '?'}v=${proofNonce}`
+      : snapshot.storyArtifactUrl;
+
   const selected = snapshot.pageArtifacts[selectedIdx];
   const acceptedCount = snapshot.pageArtifacts.filter((p) => p.accepted).length;
   const allAccepted =
@@ -412,11 +421,7 @@ No image yet
         {/* Inline full-proof preview — distinct from the per-page section above. */}
         <div className="mt-8">
           <InlineProofPreview
-            proofUrl={
-              snapshot.storyArtifactUrl && proofNonce > 0
-                ? `${snapshot.storyArtifactUrl}${snapshot.storyArtifactUrl.includes('?') ? '&' : '?'}v=${proofNonce}`
-                : snapshot.storyArtifactUrl
-            }
+            proofUrl={proofUrl}
             isPrint={snapshot.isPrint}
             illustratedPageCount={snapshot.pageArtifacts.length}
           />
@@ -431,7 +436,7 @@ No image yet
                 Step 1 — open the full {snapshot.isPrint ? 'printed-book proof' : 'storybook PDF'}
               </p>
               <a
-                href={snapshot.storyArtifactUrl}
+                href={proofUrl ?? undefined}
                 target="_blank"
                 rel="noopener"
                 className="inline-flex w-full items-center justify-center gap-2 rounded-xl border-2 border-[#10263d] bg-[#10263d] px-5 py-3 text-base font-semibold text-white sm:w-auto"

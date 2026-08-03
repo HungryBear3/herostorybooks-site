@@ -33,8 +33,14 @@ const REPO = process.cwd();
  * `npm test` before `git add` would pass, and the commit would still carry the
  * identifier.
  */
-const SCANNED_EXTENSIONS =
-  /\.(ts|tsx|js|mjs|cjs|json|md|txt|patch|diff|log|ya?ml|py|sh|html|css)$/;
+/**
+ * Inverted on purpose: scan EVERYTHING except known-binary payloads, rather
+ * than allow-listing extensions. An allowlist silently skips whatever nobody
+ * thought of (.csv, .jsonl, .har, extensionless notes) — which is exactly where
+ * a pasted customer record tends to land.
+ */
+const BINARY_EXTENSIONS =
+  /\.(png|jpe?g|gif|webp|avif|ico|svgz|pdf|zip|gz|tgz|bz2|xz|7z|woff2?|ttf|otf|eot|mp[34]|mov|mp4|webm|wav|ogg|bin|wasm|node|dylib|so|dll|exe|class|jar|db|sqlite3?|lock)$/i;
 
 function sourceFiles(): string[] {
   const listed = execFileSync(
@@ -44,7 +50,7 @@ function sourceFiles(): string[] {
   )
     .split('\0')
     .filter(Boolean);
-  return listed.filter((f) => SCANNED_EXTENSIONS.test(f)).map((f) => path.join(REPO, f));
+  return listed.filter((f) => !BINARY_EXTENSIONS.test(f)).map((f) => path.join(REPO, f));
 }
 
 // ── 1. No real customer / order identifiers ────────────────────────────────
@@ -72,7 +78,9 @@ test('committed source contains no real customer or order identifiers', () => {
     if (rel === path.join('tests', 'review-source-guards.test.ts')) continue; // this file
     let text: string;
     try {
-      text = readFileSync(file, 'utf8');
+      const buf = readFileSync(file);
+      if (buf.subarray(0, 8192).includes(0)) continue; // binary payload
+      text = buf.toString('utf8');
     } catch {
       continue;
     }
