@@ -590,7 +590,11 @@ export async function POST(request: Request) {
       ...(isPrintFormat(order.bookFormat)
         ? { shipping_address_collection: { allowed_countries: ['US'] } }
         : {}),
-      success_url: `${baseUrl}/thank-you?${successParams.toString()}`,
+      // Stripe replaces this literal placeholder after successful Checkout.
+      // Keep it outside URLSearchParams so the braces are not percent-encoded.
+      // The opaque Session id enables a server-side fallback when the webhook
+      // is delayed; it is never trusted without exact order/amount checks.
+      success_url: `${baseUrl}/thank-you?${successParams.toString()}&sessionId={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/checkout`,
     });
 

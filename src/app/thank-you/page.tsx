@@ -1,5 +1,6 @@
 import { getOrder } from '@/lib/orders';
 import { PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
+import { PendingConfirmation } from './pending-confirmation';
 
 // This page MUST be honest about payment state. Do not show success copy
 // based on URL params alone — Stripe redirects here on completion AND a
@@ -14,6 +15,7 @@ type ThankYouPageProps = {
     childName?: string;
     format?: string;
     email?: string;
+    sessionId?: string;
   }>;
 };
 
@@ -23,6 +25,7 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
   const childNameFallback = params.childName?.trim() || 'Your child';
   const formatFallback = params.format?.trim() || 'storybook';
   const emailFallback = params.email?.trim();
+  const sessionId = params.sessionId?.trim();
 
   // Server-side load the order. If orderId is missing or unknown, fall
   // through to the neutral processing state — never to the success state.
@@ -48,8 +51,12 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
     return <FailedView orderId={orderId} />;
   }
 
+  if (paymentStatus === 'refunded') {
+    return <RefundedView orderId={orderId} />;
+  }
+
   // pending OR order-not-found OR no orderId — show neutral processing state.
-  return <PendingView orderId={orderId} childName={childName} />;
+  return <PendingConfirmation orderId={orderId} childName={childName} sessionId={sessionId} />;
 }
 
 function SuccessView({
@@ -71,7 +78,7 @@ function SuccessView({
           {childName}&apos;s Storybook Is In Motion!
         </h1>
         <p className="text-lg text-gray-600 max-w-md mx-auto">
-          We saved your {format} order and kicked off the first delivery step.
+          Your {format} order is saved. We&apos;ll prepare your proof next.
         </p>
       </div>
 
@@ -103,7 +110,7 @@ function SuccessView({
             </div>
           </div>
         </div>
-        <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
+        <p className="text-sm text-center text-gray-700 pt-3 border-t border-gray-200">
           Questions? support@herostorybooks.com · Print books move to production only after proof approval
         </p>
       </div>
@@ -112,7 +119,7 @@ function SuccessView({
         {orderId ? (
           <a
             href={`/status/${orderId}`}
-            className="px-6 py-3 rounded-xl font-semibold text-sm text-center"
+            className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border border-[#8A6F12] font-semibold text-sm text-center"
             style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}
           >
             View Order Status
@@ -120,71 +127,7 @@ function SuccessView({
         ) : null}
         <a
           href="/"
-          className="px-6 py-3 rounded-xl border-2 border-gray-200 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
-        >
-          Back to Home
-        </a>
-      </div>
-    </div>
-  );
-}
-
-function PendingView({
-  orderId,
-  childName,
-}: {
-  orderId: string | undefined;
-  childName: string;
-}) {
-  return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--cream)] px-4 py-16 space-y-8">
-      {/* Auto-refresh once after ~20s in case the webhook hasn't landed yet.
-          Keeps the page honest without polling aggressively. */}
-      <meta httpEquiv="refresh" content="20" />
-      <div className="text-center">
-        <span className="text-7xl">⏳</span>
-        <h1 className="text-4xl font-bold text-[var(--forest)] mt-4 mb-2">
-          Confirming your payment…
-        </h1>
-        <p className="text-lg text-gray-600 max-w-md mx-auto">
-          We&apos;re waiting for Stripe to confirm {childName}&apos;s order. This usually takes
-          under a minute. This page will refresh automatically.
-        </p>
-      </div>
-
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 w-full max-w-md space-y-3 text-sm text-gray-700">
-        <p className="text-gray-600">
-          {orderId ? (
-            <>
-              Your order id is <span className="font-mono text-[var(--forest)]">{orderId}</span>.
-              You&apos;ll see the full confirmation here once the payment lands.
-            </>
-          ) : (
-            <>You&apos;ll see the full confirmation here once the payment lands.</>
-          )}
-        </p>
-        <p className="text-gray-500">
-          If this page is still confirming after a minute or two, your payment may not have completed.
-          You can safely re-try checkout, or contact support and we&apos;ll sort it out.
-        </p>
-        <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
-          Questions? support@herostorybooks.com
-        </p>
-      </div>
-
-      <div className="flex flex-col sm:flex-row gap-3">
-        {orderId ? (
-          <a
-            href={`/status/${orderId}`}
-            className="px-6 py-3 rounded-xl font-semibold text-sm text-center"
-            style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}
-          >
-            View Order Status
-          </a>
-        ) : null}
-        <a
-          href="/"
-          className="px-6 py-3 rounded-xl border-2 border-gray-200 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
+          className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border-2 border-gray-300 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
         >
           Back to Home
         </a>
@@ -199,7 +142,7 @@ function FailedView({ orderId }: { orderId: string | undefined }) {
       <div className="text-center">
         <span className="text-7xl">⚠️</span>
         <h1 className="text-4xl font-bold text-[var(--forest)] mt-4 mb-2">
-          We couldn&apos;t confirm your payment
+          Your payment didn&apos;t go through
         </h1>
         <p className="text-lg text-gray-600 max-w-md mx-auto">
           Stripe reported a failed payment for this order. No book has been started yet.
@@ -217,7 +160,7 @@ function FailedView({ orderId }: { orderId: string | undefined }) {
             <span className="font-mono text-[var(--forest)]">{orderId}</span>.
           </p>
         ) : null}
-        <p className="text-xs text-center text-gray-400 pt-2 border-t border-gray-100">
+        <p className="text-sm text-center text-gray-700 pt-3 border-t border-gray-200">
           Questions? support@herostorybooks.com
         </p>
       </div>
@@ -225,15 +168,48 @@ function FailedView({ orderId }: { orderId: string | undefined }) {
       <div className="flex flex-col sm:flex-row gap-3">
         <a
           href="/checkout"
-          className="px-6 py-3 rounded-xl font-semibold text-sm text-center"
+          className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border border-[#8A6F12] font-semibold text-sm text-center"
           style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}
         >
           Try Checkout Again
         </a>
         <a
           href="/"
-          className="px-6 py-3 rounded-xl border-2 border-gray-200 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
+          className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border-2 border-gray-300 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition"
         >
+          Back to Home
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function RefundedView({ orderId }: { orderId: string | undefined }) {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--cream)] px-4 py-16 space-y-8">
+      <div className="text-center">
+        <span className="text-7xl">↩️</span>
+        <h1 className="text-4xl font-bold text-[var(--forest)] mt-4 mb-2">This order was refunded</h1>
+        <p className="text-lg text-gray-600 max-w-md mx-auto">
+          Contact us if you need help with the refund or want to place a separate new order.
+        </p>
+      </div>
+      <div className="bg-white rounded-2xl border border-gray-300 shadow-md p-6 w-full max-w-md space-y-3 text-sm text-gray-700">
+        <p className="border-l-4 border-amber-600 bg-amber-50 px-4 py-3 text-base font-bold text-gray-900">
+          Don&apos;t pay again for this order.
+        </p>
+        {orderId ? <p>Order ID: <span className="font-mono break-all text-[var(--forest)]">{orderId}</span></p> : null}
+        <p className="text-sm text-center text-gray-700 pt-3 border-t border-gray-200">
+          Questions? <a className="font-semibold underline underline-offset-2" href="mailto:support@herostorybooks.com">support@herostorybooks.com</a>
+        </p>
+      </div>
+      <div className="flex flex-col sm:flex-row gap-3">
+        {orderId ? (
+          <a href={`/status/${orderId}`} className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border border-[#8A6F12] font-semibold text-sm text-center" style={{ backgroundColor: '#D4AF37', color: '#1F3A5F' }}>
+            View Order Status
+          </a>
+        ) : null}
+        <a href="/" className="min-h-12 inline-flex items-center justify-center px-6 py-3 rounded-xl border-2 border-gray-300 font-semibold text-sm text-center text-[var(--forest)] hover:bg-gray-50 transition">
           Back to Home
         </a>
       </div>
