@@ -79,7 +79,7 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_ack_inv'): P
   // Proof gates are revision-bound: a seeded proof URL without an
   // identity would (correctly) fail every one of them.
   if (order.storyArtifactUrl && !order.proofVersion) {
-    order.proofSourceFingerprint = proofSourceFingerprint(order.pageArtifacts ?? []);
+    order.proofSourceFingerprint = proofSourceFingerprint(order);
     order.proofVersion = 'pv_test';
   }
   if (order.proofReviewedAt && !order.proofReviewedVersion) {
@@ -145,7 +145,7 @@ test('regenerate auto-rebuild clears proofReviewedAt; approve then 409s with pro
         buildProof: async (oid: string) => ({
           ok: true as const,
           proofUrl: 'https://example.com/orders/x/proofs/pv_v2.pdf',
-          sourceFingerprint: proofSourceFingerprint((await getOrder(oid))?.pageArtifacts ?? []),
+          sourceFingerprint: proofSourceFingerprint((await getOrder(oid))!),
           proofVersion: 'pv_v2',
         }),
       },

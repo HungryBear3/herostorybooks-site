@@ -29,16 +29,22 @@ export async function POST(
   });
   if (!result.ok) {
     return NextResponse.json(
-      { ok: false, error: result.error ?? 'regenerate_failed', page: result.page ?? null },
+      {
+        ok: false,
+        error: result.error ?? 'regenerate_failed',
+        page: result.page ?? null,
+        snapshot: result.snapshot ?? null,
+      },
       { status: result.status ?? 500 },
     );
   }
   return NextResponse.json({
     ok: true,
     page: result.page,
+    snapshot: result.snapshot,
     warning: result.warning ?? null,
-    // The client must re-fetch the snapshot for the new proof revision; a
-    // failed refresh means no proof is currently available for acknowledgment.
+    // The response carries the final authoritative snapshot. If proof refresh
+    // failed, that snapshot intentionally advertises no acknowledgeable proof.
     proofRefreshed: result.proofRefreshed ?? false,
     proofRefreshError: result.proofRefreshError ?? null,
   });

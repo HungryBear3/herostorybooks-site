@@ -3,8 +3,7 @@ import { NextResponse } from 'next/server';
 import { isAdminAuthedFromRequest } from '@/lib/admin-auth';
 import {
   applyPageReviewPatch,
-  getOrder,
-  persistOrder,
+  withOrderTransaction,
   type PageReviewPatch,
 } from '@/lib/orders';
 
@@ -41,18 +40,23 @@ export async function POST(
     patch.reviewerNotes = v === null ? null : typeof v === 'string' ? v : null;
   }
 
-  const order = await getOrder(orderId);
-  if (!order) {
-    return NextResponse.json({ error: 'Order not found' }, { status: 404 });
-  }
+  const result = await withOrderTransaction<
+    | { ok: true; page: { pageIndex: number; targetedRegenNeeded?: boolean; reviewerNotes?: string | null; reviewedAt?: string | null } }
+    | { ok: false; status: number; error: string }
+  >(
+    orderId,
+    (current) => {
+      const applied = applyPageReviewPatch(current, pageIndex, patch, new Date().toISOString());
+      if (applied.ok === false) return { abort: applied };
+      const response = { ok: true as const, page: applied.page };
+      if (applied.order === current) return { abort: response };
+      return { commit: applied.order, result: response };
+    },
+    { notFound: () => ({ ok: false as const, status: 404, error: 'Order not found' }) },
+  );
 
-  const result = applyPageReviewPatch(order, pageIndex, patch, new Date().toISOString());
   if (result.ok === false) {
     return NextResponse.json({ error: result.error }, { status: result.status });
-  }
-
-  if (result.order !== order) {
-    await persistOrder(result.order);
   }
 
   return NextResponse.json({

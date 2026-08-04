@@ -80,7 +80,7 @@ async function seed(
   // approval are revision-bound, so a seeded proof URL without an identity
   // would (correctly) fail every gate.
   if (order.storyArtifactUrl && !order.proofVersion) {
-    order.proofSourceFingerprint = proofSourceFingerprint(order.pageArtifacts ?? []);
+    order.proofSourceFingerprint = proofSourceFingerprint(order);
     order.proofVersion = 'pv_test';
   }
   if (order.proofReviewedAt && !order.proofReviewedVersion) {

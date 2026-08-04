@@ -35,9 +35,11 @@ import {
 } from './fulfillment.ts';
 import { sendRegenManualReviewAlert } from './order-email.ts';
 import {
+  hasUnresolvedChangeRequests,
   recordCustomerTextChangeRequest,
   type RecordCustomerTextChangeInput,
 } from './customer-text-change-request.ts';
+import { pageGenerationSourceFingerprint } from './review-source-identity.ts';
 
 // Soft internal thresholds (runbook): warn at 3, manual review at 5.
 export const REGEN_WARNING_THRESHOLD = 3;
@@ -115,7 +117,7 @@ export const CLEARED_PROOF_STATE = {
 export function proofIsFresh(order: OrderRecord): boolean {
   if (!order.storyArtifactUrl) return false;
   if (!order.proofSourceFingerprint || !order.proofVersion) return false;
-  return order.proofSourceFingerprint === proofSourceFingerprint(order.pageArtifacts ?? []);
+  return order.proofSourceFingerprint === proofSourceFingerprint(order);
 }
 
 export interface RegenerateInput extends ReviewActorInput {
@@ -133,6 +135,8 @@ export interface RegenerateResult {
   /** True iff a NEW proof revision was published after this regeneration. */
   proofRefreshed?: boolean;
   proofRefreshError?: string;
+  /** Exact record committed by the final successful mutation step. */
+  snapshot?: ReviewSnapshot;
 }
 
 export interface AcceptInput extends ReviewActorInput {
@@ -145,6 +149,7 @@ export interface AcceptResult {
   status: 200 | 400 | 403 | 404 | 409;
   page?: PageArtifact;
   error?: string;
+  snapshot?: ReviewSnapshot;
 }
 
 export function applyAcceptPage(
@@ -225,6 +230,7 @@ export interface ProofPublishResult {
   refreshed: boolean;
   error?: string;
   proofVersion?: string;
+  snapshot?: ReviewSnapshot;
 }
 
 /**
@@ -268,7 +274,10 @@ export async function publishProofGuarded(
         if (order.reviewStatus === 'approved') {
           return { abort: { refreshed: false, error: 'already_approved' } };
         }
-        if (proofSourceFingerprint(order.pageArtifacts ?? []) !== usable.sourceFingerprint) {
+        if (hasUnresolvedChangeRequests(order.pageArtifacts ?? [])) {
+          return { abort: { refreshed: false, error: 'unresolved_change_requests' } };
+        }
+        if (proofSourceFingerprint(order) !== usable.sourceFingerprint) {
           return { abort: { refreshed: false, error: 'proof_source_changed_during_rebuild' } };
         }
         let next = applyFulfillmentPatchTo(order, {
@@ -284,7 +293,14 @@ export async function publishProofGuarded(
           ...(opts.auditPageIndex != null ? { pageIndex: opts.auditPageIndex } : {}),
           meta: { proofVersion: usable.proofVersion },
         });
-        return { commit: next, result: { refreshed: true, proofVersion: usable.proofVersion } };
+        return {
+          commit: next,
+          result: {
+            refreshed: true,
+            proofVersion: usable.proofVersion,
+            snapshot: reviewSnapshotFromOrder(next),
+          },
+        };
       },
       { notFound: () => ({ refreshed: false, error: 'order_not_found' }) },
     );
@@ -345,8 +361,15 @@ export async function regeneratePage(
 
   const generate = deps.generatePageImage ?? generatePageImage;
   const referenceImageUrl = getOrderPhotoUrl(preOrder);
+  const referenceImageRequired = orderRequiresReferenceImage(preOrder);
+  const generationSource = pageGenerationSourceFingerprint({
+    order: preOrder,
+    page: preTarget,
+    referenceImageUrl,
+    referenceImageRequired,
+  });
   const result = await generate(
-    { prompt, referenceImageUrl, referenceImageRequired: orderRequiresReferenceImage(preOrder) },
+    { prompt, referenceImageUrl, referenceImageRequired },
     { providers: deps.providers },
   );
   const now = (deps.now ?? (() => new Date()))();
@@ -360,7 +383,7 @@ export async function regeneratePage(
     success: Boolean(result.imageUrl),
   };
 
-  type Applied = { updatedPage: PageArtifact; preCount: number };
+  type Applied = { updatedPage: PageArtifact; preCount: number; snapshot: ReviewSnapshot };
   let applied: { error: RegenerateResult } | Applied;
   try {
     applied = await withOrderTransaction<{ error: RegenerateResult } | Applied>(
@@ -390,6 +413,21 @@ export async function regeneratePage(
         const latestTarget = order.pageArtifacts.find((p) => p.pageIndex === input.pageIndex);
         if (!latestTarget) {
           return { abort: { error: { ok: false, status: 400, error: 'Invalid page index' } } };
+        }
+        const latestReferenceImageUrl = getOrderPhotoUrl(order);
+        const latestReferenceImageRequired = orderRequiresReferenceImage(order);
+        const latestGenerationSource = pageGenerationSourceFingerprint({
+          order,
+          page: latestTarget,
+          referenceImageUrl: latestReferenceImageUrl,
+          referenceImageRequired: latestReferenceImageRequired,
+        });
+        if (latestGenerationSource !== generationSource) {
+          return {
+            abort: {
+              error: { ok: false, status: 409, error: 'page_changed_during_generation' },
+            },
+          };
         }
         const { artifacts, page: updatedPage, error } = applyRegeneratePage(
           order.pageArtifacts,
@@ -430,7 +468,14 @@ export async function regeneratePage(
           pageIndex: input.pageIndex,
           reason: 'page_regenerated',
         });
-        return { commit: next, result: { updatedPage, preCount: latestTarget.regenerateCount } };
+        return {
+          commit: next,
+          result: {
+            updatedPage,
+            preCount: latestTarget.regenerateCount,
+            snapshot: reviewSnapshotFromOrder(next),
+          },
+        };
       },
       { notFound: () => ({ error: { ok: false, status: 404, error: 'Order not found' } }) },
     );
@@ -442,9 +487,16 @@ export async function regeneratePage(
   }
   if ('error' in applied) return applied.error;
   const { updatedPage, preCount } = applied;
+  let authoritativeSnapshot: ReviewSnapshot | undefined = applied.snapshot;
 
   if (!result.imageUrl) {
-    return { ok: false, status: 502, page: updatedPage, error: result.error ?? 'image_generation_failed' };
+    return {
+      ok: false,
+      status: 502,
+      page: updatedPage,
+      error: result.error ?? 'image_generation_failed',
+      snapshot: authoritativeSnapshot,
+    };
   }
 
   // Publish a fresh proof revision. Built outside the transaction, published
@@ -465,6 +517,9 @@ export async function regeneratePage(
     }
     proofRefreshed = outcome.refreshed;
     proofRefreshError = outcome.error;
+    authoritativeSnapshot = outcome.refreshed && outcome.snapshot
+      ? outcome.snapshot
+      : await freshMutationSnapshot(input.orderId, input.actor ?? INTERNAL_REVIEW_ACTOR);
   }
 
   const wasBelow = preCount < REGEN_MANUAL_REVIEW_THRESHOLD;
@@ -490,6 +545,7 @@ export async function regeneratePage(
     page: updatedPage,
     ...(warning ? { warning } : {}),
     proofRefreshed,
+    snapshot: authoritativeSnapshot,
     ...(proofRefreshError ? { proofRefreshError } : {}),
   };
 }
@@ -534,7 +590,10 @@ export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
             regenerateCountAtAccept: page.regenerateCount,
           },
         });
-        return { commit: next, result: { ok: true, status: 200, page } };
+        return {
+          commit: next,
+          result: { ok: true, status: 200, page, snapshot: reviewSnapshotFromOrder(next) },
+        };
       },
       { notFound: () => ({ ok: false, status: 404, error: 'Order not found' }) },
     );
@@ -554,6 +613,7 @@ export interface AckProofResult {
   proofReviewedAt?: string;
   proofReviewedVersion?: string;
   error?: string;
+  snapshot?: ReviewSnapshot;
 }
 
 export interface AcknowledgeProofInput extends ReviewActorInput {
@@ -600,11 +660,12 @@ export async function acknowledgeProofReview(
               status: 200,
               proofReviewedAt: order.proofReviewedAt,
               proofReviewedVersion: order.proofReviewedVersion,
+              snapshot: reviewSnapshotFromOrder(order),
             },
           };
         }
         // The persisted proof must still describe the current pages.
-        if (order.proofSourceFingerprint !== proofSourceFingerprint(order.pageArtifacts ?? [])) {
+        if (order.proofSourceFingerprint !== proofSourceFingerprint(order)) {
           return { abort: { ok: false, status: 409, error: 'proof_stale' } };
         }
         const ts = now.toISOString();
@@ -619,7 +680,13 @@ export async function acknowledgeProofReview(
         });
         return {
           commit: next,
-          result: { ok: true, status: 200, proofReviewedAt: ts, proofReviewedVersion: order.proofVersion },
+          result: {
+            ok: true,
+            status: 200,
+            proofReviewedAt: ts,
+            proofReviewedVersion: order.proofVersion,
+            snapshot: reviewSnapshotFromOrder(next),
+          },
         };
       },
       { notFound: () => ({ ok: false, status: 404, error: 'Order not found' }) },
@@ -640,6 +707,7 @@ export interface ApproveWholeBookResult {
   proofUrl?: string;
   proofVersion?: string;
   error?: string;
+  snapshot?: ReviewSnapshot;
 }
 
 export interface ApproveWholeBookInput extends ReviewActorInput {}
@@ -718,7 +786,7 @@ export async function approveWholeBook(
           return reject('proof_identity_missing', 'proof_unavailable');
         }
         // …and still describe the pages being approved.
-        if (order.proofSourceFingerprint !== proofSourceFingerprint(order.pageArtifacts)) {
+        if (order.proofSourceFingerprint !== proofSourceFingerprint(order)) {
           return reject('proof_stale', 'proof_stale');
         }
         // …and be the exact revision the customer acknowledged.
@@ -745,6 +813,7 @@ export async function approveWholeBook(
             status: 200,
             proofUrl: order.storyArtifactUrl,
             proofVersion: order.proofVersion,
+            snapshot: reviewSnapshotFromOrder(next),
           },
         };
       },
@@ -812,6 +881,7 @@ export interface SaveTextChangeResult {
   status: 200 | 400 | 403 | 404 | 409 | 500;
   page?: PageArtifact;
   error?: string;
+  snapshot?: ReviewSnapshot;
 }
 
 /**
@@ -873,7 +943,15 @@ export async function saveTextChangeRequest(
           pageIndex: input.pageIndex,
           reason: 'customer_text_change_requested',
         });
-        return { commit: next, result: { ok: true, status: 200, page: updatedPage } };
+        return {
+          commit: next,
+          result: {
+            ok: true,
+            status: 200,
+            page: updatedPage,
+            snapshot: reviewSnapshotFromOrder(next),
+          },
+        };
       },
       { notFound: () => ({ ok: false, status: 404, error: 'order_not_found' }) },
     );
@@ -883,6 +961,115 @@ export async function saveTextChangeRequest(
     }
     throw error;
   }
+}
+
+export interface ResolveTextChangeResult {
+  ok: boolean;
+  status: 200 | 400 | 403 | 404 | 409 | 502;
+  error?: string;
+  snapshot?: ReviewSnapshot;
+  proofRefreshed?: boolean;
+}
+
+/** Admin-only service operation: apply canonical wording with CAS, resolve the
+ * request, invalidate all rendered artifacts, then build/publish a fresh proof
+ * outside the transaction. The caller must enforce admin authentication. */
+export async function resolveTextChangeRequest(
+  input: { orderId: string; pageIndex: number; storyText: string },
+  deps: {
+    now?: () => Date;
+    buildProof?: typeof buildProofArtifactFromPageArtifacts;
+  } = {},
+): Promise<ResolveTextChangeResult> {
+  const storyText = typeof input.storyText === 'string' ? input.storyText.trim() : '';
+  if (!Number.isInteger(input.pageIndex) || input.pageIndex < 0) {
+    return { ok: false, status: 400, error: 'invalid_page_index' };
+  }
+  if (!storyText) return { ok: false, status: 400, error: 'invalid_story_text' };
+
+  let staged: ResolveTextChangeResult;
+  try {
+    staged = await withOrderTransaction<ResolveTextChangeResult>(
+      input.orderId,
+      (order) => {
+        const refusal = evaluateReviewMutationEligibility(order, {
+          kind: 'internal',
+          reason: 'admin_resolve_text_change',
+        });
+        if (refusal) return { abort: { ok: false, status: refusal.status, error: refusal.error } };
+        if (order.reviewStatus === 'approved') {
+          return { abort: { ok: false, status: 409, error: 'already_approved' } };
+        }
+        const target = order.pageArtifacts?.find((p) => p.pageIndex === input.pageIndex);
+        if (!target?.customerRequestedChange) {
+          return { abort: { ok: false, status: 409, error: 'text_change_request_missing' } };
+        }
+        const at = (deps.now ?? (() => new Date()))().toISOString();
+        const updatedPage: PageArtifact = {
+          ...target,
+          storyText,
+          customerReviewStatus: 'resolved',
+          customerRequestedChange: {
+            ...target.customerRequestedChange,
+            lifecycleStatus: 'resolved',
+            updatedAt: at,
+          },
+        };
+        const pages = (order.pageArtifacts ?? []).map((page) =>
+          page.pageIndex === input.pageIndex ? updatedPage : page,
+        );
+        let next = applyFulfillmentPatchTo(order, {
+          pageArtifacts: pages,
+          reviewStatus: 'in_review',
+          ...CLEARED_PROOF_STATE,
+          printInteriorArtifactUrl: null,
+          printInteriorMd5: null,
+          printInteriorPageCount: null,
+          printCoverArtifactUrl: null,
+          printCoverMd5: null,
+        });
+        next = appendAuditEventTo(next, {
+          type: 'customer_text_change_resolved',
+          pageIndex: input.pageIndex,
+          meta: { storyChars: storyText.length },
+        });
+        next = appendAuditEventTo(next, {
+          type: 'proof_invalidated',
+          pageIndex: input.pageIndex,
+          reason: 'canonical_text_changed',
+        });
+        return {
+          commit: next,
+          result: { ok: true, status: 200, snapshot: reviewSnapshotFromOrder(next) },
+        };
+      },
+      { notFound: () => ({ ok: false, status: 404, error: 'order_not_found' }) },
+    );
+  } catch (error) {
+    if (error instanceof OrderVersionConflictError) {
+      return { ok: false, status: 409, error: 'order_mutation_busy' };
+    }
+    throw error;
+  }
+  if (!staged.ok) return staged;
+
+  const built = await (deps.buildProof ?? buildProofArtifactFromPageArtifacts)(input.orderId);
+  const published = await publishProofGuarded(input.orderId, built, {
+    actor: { kind: 'internal', reason: 'admin_resolve_text_change' },
+  });
+  if (!published.refreshed || !published.snapshot) {
+    return {
+      ok: false,
+      status: 502,
+      error: published.error ?? 'proof_refresh_failed',
+      snapshot: await freshMutationSnapshot(input.orderId, {
+        kind: 'internal',
+        reason: 'admin_resolve_text_change',
+      }),
+      proofRefreshed: false,
+    };
+  }
+  return { ok: true, status: 200, snapshot: published.snapshot, proofRefreshed: true };
 }
 
 // ── Review-link preparation (admin-authenticated caller) ───────────────────
@@ -987,21 +1174,14 @@ export interface ReviewSnapshot {
   bookFormat: OrderRecord['bookFormat'];
 }
 
-export async function getReviewSnapshot(
-  orderId: string,
-  input: ReviewAccessInput = {},
-): Promise<ReviewSnapshot | null> {
-  const order = await getOrder(orderId);
-  if (!order) return null;
-  if (!order.pageArtifacts || order.pageArtifacts.length === 0) return null;
-  if (!hasReviewAccess(order, input)) return null;
+export function reviewSnapshotFromOrder(order: OrderRecord): ReviewSnapshot {
   const fresh = proofIsFresh(order);
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
   return {
     orderId: order.id,
     childName: order.childName,
     reviewStatus: order.reviewStatus ?? 'in_review',
-    pageArtifacts: [...order.pageArtifacts].sort((a, b) => a.pageIndex - b.pageIndex),
+    pageArtifacts: [...(order.pageArtifacts ?? [])].sort((a, b) => a.pageIndex - b.pageIndex),
     // Advertise the proof ONLY when it is complete and current.
     storyArtifactUrl: fresh ? (order.storyArtifactUrl ?? null) : null,
     proofVersion: fresh ? (order.proofVersion ?? null) : null,
@@ -1012,6 +1192,32 @@ export async function getReviewSnapshot(
     isPrint,
     bookFormat: order.bookFormat,
   };
+}
+
+/** Fresh snapshot for a mutation response after slow work failed. Customer
+ * callers are re-authorized against the latest token before any data is exposed;
+ * authenticated internal callers may read the latest committed review state. */
+async function freshMutationSnapshot(
+  orderId: string,
+  actor: ReviewActor = INTERNAL_REVIEW_ACTOR,
+): Promise<ReviewSnapshot | undefined> {
+  const current = await getOrder(orderId);
+  if (!current?.pageArtifacts?.length) return undefined;
+  if (actor.kind === 'customer' && !hasReviewWriteAccess(current, { reviewToken: actor.reviewToken })) {
+    return undefined;
+  }
+  return reviewSnapshotFromOrder(current);
+}
+
+export async function getReviewSnapshot(
+  orderId: string,
+  input: ReviewAccessInput = {},
+): Promise<ReviewSnapshot | null> {
+  const order = await getOrder(orderId);
+  if (!order) return null;
+  if (!order.pageArtifacts || order.pageArtifacts.length === 0) return null;
+  if (!hasReviewAccess(order, input)) return null;
+  return reviewSnapshotFromOrder(order);
 }
 
 // ── Capability helpers ─────────────────────────────────────────────────────
@@ -1026,13 +1232,10 @@ function tokensMatch(stored: string, provided: string): boolean {
   }
 }
 
-/**
- * READ access to the review surface. Once a capability token exists, reads are
- * gated by it for both digital and print. Legacy/in-progress orders without a
- * prepared token stay readable so operator visibility is not lost.
- */
+/** Public review reads are capability-gated for every order. Operator access
+ * belongs on authenticated admin surfaces, never on this public helper. */
 export function hasReviewAccess(order: OrderRecord, input: ReviewAccessInput = {}): boolean {
-  if (!order.proofApprovalToken) return true;
+  if (!order.proofApprovalToken) return false;
   return tokensMatch(order.proofApprovalToken, input.reviewToken ?? '');
 }
 
@@ -1048,16 +1251,4 @@ export function hasReviewWriteAccess(order: OrderRecord, input: ReviewAccessInpu
 
 export function reviewPathFor(orderId: string, token: string): string {
   return `/review/${orderId}?token=${token}`;
-}
-
-/**
- * True when any page still carries an unresolved customer wording request. Pure,
- * so the approval gate and the client can share one definition.
- */
-export function hasUnresolvedChangeRequests(pages: PageArtifact[]): boolean {
-  return pages.some(
-    (p) =>
-      p.customerReviewStatus === 'changes_requested' ||
-      (p.customerRequestedChange != null && p.customerRequestedChange.lifecycleStatus !== 'resolved'),
-  );
 }

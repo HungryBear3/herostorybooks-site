@@ -57,3 +57,13 @@ export function recordCustomerTextChangeRequest(
     },
   };
 }
+
+/** Shared pure gate for server approval and the customer client. */
+export function hasUnresolvedChangeRequests(pages: PageArtifact[]): boolean {
+  return pages.some(
+    (page) =>
+      page.customerReviewStatus === 'changes_requested' ||
+      (page.customerRequestedChange != null &&
+        page.customerRequestedChange.lifecycleStatus !== 'resolved'),
+  );
+}

@@ -33,5 +33,6 @@ export async function POST(
     ok: true,
     proofReviewedAt: result.proofReviewedAt,
     proofReviewedVersion: result.proofReviewedVersion,
+    snapshot: result.snapshot,
   });
 }

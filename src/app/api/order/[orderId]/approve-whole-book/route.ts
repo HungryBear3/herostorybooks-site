@@ -29,5 +29,6 @@ export async function POST(
     ok: true,
     proofUrl: result.proofUrl ?? null,
     proofVersion: result.proofVersion ?? null,
+    snapshot: result.snapshot,
   });
 }

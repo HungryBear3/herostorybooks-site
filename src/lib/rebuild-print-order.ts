@@ -35,12 +35,12 @@ import {
 } from './image-generator.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import {
-  getOrder,
+  commitOrderConditional,
   getOrderPhotoUrl,
   getStoryPageCount,
   isPrintFormat,
   orderRequiresReferenceImage,
-  persistOrder,
+  readOrderVersioned,
   withBlobNamespace,
   type OrderRecord,
   type PageArtifact,
@@ -50,6 +50,8 @@ import {
   type StoryWithMeta,
 } from './story-generator.ts';
 import type { StoryContent } from './fulfillment-types.ts';
+import { newProofVersion, proofArtifactPath } from './fulfillment.ts';
+import { proofRenderSourceFingerprint } from './review-source-identity.ts';
 
 export type RebuildRefusalReason =
   | 'order_not_found'
@@ -58,7 +60,8 @@ export type RebuildRefusalReason =
   | 'already_submitted_to_lulu'
   | 'already_in_production'
   | 'already_shipped'
-  | 'order_refunded';
+  | 'order_refunded'
+  | 'order_changed_during_rebuild';
 
 export interface RebuildPlan {
   orderId: string;
@@ -122,7 +125,7 @@ export function checkRebuildSafety(order: OrderRecord): RebuildRefusal | null {
   if (!isPrintFormat(order.bookFormat)) {
     return { ok: false, reason: 'not_print_format', detail: `bookFormat=${order.bookFormat}` };
   }
-  if (order.paymentStatus === 'refunded' || order.refundedAt) {
+  if (order.paymentStatus === 'refunded' || order.refundedAt || order.stripeRefundId) {
     return { ok: false, reason: 'order_refunded', detail: `paymentStatus=${order.paymentStatus}` };
   }
   if (order.paymentStatus !== 'paid') {
@@ -193,10 +196,11 @@ export async function rebuildPrintOrder(
   opts: { dryRun?: boolean } = {},
   deps: RebuildDeps = {},
 ): Promise<RebuildOutcome> {
-  const order = await getOrder(orderId);
-  if (!order) {
+  const versioned = await readOrderVersioned(orderId);
+  if (!versioned) {
     return { ok: false, reason: 'order_not_found', detail: orderId };
   }
+  const { order, version: startingVersion } = versioned;
 
   const refusal = checkRebuildSafety(order);
   if (refusal) return refusal;
@@ -254,6 +258,8 @@ export async function rebuildPrintOrder(
       pageIndex: i,
       storyText: page.story,
       basePrompt: page.imagePrompt,
+      sceneTitle: page.sceneTitle,
+      textLayout: page.textLayout ?? null,
       characterAnchor,
       currentImageUrl: result?.imageUrl ?? null,
       acceptedImageUrl: null,
@@ -291,10 +297,10 @@ export async function rebuildPrintOrder(
   const proofBuffer = await _buildPdf(story, order, allUrls);
   const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
 
-  const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);
-  const artifactStamp = now.toISOString().replace(/[:.]/g, '-');
-  const proofUrl = await _upload(order.id, proofBuffer, `${safeSlug}-proof-${artifactStamp}.pdf`);
-  const interiorUrl = await _upload(order.id, interiorBuffer, `${safeSlug}-interior-${artifactStamp}.pdf`);
+  const proofVersion = newProofVersion();
+  const proofUrl = await _upload(order.id, proofBuffer, proofArtifactPath(proofVersion));
+  const interiorUrl = await _upload(order.id, interiorBuffer, `interiors/${proofVersion}.pdf`);
+  const proofSourceFingerprint = proofRenderSourceFingerprint({ story, order, imageUrls: allUrls });
   const interiorMd5 = md5Hex(interiorBuffer);
   const interiorPageCount = getPrintInteriorPageCount(story, order);
 
@@ -308,6 +314,8 @@ export async function rebuildPrintOrder(
   const updated: OrderRecord = {
     ...order,
     storyArtifactUrl: proofUrl,
+    proofSourceFingerprint,
+    proofVersion,
     storyMeta,
     printInteriorArtifactUrl: interiorUrl,
     printInteriorMd5: interiorMd5,
@@ -327,6 +335,7 @@ export async function rebuildPrintOrder(
     proofApprovalToken,
     proofApprovedAt: null,
     proofReviewedAt: null,
+    proofReviewedVersion: null,
     fulfillmentStatus: 'proof_ready',
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
@@ -347,7 +356,10 @@ export async function rebuildPrintOrder(
     ],
     updatedAt: now.toISOString(),
   };
-  await persistOrder(updated);
+  const committed = await commitOrderConditional(updated, startingVersion);
+  if (!committed.ok) {
+    return { ok: false, reason: 'order_changed_during_rebuild' };
+  }
 
   return {
     ok: true,
@@ -366,7 +378,7 @@ export async function rebuildPrintOrder(
 
 // ── Default upload (mirrors fulfillment.ts) ─────────────────────────────────
 
-async function defaultUploadArtifact(
+export async function defaultUploadArtifact(
   orderId: string,
   buffer: Buffer,
   filename: string,
@@ -379,7 +391,7 @@ async function defaultUploadArtifact(
       access: 'public',
       contentType: 'application/pdf',
       addRandomSuffix: false,
-      allowOverwrite: true,
+      allowOverwrite: false,
       token,
     });
     return blob.url;
@@ -387,8 +399,9 @@ async function defaultUploadArtifact(
   const { mkdir, writeFile } = await import('node:fs/promises');
   const path = await import('node:path');
   const dir = path.join(process.cwd(), '.data', 'artifacts', orderId);
-  await mkdir(dir, { recursive: true });
-  await writeFile(path.join(dir, filename), buffer);
+  const filePath = path.join(dir, filename);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, buffer, { flag: 'wx' });
   const base = process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'http://localhost:3000';
   return `${base}/api/order/${orderId}/artifact/${filename}`;
 }

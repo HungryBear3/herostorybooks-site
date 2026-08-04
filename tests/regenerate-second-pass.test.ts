@@ -11,6 +11,8 @@ import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
 import {
   regeneratePage,
   approveWholeBook,
+  getReviewSnapshot,
+  saveTextChangeRequest,
 } from '../src/lib/page-review.ts';
 import type { ImageProvider } from '../src/lib/image-provider-types.ts';
 
@@ -57,12 +59,13 @@ async function seedOrder(
     paymentStatus: 'paid',
     pageArtifacts: [pageFixture(0), pageFixture(1), pageFixture(2)],
     reviewStatus: 'in_review',
+    proofApprovalToken: 're_test_stub_token',
     ...overrides,
   };
   // Proof gates are revision-bound: a seeded proof URL without an
   // identity would (correctly) fail every one of them.
   if (order.storyArtifactUrl && !order.proofVersion) {
-    order.proofSourceFingerprint = proofSourceFingerprint(order.pageArtifacts ?? []);
+    order.proofSourceFingerprint = proofSourceFingerprint(order);
     order.proofVersion = 'pv_test';
   }
   if (order.proofReviewedAt && !order.proofReviewedVersion) {
@@ -102,7 +105,7 @@ test('regeneratePage: auto-rebuilds proof on success and reports proofRefreshed:
           return {
             ok: true as const,
             proofUrl: 'https://example.com/refreshed.pdf',
-            sourceFingerprint: proofSourceFingerprint((await getOrder(oid))?.pageArtifacts ?? []),
+            sourceFingerprint: proofSourceFingerprint((await getOrder(oid))!),
             proofVersion: 'pv_refreshed',
           };
         },
@@ -111,6 +114,12 @@ test('regeneratePage: auto-rebuilds proof on success and reports proofRefreshed:
     assert.equal(result.ok, true);
     assert.equal(result.proofRefreshed, true);
     assert.equal(rebuildCalled, 1);
+    assert.equal(result.snapshot?.storyArtifactUrl, 'https://example.com/refreshed.pdf');
+    assert.equal(result.snapshot?.proofVersion, 'pv_refreshed');
+    assert.deepEqual(
+      result.snapshot,
+      await getReviewSnapshot('ord_secondpass_test', { reviewToken: 're_test_stub_token' }),
+    );
   } finally {
     cleanup(dir);
   }
@@ -124,12 +133,29 @@ test('regeneratePage: surfaces proof rebuild failure but still returns ok:true o
       { orderId: 'ord_secondpass_test', pageIndex: 1, feedback: 'fix it' },
       {
         providers: [successProvider],
-        buildProof: async () => ({ ok: false as const, error: 'blob unreachable' }),
+        buildProof: async () => {
+          const concurrent = await saveTextChangeRequest({
+            orderId: 'ord_secondpass_test',
+            pageIndex: 2,
+            note: 'Synthetic concurrent wording during failed proof build',
+            reviewToken: 're_test_stub_token',
+          });
+          assert.equal(concurrent.ok, true);
+          return { ok: false as const, error: 'blob unreachable' };
+        },
       },
     );
     assert.equal(result.ok, true);
     assert.equal(result.proofRefreshed, false);
     assert.equal(result.proofRefreshError, 'blob unreachable');
+    const authoritative = await getReviewSnapshot('ord_secondpass_test', {
+      reviewToken: 're_test_stub_token',
+    });
+    assert.deepEqual(result.snapshot, authoritative);
+    assert.equal(
+      result.snapshot?.pageArtifacts[2].customerRequestedChange?.note,
+      'Synthetic concurrent wording during failed proof build',
+    );
   } finally {
     cleanup(dir);
   }
@@ -158,6 +184,15 @@ test('regeneratePage: does NOT trigger proof rebuild when image generation faile
     );
     assert.equal(r.ok, false);
     assert.equal(rebuildCalled, 0);
+    assert.ok(r.snapshot, 'a committed provider failure must return authoritative state');
+    const authoritative = await getReviewSnapshot('ord_secondpass_test', {
+      reviewToken: 're_test_stub_token',
+    });
+    assert.deepEqual(r.snapshot, authoritative);
+    const failureFeedback = r.snapshot?.pageArtifacts[0].feedbackHistory.at(-1);
+    assert.equal(failureFeedback?.success, false);
+    assert.equal(failureFeedback?.rawText, '');
+    assert.equal(failureFeedback?.providerTried, 'fal');
   } finally {
     cleanup(dir);
   }

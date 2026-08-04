@@ -40,6 +40,7 @@ import {
   acknowledgeProofReview,
   approveWholeBook,
   customerReviewActor,
+  publishProofGuarded,
   regeneratePage,
   saveTextChangeRequest,
 } from '../src/lib/page-review.ts';
@@ -65,10 +66,25 @@ function page(i: number, o: Partial<PageArtifact> = {}): PageArtifact {
   };
 }
 
+/** Build a complete synthetic renderer identity before the full fixture exists. */
+function proofFingerprintForTest(
+  id: string,
+  pages: PageArtifact[],
+  overrides: Partial<Pick<OrderRecord, 'childName' | 'bookFormat' | 'printTitle'>> = {},
+): string | null {
+  return proofSourceFingerprint({
+    id,
+    childName: overrides.childName ?? 'Testkid',
+    bookFormat: overrides.bookFormat ?? 'digital',
+    printTitle: overrides.printTitle ?? null,
+    pageArtifacts: pages,
+  });
+}
+
 /** An order with a live, acknowledged proof at version v1. */
 function makeOrder(id: string, o: Partial<OrderRecord> = {}): OrderRecord {
   const pages = [page(0), page(1)];
-  return {
+  const order: OrderRecord = {
     ...createOrderRecord(
       { childName: 'Testkid', bookFormat: 'digital', email: 'reviewer@example.invalid' },
       { id, now: NOW },
@@ -76,7 +92,7 @@ function makeOrder(id: string, o: Partial<OrderRecord> = {}): OrderRecord {
     paymentStatus: 'paid',
     reviewStatus: 'in_review',
     storyArtifactUrl: 'https://example.invalid/orders/x/proofs/v1.pdf',
-    proofSourceFingerprint: proofSourceFingerprint(pages),
+    proofSourceFingerprint: null,
     proofVersion: 'v1',
     proofReviewedAt: NOW,
     proofReviewedVersion: 'v1',
@@ -85,6 +101,10 @@ function makeOrder(id: string, o: Partial<OrderRecord> = {}): OrderRecord {
     auditEvents: [],
     ...o,
   };
+  if (o.proofSourceFingerprint === undefined) {
+    order.proofSourceFingerprint = proofSourceFingerprint(order);
+  }
+  return order;
 }
 
 function makeTmp() {
@@ -124,7 +144,7 @@ function goodBuild(version: string, opts: { onStart?: () => void; wait?: Promise
   const fn = async (orderId: string): Promise<ProofBuildResult> => {
     calls += 1;
     const at = await getOrder(orderId);
-    const sourceFingerprint = proofSourceFingerprint(at?.pageArtifacts ?? []);
+    const sourceFingerprint = proofSourceFingerprint(at!);
     opts.onStart?.();
     if (opts.wait) await opts.wait;
     return {
@@ -193,7 +213,7 @@ test('REQ2: a successful builder that omits proofVersion fails closed — no pro
           return {
             ok: true,
             proofUrl: 'https://example.invalid/orders/x/proofs/v2.pdf',
-            sourceFingerprint: proofSourceFingerprint(at?.pageArtifacts ?? []),
+            sourceFingerprint: proofSourceFingerprint(at!),
           } as unknown as ProofBuildResult;
         },
       },
@@ -263,6 +283,50 @@ test('REQ3: source mutated while the proof renders — the stale build cannot pe
     assert.equal(after?.storyArtifactUrl, null, 'nothing may be advertised');
     assert.equal(after?.proofVersion, null);
     assert.equal(after?.proofSourceFingerprint, null);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('REQ3b: wording requested while a proof renders discards the in-flight proof', async () => {
+  const dir = makeTmp();
+  try {
+    const orderId = 'ord_wording_during_render';
+    await persistOrder(makeOrder(orderId, {
+      storyArtifactUrl: null, proofSourceFingerprint: null, proofVersion: null,
+      proofReviewedAt: null, proofReviewedVersion: null,
+    }));
+    let started!: () => void;
+    let release!: () => void;
+    const hasStarted = new Promise<void>((resolve) => { started = resolve; });
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const buildPromise = buildProofArtifactFromPageArtifacts(orderId, {
+      buildPdf: async () => {
+        started();
+        await wait;
+        return Buffer.from('%PDF wording race');
+      },
+      uploadArtifact: async (_id, _buffer, filename) =>
+        `https://example.invalid/orders/${orderId}/${filename}`,
+    });
+    await hasStarted;
+    const wording = await saveTextChangeRequest({
+      orderId,
+      pageIndex: 0,
+      note: 'Please revise this wording',
+      reviewToken: TOKEN,
+    });
+    assert.equal(wording.ok, true);
+    release();
+    const built = await buildPromise;
+    const published = await publishProofGuarded(orderId, built, {
+      actor: customerReviewActor(TOKEN),
+    });
+    assert.equal(published.refreshed, false);
+    assert.equal(published.error, 'unresolved_change_requests');
+    const after = await getOrder(orderId);
+    assert.equal(after?.storyArtifactUrl, null);
+    assert.equal(after?.proofVersion, null);
   } finally {
     cleanup(dir);
   }
@@ -352,7 +416,7 @@ test('REQ6: an acknowledgment of revision X cannot approve revision Y', async ()
     await persistOrder(makeOrder(orderId, {
       pageArtifacts: pages,
       storyArtifactUrl: 'https://example.invalid/orders/x/proofs/v2.pdf',
-      proofSourceFingerprint: proofSourceFingerprint(pages),
+      proofSourceFingerprint: proofFingerprintForTest(orderId, pages),
       proofVersion: 'v2',
       proofReviewedAt: NOW,
       proofReviewedVersion: 'v1',
@@ -386,7 +450,7 @@ test('REQ7: the current matching revision can be acknowledged and then approved'
     await persistOrder(makeOrder(orderId, {
       pageArtifacts: pages,
       storyArtifactUrl: 'https://example.invalid/orders/x/proofs/v3.pdf',
-      proofSourceFingerprint: proofSourceFingerprint(pages),
+      proofSourceFingerprint: proofFingerprintForTest(orderId, pages),
       proofVersion: 'v3',
       proofReviewedAt: null,
       proofReviewedVersion: null,
@@ -474,7 +538,7 @@ test('REQ10+11: approval performs NO pdf build, print, email, payment, refund, f
       bookFormat: 'classic', // print order — the old code would hand off to print
       pageArtifacts: pages,
       storyArtifactUrl: 'https://example.invalid/orders/x/proofs/v5.pdf',
-      proofSourceFingerprint: proofSourceFingerprint(pages),
+      proofSourceFingerprint: proofFingerprintForTest(orderId, pages, { bookFormat: 'classic' }),
       proofVersion: 'v5',
       proofReviewedAt: NOW,
       proofReviewedVersion: 'v5',
@@ -527,7 +591,7 @@ test('REQ10: approval never invokes the proof builder, even when one is availabl
     await persistOrder(makeOrder(orderId, {
       pageArtifacts: pages,
       storyArtifactUrl: 'https://example.invalid/orders/x/proofs/v6.pdf',
-      proofSourceFingerprint: proofSourceFingerprint(pages),
+      proofSourceFingerprint: proofFingerprintForTest(orderId, pages),
       proofVersion: 'v6',
       proofReviewedAt: NOW,
       proofReviewedVersion: 'v6',
@@ -555,7 +619,7 @@ test('accepting a page whose current image is already rendered does not invalida
     const pages = [page(0, { accepted: false, acceptedImageUrl: null }), page(1)];
     await persistOrder(makeOrder(orderId, {
       pageArtifacts: pages,
-      proofSourceFingerprint: proofSourceFingerprint(pages),
+      proofSourceFingerprint: proofFingerprintForTest(orderId, pages),
     }));
 
     const res = await acceptPage({ orderId, pageIndex: 0, actor: customerReviewActor(TOKEN) });
@@ -566,7 +630,7 @@ test('accepting a page whose current image is already rendered does not invalida
     assert.equal(after?.proofVersion, 'v1');
     assert.equal(
       after?.proofSourceFingerprint,
-      proofSourceFingerprint(after?.pageArtifacts ?? []),
+      proofSourceFingerprint(after!),
       'fingerprint still matches the current pages',
     );
   } finally {

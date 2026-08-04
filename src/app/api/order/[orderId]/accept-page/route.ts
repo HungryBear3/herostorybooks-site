@@ -28,5 +28,5 @@ export async function POST(
   if (!result.ok) {
     return NextResponse.json({ ok: false, error: result.error }, { status: result.status });
   }
-  return NextResponse.json({ ok: true, page: result.page });
+  return NextResponse.json({ ok: true, page: result.page, snapshot: result.snapshot });
 }

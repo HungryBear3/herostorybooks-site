@@ -140,7 +140,7 @@ async function seedOrder(
   storyArtifactUrl: string | null,
 ): Promise<OrderRecord> {
   const base = createOrderRecord(
-    { childName: 'Luna', bookFormat, email: 'a@b.com' },
+    { childName: 'Synthetic Review Child', bookFormat, email: 'review@example.invalid' },
     { id: `ord_review_gate_${bookFormat}`, now: '2026-04-27T10:00:00Z' },
   );
   const order: OrderRecord = {
@@ -149,12 +149,13 @@ async function seedOrder(
     storyArtifactUrl,
     pageArtifacts: [pageFixture(0), pageFixture(1)],
     reviewStatus: 'in_review',
+    proofApprovalToken: 're_test_stub_token',
   };
   // A proof is advertised only when it is completely identified AND still
   // matches the current pages; seed that identity so the snapshot tests
   // exercise the advertised path rather than the fail-closed one.
   if (order.storyArtifactUrl) {
-    order.proofSourceFingerprint = proofSourceFingerprint(order.pageArtifacts ?? []);
+    order.proofSourceFingerprint = proofSourceFingerprint(order);
     order.proofVersion = 'pv_test';
   }
   await persistOrder(order);
@@ -165,7 +166,7 @@ test('getReviewSnapshot: surfaces storyArtifactUrl when present', async () => {
   const dir = makeTmp();
   try {
     await seedOrder('classic', 'https://example.com/proof.pdf');
-    const snap = await getReviewSnapshot('ord_review_gate_classic');
+    const snap = await getReviewSnapshot('ord_review_gate_classic', { reviewToken: 're_test_stub_token' });
     assert.ok(snap);
     assert.equal(snap!.storyArtifactUrl, 'https://example.com/proof.pdf');
   } finally {
@@ -177,7 +178,7 @@ test('getReviewSnapshot: print orders → isPrint=true', async () => {
   const dir = makeTmp();
   try {
     await seedOrder('classic', 'https://x/proof.pdf');
-    const snap = await getReviewSnapshot('ord_review_gate_classic');
+    const snap = await getReviewSnapshot('ord_review_gate_classic', { reviewToken: 're_test_stub_token' });
     assert.equal(snap!.isPrint, true);
     assert.equal(snap!.bookFormat, 'classic');
   } finally {
@@ -189,7 +190,7 @@ test('getReviewSnapshot: digital orders → isPrint=false', async () => {
   const dir = makeTmp();
   try {
     await seedOrder('digital', 'https://x/proof.pdf');
-    const snap = await getReviewSnapshot('ord_review_gate_digital');
+    const snap = await getReviewSnapshot('ord_review_gate_digital', { reviewToken: 're_test_stub_token' });
     assert.equal(snap!.isPrint, false);
     assert.equal(snap!.bookFormat, 'digital');
   } finally {
@@ -201,7 +202,7 @@ test('getReviewSnapshot: premium orders → isPrint=true', async () => {
   const dir = makeTmp();
   try {
     await seedOrder('premium', 'https://x/proof.pdf');
-    const snap = await getReviewSnapshot('ord_review_gate_premium');
+    const snap = await getReviewSnapshot('ord_review_gate_premium', { reviewToken: 're_test_stub_token' });
     assert.equal(snap!.isPrint, true);
   } finally {
     cleanup(dir);
@@ -212,7 +213,7 @@ test('getReviewSnapshot: storyArtifactUrl null when proof not yet built', async 
   const dir = makeTmp();
   try {
     await seedOrder('classic', null);
-    const snap = await getReviewSnapshot('ord_review_gate_classic');
+    const snap = await getReviewSnapshot('ord_review_gate_classic', { reviewToken: 're_test_stub_token' });
     assert.equal(snap!.storyArtifactUrl, null);
     // Gate should block: proof_not_ready
     assert.equal(
@@ -236,7 +237,7 @@ test('getReviewSnapshot: storyArtifactUrl null when proof not yet built', async 
 
 test('review access: print order with proof token requires matching token', () => {
   const order = createOrderRecord(
-    { childName: 'Luna', bookFormat: 'classic', email: 'a@b.com' },
+    { childName: 'Synthetic Review Child', bookFormat: 'classic', email: 'review@example.invalid' },
     { id: 'ord_review_token_gate', now: '2026-04-27T10:00:00Z' },
   );
   const withToken: OrderRecord = { ...order, proofApprovalToken: 'tok_secret' };
@@ -245,17 +246,17 @@ test('review access: print order with proof token requires matching token', () =
   assert.equal(hasReviewAccess(withToken, { reviewToken: 'tok_secret' }), true);
 });
 
-test('review access: digital orders and legacy print orders remain visible without a token', () => {
+test('review access: tokenless digital and legacy print records are not public', () => {
   const digital = createOrderRecord(
-    { childName: 'Luna', bookFormat: 'digital', email: 'a@b.com' },
+    { childName: 'Synthetic Review Child', bookFormat: 'digital', email: 'review@example.invalid' },
     { id: 'ord_review_token_digital', now: '2026-04-27T10:00:00Z' },
   );
   const legacyPrint = createOrderRecord(
-    { childName: 'Luna', bookFormat: 'classic', email: 'a@b.com' },
+    { childName: 'Synthetic Review Child', bookFormat: 'classic', email: 'review@example.invalid' },
     { id: 'ord_review_token_legacy', now: '2026-04-27T10:00:00Z' },
   );
-  assert.equal(hasReviewAccess(digital, { reviewToken: null }), true);
-  assert.equal(hasReviewAccess(legacyPrint, { reviewToken: null }), true);
+  assert.equal(hasReviewAccess(digital, { reviewToken: null }), false);
+  assert.equal(hasReviewAccess(legacyPrint, { reviewToken: null }), false);
 });
 
 // ── Source-level guards on the review client ────────────────────────────────

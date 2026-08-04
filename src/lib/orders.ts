@@ -91,7 +91,8 @@ export interface OrderInput {
   // Optional child-voice-note beta (NEXT_PUBLIC_HSB_VOICE_BETA). The audio is
   // NOT used for voice cloning; it's stored as inspiration/source material for
   // later operator-reviewed story personalization.
-  voiceFileName?: string | null;
+  // The original client filename is intentionally neither accepted nor
+  // persisted: recording-app filenames can contain names, dates, and places.
   voiceBlobPath?: string | null;
   voiceBlobUrl?: string | null;
   voiceConsentAt?: string | null;
@@ -165,6 +166,7 @@ export type ReviewAuditEventType =
   | 'page_accept_rejected'
   | 'page_regenerate_rejected'
   | 'customer_text_change_requested'
+  | 'customer_text_change_resolved'
   | 'review_link_prepared'
   | 'proof_invalidated'
   | 'proof_published'
@@ -216,6 +218,8 @@ export interface PageArtifact {
   pageIndex: number;
   storyText: string;
   basePrompt: string;
+  /** PDF-rendered story heading, persisted so proof identity is recomputable. */
+  sceneTitle?: string;
   /** Frozen story-level character description used as the first section of
    *  every page prompt (initial AND regenerate). This is the single anchor
    *  that keeps the same child visually consistent across all pages of one
@@ -268,6 +272,8 @@ export type FulfillmentMode = 'auto' | 'manual_hold';
 
 export interface OrderRecord extends OrderInput {
   id: string;
+  /** Non-PII compatibility signal derived while reading retired legacy data. */
+  legacyVoiceUploadPresent?: boolean;
   bookFormat: BookFormat;
   formatLabel: string;
   priceCents: number;
@@ -892,7 +898,6 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     photoFileName: input.photoFileName?.trim() || null,
     photoBlobPath: input.photoBlobPath?.trim() || null,
     photoBlobUrl: input.photoBlobUrl?.trim() || null,
-    voiceFileName: input.voiceFileName?.trim() || null,
     voiceBlobPath: input.voiceBlobPath?.trim() || null,
     voiceBlobUrl: input.voiceBlobUrl?.trim() || null,
     voiceConsentAt: input.voiceConsentAt?.trim() || null,
@@ -1138,6 +1143,21 @@ export interface UploadedVoiceRef {
   url: string;
 }
 
+function voiceExtForMime(mime: string): string {
+  const normalized = mime.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (normalized === 'audio/webm') return 'webm';
+  if (normalized === 'audio/ogg') return 'ogg';
+  if (normalized === 'audio/mp4' || normalized === 'audio/x-m4a') return 'm4a';
+  if (normalized === 'audio/aac') return 'aac';
+  if (normalized === 'audio/mpeg' || normalized === 'audio/mp3') return 'mp3';
+  if (normalized === 'audio/wav' || normalized === 'audio/x-wav') return 'wav';
+  if (normalized === 'text/plain') return 'txt';
+  if (normalized === 'application/pdf') return 'pdf';
+  if (normalized === 'application/msword') return 'doc';
+  if (normalized === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
+  return 'bin';
+}
+
 /**
  * Upload an attached child-voice audio file to durable blob storage. Mirrors
  * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
@@ -1162,11 +1182,9 @@ export async function uploadOrderVoice(orderId: string, file: File): Promise<Upl
     return null;
   }
 
-  const safeName = (file.name || 'voice')
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'voice';
-
-  const pathname = withBlobNamespace(`orders/${orderId}/voice-${safeName}`);
+  // Never derive durable identifiers from the caller-controlled filename.
+  const assetId = crypto.randomBytes(12).toString('base64url');
+  const pathname = withBlobNamespace(`orders/${orderId}/voice-${assetId}.${voiceExtForMime(file.type)}`);
   const buffer = Buffer.from(await file.arrayBuffer());
 
   try {
@@ -1344,9 +1362,27 @@ export async function rollbackOrderMediaUploads(
   return uniquePaths.length;
 }
 
+function scrubRetiredPrivateFields(order: OrderRecord): OrderRecord {
+  const sanitized = { ...order } as OrderRecord & Record<string, unknown>;
+  // Legacy records can still carry the removed original voice filename. Derive
+  // only a non-PII presence signal, then delete the value before generic order
+  // code can copy, log, render, or persist it again.
+  const retiredVoiceName = sanitized['voiceFileName'];
+  if (typeof retiredVoiceName === 'string' && retiredVoiceName.trim()) {
+    sanitized.legacyVoiceUploadPresent = true;
+  }
+  delete sanitized['voiceFileName'];
+  return sanitized;
+}
+
+function parseOrderRecord(serialized: string): OrderRecord {
+  return scrubRetiredPrivateFields(JSON.parse(serialized) as OrderRecord);
+}
+
 export async function persistOrder(order: OrderRecord) {
   const token = getBlobToken();
-  const serialized = JSON.stringify(order, null, 2);
+  const sanitized = scrubRetiredPrivateFields(order);
+  const serialized = JSON.stringify(sanitized, null, 2);
   const requireDurable = requiresDurablePersistence();
 
   if (token) {
@@ -1358,7 +1394,7 @@ export async function persistOrder(order: OrderRecord) {
         contentType: 'application/json',
         token,
       });
-      return order;
+      return sanitized;
     } catch (err) {
       // In production-like envs we MUST NOT silently fall back to ephemeral
       // tmp filesystem — that's how a customer pays Stripe and the webhook
@@ -1394,7 +1430,7 @@ export async function persistOrder(order: OrderRecord) {
   const dir = getOrderStoreDir();
   await mkdir(dir, { recursive: true });
   await writeFile(`${dir}/${order.id}.json`, `${serialized}\n`, 'utf8');
-  return order;
+  return sanitized;
 }
 
 export async function getOrder(orderId: string) {
@@ -1408,11 +1444,11 @@ export async function getOrder(orderId: string) {
         const blob = blobs.find((b) => b.pathname === getOrderBlobPath(orderId));
         if (!blob?.url) return null;
         const text = await readBlobText({ pathname: blob.pathname, url: blob.url, token });
-        return text ? (JSON.parse(text) as OrderRecord) : null;
+        return text ? parseOrderRecord(text) : null;
       }
 
       const text = await readBlobText({ pathname: getOrderBlobPath(orderId), token });
-      return text ? (JSON.parse(text) as OrderRecord) : null;
+      return text ? parseOrderRecord(text) : null;
     } catch (err) {
       if (requireDurable) {
         // In production, blob errors must NOT silently fall back to ephemeral
@@ -1439,7 +1475,7 @@ export async function getOrder(orderId: string) {
 
   try {
     const file = await readFile(`${getOrderStoreDir()}/${orderId}.json`, 'utf8');
-    return JSON.parse(file) as OrderRecord;
+    return parseOrderRecord(file);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
@@ -1461,7 +1497,7 @@ export async function listOrders(): Promise<OrderRecord[]> {
         try {
           const text = await readBlobText({ pathname: blob.pathname, url: blob.url, token });
           if (!text) continue;
-          orders.push(JSON.parse(text) as OrderRecord);
+          orders.push(parseOrderRecord(text));
         } catch {
           // skip corrupt/unreadable blobs
         }
@@ -1479,7 +1515,7 @@ export async function listOrders(): Promise<OrderRecord[]> {
     for (const file of files.filter(f => f.endsWith('.json'))) {
       try {
         const text = await readFile(`${dir}/${file}`, 'utf8');
-        orders.push(JSON.parse(text) as OrderRecord);
+        orders.push(parseOrderRecord(text));
       } catch {
         // skip corrupt files
       }
@@ -1496,19 +1532,18 @@ export function isOrderStatus(value: string): value is OrderStatus {
 }
 
 export async function updateOrderStatus(orderId: string, status: OrderStatus) {
-  const existing = await getOrder(orderId);
-  if (!existing) {
-    return null;
-  }
-
-  const updated: OrderRecord = {
-    ...existing,
-    status,
-    updatedAt: new Date().toISOString(),
-  };
-
-  await persistOrder(updated);
-  return updated;
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const updated: OrderRecord = {
+        ...current,
+        status,
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
 }
 
 type FulfillmentPatch = Partial<Pick<
@@ -1526,6 +1561,7 @@ type FulfillmentPatch = Partial<Pick<
   | 'printTitle'
   | 'proofApprovalToken'
   | 'proofApprovedAt'
+  | 'customerProofReleasedAt'
   | 'proofReviewedAt'
   | 'proofSourceFingerprint'
   | 'proofVersion'
@@ -1570,6 +1606,7 @@ function patchRequiresPaidOrder(patch: FulfillmentPatch): boolean {
   if (patch.printInteriorArtifactUrl !== undefined) return true;
   if (patch.printCoverArtifactUrl !== undefined) return true;
   if (patch.proofApprovalToken !== undefined) return true;
+  if (patch.customerProofReleasedAt !== undefined) return true;
   if (patch.printJobId !== undefined) return true;
   if (patch.status === 'preview_ready' || patch.status === 'print_in_production' || patch.status === 'shipped') return true;
   if (patch.fulfillmentStatus && PAYMENT_GATED_FULFILLMENT_STATUSES.includes(patch.fulfillmentStatus)) return true;
@@ -1581,28 +1618,30 @@ export async function updateFulfillmentState(
   patch: FulfillmentPatch,
   existingOrder?: OrderRecord,
 ): Promise<OrderRecord | null> {
-  // If the caller already holds a freshly-written record for this order, use it
-  // directly. A second getOrder() here can return a stale blob snapshot and
-  // spread it over fields that were just written (e.g. pageArtifacts after
-  // regen). Guard the exported helper against accidental cross-order reuse.
-  const existing = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
-  if (!existing) return null;
-
-  const effectivePaymentStatus = patch.paymentStatus ?? existing.paymentStatus;
-  if (patchRequiresPaidOrder(patch) && effectivePaymentStatus !== 'paid') {
-    throw new Error(
-      `[orders] Refusing fulfillment mutation for ${orderId}: paymentStatus=${effectivePaymentStatus}`,
-    );
-  }
-
-  const updated: OrderRecord = {
-    ...existing,
-    ...patch,
-    updatedAt: new Date().toISOString(),
-  };
-
-  await persistOrder(updated);
-  return updated;
+  // Fulfillment and customer review share one order record. Every merge must
+  // therefore use the same versioned transaction boundary; an unconditional
+  // read-merge-persist can overwrite a concurrent accept/regenerate/wording CAS.
+  // `existingOrder` remains in the public signature for compatibility, but is
+  // intentionally not trusted as a commit base because it may already be stale.
+  void existingOrder;
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const effectivePaymentStatus = patch.paymentStatus ?? current.paymentStatus;
+      if (patchRequiresPaidOrder(patch) && effectivePaymentStatus !== 'paid') {
+        throw new Error(
+          `[orders] Refusing fulfillment mutation for ${orderId}: paymentStatus=${effectivePaymentStatus}`,
+        );
+      }
+      const updated: OrderRecord = {
+        ...current,
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
 }
 
 /**
@@ -1616,13 +1655,9 @@ export async function appendAuditEvent(
   event: Omit<ReviewAuditEvent, 'at'> & { at?: string },
   existingOrder?: OrderRecord,
 ): Promise<OrderRecord | null> {
-  // Use the caller's already-written record when available for this order. A
-  // fresh getOrder() here can return a stale blob snapshot and overwrite newer
-  // pageArtifacts (the production regen-clobber bug: appendAuditEvent re-read
-  // stale state after updateFulfillmentState had already persisted the regen'd
-  // artifacts). Guard the exported helper against accidental cross-order reuse.
-  const existing = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
-  if (!existing) return null;
+  // A caller-held record can already be stale even when its id matches. Append
+  // against the versioned current record so audit writes cannot erase review CAS.
+  void existingOrder;
   const entry: ReviewAuditEvent = {
     at: event.at ?? new Date().toISOString(),
     type: event.type,
@@ -1630,13 +1665,18 @@ export async function appendAuditEvent(
     ...(event.reason ? { reason: event.reason } : {}),
     ...(event.meta ? { meta: event.meta } : {}),
   };
-  const updated: OrderRecord = {
-    ...existing,
-    auditEvents: [...(existing.auditEvents ?? []), entry],
-    updatedAt: new Date().toISOString(),
-  };
-  await persistOrder(updated);
-  return updated;
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const updated: OrderRecord = {
+        ...current,
+        auditEvents: [...(current.auditEvents ?? []), entry],
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
 }
 
 
@@ -1902,11 +1942,25 @@ export async function readOrderVersioned(orderId: string): Promise<VersionedOrde
   if (!raw) return null;
   let parsed: OrderRecord;
   try {
-    parsed = JSON.parse(raw.body) as OrderRecord;
+    parsed = parseOrderRecord(raw.body);
   } catch (error) {
     throw new OrderPersistenceError(orderId, 'Stored order record is not valid JSON', error);
   }
   return { order: parsed, version: raw.version };
+}
+
+/** Create a new order only when its deterministic record path is absent. */
+export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> {
+  const sanitized = scrubRetiredPrivateFields(order);
+  const adapter = resolveOrderStoreAdapter();
+  const created = await adapter.createIfAbsent(
+    getOrderBlobPath(order.id),
+    JSON.stringify(sanitized, null, 2),
+  );
+  if (!created.ok) {
+    throw new OrderPersistenceError(order.id, 'Refusing to overwrite an existing order during creation');
+  }
+  return sanitized;
 }
 
 /** Commit an order record only if the stored version is still `expectedVersion`. */
@@ -1917,7 +1971,7 @@ export async function commitOrderConditional(
   const adapter = resolveOrderStoreAdapter();
   return adapter.replaceIfVersion(
     getOrderBlobPath(order.id),
-    JSON.stringify(order, null, 2),
+    JSON.stringify(scrubRetiredPrivateFields(order), null, 2),
     expectedVersion,
   );
 }
@@ -1998,25 +2052,22 @@ export async function updateOrderPayment(
   paymentStatus: PaymentStatus,
   opts: { stripeSessionId?: string; shippingAddress?: ShippingAddress } = {},
 ) {
-  const existing = await getOrder(orderId);
-  if (!existing) return null;
-
   const now = new Date().toISOString();
-  const updated: OrderRecord = {
-    ...existing,
-    paymentStatus,
-    ...(opts.stripeSessionId != null ? { stripeSessionId: opts.stripeSessionId } : {}),
-    ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
-    // Authoritative + idempotent paidAt: stamped ONLY on the transition to
-    // 'paid', and ONLY if not already set. `...existing` above preserves an
-    // existing paidAt across replays / later updates; we never overwrite it and
-    // never derive it from updatedAt or a scan clock.
-    ...(paymentStatus === 'paid' && !existing.paidAt ? { paidAt: now } : {}),
-    updatedAt: now,
-  };
-
-  await persistOrder(updated);
-  return updated;
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const updated: OrderRecord = {
+        ...current,
+        paymentStatus,
+        ...(opts.stripeSessionId != null ? { stripeSessionId: opts.stripeSessionId } : {}),
+        ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
+        ...(paymentStatus === 'paid' && !current.paidAt ? { paidAt: now } : {}),
+        updatedAt: now,
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
 }
 
 export async function updatePrintUpgradePayment(
@@ -2028,23 +2079,21 @@ export async function updatePrintUpgradePayment(
     paidAt?: string;
   },
 ) {
-  const existing = await getOrder(orderId);
-  if (!existing) return null;
-
-  if (existing.printUpgradeStatus === 'paid') {
-    return existing;
-  }
-
-  const updated: OrderRecord = {
-    ...existing,
-    printUpgradeStatus: 'paid',
-    printUpgradeStripeSessionId: opts.stripeSessionId,
-    printUpgradeTargetFormat: opts.targetFormat,
-    printUpgradePaidAt: opts.paidAt ?? new Date().toISOString(),
-    ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
-    updatedAt: new Date().toISOString(),
-  };
-
-  await persistOrder(updated);
-  return updated;
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.printUpgradeStatus === 'paid') return { abort: current };
+      const updated: OrderRecord = {
+        ...current,
+        printUpgradeStatus: 'paid',
+        printUpgradeStripeSessionId: opts.stripeSessionId,
+        printUpgradeTargetFormat: opts.targetFormat,
+        printUpgradePaidAt: opts.paidAt ?? new Date().toISOString(),
+        ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
 }

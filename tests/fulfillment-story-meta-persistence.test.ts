@@ -193,7 +193,8 @@ test('digital fulfillment retains storyMeta after pageArtifacts/PDF state writes
   // pageArtifacts must have landed (basic sanity)
   assert.equal(persisted!.pageArtifacts?.length, MOCK_STORY.pages.length);
   // PDF must have landed (basic sanity)
-  assert.ok(persisted!.storyArtifactUrl?.includes('/luna-storybook.pdf'));
+  assert.ok(persisted!.proofVersion);
+  assert.ok(persisted!.storyArtifactUrl?.endsWith(`/proofs/${persisted!.proofVersion}.pdf`));
   // The thing the patch is for:
   assert.equal(persisted!.storyMeta?.source, 'gemini_page_prose');
 });
@@ -246,9 +247,10 @@ test('digital delivery_email_failed path preserves storyMeta + storyArtifactUrl 
   assert.equal(persisted!.fulfillmentStatus, 'delivery_email_failed');
   // All three must survive:
   assert.equal(persisted!.storyMeta?.source, 'gemini_page_prose');
+  assert.ok(persisted!.proofVersion);
   assert.ok(
-    persisted!.storyArtifactUrl?.includes('/luna-storybook.pdf'),
-    'storyArtifactUrl must survive the email-failure write',
+    persisted!.storyArtifactUrl?.endsWith(`/proofs/${persisted!.proofVersion}.pdf`),
+    'immutable versioned storyArtifactUrl must survive the email-failure write',
   );
   assert.equal(
     persisted!.pageArtifacts?.length,
@@ -271,6 +273,7 @@ test('print fulfillment persists storyMeta through final proof_ready state', asy
   assert.ok(persisted);
   assert.equal(persisted!.fulfillmentStatus, 'proof_ready');
   assert.equal(persisted!.storyMeta?.source, 'gemini_page_prose');
-  assert.ok(persisted!.storyArtifactUrl?.includes('/luna-proof.pdf'));
-  assert.ok(persisted!.printInteriorArtifactUrl?.includes('/luna-interior.pdf'));
+  assert.ok(persisted!.proofVersion);
+  assert.ok(persisted!.storyArtifactUrl?.endsWith(`/proofs/${persisted!.proofVersion}.pdf`));
+  assert.ok(persisted!.printInteriorArtifactUrl?.endsWith(`/interiors/${persisted!.proofVersion}.pdf`));
 });

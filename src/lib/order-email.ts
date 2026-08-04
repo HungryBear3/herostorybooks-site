@@ -418,22 +418,24 @@ export async function sendLifecycleEmail(
 
 export function buildDigitalDeliveryEmail(
   order: OrderRecord,
-  options: { pdfUrl: string; supportEmail?: string } = { pdfUrl: '' },
+  options: { pdfUrl: string; reviewUrl?: string; supportEmail?: string },
 ) {
   const supportEmail = options.supportEmail || getSupportEmail();
   const name = order.childName;
   const subject = `${name}'s storybook is ready — download inside ✨`;
+  const reviewHtml = options.reviewUrl
+    ? `<p style="margin:0 0 16px;">Your personalized storybook is ready. Open the private review page to check every page, request wording or image changes, and acknowledge the current proof.</p>
+      <div style="text-align:center;margin:28px 0;">
+        <a href="${escapeHtml(options.reviewUrl)}" style="background:#D4AF37;color:#1F3A5F;font-weight:bold;font-size:16px;text-decoration:none;padding:14px 32px;border-radius:12px;display:inline-block;">📖 Review ${escapeHtml(name)}'s Storybook</a>
+      </div>
+      <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">Private review link: ${escapeHtml(options.reviewUrl)}</p>`
+    : '<p style="margin:0 0 16px;">Your personalized storybook PDF is ready.</p>';
 
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937;line-height:1.5;">
       <h1 style="font-size:28px;color:#1F3A5F;margin-bottom:12px;">${escapeHtml(name)}'s book is done ✨</h1>
-      <p style="margin:0 0 16px;">Your personalized storybook is ready. Click below to download your PDF.</p>
-      <div style="text-align:center;margin:28px 0;">
-        <a href="${escapeHtml(options.pdfUrl)}" style="background:#D4AF37;color:#1F3A5F;font-weight:bold;font-size:16px;text-decoration:none;padding:14px 32px;border-radius:12px;display:inline-block;">
-          📖 Download ${escapeHtml(name)}'s Storybook
-        </a>
-      </div>
-      <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">If the button doesn't work, copy this link: ${escapeHtml(options.pdfUrl)}</p>
+      ${reviewHtml}
+      <p style="margin:0 0 12px;">Direct PDF: <a href="${escapeHtml(options.pdfUrl)}">Download ${escapeHtml(name)}'s Storybook</a></p>
       <p style="margin:0 0 12px;">Questions? Reply to this email or contact <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>.</p>
       <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Order ID: ${escapeHtml(order.id)} · Proof approval before print</p>
     </div>
@@ -442,7 +444,8 @@ export function buildDigitalDeliveryEmail(
   const text = [
     `${name}'s storybook is ready ✨`,
     '',
-    `Download your PDF here: ${options.pdfUrl}`,
+    ...(options.reviewUrl ? [`Private review page: ${options.reviewUrl}`] : []),
+    `Direct PDF download: ${options.pdfUrl}`,
     '',
     `Questions? ${supportEmail}`,
     `Order ID: ${order.id}`,
@@ -453,14 +456,18 @@ export function buildDigitalDeliveryEmail(
 
 export async function sendDigitalDeliveryEmail(
   order: OrderRecord,
-  options: { pdfUrl: string },
+  options: { pdfUrl: string; reviewUrl?: string },
 ) {
   const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
   if (!apiKey) return { skipped: true as const, reason: 'missing_resend_api_key' };
 
   const resend = new Resend(apiKey);
   const supportEmail = getSupportEmail();
-  const email = buildDigitalDeliveryEmail(order, { pdfUrl: options.pdfUrl, supportEmail });
+  const email = buildDigitalDeliveryEmail(order, {
+    pdfUrl: options.pdfUrl,
+    reviewUrl: options.reviewUrl,
+    supportEmail,
+  });
 
   return sendWithFallback(resend, `Digital delivery email for ${order.id}`, {
     from: getOrderSenderEmail(),

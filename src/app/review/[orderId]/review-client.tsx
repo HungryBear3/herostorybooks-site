@@ -3,6 +3,7 @@
 import { useState } from 'react';
 
 import type { PageArtifact } from '@/lib/orders';
+import { hasUnresolvedChangeRequests } from '@/lib/customer-text-change-request';
 import { InlineProofPreview } from './inline-proof-preview';
 
 const FEEDBACK_HELPER =
@@ -52,14 +53,10 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [snapshot, setSnapshot] = useState<Snapshot>(initial);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [feedback, setFeedback] = useState('');
-  const [busy, setBusy] = useState<'idle' | 'regenerating' | 'accepting' | 'approving' | 'acknowledging'>('idle');
+  const [wordingNote, setWordingNote] = useState('');
+  const [busy, setBusy] = useState<'idle' | 'regenerating' | 'accepting' | 'wording' | 'approving' | 'acknowledging'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [proofAck, setProofAck] = useState<boolean>(
-    Boolean(initial.proofReviewedAt) &&
-      initial.proofReviewedVersion != null &&
-      initial.proofReviewedVersion === initial.proofVersion,
-  );
   const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
 
   const selected = snapshot.pageArtifacts[selectedIdx];
@@ -67,6 +64,10 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const allAccepted =
     snapshot.pageArtifacts.length > 0 &&
     acceptedCount === snapshot.pageArtifacts.length;
+  const unresolvedWording = hasUnresolvedChangeRequests(snapshot.pageArtifacts);
+  const proofAck = Boolean(snapshot.proofReviewedAt) &&
+    snapshot.proofReviewedVersion != null &&
+    snapshot.proofReviewedVersion === snapshot.proofVersion;
 
   async function regenerate() {
     if (!selected) return;
@@ -80,17 +81,19 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
         body: JSON.stringify({ pageIndex: selected.pageIndex, feedback }),
       });
       const data = await res.json();
+      // A failed provider call may still have committed review/audit state.
+      // Apply any authoritative snapshot before surfacing the error so the
+      // browser never advertises a proof or page state persistence already voided.
+      if (data.snapshot) setSnapshot(data.snapshot);
       if (!res.ok || !data.ok) {
         setError(data?.error ?? `Regeneration failed (${res.status})`);
         return;
       }
-      setSnapshot((s) => ({
-        ...s,
-        pageArtifacts: s.pageArtifacts.map((p) =>
-          p.pageIndex === selected.pageIndex ? data.page : p,
-        ),
-        reviewStatus: 'customer_changes_requested',
-      }));
+      if (!data.snapshot) {
+        setError('The server did not return the updated book state. Refresh before continuing.');
+        return;
+      }
+      setSnapshot(data.snapshot);
       setFeedback('');
       if (data.warning === 'regen_manual_review_threshold') {
         setNotice('We\u2019ve regenerated this page several times. Our team will also take a look to make sure it lands right.');
@@ -119,12 +122,41 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
         setError(data?.error ?? `Accept failed (${res.status})`);
         return;
       }
-      setSnapshot((s) => ({
-        ...s,
-        pageArtifacts: s.pageArtifacts.map((p) =>
-          p.pageIndex === selected.pageIndex ? data.page : p,
-        ),
-      }));
+      if (!data.snapshot) {
+        setError('The server did not return the updated book state. Refresh before continuing.');
+        return;
+      }
+      setSnapshot(data.snapshot);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error');
+    } finally {
+      setBusy('idle');
+    }
+  }
+
+  async function requestWordingChange() {
+    if (!selected || !wordingNote.trim()) return;
+    setBusy('wording');
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/order/${snapshot.orderId}/request-text-change${tokenQuery()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pageIndex: selected.pageIndex, note: wordingNote }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setError(data?.error ?? `Wording request failed (${res.status})`);
+        return;
+      }
+      if (!data.snapshot) {
+        setError('The server did not return the updated book state. Refresh before continuing.');
+        return;
+      }
+      setSnapshot(data.snapshot);
+      setWordingNote('');
+      setNotice('Wording change requested. Approval is paused until our team resolves it and publishes a new proof.');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Network error');
     } finally {
@@ -286,6 +318,38 @@ No image yet
               </button>
             </div>
 
+            <div className="mt-5 rounded-xl border border-violet-200 bg-violet-50 p-4" data-testid="wording-change-panel">
+              <label htmlFor="wording-note" className="block text-sm font-semibold text-violet-950">
+                Request a wording change
+              </label>
+              <p className="mt-1 text-xs text-violet-800">
+                Use this only for story wording. It does not regenerate the artwork. A request pauses final approval until our team resolves it and publishes a new proof.
+              </p>
+              {selected.customerRequestedChange &&
+                selected.customerRequestedChange.lifecycleStatus !== 'resolved' && (
+                  <p className="mt-3 rounded-md border border-violet-200 bg-white px-3 py-2 text-xs text-violet-900" data-testid="pending-wording-request">
+                    Pending request: {selected.customerRequestedChange.note}
+                  </p>
+                )}
+              <textarea
+                id="wording-note"
+                value={wordingNote}
+                onChange={(event) => setWordingNote(event.target.value)}
+                maxLength={2000}
+                rows={3}
+                placeholder="What should this page say instead?"
+                className="mt-3 w-full rounded-xl border-2 border-violet-200 px-3 py-2 text-sm focus:border-violet-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={requestWordingChange}
+                disabled={busy !== 'idle' || !wordingNote.trim()}
+                className="mt-3 rounded-xl border border-violet-700 px-4 py-2 text-sm font-semibold text-violet-900 disabled:opacity-50"
+              >
+                {busy === 'wording' ? 'Saving request…' : 'Submit wording request'}
+              </button>
+            </div>
+
             {selected.feedbackHistory.length > 0 && (
               <details className="mt-4 text-xs text-gray-500">
                 <summary className="cursor-pointer">Past feedback ({selected.feedbackHistory.length})</summary>
@@ -369,15 +433,13 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
                 checked={proofAck}
                 onChange={async (e) => {
                   const next = e.target.checked;
-                  setProofAck(next);
-                  if (!next) return; // unchecking is a client-only revoke for this session
+                  if (!next) return; // persisted acknowledgments are revision-bound, not session toggles
                   // Already persisted for THIS revision — nothing to send.
                   if (
                     snapshot.proofReviewedAt &&
                     snapshot.proofReviewedVersion === snapshot.proofVersion
                   ) return;
                   if (!snapshot.proofVersion) {
-                    setProofAck(false);
                     setError('The proof is being rebuilt. Refresh in a moment to review the latest version.');
                     return;
                   }
@@ -395,17 +457,15 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
                     );
                     const data = await res.json();
                     if (!res.ok || !data.ok) {
-                      setProofAck(false);
                       setError(data?.error ?? `Could not save acknowledgment (${res.status})`);
                       return;
                     }
-                    setSnapshot((s) => ({
-                      ...s,
-                      proofReviewedAt: data.proofReviewedAt,
-                      proofReviewedVersion: data.proofReviewedVersion ?? s.proofVersion,
-                    }));
+                    if (!data.snapshot) {
+                      setError('The server did not return the updated book state. Refresh before continuing.');
+                      return;
+                    }
+                    setSnapshot(data.snapshot);
                   } catch (err) {
-                    setProofAck(false);
                     setError(err instanceof Error ? err.message : 'Network error');
                   } finally {
                     setBusy('idle');
@@ -429,6 +489,7 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
               type="button"
               disabled={
                 !allAccepted ||
+                unresolvedWording ||
                 !proofAck ||
                 !snapshot.storyArtifactUrl ||
                 busy !== 'idle' ||
@@ -442,9 +503,7 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
                 ? 'Approved'
                 : busy === 'approving'
                   ? 'Approving\u2026'
-                  : snapshot.isPrint
-                    ? 'Approve the whole book and send to print'
-                    : 'Approve the whole book'}
+                  : 'Approve the complete book'}
             </button>
             {!allAccepted && (
               <p className="mt-2 text-xs text-gray-500">
@@ -454,6 +513,11 @@ Accept each illustrated page first — your progress is saved, so you can come b
             {allAccepted && !proofAck && snapshot.storyArtifactUrl && (
               <p className="mt-2 text-xs text-gray-500" data-testid="ack-required-hint">
 Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to enable approval.
+              </p>
+            )}
+            {unresolvedWording && (
+              <p className="mt-2 text-xs text-violet-700" data-testid="wording-request-blocks-approval">
+                Approval is paused while a wording request is unresolved.
               </p>
             )}
           </div>
@@ -473,9 +537,8 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
               Approve the complete proof?
             </h2>
             <p className="mt-3 text-sm leading-relaxed text-slate-700">
-              This confirms you accept the full proof for {snapshot.childName}&apos;s book. For print
-              orders, approval may send the finished book to print, so please only continue if the
-              cover, story pages, and ending pages are ready.
+              This confirms you accept the full proof for {snapshot.childName}&apos;s book. This locks
+              your review approval. Print release happens separately after our final production checks.
             </p>
             <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
               <button
@@ -504,13 +567,13 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
                       setError(data?.error ?? `Approval failed (${res.status})`);
                       return;
                     }
-                    setSnapshot((s) => ({ ...s, reviewStatus: 'approved' }));
+                    if (!data.snapshot) {
+                      setError('The server did not return the updated book state. Refresh before continuing.');
+                      return;
+                    }
+                    setSnapshot(data.snapshot);
                     setShowApprovalConfirm(false);
-                    setNotice(
-                      data.printApproved
-                        ? 'Approved — thank you. We’re sending the finished book to print now.'
-                        : 'Approved — thank you. Your final storybook is ready.',
-                    );
+                    setNotice('Approved — thank you. Our team will complete the final production check before print release.');
                     setTimeout(() => {
                       window.location.href = `/status/${snapshot.orderId}`;
                     }, 1500);

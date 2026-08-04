@@ -7,9 +7,8 @@ import {
 } from '../src/lib/order-email.ts';
 import { createOrderRecord } from '../src/lib/orders.ts';
 
-// Behaviour matrix for the Resend "domain is not verified" 403 case.
-// Production hit this in the ord_d4db1530d474458c incident. After the
-// fix, the email sender:
+// Behaviour matrix for the synthetic Resend "domain is not verified" 403 case.
+// After the fix, the email sender:
 //   - surfaces an actionable error mentioning the configured sender,
 //     the HSB_EMAIL_FROM_FALLBACK env var, and the Resend dashboard URL,
 //   - retries automatically with the fallback sender when set,
@@ -78,6 +77,7 @@ test('unverified domain without fallback → actionable error message thrown', a
       () =>
         sendDigitalDeliveryEmail(makeDigitalOrder(), {
           pdfUrl: 'https://cdn.example.com/order/storybook.pdf',
+          reviewUrl: 'https://example.com/review/order_test?token=re_test_stub',
         }),
       (err: Error) => {
         assert.match(err.message, /not on a verified Resend domain/i);
@@ -137,6 +137,7 @@ test('unverified primary domain WITH fallback → retries once with fallback sen
   try {
     const result = await sendDigitalDeliveryEmail(makeDigitalOrder(), {
       pdfUrl: 'https://cdn.example.com/order/storybook.pdf',
+      reviewUrl: 'https://example.com/review/order_test?token=re_test_stub',
     });
     assert.equal((result as { skipped?: boolean }).skipped, false);
     assert.equal(attempt, 2, 'expected one retry against the fallback sender');
@@ -180,6 +181,7 @@ test('non-domain error (e.g. 500) does NOT trigger the fallback retry', async ()
       () =>
         sendDigitalDeliveryEmail(makeDigitalOrder(), {
           pdfUrl: 'https://cdn.example.com/order/storybook.pdf',
+          reviewUrl: 'https://example.com/review/order_test?token=re_test_stub',
         }),
       (err: Error) => /Resend temporary outage|500/.test(err.message),
     );

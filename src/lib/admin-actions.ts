@@ -9,6 +9,21 @@ import {
   sendLifecycleEmail,
   sendDigitalDeliveryEmail,
 } from './order-email.ts';
+import { prepareCustomerReviewLink } from './page-review.ts';
+
+function absoluteReviewUrl(reviewPath: string): string {
+  const base = (process.env.NEXT_PUBLIC_URL || 'http://localhost:3000').replace(/\/$/, '');
+  return `${base}${reviewPath}`;
+}
+
+async function deliveryReviewUrl(order: OrderRecord): Promise<string | undefined> {
+  if (!order.pageArtifacts?.length) return undefined;
+  const prepared = await prepareCustomerReviewLink(order.id);
+  if (!prepared.ok || !prepared.reviewPath) {
+    throw new Error(prepared.error ?? 'review_link_unavailable');
+  }
+  return absoluteReviewUrl(prepared.reviewPath);
+}
 
 export type ActionResult =
   | { ok: true; detail?: string }
@@ -37,7 +52,10 @@ export async function retryOrderFulfillment(
     const isDigital = order.bookFormat === 'digital';
     if (isDigital && order.storyArtifactUrl) {
       try {
-        await sendDigitalDeliveryEmail(order, { pdfUrl: order.storyArtifactUrl });
+        await sendDigitalDeliveryEmail(order, {
+          pdfUrl: order.storyArtifactUrl,
+          reviewUrl: await deliveryReviewUrl(order),
+        });
         await updateFulfillmentState(orderId, {
           fulfillmentStatus: 'complete',
           fulfillmentLastError: null,
@@ -130,7 +148,10 @@ export async function resendDigitalDelivery(orderId: string): Promise<ActionResu
     return { ok: false, status: 409, error: 'No digital artifact URL to resend' };
   }
   try {
-    await sendDigitalDeliveryEmail(order, { pdfUrl: order.storyArtifactUrl });
+    await sendDigitalDeliveryEmail(order, {
+      pdfUrl: order.storyArtifactUrl,
+      reviewUrl: await deliveryReviewUrl(order),
+    });
     await updateFulfillmentState(orderId, {
       fulfillmentStatus: 'complete',
       fulfillmentLastError: null,

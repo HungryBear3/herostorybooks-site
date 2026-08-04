@@ -66,7 +66,7 @@ function page(i: number, o: Partial<PageArtifact> = {}): PageArtifact {
 
 function makeOrder(id: string, o: Partial<OrderRecord> = {}): OrderRecord {
   const pages = [page(0), page(1)];
-  return {
+  const order: OrderRecord = {
     ...createOrderRecord(
       { childName: 'Testkid', bookFormat: 'digital', email: 'reviewer@example.invalid' },
       { id, now: NOW },
@@ -74,7 +74,7 @@ function makeOrder(id: string, o: Partial<OrderRecord> = {}): OrderRecord {
     paymentStatus: 'paid',
     reviewStatus: 'in_review',
     storyArtifactUrl: 'https://example.invalid/orders/x/proofs/v1.pdf',
-    proofSourceFingerprint: proofSourceFingerprint(pages),
+    proofSourceFingerprint: null,
     proofVersion: 'v1',
     proofReviewedAt: NOW,
     proofReviewedVersion: 'v1',
@@ -83,6 +83,10 @@ function makeOrder(id: string, o: Partial<OrderRecord> = {}): OrderRecord {
     auditEvents: [],
     ...o,
   };
+  if (o.proofSourceFingerprint === undefined) {
+    order.proofSourceFingerprint = proofSourceFingerprint(order);
+  }
+  return order;
 }
 
 function makeTmp() {
@@ -116,7 +120,7 @@ const goodBuild = async (oid: string) => {
   return {
     ok: true as const,
     proofUrl: `https://example.invalid/orders/${oid}/proofs/v2.pdf`,
-    sourceFingerprint: proofSourceFingerprint(at?.pageArtifacts ?? []),
+    sourceFingerprint: proofSourceFingerprint(at!),
     proofVersion: 'v2',
   };
 };
@@ -207,7 +211,7 @@ test('REQ12: capability rotated DURING the proof render — the proof is not pub
         providers: [stubProvider], now: () => new Date(NOW),
         buildProof: async (oid: string) => {
           const at = await getOrder(oid);
-          const fp = proofSourceFingerprint(at?.pageArtifacts ?? []);
+          const fp = proofSourceFingerprint(at!);
           started();
           await wait;
           return { ok: true as const, proofUrl: `https://example.invalid/orders/${oid}/proofs/v2.pdf`, sourceFingerprint: fp, proofVersion: 'v2' };

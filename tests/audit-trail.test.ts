@@ -82,7 +82,7 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_audit_test')
   // Proof gates are revision-bound: a seeded proof URL without an
   // identity would (correctly) fail every one of them.
   if (order.storyArtifactUrl && !order.proofVersion) {
-    order.proofSourceFingerprint = proofSourceFingerprint(order.pageArtifacts ?? []);
+    order.proofSourceFingerprint = proofSourceFingerprint(order);
     order.proofVersion = 'pv_test';
   }
   if (order.proofReviewedAt && !order.proofReviewedVersion) {
@@ -169,7 +169,7 @@ test('regeneratePage writes a proof_rebuilt event after auto-rebuild', async () 
       { orderId: 'ord_audit_test', pageIndex: 0, feedback: '' },
       {
         providers: [successProvider],
-        buildProof: async (oid: string) => ({ ok: true as const, proofUrl: 'https://x/refreshed.pdf', sourceFingerprint: proofSourceFingerprint((await getOrder(oid))?.pageArtifacts ?? []), proofVersion: `pv_${Math.random().toString(36).slice(2)}` }),
+        buildProof: async (oid: string) => ({ ok: true as const, proofUrl: 'https://x/refreshed.pdf', sourceFingerprint: proofSourceFingerprint((await getOrder(oid))!), proofVersion: `pv_${Math.random().toString(36).slice(2)}` }),
       },
     );
     const after = await getOrder('ord_audit_test');
@@ -338,7 +338,7 @@ test('end-to-end: full review→approve sequence is captured in chronological or
         buildProof: async (oid: string) => ({
           ok: true as const,
           proofUrl: 'https://example.com/re-proof.pdf',
-          sourceFingerprint: proofSourceFingerprint((await getOrder(oid))?.pageArtifacts ?? []),
+          sourceFingerprint: proofSourceFingerprint((await getOrder(oid))!),
           proofVersion: 'pv_second',
         }),
       },

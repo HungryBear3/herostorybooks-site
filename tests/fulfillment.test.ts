@@ -78,17 +78,23 @@ test('backoffMs grows exponentially: 5s, 25s, 125s', () => {
   assert.equal(backoffMs(3), 125_000);
 });
 
-test('source-level: fulfillment artifact uploads allow overwrite for retries/rebuilds', () => {
+test('source-level: fulfillment artifact uploads refuse overwrite for immutable retries/rebuilds', () => {
   const src = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
-  assert.match(src, /allowOverwrite:\s*true/);
+  assert.match(src, /allowOverwrite:\s*false/);
+  assert.doesNotMatch(src, /allowOverwrite:\s*true/);
 });
 
-test('source-level: proof release timestamp writes carry final artifact state', () => {
+test('source-level: proof release timestamp writes are narrow and cannot replay stale artifacts', () => {
   const src = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
-  assert.match(src, /function proofReleasePatch\(order: OrderRecord, persistedState: Partial<OrderRecord>\)/);
-  assert.match(src, /\.\.\.persistedState,[\s\S]*customerProofReleasedAt:/);
-  assert.match(src, /proofReleasePatch\(order, finalDigitalPatch\)/);
-  assert.match(src, /proofReleasePatch\(order, finalPrintProofPatch\)/);
+  assert.match(src, /function proofReleasePatch\(order: OrderRecord\)/);
+  const start = src.indexOf('function proofReleasePatch');
+  const end = src.indexOf('\n}\n', start);
+  assert.ok(start > 0 && end > start, 'proofReleasePatch must be bounded');
+  const body = src.slice(start, end);
+  assert.match(body, /customerProofReleasedAt:/);
+  assert.doesNotMatch(body, /persistedState|pageArtifacts|storyArtifactUrl|proofVersion/);
+  assert.match(src, /proofReleasePatch\(order\)/);
+  assert.doesNotMatch(src, /proofReleasePatch\(order,\s*final(?:Digital|PrintProof)Patch\)/);
 });
 
 // ── Payment gate ──────────────────────────────────────────────────────────────
@@ -240,13 +246,13 @@ test('digital fulfillment fails closed before PDF/upload when any generated imag
   }
 });
 
-test('digital fulfillment does not set proofApprovalToken', async () => {
+test('digital fulfillment mints a review capability token', async () => {
   const dir = makeTmpDir();
   try {
     const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital' }, dir);
     await triggerFulfillment(order.id, PASS_DEPS);
     const after = await getOrder(order.id);
-    assert.ok(!after?.proofApprovalToken, 'digital orders must not get a proof approval token');
+    assert.ok(after?.proofApprovalToken, 'digital orders must get a private review capability');
   } finally {
     cleanupTmpDir(dir);
   }
@@ -263,8 +269,9 @@ test('paid print order reaches proof_ready and gets proofApprovalToken', async (
     assert.equal(after?.fulfillmentStatus, 'proof_ready');
     assert.equal(after?.status, 'preview_ready');
     assert.ok(after?.proofApprovalToken, 'print order should have a proofApprovalToken');
-    assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
-    assert.ok(after?.printInteriorArtifactUrl?.includes('-interior.pdf'));
+    assert.ok(after?.proofVersion);
+    assert.ok(after?.storyArtifactUrl?.endsWith(`/proofs/${after.proofVersion}.pdf`));
+    assert.ok(after?.printInteriorArtifactUrl?.endsWith(`/interiors/${after.proofVersion}.pdf`));
     assert.equal(after?.printInteriorMd5, '9438d3bf30c74a06e6be381d2632a06e');
     assert.equal(after?.printInteriorPageCount, 32);
     assert.equal(after?.printTitle, MOCK_STORY.title);
