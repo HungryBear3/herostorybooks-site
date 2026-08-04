@@ -13,7 +13,7 @@ import {
   createOrderRecord,
   getBlobAccessMode,
   getOrder,
-  persistOrder,
+  persistNewOrder,
   withBlobNamespace,
   type OrderInput,
   type OrderRecord,
@@ -166,7 +166,7 @@ export async function recoverOrder(input: RecoveryInput): Promise<RecoverySummar
     );
   }
 
-  await persistOrder(record);
+  await persistNewOrder(record);
 
   return {
     orderId: record.id,

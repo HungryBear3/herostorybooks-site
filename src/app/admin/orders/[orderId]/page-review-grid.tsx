@@ -1,9 +1,10 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import type { PageArtifact } from '@/lib/orders';
+import type { ReviewSnapshot } from '@/lib/page-review';
 
 const HIGH_REGEN_THRESHOLD = 3;
 const NOTES_MAX = 500;
@@ -21,6 +22,8 @@ type GridPage = Pick<
   | 'reviewedAt'
   | 'generationProvider'
   | 'generationModel'
+  | 'customerReviewStatus'
+  | 'customerRequestedChange'
 >;
 
 interface Props {
@@ -29,7 +32,12 @@ interface Props {
 }
 
 export default function PageReviewGrid({ orderId, pages }: Props) {
-  const sorted = useMemo(() => [...pages].sort((a, b) => a.pageIndex - b.pageIndex), [pages]);
+  const [authoritativePages, setAuthoritativePages] = useState<GridPage[]>(pages);
+  useEffect(() => setAuthoritativePages(pages), [pages]);
+  const sorted = useMemo(
+    () => [...authoritativePages].sort((a, b) => a.pageIndex - b.pageIndex),
+    [authoritativePages],
+  );
   const flaggedCount = useMemo(
     () => sorted.filter((p) => Boolean(p.targetedRegenNeeded)).length,
     [sorted],
@@ -51,14 +59,27 @@ export default function PageReviewGrid({ orderId, pages }: Props) {
       </p>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {sorted.map((page) => (
-          <PageTile key={page.pageIndex} orderId={orderId} page={page} />
+          <PageTile
+            key={page.pageIndex}
+            orderId={orderId}
+            page={page}
+            applySnapshot={(snapshot) => setAuthoritativePages(snapshot.pageArtifacts)}
+          />
         ))}
       </div>
     </section>
   );
 }
 
-function PageTile({ orderId, page }: { orderId: string; page: GridPage }) {
+function PageTile({
+  orderId,
+  page,
+  applySnapshot,
+}: {
+  orderId: string;
+  page: GridPage;
+  applySnapshot: (snapshot: ReviewSnapshot) => void;
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState(page.reviewerNotes ?? '');
@@ -66,6 +87,10 @@ function PageTile({ orderId, page }: { orderId: string; page: GridPage }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(page.reviewedAt ?? null);
+  const [resolvedText, setResolvedText] = useState(page.storyText);
+  const unresolvedWording = Boolean(
+    page.customerRequestedChange && page.customerRequestedChange.lifecycleStatus !== 'resolved',
+  );
 
   const dirty =
     flag !== Boolean(page.targetedRegenNeeded) ||
@@ -99,6 +124,32 @@ function PageTile({ orderId, page }: { orderId: string; page: GridPage }) {
         setSavedAt(data.page?.reviewedAt ?? new Date().toISOString());
         router.refresh();
       }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Request failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resolveWording() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/resolve-text-change`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pageIndex: page.pageIndex, storyText: resolvedText }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        snapshot?: ReviewSnapshot;
+      };
+      // The service can commit wording state and then fail the slow proof build.
+      // Apply that authoritative committed snapshot before surfacing the error;
+      // otherwise the admin could unknowingly act on stale wording requests.
+      if (data.snapshot) applySnapshot(data.snapshot);
+      router.refresh();
+      if (!res.ok) setErr(data.error ?? `Failed (${res.status})`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Request failed');
     } finally {
@@ -154,12 +205,36 @@ function PageTile({ orderId, page }: { orderId: string; page: GridPage }) {
               />
               Targeted regen needed
             </label>
+            {unresolvedWording && (
+              <div className="space-y-1.5 rounded border border-amber-200 bg-amber-50 p-2">
+                <p className="text-[10px] font-semibold text-amber-900">Customer wording request</p>
+                <p className="text-[10px] text-amber-800 whitespace-pre-wrap">
+                  {page.customerRequestedChange?.note}
+                </p>
+                <textarea
+                  value={resolvedText}
+                  onChange={(e) => setResolvedText(e.target.value)}
+                  rows={4}
+                  placeholder="Canonical page wording"
+                  className="w-full border border-amber-200 rounded px-1.5 py-1 text-[11px]"
+                  disabled={busy}
+                />
+                <button
+                  type="button"
+                  onClick={resolveWording}
+                  disabled={busy || !resolvedText.trim()}
+                  className="w-full px-2 py-1 text-[11px] rounded font-semibold bg-amber-700 text-white disabled:opacity-40"
+                >
+                  {busy ? 'rebuilding proof…' : 'apply wording & rebuild proof'}
+                </button>
+              </div>
+            )}
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value.slice(0, NOTES_MAX))}
               rows={3}
               maxLength={NOTES_MAX}
-              placeholder="Reviewer notes (e.g. Lukas looks older here; T-rex too small)…"
+              placeholder="Reviewer notes (e.g. character looks older here; subject is too small)…"
               className="w-full border border-gray-200 rounded px-1.5 py-1 text-[11px]"
               disabled={busy}
             />

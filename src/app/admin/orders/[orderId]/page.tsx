@@ -56,9 +56,13 @@ export default async function AdminOrderDetail({ params }: Props) {
     occasion: order.occasion ?? null,
     giftMessagePreview: previewText(order.giftMessage),
     characterNotesPreview: previewText(order.characterNotes),
-    hasVoiceOrUpload: Boolean(order.voiceFileName || order.voiceBlobPath || order.voiceConsentAt || order.voiceTranscript),
+    hasVoiceOrUpload: Boolean(
+      order.voiceBlobPath
+      || order.voiceConsentAt
+      || order.voiceTranscript
+      || order.legacyVoiceUploadPresent,
+    ),
     voiceSource: order.voiceSource ?? null,
-    voiceFileName: order.voiceFileName ?? null,
     voiceBlobPath: order.voiceBlobPath ?? null,
     voiceConsentAt: order.voiceConsentAt ?? null,
     transcriptStatus: order.voiceTranscript?.status ?? 'not_enabled',
@@ -178,7 +182,6 @@ export default async function AdminOrderDetail({ params }: Props) {
           {storyInput.hasVoiceOrUpload && (
             <>
               <Row label="Upload source" value={storyInput.voiceSource ?? 'uploaded/unknown'} />
-              <Row label="Upload file" value={storyInput.voiceFileName ?? '—'} />
               <Row label="Upload blob path" value={storyInput.voiceBlobPath ?? '—'} mono />
               <Row label="Consent recorded" value={storyInput.voiceConsentAt ?? '—'} />
               <Row label="Transcript status" value={storyInput.transcriptStatus} tone={storyInput.transcriptStatus === 'failed' ? 'bad' : 'neutral'} />

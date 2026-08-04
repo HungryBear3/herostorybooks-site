@@ -5,8 +5,8 @@
  *  - uploadOrderVoice() mirrors uploadOrderPhoto() durable-failure semantics:
  *    in a production-like env with no BLOB_READ_WRITE_TOKEN it throws
  *    OrderPersistenceError; in dev with no token it returns null silently.
- *  - createOrderRecord() persists sanitized voice metadata + clamps voiceSource
- *    to the allowed enum.
+ *  - createOrderRecord() persists privacy-safe voice metadata, never the
+ *    caller-controlled original filename, and clamps voiceSource.
  *  - The /api/order route source (static grep):
  *      • rejects an attached voice with missing consent (voice_consent_required)
  *      • rejects an attached voice that is not audio (voice_invalid_type)
@@ -28,8 +28,11 @@ import { readFileSync } from 'node:fs';
 
 import {
   createOrderRecord,
+  getOrder,
   MAX_VOICE_BYTES,
   OrderPersistenceError,
+  updateOrderPayment,
+  updateOrderStatus,
   uploadOrderVoice,
 } from '../src/lib/orders.ts';
 
@@ -61,23 +64,21 @@ function makeAudioFile(name = 'voice.webm', type = 'audio/webm', size = 32): Fil
 
 // ── createOrderRecord persists voice metadata ────────────────────────────────
 
-test('createOrderRecord persists sanitized voice metadata when provided', () => {
+test('createOrderRecord persists privacy-safe voice metadata when provided', () => {
   const record = createOrderRecord(
     {
       childName: 'Lila',
       bookFormat: 'classic',
       email: 'a@b.com',
-      voiceFileName: 'child-voice-note.webm',
-      voiceBlobPath: 'orders/ord_1/voice-child-voice-note.webm',
-      voiceBlobUrl: 'https://blob.example.com/orders/ord_1/voice-child-voice-note.webm',
+      voiceBlobPath: 'orders/ord_1/voice-aB12cD34eF56.webm',
+      voiceBlobUrl: 'https://blob.example.com/orders/ord_1/voice-aB12cD34eF56.webm',
       voiceConsentAt: '2026-05-14T10:00:00.000Z',
       voiceSource: 'recorded',
     },
     { id: 'ord_voice_record', now: '2026-05-14T10:00:00.000Z' },
   );
-  assert.equal(record.voiceFileName, 'child-voice-note.webm');
-  assert.equal(record.voiceBlobPath, 'orders/ord_1/voice-child-voice-note.webm');
-  assert.equal(record.voiceBlobUrl, 'https://blob.example.com/orders/ord_1/voice-child-voice-note.webm');
+  assert.equal(record.voiceBlobPath, 'orders/ord_1/voice-aB12cD34eF56.webm');
+  assert.equal(record.voiceBlobUrl, 'https://blob.example.com/orders/ord_1/voice-aB12cD34eF56.webm');
   assert.equal(record.voiceConsentAt, '2026-05-14T10:00:00.000Z');
   assert.equal(record.voiceSource, 'recorded');
 });
@@ -101,11 +102,77 @@ test('createOrderRecord leaves voice metadata null when not provided (backward c
     { childName: 'Lila', bookFormat: 'digital', email: 'a@b.com' },
     { id: 'ord_voice_null', now: '2026-05-14T10:00:00.000Z' },
   );
-  assert.equal(record.voiceFileName, null);
   assert.equal(record.voiceBlobPath, null);
   assert.equal(record.voiceBlobUrl, null);
   assert.equal(record.voiceConsentAt, null);
   assert.equal(record.voiceSource, null);
+});
+
+test('createOrderRecord drops a caller-controlled original voice filename', () => {
+  const record = createOrderRecord(
+    {
+      childName: 'Lila',
+      bookFormat: 'digital',
+      email: 'a@b.com',
+      // @ts-expect-error — forbidden legacy field supplied to prove runtime defense in depth
+      voiceFileName: 'Synthetic Child Recording 2026.m4a',
+    },
+    { id: 'ord_no_voice_filename', now: '2026-05-14T10:00:00.000Z' },
+  );
+
+  assert.equal(
+    (record as unknown as Record<string, unknown>).voiceFileName,
+    undefined,
+    'customer voice filenames must never be persisted',
+  );
+});
+
+test('legacy voice filenames are scrubbed whenever an order is re-persisted', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { readFile, writeFile } = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-voice-privacy-'));
+  const filePath = path.join(dir, 'ord_legacy_voice.json');
+  const legacy = {
+    ...createOrderRecord(
+      { childName: 'Legacy', bookFormat: 'digital', email: 'legacy@example.com' },
+      { id: 'ord_legacy_voice', now: '2026-05-14T10:00:00.000Z' },
+    ),
+    voiceFileName: 'Synthetic Legacy Recording 2026.m4a',
+  };
+
+  try {
+    await withEnv(
+      {
+        HSB_ORDER_STORE_DIR: dir,
+        BLOB_READ_WRITE_TOKEN: undefined,
+        VERCEL_ENV: undefined,
+        HSB_REQUIRE_DURABLE_PERSISTENCE: undefined,
+      },
+      async () => {
+        await writeFile(filePath, `${JSON.stringify(legacy, null, 2)}\n`, 'utf8');
+        const loaded = await getOrder('ord_legacy_voice');
+        assert.ok(loaded);
+        assert.equal((loaded as unknown as Record<string, unknown>).voiceFileName, undefined);
+        assert.equal(loaded.legacyVoiceUploadPresent, true);
+
+        const paymentResult = await updateOrderPayment('ord_legacy_voice', 'paid');
+        assert.equal((paymentResult as unknown as Record<string, unknown>).voiceFileName, undefined);
+        assert.equal(paymentResult?.legacyVoiceUploadPresent, true);
+        const afterPayment = JSON.parse(await readFile(filePath, 'utf8')) as Record<string, unknown>;
+        assert.equal(afterPayment.voiceFileName, undefined, 'payment update must scrub legacy filename PII');
+        assert.equal(afterPayment.legacyVoiceUploadPresent, true);
+
+        await writeFile(filePath, `${JSON.stringify(legacy, null, 2)}\n`, 'utf8');
+        await updateOrderStatus('ord_legacy_voice', 'preview_ready');
+        const afterStatus = JSON.parse(await readFile(filePath, 'utf8')) as Record<string, unknown>;
+        assert.equal(afterStatus.voiceFileName, undefined, 'status update must scrub legacy filename PII');
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ── uploadOrderVoice strict mode mirrors uploadOrderPhoto ────────────────────
@@ -146,9 +213,54 @@ test('MAX_VOICE_BYTES is exactly 15 MiB', () => {
   assert.equal(MAX_VOICE_BYTES, 15 * 1024 * 1024);
 });
 
+const ORDERS_SRC = readFileSync('src/lib/orders.ts', 'utf8');
+
+function uploadOrderVoiceBody(): string {
+  const start = ORDERS_SRC.indexOf('export async function uploadOrderVoice');
+  assert.ok(start !== -1, 'uploadOrderVoice must exist');
+  const after = ORDERS_SRC.slice(start + 1);
+  const nextTopLevelFunction = after.search(/\n(?:export\s+)?async function\s/);
+  return after.slice(0, nextTopLevelFunction === -1 ? after.length : nextTopLevelFunction);
+}
+
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+}
+
+test('orders source does not declare or persist voiceFileName', () => {
+  const code = stripComments(ORDERS_SRC);
+  assert.doesNotMatch(code, /\bvoiceFileName\s*\??\s*:/);
+});
+
+test('uploadOrderVoice uses a random asset id and never reads file.name', () => {
+  const body = stripComments(uploadOrderVoiceBody());
+  assert.match(body, /crypto\s*\.\s*(?:randomBytes|randomUUID)/);
+  assert.doesNotMatch(body, /\bfile\.name\b/);
+  assert.doesNotMatch(body, /voice-\$\{[^}]*\bsafeName\b/);
+});
+
+test('raw AAC uses an .aac extension rather than an M4A container extension', () => {
+  assert.match(
+    stripComments(ORDERS_SRC),
+    /normalized === ['"]audio\/aac['"]\) return ['"]aac['"]/,
+  );
+});
+
 // ── /api/order route source contract (static grep) ──────────────────────────
 
 const ROUTE_SRC = readFileSync('src/app/api/order/route.ts', 'utf8');
+const ADMIN_ORDER_SRC = readFileSync('src/app/admin/orders/[orderId]/page.tsx', 'utf8');
+
+test('order and admin surfaces do not retain or display customer voice filenames', () => {
+  assert.doesNotMatch(stripComments(ROUTE_SRC), /\bvoiceFileName\s*:/);
+  assert.doesNotMatch(ROUTE_SRC, /\(voiceRaw as File\)\.name/);
+  assert.doesNotMatch(ADMIN_ORDER_SRC, /\bvoiceFileName\b/);
+  assert.match(ADMIN_ORDER_SRC, /hasVoiceOrUpload:\s*Boolean\([\s\S]*?order\.legacyVoiceUploadPresent/);
+  assert.doesNotMatch(ADMIN_ORDER_SRC, /voiceFileName\s*:/);
+  assert.doesNotMatch(ADMIN_ORDER_SRC, /Upload file/);
+});
 
 test('order route imports uploadOrderVoice + MAX_VOICE_BYTES', () => {
   assert.match(ROUTE_SRC, /uploadOrderVoice/);

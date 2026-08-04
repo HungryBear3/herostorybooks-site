@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { acceptPage, customerReviewActor } from '@/lib/page-review';
+import { saveTextChangeRequest } from '@/lib/page-review';
 import { authorizeCustomerReviewWrite } from '@/lib/review-route-auth';
 
 export const dynamic = 'force-dynamic';
@@ -16,14 +16,15 @@ export async function POST(
   }
   const body = await request.json().catch(() => ({}));
   const pageIndex = Number(body?.pageIndex);
-  if (!Number.isInteger(pageIndex) || pageIndex < 0) {
-    return NextResponse.json({ ok: false, error: 'invalid_page_index' }, { status: 400 });
-  }
+  const note = typeof body?.note === 'string' ? body.note : '';
 
-  const result = await acceptPage({
+  // Forward the presented token so the service revalidates it against the order
+  // as read inside its guarded transaction.
+  const result = await saveTextChangeRequest({
     orderId,
     pageIndex,
-    actor: customerReviewActor(auth.reviewToken),
+    note,
+    reviewToken: auth.reviewToken,
   });
   if (!result.ok) {
     return NextResponse.json({ ok: false, error: result.error }, { status: result.status });

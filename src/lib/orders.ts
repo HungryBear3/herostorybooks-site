@@ -1,6 +1,13 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
-import { del, get, list, put } from '@vercel/blob';
+import {
+  BlobNotFoundError,
+  BlobPreconditionFailedError,
+  del,
+  get,
+  list,
+  put,
+} from '@vercel/blob';
 
 import type { CheckoutTracking } from './checkout-tracking.ts';
 import type { CustomerQueueStatus } from './order-queue.ts';
@@ -84,7 +91,8 @@ export interface OrderInput {
   // Optional child-voice-note beta (NEXT_PUBLIC_HSB_VOICE_BETA). The audio is
   // NOT used for voice cloning; it's stored as inspiration/source material for
   // later operator-reviewed story personalization.
-  voiceFileName?: string | null;
+  // The original client filename is intentionally neither accepted nor
+  // persisted: recording-app filenames can contain names, dates, and places.
   voiceBlobPath?: string | null;
   voiceBlobUrl?: string | null;
   voiceConsentAt?: string | null;
@@ -155,6 +163,13 @@ export interface PageVersionEntry {
 }
 
 export type ReviewAuditEventType =
+  | 'page_accept_rejected'
+  | 'page_regenerate_rejected'
+  | 'customer_text_change_requested'
+  | 'customer_text_change_resolved'
+  | 'review_link_prepared'
+  | 'proof_invalidated'
+  | 'proof_published'
   | 'proof_generated'
   | 'proof_rebuilt'
   | 'proof_release_blocked'
@@ -203,6 +218,8 @@ export interface PageArtifact {
   pageIndex: number;
   storyText: string;
   basePrompt: string;
+  /** PDF-rendered story heading, persisted so proof identity is recomputable. */
+  sceneTitle?: string;
   /** Frozen story-level character description used as the first section of
    *  every page prompt (initial AND regenerate). This is the single anchor
    *  that keeps the same child visually consistent across all pages of one
@@ -255,6 +272,8 @@ export type FulfillmentMode = 'auto' | 'manual_hold';
 
 export interface OrderRecord extends OrderInput {
   id: string;
+  /** Non-PII compatibility signal derived while reading retired legacy data. */
+  legacyVoiceUploadPresent?: boolean;
   bookFormat: BookFormat;
   formatLabel: string;
   priceCents: number;
@@ -317,6 +336,22 @@ export interface OrderRecord extends OrderInput {
   /** ISO timestamp the customer ticked the "I reviewed the full proof PDF"
    *  acknowledgment on /review. Required server-side before approveWholeBook. */
   proofReviewedAt?: string | null;
+  /**
+   * Identity of the exact proof artifact currently persisted at
+   * `storyArtifactUrl`. All three move together, and a rendered-content
+   * mutation clears them together with the acknowledgment.
+   *
+   * `proofSourceFingerprint` is the fingerprint of the page set the PDF was
+   * rendered from; `proofVersion` names the immutable artifact.
+   * `proofReviewedVersion` records WHICH revision the customer acknowledged, so
+   * an acknowledgment of revision X can never approve revision Y.
+   *
+   * Nullable for backward compatibility with records written before this
+   * existed; a null fingerprint or version fails closed at every gate.
+   */
+  proofSourceFingerprint?: string | null;
+  proofVersion?: string | null;
+  proofReviewedVersion?: string | null;
   printJobId?: string | null;
   printJobStatus?: string | null;
   trackingNumber?: string | null;
@@ -863,7 +898,6 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     photoFileName: input.photoFileName?.trim() || null,
     photoBlobPath: input.photoBlobPath?.trim() || null,
     photoBlobUrl: input.photoBlobUrl?.trim() || null,
-    voiceFileName: input.voiceFileName?.trim() || null,
     voiceBlobPath: input.voiceBlobPath?.trim() || null,
     voiceBlobUrl: input.voiceBlobUrl?.trim() || null,
     voiceConsentAt: input.voiceConsentAt?.trim() || null,
@@ -1109,6 +1143,21 @@ export interface UploadedVoiceRef {
   url: string;
 }
 
+function voiceExtForMime(mime: string): string {
+  const normalized = mime.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (normalized === 'audio/webm') return 'webm';
+  if (normalized === 'audio/ogg') return 'ogg';
+  if (normalized === 'audio/mp4' || normalized === 'audio/x-m4a') return 'm4a';
+  if (normalized === 'audio/aac') return 'aac';
+  if (normalized === 'audio/mpeg' || normalized === 'audio/mp3') return 'mp3';
+  if (normalized === 'audio/wav' || normalized === 'audio/x-wav') return 'wav';
+  if (normalized === 'text/plain') return 'txt';
+  if (normalized === 'application/pdf') return 'pdf';
+  if (normalized === 'application/msword') return 'doc';
+  if (normalized === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
+  return 'bin';
+}
+
 /**
  * Upload an attached child-voice audio file to durable blob storage. Mirrors
  * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
@@ -1133,11 +1182,9 @@ export async function uploadOrderVoice(orderId: string, file: File): Promise<Upl
     return null;
   }
 
-  const safeName = (file.name || 'voice')
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'voice';
-
-  const pathname = withBlobNamespace(`orders/${orderId}/voice-${safeName}`);
+  // Never derive durable identifiers from the caller-controlled filename.
+  const assetId = crypto.randomBytes(12).toString('base64url');
+  const pathname = withBlobNamespace(`orders/${orderId}/voice-${assetId}.${voiceExtForMime(file.type)}`);
   const buffer = Buffer.from(await file.arrayBuffer());
 
   try {
@@ -1315,9 +1362,27 @@ export async function rollbackOrderMediaUploads(
   return uniquePaths.length;
 }
 
+function scrubRetiredPrivateFields(order: OrderRecord): OrderRecord {
+  const sanitized = { ...order } as OrderRecord & Record<string, unknown>;
+  // Legacy records can still carry the removed original voice filename. Derive
+  // only a non-PII presence signal, then delete the value before generic order
+  // code can copy, log, render, or persist it again.
+  const retiredVoiceName = sanitized['voiceFileName'];
+  if (typeof retiredVoiceName === 'string' && retiredVoiceName.trim()) {
+    sanitized.legacyVoiceUploadPresent = true;
+  }
+  delete sanitized['voiceFileName'];
+  return sanitized;
+}
+
+function parseOrderRecord(serialized: string): OrderRecord {
+  return scrubRetiredPrivateFields(JSON.parse(serialized) as OrderRecord);
+}
+
 export async function persistOrder(order: OrderRecord) {
   const token = getBlobToken();
-  const serialized = JSON.stringify(order, null, 2);
+  const sanitized = scrubRetiredPrivateFields(order);
+  const serialized = JSON.stringify(sanitized, null, 2);
   const requireDurable = requiresDurablePersistence();
 
   if (token) {
@@ -1329,7 +1394,7 @@ export async function persistOrder(order: OrderRecord) {
         contentType: 'application/json',
         token,
       });
-      return order;
+      return sanitized;
     } catch (err) {
       // In production-like envs we MUST NOT silently fall back to ephemeral
       // tmp filesystem — that's how a customer pays Stripe and the webhook
@@ -1365,7 +1430,7 @@ export async function persistOrder(order: OrderRecord) {
   const dir = getOrderStoreDir();
   await mkdir(dir, { recursive: true });
   await writeFile(`${dir}/${order.id}.json`, `${serialized}\n`, 'utf8');
-  return order;
+  return sanitized;
 }
 
 export async function getOrder(orderId: string) {
@@ -1379,11 +1444,11 @@ export async function getOrder(orderId: string) {
         const blob = blobs.find((b) => b.pathname === getOrderBlobPath(orderId));
         if (!blob?.url) return null;
         const text = await readBlobText({ pathname: blob.pathname, url: blob.url, token });
-        return text ? (JSON.parse(text) as OrderRecord) : null;
+        return text ? parseOrderRecord(text) : null;
       }
 
       const text = await readBlobText({ pathname: getOrderBlobPath(orderId), token });
-      return text ? (JSON.parse(text) as OrderRecord) : null;
+      return text ? parseOrderRecord(text) : null;
     } catch (err) {
       if (requireDurable) {
         // In production, blob errors must NOT silently fall back to ephemeral
@@ -1410,7 +1475,7 @@ export async function getOrder(orderId: string) {
 
   try {
     const file = await readFile(`${getOrderStoreDir()}/${orderId}.json`, 'utf8');
-    return JSON.parse(file) as OrderRecord;
+    return parseOrderRecord(file);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
@@ -1432,7 +1497,7 @@ export async function listOrders(): Promise<OrderRecord[]> {
         try {
           const text = await readBlobText({ pathname: blob.pathname, url: blob.url, token });
           if (!text) continue;
-          orders.push(JSON.parse(text) as OrderRecord);
+          orders.push(parseOrderRecord(text));
         } catch {
           // skip corrupt/unreadable blobs
         }
@@ -1450,7 +1515,7 @@ export async function listOrders(): Promise<OrderRecord[]> {
     for (const file of files.filter(f => f.endsWith('.json'))) {
       try {
         const text = await readFile(`${dir}/${file}`, 'utf8');
-        orders.push(JSON.parse(text) as OrderRecord);
+        orders.push(parseOrderRecord(text));
       } catch {
         // skip corrupt files
       }
@@ -1467,19 +1532,18 @@ export function isOrderStatus(value: string): value is OrderStatus {
 }
 
 export async function updateOrderStatus(orderId: string, status: OrderStatus) {
-  const existing = await getOrder(orderId);
-  if (!existing) {
-    return null;
-  }
-
-  const updated: OrderRecord = {
-    ...existing,
-    status,
-    updatedAt: new Date().toISOString(),
-  };
-
-  await persistOrder(updated);
-  return updated;
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const updated: OrderRecord = {
+        ...current,
+        status,
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
 }
 
 type FulfillmentPatch = Partial<Pick<
@@ -1497,7 +1561,11 @@ type FulfillmentPatch = Partial<Pick<
   | 'printTitle'
   | 'proofApprovalToken'
   | 'proofApprovedAt'
+  | 'customerProofReleasedAt'
   | 'proofReviewedAt'
+  | 'proofSourceFingerprint'
+  | 'proofVersion'
+  | 'proofReviewedVersion'
   | 'printJobId'
   | 'printJobStatus'
   | 'trackingNumber'
@@ -1538,6 +1606,7 @@ function patchRequiresPaidOrder(patch: FulfillmentPatch): boolean {
   if (patch.printInteriorArtifactUrl !== undefined) return true;
   if (patch.printCoverArtifactUrl !== undefined) return true;
   if (patch.proofApprovalToken !== undefined) return true;
+  if (patch.customerProofReleasedAt !== undefined) return true;
   if (patch.printJobId !== undefined) return true;
   if (patch.status === 'preview_ready' || patch.status === 'print_in_production' || patch.status === 'shipped') return true;
   if (patch.fulfillmentStatus && PAYMENT_GATED_FULFILLMENT_STATUSES.includes(patch.fulfillmentStatus)) return true;
@@ -1549,28 +1618,30 @@ export async function updateFulfillmentState(
   patch: FulfillmentPatch,
   existingOrder?: OrderRecord,
 ): Promise<OrderRecord | null> {
-  // If the caller already holds a freshly-written record for this order, use it
-  // directly. A second getOrder() here can return a stale blob snapshot and
-  // spread it over fields that were just written (e.g. pageArtifacts after
-  // regen). Guard the exported helper against accidental cross-order reuse.
-  const existing = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
-  if (!existing) return null;
-
-  const effectivePaymentStatus = patch.paymentStatus ?? existing.paymentStatus;
-  if (patchRequiresPaidOrder(patch) && effectivePaymentStatus !== 'paid') {
-    throw new Error(
-      `[orders] Refusing fulfillment mutation for ${orderId}: paymentStatus=${effectivePaymentStatus}`,
-    );
-  }
-
-  const updated: OrderRecord = {
-    ...existing,
-    ...patch,
-    updatedAt: new Date().toISOString(),
-  };
-
-  await persistOrder(updated);
-  return updated;
+  // Fulfillment and customer review share one order record. Every merge must
+  // therefore use the same versioned transaction boundary; an unconditional
+  // read-merge-persist can overwrite a concurrent accept/regenerate/wording CAS.
+  // `existingOrder` remains in the public signature for compatibility, but is
+  // intentionally not trusted as a commit base because it may already be stale.
+  void existingOrder;
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const effectivePaymentStatus = patch.paymentStatus ?? current.paymentStatus;
+      if (patchRequiresPaidOrder(patch) && effectivePaymentStatus !== 'paid') {
+        throw new Error(
+          `[orders] Refusing fulfillment mutation for ${orderId}: paymentStatus=${effectivePaymentStatus}`,
+        );
+      }
+      const updated: OrderRecord = {
+        ...current,
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
 }
 
 /**
@@ -1584,13 +1655,9 @@ export async function appendAuditEvent(
   event: Omit<ReviewAuditEvent, 'at'> & { at?: string },
   existingOrder?: OrderRecord,
 ): Promise<OrderRecord | null> {
-  // Use the caller's already-written record when available for this order. A
-  // fresh getOrder() here can return a stale blob snapshot and overwrite newer
-  // pageArtifacts (the production regen-clobber bug: appendAuditEvent re-read
-  // stale state after updateFulfillmentState had already persisted the regen'd
-  // artifacts). Guard the exported helper against accidental cross-order reuse.
-  const existing = existingOrder?.id === orderId ? existingOrder : await getOrder(orderId);
-  if (!existing) return null;
+  // A caller-held record can already be stale even when its id matches. Append
+  // against the versioned current record so audit writes cannot erase review CAS.
+  void existingOrder;
   const entry: ReviewAuditEvent = {
     at: event.at ?? new Date().toISOString(),
     type: event.type,
@@ -1598,13 +1665,386 @@ export async function appendAuditEvent(
     ...(event.reason ? { reason: event.reason } : {}),
     ...(event.meta ? { meta: event.meta } : {}),
   };
-  const updated: OrderRecord = {
-    ...existing,
-    auditEvents: [...(existing.auditEvents ?? []), entry],
-    updatedAt: new Date().toISOString(),
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const updated: OrderRecord = {
+        ...current,
+        auditEvents: [...(current.auditEvents ?? []), entry],
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+
+// ── Guarded commit: optimistic CAS on the order record ──────────────────────
+//
+// CONCURRENCY MODEL
+// -----------------
+// The order-record ETag/ifMatch compare-and-swap is the ONLY correctness
+// boundary for customer review mutations. There is deliberately no distributed
+// lock: a list-derived generation lock can split-brain (generation 1 cleaned,
+// generation 2 live, an eventually-consistent list hides generation 2, a
+// contender recreates generation 1), and a lock cannot fence a durable write
+// anyway — a holder can pause past its lease and resume after someone else
+// committed.
+//
+// Instead every mutation is: read the order WITH its version → recompute the
+// entire mutation against that record → write back only if the stored version
+// is still exactly that token → on conflict, retry from a fresh read (bounded).
+//
+//   * Vercel Blob : put(..., { ifMatch: <etag> }); get() returns body + etag in
+//                   ONE call, so the version always describes the bytes read.
+//   * local FS    : an exclusive link()-claim keyed on the expected version plus
+//                   a re-verify of the on-disk content hash, then atomic rename.
+//
+// Slow work (image generation, PDF rendering) runs strictly OUTSIDE the
+// transaction and is bound to the state it was computed from by an explicit
+// fingerprint, never by holding anything.
+
+export class OrderVersionConflictError extends Error {
+  readonly orderId: string;
+  readonly attempts: number;
+  constructor(orderId: string, attempts: number) {
+    super(`Order ${orderId} was modified concurrently; gave up after ${attempts} attempt(s)`);
+    this.name = 'OrderVersionConflictError';
+    this.orderId = orderId;
+    this.attempts = attempts;
+  }
+}
+
+/** An order read together with the opaque version token needed to commit it. */
+export interface VersionedOrder {
+  order: OrderRecord;
+  version: string;
+}
+
+export type ConditionalCommitResult =
+  | { ok: true; version: string }
+  | { ok: false; reason: 'version_conflict' };
+
+/**
+ * Storage seam for versioned reads and conditional commits.
+ *
+ * `replaceIfVersion` MUST compare and write as ONE store-side operation. An
+ * implementation that reads, compares in application code, then writes
+ * unconditionally reintroduces the exact TOCTOU gap this exists to close.
+ */
+export interface OrderStoreAdapter {
+  readonly kind: string;
+  readVersioned(pathname: string): Promise<{ body: string; version: string } | null>;
+  createIfAbsent(
+    pathname: string,
+    body: string,
+  ): Promise<ConditionalCommitResult | { ok: false; reason: 'exists' }>;
+  replaceIfVersion(
+    pathname: string,
+    body: string,
+    expectedVersion: string,
+  ): Promise<ConditionalCommitResult>;
+}
+
+function isPreconditionFailure(error: unknown): boolean {
+  if (error instanceof BlobPreconditionFailedError) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /precondition|412|if-match|ifMatch/i.test(message);
+}
+
+function isBlobAlreadyExistsError(message: string): boolean {
+  return /already exists|blob.*exist|409|conflict/i.test(message);
+}
+
+function isBlobNotFoundError(message: string): boolean {
+  return /not ?found|404|BlobNotFound/i.test(message);
+}
+
+function blobOrderStoreAdapter(token: string): OrderStoreAdapter {
+  return {
+    kind: 'blob',
+    async readVersioned(pathname) {
+      try {
+        // get() returns the body stream AND the etag in a single call, so the
+        // version token always describes exactly the bytes we read.
+        const result = await get(pathname, {
+          access: getBlobAccessMode(),
+          token,
+          useCache: false,
+        });
+        if (!result || !result.stream) return null;
+        const body = await new Response(result.stream).text();
+        return { body, version: result.blob.etag };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof BlobNotFoundError || isBlobNotFoundError(message)) return null;
+        throw new OrderPersistenceError(
+          pathname,
+          `Versioned order read failed: ${sanitizeBlobErrorMessage(message)}`,
+          error,
+        );
+      }
+    },
+    async createIfAbsent(pathname, body) {
+      try {
+        const res = await put(pathname, body, {
+          access: getBlobAccessMode(),
+          token,
+          allowOverwrite: false,
+          addRandomSuffix: false,
+          contentType: 'application/json',
+        });
+        return { ok: true, version: res.etag };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (isBlobAlreadyExistsError(message)) return { ok: false, reason: 'exists' };
+        throw error;
+      }
+    },
+    async replaceIfVersion(pathname, body, expectedVersion) {
+      try {
+        // THE atomic primitive: the store compares the stored ETag with
+        // `ifMatch` and performs the write only if they are equal.
+        const res = await put(pathname, body, {
+          access: getBlobAccessMode(),
+          token,
+          allowOverwrite: true,
+          addRandomSuffix: false,
+          contentType: 'application/json',
+          ifMatch: expectedVersion,
+        });
+        return { ok: true, version: res.etag };
+      } catch (error) {
+        if (isPreconditionFailure(error)) return { ok: false, reason: 'version_conflict' };
+        throw error;
+      }
+    },
   };
-  await persistOrder(updated);
-  return updated;
+}
+
+function orderVersionOf(body: string): string {
+  return `sha256:${crypto.createHash('sha256').update(body).digest('hex')}`;
+}
+
+function parentDirOf(p: string) {
+  const i = p.lastIndexOf('/');
+  return i === -1 ? '.' : p.slice(0, i);
+}
+
+function localOrderStoreAdapter(): OrderStoreAdapter {
+  // MUST mirror the layout persistOrder()/getOrder() use for the local store:
+  // the blob pathname is `<namespace>/orders/<id>.json`, and on disk that same
+  // record lives at `<storeDir>/<id>.json`.
+  const basenameOf = (pathname: string) => pathname.slice(pathname.lastIndexOf('/') + 1);
+  const fileFor = (pathname: string) => `${getOrderStoreDir()}/${basenameOf(pathname)}`;
+  const claimFor = (pathname: string, version: string) =>
+    `${getOrderStoreDir()}/.cas/${basenameOf(pathname)}.${version.replace(/[^a-z0-9]/gi, '')}.claim`;
+
+  const readRaw = async (file: string): Promise<string | null> => {
+    try {
+      return await readFile(file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  };
+
+  return {
+    kind: 'local',
+    async readVersioned(pathname) {
+      const body = await readRaw(fileFor(pathname));
+      if (body === null) return null;
+      return { body, version: orderVersionOf(body) };
+    },
+    async createIfAbsent(pathname, body) {
+      const file = fileFor(pathname);
+      await mkdir(parentDirOf(file), { recursive: true });
+      const tmp = `${file}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+      await writeFile(tmp, body, 'utf8');
+      try {
+        await link(tmp, file); // atomic exclusive create
+        return { ok: true, version: orderVersionOf(body) };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return { ok: false, reason: 'exists' };
+        throw error;
+      } finally {
+        await unlink(tmp).catch(() => {});
+      }
+    },
+    async replaceIfVersion(pathname, body, expectedVersion) {
+      const file = fileFor(pathname);
+      const claim = claimFor(pathname, expectedVersion);
+      await mkdir(parentDirOf(claim), { recursive: true });
+      await mkdir(parentDirOf(file), { recursive: true });
+
+      // Exclusively claim the right to advance FROM `expectedVersion`. Two
+      // writers holding the same expected version cannot both claim it.
+      const claimTmp = `${claim}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+      await writeFile(claimTmp, expectedVersion, 'utf8');
+      let claimed = false;
+      try {
+        try {
+          await link(claimTmp, claim);
+          claimed = true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+            return { ok: false, reason: 'version_conflict' };
+          }
+          throw error;
+        }
+        const current = await readRaw(file);
+        if (current === null || orderVersionOf(current) !== expectedVersion) {
+          return { ok: false, reason: 'version_conflict' };
+        }
+        const tmp = `${file}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+        await writeFile(tmp, body, 'utf8');
+        await rename(tmp, file);
+        return { ok: true, version: orderVersionOf(body) };
+      } finally {
+        await unlink(claimTmp).catch(() => {});
+        if (claimed) await unlink(claim).catch(() => {});
+      }
+    },
+  };
+}
+
+let orderStoreAdapterFactoryOverride: ((token: string | undefined) => OrderStoreAdapter) | null = null;
+
+/** Test seam: substitute the versioned store to exercise exact CAS semantics. */
+export function __setOrderStoreAdapterFactoryForTests(
+  factory: ((token: string | undefined) => OrderStoreAdapter) | null,
+): void {
+  orderStoreAdapterFactoryOverride = factory;
+}
+
+export function __resetOrderStoreAdapterFactoryForTests(): void {
+  orderStoreAdapterFactoryOverride = null;
+}
+
+function resolveOrderStoreAdapter(): OrderStoreAdapter {
+  const token = getBlobToken();
+  if (orderStoreAdapterFactoryOverride) return orderStoreAdapterFactoryOverride(token);
+  if (token) return blobOrderStoreAdapter(token);
+  if (requiresDurablePersistence()) {
+    throw new OrderPersistenceError(
+      'unknown',
+      'BLOB_READ_WRITE_TOKEN missing in production — cannot perform a guarded order commit',
+    );
+  }
+  return localOrderStoreAdapter();
+}
+
+/** Read an order together with its CAS version token. */
+export async function readOrderVersioned(orderId: string): Promise<VersionedOrder | null> {
+  const adapter = resolveOrderStoreAdapter();
+  const raw = await adapter.readVersioned(getOrderBlobPath(orderId));
+  if (!raw) return null;
+  let parsed: OrderRecord;
+  try {
+    parsed = parseOrderRecord(raw.body);
+  } catch (error) {
+    throw new OrderPersistenceError(orderId, 'Stored order record is not valid JSON', error);
+  }
+  return { order: parsed, version: raw.version };
+}
+
+/** Create a new order only when its deterministic record path is absent. */
+export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> {
+  const sanitized = scrubRetiredPrivateFields(order);
+  const adapter = resolveOrderStoreAdapter();
+  const created = await adapter.createIfAbsent(
+    getOrderBlobPath(order.id),
+    JSON.stringify(sanitized, null, 2),
+  );
+  if (!created.ok) {
+    throw new OrderPersistenceError(order.id, 'Refusing to overwrite an existing order during creation');
+  }
+  return sanitized;
+}
+
+/** Commit an order record only if the stored version is still `expectedVersion`. */
+export async function commitOrderConditional(
+  order: OrderRecord,
+  expectedVersion: string,
+): Promise<ConditionalCommitResult> {
+  const adapter = resolveOrderStoreAdapter();
+  return adapter.replaceIfVersion(
+    getOrderBlobPath(order.id),
+    JSON.stringify(scrubRetiredPrivateFields(order), null, 2),
+    expectedVersion,
+  );
+}
+
+// ── Pure record transforms (compose a whole mutation before committing) ─────
+
+/** Pure equivalent of updateFulfillmentState's merge. Performs no I/O. */
+export function applyFulfillmentPatchTo(
+  existing: OrderRecord,
+  patch: FulfillmentPatch,
+  now: string = new Date().toISOString(),
+): OrderRecord {
+  const effectivePaymentStatus = patch.paymentStatus ?? existing.paymentStatus;
+  if (patchRequiresPaidOrder(patch) && effectivePaymentStatus !== 'paid') {
+    throw new Error(
+      `[orders] Refusing fulfillment mutation for ${existing.id}: paymentStatus=${effectivePaymentStatus}`,
+    );
+  }
+  return { ...existing, ...patch, updatedAt: now };
+}
+
+/** Pure equivalent of appendAuditEvent's append. Performs no I/O. */
+export function appendAuditEventTo(
+  existing: OrderRecord,
+  event: Omit<ReviewAuditEvent, 'at'> & { at?: string },
+  now: string = new Date().toISOString(),
+): OrderRecord {
+  const entry: ReviewAuditEvent = {
+    at: event.at ?? now,
+    type: event.type,
+    ...(event.pageIndex != null ? { pageIndex: event.pageIndex } : {}),
+    ...(event.reason ? { reason: event.reason } : {}),
+    ...(event.meta ? { meta: event.meta } : {}),
+  };
+  return { ...existing, auditEvents: [...(existing.auditEvents ?? []), entry], updatedAt: now };
+}
+
+// ── The guarded transaction ────────────────────────────────────────────────
+
+export type OrderTransactionOutcome<T> =
+  | { commit: OrderRecord; result: T }
+  | { abort: T };
+
+export const ORDER_TRANSACTION_MAX_ATTEMPTS = 5;
+
+/**
+ * Whole-mutation optimistic CAS with bounded retry.
+ *
+ * On every attempt the order is re-read WITH its version, the caller recomputes
+ * the entire intended mutation against that fresh record (so all approval,
+ * capability and payment invariants are re-evaluated on the latest state, and
+ * unrelated concurrent changes are carried forward rather than clobbered), and
+ * the result is committed conditionally on that version.
+ */
+export async function withOrderTransaction<T>(
+  orderId: string,
+  mutate: (order: OrderRecord) => Promise<OrderTransactionOutcome<T>> | OrderTransactionOutcome<T>,
+  opts: { maxAttempts?: number; notFound?: () => T } = {},
+): Promise<T> {
+  const maxAttempts = opts.maxAttempts ?? ORDER_TRANSACTION_MAX_ATTEMPTS;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const current = await readOrderVersioned(orderId);
+    if (!current) {
+      if (opts.notFound) return opts.notFound();
+      throw new OrderPersistenceError(orderId, 'Order not found for guarded commit');
+    }
+    const outcome = await mutate(current.order);
+    if ('abort' in outcome) return outcome.abort;
+    const committed = await commitOrderConditional(outcome.commit, current.version);
+    if (committed.ok) return outcome.result;
+  }
+  throw new OrderVersionConflictError(orderId, maxAttempts);
 }
 
 export async function updateOrderPayment(
@@ -1612,25 +2052,22 @@ export async function updateOrderPayment(
   paymentStatus: PaymentStatus,
   opts: { stripeSessionId?: string; shippingAddress?: ShippingAddress } = {},
 ) {
-  const existing = await getOrder(orderId);
-  if (!existing) return null;
-
   const now = new Date().toISOString();
-  const updated: OrderRecord = {
-    ...existing,
-    paymentStatus,
-    ...(opts.stripeSessionId != null ? { stripeSessionId: opts.stripeSessionId } : {}),
-    ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
-    // Authoritative + idempotent paidAt: stamped ONLY on the transition to
-    // 'paid', and ONLY if not already set. `...existing` above preserves an
-    // existing paidAt across replays / later updates; we never overwrite it and
-    // never derive it from updatedAt or a scan clock.
-    ...(paymentStatus === 'paid' && !existing.paidAt ? { paidAt: now } : {}),
-    updatedAt: now,
-  };
-
-  await persistOrder(updated);
-  return updated;
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const updated: OrderRecord = {
+        ...current,
+        paymentStatus,
+        ...(opts.stripeSessionId != null ? { stripeSessionId: opts.stripeSessionId } : {}),
+        ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
+        ...(paymentStatus === 'paid' && !current.paidAt ? { paidAt: now } : {}),
+        updatedAt: now,
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
 }
 
 export async function updatePrintUpgradePayment(
@@ -1642,23 +2079,21 @@ export async function updatePrintUpgradePayment(
     paidAt?: string;
   },
 ) {
-  const existing = await getOrder(orderId);
-  if (!existing) return null;
-
-  if (existing.printUpgradeStatus === 'paid') {
-    return existing;
-  }
-
-  const updated: OrderRecord = {
-    ...existing,
-    printUpgradeStatus: 'paid',
-    printUpgradeStripeSessionId: opts.stripeSessionId,
-    printUpgradeTargetFormat: opts.targetFormat,
-    printUpgradePaidAt: opts.paidAt ?? new Date().toISOString(),
-    ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
-    updatedAt: new Date().toISOString(),
-  };
-
-  await persistOrder(updated);
-  return updated;
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.printUpgradeStatus === 'paid') return { abort: current };
+      const updated: OrderRecord = {
+        ...current,
+        printUpgradeStatus: 'paid',
+        printUpgradeStripeSessionId: opts.stripeSessionId,
+        printUpgradeTargetFormat: opts.targetFormat,
+        printUpgradePaidAt: opts.paidAt ?? new Date().toISOString(),
+        ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
 }

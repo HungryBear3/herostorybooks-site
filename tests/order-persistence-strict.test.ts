@@ -219,21 +219,19 @@ test('order route contract: persistOrder throws BEFORE any Stripe call would hap
   );
 });
 
-test('order route source: persistOrder is called before stripe.checkout.sessions.create', async () => {
+test('order route source: create-only persistence and final CAS both precede Stripe', async () => {
   // Static guard against future regressions that re-order the route.
   const { readFile } = await import('node:fs/promises');
   const src = await readFile('src/app/api/order/route.ts', 'utf8');
-  const persistIdx = src.indexOf('await persistOrder');
+  const createIdx = src.indexOf('await persistNewOrder');
+  const casIdx = src.indexOf('await withOrderTransaction');
   const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
   const orderPersistenceErrorIdx = src.indexOf('OrderPersistenceError');
-  assert.ok(persistIdx > -1, 'route must call persistOrder');
+  assert.ok(createIdx > -1, 'route must create the durable owner record atomically');
+  assert.ok(casIdx > createIdx, 'route must update the draft through versioned CAS');
   assert.ok(stripeIdx > -1, 'route must call stripe.checkout.sessions.create');
-  assert.ok(persistIdx < stripeIdx, 'persistOrder must run before stripe.checkout.sessions.create');
+  assert.ok(casIdx < stripeIdx, 'all durable writes must complete before Stripe');
   assert.ok(orderPersistenceErrorIdx > -1, 'route must handle OrderPersistenceError');
-  assert.ok(
-    orderPersistenceErrorIdx < stripeIdx,
-    'OrderPersistenceError handler must be wired before the Stripe call',
-  );
 });
 
 test('order route source: Stripe Checkout enables buyer-entered promotion codes', async () => {

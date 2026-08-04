@@ -1,9 +1,7 @@
 import {
-  appendAuditEvent,
   getBookFormatMeta,
-  getOrder,
   isPrintFormat,
-  persistOrder,
+  withOrderTransaction,
   type BookFormat,
   type OrderRecord,
   type ShippingAddress,
@@ -76,51 +74,51 @@ export async function recordPrintUpgradePayment(
   orderId: string,
   input: RecordPrintUpgradePaymentInput,
 ): Promise<OrderRecord | null> {
-  const existing = await getOrder(orderId);
-  if (!existing) return null;
-
-  const upgrade = calculatePrintUpgrade(existing, input.targetFormat);
-  if (upgrade.ok === false) {
-    throw new Error(`print upgrade refused for ${orderId}: ${upgrade.error}`);
-  }
-
-  const target = getBookFormatMeta(input.targetFormat);
   const paidAt = input.paidAt ?? new Date().toISOString();
-  const updated: OrderRecord = {
-    ...existing,
-    bookFormat: input.targetFormat,
-    formatLabel: target.label,
-    priceCents: target.priceCents,
-    deliveryExpectation: input.targetFormat === 'premium'
-      ? 'Hardcover ships after proof approval and manual print QA'
-      : 'Softcover ships after proof approval and manual print QA',
-    printUpgradeStatus: 'paid',
-    printUpgradeSourceFormat: existing.bookFormat,
-    printUpgradeTargetFormat: input.targetFormat,
-    printUpgradeAmountCents: input.amountCents,
-    printUpgradeStripeSessionId: input.stripeSessionId,
-    printUpgradePaidAt: paidAt,
-    printUpgradePrintProvider: input.printProvider ?? 'rpi',
-    ...(input.shippingAddress ? { shippingAddress: input.shippingAddress } : {}),
-    // Slice A safety: payment only. Preserve proof/review state, but never mark
-    // approved/submitted and never create a print job from the webhook.
-    printJobId: existing.printJobId ?? null,
-    printJobStatus: existing.printJobStatus ?? null,
-    updatedAt: paidAt,
-  };
-
-  await persistOrder(updated);
-  await appendAuditEvent(orderId, {
-    at: paidAt,
-    type: 'print_upgrade_paid',
-    meta: {
-      sourceFormat: upgrade.sourceFormat,
-      targetFormat: upgrade.targetFormat,
-      amountCents: input.amountCents,
-      stripeSessionId: input.stripeSessionId,
-      printProvider: input.printProvider ?? 'rpi',
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const upgrade = calculatePrintUpgrade(current, input.targetFormat);
+      if (upgrade.ok === false) {
+        throw new Error(`print upgrade refused for ${orderId}: ${upgrade.error}`);
+      }
+      const target = getBookFormatMeta(input.targetFormat);
+      const updated: OrderRecord = {
+        ...current,
+        bookFormat: input.targetFormat,
+        formatLabel: target.label,
+        priceCents: target.priceCents,
+        deliveryExpectation: input.targetFormat === 'premium'
+          ? 'Hardcover ships after proof approval and manual print QA'
+          : 'Softcover ships after proof approval and manual print QA',
+        printUpgradeStatus: 'paid',
+        printUpgradeSourceFormat: current.bookFormat,
+        printUpgradeTargetFormat: input.targetFormat,
+        printUpgradeAmountCents: input.amountCents,
+        printUpgradeStripeSessionId: input.stripeSessionId,
+        printUpgradePaidAt: paidAt,
+        printUpgradePrintProvider: input.printProvider ?? 'rpi',
+        ...(input.shippingAddress ? { shippingAddress: input.shippingAddress } : {}),
+        printJobId: current.printJobId ?? null,
+        printJobStatus: current.printJobStatus ?? null,
+        auditEvents: [
+          ...(current.auditEvents ?? []),
+          {
+            at: paidAt,
+            type: 'print_upgrade_paid',
+            meta: {
+              sourceFormat: upgrade.sourceFormat,
+              targetFormat: upgrade.targetFormat,
+              amountCents: input.amountCents,
+              stripeSessionId: input.stripeSessionId,
+              printProvider: input.printProvider ?? 'rpi',
+            },
+          },
+        ],
+        updatedAt: paidAt,
+      };
+      return { commit: updated, result: updated };
     },
-  });
-
-  return getOrder(orderId);
+    { notFound: () => null },
+  );
 }

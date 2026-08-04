@@ -16,11 +16,10 @@ import {
 import type { OrderRecord } from '../src/lib/orders.ts';
 import type { StoryContent } from '../src/lib/fulfillment-types.ts';
 import { retryOrderFulfillment, resendDigitalDelivery } from '../src/lib/admin-actions.ts';
+import { saveTextChangeRequest } from '../src/lib/page-review.ts';
 
-// Tests for the email-failure isolation introduced after the
-// `Digital delivery email for ord_d4db1530d474458c failed (403): The
-// herostorybooks.com domain is not verified` incident. The book
-// itself was generated correctly; only the email failed. We must:
+// Tests for delivery-email failure isolation. All identifiers and content in
+// this file are synthetic; no production incident/customer identifier is kept.
 //   - persist the artifacts (storyArtifactUrl + pageArtifacts) durably,
 //   - record `fulfillmentStatus='delivery_email_failed'`,
 //   - NOT regenerate the story/images on retry,
@@ -130,9 +129,10 @@ test('digital delivery email failure preserves artifacts and records delivery_em
   assert.ok(persisted, 'order persisted');
   assert.equal(persisted!.fulfillmentStatus, 'delivery_email_failed');
   // Artifacts must survive the email failure.
+  assert.ok(persisted!.proofVersion, 'proofVersion must be persisted');
   assert.ok(
-    persisted!.storyArtifactUrl?.includes('/luna-storybook.pdf'),
-    `Expected storyArtifactUrl to be persisted, got ${persisted!.storyArtifactUrl}`,
+    persisted!.storyArtifactUrl?.endsWith(`/proofs/${persisted!.proofVersion}.pdf`),
+    `Expected immutable versioned storyArtifactUrl, got ${persisted!.storyArtifactUrl}`,
   );
   assert.equal(persisted!.pageArtifacts?.length, MOCK_STORY.pages.length);
   // Last error must be descriptive and mention the actionable hint.
@@ -145,6 +145,187 @@ test('digital delivery email failure preserves artifacts and records delivery_em
     /not on a verified Resend domain|domain is not verified/i,
   );
 });
+
+test('email failure cannot replay stale proof/page state over a concurrent wording request', async (t) => {
+  const dir = makeTmpDir();
+  const originalKey = process.env.HSB_RESEND_API_KEY;
+  const originalFetch = globalThis.fetch;
+  process.env.HSB_RESEND_API_KEY = 're_test_stub';
+  let emailStarted!: () => void;
+  let releaseEmail!: () => void;
+  const started = new Promise<void>((resolve) => { emailStarted = resolve; });
+  const release = new Promise<void>((resolve) => { releaseEmail = resolve; });
+  globalThis.fetch = (async () => {
+    emailStarted();
+    await release;
+    return new Response(JSON.stringify({ message: 'synthetic email failure' }), {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.HSB_RESEND_API_KEY;
+    else process.env.HSB_RESEND_API_KEY = originalKey;
+    cleanupTmpDir(dir);
+  });
+
+  const reviewToken = 'de45'.repeat(12);
+  const order = await makeDigitalOrder({ proofApprovalToken: reviewToken });
+  const run = triggerFulfillment(order.id, PASS_DEPS_WITHOUT_EMAIL);
+  await started;
+  const wording = await saveTextChangeRequest({
+    orderId: order.id,
+    pageIndex: 0,
+    note: 'Keep this synthetic wording request',
+    reviewToken,
+  });
+  assert.equal(wording.ok, true);
+  assert.equal(wording.snapshot?.storyArtifactUrl, null);
+  releaseEmail();
+  await run;
+
+  const after = await getOrder(order.id);
+  assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
+  assert.equal(after?.storyArtifactUrl, null, 'email error patch must not restore a stale proof');
+  assert.equal(after?.proofVersion, null);
+  assert.equal(
+    after?.pageArtifacts?.[0].customerRequestedChange?.note,
+    'Keep this synthetic wording request',
+    'email error patch must preserve the concurrent CAS page mutation',
+  );
+});
+
+test('print email failure cannot replay stale proof/page state over a concurrent wording request', async (t) => {
+  const dir = makeTmpDir();
+  const originalKey = process.env.HSB_RESEND_API_KEY;
+  const originalFetch = globalThis.fetch;
+  process.env.HSB_RESEND_API_KEY = 're_test_stub';
+  let emailStarted!: () => void;
+  let releaseEmail!: () => void;
+  const started = new Promise<void>((resolve) => { emailStarted = resolve; });
+  const release = new Promise<void>((resolve) => { releaseEmail = resolve; });
+  globalThis.fetch = (async () => {
+    emailStarted();
+    await release;
+    return new Response(JSON.stringify({ message: 'synthetic print email failure' }), {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.HSB_RESEND_API_KEY;
+    else process.env.HSB_RESEND_API_KEY = originalKey;
+    cleanupTmpDir(dir);
+  });
+
+  const base = createOrderRecord(
+    { childName: 'Synthetic Print Child', bookFormat: 'classic', email: 'print@example.invalid' },
+    { id: `ord_${Math.random().toString(36).slice(2, 10)}`, now: '2026-05-12T10:00:00Z' },
+  );
+  await persistOrder({ ...base, paymentStatus: 'paid', stripeSessionId: 'cs_test_print_race' });
+  const deps: FulfillmentDeps = {
+    ...PASS_DEPS_WITHOUT_EMAIL,
+    buildPrintInteriorPdf: async () => Buffer.from('%PDF-1.4 synthetic interior'),
+  };
+  const run = triggerFulfillment(base.id, deps);
+  await started;
+  const ready = await getOrder(base.id);
+  assert.ok(ready?.proofApprovalToken);
+  const wording = await saveTextChangeRequest({
+    orderId: base.id,
+    pageIndex: 0,
+    note: 'Keep this synthetic print wording request',
+    reviewToken: ready?.proofApprovalToken,
+  });
+  assert.equal(wording.ok, true);
+  assert.equal(wording.snapshot?.storyArtifactUrl, null);
+  releaseEmail();
+  await run;
+
+  const after = await getOrder(base.id);
+  assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
+  assert.equal(after?.storyArtifactUrl, null, 'print email error patch must not restore a stale proof');
+  assert.equal(after?.proofVersion, null);
+  assert.equal(
+    after?.pageArtifacts?.[0].customerRequestedChange?.note,
+    'Keep this synthetic print wording request',
+    'print email error patch must preserve the concurrent CAS page mutation',
+  );
+});
+
+for (const bookFormat of ['digital', 'classic'] as const) {
+  test(`${bookFormat} delayed email success preserves concurrent wording and proof invalidation`, async (t) => {
+    const dir = makeTmpDir();
+    const originalKey = process.env.HSB_RESEND_API_KEY;
+    const originalFetch = globalThis.fetch;
+    process.env.HSB_RESEND_API_KEY = 're_test_stub';
+    let emailStarted!: () => void;
+    let releaseEmail!: () => void;
+    const started = new Promise<void>((resolve) => { emailStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseEmail = resolve; });
+    globalThis.fetch = (async () => {
+      emailStarted();
+      await release;
+      return new Response(JSON.stringify({ id: 'synthetic_email_success' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    t.after(() => {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) delete process.env.HSB_RESEND_API_KEY;
+      else process.env.HSB_RESEND_API_KEY = originalKey;
+      cleanupTmpDir(dir);
+    });
+
+    let order: OrderRecord;
+    const deps: FulfillmentDeps = {
+      ...PASS_DEPS_WITHOUT_EMAIL,
+      ...(bookFormat === 'classic'
+        ? { buildPrintInteriorPdf: async () => Buffer.from('%PDF-1.4 synthetic interior') }
+        : {}),
+    };
+    if (bookFormat === 'digital') {
+      order = await makeDigitalOrder();
+    } else {
+      const base = createOrderRecord(
+        {
+          childName: 'Synthetic Print Child',
+          bookFormat: 'classic',
+          email: 'print@example.invalid',
+        },
+        { id: 'ord_synthetic_print_success_race', now: '2026-05-12T10:00:00Z' },
+      );
+      order = { ...base, paymentStatus: 'paid', stripeSessionId: 'cs_test_print_success_race' };
+      await persistOrder(order);
+    }
+
+    const run = triggerFulfillment(order.id, deps);
+    await started;
+    const ready = await getOrder(order.id);
+    assert.ok(ready?.proofApprovalToken);
+    const wording = await saveTextChangeRequest({
+      orderId: order.id,
+      pageIndex: 0,
+      note: `Keep synthetic ${bookFormat} wording`,
+      reviewToken: ready.proofApprovalToken,
+    });
+    assert.equal(wording.ok, true);
+    releaseEmail();
+    await run;
+
+    const after = await getOrder(order.id);
+    assert.ok(after?.customerProofReleasedAt, 'successful email commits only the release timestamp');
+    assert.equal(after?.storyArtifactUrl, null);
+    assert.equal(after?.proofVersion, null);
+    assert.equal(
+      after?.pageArtifacts?.[0].customerRequestedChange?.note,
+      `Keep synthetic ${bookFormat} wording`,
+    );
+  });
+}
 
 // ── Test 2: retryOrderFulfillment short-circuits when only email failed ───────
 

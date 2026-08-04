@@ -280,8 +280,11 @@ test('rebuildPrintOrder: classic full rebuild updates artifacts + resets review 
     assert.equal(after.pageArtifacts?.length, 24);
     // Print artifact metadata refreshed.
     assert.equal(after.printInteriorPageCount, 32);
-    assert.match(String(after.printInteriorArtifactUrl), /-interior-[0-9TZ-]+\.pdf$/);
-    assert.match(String(after.storyArtifactUrl), /-proof-[0-9TZ-]+\.pdf$/);
+    assert.match(String(after.printInteriorArtifactUrl), /\/interiors\/pv_[a-z0-9_]+\.pdf$/);
+    assert.match(String(after.storyArtifactUrl), /\/proofs\/pv_[a-z0-9_]+\.pdf$/);
+    assert.ok(after.proofVersion);
+    assert.equal(after.storyArtifactUrl, `https://rebuilt.example/${after.id}/proofs/${after.proofVersion}.pdf`);
+    assert.equal(after.printInteriorArtifactUrl, `https://rebuilt.example/${after.id}/interiors/${after.proofVersion}.pdf`);
     assert.equal(after.printTitle, 'Rebuilt Title');
     assert.notEqual(after.printInteriorMd5, 'legacy-md5');
     // Cover cleared so next print submission rebuilds the cover against
@@ -389,5 +392,37 @@ test('rebuildPrintOrder: discards stale legacy accepted images (clean rebuild co
       assert.equal(page.acceptedImageUrl, null);
       assert.notEqual(page.currentImageUrl, 'https://example.com/legacy-accepted.png');
     }
+  } finally { cleanup(dir); }
+});
+
+test('rebuildPrintOrder: stale slow build cannot overwrite a newer order version', async () => {
+  const dir = makeTmp();
+  try {
+    const before = await seed({ bookFormat: 'classic' });
+    const deps = fakeDeps();
+    let releaseBuild!: () => void;
+    const mayFinish = new Promise<void>((resolve) => { releaseBuild = resolve; });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    deps.buildPdf = async () => {
+      markStarted();
+      await mayFinish;
+      return Buffer.from('%PDF stale proof');
+    };
+
+    const pending = rebuildPrintOrder(before.id, { dryRun: false }, deps);
+    await started;
+    const concurrent = (await getOrder(before.id))!;
+    await persistOrder({ ...concurrent, queueStatusNote: 'newer concurrent state' });
+    releaseBuild();
+
+    const result = await pending;
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.reason, 'order_changed_during_rebuild');
+    const after = (await getOrder(before.id))!;
+    assert.equal(after.queueStatusNote, 'newer concurrent state');
+    assert.equal(after.storyArtifactUrl, before.storyArtifactUrl);
+    assert.equal(after.proofVersion, before.proofVersion);
   } finally { cleanup(dir); }
 });

@@ -6,12 +6,13 @@ import {
   isPrintFormat,
   MAX_VOICE_BYTES,
   OrderPersistenceError,
-  persistOrder,
+  persistNewOrder,
   rollbackOrderMediaUploads,
   sanitizeFamilyCharacters,
   uploadOrderPhoto,
   uploadOrderSupportingPhoto,
   uploadOrderVoice,
+  withOrderTransaction,
 } from '@/lib/orders';
 import {
   missingFieldErrorCode,
@@ -347,7 +348,6 @@ export async function POST(request: Request) {
       bookFormat,
       email,
       photoFileName: photoValidation.ok ? `hero.${photoValidation.extension}` : null,
-      voiceFileName: hasVoiceUpload ? (voiceRaw as File).name : null,
       customStoryBrief,
       customStoryValidation,
       checkoutTracking,
@@ -362,7 +362,7 @@ export async function POST(request: Request) {
     // media. If cleanup itself later fails, the deterministic orders/<id>/
     // Blob prefix still has an owning record for retention/deletion handling.
     try {
-      await persistOrder(draftOrder);
+      await persistNewOrder(draftOrder);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[order] ABORT BEFORE MEDIA/STRIPE: durable draft persistence failed for ${draftOrder.id}: ${message}`);
@@ -525,15 +525,18 @@ export async function POST(request: Request) {
     // for an order the webhook + status page can never find.
     let order;
     try {
-      order = await persistOrder({
-        ...draftOrder,
-        familyCharacters: familyCharactersWithPhotos,
-        photoBlobPath,
-        photoBlobUrl,
-        voiceBlobPath,
-        voiceBlobUrl,
-        voiceConsentAt,
-        voiceSource: hasVoiceUpload ? voiceSource : null,
+      order = await withOrderTransaction(draftOrder.id, (current) => {
+        const updated = {
+          ...current,
+          familyCharacters: familyCharactersWithPhotos,
+          photoBlobPath,
+          photoBlobUrl,
+          voiceBlobPath,
+          voiceBlobUrl,
+          voiceConsentAt,
+          voiceSource: hasVoiceUpload ? voiceSource : null,
+        };
+        return { commit: updated, result: updated };
       });
     } catch (error) {
       await rollbackUploadedMedia('final order persistence failure');

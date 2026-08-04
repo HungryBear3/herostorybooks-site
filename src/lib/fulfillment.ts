@@ -3,7 +3,7 @@ import { put } from '@vercel/blob';
 
 import { getOrder, getOrderPhotoUrl, isPrintFormat, orderRequiresReferenceImage, updateFulfillmentState, withBlobNamespace } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
-import type { OrderRecord } from './orders.ts';
+import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
 import { generateStory, generateStoryWithMeta } from './story-generator.ts';
 import type { StoryWithMeta } from './story-generator.ts';
@@ -12,6 +12,7 @@ import type { GeneratedImageResult } from './image-generator.ts';
 import { buildPdf, buildPrintCoverPdf, buildPrintInteriorPdf, getPrintInteriorPageCount } from './pdf-builder.ts';
 import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';
 import { sendDigitalDeliveryEmail, sendProofReadyEmail, sendLifecycleEmail, sendOperatorFailureAlert } from './order-email.ts';
+import { proofRenderSourceFingerprint, proofStoryFromPageArtifacts } from './review-source-identity.ts';
 
 // ── Per-page artifact selection (proof rebuild) ───────────────────────────────
 
@@ -85,9 +86,8 @@ function paidFulfillmentPatch(order: OrderRecord, patch: Partial<OrderRecord>): 
   };
 }
 
-function proofReleasePatch(order: OrderRecord, persistedState: Partial<OrderRecord>): Partial<OrderRecord> {
+function proofReleasePatch(order: OrderRecord): Partial<OrderRecord> {
   return paidFulfillmentPatch(order, {
-    ...persistedState,
     customerProofReleasedAt: new Date().toISOString(),
     fulfillmentLastError: null,
   });
@@ -95,14 +95,14 @@ function proofReleasePatch(order: OrderRecord, persistedState: Partial<OrderReco
 
 // ── Default implementations ───────────────────────────────────────────────────
 
-async function defaultUploadArtifact(orderId: string, buffer: Buffer, filename: string): Promise<string> {
+export async function defaultUploadArtifact(orderId: string, buffer: Buffer, filename: string): Promise<string> {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   if (token) {
     const blob = await put(withBlobNamespace(`orders/${orderId}/${filename}`), buffer, {
       access: 'public',
       contentType: 'application/pdf',
       addRandomSuffix: false,
-      allowOverwrite: true,
+      allowOverwrite: false,
       token,
     });
     return blob.url;
@@ -111,9 +111,9 @@ async function defaultUploadArtifact(orderId: string, buffer: Buffer, filename: 
   const { mkdir, writeFile } = await import('node:fs/promises');
   const path = await import('node:path');
   const dir = path.join(process.cwd(), '.data', 'artifacts', orderId);
-  await mkdir(dir, { recursive: true });
   const filePath = path.join(dir, filename);
-  await writeFile(filePath, buffer);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, buffer, { flag: 'wx' });
   const base = process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'http://localhost:3000';
   return `${base}/api/order/${orderId}/artifact/${filename}`;
 }
@@ -317,6 +317,8 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
       pageIndex: i,
       storyText: page.story,
       basePrompt: page.imagePrompt,
+      sceneTitle: page.sceneTitle,
+      textLayout: page.textLayout ?? null,
       characterAnchor,
       currentImageUrl: result?.imageUrl ?? null,
       acceptedImageUrl: null,
@@ -355,10 +357,12 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
   const pdfBuffer = await _buildPdf(story, order, allUrls);
 
-  const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);
-  const filename = `${safeSlug}-storybook.pdf`;
-  const pdfUrl = await _upload(order.id, pdfBuffer, filename);
+  const proofVersion = newProofVersion();
+  const pdfUrl = await _upload(order.id, pdfBuffer, proofArtifactPath(proofVersion));
+  const sourceFingerprint = proofRenderSourceFingerprint({ story, order, imageUrls: allUrls });
 
+  const proofApprovalToken = order.proofApprovalToken ?? crypto.randomBytes(24).toString('hex');
+  const reviewUrl = `${_getBaseUrl()}/review/${order.id}?token=${proofApprovalToken}`;
   const proofGeneratedEvent = buildProofGeneratedAuditEvent(order, seededPageArtifacts.length);
   // CRITICAL: include storyMeta explicitly in the final 'complete' patch.
   // The 2026-05-15 Gemini preview proof test showed final persisted
@@ -369,7 +373,15 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     fulfillmentStatus: 'complete',
     status: 'preview_ready',
     storyArtifactUrl: pdfUrl,
+    // Identity of the artifact just published. Without these the review
+    // surface has a URL it cannot verify, and every proof gate fails closed.
+    proofSourceFingerprint: sourceFingerprint,
+    proofVersion,
+    proofReviewedAt: null,
+    proofReviewedVersion: null,
+    proofApprovalToken,
     pageArtifacts: seededPageArtifacts,
+    printTitle: story.title,
     storyMeta,
     reviewStatus: 'in_review',
     fulfillmentAttempts: 0,
@@ -387,24 +399,19 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // whose PDF is already correct. Admin's `retryOrderFulfillment` knows
   // how to recover by resending just the email.
   try {
-    const emailResult = await sendDigitalDeliveryEmail(order, { pdfUrl });
+    const emailResult = await sendDigitalDeliveryEmail(order, { pdfUrl, reviewUrl });
     if (!emailResult.skipped) {
-      await updateFulfillmentState(order.id, proofReleasePatch(order, finalDigitalPatch));
+      await updateFulfillmentState(order.id, proofReleasePatch(order));
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[fulfillment] delivery email failed for ${order.id}: ${message}`);
-    // Preserve artifacts + storyMeta + pageArtifacts explicitly on the
-    // email-failure path. Email failure must never drop persisted proof
-    // state (this was the regression class the original
-    // fulfillment-email-failure tests were written to lock down — extend
-    // it to cover storyMeta here too).
+    // Patch only email/fulfillment diagnostics onto the latest versioned record.
+    // Never replay proof or page fields captured before the email call: customer
+    // review may have committed concurrently while the network request was open.
     await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'delivery_email_failed',
       fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
-      storyArtifactUrl: pdfUrl,
-      pageArtifacts: seededPageArtifacts,
-      storyMeta,
     }));
   }
 }
@@ -464,6 +471,8 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
       pageIndex: i,
       storyText: page.story,
       basePrompt: page.imagePrompt,
+      sceneTitle: page.sceneTitle,
+      textLayout: page.textLayout ?? null,
       characterAnchor,
       currentImageUrl: result?.imageUrl ?? null,
       acceptedImageUrl: null,
@@ -495,9 +504,10 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   const previewBuffer = await _buildPdf(story, order, allUrls);
   const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
 
-  const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);
-  const proofUrl = await _upload(order.id, previewBuffer, `${safeSlug}-proof.pdf`);
-  const interiorUrl = await _upload(order.id, interiorBuffer, `${safeSlug}-interior.pdf`);
+  const proofVersion = newProofVersion();
+  const proofUrl = await _upload(order.id, previewBuffer, proofArtifactPath(proofVersion));
+  const interiorUrl = await _upload(order.id, interiorBuffer, `interiors/${proofVersion}.pdf`);
+  const sourceFingerprint = proofRenderSourceFingerprint({ story, order, imageUrls: allUrls });
 
   const proofApprovalToken = crypto.randomBytes(24).toString('hex');
   const baseUrl = _getBaseUrl();
@@ -518,6 +528,10 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     fulfillmentStatus: 'proof_ready',
     status: 'preview_ready',
     storyArtifactUrl: proofUrl,
+    proofSourceFingerprint: sourceFingerprint,
+    proofVersion,
+    proofReviewedAt: null,
+    proofReviewedVersion: null,
     printInteriorArtifactUrl: interiorUrl,
     printInteriorMd5: md5Hex(interiorBuffer),
     printInteriorPageCount: interiorPageCount,
@@ -543,20 +557,17 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   try {
     const emailResult = await sendProofReadyEmail(order, { reviewUrl, proofUrl });
     if (!emailResult.skipped) {
-      await updateFulfillmentState(order.id, proofReleasePatch(order, finalPrintProofPatch));
+      await updateFulfillmentState(order.id, proofReleasePatch(order));
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[fulfillment] proof-ready email failed for ${order.id}: ${message}`);
-    // Email failure must not drop the proof artifacts or storyMeta —
-    // admin's email-only resend path depends on them being present.
+    // Patch only email/fulfillment diagnostics onto the latest versioned record.
+    // The proof/page tuple may have been invalidated by customer review while
+    // the email request was in flight and must never be replayed here.
     await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'delivery_email_failed',
       fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
-      storyArtifactUrl: proofUrl,
-      printInteriorArtifactUrl: interiorUrl,
-      pageArtifacts: seededPageArtifacts,
-      storyMeta,
     }));
   }
 }
@@ -633,6 +644,131 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
  * Call this after the customer approves the whole book OR (optionally) after
  * any individual regenerate to keep the proof URL fresh.
  */
+/**
+ * Stable fingerprint of the page set a proof PDF was rendered from.
+ *
+ * Derived from `imageUrlForPage` — the SAME helper `pageImageUrlsFromArtifacts`
+ * feeds the renderer — so the fingerprint and the rendered output cannot drift.
+ * Covers everything the PDF actually renders: page order, story text, and the
+ * effective image URL per page. Delimiters are escapes, never raw bytes, so the
+ * source stays plain ASCII while the encoding remains injective.
+ *
+ * Rendering is slow and necessarily happens outside any transaction; this is
+ * what binds a produced artifact to the exact state it came from, so a caller
+ * can refuse to publish a proof whose source moved underneath it.
+ */
+export function proofSourceFingerprint(
+  order: Pick<OrderRecord, 'id' | 'childName' | 'bookFormat' | 'printTitle' | 'pageArtifacts'>,
+  pages: PageArtifact[] = order.pageArtifacts ?? [],
+): string | null {
+  const story = proofStoryFromPageArtifacts(order, pages);
+  if (!story) return null;
+  const pageUrls = pageImageUrlsFromArtifacts(pages);
+  return proofRenderSourceFingerprint({
+    story,
+    order,
+    imageUrls: [pageUrls[0] ?? null, ...pageUrls],
+  });
+}
+
+/**
+ * Fail-closed discriminated union. A successful build ALWAYS carries the URL,
+ * the source fingerprint and the version; there is no shape in which a caller
+ * receives `ok: true` with a missing field, and the producer validates this at
+ * RUNTIME rather than trusting the type checker.
+ */
+export type ProofBuildResult =
+  | { ok: true; proofUrl: string; sourceFingerprint: string; proofVersion: string }
+  | { ok: false; error: string };
+
+/** Runtime validation of a claimed-successful build. Never trust the type. */
+export function isUsableProofBuild(
+  result: ProofBuildResult | null | undefined,
+): result is { ok: true; proofUrl: string; sourceFingerprint: string; proofVersion: string } {
+  if (!result || result.ok !== true) return false;
+  const r = result as { proofUrl?: unknown; sourceFingerprint?: unknown; proofVersion?: unknown };
+  return (
+    typeof r.proofUrl === 'string' && r.proofUrl.length > 0 &&
+    typeof r.sourceFingerprint === 'string' && r.sourceFingerprint.length > 0 &&
+    typeof r.proofVersion === 'string' && r.proofVersion.length > 0
+  );
+}
+
+/** Opaque, collision-resistant revision id for one proof artifact. */
+export function newProofVersion(): string {
+  return `pv_${Date.now().toString(36)}_${crypto.randomBytes(8).toString('hex')}`;
+}
+
+/** Immutable customer-proof path bound one-to-one to a proof revision. */
+export function proofArtifactPath(proofVersion: string): string {
+  return `proofs/${proofVersion}.pdf`;
+}
+
+/**
+ * Render + upload a proof PDF to an IMMUTABLE, version-keyed path and persist
+ * NOTHING.
+ *
+ * Each build lands at `orders/{orderId}/proofs/{proofVersion}.pdf`, so the
+ * persisted `storyArtifactUrl` identifies the exact artifact by itself: a
+ * reload, a reopen or a shared link always resolves to the bytes that were
+ * acknowledged. Nothing overwrites a previously published proof, so no cache
+ * buster or session-local nonce is ever load-bearing.
+ *
+ * Persisting the URL is the caller's responsibility and must go through a
+ * conditional commit that re-checks `sourceFingerprint` against current pages.
+ */
+export async function buildProofArtifactFromPageArtifacts(
+  orderId: string,
+  deps: FulfillmentDeps = {},
+): Promise<ProofBuildResult> {
+  const order = await getOrder(orderId);
+  if (!order) return { ok: false, error: 'order_not_found' };
+  if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
+    return { ok: false, error: 'no_page_artifacts' };
+  }
+
+  const _buildPdf = deps.buildPdf ?? buildPdf;
+  const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
+  const pages = order.pageArtifacts;
+  const proofVersion = newProofVersion();
+
+  const story = proofStoryFromPageArtifacts(order, pages);
+  if (!story) return { ok: false, error: 'page_artifacts_incomplete' };
+
+  const pageUrls = pageImageUrlsFromArtifacts(pages);
+  const allUrls: (string | null)[] = [pageUrls[0] ?? null, ...pageUrls];
+  // Fingerprint the exact production-renderer inputs before the slow render.
+  const sourceFingerprint = proofRenderSourceFingerprint({ story, order, imageUrls: allUrls });
+
+  let proofUrl: string;
+  try {
+    const pdfBuffer = await _buildPdf(story, order, allUrls);
+    // Immutable, version-keyed path. Never reuses a published proof path.
+    proofUrl = await _upload(order.id, pdfBuffer, proofArtifactPath(proofVersion));
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  const candidate = { ok: true, proofUrl, sourceFingerprint, proofVersion } as ProofBuildResult;
+  // Fail closed: an upload that produced no usable URL — or any other way of
+  // ending up without all three identity fields — is NOT a successful build.
+  if (!isUsableProofBuild(candidate)) {
+    return { ok: false, error: 'proof_build_incomplete' };
+  }
+  return candidate;
+}
+
+/**
+ * Rebuild the proof and persist it with a LAST-WRITE-WINS update.
+ *
+ * NOT safe for concurrent callers and NOT used by the customer editable-review
+ * flows, which build via `buildProofArtifactFromPageArtifacts` and publish
+ * through their own conditional, fingerprint-checked commit.
+ *
+ * Fully guarded regardless: it can never persist a URL without the matching
+ * fingerprint and version, so it cannot produce a record that passes a proof
+ * gate without an identifiable artifact.
+ */
 export async function rebuildProofFromPageArtifacts(
   orderId: string,
   deps: FulfillmentDeps = {},
@@ -643,48 +779,19 @@ export async function rebuildProofFromPageArtifacts(
     return { ok: false, error: 'Order has no page artifacts to rebuild from' };
   }
 
-  const _generateStory = deps.generateStory ?? generateStory;
-  const _buildPdf = deps.buildPdf ?? buildPdf;
-  const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
+  const built = await buildProofArtifactFromPageArtifacts(orderId, deps);
+  if (built.ok !== true) return { ok: false, error: built.error };
 
-  // We need a StoryContent shape for the PDF builder. Reconstruct it from artifacts.
-  const story: StoryContent = await (async () => {
-    // Prefer a fresh story regeneration ONLY if we don't have stored text — otherwise
-    // reuse what's persisted to keep deterministic output.
-    const haveAllText = order.pageArtifacts!.every((p) => p.storyText && p.basePrompt);
-    if (haveAllText) {
-      return {
-        title: order.printTitle ?? `${order.childName}'s Hero Story Book`,
-        characterDescription: '',
-        pages: order.pageArtifacts!.map((p) => ({
-          pageNum: p.pageIndex + 1,
-          sceneTitle: '',
-          story: p.storyText,
-          imagePrompt: p.basePrompt,
-        })),
-      };
-    }
-    return _generateStory(order);
-  })();
-
-  const pageUrls = pageImageUrlsFromArtifacts(order.pageArtifacts);
-  const allUrls: (string | null)[] = [pageUrls[0] ?? null, ...pageUrls];
-
-  const pdfBuffer = await _buildPdf(story, order, allUrls);
-  const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);
-  const proofUrl = await _upload(order.id, pdfBuffer, `${safeSlug}-proof.pdf`);
-
-  // Stale-ack invalidation: every successful rebuild produces a NEW PDF the
-  // customer has not yet acknowledged. Clearing proofReviewedAt forces the
-  // approve-whole-book gate to require a fresh ack against the new proof.
-  // approveWholeBook reads proofReviewedAt BEFORE calling this rebuild, so
-  // its in-progress happy path is unaffected — the clear only impacts
-  // subsequent approval attempts.
+  // Stale-ack invalidation: a new PDF has not been acknowledged. The identity
+  // fields move with the URL, so no record can carry a proof without one.
   await updateFulfillmentState(order.id, {
-    storyArtifactUrl: proofUrl,
+    storyArtifactUrl: built.proofUrl,
+    proofSourceFingerprint: built.sourceFingerprint,
+    proofVersion: built.proofVersion,
     proofReviewedAt: null,
+    proofReviewedVersion: null,
   });
-  return { ok: true, proofUrl };
+  return { ok: true, proofUrl: built.proofUrl };
 }
 
 export interface TriggerFulfillmentOptions {

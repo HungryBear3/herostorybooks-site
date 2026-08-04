@@ -5,6 +5,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+
+import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -77,6 +79,15 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_audit_test')
     auditEvents: [],
     ...overrides,
   };
+  // Proof gates are revision-bound: a seeded proof URL without an
+  // identity would (correctly) fail every one of them.
+  if (order.storyArtifactUrl && !order.proofVersion) {
+    order.proofSourceFingerprint = proofSourceFingerprint(order);
+    order.proofVersion = 'pv_test';
+  }
+  if (order.proofReviewedAt && !order.proofReviewedVersion) {
+    order.proofReviewedVersion = order.proofVersion ?? 'pv_test';
+  }
   await persistOrder(order);
   return order;
 }
@@ -158,16 +169,18 @@ test('regeneratePage writes a proof_rebuilt event after auto-rebuild', async () 
       { orderId: 'ord_audit_test', pageIndex: 0, feedback: '' },
       {
         providers: [successProvider],
-        rebuildProof: async () => ({ ok: true, proofUrl: 'https://x/refreshed.pdf' }),
+        buildProof: async (oid: string) => ({ ok: true as const, proofUrl: 'https://x/refreshed.pdf', sourceFingerprint: proofSourceFingerprint((await getOrder(oid))!), proofVersion: `pv_${Math.random().toString(36).slice(2)}` }),
       },
     );
     const after = await getOrder('ord_audit_test');
     const types = eventTypes(after?.auditEvents);
     assert.ok(types.includes('page_regenerated'));
-    assert.ok(types.includes('proof_rebuilt'));
-    const rebuilt = after!.auditEvents!.find((e) => e.type === 'proof_rebuilt');
-    assert.equal((rebuilt!.meta as Record<string, unknown>).success, true);
-    assert.equal((rebuilt!.meta as Record<string, unknown>).triggeredBy, 'page_regenerated');
+    assert.ok(types.includes('proof_published'));
+    // The publish event names the revision it published; a regeneration also
+    // records that the previous proof was invalidated.
+    const published = after!.auditEvents!.find((e) => e.type === 'proof_published');
+    assert.ok((published!.meta as Record<string, unknown>).proofVersion);
+    assert.ok(types.includes('proof_invalidated'));
   } finally { cleanup(dir); }
 });
 
@@ -200,7 +213,7 @@ test('acknowledgeProofReview writes a proof_review_acknowledged event', async ()
   const dir = makeTmp();
   try {
     await seed({ proofReviewedAt: null });
-    const r = await acknowledgeProofReview('ord_audit_test', new Date('2026-04-27T11:00:00Z'));
+    const r = await acknowledgeProofReview('ord_audit_test', { proofVersion: 'pv_test', now: new Date('2026-04-27T11:00:00Z') });
     assert.equal(r.ok, true);
     const after = await getOrder('ord_audit_test');
     const evt = after!.auditEvents!.find((e) => e.type === 'proof_review_acknowledged');
@@ -214,8 +227,8 @@ test('acknowledgeProofReview is idempotent — no duplicate audit events on re-a
   const dir = makeTmp();
   try {
     await seed({ proofReviewedAt: null });
-    await acknowledgeProofReview('ord_audit_test', new Date('2026-04-27T11:00:00Z'));
-    await acknowledgeProofReview('ord_audit_test', new Date('2026-04-27T12:00:00Z'));
+    await acknowledgeProofReview('ord_audit_test', { proofVersion: 'pv_test', now: new Date('2026-04-27T11:00:00Z') });
+    await acknowledgeProofReview('ord_audit_test', { proofVersion: 'pv_test', now: new Date('2026-04-27T12:00:00Z') });
     const after = await getOrder('ord_audit_test');
     const acks = after!.auditEvents!.filter((e) => e.type === 'proof_review_acknowledged');
     assert.equal(acks.length, 1);
@@ -224,24 +237,6 @@ test('acknowledgeProofReview is idempotent — no duplicate audit events on re-a
 
 // ── whole_book_approved (happy path) ────────────────────────────────────────
 
-test('approveWholeBook writes whole_book_approved + proof_rebuilt on success', async () => {
-  const dir = makeTmp();
-  try {
-    await seed({ proofReviewedAt: '2026-04-27T11:00:00Z' });
-    const r = await approveWholeBook('ord_audit_test', {
-      rebuildProof: async () => ({ ok: true, proofUrl: 'https://x/final.pdf' }),
-      approvePrint: async () => ({ ok: true }),
-    });
-    assert.equal(r.ok, true);
-    const after = await getOrder('ord_audit_test');
-    const types = eventTypes(after?.auditEvents);
-    assert.ok(types.includes('proof_rebuilt'));
-    assert.ok(types.includes('whole_book_approved'));
-    const approved = after!.auditEvents!.find((e) => e.type === 'whole_book_approved');
-    assert.equal((approved!.meta as Record<string, unknown>).bookFormat, 'classic');
-    assert.equal((approved!.meta as Record<string, unknown>).proofUrl, 'https://x/final.pdf');
-  } finally { cleanup(dir); }
-});
 
 // ── whole_book_approval_rejected (every gate) ───────────────────────────────
 
@@ -249,9 +244,7 @@ test('approveWholeBook rejected → audit event with reason=already_approved', a
   const dir = makeTmp();
   try {
     await seed({ reviewStatus: 'approved', proofReviewedAt: '2026-04-26T00:00:00Z' });
-    await approveWholeBook('ord_audit_test', {
-      rebuildProof: async () => ({ ok: true, proofUrl: 'x' }),
-    });
+    await approveWholeBook('ord_audit_test');
     const after = await getOrder('ord_audit_test');
     const evt = after!.auditEvents!.find((e) => e.type === 'whole_book_approval_rejected');
     assert.ok(evt);
@@ -269,9 +262,7 @@ test('approveWholeBook rejected → audit event with reason=pages_not_accepted',
         pageFixture(1), // not accepted
       ],
     });
-    await approveWholeBook('ord_audit_test', {
-      rebuildProof: async () => ({ ok: true, proofUrl: 'x' }),
-    });
+    await approveWholeBook('ord_audit_test');
     const after = await getOrder('ord_audit_test');
     const evt = after!.auditEvents!.find((e) => e.type === 'whole_book_approval_rejected');
     assert.ok(evt);
@@ -303,18 +294,6 @@ test('approveWholeBook rejected → audit event with reason=proof_ack_missing', 
   } finally { cleanup(dir); }
 });
 
-test('approveWholeBook rejected → audit event with reason=proof_rebuild_failed', async () => {
-  const dir = makeTmp();
-  try {
-    await seed({ proofReviewedAt: '2026-04-27T11:00:00Z' });
-    await approveWholeBook('ord_audit_test', {
-      rebuildProof: async () => ({ ok: false, error: 'pdf builder threw' }),
-    });
-    const after = await getOrder('ord_audit_test');
-    const evt = after!.auditEvents!.find((e) => e.type === 'whole_book_approval_rejected');
-    assert.equal(evt!.reason, 'proof_rebuild_failed');
-  } finally { cleanup(dir); }
-});
 
 // ── Chronological accumulation ──────────────────────────────────────────────
 
@@ -325,7 +304,7 @@ test('audit trail accumulates events in append order', async () => {
     await seed({ auditEvents: [] });
     await appendAuditEvent('ord_audit_test', { type: 'proof_generated' });
     await appendAuditEvent('ord_audit_test', { type: 'page_regenerated', pageIndex: 0 });
-    await appendAuditEvent('ord_audit_test', { type: 'proof_rebuilt' });
+    await appendAuditEvent('ord_audit_test', { type: 'proof_published' });
     await appendAuditEvent('ord_audit_test', { type: 'page_accepted', pageIndex: 0 });
     await appendAuditEvent('ord_audit_test', { type: 'proof_review_acknowledged' });
     await appendAuditEvent('ord_audit_test', { type: 'whole_book_approved' });
@@ -333,7 +312,7 @@ test('audit trail accumulates events in append order', async () => {
     assert.deepEqual(eventTypes(after?.auditEvents), [
       'proof_generated',
       'page_regenerated',
-      'proof_rebuilt',
+      'proof_published',
       'page_accepted',
       'proof_review_acknowledged',
       'whole_book_approved',
@@ -350,27 +329,52 @@ test('end-to-end: full review→approve sequence is captured in chronological or
       pageArtifacts: [pageFixture(0), pageFixture(1)],
       proofReviewedAt: null,
     });
+    // A regeneration invalidates the published proof, so the sequence must
+    // publish a NEW revision and acknowledge THAT one before approving.
     await regeneratePage(
       { orderId: 'ord_audit_test', pageIndex: 0, feedback: 'fix' },
-      { providers: [successProvider], skipProofRebuild: true },
+      {
+        providers: [successProvider],
+        buildProof: async (oid: string) => ({
+          ok: true as const,
+          proofUrl: 'https://example.com/re-proof.pdf',
+          sourceFingerprint: proofSourceFingerprint((await getOrder(oid))!),
+          proofVersion: 'pv_second',
+        }),
+      },
     );
     await acceptPage({ orderId: 'ord_audit_test', pageIndex: 0 });
     await acceptPage({ orderId: 'ord_audit_test', pageIndex: 1 });
-    await acknowledgeProofReview('ord_audit_test');
-    const r = await approveWholeBook('ord_audit_test', {
-      rebuildProof: async () => ({ ok: true, proofUrl: 'https://x/final.pdf' }),
-      approvePrint: async () => ({ ok: true }),
-    });
+    const live = await getOrder('ord_audit_test');
+    await acknowledgeProofReview('ord_audit_test', { proofVersion: live!.proofVersion! });
+    const r = await approveWholeBook('ord_audit_test');
     assert.equal(r.ok, true);
     const after = await getOrder('ord_audit_test');
     assert.deepEqual(eventTypes(after?.auditEvents), [
       'page_regenerated',
+      'proof_invalidated',
+      'proof_published',
       'page_accepted',
       'page_accepted',
       'proof_review_acknowledged',
-      'proof_rebuilt',
+      // NOTE: no publish event here — approval neither rebuilds nor publishes.
       'whole_book_approved',
     ]);
     assert.equal(after?.reviewStatus, 'approved');
+  } finally { cleanup(dir); }
+});
+
+test('approveWholeBook writes whole_book_approved ONLY — it publishes no proof', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({ proofReviewedAt: '2026-04-27T09:00:00Z' });
+    const r = await approveWholeBook('ord_audit_test');
+    assert.equal(r.ok, true, r.error);
+    const after = await getOrder('ord_audit_test');
+    const types = (after?.auditEvents ?? []).map((e) => e.type);
+    assert.ok(types.includes('whole_book_approved'));
+    // Customer approval and print release are separate gates: approval neither
+    // rebuilds nor publishes a proof, so no publish event may appear.
+    assert.equal(types.includes('proof_published'), false);
   } finally { cleanup(dir); }
 });
