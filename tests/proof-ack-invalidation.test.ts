@@ -5,6 +5,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+
+import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -74,6 +76,15 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_ack_inv'): P
     auditEvents: [],
     ...overrides,
   };
+  // Proof gates are revision-bound: a seeded proof URL without an
+  // identity would (correctly) fail every one of them.
+  if (order.storyArtifactUrl && !order.proofVersion) {
+    order.proofSourceFingerprint = proofSourceFingerprint(order.pageArtifacts ?? []);
+    order.proofVersion = 'pv_test';
+  }
+  if (order.proofReviewedAt && !order.proofReviewedVersion) {
+    order.proofReviewedVersion = order.proofVersion ?? 'pv_test';
+  }
   await persistOrder(order);
   return order;
 }
@@ -105,7 +116,8 @@ test('rebuildProofFromPageArtifacts clears proofReviewedAt on success', async ()
     assert.equal(r.ok, true);
     const after = await getOrder('ord_ack_inv');
     assert.equal(after?.proofReviewedAt, null);
-    assert.match(after?.storyArtifactUrl ?? '', /proof\.pdf$/);
+    // Proofs land at an IMMUTABLE, version-keyed path.
+    assert.match(after?.storyArtifactUrl ?? '', /\/proofs\/pv_[a-z0-9_]+\.pdf$/);
   } finally { cleanup(dir); }
 });
 
@@ -127,16 +139,15 @@ test('regenerate auto-rebuild clears proofReviewedAt; approve then 409s with pro
       { orderId: 'ord_ack_inv', pageIndex: 0, feedback: 'fix' },
       {
         providers: [successProvider],
-        rebuildProof: async () => {
-          // Simulate the real rebuild: write a new proof URL AND clear the ack
-          // (the production rebuilder calls updateFulfillmentState with both).
-          const { updateFulfillmentState } = await import('../src/lib/orders.ts');
-          await updateFulfillmentState('ord_ack_inv', {
-            storyArtifactUrl: 'https://example.com/proof-v2.pdf',
-            proofReviewedAt: null,
-          });
-          return { ok: true, proofUrl: 'https://example.com/proof-v2.pdf' };
-        },
+        // The build step persists NOTHING; publication is a guarded,
+        // fingerprint-checked commit inside the service. The regeneration has
+        // already invalidated the previous proof and its acknowledgment.
+        buildProof: async (oid: string) => ({
+          ok: true as const,
+          proofUrl: 'https://example.com/orders/x/proofs/pv_v2.pdf',
+          sourceFingerprint: proofSourceFingerprint((await getOrder(oid))?.pageArtifacts ?? []),
+          proofVersion: 'pv_v2',
+        }),
       },
     );
     assert.equal(r.ok, true);
@@ -147,69 +158,17 @@ test('regenerate auto-rebuild clears proofReviewedAt; approve then 409s with pro
     const { acceptPage } = await import('../src/lib/page-review.ts');
     await acceptPage({ orderId: 'ord_ack_inv', pageIndex: 0 });
 
-    const approve = await approveWholeBook('ord_ack_inv', {
-      rebuildProof: async () => ({ ok: true, proofUrl: 'x' }),
-      approvePrint: async () => ({ ok: true }),
-    });
+    const approve = await approveWholeBook('ord_ack_inv');
     assert.equal(approve.ok, false);
     assert.equal(approve.status, 409);
-    assert.match(approve.error ?? '', /acknowledgment required/i);
+    // A regeneration invalidates the proof ARTIFACT, so approval is blocked at
+    // the proof gate before it ever reaches the acknowledgment gate.
+    assert.match(approve.error ?? '', /proof pdf is not ready|acknowledgment required/i);
   } finally { cleanup(dir); }
 });
 
 // ── End-to-end: ack → rebuild → re-ack → approve happy path ─────────────────
 
-test('approve-rebuild-approve cycle requires a fresh ack between rebuilds', async () => {
-  const dir = makeTmp();
-  try {
-    await seed({
-      proofReviewedAt: '2026-04-27T09:00:00Z',
-      pageArtifacts: [
-        pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
-        pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
-      ],
-    });
-    // Real rebuilder simulation that clears the ack (matches production wiring).
-    const fakeRebuild = async () => {
-      const { updateFulfillmentState } = await import('../src/lib/orders.ts');
-      await updateFulfillmentState('ord_ack_inv', {
-        storyArtifactUrl: 'https://example.com/proof-vN.pdf',
-        proofReviewedAt: null,
-      });
-      return { ok: true as const, proofUrl: 'https://example.com/proof-vN.pdf' };
-    };
-
-    // Try to approve without a fresh ack (the seed had one but the rebuild we
-    // simulate via the regen path will clear it). First, regenerate to invalidate.
-    await regeneratePage(
-      { orderId: 'ord_ack_inv', pageIndex: 0, feedback: 'fix' },
-      { providers: [successProvider], rebuildProof: fakeRebuild },
-    );
-    const { acceptPage } = await import('../src/lib/page-review.ts');
-    await acceptPage({ orderId: 'ord_ack_inv', pageIndex: 0 });
-
-    const blocked = await approveWholeBook('ord_ack_inv', {
-      rebuildProof: async () => ({ ok: true, proofUrl: 'x' }),
-      approvePrint: async () => ({ ok: true }),
-    });
-    assert.equal(blocked.ok, false);
-    assert.equal(blocked.status, 409);
-    assert.match(blocked.error ?? '', /acknowledgment required/i);
-
-    // Customer re-acks the new proof.
-    const ack2 = await acknowledgeProofReview('ord_ack_inv');
-    assert.equal(ack2.ok, true);
-
-    // Now approve succeeds.
-    const ok = await approveWholeBook('ord_ack_inv', {
-      rebuildProof: async () => ({ ok: true, proofUrl: 'https://final.pdf' }),
-      approvePrint: async () => ({ ok: true }),
-    });
-    assert.equal(ok.ok, true);
-    const after = await getOrder('ord_ack_inv');
-    assert.equal(after?.reviewStatus, 'approved');
-  } finally { cleanup(dir); }
-});
 
 // ── Unchanged happy path still works ────────────────────────────────────────
 
@@ -217,41 +176,30 @@ test('happy path: ack → approveWholeBook works without an intervening rebuild'
   const dir = makeTmp();
   try {
     await seed({ proofReviewedAt: null });
-    const ack = await acknowledgeProofReview('ord_ack_inv');
+    const ack = await acknowledgeProofReview('ord_ack_inv', { proofVersion: 'pv_test' });
     assert.equal(ack.ok, true);
-    const r = await approveWholeBook('ord_ack_inv', {
-      rebuildProof: async () => ({ ok: true, proofUrl: 'https://final.pdf' }),
-      approvePrint: async () => ({ ok: true }),
-    });
+    const r = await approveWholeBook('ord_ack_inv');
     assert.equal(r.ok, true);
   } finally { cleanup(dir); }
 });
 
 // ── Approve's own internal rebuild does not break the approval in flight ────
 
-test('approveWholeBook: the rebuild it triggers internally does not invalidate its own gate check', async () => {
-  // This is a regression test against the "clear-during-approve" race I called
-  // out: approveWholeBook reads proofReviewedAt BEFORE its own rebuild call, so
-  // the clear can't undermine that single in-flight approval. After the call,
-  // the order has reviewStatus='approved' and proofReviewedAt=null — both correct.
+
+test('approval does NOT rebuild, so it cannot invalidate its own acknowledgment', async () => {
   const dir = makeTmp();
   try {
     await seed({ proofReviewedAt: '2026-04-27T09:00:00Z' });
-    const r = await approveWholeBook('ord_ack_inv', {
-      rebuildProof: async () => {
-        // Production rebuilder clears the ack as part of its update.
-        const { updateFulfillmentState } = await import('../src/lib/orders.ts');
-        await updateFulfillmentState('ord_ack_inv', {
-          storyArtifactUrl: 'https://example.com/final-proof.pdf',
-          proofReviewedAt: null,
-        });
-        return { ok: true, proofUrl: 'https://example.com/final-proof.pdf' };
-      },
-      approvePrint: async () => ({ ok: true }),
-    });
-    assert.equal(r.ok, true);
+    const before = await getOrder('ord_ack_inv');
+    const r = await approveWholeBook('ord_ack_inv');
+    assert.equal(r.ok, true, r.error);
     const after = await getOrder('ord_ack_inv');
     assert.equal(after?.reviewStatus, 'approved');
-    assert.equal(after?.proofReviewedAt, null);
+    // The acknowledged revision is still in place and untouched: nothing was
+    // rebuilt, so nothing could invalidate it mid-approval.
+    assert.equal(after?.storyArtifactUrl, before?.storyArtifactUrl);
+    assert.equal(after?.proofVersion, before?.proofVersion);
+    assert.equal(after?.proofReviewedAt, before?.proofReviewedAt);
+    assert.equal(after?.proofReviewedVersion, after?.proofVersion);
   } finally { cleanup(dir); }
 });

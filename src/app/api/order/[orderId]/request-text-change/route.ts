@@ -1,15 +1,10 @@
 import { NextResponse } from 'next/server';
 
-import { approveWholeBook, customerReviewActor } from '@/lib/page-review';
+import { saveTextChangeRequest } from '@/lib/page-review';
 import { authorizeCustomerReviewWrite } from '@/lib/review-route-auth';
 
 export const dynamic = 'force-dynamic';
 
-/**
- * Customer approval ends at REVIEW approval. This route never releases to
- * print, emails anyone, or calls any external provider — releasing to print is
- * a separate, separately authorized operator gate.
- */
 export async function POST(
   request: Request,
   context: { params: Promise<{ orderId: string }> },
@@ -19,15 +14,20 @@ export async function POST(
   if (!auth.ok) {
     return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status });
   }
-  const result = await approveWholeBook(orderId, {
-    actor: customerReviewActor(auth.reviewToken),
+  const body = await request.json().catch(() => ({}));
+  const pageIndex = Number(body?.pageIndex);
+  const note = typeof body?.note === 'string' ? body.note : '';
+
+  // Forward the presented token so the service revalidates it against the order
+  // as read inside its guarded transaction.
+  const result = await saveTextChangeRequest({
+    orderId,
+    pageIndex,
+    note,
+    reviewToken: auth.reviewToken,
   });
   if (!result.ok) {
     return NextResponse.json({ ok: false, error: result.error }, { status: result.status });
   }
-  return NextResponse.json({
-    ok: true,
-    proofUrl: result.proofUrl ?? null,
-    proofVersion: result.proofVersion ?? null,
-  });
+  return NextResponse.json({ ok: true, page: result.page });
 }

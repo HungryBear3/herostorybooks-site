@@ -79,7 +79,13 @@ test('rebuildProofFromPageArtifacts: passes accepted/current URLs to PDF builder
     ]);
 
     const after = await getOrder('ord_rebuild');
-    assert.match(after!.storyArtifactUrl ?? '', /-proof\.pdf$/);
+    // Proofs now land at an IMMUTABLE, version-keyed path so a published
+    // artifact is never overwritten and the URL identifies it exactly.
+    assert.match(after!.storyArtifactUrl ?? '', /\/proofs\/pv_[a-z0-9_]+\.pdf$/);
+    // …and the identity fields move with it, so no record can carry a
+    // proof URL that no gate can verify.
+    assert.ok(after!.proofSourceFingerprint);
+    assert.ok(after!.proofVersion);
   } finally {
     cleanup(dir);
   }

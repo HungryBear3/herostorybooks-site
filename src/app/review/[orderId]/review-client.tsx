@@ -15,10 +15,37 @@ interface Snapshot {
   childName: string;
   reviewStatus: 'not_started' | 'in_review' | 'customer_changes_requested' | 'approved';
   pageArtifacts: PageArtifact[];
+  /**
+   * The IMMUTABLE persisted proof URL, or null when no usable proof exists.
+   * The server nulls this whenever the published proof no longer matches the
+   * current pages, so it is authoritative: null means nothing may be
+   * acknowledged or approved. Nothing here is session-local — a reload
+   * re-derives the identical state from the server.
+   */
   storyArtifactUrl: string | null;
+  /** Revision that must be echoed back when acknowledging. */
+  proofVersion: string | null;
+  /** Revision already acknowledged, if any. */
+  proofReviewedVersion: string | null;
+  proofReviewedAt: string | null;
+  proofAvailable: boolean;
+  proofFresh: boolean;
   isPrint: boolean;
   bookFormat: 'digital' | 'classic' | 'premium';
-  proofReviewedAt: string | null;
+}
+
+/**
+ * The capability token lives only in the tokenized review URL and is forwarded
+ * on every customer mutation. It is never rendered into page content. Every
+ * mutation route rejects a bare order id server-side, so a missing token fails
+ * closed rather than silently acting.
+ */
+function tokenQuery(): string {
+  const token =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('token')
+      : null;
+  return token ? `?token=${encodeURIComponent(token)}` : '';
 }
 
 export default function ReviewClient({ initial }: { initial: Snapshot }) {
@@ -28,7 +55,11 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [busy, setBusy] = useState<'idle' | 'regenerating' | 'accepting' | 'approving' | 'acknowledging'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [proofAck, setProofAck] = useState<boolean>(Boolean(initial.proofReviewedAt));
+  const [proofAck, setProofAck] = useState<boolean>(
+    Boolean(initial.proofReviewedAt) &&
+      initial.proofReviewedVersion != null &&
+      initial.proofReviewedVersion === initial.proofVersion,
+  );
   const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
 
   const selected = snapshot.pageArtifacts[selectedIdx];
@@ -43,7 +74,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
     setError(null);
     setNotice(null);
     try {
-      const res = await fetch(`/api/order/${snapshot.orderId}/regenerate-page`, {
+      const res = await fetch(`/api/order/${snapshot.orderId}/regenerate-page${tokenQuery()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pageIndex: selected.pageIndex, feedback }),
@@ -78,7 +109,7 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
     setBusy('accepting');
     setError(null);
     try {
-      const res = await fetch(`/api/order/${snapshot.orderId}/accept-page`, {
+      const res = await fetch(`/api/order/${snapshot.orderId}/accept-page${tokenQuery()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pageIndex: selected.pageIndex }),
@@ -340,13 +371,27 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
                   const next = e.target.checked;
                   setProofAck(next);
                   if (!next) return; // unchecking is a client-only revoke for this session
-                  if (snapshot.proofReviewedAt) return; // already persisted
+                  // Already persisted for THIS revision — nothing to send.
+                  if (
+                    snapshot.proofReviewedAt &&
+                    snapshot.proofReviewedVersion === snapshot.proofVersion
+                  ) return;
+                  if (!snapshot.proofVersion) {
+                    setProofAck(false);
+                    setError('The proof is being rebuilt. Refresh in a moment to review the latest version.');
+                    return;
+                  }
                   setBusy('acknowledging');
                   setError(null);
                   try {
                     const res = await fetch(
-                      `/api/order/${snapshot.orderId}/acknowledge-proof`,
-                      { method: 'POST' },
+                      `/api/order/${snapshot.orderId}/acknowledge-proof${tokenQuery()}`,
+                      {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        // Bind the acknowledgment to the exact revision shown.
+                        body: JSON.stringify({ proofVersion: snapshot.proofVersion }),
+                      },
                     );
                     const data = await res.json();
                     if (!res.ok || !data.ok) {
@@ -354,7 +399,11 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
                       setError(data?.error ?? `Could not save acknowledgment (${res.status})`);
                       return;
                     }
-                    setSnapshot((s) => ({ ...s, proofReviewedAt: data.proofReviewedAt }));
+                    setSnapshot((s) => ({
+                      ...s,
+                      proofReviewedAt: data.proofReviewedAt,
+                      proofReviewedVersion: data.proofReviewedVersion ?? s.proofVersion,
+                    }));
                   } catch (err) {
                     setProofAck(false);
                     setError(err instanceof Error ? err.message : 'Network error');
@@ -447,7 +496,7 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
                   setError(null);
                   setNotice(null);
                   try {
-                    const res = await fetch(`/api/order/${snapshot.orderId}/approve-whole-book`, {
+                    const res = await fetch(`/api/order/${snapshot.orderId}/approve-whole-book${tokenQuery()}`, {
                       method: 'POST',
                     });
                     const data = await res.json();

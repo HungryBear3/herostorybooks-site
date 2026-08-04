@@ -14,6 +14,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+
+import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -148,6 +150,13 @@ async function seedOrder(
     pageArtifacts: [pageFixture(0), pageFixture(1)],
     reviewStatus: 'in_review',
   };
+  // A proof is advertised only when it is completely identified AND still
+  // matches the current pages; seed that identity so the snapshot tests
+  // exercise the advertised path rather than the fail-closed one.
+  if (order.storyArtifactUrl) {
+    order.proofSourceFingerprint = proofSourceFingerprint(order.pageArtifacts ?? []);
+    order.proofVersion = 'pv_test';
+  }
   await persistOrder(order);
   return order;
 }

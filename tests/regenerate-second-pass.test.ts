@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+
+import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -57,6 +59,15 @@ async function seedOrder(
     reviewStatus: 'in_review',
     ...overrides,
   };
+  // Proof gates are revision-bound: a seeded proof URL without an
+  // identity would (correctly) fail every one of them.
+  if (order.storyArtifactUrl && !order.proofVersion) {
+    order.proofSourceFingerprint = proofSourceFingerprint(order.pageArtifacts ?? []);
+    order.proofVersion = 'pv_test';
+  }
+  if (order.proofReviewedAt && !order.proofReviewedVersion) {
+    order.proofReviewedVersion = order.proofVersion ?? 'pv_test';
+  }
   await persistOrder(order);
   return order;
 }
@@ -86,9 +97,14 @@ test('regeneratePage: auto-rebuilds proof on success and reports proofRefreshed:
       { orderId: 'ord_secondpass_test', pageIndex: 1, feedback: 'fix it' },
       {
         providers: [successProvider],
-        rebuildProof: async () => {
+        buildProof: async (oid: string) => {
           rebuildCalled++;
-          return { ok: true, proofUrl: 'https://example.com/refreshed.pdf' };
+          return {
+            ok: true as const,
+            proofUrl: 'https://example.com/refreshed.pdf',
+            sourceFingerprint: proofSourceFingerprint((await getOrder(oid))?.pageArtifacts ?? []),
+            proofVersion: 'pv_refreshed',
+          };
         },
       },
     );
@@ -108,7 +124,7 @@ test('regeneratePage: surfaces proof rebuild failure but still returns ok:true o
       { orderId: 'ord_secondpass_test', pageIndex: 1, feedback: 'fix it' },
       {
         providers: [successProvider],
-        rebuildProof: async () => ({ ok: false, error: 'blob unreachable' }),
+        buildProof: async () => ({ ok: false as const, error: 'blob unreachable' }),
       },
     );
     assert.equal(result.ok, true);
@@ -134,9 +150,9 @@ test('regeneratePage: does NOT trigger proof rebuild when image generation faile
       { orderId: 'ord_secondpass_test', pageIndex: 0, feedback: '' },
       {
         providers: [allFail],
-        rebuildProof: async () => {
+        buildProof: async () => {
           rebuildCalled++;
-          return { ok: true, proofUrl: 'should not be called' };
+          return { ok: false as const, error: 'should not be called' };
         },
       },
     );
@@ -248,109 +264,39 @@ test('approveWholeBook: rejects when not all pages accepted', async () => {
   }
 });
 
-test('approveWholeBook: digital order → rebuilds proof, sets reviewStatus=approved, no print handoff', async () => {
-  const dir = makeTmp();
-  try {
-    await seedOrder({
-      bookFormat: 'digital',
-      storyArtifactUrl: 'https://example.com/proof.pdf',
-      proofReviewedAt: '2026-04-27T10:00:00Z',
-      pageArtifacts: [
-        pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
-        pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
-      ],
-    });
-    let printApprovalCalled = false;
-    const r = await approveWholeBook('ord_secondpass_test', {
-      rebuildProof: async () => ({ ok: true, proofUrl: 'https://example.com/final.pdf' }),
-      approvePrint: async () => {
-        printApprovalCalled = true;
-        return { ok: true };
-      },
-    });
-    assert.equal(r.ok, true);
-    assert.equal(r.proofUrl, 'https://example.com/final.pdf');
-    assert.equal(r.printApproved, false);
-    assert.equal(printApprovalCalled, false);
-    const after = await getOrder('ord_secondpass_test');
-    assert.equal(after?.reviewStatus, 'approved');
-  } finally {
-    cleanup(dir);
-  }
-});
 
-test('approveWholeBook: print order with proofApprovalToken hands off to approvePrint', async () => {
+
+
+
+// ── Customer approval is inert: review approval only ───────────────────────
+
+test('approveWholeBook on a PRINT order performs no print handoff and no rebuild', async () => {
   const dir = makeTmp();
   try {
     await seedOrder({
       bookFormat: 'classic',
-      proofApprovalToken: 'tok_abc',
-      fulfillmentStatus: 'proof_ready',
-      storyArtifactUrl: 'https://example.com/proof.pdf',
-      proofReviewedAt: '2026-04-27T10:00:00Z',
+      storyArtifactUrl: 'https://example.com/orders/x/proofs/pv_test.pdf',
+      proofReviewedAt: '2026-04-27T09:00:00Z',
       pageArtifacts: [
         pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
         pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
       ],
     });
-    let receivedToken: string | null = null;
-    const r = await approveWholeBook('ord_secondpass_test', {
-      rebuildProof: async () => ({ ok: true, proofUrl: 'https://example.com/proof.pdf' }),
-      approvePrint: async (_orderId, token) => {
-        receivedToken = token;
-        return { ok: true };
-      },
-    });
-    assert.equal(r.ok, true);
-    assert.equal(r.printApproved, true);
-    assert.equal(receivedToken, 'tok_abc');
-  } finally {
-    cleanup(dir);
-  }
-});
+    const before = await getOrder('ord_secondpass_test');
 
-test('approveWholeBook: rebuild failure → 502', async () => {
-  const dir = makeTmp();
-  try {
-    await seedOrder({
-      storyArtifactUrl: 'https://example.com/proof.pdf',
-      proofReviewedAt: '2026-04-27T10:00:00Z',
-      pageArtifacts: [
-        pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
-      ],
-    });
-    const r = await approveWholeBook('ord_secondpass_test', {
-      rebuildProof: async () => ({ ok: false, error: 'pdf builder threw' }),
-    });
-    assert.equal(r.ok, false);
-    assert.equal(r.status, 502);
-    assert.match(r.error ?? '', /pdf builder threw/);
-  } finally {
-    cleanup(dir);
-  }
-});
+    const r = await approveWholeBook('ord_secondpass_test');
+    assert.equal(r.ok, true, r.error);
 
-test('approveWholeBook: print handoff failure → ok:true with warning + printApproved:false', async () => {
-  const dir = makeTmp();
-  try {
-    await seedOrder({
-      bookFormat: 'premium',
-      proofApprovalToken: 'tok_xyz',
-      fulfillmentStatus: 'proof_ready',
-      storyArtifactUrl: 'https://x/proof.pdf',
-      proofReviewedAt: '2026-04-27T10:00:00Z',
-      pageArtifacts: [
-        pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
-      ],
-    });
-    const r = await approveWholeBook('ord_secondpass_test', {
-      rebuildProof: async () => ({ ok: true, proofUrl: 'https://x/proof.pdf' }),
-      approvePrint: async () => ({ ok: false, error: 'token expired' }),
-    });
-    assert.equal(r.ok, true);
-    assert.equal(r.printApproved, false);
-    assert.match(r.error ?? '', /token expired/);
-  } finally {
-    cleanup(dir);
-  }
+    const after = await getOrder('ord_secondpass_test');
+    assert.equal(after?.reviewStatus, 'approved');
+    // Print release is a SEPARATE, separately authorized operator gate.
+    assert.equal(after?.printJobId ?? null, null, 'no print job was created');
+    assert.equal(after?.printJobStatus ?? null, null, 'no print job status');
+    assert.equal(after?.proofApprovedAt ?? null, null, 'no print proof approval');
+    // Nothing was rebuilt: the acknowledged artifact is byte-identical.
+    assert.equal(after?.storyArtifactUrl, before?.storyArtifactUrl);
+    assert.equal(after?.proofVersion, before?.proofVersion);
+    // …and the result never claims a print handoff happened.
+    assert.equal((r as { printApproved?: unknown }).printApproved, undefined);
+  } finally { cleanup(dir); }
 });
