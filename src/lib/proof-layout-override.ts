@@ -141,6 +141,36 @@ export function isProofTextColor(v: unknown): v is ProofTextColor {
   return v === 'dark_brown' || v === 'cream' || v === 'charcoal';
 }
 
+/**
+ * Shared runtime guard for UNTRUSTED persisted override values. Validity is
+ * decided on the COMPLETE shape BEFORE canonicalization supplies any default,
+ * so a malformed / legacy `{}` (or null/array/wrong-type/non-finite) can never
+ * become an active card just because canonicalization would clamp a missing
+ * field to a bound. Must gate every trust boundary that consumes a persisted
+ * `proofCardOverride`: the render path, the fingerprint projection, and the
+ * PageArtifact→StoryContent projection — so render and identity always agree.
+ *
+ * A malformed override is treated as ABSENT (bottom band, no fingerprint
+ * change). A structurally valid override MAY omit the optional `textColor`
+ * (it then resolves to the approved legacy default).
+ */
+export function isValidProofCardOverride(value: unknown): value is ProofCardOverride {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const o = value as Record<string, unknown>;
+  const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  if (!finite(o.x) || !finite(o.y) || !finite(o.width) || !finite(o.height)) return false;
+  if (!finite(o.opacity) || !finite(o.fontScale)) return false;
+  // textColor is optional: absent/null → legacy default; if present it must be
+  // an approved enum value (never arbitrary color input).
+  if (o.textColor != null && !isProofTextColor(o.textColor)) return false;
+  const nonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+  if (!nonEmptyString(o.authoredAgainstProofVersion)) return false;
+  if (!nonEmptyString(o.authoredAgainstFingerprint)) return false;
+  if (!nonEmptyString(o.appliedAt)) return false;
+  if (!nonEmptyString(o.appliedBy)) return false;
+  return true;
+}
+
 /** Resolve a color to fixed hex. Absent/null (no explicit choice) === the exact
  *  legacy default (#1F3A5F); the three enum members resolve to their fixed
  *  approved values. There is no path by which absence renders as `dark_brown`. */

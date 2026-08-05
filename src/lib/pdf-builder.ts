@@ -14,7 +14,7 @@ import type {
   TextPanelStyle,
 } from './fulfillment-types.ts';
 import { isKnownLayoutVersion, isModernLayout, isValidPageTextLayout } from './fulfillment-types.ts';
-import { canonicalizeProofCardGeometry, resolveProofTextColor } from './proof-layout-override.ts';
+import { canonicalizeProofCardGeometry, isValidProofCardOverride, resolveProofTextColor } from './proof-layout-override.ts';
 
 /**
  * Thrown when a book explicitly marked `modern_full_bleed` reaches the story
@@ -31,6 +31,25 @@ export class ModernLayoutMetadataError extends Error {
         ` — refusing to render through the legacy bottom band`,
     );
     this.name = 'ModernLayoutMetadataError';
+    this.pageIndex = pageIndex;
+  }
+}
+
+/**
+ * Thrown when a proof over-art card's text cannot fit its bounded card at the
+ * approved minimum font — the build fails closed rather than ellipsis-clipping
+ * customer prose. Deterministic and privacy-safe: it carries only the page
+ * index (never story text, child name, order id, email, or any PII).
+ */
+export class ProofCardOverflowError extends Error {
+  readonly pageIndex: number | undefined;
+  constructor(pageIndex?: number) {
+    super(
+      `Proof over-art card text overflows its bounded card` +
+        (pageIndex != null ? ` (page index ${pageIndex})` : '') +
+        ` — refusing to clip`,
+    );
+    this.name = 'ProofCardOverflowError';
     this.pageIndex = pageIndex;
   }
 }
@@ -831,6 +850,7 @@ function drawProofCardAt(
   doc: InstanceType<typeof PDFDocument>,
   text: string,
   geometry: ProofCardGeometryLike & { opacity: number; textColor?: ProofTextColor },
+  pageIndex?: number,
 ): void {
   // Canonicalize at the render boundary so drawn pixels equal fingerprinted values.
   const g = canonicalizeProofCardGeometry(geometry);
@@ -839,6 +859,13 @@ function drawProofCardAt(
   const color = resolveProofTextColor(geometry.textColor);
   const layout = proofCardLayout(g);
   const fit = computeProofCardText(g, text);
+
+  // Fail closed: an over-art card whose prose does not fit the bounded card at
+  // the approved minimum font must NOT be drawn (drawCaptionText would clip via
+  // ellipsis). Throw so buildPdf rejects instead of returning a clipped proof.
+  if (fit.overflowed) {
+    throw new ProofCardOverflowError(pageIndex);
+  }
 
   doc.save();
   doc
@@ -866,8 +893,9 @@ function drawProofOverrideCard(
   doc: InstanceType<typeof PDFDocument>,
   storyText: string,
   override: ProofCardOverride,
+  pageIndex?: number,
 ): void {
-  drawProofCardAt(doc, storyText, override);
+  drawProofCardAt(doc, storyText, override, pageIndex);
 }
 
 function drawStoryPage(
@@ -908,10 +936,12 @@ function drawStoryPage(
       });
   }
 
-  if (cardOverride) {
+  if (isValidProofCardOverride(cardOverride)) {
     // Sanctioned over-art exception: a customer-authored positioned card
-    // supersedes the bottom band for THIS page's text. Proof-only.
-    drawProofOverrideCard(doc, storyText, cardOverride);
+    // supersedes the bottom band for THIS page's text. Proof-only. A malformed
+    // / legacy override fails this guard and falls through to the bottom band,
+    // exactly as the fingerprint projection treats it (render == identity).
+    drawProofOverrideCard(doc, storyText, cardOverride, pageIndex);
   } else {
     // Default bottom-band render — byte-identical to prior behavior. Body-only:
     // the proof draw site does NOT print sceneTitle, so the fitter budgets no

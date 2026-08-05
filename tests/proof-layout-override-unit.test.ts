@@ -21,7 +21,9 @@ import {
   proofCardGeometryForFingerprint,
   proofTextColorForFingerprint,
   contrastRatio,
+  isValidProofCardOverride,
 } from '../src/lib/proof-layout-override.ts';
+import type { ProofCardOverride } from '../src/lib/fulfillment-types.ts';
 
 const MID = { x: 0.2, y: 0.2, width: 0.5, height: 0.2, opacity: 0.7, fontScale: 1 };
 
@@ -119,4 +121,47 @@ test('the contrast gate FAILS CLOSED for a too-transparent (illegible) card at a
 test('contrastRatio is symmetric and bounded 1..21', () => {
   assert.ok(Math.abs(contrastRatio('#000000', '#FFFFFF') - 21) < 0.01);
   assert.equal(contrastRatio('#123456', '#123456'), 1);
+});
+
+// ── isValidProofCardOverride: the shared untrusted-input guard ────────────────
+
+function validOverride(patch: Partial<ProofCardOverride> = {}): ProofCardOverride {
+  return {
+    x: 0.1, y: 0.12, width: 0.6, height: 0.22, opacity: 0.9, fontScale: 1,
+    textColor: 'dark_brown',
+    authoredAgainstProofVersion: 'pv_1',
+    authoredAgainstFingerprint: 'pf_1',
+    appliedAt: '2026-08-05T00:00:00.000Z',
+    appliedBy: 'customer',
+    ...patch,
+  };
+}
+
+test('a fully-formed override is valid', () => {
+  assert.equal(isValidProofCardOverride(validOverride()), true);
+});
+
+test('a structurally valid override may omit the optional textColor', () => {
+  const { textColor, ...noColor } = validOverride();
+  void textColor;
+  assert.equal(isValidProofCardOverride(noColor), true);
+  // null textColor is also tolerated (→ legacy default), not treated as malformed.
+  assert.equal(isValidProofCardOverride(validOverride({ textColor: null as unknown as undefined })), true);
+});
+
+test('malformed / legacy shapes are rejected (treated as absent)', () => {
+  const bad: unknown[] = [
+    {}, null, undefined, [], 'x', 42, true,
+    validOverride({ x: 'a' as unknown as number }),      // non-numeric geometry
+    validOverride({ opacity: NaN }),                     // non-finite
+    validOverride({ height: Infinity }),                 // non-finite
+    validOverride({ textColor: 'neon' as unknown as undefined }), // bad enum
+    validOverride({ authoredAgainstProofVersion: '' }),  // empty binding
+    validOverride({ authoredAgainstFingerprint: undefined as unknown as string }),
+    validOverride({ appliedBy: '' }),                    // empty metadata
+    validOverride({ appliedAt: 123 as unknown as string }),
+  ];
+  for (const b of bad) {
+    assert.equal(isValidProofCardOverride(b), false, `expected invalid: ${JSON.stringify(b)}`);
+  }
 });

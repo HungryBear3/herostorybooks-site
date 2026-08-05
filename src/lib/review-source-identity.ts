@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 
 import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
-import { proofCardGeometryForFingerprint, proofTextColorForFingerprint } from './proof-layout-override.ts';
+import { isValidProofCardOverride, proofCardGeometryForFingerprint, proofTextColorForFingerprint } from './proof-layout-override.ts';
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -74,8 +74,10 @@ export function proofRenderSourceFingerprint(input: {
       // Only byte-affecting values move the fingerprint: canonical card geometry
       // plus the RESOLVED text/scrim RGB. Operational metadata
       // (appliedAt/appliedBy/authoredAgainst*) is excluded so it cannot
-      // spuriously invalidate a proof.
-      proofCardOverride: page.proofCardOverride
+      // spuriously invalidate a proof. A malformed/legacy override fails the
+      // shared guard and is treated as ABSENT here — identical to how the
+      // renderer treats it — so a `{}` never alters proof identity.
+      proofCardOverride: isValidProofCardOverride(page.proofCardOverride)
         ? {
             ...proofCardGeometryForFingerprint(page.proofCardOverride),
             color: proofTextColorForFingerprint(page.proofCardOverride.textColor),
@@ -114,8 +116,12 @@ export function proofStoryFromPageArtifacts(
       ...(page.textLayout ? { textLayout: page.textLayout } : {}),
       // Carry the proof-only positioned card override through to the render +
       // fingerprint inputs, so a customer layout edit both renders and moves the
-      // proof identity.
-      ...(page.proofCardOverride ? { proofCardOverride: page.proofCardOverride } : {}),
+      // proof identity. Only a structurally valid override is forwarded — a
+      // malformed/legacy value is dropped here so it never reaches a direct
+      // StoryContent render or fingerprint path.
+      ...(isValidProofCardOverride(page.proofCardOverride)
+        ? { proofCardOverride: page.proofCardOverride }
+        : {}),
     })),
   };
 }
