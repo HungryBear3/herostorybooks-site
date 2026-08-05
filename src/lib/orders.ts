@@ -1392,6 +1392,9 @@ export async function persistOrder(order: OrderRecord) {
         allowOverwrite: true,
         addRandomSuffix: false,
         contentType: 'application/json',
+        // Mutable CAS record: forbid CDN caching so a later read-after-write
+        // (or guarded commit) never observes an overwritten record as stale.
+        cacheControlMaxAge: 0,
         token,
       });
       return sanitized;
@@ -1761,6 +1764,27 @@ function isBlobNotFoundError(message: string): boolean {
   return /not ?found|404|BlobNotFound/i.test(message);
 }
 
+/**
+ * Canonicalize an HTTP ETag validator so the SAME underlying version compares
+ * equal across subsystems that decorate it differently. The Blob metadata API
+ * (`list`) and the public CDN edge do not guarantee byte-identical ETag
+ * representations for identical bytes — one may return a strong quoted value
+ * (`"abc"`) while the other returns a weak (`W/"abc"`) or unquoted (`abc`)
+ * form. Comparing the raw strings then reads an equivalent validator as a
+ * foreign change and fails every CAS read (the production 503). We strip the
+ * optional weak prefix, surrounding quotes, and whitespace before comparing.
+ * Returns null for an absent/empty validator.
+ */
+export function normalizeEtag(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let value = raw.trim();
+  if (/^W\//i.test(value)) value = value.slice(2).trim();
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    value = value.slice(1, -1);
+  }
+  return value.length ? value : null;
+}
+
 type PublicVersionedReadDeps = {
   listImpl?: (options: { prefix: string; token: string }) => Promise<{
     blobs: Array<{ pathname: string; url: string; etag: string }>;
@@ -1778,10 +1802,20 @@ const PUBLIC_VERSIONED_READ_MAX_ATTEMPTS = 3;
  * request with HTTP 400, so public order reads must use the URL returned by
  * `list()` and an unauthenticated fetch.
  *
- * The list result supplies the authoritative ETag. `If-Match` plus an exact
- * response-ETag check binds the fetched bytes to that version; an overwrite
- * racing between list and fetch is retried rather than returning mismatched
- * bytes/version to the CAS caller.
+ * The authoritative version is the ETag from `list()` (the Blob metadata API,
+ * which is strongly consistent). The public CDN URL is used ONLY to retrieve
+ * the bytes: per-attempt cache-busting plus `no-store` defeat any stale edge
+ * copy, and order records are written with `cacheControlMaxAge: 0` so the CDN
+ * revalidates rather than serving an overwritten record from cache.
+ *
+ * The fetched bytes are bound to that authoritative version by comparing the
+ * CDN's own validator MODULO HTTP ETag decoration (weak/quoting) — never by raw
+ * string identity, which reads an equivalent validator as a foreign change and
+ * was the production defect. When the CDN omits a usable validator, coherence
+ * is confirmed by re-listing and requiring the authoritative ETag to be
+ * unchanged across the read (stable evidence). A genuine overwrite racing the
+ * read moves the authoritative ETag and is retried, so a real competing writer
+ * still fails closed rather than yielding stale bytes.
  */
 export async function readPublicOrderBlobVersioned(
   pathname: string,
@@ -1790,30 +1824,43 @@ export async function readPublicOrderBlobVersioned(
 ): Promise<{ body: string; version: string } | null> {
   const listImpl = deps.listImpl ?? ((options) => list(options));
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const findBlob = (blobs: Array<{ pathname: string; url: string; etag: string }>) =>
+    blobs.find((candidate) => candidate.pathname === pathname);
 
   for (let attempt = 1; attempt <= PUBLIC_VERSIONED_READ_MAX_ATTEMPTS; attempt += 1) {
     const { blobs } = await listImpl({ prefix: pathname, token });
-    const blob = blobs.find((candidate) => candidate.pathname === pathname);
+    const blob = findBlob(blobs);
     if (!blob) return null;
     if (!blob.etag) {
       throw new Error('Public Blob list response omitted the order ETag');
     }
+    const listVersion = normalizeEtag(blob.etag);
 
     const url = new URL(blob.url);
     url.searchParams.set('hsb-cas-read', `${Date.now()}-${attempt}`);
-    const response = await fetchImpl(url, {
-      cache: 'no-store',
-      headers: { 'If-Match': blob.etag },
-    });
+    const response = await fetchImpl(url, { cache: 'no-store' });
 
     if (response.status === 404 || response.status === 412) continue;
     if (!response.ok) {
       throw new Error(`Public Blob fetch failed: ${response.status} ${response.statusText}`.trim());
     }
 
-    const responseEtag = response.headers.get('etag');
-    if (!responseEtag || responseEtag !== blob.etag) continue;
-    return { body: await response.text(), version: responseEtag };
+    const body = await response.text();
+    const responseVersion = normalizeEtag(response.headers.get('etag'));
+
+    if (responseVersion) {
+      // The CDN gave a validator: accept iff it matches the authoritative
+      // version modulo decoration; otherwise the bytes are stale/advanced.
+      if (responseVersion !== listVersion) continue;
+      return { body, version: blob.etag };
+    }
+
+    // No usable CDN validator: confirm the authoritative record did not advance
+    // while we read it, so the bytes still correspond to `listVersion`.
+    const confirm = await listImpl({ prefix: pathname, token });
+    const confirmBlob = findBlob(confirm.blobs);
+    if (!confirmBlob || normalizeEtag(confirmBlob.etag) !== listVersion) continue;
+    return { body, version: blob.etag };
   }
 
   throw new Error(
@@ -1859,6 +1906,8 @@ function blobOrderStoreAdapter(token: string): OrderStoreAdapter {
           allowOverwrite: false,
           addRandomSuffix: false,
           contentType: 'application/json',
+          // Mutable CAS record — never serve an overwritten copy from CDN cache.
+          cacheControlMaxAge: 0,
         });
         return { ok: true, version: res.etag };
       } catch (error) {
@@ -1877,6 +1926,8 @@ function blobOrderStoreAdapter(token: string): OrderStoreAdapter {
           allowOverwrite: true,
           addRandomSuffix: false,
           contentType: 'application/json',
+          // Mutable CAS record — never serve an overwritten copy from CDN cache.
+          cacheControlMaxAge: 0,
           ifMatch: expectedVersion,
         });
         return { ok: true, version: res.etag };
