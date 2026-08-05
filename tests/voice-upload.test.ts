@@ -315,9 +315,21 @@ test('checkout source reads NEXT_PUBLIC_HSB_STORY_UPLOAD feature flag', () => {
 test('checkout source mounts VoiceRecorderSection in the Custom Story source section', () => {
   assert.match(CHECKOUT_SRC, /Tell us the memory in your own words[\s\S]*?STORY_UPLOAD_ENABLED && customStorySourceMode === ["']audio["'] && \(\s*<VoiceRecorderSection/);
   assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
-  assert.match(CHECKOUT_SRC, /Record a voice note/);
-  assert.match(CHECKOUT_SRC, /Upload a voice memo/);
+});
+
+test('Custom Story chooser renders one audio card and one typing card, not two audio cards', () => {
+  // Single combined top-level audio card.
+  assert.match(CHECKOUT_SRC, /Record or upload a voice note/);
+  // Separate written-memory choice remains.
   assert.match(CHECKOUT_SRC, /Prefer typing\?/);
+  // The old duplicated audio cards must be gone.
+  assert.doesNotMatch(CHECKOUT_SRC, /🎙️ Record a voice note</);
+  assert.doesNotMatch(CHECKOUT_SRC, /⬆️ Upload a voice memo/);
+  // Exactly one top-level card selects the audio source mode; the other selects written.
+  const audioCards = CHECKOUT_SRC.match(/set\(["']customStorySourceMode["'], ["']audio["']\)/g) ?? [];
+  assert.strictEqual(audioCards.length, 1, `expected exactly 1 top-level audio source card, got ${audioCards.length}`);
+  const writtenCards = CHECKOUT_SRC.match(/set\(["']customStorySourceMode["'], ["']written["']\)/g) ?? [];
+  assert.strictEqual(writtenCards.length, 1, `expected exactly 1 top-level typing source card, got ${writtenCards.length}`);
 });
 
 test('checkout source attaches voice fields to FormData only when story upload is on', () => {
@@ -361,4 +373,10 @@ test('voice section avoids beta/data-loss confidence killers', () => {
 
 test('voice section releases mic tracks on stop AND on unmount', () => {
   assert.match(VOICE_UI_SRC, /getTracks\(\)\.forEach\(\(t\) => t\.stop\(\)\)/);
+});
+
+test('voice section remains the single place offering Record and Upload controls', () => {
+  assert.match(VOICE_UI_SRC, />\s*Record audio\s*</);
+  assert.match(VOICE_UI_SRC, />\s*Upload voice memo\s*</);
+  assert.match(VOICE_UI_SRC, />\s*Upload text\/document\s*</);
 });

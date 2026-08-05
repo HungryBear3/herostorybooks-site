@@ -1032,7 +1032,7 @@ export function CheckoutForm() {
                   </p>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-3">
+                <div className="grid gap-3 md:grid-cols-2">
                   <button
                     type="button"
                     onClick={() => set("customStorySourceMode", "audio")}
@@ -1042,23 +1042,9 @@ export function CheckoutForm() {
                         : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2]"
                     }`}
                   >
-                    <span className="block text-sm font-bold text-[#1f1a16]">🎙️ Record a voice note</span>
+                    <span className="block text-sm font-bold text-[#1f1a16]">🎙️ Record or upload a voice note</span>
                     <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
-                      Up to 3 minutes · tap to start, tap to stop.
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => set("customStorySourceMode", "audio")}
-                    className={`rounded-2xl border-2 p-4 text-left transition ${
-                      customStorySourceMode === "audio"
-                        ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30"
-                        : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2]"
-                    }`}
-                  >
-                    <span className="block text-sm font-bold text-[#1f1a16]">⬆️ Upload a voice memo</span>
-                    <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
-                      From Voice Memos or any audio file.
+                      Record up to 3 minutes, or upload a voice memo or audio file.
                     </span>
                   </button>
                   <button
