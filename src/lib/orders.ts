@@ -1761,15 +1761,80 @@ function isBlobNotFoundError(message: string): boolean {
   return /not ?found|404|BlobNotFound/i.test(message);
 }
 
+type PublicVersionedReadDeps = {
+  listImpl?: (options: { prefix: string; token: string }) => Promise<{
+    blobs: Array<{ pathname: string; url: string; etag: string }>;
+  }>;
+  fetchImpl?: typeof fetch;
+};
+
+const PUBLIC_VERSIONED_READ_MAX_ATTEMPTS = 3;
+
+/**
+ * Read a public-store order record together with the exact ETag of the bytes.
+ *
+ * `@vercel/blob#get(pathname, { access: 'public' })` sends an Authorization
+ * header to the public Blob URL. The production public store rejects that
+ * request with HTTP 400, so public order reads must use the URL returned by
+ * `list()` and an unauthenticated fetch.
+ *
+ * The list result supplies the authoritative ETag. `If-Match` plus an exact
+ * response-ETag check binds the fetched bytes to that version; an overwrite
+ * racing between list and fetch is retried rather than returning mismatched
+ * bytes/version to the CAS caller.
+ */
+export async function readPublicOrderBlobVersioned(
+  pathname: string,
+  token: string,
+  deps: PublicVersionedReadDeps = {},
+): Promise<{ body: string; version: string } | null> {
+  const listImpl = deps.listImpl ?? ((options) => list(options));
+  const fetchImpl = deps.fetchImpl ?? fetch;
+
+  for (let attempt = 1; attempt <= PUBLIC_VERSIONED_READ_MAX_ATTEMPTS; attempt += 1) {
+    const { blobs } = await listImpl({ prefix: pathname, token });
+    const blob = blobs.find((candidate) => candidate.pathname === pathname);
+    if (!blob) return null;
+    if (!blob.etag) {
+      throw new Error('Public Blob list response omitted the order ETag');
+    }
+
+    const url = new URL(blob.url);
+    url.searchParams.set('hsb-cas-read', `${Date.now()}-${attempt}`);
+    const response = await fetchImpl(url, {
+      cache: 'no-store',
+      headers: { 'If-Match': blob.etag },
+    });
+
+    if (response.status === 404 || response.status === 412) continue;
+    if (!response.ok) {
+      throw new Error(`Public Blob fetch failed: ${response.status} ${response.statusText}`.trim());
+    }
+
+    const responseEtag = response.headers.get('etag');
+    if (!responseEtag || responseEtag !== blob.etag) continue;
+    return { body: await response.text(), version: responseEtag };
+  }
+
+  throw new Error(
+    `Public Blob changed during ${PUBLIC_VERSIONED_READ_MAX_ATTEMPTS} versioned read attempt(s)`,
+  );
+}
+
 function blobOrderStoreAdapter(token: string): OrderStoreAdapter {
   return {
     kind: 'blob',
     async readVersioned(pathname) {
       try {
+        if (getBlobAccessMode() === 'public') {
+          return await readPublicOrderBlobVersioned(pathname, token);
+        }
+        const access = getBlobAccessMode();
         // get() returns the body stream AND the etag in a single call, so the
-        // version token always describes exactly the bytes we read.
+        // version token always describes exactly the bytes we read. This SDK
+        // path is private-store only; public-store reads use the helper above.
         const result = await get(pathname, {
-          access: getBlobAccessMode(),
+          access,
           token,
           useCache: false,
         });
