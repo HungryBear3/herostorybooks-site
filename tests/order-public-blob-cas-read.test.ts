@@ -38,8 +38,65 @@ test('public versioned read fetches the listed URL without authorization and ret
   assert.deepEqual(result, { body: '{"ok":true}', version: '"etag-1"' });
   assert.ok(requestedUrl.startsWith(URL));
   const headers = new Headers(requestedHeaders);
-  assert.equal(headers.get('if-match'), '"etag-1"');
+  // The CDN GET is unauthenticated and carries no `If-Match`: the public edge's
+  // precondition handling and ETag representation are not a reliable mirror of
+  // the metadata-API version, so binding is done by comparing the CDN validator
+  // to the authoritative `list()` ETag (modulo decoration), not at the edge.
+  assert.equal(headers.has('if-match'), false);
   assert.equal(headers.has('authorization'), false);
+});
+
+test('public versioned read treats an HTTP-equivalent (weak / requoted) ETag as the same version', async () => {
+  // Reproduces the production 503: `list()` returns a strong quoted validator
+  // while the public CDN returns the SAME validator weakened/unquoted. Raw
+  // string comparison read this as a foreign change on all three attempts and
+  // failed closed with no concurrent writer. It must now converge.
+  for (const cdnEtag of ['W/"etag-1"', 'etag-1', ' "etag-1" ']) {
+    const result = await readPublicOrderBlobVersioned(PATHNAME, 'synthetic-token', {
+      listImpl: async () => listed('"etag-1"'),
+      fetchImpl: async () =>
+        new Response('{"ok":true}', { status: 200, headers: { etag: cdnEtag } }),
+    });
+    assert.deepEqual(
+      result,
+      { body: '{"ok":true}', version: '"etag-1"' },
+      `expected convergence for CDN ETag ${JSON.stringify(cdnEtag)}`,
+    );
+  }
+});
+
+test('public versioned read converges when the CDN omits an ETag but the version is stable', async () => {
+  // Some public edges return no validator on GET. Coherence is then confirmed by
+  // re-listing: a stable authoritative ETag across the read means the bytes are
+  // current. The returned version is the authoritative `list()` ETag.
+  let lists = 0;
+  const result = await readPublicOrderBlobVersioned(PATHNAME, 'synthetic-token', {
+    listImpl: async () => {
+      lists += 1;
+      return listed('"stable"');
+    },
+    fetchImpl: async () => new Response('{"ok":true}', { status: 200 }),
+  });
+  assert.deepEqual(result, { body: '{"ok":true}', version: '"stable"' });
+  assert.equal(lists, 2, 'expected a confirming re-list when the CDN omits an ETag');
+});
+
+test('public versioned read retries when the CDN omits an ETag and the version advanced mid-read', async () => {
+  // No CDN validator AND a genuine concurrent overwrite between fetch and the
+  // confirming re-list: the authoritative ETag moved, so the stale bytes must
+  // not be accepted — retry, then converge on the settled version.
+  let lists = 0;
+  const result = await readPublicOrderBlobVersioned(PATHNAME, 'synthetic-token', {
+    listImpl: async () => {
+      lists += 1;
+      // attempt 1: read v1, confirm sees v2 (advanced) -> retry;
+      // attempt 2: read v2, confirm sees v2 (stable)   -> accept.
+      const etag = lists <= 1 ? '"v1"' : '"v2"';
+      return listed(etag);
+    },
+    fetchImpl: async () => new Response('{"settled":true}', { status: 200 }),
+  });
+  assert.deepEqual(result, { body: '{"settled":true}', version: '"v2"' });
 });
 
 test('public versioned read returns null when the exact order pathname is absent', async () => {
