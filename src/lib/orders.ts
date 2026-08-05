@@ -11,7 +11,7 @@ import {
 
 import type { CheckoutTracking } from './checkout-tracking.ts';
 import type { CustomerQueueStatus } from './order-queue.ts';
-import type { FulfillmentStatus, LayoutVersion, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
+import type { FulfillmentStatus, LayoutVersion, PageTextLayout, ProofCardOverride, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts';
 import { validateOrderPhotoFile } from './photo-file-validation.ts';
@@ -246,6 +246,12 @@ export interface PageArtifact {
   /** Optional picture-book text layout persisted on newer generated/rebuilt pages.
    *  Legacy orders may omit it, so scripts should provide a fallback when needed. */
   textLayout?: PageTextLayout | null;
+  /** Proof-only positioned text-card override authored via the customer layout
+   *  editor. When present the customer-review PDF draws an over-art card for
+   *  this page; the print master ignores it. Its geometry + resolved color fold
+   *  into the proof fingerprint, so setting/clearing it invalidates any cached
+   *  proof. Optional for backward compatibility. */
+  proofCardOverride?: ProofCardOverride | null;
 
   /** Internal-only flag set by an operator from the admin page-review grid
    *  to mark this page as needing a targeted regeneration in a later pass.

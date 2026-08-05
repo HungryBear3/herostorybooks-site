@@ -122,6 +122,56 @@ export function isModernLayout(layoutVersion: LayoutVersion | null | undefined):
  */
 export const NEW_PROOF_LAYOUT_VERSION: LayoutVersion = 'legacy_bottom_band';
 
+/**
+ * Closed set of the three EXPLICIT approved proof text-color choices. Semantic,
+ * not free color input. Each maps to a FIXED (text, scrim-fill) pair in
+ * proof-layout-override so the UI preview and PDF renderer use identical values.
+ * Absence / no explicit choice is NOT in this enum — it resolves to the legacy
+ * default (#1F3A5F, a deep blue), so blue is never labeled brown. Arbitrary
+ * hex/RGB/CSS/gradients are never accepted.
+ */
+export type ProofTextColor = 'dark_brown' | 'cream' | 'charcoal';
+
+/**
+ * PROOF-ONLY per-page positioned text-card override for the customer-facing
+ * modern layout editor (the sanctioned exception to "copy must never sit over
+ * art"). When a page carries this override the customer-review PDF draws the
+ * story text as a positioned translucent legibility card that MAY overlap the
+ * illustration. A page with no override renders as it did before; the print
+ * master (`buildPrintInteriorPdf`) never reads this field.
+ *
+ * All geometry is normalized and resolution-independent: origin is the page
+ * top-left and every distance is a fraction of the page width/height in [0,1].
+ * Byte-affecting values (geometry + resolved color) fold into the proof
+ * fingerprint; operational metadata (appliedAt/appliedBy/authoredAgainst*) does
+ * not, so it cannot spuriously invalidate a proof.
+ */
+export interface ProofCardOverride {
+  /** Card top-left X, page-relative fraction [0,1]. */
+  x: number;
+  /** Card top-left Y, page-relative fraction [0,1]. */
+  y: number;
+  /** Card width, page-relative fraction [0,1]. */
+  width: number;
+  /** Card height, page-relative fraction [0,1]. */
+  height: number;
+  /** Card panel opacity, bounded so it is never unreadable nor a face-blocking
+   *  opaque slab. */
+  opacity: number;
+  /** Multiplier applied to the fitted body font size, bounded conservatively. */
+  fontScale: number;
+  /** Approved semantic text color. Absent renders as the legacy default. */
+  textColor?: ProofTextColor;
+  /** Proof revision this override was authored against (revision binding). */
+  authoredAgainstProofVersion: string;
+  /** Source/artwork fingerprint this override was authored against. */
+  authoredAgainstFingerprint: string;
+  /** ISO timestamp the override was applied. Operational — NOT fingerprinted. */
+  appliedAt: string;
+  /** Bounded actor identifier for the audit trail. Operational — NOT fingerprinted. */
+  appliedBy: string;
+}
+
 export interface StoryPage {
   pageNum: number;
   sceneTitle: string;
@@ -131,6 +181,10 @@ export interface StoryPage {
    *  translucent_dark/soft_scrim, but Release 1 PDFs coerce story prose to
    *  dark text on an approved cream paper band. */
   textLayout?: PageTextLayout;
+  /** Optional proof-only positioned text-card override. When present the proof
+   *  renderer draws an over-art card instead of the bottom band; the print
+   *  renderer ignores it. */
+  proofCardOverride?: ProofCardOverride | null;
 }
 
 export interface StoryContent {

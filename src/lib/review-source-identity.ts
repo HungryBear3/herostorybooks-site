@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 
 import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
+import { proofCardGeometryForFingerprint, proofTextColorForFingerprint } from './proof-layout-override.ts';
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -70,6 +71,16 @@ export function proofRenderSourceFingerprint(input: {
       sceneTitle: page.sceneTitle,
       story: page.story,
       textLayout: page.textLayout ?? null,
+      // Only byte-affecting values move the fingerprint: canonical card geometry
+      // plus the RESOLVED text/scrim RGB. Operational metadata
+      // (appliedAt/appliedBy/authoredAgainst*) is excluded so it cannot
+      // spuriously invalidate a proof.
+      proofCardOverride: page.proofCardOverride
+        ? {
+            ...proofCardGeometryForFingerprint(page.proofCardOverride),
+            color: proofTextColorForFingerprint(page.proofCardOverride.textColor),
+          }
+        : null,
     })),
   };
   const digest = canonicalSourceHash({
@@ -101,6 +112,10 @@ export function proofStoryFromPageArtifacts(
       story: page.storyText,
       imagePrompt: page.basePrompt,
       ...(page.textLayout ? { textLayout: page.textLayout } : {}),
+      // Carry the proof-only positioned card override through to the render +
+      // fingerprint inputs, so a customer layout edit both renders and moves the
+      // proof identity.
+      ...(page.proofCardOverride ? { proofCardOverride: page.proofCardOverride } : {}),
     })),
   };
 }
