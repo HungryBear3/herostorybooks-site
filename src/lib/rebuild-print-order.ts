@@ -308,7 +308,7 @@ export async function rebuildPrintOrder(
   const proofVersion = newProofVersion();
   const proofUrl = await _upload(order.id, proofBuffer, proofArtifactPath(proofVersion));
   const interiorUrl = await _upload(order.id, interiorBuffer, `interiors/${proofVersion}.pdf`);
-  const proofSourceFingerprint = proofRenderSourceFingerprint({ story, order, imageUrls: allUrls });
+  const proofSourceFingerprint = proofRenderSourceFingerprint({ story, order: orderForBuild, imageUrls: allUrls });
   const interiorMd5 = md5Hex(interiorBuffer);
   const interiorPageCount = getPrintInteriorPageCount(story, order);
 
@@ -329,6 +329,7 @@ export async function rebuildPrintOrder(
     printInteriorArtifactUrl: interiorUrl,
     printInteriorMd5: interiorMd5,
     printInteriorPageCount: interiorPageCount,
+    printInteriorProofVersion: proofVersion,
     printTitle: story.title,
     // Force cover regeneration on next print submission — old cover
     // dimensions were calculated against the wrong interior page count.
@@ -339,6 +340,8 @@ export async function rebuildPrintOrder(
     // anyway — being explicit guards against future safety regressions.
     printJobId: null,
     printJobStatus: null,
+    printSubmissionAttemptedAt: null,
+    printSubmissionProofVersion: null,
     pageArtifacts: newPageArtifacts,
     reviewStatus: 'in_review',
     proofApprovalToken,

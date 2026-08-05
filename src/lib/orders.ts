@@ -246,6 +246,7 @@ export interface PageArtifact {
   /** Optional picture-book text layout persisted on newer generated/rebuilt pages.
    *  Legacy orders may omit it, so scripts should provide a fallback when needed. */
   textLayout?: PageTextLayout | null;
+
   /** Internal-only flag set by an operator from the admin page-review grid
    *  to mark this page as needing a targeted regeneration in a later pass.
    *  Never surfaced to the customer. Optional for backward compatibility
@@ -314,6 +315,8 @@ export interface OrderRecord extends OrderInput {
   printInteriorArtifactUrl?: string | null;
   printInteriorMd5?: string | null;
   printInteriorPageCount?: number | null;
+  /** Exact proof revision whose accepted pages produced the print interior. */
+  printInteriorProofVersion?: string | null;
   printCoverArtifactUrl?: string | null;
   printCoverMd5?: string | null;
   printTitle?: string | null;
@@ -361,6 +364,10 @@ export interface OrderRecord extends OrderInput {
   layoutVersion?: LayoutVersion | null;
   printJobId?: string | null;
   printJobStatus?: string | null;
+  /** Durable pre-POST fence. Once set, ordinary retry is forbidden until the
+   * provider is reconciled because the first response may have been lost. */
+  printSubmissionAttemptedAt?: string | null;
+  printSubmissionProofVersion?: string | null;
   trackingNumber?: string | null;
   trackingUrl?: string | null;
   shippedAt?: string | null;
@@ -1562,12 +1569,16 @@ type FulfillmentPatch = Partial<Pick<
   | 'fulfillmentAttempts'
   | 'fulfillmentLastError'
   | 'storyArtifactUrl'
+  | 'layoutVersion'
   | 'storyMeta'
   | 'printInteriorArtifactUrl'
   | 'printInteriorMd5'
   | 'printInteriorPageCount'
+  | 'printInteriorProofVersion'
   | 'printCoverArtifactUrl'
   | 'printCoverMd5'
+  | 'printSubmissionAttemptedAt'
+  | 'printSubmissionProofVersion'
   | 'printTitle'
   | 'proofApprovalToken'
   | 'proofApprovedAt'

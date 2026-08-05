@@ -21,6 +21,7 @@ import {
   applyFulfillmentPatchTo,
   getOrder,
   getOrderPhotoUrl,
+  isPrintFormat,
   OrderVersionConflictError,
   orderRequiresReferenceImage,
   readOrderVersioned,
@@ -32,7 +33,9 @@ import { buildRegeneratePrompt } from './image-prompt-builder.ts';
 import {
   buildProofArtifactFromPageArtifacts,
   isUsableProofBuild,
+  isUsablePrintProofBuild,
   proofSourceFingerprint,
+  type ProofBuildSuccess,
 } from './fulfillment.ts';
 import { sendRegenManualReviewAlert } from './order-email.ts';
 import { validateStoryPageSet } from './story-page-contract.ts';
@@ -42,6 +45,7 @@ import {
   type RecordCustomerTextChangeInput,
 } from './customer-text-change-request.ts';
 import { pageGenerationSourceFingerprint } from './review-source-identity.ts';
+import { NEW_PROOF_LAYOUT_VERSION } from './fulfillment-types.ts';
 
 // Soft internal thresholds (runbook): warn at 3, manual review at 5.
 export const REGEN_WARNING_THRESHOLD = 3;
@@ -264,7 +268,7 @@ export async function publishProofGuarded(
         : 'proof_build_incomplete';
     return { refreshed: false, error: err };
   }
-  const usable = built as { proofUrl: string; sourceFingerprint: string; proofVersion: string };
+  const usable = built as ProofBuildSuccess;
 
   try {
     return await withOrderTransaction<ProofPublishResult>(
@@ -279,16 +283,37 @@ export async function publishProofGuarded(
         if (hasUnresolvedChangeRequests(order.pageArtifacts ?? [])) {
           return { abort: { refreshed: false, error: 'unresolved_change_requests' } };
         }
-        if (proofSourceFingerprint(order) !== usable.sourceFingerprint) {
+        if (validateStoryPageSet(order.pageArtifacts, order.bookFormat, NEW_PROOF_LAYOUT_VERSION)) {
+          return { abort: { refreshed: false, error: 'incomplete_page_set' } };
+        }
+        if (isPrintFormat(order.bookFormat) && !isUsablePrintProofBuild(usable)) {
+          return { abort: { refreshed: false, error: 'print_proof_build_incomplete' } };
+        }
+        const orderForProof = { ...order, layoutVersion: NEW_PROOF_LAYOUT_VERSION };
+        if (proofSourceFingerprint(orderForProof) !== usable.sourceFingerprint) {
           return { abort: { refreshed: false, error: 'proof_source_changed_during_rebuild' } };
         }
         let next = applyFulfillmentPatchTo(order, {
+          layoutVersion: NEW_PROOF_LAYOUT_VERSION,
           storyArtifactUrl: usable.proofUrl,
           proofSourceFingerprint: usable.sourceFingerprint,
           proofVersion: usable.proofVersion,
           // A newly published revision has not been acknowledged.
           proofReviewedAt: null,
           proofReviewedVersion: null,
+          ...(isPrintFormat(order.bookFormat)
+            ? {
+                printInteriorArtifactUrl: usable.printInteriorArtifactUrl,
+                printInteriorMd5: usable.printInteriorMd5,
+                printInteriorPageCount: usable.printInteriorPageCount,
+                printInteriorProofVersion: usable.printInteriorProofVersion,
+                printTitle: usable.printTitle,
+                printCoverArtifactUrl: null,
+                printCoverMd5: null,
+                printSubmissionAttemptedAt: null,
+                printSubmissionProofVersion: null,
+              }
+            : {}),
         });
         next = appendAuditEventTo(next, {
           type: 'proof_published',

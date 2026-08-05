@@ -23,6 +23,7 @@ import type { FulfillmentDeps } from '../src/lib/fulfillment.ts';
 import { acceptPage, customerReviewActor, regeneratePage } from '../src/lib/page-review.ts';
 import { canonicalSourceHash, proofStoryFromPageArtifacts } from '../src/lib/review-source-identity.ts';
 import { defaultUploadArtifact as rebuildDefaultUploadArtifact } from '../src/lib/rebuild-print-order.ts';
+import { padPageSet } from './support/full-page-set.ts';
 
 const NOW = '2026-08-03T20:10:00.000Z';
 const TOKEN = 'ca55'.repeat(12);
@@ -301,7 +302,7 @@ test('default proof uploader creates nested immutable local paths', async () => 
   const orderId = 'ord_synthetic_nested_proof';
   try {
     process.chdir(cwd);
-    await persistOrder(order(orderId));
+    await persistOrder(order(orderId, { pageArtifacts: padPageSet([page()]) }));
     const built = await buildProofArtifactFromPageArtifacts(orderId, {
       buildPdf: async () => Buffer.from('%PDF nested path'),
     });

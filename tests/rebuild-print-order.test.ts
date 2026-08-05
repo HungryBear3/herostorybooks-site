@@ -25,6 +25,7 @@ import {
   rebuildPrintOrder,
   type RebuildDeps,
 } from '../src/lib/rebuild-print-order.ts';
+import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
 
 function makeTmp() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-rebuild-print-'));
@@ -285,6 +286,10 @@ test('rebuildPrintOrder: classic full rebuild updates artifacts + resets review 
     assert.ok(after.proofVersion);
     assert.equal(after.storyArtifactUrl, `https://rebuilt.example/${after.id}/proofs/${after.proofVersion}.pdf`);
     assert.equal(after.printInteriorArtifactUrl, `https://rebuilt.example/${after.id}/interiors/${after.proofVersion}.pdf`);
+    assert.equal(after.printInteriorProofVersion, after.proofVersion);
+    assert.equal(after.proofSourceFingerprint, proofSourceFingerprint(after));
+    assert.equal(after.printSubmissionAttemptedAt, null);
+    assert.equal(after.printSubmissionProofVersion, null);
     assert.equal(after.printTitle, 'Rebuilt Title');
     assert.notEqual(after.printInteriorMd5, 'legacy-md5');
     // Cover cleared so next print submission rebuilds the cover against

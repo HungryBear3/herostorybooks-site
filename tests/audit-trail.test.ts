@@ -170,7 +170,22 @@ test('regeneratePage writes a proof_rebuilt event after auto-rebuild', async () 
       { orderId: 'ord_audit_test', pageIndex: 0, feedback: '' },
       {
         providers: [successProvider],
-        buildProof: async (oid: string) => ({ ok: true as const, proofUrl: 'https://x/refreshed.pdf', sourceFingerprint: proofSourceFingerprint((await getOrder(oid))!), proofVersion: `pv_${Math.random().toString(36).slice(2)}` }),
+        buildProof: async (oid: string) => {
+          const proofVersion = `pv_${Math.random().toString(36).slice(2)}`;
+          const sourceOrder = (await getOrder(oid))!;
+          const printTitle = sourceOrder.printTitle ?? `${sourceOrder.childName}'s Hero Story Book`;
+          return {
+            ok: true as const,
+            proofUrl: 'https://x/refreshed.pdf',
+            sourceFingerprint: proofSourceFingerprint(sourceOrder),
+            proofVersion,
+            printInteriorArtifactUrl: 'https://x/refreshed-interior.pdf',
+            printInteriorMd5: 'refreshed-interior-md5',
+            printInteriorPageCount: 32,
+            printInteriorProofVersion: proofVersion,
+            printTitle,
+          };
+        },
       },
     );
     const after = await getOrder('ord_audit_test');
@@ -338,12 +353,21 @@ test('end-to-end: full review→approve sequence is captured in chronological or
       { orderId: 'ord_audit_test', pageIndex: 0, feedback: 'fix' },
       {
         providers: [successProvider],
-        buildProof: async (oid: string) => ({
-          ok: true as const,
-          proofUrl: 'https://example.com/re-proof.pdf',
-          sourceFingerprint: proofSourceFingerprint((await getOrder(oid))!),
-          proofVersion: 'pv_second',
-        }),
+        buildProof: async (oid: string) => {
+          const sourceOrder = (await getOrder(oid))!;
+          const printTitle = sourceOrder.printTitle ?? `${sourceOrder.childName}'s Hero Story Book`;
+          return {
+            ok: true as const,
+            proofUrl: 'https://example.com/re-proof.pdf',
+            sourceFingerprint: proofSourceFingerprint(sourceOrder),
+            proofVersion: 'pv_second',
+            printInteriorArtifactUrl: 'https://example.com/re-interior.pdf',
+            printInteriorMd5: 're-interior-md5',
+            printInteriorPageCount: 32,
+            printInteriorProofVersion: 'pv_second',
+            printTitle,
+          };
+        },
       },
     );
     await acceptPage({ orderId: 'ord_audit_test', pageIndex: 0 });
@@ -351,7 +375,7 @@ test('end-to-end: full review→approve sequence is captured in chronological or
     const live = await getOrder('ord_audit_test');
     await acknowledgeProofReview('ord_audit_test', { proofVersion: live!.proofVersion! });
     const r = await approveWholeBook('ord_audit_test');
-    assert.equal(r.ok, true);
+    assert.equal(r.ok, true, r.error);
     const after = await getOrder('ord_audit_test');
     assert.deepEqual(eventTypes(after?.auditEvents), [
       'page_regenerated',

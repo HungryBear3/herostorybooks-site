@@ -9,11 +9,13 @@ import {
   approvePrintProof,
   backoffMs,
   MAX_RETRIES,
+  proofSourceFingerprint,
   type FulfillmentDeps,
 } from '../src/lib/fulfillment.ts';
 import { createOrderRecord, persistOrder, getOrder, updateFulfillmentState } from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 import type { StoryContent } from '../src/lib/fulfillment-types.ts';
+import { padPageSet } from './support/full-page-set.ts';
 
 // ── Shared test fixtures ──────────────────────────────────────────────────────
 
@@ -325,9 +327,23 @@ test('valid token approves proof, creates cover artifact, and triggers print pro
       printInteriorArtifactUrl: 'https://cdn.example.com/interior.pdf',
       printInteriorMd5: 'INTERIORMD5',
       printInteriorPageCount: 32,
+      printInteriorProofVersion: 'proof-v1',
       printTitle: MOCK_STORY.title,
       proofApprovalToken: 'valid-token-abc',
+      reviewStatus: 'approved',
+      pageArtifacts: padPageSet([]),
+      proofVersion: 'proof-v1',
+      proofReviewedAt: '2026-04-23T10:00:00Z',
+      proofReviewedVersion: 'proof-v1',
     }, dir);
+
+    // Persist the identity of the exact approved/acknowledged source. The print
+    // release gate must reject stale or partial fixtures rather than treating a
+    // valid capability token as whole-book approval.
+    await persistOrder({
+      ...order,
+      proofSourceFingerprint: proofSourceFingerprint(order),
+    });
 
     const result = await approvePrintProof(order.id, 'valid-token-abc', PASS_DEPS);
     assert.equal(result.ok, true, result.error);

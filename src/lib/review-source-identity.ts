@@ -59,7 +59,7 @@ export function pageGenerationSourceFingerprint(input: {
  */
 export function proofRenderSourceFingerprint(input: {
   story: StoryContent;
-  order: Pick<OrderRecord, 'id' | 'childName' | 'bookFormat'>;
+  order: Pick<OrderRecord, 'id' | 'childName' | 'bookFormat' | 'layoutVersion'>;
   imageUrls: (string | null)[];
 }): string {
   const { story, order, imageUrls } = input;
@@ -78,6 +78,7 @@ export function proofRenderSourceFingerprint(input: {
       id: order.id,
       childName: order.childName,
       bookFormat: order.bookFormat,
+      layoutVersion: order.layoutVersion ?? 'legacy_bottom_band',
     },
     imageUrls,
   });

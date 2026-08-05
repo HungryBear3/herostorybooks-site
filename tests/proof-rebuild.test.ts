@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createOrderRecord, persistOrder, getOrder } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
 import { rebuildProofFromPageArtifacts } from '../src/lib/fulfillment.ts';
+import { padPageSet } from './support/full-page-set.ts';
 
 function makeTmp() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-rebuild-'));
@@ -46,7 +47,7 @@ test('rebuildProofFromPageArtifacts: passes accepted/current URLs to PDF builder
     const order: OrderRecord = {
       ...base,
       paymentStatus: 'paid',
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         pageFixture(0, {
           accepted: true,
           acceptedImageUrl: 'https://example.com/accepted-0.png',
@@ -57,7 +58,7 @@ test('rebuildProofFromPageArtifacts: passes accepted/current URLs to PDF builder
           accepted: true,
           acceptedImageUrl: 'https://example.com/accepted-2.png',
         }),
-      ],
+      ]),
     };
     await persistOrder(order);
 
@@ -71,12 +72,13 @@ test('rebuildProofFromPageArtifacts: passes accepted/current URLs to PDF builder
     });
     assert.equal(result.ok, true);
     // PDF builder receives [coverUrl, ...page urls]; first slot is the cover (page 0)
-    assert.deepEqual(capturedUrls, [
+    assert.deepEqual(capturedUrls.slice(0, 4), [
       'https://example.com/accepted-0.png', // cover slot uses page 0
       'https://example.com/accepted-0.png',
       'https://example.com/current-1.png',
       'https://example.com/accepted-2.png',
     ]);
+    assert.equal(capturedUrls.length, 25, 'cover + 24 story-page images');
 
     const after = await getOrder('ord_rebuild');
     // Proofs now land at an IMMUTABLE, version-keyed path so a published

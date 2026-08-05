@@ -11,7 +11,7 @@ import type {
   TextColorMode,
   TextPanelStyle,
 } from './fulfillment-types.ts';
-import { isModernLayout, isValidPageTextLayout } from './fulfillment-types.ts';
+import { isKnownLayoutVersion, isModernLayout, isValidPageTextLayout } from './fulfillment-types.ts';
 
 /**
  * Thrown when a book explicitly marked `modern_full_bleed` reaches the story
@@ -29,6 +29,14 @@ export class ModernLayoutMetadataError extends Error {
     );
     this.name = 'ModernLayoutMetadataError';
     this.pageIndex = pageIndex;
+  }
+}
+
+/** Unknown persisted layout markers must never silently select legacy output. */
+export class UnknownLayoutVersionError extends Error {
+  constructor() {
+    super('Unknown layout version — refusing to render through the legacy bottom band');
+    this.name = 'UnknownLayoutVersionError';
   }
 }
 
@@ -189,6 +197,9 @@ export function getPictureBookStoryLayout(
   layoutVersion?: LayoutVersion | null,
   pageIndex?: number,
 ): PictureBookStoryLayout {
+  if (!isKnownLayoutVersion(layoutVersion)) {
+    throw new UnknownLayoutVersionError();
+  }
   // Fail closed for modern books: an explicitly-modern book must carry valid
   // per-page layout metadata. Never silently fall back to the legacy bottom
   // band for a modern page. Legacy/unmarked books keep the existing tolerant

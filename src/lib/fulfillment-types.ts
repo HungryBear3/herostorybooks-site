@@ -97,8 +97,15 @@ export function isValidPageTextLayout(layout: PageTextLayout | null | undefined)
   );
 }
 
+/** Runtime guard for persisted data. TypeScript's union cannot protect JSON
+ * records, so every non-null value must be recognized explicitly. */
+export function isKnownLayoutVersion(layoutVersion: unknown): layoutVersion is LayoutVersion | null | undefined {
+  return layoutVersion == null || layoutVersion === 'legacy_bottom_band' || layoutVersion === 'modern_full_bleed';
+}
+
 /** A book is rendered/validated under the modern contract ONLY when explicitly
- *  marked modern. Absent or 'legacy_bottom_band' → legacy (no record rewrite). */
+ * marked modern. Callers must reject unknown non-null values before using this
+ * predicate; only absent/null and explicit legacy are legacy-compatible. */
 export function isModernLayout(layoutVersion: LayoutVersion | null | undefined): boolean {
   return layoutVersion === 'modern_full_bleed';
 }

@@ -58,7 +58,7 @@ async function seedOrder(
   const order: OrderRecord = {
     ...base,
     paymentStatus: 'paid',
-    pageArtifacts: [pageFixture(0), pageFixture(1), pageFixture(2)],
+    pageArtifacts: padPageSet([pageFixture(0), pageFixture(1), pageFixture(2)]),
     reviewStatus: 'in_review',
     proofApprovalToken: 're_test_stub_token',
     ...overrides,

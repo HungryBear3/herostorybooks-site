@@ -1,6 +1,6 @@
 import type { PageArtifact } from './orders.ts';
 import { getStoryPageCount } from './orders.ts';
-import { isModernLayout, isValidPageTextLayout, type LayoutVersion } from './fulfillment-types.ts';
+import { isKnownLayoutVersion, isModernLayout, isValidPageTextLayout, type LayoutVersion } from './fulfillment-types.ts';
 
 /**
  * The digital/print product contract for a story-page set. A book must carry
@@ -19,6 +19,7 @@ import { isModernLayout, isValidPageTextLayout, type LayoutVersion } from './ful
  */
 
 export type StoryPageSetFailure =
+  | { code: 'unknown_layout_version' }
   | { code: 'wrong_page_count'; expected: number; actual: number }
   | { code: 'out_of_range_page'; pageIndex: number; expected: number }
   | { code: 'duplicate_page'; pageIndex: number }
@@ -29,7 +30,7 @@ export type StoryPageSetFailure =
 /** The subset of a page artifact the contract inspects. */
 export type StoryPageForContract = Pick<
   PageArtifact,
-  'pageIndex' | 'storyText' | 'currentImageUrl' | 'acceptedImageUrl' | 'textLayout'
+  'pageIndex' | 'storyText' | 'currentImageUrl' | 'acceptedImageUrl' | 'accepted' | 'textLayout'
 >;
 
 /**
@@ -43,6 +44,9 @@ export function validateStoryPageSet(
   bookFormat: string,
   layoutVersion: LayoutVersion | null | undefined,
 ): StoryPageSetFailure | null {
+  if (!isKnownLayoutVersion(layoutVersion)) {
+    return { code: 'unknown_layout_version' };
+  }
   const expected = getStoryPageCount(bookFormat);
   const pages = pageArtifacts ?? [];
 
@@ -70,7 +74,9 @@ export function validateStoryPageSet(
     if (!page.storyText || !page.storyText.trim()) {
       return { code: 'missing_story_text', pageIndex: page.pageIndex };
     }
-    const illustration = page.acceptedImageUrl ?? page.currentImageUrl;
+    // Match the renderer exactly. A stale URL in the unselected field must not
+    // make an image-less rendered page pass the contract.
+    const illustration = page.accepted ? page.acceptedImageUrl : page.currentImageUrl;
     if (!illustration) {
       return { code: 'missing_illustration', pageIndex: page.pageIndex };
     }
@@ -119,6 +125,8 @@ export function assertStoryPageSet(
 /** Human/audit-safe one-line summary of a failure (no PII, no story text). */
 export function describeStoryPageSetFailure(failure: StoryPageSetFailure): string {
   switch (failure.code) {
+    case 'unknown_layout_version':
+      return 'unknown layout version';
     case 'wrong_page_count':
       return `expected ${failure.expected} story pages, got ${failure.actual}`;
     case 'out_of_range_page':
