@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { padPageSet } from './support/full-page-set.ts';
 import assert from 'node:assert/strict';
 
 import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
@@ -312,10 +313,10 @@ test('approveWholeBook on a PRINT order performs no print handoff and no rebuild
       bookFormat: 'classic',
       storyArtifactUrl: 'https://example.com/orders/x/proofs/pv_test.pdf',
       proofReviewedAt: '2026-04-27T09:00:00Z',
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
         pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
-      ],
+      ]),
     });
     const before = await getOrder('ord_secondpass_test');
 

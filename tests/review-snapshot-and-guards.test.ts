@@ -22,6 +22,7 @@ import path from 'node:path';
 import { createOrderRecord, getOrder, persistOrder } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
 import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
+import { padPageSet } from './support/full-page-set.ts';
 import {
   acceptPage,
   acknowledgeProofReview,
@@ -49,7 +50,7 @@ function page(i: number, o: Partial<PageArtifact> = {}): PageArtifact {
   };
 }
 function makeOrder(id: string, o: Partial<OrderRecord> = {}): OrderRecord {
-  const pages = [page(0), page(1)];
+  const pages = padPageSet([page(0), page(1)]);
   const order: OrderRecord = {
     ...createOrderRecord(
       { childName: 'Testkid', bookFormat: 'digital', email: 'reviewer@example.invalid' },
@@ -139,7 +140,7 @@ test('REQ8: successful mutations return the exact committed review snapshot', as
   try {
     const acceptId = 'ord_snapshot_accept';
     await persistOrder(makeOrder(acceptId, {
-      pageArtifacts: [page(0, { accepted: false, acceptedImageUrl: null }), page(1)],
+      pageArtifacts: padPageSet([page(0, { accepted: false, acceptedImageUrl: null }), page(1)]),
     }));
     const accepted = await acceptPage({
       orderId: acceptId,
@@ -210,7 +211,7 @@ test('REQ17: unresolved wording blocks server approval; resolved wording permits
   try {
     const blockedId = 'ord_unresolved_wording_gate';
     const blocked = makeOrder(blockedId, {
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         page(0, {
           customerReviewStatus: 'changes_requested',
           customerRequestedChange: {
@@ -220,7 +221,7 @@ test('REQ17: unresolved wording blocks server approval; resolved wording permits
           },
         }),
         page(1),
-      ],
+      ]),
       printInteriorArtifactUrl: 'https://example.invalid/interior.pdf',
       fulfillmentStatus: 'proof_ready',
     });
@@ -239,7 +240,7 @@ test('REQ17: unresolved wording blocks server approval; resolved wording permits
 
     const resolvedId = 'ord_resolved_wording_gate';
     const resolved = makeOrder(resolvedId, {
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         page(0, {
           customerReviewStatus: 'resolved',
           customerRequestedChange: {
@@ -249,7 +250,7 @@ test('REQ17: unresolved wording blocks server approval; resolved wording permits
           },
         }),
         page(1),
-      ],
+      ]),
     });
     resolved.proofSourceFingerprint = proofSourceFingerprint(resolved);
     await persistOrder(resolved);

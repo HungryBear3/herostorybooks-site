@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
+import { padPageSet } from './support/full-page-set.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -68,10 +69,10 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_ack_inv'): P
     proofApprovalToken: 'tok_xyz',
     fulfillmentStatus: 'proof_ready',
     storyArtifactUrl: 'https://example.com/proof-v1.pdf',
-    pageArtifacts: [
+    pageArtifacts: padPageSet([
       pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
       pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
-    ],
+    ]),
     reviewStatus: 'in_review',
     auditEvents: [],
     ...overrides,
@@ -128,10 +129,10 @@ test('regenerate auto-rebuild clears proofReviewedAt; approve then 409s with pro
   try {
     await seed({
       proofReviewedAt: '2026-04-27T09:00:00Z',
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
         pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
-      ],
+      ]),
     });
     // Regenerate page 0; auto-rebuild fires after the regen. Inject the rebuilder
     // so we don't need a full PDF builder pipeline in the test.

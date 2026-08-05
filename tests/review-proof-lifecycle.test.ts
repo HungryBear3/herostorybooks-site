@@ -26,6 +26,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { padPageSet } from './support/full-page-set.ts';
 
 import { createOrderRecord, getOrder, persistOrder } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
@@ -77,13 +78,13 @@ function proofFingerprintForTest(
     childName: overrides.childName ?? 'Testkid',
     bookFormat: overrides.bookFormat ?? 'digital',
     printTitle: overrides.printTitle ?? null,
-    pageArtifacts: pages,
+    pageArtifacts: padPageSet(pages),
   });
 }
 
 /** An order with a live, acknowledged proof at version v1. */
 function makeOrder(id: string, o: Partial<OrderRecord> = {}): OrderRecord {
-  const pages = [page(0), page(1)];
+  const pages = padPageSet([page(0), page(1)]);
   const order: OrderRecord = {
     ...createOrderRecord(
       { childName: 'Testkid', bookFormat: 'digital', email: 'reviewer@example.invalid' },
@@ -412,7 +413,7 @@ test('REQ6: an acknowledgment of revision X cannot approve revision Y', async ()
   try {
     const orderId = 'ord_version_mismatch';
     // Persisted proof is v2, but the customer acknowledged v1.
-    const pages = [page(0), page(1)];
+    const pages = padPageSet([page(0), page(1)]);
     await persistOrder(makeOrder(orderId, {
       pageArtifacts: pages,
       storyArtifactUrl: 'https://example.invalid/orders/x/proofs/v2.pdf',
@@ -446,7 +447,7 @@ test('REQ7: the current matching revision can be acknowledged and then approved'
   const dir = makeTmp();
   try {
     const orderId = 'ord_happy';
-    const pages = [page(0), page(1)];
+    const pages = padPageSet([page(0), page(1)]);
     await persistOrder(makeOrder(orderId, {
       pageArtifacts: pages,
       storyArtifactUrl: 'https://example.invalid/orders/x/proofs/v3.pdf',
@@ -533,7 +534,7 @@ test('REQ10+11: approval performs NO pdf build, print, email, payment, refund, f
   const dir = makeTmp();
   try {
     const orderId = 'ord_inert_approve';
-    const pages = [page(0), page(1)];
+    const pages = padPageSet([page(0), page(1)]);
     await persistOrder(makeOrder(orderId, {
       bookFormat: 'classic', // print order — the old code would hand off to print
       pageArtifacts: pages,
@@ -587,7 +588,7 @@ test('REQ10: approval never invokes the proof builder, even when one is availabl
   const dir = makeTmp();
   try {
     const orderId = 'ord_no_build_on_approve';
-    const pages = [page(0), page(1)];
+    const pages = padPageSet([page(0), page(1)]);
     await persistOrder(makeOrder(orderId, {
       pageArtifacts: pages,
       storyArtifactUrl: 'https://example.invalid/orders/x/proofs/v6.pdf',
@@ -616,7 +617,7 @@ test('accepting a page whose current image is already rendered does not invalida
   const dir = makeTmp();
   try {
     const orderId = 'ord_accept_neutral';
-    const pages = [page(0, { accepted: false, acceptedImageUrl: null }), page(1)];
+    const pages = padPageSet([page(0, { accepted: false, acceptedImageUrl: null }), page(1)]);
     await persistOrder(makeOrder(orderId, {
       pageArtifacts: pages,
       proofSourceFingerprint: proofFingerprintForTest(orderId, pages),

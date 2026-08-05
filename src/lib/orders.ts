@@ -11,12 +11,12 @@ import {
 
 import type { CheckoutTracking } from './checkout-tracking.ts';
 import type { CustomerQueueStatus } from './order-queue.ts';
-import type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
+import type { FulfillmentStatus, LayoutVersion, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts';
 import { validateOrderPhotoFile } from './photo-file-validation.ts';
 import { PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
-export type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta };
+export type { FulfillmentStatus, LayoutVersion, PageTextLayout, VoiceTranscriptMeta };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
 export type BookFormat = 'digital' | 'classic' | 'premium';
@@ -352,6 +352,13 @@ export interface OrderRecord extends OrderInput {
   proofSourceFingerprint?: string | null;
   proofVersion?: string | null;
   proofReviewedVersion?: string | null;
+  /**
+   * How this book's story pages are laid out/rendered. Explicit and durable:
+   * new/regenerated proofs set it; absence marks an unmarked historical order
+   * treated as legacy at read time (never rewritten). Modern books fail closed
+   * on missing/invalid per-page layout metadata; legacy books do not.
+   */
+  layoutVersion?: LayoutVersion | null;
   printJobId?: string | null;
   printJobStatus?: string | null;
   trackingNumber?: string | null;

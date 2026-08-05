@@ -21,10 +21,19 @@ const MOCK_STORY: StoryContent = {
   title: "Luna's Great Adventure",
   dedication: 'For Luna, with love.',
   characterDescription: 'A brave child named Luna.',
+  // 24 story pages — the digital/classic contract now enforced before proof
+  // readiness. The first three keep their named scenes; the rest are valid
+  // filler so the set satisfies the count/contiguity gate.
   pages: [
     { pageNum: 1, sceneTitle: 'The Beginning', story: 'Luna set off on her quest.', imagePrompt: 'Luna in a forest' },
     { pageNum: 2, sceneTitle: 'The Challenge', story: 'Luna faced a great challenge.', imagePrompt: 'Luna climbing' },
     { pageNum: 3, sceneTitle: 'The Victory', story: 'Luna triumphed and returned home.', imagePrompt: 'Luna cheering' },
+    ...Array.from({ length: 21 }, (_, i) => ({
+      pageNum: i + 4,
+      sceneTitle: `Scene ${i + 4}`,
+      story: `Luna adventure page ${i + 4}.`,
+      imagePrompt: `Luna scene ${i + 4}`,
+    })),
   ],
 };
 

@@ -23,6 +23,7 @@ import {
   getOrderPhotoUrl,
   OrderVersionConflictError,
   orderRequiresReferenceImage,
+  readOrderVersioned,
   withOrderTransaction,
 } from './orders.ts';
 import type { OrderRecord, PageArtifact, PageFeedbackEntry, PageVersionEntry } from './orders.ts';
@@ -34,6 +35,7 @@ import {
   proofSourceFingerprint,
 } from './fulfillment.ts';
 import { sendRegenManualReviewAlert } from './order-email.ts';
+import { validateStoryPageSet } from './story-page-contract.ts';
 import {
   hasUnresolvedChangeRequests,
   recordCustomerTextChangeRequest,
@@ -744,6 +746,8 @@ export async function approveWholeBook(
           proof_not_ready: 'Full proof PDF is not ready yet',
           proof_ack_missing:
             'Proof acknowledgment required — confirm you reviewed the full proof PDF before approving',
+          incomplete_page_set:
+            'This book does not yet have its full set of story pages — it cannot be approved',
         };
         const reject = (
           reason: string,
@@ -769,6 +773,14 @@ export async function approveWholeBook(
             acceptedCount: order.pageArtifacts.filter((p) => p.accepted).length,
             totalPages: order.pageArtifacts.length,
           });
+        }
+        // Fail closed on the book contract: an approved order must carry the
+        // full, valid story-page set (exact count, unique/contiguous indices,
+        // text + illustration per page; layout metadata for modern books).
+        // Only the safe failure code is audited — never story text or PII.
+        const pageSetFailure = validateStoryPageSet(order.pageArtifacts, order.bookFormat, order.layoutVersion);
+        if (pageSetFailure) {
+          return reject('incomplete_page_set', 'incomplete_page_set', { failure: pageSetFailure.code });
         }
         if (hasUnresolvedChangeRequests(order.pageArtifacts)) {
           return reject('unresolved_change_requests', undefined, {
@@ -1213,7 +1225,13 @@ export async function getReviewSnapshot(
   orderId: string,
   input: ReviewAccessInput = {},
 ): Promise<ReviewSnapshot | null> {
-  const order = await getOrder(orderId);
+  // Read the AUTHORITATIVE, version-bound record — not the unversioned public
+  // `getOrder`, whose CDN copy can lag an authoritative order update and render
+  // a known-stale proof/layout on the review page. `readOrderVersioned` binds
+  // the bytes to the current Blob version (#127) and fails closed on an
+  // incoherent read rather than returning stale content.
+  const versioned = await readOrderVersioned(orderId);
+  const order = versioned?.order;
   if (!order) return null;
   if (!order.pageArtifacts || order.pageArtifacts.length === 0) return null;
   if (!hasReviewAccess(order, input)) return null;

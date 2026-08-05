@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
+import { padPageSet } from './support/full-page-set.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -70,11 +71,11 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_audit_test')
     storyArtifactUrl: 'https://example.com/proof.pdf',
     proofApprovalToken: 'tok_xyz',
     fulfillmentStatus: 'proof_ready',
-    pageArtifacts: [
+    pageArtifacts: padPageSet([
       pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
       pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
       pageFixture(2, { accepted: true, acceptedImageUrl: 'https://x/2.png' }),
-    ],
+    ]),
     reviewStatus: 'in_review',
     auditEvents: [],
     ...overrides,
@@ -141,7 +142,7 @@ test('regeneratePage writes a page_regenerated audit event with provider + page'
   const dir = makeTmp();
   try {
     await seed({
-      pageArtifacts: [pageFixture(0), pageFixture(1)],
+      pageArtifacts: padPageSet([pageFixture(0), pageFixture(1)]),
     });
     const r = await regeneratePage(
       { orderId: 'ord_audit_test', pageIndex: 1, feedback: 'fix the hands' },
@@ -163,7 +164,7 @@ test('regeneratePage writes a proof_rebuilt event after auto-rebuild', async () 
   const dir = makeTmp();
   try {
     await seed({
-      pageArtifacts: [pageFixture(0), pageFixture(1)],
+      pageArtifacts: padPageSet([pageFixture(0), pageFixture(1)]),
     });
     await regeneratePage(
       { orderId: 'ord_audit_test', pageIndex: 0, feedback: '' },
@@ -190,11 +191,11 @@ test('acceptPage writes a page_accepted audit event with counts', async () => {
   const dir = makeTmp();
   try {
     await seed({
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
         pageFixture(1),
         pageFixture(2),
-      ],
+      ]),
     });
     const r = await acceptPage({ orderId: 'ord_audit_test', pageIndex: 1 });
     assert.equal(r.ok, true);
@@ -202,8 +203,9 @@ test('acceptPage writes a page_accepted audit event with counts', async () => {
     const evt = after!.auditEvents!.find((e) => e.type === 'page_accepted');
     assert.ok(evt);
     assert.equal(evt!.pageIndex, 1);
-    assert.equal((evt!.meta as Record<string, unknown>).acceptedCount, 2);
-    assert.equal((evt!.meta as Record<string, unknown>).totalPages, 3);
+    // Padded to the 24-page contract: page 2 remains unaccepted → 23 accepted.
+    assert.equal((evt!.meta as Record<string, unknown>).acceptedCount, 23);
+    assert.equal((evt!.meta as Record<string, unknown>).totalPages, 24);
   } finally { cleanup(dir); }
 });
 
@@ -257,18 +259,19 @@ test('approveWholeBook rejected → audit event with reason=pages_not_accepted',
   try {
     await seed({
       proofReviewedAt: '2026-04-27T11:00:00Z',
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
-        pageFixture(1), // not accepted
-      ],
+        pageFixture(1, { accepted: false }), // not accepted
+      ]),
     });
     await approveWholeBook('ord_audit_test');
     const after = await getOrder('ord_audit_test');
     const evt = after!.auditEvents!.find((e) => e.type === 'whole_book_approval_rejected');
     assert.ok(evt);
     assert.equal(evt!.reason, 'pages_not_accepted');
-    assert.equal((evt!.meta as Record<string, unknown>).acceptedCount, 1);
-    assert.equal((evt!.meta as Record<string, unknown>).totalPages, 2);
+    // Padded to the 24-page contract: only page 1 is unaccepted → 23 accepted.
+    assert.equal((evt!.meta as Record<string, unknown>).acceptedCount, 23);
+    assert.equal((evt!.meta as Record<string, unknown>).totalPages, 24);
   } finally { cleanup(dir); }
 });
 
@@ -326,7 +329,7 @@ test('end-to-end: full review→approve sequence is captured in chronological or
   const dir = makeTmp();
   try {
     await seed({
-      pageArtifacts: [pageFixture(0), pageFixture(1)],
+      pageArtifacts: padPageSet([pageFixture(0), pageFixture(1)]),
       proofReviewedAt: null,
     });
     // A regeneration invalidates the published proof, so the sequence must

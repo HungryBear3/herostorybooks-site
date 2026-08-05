@@ -5,6 +5,8 @@ import { getOrder, getOrderPhotoUrl, isPrintFormat, orderRequiresReferenceImage,
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
+import { NEW_PROOF_LAYOUT_VERSION } from './fulfillment-types.ts';
+import { assertStoryPageSet } from './story-page-contract.ts';
 import { generateStory, generateStoryWithMeta } from './story-generator.ts';
 import type { StoryWithMeta } from './story-generator.ts';
 import { generateStoryImageResults, requireCompleteImageResults } from './image-generator.ts';
@@ -353,9 +355,14 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
+  // Fail closed BEFORE building/publishing a proof: the story page set must
+  // satisfy the book contract (exact count, unique/contiguous indices, story
+  // text + illustration on every page). A partial/duplicated set never reaches
+  // preview_ready. New proofs are the legacy bottom band (see NEW_PROOF_LAYOUT_VERSION).
+  assertStoryPageSet(seededPageArtifacts, order.bookFormat, NEW_PROOF_LAYOUT_VERSION);
   // Include cover image (first imageUrl) + per-page images
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
-  const pdfBuffer = await _buildPdf(story, order, allUrls);
+  const pdfBuffer = await _buildPdf(story, { ...order, layoutVersion: NEW_PROOF_LAYOUT_VERSION }, allUrls);
 
   const proofVersion = newProofVersion();
   const pdfUrl = await _upload(order.id, pdfBuffer, proofArtifactPath(proofVersion));
@@ -372,6 +379,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   const finalDigitalPatch: Partial<OrderRecord> = {
     fulfillmentStatus: 'complete',
     status: 'preview_ready',
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     storyArtifactUrl: pdfUrl,
     // Identity of the artifact just published. Without these the review
     // surface has a URL it cannot verify, and every proof gate fails closed.
@@ -500,9 +508,13 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
+  // Fail closed on a partial/duplicated page set before building the print
+  // proof + interior — no preview_ready with an undersized book.
+  assertStoryPageSet(seededPageArtifacts, order.bookFormat, NEW_PROOF_LAYOUT_VERSION);
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
-  const previewBuffer = await _buildPdf(story, order, allUrls);
-  const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
+  const orderForBuild = { ...order, layoutVersion: NEW_PROOF_LAYOUT_VERSION };
+  const previewBuffer = await _buildPdf(story, orderForBuild, allUrls);
+  const interiorBuffer = await _buildPrintInteriorPdf(story, orderForBuild, allUrls);
 
   const proofVersion = newProofVersion();
   const proofUrl = await _upload(order.id, previewBuffer, proofArtifactPath(proofVersion));
@@ -527,6 +539,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   const finalPrintProofPatch: Partial<OrderRecord> = {
     fulfillmentStatus: 'proof_ready',
     status: 'preview_ready',
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     storyArtifactUrl: proofUrl,
     proofSourceFingerprint: sourceFingerprint,
     proofVersion,

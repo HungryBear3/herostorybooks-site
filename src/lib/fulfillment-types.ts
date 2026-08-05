@@ -57,6 +57,64 @@ export interface PageTextLayout {
   panelStyle: TextPanelStyle;
 }
 
+/**
+ * Durable discriminator for how a book's story pages are laid out and
+ * rendered. This is an explicit, per-order marker — never inferred at render
+ * time — so the renderer can fail closed for modern books with missing
+ * metadata instead of silently coercing to the legacy bottom band.
+ *
+ * - 'legacy_bottom_band' : the current Release-1 bottom paper band over art.
+ *                          Missing/legacy per-page metadata is tolerated and
+ *                          normalized (existing behavior).
+ * - 'modern_full_bleed'  : the full-bleed overlay system with explicit,
+ *                          validated per-page text placement. Missing or
+ *                          invalid page metadata MUST fail closed.
+ *
+ * Absent (undefined/null) on a record = unmarked historical order → treated as
+ * legacy at read time WITHOUT rewriting the record (migration boundary).
+ */
+export type LayoutVersion = 'legacy_bottom_band' | 'modern_full_bleed';
+
+const TEXT_ZONES: readonly TextZone[] = [
+  'top_left', 'top_right', 'bottom_left', 'bottom_right', 'bottom_band', 'top_band', 'natural',
+];
+const TEXT_COLOR_MODES: readonly TextColorMode[] = ['light', 'dark', 'auto'];
+const TEXT_PANEL_STYLES: readonly TextPanelStyle[] = [
+  'none', 'translucent_cream', 'translucent_dark', 'soft_scrim',
+];
+
+/**
+ * True iff `layout` is present and every field is a known enum member. Shared
+ * by the story-page contract validator and the PDF renderer's fail-closed
+ * gate so both agree on what "valid modern layout metadata" means.
+ */
+export function isValidPageTextLayout(layout: PageTextLayout | null | undefined): layout is PageTextLayout {
+  if (!layout || typeof layout !== 'object') return false;
+  return (
+    TEXT_ZONES.includes(layout.zone) &&
+    TEXT_COLOR_MODES.includes(layout.colorMode) &&
+    TEXT_PANEL_STYLES.includes(layout.panelStyle)
+  );
+}
+
+/** A book is rendered/validated under the modern contract ONLY when explicitly
+ *  marked modern. Absent or 'legacy_bottom_band' → legacy (no record rewrite). */
+export function isModernLayout(layoutVersion: LayoutVersion | null | undefined): boolean {
+  return layoutVersion === 'modern_full_bleed';
+}
+
+/**
+ * The layout version assigned to newly generated / regenerated proofs.
+ *
+ * Phase 1 keeps this the legacy bottom band — the exact output of the current
+ * renderer — because per-page layout metadata is not yet guaranteed by story
+ * generation and the modern positioned renderer does not exist yet. Marking
+ * new proofs modern now would intermittently fail-close live generation.
+ * Phase 2 flips this single constant to `'modern_full_bleed'` once per-page
+ * metadata production and the positioned renderer land.
+ */
+export const NEW_PROOF_LAYOUT_VERSION: LayoutVersion = 'legacy_bottom_band';
+
 export interface StoryPage {
   pageNum: number;
   sceneTitle: string;

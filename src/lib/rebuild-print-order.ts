@@ -50,6 +50,8 @@ import {
   type StoryWithMeta,
 } from './story-generator.ts';
 import type { StoryContent } from './fulfillment-types.ts';
+import { NEW_PROOF_LAYOUT_VERSION } from './fulfillment-types.ts';
+import { assertStoryPageSet } from './story-page-contract.ts';
 import { newProofVersion, proofArtifactPath } from './fulfillment.ts';
 import { proofRenderSourceFingerprint } from './review-source-identity.ts';
 
@@ -294,8 +296,14 @@ export async function rebuildPrintOrder(
   // print interior that goes to Lulu (buildPrintInteriorPdf). The slice
   // 2 print interior renderer is what introduces the matter pages and
   // reduces filler — that's the fix we're delivering to these orders.
-  const proofBuffer = await _buildPdf(story, order, allUrls);
-  const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
+  // Fail closed: the rebuilt page set must satisfy the book contract before we
+  // publish a proof/interior or move the order to preview_ready. This is the
+  // exact defect that produced a 6-page/14-page partial — a short regenerated
+  // set now aborts the rebuild instead of shipping.
+  assertStoryPageSet(newPageArtifacts, order.bookFormat, NEW_PROOF_LAYOUT_VERSION);
+  const orderForBuild = { ...order, layoutVersion: NEW_PROOF_LAYOUT_VERSION };
+  const proofBuffer = await _buildPdf(story, orderForBuild, allUrls);
+  const interiorBuffer = await _buildPrintInteriorPdf(story, orderForBuild, allUrls);
 
   const proofVersion = newProofVersion();
   const proofUrl = await _upload(order.id, proofBuffer, proofArtifactPath(proofVersion));
@@ -316,6 +324,7 @@ export async function rebuildPrintOrder(
     storyArtifactUrl: proofUrl,
     proofSourceFingerprint,
     proofVersion,
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     storyMeta,
     printInteriorArtifactUrl: interiorUrl,
     printInteriorMd5: interiorMd5,

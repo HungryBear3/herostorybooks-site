@@ -5,11 +5,32 @@ import { fileURLToPath } from 'node:url';
 
 import type { OrderRecord } from './orders.ts';
 import type {
+  LayoutVersion,
   PageTextLayout,
   StoryContent,
   TextColorMode,
   TextPanelStyle,
 } from './fulfillment-types.ts';
+import { isModernLayout, isValidPageTextLayout } from './fulfillment-types.ts';
+
+/**
+ * Thrown when a book explicitly marked `modern_full_bleed` reaches the story
+ * renderer with a page whose layout metadata is missing or invalid. The build
+ * aborts (fail closed) rather than silently coercing to the legacy bottom
+ * band, so a partial/legacy proof is never produced for a modern book.
+ */
+export class ModernLayoutMetadataError extends Error {
+  readonly pageIndex: number | undefined;
+  constructor(pageIndex?: number) {
+    super(
+      `Modern book is missing valid per-page layout metadata` +
+        (pageIndex != null ? ` (page index ${pageIndex})` : '') +
+        ` — refusing to render through the legacy bottom band`,
+    );
+    this.name = 'ModernLayoutMetadataError';
+    this.pageIndex = pageIndex;
+  }
+}
 
 // Import the standalone PDFKit build directly. The default 'pdfkit' entry
 // (js/pdfkit.js) reads its AFM font metrics from node_modules/pdfkit/js/data
@@ -165,7 +186,17 @@ export function resolvePageTextLayout(layout?: PageTextLayout): {
 export function getPictureBookStoryLayout(
   kind: 'proof' | 'print',
   textLayout?: PageTextLayout,
+  layoutVersion?: LayoutVersion | null,
+  pageIndex?: number,
 ): PictureBookStoryLayout {
+  // Fail closed for modern books: an explicitly-modern book must carry valid
+  // per-page layout metadata. Never silently fall back to the legacy bottom
+  // band for a modern page. Legacy/unmarked books keep the existing tolerant
+  // normalization below.
+  if (isModernLayout(layoutVersion) && !isValidPageTextLayout(textLayout)) {
+    throw new ModernLayoutMetadataError(pageIndex);
+  }
+
   // Release 1 contract: story pages are always rendered as a clean bottom
   // paper band under the art. Legacy `textLayout.zone` metadata is parsed
   // through resolvePageTextLayout so panelStyle/colorMode normalization
@@ -687,8 +718,10 @@ function drawStoryPage(
   storyText: string,
   imageBuffer: ArrayBuffer | null,
   textLayout?: PageTextLayout,
+  layoutVersion?: LayoutVersion | null,
+  pageIndex?: number,
 ) {
-  const layout = getPictureBookStoryLayout('proof', textLayout);
+  const layout = getPictureBookStoryLayout('proof', textLayout, layoutVersion, pageIndex);
   // Body-only render — the proof draw site does NOT print sceneTitle,
   // so we ask the fitter not to budget any vertical room for it. That
   // lets the story body use the whole safe zone and removes the
@@ -948,7 +981,7 @@ export async function buildPdf(
     // Story pages
     story.pages.forEach((page, i) => {
       doc.addPage();
-      drawStoryPage(doc, renderedPageNumber, page.sceneTitle, page.story, imageBuffers[i + 1] ?? null, page.textLayout);
+      drawStoryPage(doc, renderedPageNumber, page.sceneTitle, page.story, imageBuffers[i + 1] ?? null, page.textLayout, order.layoutVersion, i);
       renderedPageNumber += 1;
     });
 
@@ -1055,7 +1088,7 @@ export async function buildPrintInteriorPdf(
 
     story.pages.forEach((page, index) => {
       doc.addPage();
-      const layout = getPictureBookStoryLayout('print', page.textLayout);
+      const layout = getPictureBookStoryLayout('print', page.textLayout, order.layoutVersion, index);
       // Body-only render — the print loop does NOT print sceneTitle on
       // story pages, so the fitter must not budget for a title or the
       // story copy sits in the upper half of the cream band with

@@ -246,15 +246,26 @@ test('initial digital proof URL is immutable and keyed by its persisted proof ve
       generateStory: async () => ({
         title: 'Synthetic Immutable Story',
         characterDescription: 'Synthetic character',
-        pages: [{
-          pageNum: 1,
-          sceneTitle: 'Synthetic Scene',
-          story: 'Synthetic story text',
-          imagePrompt: 'Synthetic illustration prompt',
-          textLayout: { zone: 'bottom_band', colorMode: 'dark', panelStyle: 'translucent_cream' },
-        }],
+        // 24 story pages to satisfy the digital page-count contract; page 1
+        // keeps its named scene + layout for the assertions below.
+        pages: [
+          {
+            pageNum: 1,
+            sceneTitle: 'Synthetic Scene',
+            story: 'Synthetic story text',
+            imagePrompt: 'Synthetic illustration prompt',
+            textLayout: { zone: 'bottom_band' as const, colorMode: 'dark' as const, panelStyle: 'translucent_cream' as const },
+          },
+          ...Array.from({ length: 23 }, (_, i) => ({
+            pageNum: i + 2,
+            sceneTitle: `Synthetic Scene ${i + 2}`,
+            story: `Synthetic story text ${i + 2}`,
+            imagePrompt: `Synthetic illustration prompt ${i + 2}`,
+            textLayout: { zone: 'bottom_band' as const, colorMode: 'dark' as const, panelStyle: 'translucent_cream' as const },
+          })),
+        ],
       }),
-      generateImages: async () => ['https://example.invalid/generated-page.png'],
+      generateImages: async (prompts) => prompts.map((_, i) => `https://example.invalid/generated-page-${i}.png`),
       buildPdf: async () => Buffer.from('%PDF synthetic immutable'),
       uploadArtifact: async (id, _buffer, filename) => {
         uploaded.push(filename);
