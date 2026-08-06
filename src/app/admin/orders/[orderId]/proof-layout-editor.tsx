@@ -14,8 +14,20 @@ import {
   resolveProofTextColor,
   type ProofCardGeometry,
 } from '@/lib/proof-layout-override';
+import {
+  applyKeyboardGeometry,
+  applyPointerMove,
+  applyPointerResize,
+  colorChoiceFromOverride as initialColorChoice,
+  defaultCardGeometry as defaultGeometry,
+  geometryFromOverride as toGeometry,
+  isEditorArrowKey,
+  type LayoutColorChoice,
+} from '@/lib/proof-layout-editor-core';
 
-type ColorChoice = 'legacy_default' | ProofTextColor;
+// Shared color choice type + palette (geometry/keyboard/contrast behaviour is
+// shared with the customer editor via proof-layout-editor-core — no fork).
+type ColorChoice = LayoutColorChoice;
 const COLOR_OPTIONS: { value: ColorChoice; swatch: string; label: string }[] = [
   { value: 'legacy_default', swatch: LEGACY_DEFAULT_TEXT_COLOR.text, label: 'Default (legacy)' },
   { value: 'dark_brown', swatch: PROOF_TEXT_COLORS.dark_brown.text, label: 'Dark brown' },
@@ -25,8 +37,6 @@ const COLOR_OPTIONS: { value: ColorChoice; swatch: string; label: string }[] = [
 
 const PAGE_ASPECT = 595.28 / 841.89;
 const STORY_IMAGE_HEIGHT_FRACTION = 650 / 841.89;
-const KEY_STEP = 0.01;
-const KEY_STEP_LARGE = 0.05;
 
 function resolveChoice(choice: ColorChoice) {
   return resolveProofTextColor(choice === 'legacy_default' ? undefined : choice);
@@ -36,28 +46,9 @@ function contrastFor(choice: ColorChoice, opacity: number) {
   return evaluateProofTextContrast(choice === 'legacy_default' ? undefined : choice, opacity);
 }
 
-function defaultGeometry(): ProofCardGeometry {
-  return canonicalizeProofCardGeometry({
-    x: 42 / 595.28,
-    y: 650 / 841.89,
-    width: (595.28 - 84) / 595.28,
-    height: 156 / 841.89,
-    opacity: 0.9,
-    fontScale: 1,
-  });
-}
-
-function toGeometry(override: ProofCardOverride | null | undefined): ProofCardGeometry {
-  return override ? canonicalizeProofCardGeometry(override) : defaultGeometry();
-}
-
-function initialColorChoice(override: ProofCardOverride | null | undefined): ColorChoice {
-  return override?.textColor ?? 'legacy_default';
-}
-
 type DragMode =
-  | { kind: 'move'; startX: number; startY: number; originX: number; originY: number }
-  | { kind: 'resize'; startX: number; startY: number; originW: number; originH: number };
+  | { kind: 'move'; startX: number; startY: number; origin: ProofCardGeometry }
+  | { kind: 'resize'; startX: number; startY: number; origin: ProofCardGeometry };
 
 interface Props {
   orderId: string;
@@ -148,8 +139,7 @@ function ProofLayoutEditorState({
       const rect = frame.getBoundingClientRect();
       const dx = (event.clientX - drag.startX) / rect.width;
       const dy = (event.clientY - drag.startY) / rect.height;
-      if (drag.kind === 'move') update({ x: drag.originX + dx, y: drag.originY + dy });
-      else update({ width: drag.originW + dx, height: drag.originH + dy });
+      setGeo(drag.kind === 'move' ? applyPointerMove(drag.origin, dx, dy) : applyPointerResize(drag.origin, dx, dy));
     }
     function onUp() {
       dragRef.current = null;
@@ -164,49 +154,21 @@ function ProofLayoutEditorState({
 
   function startMove(event: React.PointerEvent) {
     event.preventDefault();
-    dragRef.current = {
-      kind: 'move',
-      startX: event.clientX,
-      startY: event.clientY,
-      originX: geo.x,
-      originY: geo.y,
-    };
+    dragRef.current = { kind: 'move', startX: event.clientX, startY: event.clientY, origin: geo };
   }
 
   function startResize(event: React.PointerEvent) {
     event.preventDefault();
     event.stopPropagation();
-    dragRef.current = {
-      kind: 'resize',
-      startX: event.clientX,
-      startY: event.clientY,
-      originW: geo.width,
-      originH: geo.height,
-    };
+    dragRef.current = { kind: 'resize', startX: event.clientX, startY: event.clientY, origin: geo };
   }
 
   function onKeyDown(event: React.KeyboardEvent) {
-    const step = event.shiftKey ? KEY_STEP_LARGE : KEY_STEP;
-    const resize = event.altKey;
-    switch (event.key) {
-      case 'ArrowLeft':
-        event.preventDefault();
-        resize ? update({ width: geo.width - step }) : update({ x: geo.x - step });
-        break;
-      case 'ArrowRight':
-        event.preventDefault();
-        resize ? update({ width: geo.width + step }) : update({ x: geo.x + step });
-        break;
-      case 'ArrowUp':
-        event.preventDefault();
-        resize ? update({ height: geo.height - step }) : update({ y: geo.y - step });
-        break;
-      case 'ArrowDown':
-        event.preventDefault();
-        resize ? update({ height: geo.height + step }) : update({ y: geo.y + step });
-        break;
-      default:
-        break;
+    if (!isEditorArrowKey(event.key)) return;
+    const next = applyKeyboardGeometry(geo, event.key, { shift: event.shiftKey, alt: event.altKey });
+    if (next) {
+      event.preventDefault();
+      setGeo(next);
     }
   }
 

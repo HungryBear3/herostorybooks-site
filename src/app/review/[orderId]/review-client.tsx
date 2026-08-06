@@ -3,8 +3,15 @@
 import { useState } from 'react';
 
 import type { PageArtifact } from '@/lib/orders';
+import type { ReviewSnapshot } from '@/lib/page-review';
 import { hasUnresolvedChangeRequests } from '@/lib/customer-text-change-request';
+import { canOfferCustomerLayoutEditing, editorIdentityKey } from '@/lib/proof-layout-editor-core';
 import { InlineProofPreview } from './inline-proof-preview';
+import CustomerProofLayoutEditor from './customer-proof-layout-editor';
+
+function reviewTokenFromUrl(): string | null {
+  return typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('token') : null;
+}
 
 const FEEDBACK_HELPER =
   'Tell us what to change on this page — for example: fix the hands, make the child look happier, brighten the garden, or make the face look more like the uploaded photo.';
@@ -26,6 +33,9 @@ interface Snapshot {
   storyArtifactUrl: string | null;
   /** Revision that must be echoed back when acknowledging. */
   proofVersion: string | null;
+  /** Current proof source fingerprint (content-hash ETag) the layout editor
+   *  echoes back for optimistic concurrency. Null unless a fresh proof exists. */
+  proofSourceFingerprint: string | null;
   /** Revision already acknowledged, if any. */
   proofReviewedVersion: string | null;
   proofReviewedAt: string | null;
@@ -58,8 +68,10 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
+  const [layoutEditorOpen, setLayoutEditorOpen] = useState(false);
 
   const selected = snapshot.pageArtifacts[selectedIdx];
+  const canEditLayout = canOfferCustomerLayoutEditing(snapshot);
   const acceptedCount = snapshot.pageArtifacts.filter((p) => p.accepted).length;
   const allAccepted =
     snapshot.pageArtifacts.length > 0 &&
@@ -268,6 +280,42 @@ No image yet
             </div>
 
             <p className="mb-3 text-sm text-gray-700">{selected.storyText}</p>
+
+            {/* ── Bounded page-layout editor (customer surface) ── */}
+            {canEditLayout ? (
+              layoutEditorOpen ? (
+                <CustomerProofLayoutEditor
+                  key={editorIdentityKey(snapshot.orderId, selected.pageIndex, snapshot, selected.proofCardOverride)}
+                  orderId={snapshot.orderId}
+                  reviewToken={reviewTokenFromUrl()}
+                  pageIndex={selected.pageIndex}
+                  imageUrl={selected.currentImageUrl}
+                  storyText={selected.storyText}
+                  proofVersion={snapshot.proofVersion!}
+                  sourceFingerprint={snapshot.proofSourceFingerprint!}
+                  initialOverride={selected.proofCardOverride ?? null}
+                  onCommitted={(next: ReviewSnapshot) => {
+                    setSnapshot(next);
+                    setLayoutEditorOpen(false);
+                  }}
+                  onClose={() => setLayoutEditorOpen(false)}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setLayoutEditorOpen(true)}
+                  className="mb-4 min-h-11 rounded-full border border-forest px-4 text-sm font-semibold text-forest"
+                  data-testid="open-layout-editor"
+                >
+                  Adjust this page’s text placement
+                </button>
+              )
+            ) : snapshot.reviewStatus !== 'approved' ? (
+              <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                An updated proof is being prepared — you’ll be able to adjust this page’s text placement once it’s ready.
+              </p>
+            ) : null}
+
             <p className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-900">
               {REGENERATION_POLICY}
             </p>
