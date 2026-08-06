@@ -183,7 +183,10 @@ export type ReviewAuditEventType =
   | 'print_upgrade_paid'
   | 'refund_issued'
   | 'refund_refused'
-  | 'internal_disposition_marked';
+  | 'internal_disposition_marked'
+  | 'page_layout_override_applied'
+  | 'page_layout_override_reset'
+  | 'layout_help_requested';
 
 export interface ReviewAuditEvent {
   /** ISO timestamp the event was recorded. */

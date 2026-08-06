@@ -5,7 +5,7 @@ import { getOrder, getOrderPhotoUrl, isPrintFormat, OrderVersionConflictError, o
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
-import { NEW_PROOF_LAYOUT_VERSION } from './fulfillment-types.ts';
+import { NEW_PROOF_LAYOUT_VERSION, withRecommendedPageMetadata } from './fulfillment-types.ts';
 import { assertStoryPageSet, validateStoryPageSet } from './story-page-contract.ts';
 import { generateStory, generateStoryWithMeta } from './story-generator.ts';
 import type { StoryWithMeta } from './story-generator.ts';
@@ -157,22 +157,22 @@ async function runStoryGeneration(
   order: OrderRecord,
   deps: FulfillmentDeps,
 ): Promise<StoryWithMeta> {
-  if (deps.generateStoryWithMeta) {
-    return deps.generateStoryWithMeta(order);
-  }
-  if (deps.generateStory) {
-    const story = await deps.generateStory(order);
-    return {
-      story,
-      meta: {
-        source: 'template',
-        model: 'test_mock_legacy',
-        generatedAt: new Date().toISOString(),
-        fallbackError: null,
-      },
-    };
-  }
-  return generateStoryWithMeta(order);
+  const result = deps.generateStoryWithMeta
+    ? await deps.generateStoryWithMeta(order)
+    : deps.generateStory
+      ? {
+          story: await deps.generateStory(order),
+          meta: {
+            source: 'template' as const,
+            model: 'test_mock_legacy',
+            generatedAt: new Date().toISOString(),
+            fallbackError: null,
+          },
+        }
+      : await generateStoryWithMeta(order);
+  // Single choke point: guarantee valid recommended per-page metadata for every
+  // generated story before it seeds artifacts or renders.
+  return { ...result, story: withRecommendedPageMetadata(result.story) };
 }
 
 async function runImageGeneration(

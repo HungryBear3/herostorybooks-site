@@ -50,7 +50,7 @@ import {
   type StoryWithMeta,
 } from './story-generator.ts';
 import type { StoryContent } from './fulfillment-types.ts';
-import { NEW_PROOF_LAYOUT_VERSION } from './fulfillment-types.ts';
+import { NEW_PROOF_LAYOUT_VERSION, withRecommendedPageMetadata } from './fulfillment-types.ts';
 import { assertStoryPageSet } from './story-page-contract.ts';
 import { newProofVersion, proofArtifactPath } from './fulfillment.ts';
 import { proofRenderSourceFingerprint } from './review-source-identity.ts';
@@ -220,7 +220,10 @@ export async function rebuildPrintOrder(
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
   const now = (deps.now ?? (() => new Date()))();
 
-  const { story, meta: storyMeta } = await _generateStoryWithMeta(order);
+  const { story: rawStory, meta: storyMeta } = await _generateStoryWithMeta(order);
+  // Guarantee valid recommended per-page metadata before seeding artifacts or
+  // rendering, so the (modern) rebuild never fails closed on missing metadata.
+  const story = withRecommendedPageMetadata(rawStory);
 
   // Image generation — long-form story now means N images per print order.
   const characterAnchor = story.characterDescription ?? null;

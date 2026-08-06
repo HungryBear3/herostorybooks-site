@@ -103,6 +103,23 @@ export function isKnownLayoutVersion(layoutVersion: unknown): layoutVersion is L
   return layoutVersion == null || layoutVersion === 'legacy_bottom_band' || layoutVersion === 'modern_full_bleed';
 }
 
+/**
+ * The recommended per-page text layout for a modern book — the bottom-band
+ * treatment the current renderer produces (dark prose on the approved cream
+ * paper band). Every generated / regenerated page is guaranteed a valid layout
+ * so a modern book never reaches the fail-closed gate with missing metadata.
+ */
+export function recommendedPageTextLayout(): PageTextLayout {
+  return { zone: 'bottom_band', colorMode: 'dark', panelStyle: 'translucent_cream' };
+}
+
+/** Return a VALID page layout: the page's own metadata when structurally valid,
+ *  otherwise the recommended default. Used at every page-seeding boundary so
+ *  modern books always carry valid per-page metadata. */
+export function ensureRecommendedTextLayout(layout: PageTextLayout | null | undefined): PageTextLayout {
+  return isValidPageTextLayout(layout) ? layout : recommendedPageTextLayout();
+}
+
 /** A book is rendered/validated under the modern contract ONLY when explicitly
  * marked modern. Callers must reject unknown non-null values before using this
  * predicate; only absent/null and explicit legacy are legacy-compatible. */
@@ -113,12 +130,16 @@ export function isModernLayout(layoutVersion: LayoutVersion | null | undefined):
 /**
  * The layout version assigned to newly generated / regenerated proofs.
  *
- * Phase 1 keeps this the legacy bottom band — the exact output of the current
- * renderer — because per-page layout metadata is not yet guaranteed by story
- * generation and the modern positioned renderer does not exist yet. Marking
- * new proofs modern now would intermittently fail-close live generation.
- * Phase 2 flips this single constant to `'modern_full_bleed'` once per-page
- * metadata production and the positioned renderer land.
+ * The metadata guarantee (`withRecommendedPageMetadata`, applied at each
+ * generation choke point) is in place and proven, so a modern book never
+ * reaches the fail-closed gate/renderer with missing metadata on the INITIAL
+ * generation path. The flip to `'modern_full_bleed'` is intentionally deferred
+ * to its own follow-up: the proof-REBUILD paths (regenerate auto-rebuild,
+ * rebuildProofFromPageArtifacts) currently stamp this constant onto existing
+ * orders and their fingerprint identity folds layoutVersion, so flipping needs
+ * a coordinated change that also guarantees metadata on rebuilt pages and
+ * reconciles proofSourceFingerprint vs proofRenderSourceFingerprint. Kept legacy
+ * here so this slice stays green and single-purpose.
  */
 export const NEW_PROOF_LAYOUT_VERSION: LayoutVersion = 'legacy_bottom_band';
 
@@ -192,6 +213,17 @@ export interface StoryContent {
   dedication?: string;
   characterDescription: string;
   pages: StoryPage[];
+}
+
+/** Guarantee every story page carries VALID per-page layout metadata (its own
+ *  when structurally valid, else the recommended default) so a modern book
+ *  never reaches the fail-closed gate/renderer with missing metadata. Applied
+ *  at each story-generation choke point — covering seeded artifacts AND render. */
+export function withRecommendedPageMetadata(story: StoryContent): StoryContent {
+  return {
+    ...story,
+    pages: story.pages.map((p) => ({ ...p, textLayout: ensureRecommendedTextLayout(p.textLayout) })),
+  };
 }
 
 /**
