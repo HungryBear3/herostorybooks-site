@@ -112,6 +112,36 @@ export function canonicalizeProofCardGeometry(input: Partial<ProofCardGeometry>)
   return { x, y, width, height, opacity, fontScale };
 }
 
+// ── Renderer geometry contract (SHARED with the PDF proof renderer) ──────────
+//
+// These are the exact page/card metrics the modern_full_bleed proof renderer
+// draws with (pdf-builder.ts imports them, so there is ONE source of truth and
+// the customer CSS preview cannot drift from the printed proof). All lengths are
+// PDF points; the derived fractions are page-relative (0..1). Pure + pdfkit-free,
+// so a client component can import them safely.
+
+/** A4 proof page, in PDF points. */
+export const PROOF_PAGE_WIDTH_PT = 595.28;
+export const PROOF_PAGE_HEIGHT_PT = 841.89;
+/** Full-bleed artwork frame height (top of the page); the paper/text band is
+ *  everything below it. */
+export const PROOF_ART_FRAME_HEIGHT_PT = 650;
+/** Horizontal + vertical padding inside the text panel (the text safe zone). */
+export const PROOF_CARD_TEXT_INSET_PT = 16;
+export const PROOF_CARD_VERTICAL_INSET_PT = 10;
+/** Panel rounded-corner radius. */
+export const PROOF_CARD_CORNER_RADIUS_PT = 12;
+/** Body font baseline the renderer starts from before fit-shrinking, then scales
+ *  by fontScale. */
+export const PROOF_CARD_BASE_FONT_PT = 15;
+export const PROOF_CARD_BASE_LINE_GAP_PT = 5;
+/** Fit floor the renderer shrinks to before declaring overflow. */
+export const PROOF_CARD_MIN_FONT_PT = 12;
+export const PROOF_CARD_MIN_LINE_GAP_PT = 3;
+
+/** Fraction of page height occupied by the artwork frame (~0.7722). */
+export const PROOF_ART_FRAME_FRACTION = PROOF_ART_FRAME_HEIGHT_PT / PROOF_PAGE_HEIGHT_PT;
+
 // ── Approved text-color palette (fixed production values) ────────────────────
 //
 // Absence / no explicit color === legacy_default = the existing text token
@@ -291,5 +321,147 @@ export function assembleProofCardOverride(params: {
     authoredAgainstFingerprint: params.authoredAgainstFingerprint,
     appliedAt: params.appliedAt,
     appliedBy: params.appliedBy,
+  };
+}
+
+// ── Adaptive text fit (shared decision policy, browser-safe) ─────────────────
+//
+// The renderer measures the actual story text and shrinks the base font from
+// 15pt to 12pt (then the line gap 5→3) until it fits the panel's safe zone. The
+// FIT LOOP below is the single source of truth for that decision; the renderer
+// consumes it with a PDFKit measurer (byte-identical output) and the preview
+// consumes it with the browser-safe deterministic measurer below — so preview
+// typography follows the renderer's real 15→12 decision instead of a fixed size.
+
+export interface ProofCardFit {
+  baseFontSize: number;
+  baseLineGap: number;
+  fontSize: number;
+  lineGap: number;
+  neededHeightPt: number;
+  overflowed: boolean;
+}
+
+/**
+ * THE fit decision. `measure(fontSizePt, lineGapPt)` returns the wrapped text
+ * height in points. Shrinks font 15→12, then line gap 5→3, until it fits
+ * `safeHeightPt`; then applies `fontScale`. Pure — the measurer is injected so
+ * the same policy serves PDFKit (renderer) and the browser (preview).
+ */
+export function resolveProofCardFontFit(params: {
+  measure: (fontSizePt: number, lineGapPt: number) => number;
+  safeHeightPt: number;
+  fontScale: number;
+}): ProofCardFit {
+  const { measure, safeHeightPt, fontScale } = params;
+  let baseFontSize = PROOF_CARD_BASE_FONT_PT;
+  let baseLineGap = PROOF_CARD_BASE_LINE_GAP_PT;
+  while (measure(baseFontSize, baseLineGap) > safeHeightPt) {
+    if (baseFontSize > PROOF_CARD_MIN_FONT_PT) baseFontSize -= 1;
+    else if (baseLineGap > PROOF_CARD_MIN_LINE_GAP_PT) baseLineGap -= 1;
+    else break;
+  }
+  const fontSize = baseFontSize * fontScale;
+  const lineGap = baseLineGap * fontScale;
+  const neededHeightPt = measure(fontSize, lineGap);
+  return { baseFontSize, baseLineGap, fontSize, lineGap, neededHeightPt, overflowed: neededHeightPt > safeHeightPt };
+}
+
+// NOTE: there is deliberately NO browser-side text estimator. An average-glyph
+// approximation cannot match PDFKit's embedded-font measurement, so the preview
+// derives its fit/overflow from the AUTHORITATIVE read-only fit route (real
+// renderer) — see evaluateProofFit / customerProofFitUrl. `resolveProofCardFontFit`
+// above stays shared with the renderer only.
+
+// ── Pure preview model (shared, CSS-ready) ───────────────────────────────────
+//
+// Structural translation of the renderer contract above into frame-relative
+// percentages so a customer CSS preview matches the printed proof's structure:
+// artwork frame vs paper band, panel rect, panel-only opacity, fully-opaque
+// vertically-centered text at the same normalized insets, and renderer-aligned
+// adaptive text size. When story text is supplied the preview font follows the
+// renderer's real 15→12pt fit decision; otherwise it falls back to the base
+// size. This is a PLACEMENT preview — exact PDFKit line breaks are not
+// reproduced in CSS — but the fit DECISION, geometry, opacity separation,
+// insets, centering, and scale are faithful. No pdfkit, no I/O.
+
+export interface ProofCardPreviewRect {
+  xPct: number;
+  yPct: number;
+  widthPct: number;
+  heightPct: number;
+}
+
+export interface ProofCardPreviewModel {
+  /** Frame box aspect ratio (width / height) — the page shape. */
+  page: { aspectRatio: number };
+  /** Fraction of the frame height covered by artwork (top); paper band below. */
+  artFrameFraction: number;
+  /** Legibility panel rect, in % of the frame. */
+  panel: ProofCardPreviewRect;
+  /** Opacity applied to the panel BACKGROUND ONLY. */
+  panelOpacity: number;
+  /** Panel background fill (resolved from the approved palette). */
+  panelFill: string;
+  /** Panel corner radius as a % of the frame width. */
+  cornerRadiusPct: number;
+  /** Text safe zone (panel minus renderer insets), in % of the frame. Text is
+   *  fully opaque and vertically centered within it, left-aligned. */
+  text: ProofCardPreviewRect & {
+    centered: true;
+    /** Renderer-aligned fit font (post 15→12pt decision) × fontScale, as a % of
+     *  the frame height. Falls back to base×fontScale when no story text given. */
+    fontSizePctOfFrameHeight: number;
+    /** Text ink — always fully opaque (no opacity channel). */
+    fill: string;
+  };
+  /** Explicit full text opacity, mirroring the renderer's opaque text. */
+  textOpacity: 1;
+  /** True when the story text cannot fit at the minimum font (renderer rejects). */
+  overflowed: boolean;
+}
+
+/**
+ * Build the CSS-ready preview model from normalized card geometry + optional
+ * approved color + an optional AUTHORITATIVE fit (from the real renderer via the
+ * fit route). When `authoritativeFit` is supplied the preview font + overflow
+ * follow the renderer's actual decision; otherwise the font falls back to the
+ * base size and `overflowed` is false (Save is gated separately until the
+ * authoritative fit resolves). Canonicalizes first so preview == persisted ==
+ * rendered.
+ */
+export function proofCardPreviewModel(
+  geometry: ProofCardGeometry,
+  textColor?: ProofTextColor | null,
+  authoritativeFit?: { fontSize: number; overflowed: boolean } | null,
+): ProofCardPreviewModel {
+  const g = canonicalizeProofCardGeometry(geometry);
+  const resolved = resolveProofTextColor(textColor);
+  const insetXFrac = PROOF_CARD_TEXT_INSET_PT / PROOF_PAGE_WIDTH_PT;
+  const insetYFrac = PROOF_CARD_VERTICAL_INSET_PT / PROOF_PAGE_HEIGHT_PT;
+  const fit = authoritativeFit ?? { fontSize: PROOF_CARD_BASE_FONT_PT * g.fontScale, overflowed: false };
+  return {
+    page: { aspectRatio: PROOF_PAGE_WIDTH_PT / PROOF_PAGE_HEIGHT_PT },
+    artFrameFraction: PROOF_ART_FRAME_FRACTION,
+    panel: {
+      xPct: g.x * 100,
+      yPct: g.y * 100,
+      widthPct: g.width * 100,
+      heightPct: g.height * 100,
+    },
+    panelOpacity: g.opacity,
+    panelFill: resolved.fill,
+    cornerRadiusPct: (PROOF_CARD_CORNER_RADIUS_PT / PROOF_PAGE_WIDTH_PT) * 100,
+    text: {
+      xPct: (g.x + insetXFrac) * 100,
+      yPct: (g.y + insetYFrac) * 100,
+      widthPct: (g.width - 2 * insetXFrac) * 100,
+      heightPct: (g.height - 2 * insetYFrac) * 100,
+      centered: true,
+      fontSizePctOfFrameHeight: (fit.fontSize / PROOF_PAGE_HEIGHT_PT) * 100,
+      fill: resolved.text,
+    },
+    textOpacity: 1,
+    overflowed: fit.overflowed,
   };
 }

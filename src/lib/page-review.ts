@@ -52,7 +52,7 @@ import {
   proofTextColorForFingerprint,
   type ProofCardGeometry,
 } from './proof-layout-override.ts';
-import { proofCardTextOverflows } from './pdf-builder.ts';
+import { proofCardTextOverflows, proofCardRendererFit } from './pdf-builder.ts';
 import type { ProofCardOverride, ProofTextColor } from './fulfillment-types.ts';
 import {
   hasUnresolvedChangeRequests,
@@ -1234,6 +1234,9 @@ export interface ReviewSnapshot {
   proofAvailable: boolean;
   /** True when that proof still describes the current pages. */
   proofFresh: boolean;
+  /** Server-derived, fail-closed capability that decides whether the customer
+   *  layout editor is offered (and, if not, the honest reason). */
+  proofLayoutEditing: ProofLayoutEditCapability;
   isPrint: boolean;
   bookFormat: OrderRecord['bookFormat'];
 }
@@ -1254,6 +1257,7 @@ export function reviewSnapshotFromOrder(order: OrderRecord): ReviewSnapshot {
     proofReviewedAt: order.proofReviewedAt ?? null,
     proofAvailable: fresh,
     proofFresh: fresh,
+    proofLayoutEditing: evaluateProofLayoutEditCapability(order),
     isPrint,
     bookFormat: order.bookFormat,
   };
@@ -1331,6 +1335,138 @@ export function evaluateProofLayoutMutationLifecycle(order: OrderRecord): { stat
     return { status: 409, error: 'order_finalized' };
   }
   return null;
+}
+
+/**
+ * The authoritative, fail-closed answer to "may the customer edit this page's
+ * layout right now?" — derived from the SAME server rules the mutation path
+ * enforces (payment/refund eligibility, terminal lifecycle, and live-proof
+ * freshness). Advertised on the ReviewSnapshot so the client never has to
+ * re-derive an incomplete copy of the lifecycle state machine. The mutation
+ * route still revalidates at transaction time; this only decides whether to
+ * OFFER the control and, if not, why.
+ */
+export type ProofLayoutEditReason =
+  | 'available'
+  | 'proof_not_ready'
+  | 'review_approved'
+  | 'lifecycle_closed' // production/print-submitted/shipped/finalized ONLY
+  | 'order_refunded'
+  | 'payment_incomplete';
+
+export interface ProofLayoutEditCapability {
+  allowed: boolean;
+  reason: ProofLayoutEditReason;
+}
+
+export function evaluateProofLayoutEditCapability(order: OrderRecord): ProofLayoutEditCapability {
+  // Order-state eligibility, split into TRUTHFUL, distinct reasons — a refunded
+  // or not-yet-paid order must NEVER be described as "in production". The
+  // per-request token is not order state, so it is checked at mutation time only.
+  if (order.refundedAt || order.stripeRefundId) {
+    return { allowed: false, reason: 'order_refunded' };
+  }
+  if (order.paymentStatus !== 'paid') {
+    return { allowed: false, reason: 'payment_incomplete' };
+  }
+  const lifecycle = evaluateProofLayoutMutationLifecycle(order);
+  if (lifecycle) {
+    // 'lifecycle_closed' now means ACTUAL production closure only
+    // (shipped / in production / print-submitted / finalized).
+    return {
+      allowed: false,
+      reason: lifecycle.error === 'order_approved' ? 'review_approved' : 'lifecycle_closed',
+    };
+  }
+  // A live, current proof identity must exist to bind an edit against.
+  if (!proofIsFresh(order) || !order.proofVersion || !order.proofSourceFingerprint) {
+    return { allowed: false, reason: 'proof_not_ready' };
+  }
+  return { allowed: true, reason: 'available' };
+}
+
+// ── Authoritative, read-only proof-fit (real renderer measurement) ───────────
+
+export interface ProofFitInput {
+  orderId: string;
+  pageIndex: number;
+  geometry: ProofCardGeometry;
+  authoredAgainstProofVersion?: string | null;
+  authoredAgainstFingerprint?: string | null;
+  actor?: ReviewActor;
+}
+export interface ProofFitDecision {
+  overflowed: boolean;
+  baseFontSize: number;
+  baseLineGap: number;
+  fontSize: number;
+  lineGap: number;
+  neededHeightPt: number;
+}
+export interface ProofFitResult {
+  ok: boolean;
+  status: 200 | 400 | 401 | 403 | 404 | 409 | 422;
+  fit?: ProofFitDecision;
+  error?: string;
+}
+
+/**
+ * Read-only, side-effect-free authoritative fit for one page's proposed card
+ * geometry, using the ACTUAL embedded-font PDFKit renderer against the order's
+ * authoritative story text. Same eligibility/lifecycle/freshness/binding gates
+ * as the mutation path (no commit). Never logs story text or the token. The
+ * client uses this to surface real overflow and gate Save so a preview can never
+ * look "fit" where the server renderer would reject it.
+ */
+export async function evaluateProofFit(input: ProofFitInput): Promise<ProofFitResult> {
+  const actor = input.actor ?? INTERNAL_REVIEW_ACTOR;
+  if (!isCompleteProofCardGeometry(input.geometry)) {
+    return { ok: false, status: 422, error: 'invalid_geometry' };
+  }
+  const order = await getOrder(input.orderId);
+  if (!order?.pageArtifacts?.length) return { ok: false, status: 404, error: 'order_not_found' };
+
+  const refusal = evaluateReviewMutationEligibility(order, actor);
+  if (refusal) return { ok: false, status: refusal.status as ProofFitResult['status'], error: refusal.error };
+  const lifecycle = evaluateProofLayoutMutationLifecycle(order);
+  if (lifecycle) return { ok: false, status: lifecycle.status, error: lifecycle.error };
+
+  const page = order.pageArtifacts.find((p) => p.pageIndex === input.pageIndex);
+  if (!page) return { ok: false, status: 404, error: 'page_not_found' };
+
+  const currentFingerprint = proofSourceFingerprint(order);
+  if (!order.proofVersion || !order.proofSourceFingerprint || !order.storyArtifactUrl) {
+    return { ok: false, status: 409, error: 'no_live_proof' };
+  }
+  if (order.proofSourceFingerprint !== currentFingerprint) {
+    return { ok: false, status: 409, error: 'proof_stale' };
+  }
+  // MANDATORY binding — mirror the mutation path exactly. Absent/empty either
+  // value fails closed BEFORE the equality comparisons (a bare, unbound probe
+  // must never receive an authoritative fit).
+  if (!input.authoredAgainstProofVersion || !input.authoredAgainstFingerprint) {
+    return { ok: false, status: 409, error: 'binding_required' };
+  }
+  if (input.authoredAgainstProofVersion !== order.proofVersion) {
+    return { ok: false, status: 409, error: 'stale_revision' };
+  }
+  if (input.authoredAgainstFingerprint !== currentFingerprint) {
+    return { ok: false, status: 409, error: 'stale_fingerprint' };
+  }
+
+  const fit = proofCardRendererFit(canonicalizeProofCardGeometry(input.geometry), page.storyText);
+  return {
+    ok: true,
+    status: 200,
+    fit: {
+      overflowed: fit.overflowed,
+      baseFontSize: fit.baseFontSize,
+      baseLineGap: fit.baseLineGap,
+      fontSize: fit.fontSize,
+      lineGap: fit.lineGap,
+      neededHeightPt: fit.neededHeightPt,
+    },
+  };
 }
 
 /** Bounded numeric geometry for the audit trail — never any customer data. */

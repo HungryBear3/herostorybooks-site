@@ -19,6 +19,7 @@ import path from 'node:path';
 import {
   handleProofLayoutOverrideRequest,
   handleRequestLayoutHelpRequest,
+  handleProofFitRequest,
 } from '../src/lib/proof-layout-route-handler.ts';
 import {
   createOrderRecord, persistOrder, getOrder, __resetOrderStoreAdapterFactoryForTests,
@@ -68,6 +69,8 @@ const applyLayout = (body: unknown, token: string | null = TOKEN) =>
   handleProofLayoutOverrideRequest(req('proof-layout', body, token), ORDER);
 const requestHelp = (body: unknown, token: string | null = TOKEN) =>
   handleRequestLayoutHelpRequest(req('request-help', body, token), ORDER);
+const fit = (body: unknown, token: string | null = TOKEN) =>
+  handleProofFitRequest(req('proof-fit', body, token), ORDER);
 
 function makeTmp() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-layout-route-'));
@@ -413,5 +416,110 @@ test('request-help idempotency is scoped to the current proof fingerprint', asyn
     assert.notEqual(second.body.noop, true);
     const events = (await getOrder(ORDER))?.auditEvents?.filter((e) => e.type === 'layout_help_requested') ?? [];
     assert.equal(events.length, 2);
+  } finally { cleanup(dir); }
+});
+
+// ── R3-B: read-only authoritative fit route ──────────────────────────────────
+
+const ROOMY_BINDING = (o: OrderRecord) => ({ authoredAgainstProofVersion: 'pv_1', authoredAgainstFingerprint: o.proofSourceFingerprint });
+
+test('fit route: authorized read returns the renderer overflow decision, side-effect-free', async () => {
+  const dir = makeTmp();
+  try {
+    const o = await persistSeed();
+    const before = JSON.stringify(await getOrder(ORDER));
+    const r = await fit({ pageIndex: 0, geometry: ROOMY, ...ROOMY_BINDING(o) });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
+    const f = r.body.fit as { overflowed: boolean; baseFontSize: number; fontSize: number };
+    assert.equal(typeof f.overflowed, 'boolean');
+    assert.equal(typeof f.baseFontSize, 'number');
+    // Read-only: the stored order is byte-identical afterwards.
+    assert.equal(JSON.stringify(await getOrder(ORDER)), before);
+  } finally { cleanup(dir); }
+});
+
+test('fit route: a tiny card + long text reports overflow=true (matches the mutation guard)', async () => {
+  const dir = makeTmp();
+  try {
+    const o = await persistSeed({ pageArtifacts: [page(0, { storyText: 'This is a long page of prose that cannot possibly fit inside a tiny card at the minimum font.' }), page(1)] });
+    o.proofSourceFingerprint = proofSourceFingerprint(o); await persistOrder(o);
+    const r = await fit({ pageIndex: 0, geometry: { x: 0.05, y: 0.05, width: 0.16, height: 0.06, opacity: 0.9, fontScale: 1 }, ...ROOMY_BINDING(o) });
+    assert.equal(r.status, 200);
+    assert.equal((r.body.fit as { overflowed: boolean }).overflowed, true);
+  } finally { cleanup(dir); }
+});
+
+test('fit route: missing token is rejected', async () => {
+  const dir = makeTmp();
+  try {
+    const o = await persistSeed();
+    const r = await fit({ pageIndex: 0, geometry: ROOMY, ...ROOMY_BINDING(o) }, null);
+    assert.equal(r.body.ok, false);
+    assert.ok(r.status === 401 || r.status === 403);
+  } finally { cleanup(dir); }
+});
+
+test('fit route: stale revision / fingerprint is refused (client must reload)', async () => {
+  const dir = makeTmp();
+  try {
+    const o = await persistSeed();
+    const stale = await fit({ pageIndex: 0, geometry: ROOMY, authoredAgainstProofVersion: 'pv_OLD', authoredAgainstFingerprint: o.proofSourceFingerprint });
+    assert.equal(stale.status, 409);
+    assert.equal(stale.body.error, 'stale_revision');
+  } finally { cleanup(dir); }
+});
+
+test('fit route: refunded / lifecycle-closed orders are refused, and it never mutates', async () => {
+  const dir = makeTmp();
+  try {
+    const o = await persistSeed({ refundedAt: '2026-08-06T00:00:00.000Z' });
+    const before = JSON.stringify(await getOrder(ORDER));
+    const r = await fit({ pageIndex: 0, geometry: ROOMY, ...ROOMY_BINDING(o) });
+    assert.equal(r.body.ok, false);
+    assert.equal(r.status, 403);
+    assert.equal(JSON.stringify(await getOrder(ORDER)), before);
+  } finally { cleanup(dir); }
+});
+
+test('fit route: invalid geometry is rejected 422', async () => {
+  const dir = makeTmp();
+  try {
+    const o = await persistSeed();
+    const r = await fit({ pageIndex: 0, geometry: { x: 'nope' }, ...ROOMY_BINDING(o) });
+    assert.equal(r.status, 422);
+    assert.equal(r.body.ok, false);
+  } finally { cleanup(dir); }
+});
+
+// R4 Defect 1 — the read-only fit path must require a MANDATORY binding exactly
+// like the mutation path (absent/empty is 409 binding_required, never a fit).
+for (const [name, patch] of [
+  ['missing both', { authoredAgainstProofVersion: undefined, authoredAgainstFingerprint: undefined }],
+  ['version present, fingerprint missing', { authoredAgainstFingerprint: undefined }],
+  ['fingerprint present, version missing', { authoredAgainstProofVersion: undefined }],
+  ['empty-string version', { authoredAgainstProofVersion: '' }],
+  ['empty-string fingerprint', { authoredAgainstFingerprint: '' }],
+] as const) {
+  test(`fit route: ${name} fails closed with 409 binding_required and never mutates`, async () => {
+    const dir = makeTmp();
+    try {
+      const o = await persistSeed();
+      const before = JSON.stringify(await getOrder(ORDER));
+      const r = await fit({ pageIndex: 0, geometry: ROOMY, ...ROOMY_BINDING(o), ...patch });
+      assert.equal(r.status, 409);
+      assert.equal(r.body.error, 'binding_required');
+      assert.equal(JSON.stringify(await getOrder(ORDER)), before, 'read-only: no mutation');
+    } finally { cleanup(dir); }
+  });
+}
+
+test('fit route: a fully current binding still succeeds', async () => {
+  const dir = makeTmp();
+  try {
+    const o = await persistSeed();
+    const r = await fit({ pageIndex: 0, geometry: ROOMY, ...ROOMY_BINDING(o) });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
   } finally { cleanup(dir); }
 });

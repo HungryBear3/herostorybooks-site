@@ -461,7 +461,8 @@ test('REQ17: wording requests are a separate snapshot-authoritative client actio
   const wording = text.slice(start, end);
   assert.match(wording, /request-text-change/, 'wording action must call only the wording route');
   assert.doesNotMatch(wording, /regenerate-page|generatePage|providers?/, 'wording must never call image generation');
-  assert.match(wording, /setSnapshot\(data\.snapshot\)/, 'wording success must replace the full snapshot');
+  // Adoption is routed through the shared coordinator's stale-ordering guard.
+  assert.match(wording, /applyIfCurrent\(token, data\.snapshot\)/, 'wording success must adopt the full authoritative snapshot');
   assert.match(text, /unresolvedWording/, 'the client must derive unresolved wording state');
   assert.match(text, /!allAccepted \|\|[\s\S]*unresolvedWording \|\|[\s\S]*!proofAck/,
     'unresolved wording must disable final approval');
@@ -474,10 +475,10 @@ test('REQ17: failed regeneration applies committed snapshot before the client er
   const end = client.indexOf('async function accept()', start);
   assert.ok(start > 0 && end > start, `${clientRel}: regeneration action must be bounded`);
   const body = client.slice(start, end);
-  const apply = body.indexOf('if (data.snapshot) setSnapshot(data.snapshot)');
+  const apply = body.indexOf('if (data.snapshot) applyIfCurrent(token, data.snapshot)');
   const fail = body.indexOf('if (!res.ok || !data.ok)');
   assert.ok(apply > 0 && fail > apply,
-    'committed snapshot must be applied before a provider/error response returns');
+    'committed snapshot must be adopted before a provider/error response returns');
 
   const routeRel = 'src/app/api/order/[orderId]/regenerate-page/route.ts';
   const route = readFileSync(path.join(REPO, routeRel), 'utf8');
@@ -505,8 +506,12 @@ test('REQ17: admin wording failure applies authoritative snapshot before display
 test('REQ17: every successful review mutation replaces the authoritative snapshot', () => {
   const rel = 'src/app/review/[orderId]/review-client.tsx';
   const text = readFileSync(path.join(REPO, rel), 'utf8');
-  const replacements = text.match(/setSnapshot\(data\.snapshot\)/g) ?? [];
-  assert.ok(replacements.length >= 5, 'regenerate, accept, wording, acknowledgment and approval replace snapshots');
+  // Every mutation adopts the authoritative snapshot through the shared,
+  // stale-ordering-guarded coordinator (regenerate, accept, wording, ack, approval).
+  const replacements = text.match(/applyIfCurrent\(token, data\.snapshot\)/g) ?? [];
+  assert.ok(replacements.length >= 5, 'regenerate, accept, wording, acknowledgment and approval adopt snapshots');
+  // Adoption must be guarded, never a raw setSnapshot of a fetched body.
+  assert.doesNotMatch(text, /setSnapshot\(data\.snapshot\)/, 'raw unguarded snapshot adoption is forbidden');
   assert.doesNotMatch(text, /setSnapshot\(\(s\)\s*=>/, 'partial client-side snapshot patches are forbidden');
   assert.doesNotMatch(text, /useState\([^\n]*proofAck/, 'proof acknowledgment must be derived from the snapshot');
 });

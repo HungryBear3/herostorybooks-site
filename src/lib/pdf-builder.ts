@@ -14,7 +14,18 @@ import type {
   TextPanelStyle,
 } from './fulfillment-types.ts';
 import { isKnownLayoutVersion, isModernLayout, isValidPageTextLayout } from './fulfillment-types.ts';
-import { canonicalizeProofCardGeometry, isValidProofCardOverride, resolveProofTextColor } from './proof-layout-override.ts';
+import {
+  canonicalizeProofCardGeometry,
+  isValidProofCardOverride,
+  resolveProofTextColor,
+  resolveProofCardFontFit,
+  PROOF_ART_FRAME_HEIGHT_PT,
+  PROOF_CARD_TEXT_INSET_PT,
+  PROOF_CARD_VERTICAL_INSET_PT,
+  PROOF_CARD_CORNER_RADIUS_PT,
+  type ProofCardFit,
+  type ProofCardGeometry,
+} from './proof-layout-override.ts';
 
 /**
  * Thrown when a book explicitly marked `modern_full_bleed` reaches the story
@@ -753,9 +764,11 @@ function drawCaptionText(
 // canonicalized at the render boundary so drawn pixels equal fingerprinted
 // values; overflow is detected (fail closed) rather than clipped.
 
-const PROOF_CARD_TEXT_INSET = 16;
-const PROOF_CARD_VERTICAL_INSET = 10;
-const PROOF_CARD_CORNER_RADIUS = 12;
+// Renderer card metrics are the SHARED single source of truth (see
+// proof-layout-override.ts) so the customer CSS preview cannot drift from print.
+const PROOF_CARD_TEXT_INSET = PROOF_CARD_TEXT_INSET_PT;
+const PROOF_CARD_VERTICAL_INSET = PROOF_CARD_VERTICAL_INSET_PT;
+const PROOF_CARD_CORNER_RADIUS = PROOF_CARD_CORNER_RADIUS_PT;
 
 /** Normalized card geometry (page-relative fractions). Structural type shared
  *  with proof-layout-override without importing it into the fingerprint path. */
@@ -779,7 +792,7 @@ function proofCardLayout(box: { x: number; y: number; width: number; height: num
     imageX: 0,
     imageY: 0,
     imageWidth: PAGE_WIDTH,
-    imageHeight: 650,
+    imageHeight: PROOF_ART_FRAME_HEIGHT_PT,
     textInset: PROOF_CARD_TEXT_INSET,
     panelVerticalInset: PROOF_CARD_VERTICAL_INSET,
     textPanelFillOpacity: 1,
@@ -813,28 +826,42 @@ function computeProofCardText(box: ProofCardGeometryLike, storyText: string): Pr
   const safeHeight = safeBottom - safeTop;
 
   const measureDoc = withNoLigatureText(new PDFDocument({ autoFirstPage: false })).font(EMBEDDED_BOOK_FONT);
-  const measuredHeight = (fontSize: number, lineGap: number) => measureDoc
-    .fontSize(fontSize)
-    .lineGap(lineGap)
-    .heightOfString(storyText, { width: textWidth, align: 'left' });
+  // Shared fit policy (single source of truth with the customer preview). The
+  // PDFKit measurer keeps print output byte-identical to the prior inline loop.
+  const fit = resolveProofCardFontFit({
+    measure: (fontSize: number, lineGap: number) => measureDoc
+      .fontSize(fontSize)
+      .lineGap(lineGap)
+      .heightOfString(storyText, { width: textWidth, align: 'left' }),
+    safeHeightPt: safeHeight,
+    fontScale: box.fontScale,
+  });
 
-  let baseFontSize = 15;
-  let baseLineGap = 5;
-  while (measuredHeight(baseFontSize, baseLineGap) > safeHeight) {
-    if (baseFontSize > 12) baseFontSize -= 1;
-    else if (baseLineGap > 3) baseLineGap -= 1;
-    else break;
-  }
-
-  const fontSize = baseFontSize * box.fontScale;
-  const lineGap = baseLineGap * box.fontScale;
-  const neededHeight = measuredHeight(fontSize, lineGap);
-  const overflowed = neededHeight > safeHeight;
-
-  const pad = Math.max(0, Math.floor((safeHeight - neededHeight) / 2));
+  const pad = Math.max(0, Math.floor((safeHeight - fit.neededHeightPt) / 2));
   const drawY = safeTop + pad;
   const drawHeight = Math.max(24, safeBottom - drawY);
-  return { fontSize, lineGap, drawY, drawHeight, overflowed };
+  return { fontSize: fit.fontSize, lineGap: fit.lineGap, drawY, drawHeight, overflowed: fit.overflowed };
+}
+
+/**
+ * The renderer's ACTUAL adaptive fit decision for a card geometry + story text,
+ * using real PDFKit measurement. Exposed so the browser preview's deterministic
+ * fit can be proven to resolve the same 15→12pt / line-gap decision.
+ */
+export function proofCardRendererFit(geometry: ProofCardGeometry, storyText: string): ProofCardFit {
+  const g = canonicalizeProofCardGeometry(geometry);
+  const layout = proofCardLayout(g);
+  const textWidth = layout.textPanelWidth - layout.textInset * 2;
+  const safeHeight = layout.textPanelHeight - layout.panelVerticalInset * 2;
+  const measureDoc = withNoLigatureText(new PDFDocument({ autoFirstPage: false })).font(EMBEDDED_BOOK_FONT);
+  return resolveProofCardFontFit({
+    measure: (fontSize: number, lineGap: number) => measureDoc
+      .fontSize(fontSize)
+      .lineGap(lineGap)
+      .heightOfString(storyText, { width: textWidth, align: 'left' }),
+    safeHeightPt: safeHeight,
+    fontScale: g.fontScale,
+  });
 }
 
 /** True when the story text cannot fit the card at the bounded font scale.
