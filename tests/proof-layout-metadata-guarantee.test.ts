@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { triggerFulfillment, type FulfillmentDeps } from '../src/lib/fulfillment.ts';
+import { proofSourceFingerprint, triggerFulfillment, type FulfillmentDeps } from '../src/lib/fulfillment.ts';
 import { createOrderRecord, persistOrder, getOrder } from '../src/lib/orders.ts';
 import {
   isValidPageTextLayout,
@@ -57,6 +57,10 @@ function cleanup(dir: string) {
   delete process.env.HSB_ORDER_STORE_DIR;
 }
 
+test('new proofs use the modern full-bleed layout contract', () => {
+  assert.equal(NEW_PROOF_LAYOUT_VERSION, 'modern_full_bleed');
+});
+
 test('withRecommendedPageMetadata fills a valid layout on every page (choke point)', () => {
   const out = withRecommendedPageMetadata(STORY_NO_LAYOUT);
   assert.equal(out.pages.length, 24);
@@ -83,6 +87,11 @@ test('a generated digital order has valid layout metadata on EVERY page + the cu
       assert.ok(isValidPageTextLayout(p.textLayout), `generated page ${p.pageIndex} lacks valid layout metadata`);
     }
     assert.equal(after?.layoutVersion, NEW_PROOF_LAYOUT_VERSION, 'seeded with the current layout version');
+    assert.equal(
+      proofSourceFingerprint(after!),
+      after?.proofSourceFingerprint,
+      'initial generation must persist the fingerprint of its normalized modern page source',
+    );
     assert.equal(after?.fulfillmentStatus, 'complete');
   } finally { cleanup(dir); }
 });

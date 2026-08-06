@@ -1,11 +1,11 @@
 import crypto from 'node:crypto';
 import { put } from '@vercel/blob';
 
-import { getOrder, getOrderPhotoUrl, isPrintFormat, OrderVersionConflictError, orderRequiresReferenceImage, updateFulfillmentState, withBlobNamespace, withOrderTransaction } from './orders.ts';
+import { applyFulfillmentPatchTo, getOrder, getOrderPhotoUrl, isPrintFormat, OrderVersionConflictError, orderRequiresReferenceImage, updateFulfillmentState, withBlobNamespace, withOrderTransaction } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
-import { NEW_PROOF_LAYOUT_VERSION, withRecommendedPageMetadata } from './fulfillment-types.ts';
+import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION, withRecommendedPageMetadata } from './fulfillment-types.ts';
 import { assertStoryPageSet, validateStoryPageSet } from './story-page-contract.ts';
 import { generateStory, generateStoryWithMeta } from './story-generator.ts';
 import type { StoryWithMeta } from './story-generator.ts';
@@ -35,6 +35,18 @@ export function pageImageUrlsFromArtifacts(
   return [...artifacts]
     .sort((a, b) => a.pageIndex - b.pageIndex)
     .map(imageUrlForPage);
+}
+
+/**
+ * Normalize legacy page-layout metadata without changing any other rendered or
+ * operational field. Already-valid pages are returned by reference; only a
+ * page with missing/invalid metadata is copied with the recommended layout.
+ */
+export function normalizePageArtifactTextLayouts(artifacts: PageArtifact[]): PageArtifact[] {
+  return artifacts.map((artifact) => {
+    const textLayout = ensureRecommendedTextLayout(artifact.textLayout);
+    return textLayout === artifact.textLayout ? artifact : { ...artifact, textLayout };
+  });
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -79,13 +91,43 @@ export interface FulfillmentDeps {
   getBaseUrl?: () => string;
 }
 
-function paidFulfillmentPatch(order: OrderRecord, patch: Partial<OrderRecord>): Partial<OrderRecord> {
-  return {
-    ...patch,
-    paymentStatus: 'paid',
-    ...(order.stripeSessionId ? { stripeSessionId: order.stripeSessionId } : {}),
-    ...(order.shippingAddress ? { shippingAddress: order.shippingAddress } : {}),
-  };
+function paidFulfillmentPatch(_order: OrderRecord, patch: Partial<OrderRecord>): Partial<OrderRecord> {
+  // Payment, refund, Stripe-session, and shipping state are authoritative on the
+  // current persisted record. Never replay them from a stale fulfillment
+  // snapshot; updateFulfillmentState enforces paid-only fields/statuses against
+  // its current read.
+  return patch;
+}
+
+/** Publish a proof only when its bytes still identify the current source. */
+async function commitProofPatchIfSourceCurrent(
+  orderId: string,
+  sourceFingerprint: string,
+  patch: Partial<OrderRecord>,
+  auditEvent?: NonNullable<OrderRecord['auditEvents']>[number],
+): Promise<boolean> {
+  return withOrderTransaction(
+    orderId,
+    (current) => {
+      // Never revive or publish onto an order refunded while bytes rendered.
+      if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
+        return { abort: false };
+      }
+      const currentPages = normalizePageArtifactTextLayouts(current.pageArtifacts ?? []);
+      const next = applyFulfillmentPatchTo(current, paidFulfillmentPatch(current, {
+        ...patch,
+        // Preserve current operational page state; normalize only metadata.
+        pageArtifacts: currentPages,
+        layoutVersion: NEW_PROOF_LAYOUT_VERSION,
+        ...(auditEvent ? { auditEvents: [...(current.auditEvents ?? []), auditEvent] } : {}),
+      }));
+      if (proofSourceFingerprint(next, currentPages) !== sourceFingerprint) {
+        return { abort: false };
+      }
+      return { commit: next, result: true };
+    },
+    { notFound: () => false },
+  );
 }
 
 function proofReleasePatch(order: OrderRecord): Partial<OrderRecord> {
@@ -230,6 +272,28 @@ async function runWithRetry(
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[fulfillment] orderId=${orderId} attempt=${attempt} error: ${errMsg}`);
 
+      // The rendered bytes are bound to an obsolete source snapshot. Retrying
+      // the same closure cannot make them current and may replay stale paid
+      // state over a concurrent refund, so terminate without another build.
+      if (
+        errMsg === 'proof_source_changed_during_build'
+        || errMsg.includes('paymentStatus=refunded')
+      ) {
+        const current = await getOrder(orderId);
+        const stillPaid = current?.paymentStatus === 'paid' && !current.refundedAt && !current.stripeRefundId;
+        await updateFulfillmentState(orderId, {
+          ...(stillPaid ? { fulfillmentStatus: 'failed_manual_review' as const } : {}),
+          fulfillmentAttempts: attempt,
+          fulfillmentLastError: errMsg,
+        });
+        if (stillPaid && current) {
+          sendOperatorFailureAlert(current, errMsg).catch(e =>
+            console.error(`[fulfillment] operator alert failed for ${orderId}:`, e),
+          );
+        }
+        return;
+      }
+
       if (attempt >= MAX_RETRIES) {
         await updateFulfillmentState(orderId, {
           fulfillmentStatus: 'failed_manual_review',
@@ -358,15 +422,20 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // Fail closed BEFORE building/publishing a proof: the story page set must
   // satisfy the book contract (exact count, unique/contiguous indices, story
   // text + illustration on every page). A partial/duplicated set never reaches
-  // preview_ready. New proofs are the legacy bottom band (see NEW_PROOF_LAYOUT_VERSION).
+  // preview_ready. New proofs use the explicit modern layout discriminator.
   assertStoryPageSet(seededPageArtifacts, order.bookFormat, NEW_PROOF_LAYOUT_VERSION);
   // Include cover image (first imageUrl) + per-page images
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
-  const pdfBuffer = await _buildPdf(story, { ...order, layoutVersion: NEW_PROOF_LAYOUT_VERSION }, allUrls);
+  const orderForBuild = {
+    ...order,
+    pageArtifacts: seededPageArtifacts,
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
+  };
+  const pdfBuffer = await _buildPdf(story, orderForBuild, allUrls);
 
   const proofVersion = newProofVersion();
   const pdfUrl = await _upload(order.id, pdfBuffer, proofArtifactPath(proofVersion));
-  const sourceFingerprint = proofRenderSourceFingerprint({ story, order, imageUrls: allUrls });
+  const sourceFingerprint = proofRenderSourceFingerprint({ story, order: orderForBuild, imageUrls: allUrls });
 
   const proofApprovalToken = order.proofApprovalToken ?? crypto.randomBytes(24).toString('hex');
   const reviewUrl = `${_getBaseUrl()}/review/${order.id}?token=${proofApprovalToken}`;
@@ -394,9 +463,14 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     reviewStatus: 'in_review',
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
-    auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   };
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, finalDigitalPatch));
+  const digitalPublished = await commitProofPatchIfSourceCurrent(
+    order.id,
+    sourceFingerprint,
+    finalDigitalPatch,
+    proofGeneratedEvent,
+  );
+  if (!digitalPublished) throw new Error('proof_source_changed_during_build');
 
   // Delivery email runs AFTER the artifacts are durably persisted at
   // fulfillmentStatus='complete'. If the email fails (e.g. Resend domain
@@ -512,7 +586,11 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // proof + interior — no preview_ready with an undersized book.
   assertStoryPageSet(seededPageArtifacts, order.bookFormat, NEW_PROOF_LAYOUT_VERSION);
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
-  const orderForBuild = { ...order, layoutVersion: NEW_PROOF_LAYOUT_VERSION };
+  const orderForBuild = {
+    ...order,
+    pageArtifacts: seededPageArtifacts,
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
+  };
   const previewBuffer = await _buildPdf(story, orderForBuild, allUrls);
   const interiorBuffer = await _buildPrintInteriorPdf(story, orderForBuild, allUrls);
 
@@ -560,9 +638,14 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     proofApprovalToken,
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
-    auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   };
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, finalPrintProofPatch));
+  const printPublished = await commitProofPatchIfSourceCurrent(
+    order.id,
+    sourceFingerprint,
+    finalPrintProofPatch,
+    proofGeneratedEvent,
+  );
+  if (!printPublished) throw new Error('proof_source_changed_during_build');
 
   // Mirror of the digital path: proof artifacts are durably persisted at
   // fulfillmentStatus='proof_ready'. If the proof-ready email fails we
@@ -826,7 +909,9 @@ export async function buildProofArtifactFromPageArtifacts(
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _buildPrintInteriorPdf = deps.buildPrintInteriorPdf ?? buildPrintInteriorPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
-  const pages = order.pageArtifacts;
+  // Legacy records can predate per-page layout metadata. Normalize the exact
+  // source used by every downstream validation/render/fingerprint operation.
+  const pages = normalizePageArtifactTextLayouts(order.pageArtifacts);
   const proofVersion = newProofVersion();
 
   if (validateStoryPageSet(pages, order.bookFormat, NEW_PROOF_LAYOUT_VERSION)) {
@@ -838,8 +923,8 @@ export async function buildProofArtifactFromPageArtifacts(
 
   const pageUrls = pageImageUrlsFromArtifacts(pages);
   const allUrls: (string | null)[] = [pageUrls[0] ?? null, ...pageUrls];
-  // Regenerated proofs always render with the explicit Phase-1 discriminator.
-  const orderForBuild = { ...order, layoutVersion: NEW_PROOF_LAYOUT_VERSION };
+  // The renderer and fingerprint see the same normalized modern source.
+  const orderForBuild = { ...order, pageArtifacts: pages, layoutVersion: NEW_PROOF_LAYOUT_VERSION };
   const sourceFingerprint = proofRenderSourceFingerprint({ story, order: orderForBuild, imageUrls: allUrls });
 
   let candidate: ProofBuildSuccess;
@@ -876,15 +961,9 @@ export async function buildProofArtifactFromPageArtifacts(
 }
 
 /**
- * Rebuild the proof and persist it with a LAST-WRITE-WINS update.
- *
- * NOT safe for concurrent callers and NOT used by the customer editable-review
- * flows, which build via `buildProofArtifactFromPageArtifacts` and publish
- * through their own conditional, fingerprint-checked commit.
- *
- * Fully guarded regardless: it can never persist a URL without the matching
- * fingerprint and version, so it cannot produce a record that passes a proof
- * gate without an identifiable artifact.
+ * Rebuild the proof and persist it only when its source still matches the
+ * current transactional record. Older callers use this path directly, so it
+ * independently rejects stale build snapshots.
  */
 export async function rebuildProofFromPageArtifacts(
   orderId: string,
@@ -899,9 +978,22 @@ export async function rebuildProofFromPageArtifacts(
   const built = await buildProofArtifactFromPageArtifacts(orderId, deps);
   if (built.ok !== true) return { ok: false, error: built.error };
 
+  // Prove the build snapshot was internally coherent before checking it
+  // against the current transactional record below.
+  const normalizedPages = normalizePageArtifactTextLayouts(order.pageArtifacts);
+  const normalizedOrder = {
+    ...order,
+    pageArtifacts: normalizedPages,
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
+  };
+  if (proofSourceFingerprint(normalizedOrder, normalizedPages) !== built.sourceFingerprint) {
+    return { ok: false, error: 'proof_source_changed_during_rebuild' };
+  }
+
   // Stale-ack invalidation: a new PDF has not been acknowledged. The identity
   // fields move with the URL, so no record can carry a proof without one.
-  await updateFulfillmentState(order.id, {
+  const rebuiltPublished = await commitProofPatchIfSourceCurrent(order.id, built.sourceFingerprint, {
+    pageArtifacts: normalizedPages,
     layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     storyArtifactUrl: built.proofUrl,
     proofSourceFingerprint: built.sourceFingerprint,
@@ -922,6 +1014,7 @@ export async function rebuildProofFromPageArtifacts(
         }
       : {}),
   });
+  if (!rebuiltPublished) return { ok: false, error: 'proof_source_changed_during_rebuild' };
   return { ok: true, proofUrl: built.proofUrl };
 }
 

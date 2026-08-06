@@ -130,18 +130,13 @@ export function isModernLayout(layoutVersion: LayoutVersion | null | undefined):
 /**
  * The layout version assigned to newly generated / regenerated proofs.
  *
- * The metadata guarantee (`withRecommendedPageMetadata`, applied at each
- * generation choke point) is in place and proven, so a modern book never
- * reaches the fail-closed gate/renderer with missing metadata on the INITIAL
- * generation path. The flip to `'modern_full_bleed'` is intentionally deferred
- * to its own follow-up: the proof-REBUILD paths (regenerate auto-rebuild,
- * rebuildProofFromPageArtifacts) currently stamp this constant onto existing
- * orders and their fingerprint identity folds layoutVersion, so flipping needs
- * a coordinated change that also guarantees metadata on rebuilt pages and
- * reconciles proofSourceFingerprint vs proofRenderSourceFingerprint. Kept legacy
- * here so this slice stays green and single-purpose.
+ * Every producer using this discriminator must first guarantee valid per-page
+ * metadata. Initial generation does that through `withRecommendedPageMetadata`;
+ * rebuild/publication paths normalize legacy artifacts before validation,
+ * rendering, fingerprinting and persistence. The persisted proof tuple is thus
+ * always bound to the same modern page source the renderer consumed.
  */
-export const NEW_PROOF_LAYOUT_VERSION: LayoutVersion = 'legacy_bottom_band';
+export const NEW_PROOF_LAYOUT_VERSION: LayoutVersion = 'modern_full_bleed';
 
 /**
  * Closed set of the three EXPLICIT approved proof text-color choices. Semantic,

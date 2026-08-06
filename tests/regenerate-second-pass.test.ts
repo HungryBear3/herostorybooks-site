@@ -9,6 +9,7 @@ import path from 'node:path';
 
 import { createOrderRecord, persistOrder, getOrder } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
+import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION, recommendedPageTextLayout } from '../src/lib/fulfillment-types.ts';
 import {
   regeneratePage,
   approveWholeBook,
@@ -43,6 +44,7 @@ function pageFixture(i: number, overrides: Partial<PageArtifact> = {}): PageArti
     accepted: false,
     feedbackHistory: [],
     versionHistory: [],
+    textLayout: recommendedPageTextLayout(),
     ...overrides,
   };
 }
@@ -58,11 +60,16 @@ async function seedOrder(
   const order: OrderRecord = {
     ...base,
     paymentStatus: 'paid',
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     pageArtifacts: padPageSet([pageFixture(0), pageFixture(1), pageFixture(2)]),
     reviewStatus: 'in_review',
     proofApprovalToken: 're_test_stub_token',
     ...overrides,
   };
+  order.pageArtifacts = order.pageArtifacts?.map((artifact) => ({
+    ...artifact,
+    textLayout: ensureRecommendedTextLayout(artifact.textLayout),
+  }));
   // Proof gates are revision-bound: a seeded proof URL without an
   // identity would (correctly) fail every one of them.
   if (order.storyArtifactUrl && !order.proofVersion) {

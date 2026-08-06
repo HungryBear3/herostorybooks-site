@@ -11,7 +11,7 @@ import {
   type FulfillmentDeps,
 } from '../src/lib/fulfillment.ts';
 import { getPictureBookStoryLayout, UnknownLayoutVersionError } from '../src/lib/pdf-builder.ts';
-import { NEW_PROOF_LAYOUT_VERSION } from '../src/lib/fulfillment-types.ts';
+import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION } from '../src/lib/fulfillment-types.ts';
 import { createOrderRecord, getOrder, persistOrder, type OrderRecord, type PageArtifact } from '../src/lib/orders.ts';
 import { publishProofGuarded } from '../src/lib/page-review.ts';
 import { retryOrderFulfillment } from '../src/lib/admin-actions.ts';
@@ -38,7 +38,10 @@ function cleanup(dir: string) {
 }
 
 function completePages(overrides: Partial<PageArtifact> = {}): PageArtifact[] {
-  return padPageSet([fillerPage(0, overrides)]);
+  return padPageSet([fillerPage(0, overrides)]).map((page) => ({
+    ...page,
+    textLayout: ensureRecommendedTextLayout(page.textLayout),
+  }));
 }
 
 function printOrder(id: string, overrides: Partial<OrderRecord> = {}): OrderRecord {

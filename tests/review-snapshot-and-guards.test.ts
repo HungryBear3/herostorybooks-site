@@ -34,6 +34,7 @@ import {
   saveTextChangeRequest,
 } from '../src/lib/page-review.ts';
 import type { ImageProvider } from '../src/lib/image-provider-types.ts';
+import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION } from '../src/lib/fulfillment-types.ts';
 
 const REPO = process.cwd();
 const NOW = '2026-08-03T12:00:00.000Z';
@@ -55,12 +56,16 @@ function makeOrder(id: string, o: Partial<OrderRecord> = {}): OrderRecord {
     ...createOrderRecord(
       { childName: 'Testkid', bookFormat: 'digital', email: 'reviewer@example.invalid' },
       { id, now: NOW }),
-    paymentStatus: 'paid', reviewStatus: 'in_review',
+    paymentStatus: 'paid', reviewStatus: 'in_review', layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     storyArtifactUrl: IMMUTABLE_PROOF,
     proofSourceFingerprint: null,
     proofVersion: 'v4', proofReviewedAt: NOW, proofReviewedVersion: 'v4',
     proofApprovalToken: TOKEN, pageArtifacts: pages, auditEvents: [], ...o,
   };
+  order.pageArtifacts = order.pageArtifacts?.map((artifact) => ({
+    ...artifact,
+    textLayout: ensureRecommendedTextLayout(artifact.textLayout),
+  }));
   if (o.proofSourceFingerprint === undefined) {
     order.proofSourceFingerprint = proofSourceFingerprint(order);
   }

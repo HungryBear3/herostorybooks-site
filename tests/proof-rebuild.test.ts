@@ -4,9 +4,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createOrderRecord, persistOrder, getOrder } from '../src/lib/orders.ts';
+import { createOrderRecord, persistOrder, getOrder, withOrderTransaction } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
-import { rebuildProofFromPageArtifacts } from '../src/lib/fulfillment.ts';
+import { proofSourceFingerprint, rebuildProofFromPageArtifacts } from '../src/lib/fulfillment.ts';
+import { isValidPageTextLayout } from '../src/lib/fulfillment-types.ts';
 import { padPageSet } from './support/full-page-set.ts';
 
 function makeTmp() {
@@ -88,6 +89,84 @@ test('rebuildProofFromPageArtifacts: passes accepted/current URLs to PDF builder
     // proof URL that no gate can verify.
     assert.ok(after!.proofSourceFingerprint);
     assert.ok(after!.proofVersion);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('rebuildProofFromPageArtifacts: migrates legacy page metadata and persists matching modern proof identity', async () => {
+  const dir = makeTmp();
+  try {
+    const base = createOrderRecord(
+      { childName: 'Luna', bookFormat: 'digital', email: 'luna@example.com' },
+      { id: 'ord_rebuild_legacy_metadata', now: '2026-04-26T10:00:00Z' },
+    );
+    const legacyPages = padPageSet([pageFixture(0)]).map((artifact, i) => ({
+      ...artifact,
+      reviewerNotes: `preserve-${i}`,
+      ...(i % 2 === 0
+        ? { textLayout: undefined }
+        : { textLayout: { zone: 'invalid' } as never }),
+    }));
+    await persistOrder({
+      ...base,
+      paymentStatus: 'paid',
+      layoutVersion: 'legacy_bottom_band',
+      pageArtifacts: legacyPages,
+    });
+
+    let renderedLayoutsAreValid = false;
+    const result = await rebuildProofFromPageArtifacts(base.id, {
+      buildPdf: async (story) => {
+        renderedLayoutsAreValid = story.pages.every((page) => isValidPageTextLayout(page.textLayout));
+        return Buffer.from('%PDF rebuilt modern');
+      },
+      uploadArtifact: async (orderId, _buffer, filename) =>
+        `https://cdn.example.com/${orderId}/${filename}`,
+    });
+
+    assert.equal(result.ok, true, result.error);
+    assert.equal(renderedLayoutsAreValid, true, 'the renderer must receive normalized metadata on every page');
+    const after = await getOrder(base.id);
+    assert.equal(after?.layoutVersion, 'modern_full_bleed');
+    assert.equal(after?.pageArtifacts?.every((page) => isValidPageTextLayout(page.textLayout)), true);
+    assert.equal(after?.pageArtifacts?.[0]?.reviewerNotes, 'preserve-0');
+    assert.equal(proofSourceFingerprint(after!), after?.proofSourceFingerprint);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('rebuildProofFromPageArtifacts: discards a build when a render-affecting order field changes', async () => {
+  const dir = makeTmp();
+  try {
+    const base = createOrderRecord(
+      { childName: 'Luna Original', bookFormat: 'digital', email: 'luna@example.com' },
+      { id: 'ord_rebuild_stale_order', now: '2026-04-26T10:00:00Z' },
+    );
+    await persistOrder({ ...base, paymentStatus: 'paid', pageArtifacts: padPageSet([pageFixture(0)]) });
+    let changed = false;
+    const result = await rebuildProofFromPageArtifacts(base.id, {
+      buildPdf: async () => {
+        if (!changed) {
+          changed = true;
+          await withOrderTransaction(base.id, (current) => ({
+            commit: { ...current, childName: 'Luna Concurrent Change' },
+            result: undefined,
+          }));
+        }
+        return Buffer.from('%PDF stale rebuild');
+      },
+      uploadArtifact: async (orderId, _buffer, filename) =>
+        `https://cdn.example.com/${orderId}/${filename}`,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'proof_source_changed_during_rebuild');
+    const after = await getOrder(base.id);
+    assert.equal(after?.childName, 'Luna Concurrent Change');
+    assert.equal(after?.storyArtifactUrl ?? null, null);
+    assert.equal(after?.proofSourceFingerprint ?? null, null);
+    assert.equal(after?.proofVersion ?? null, null);
   } finally {
     cleanup(dir);
   }

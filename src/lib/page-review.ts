@@ -34,6 +34,7 @@ import {
   buildProofArtifactFromPageArtifacts,
   isUsableProofBuild,
   isUsablePrintProofBuild,
+  normalizePageArtifactTextLayouts,
   proofSourceFingerprint,
   type ProofBuildSuccess,
 } from './fulfillment.ts';
@@ -294,20 +295,26 @@ export async function publishProofGuarded(
         if (order.reviewStatus === 'approved') {
           return { abort: { refreshed: false, error: 'already_approved' } };
         }
-        if (hasUnresolvedChangeRequests(order.pageArtifacts ?? [])) {
+        const currentPages = normalizePageArtifactTextLayouts(order.pageArtifacts ?? []);
+        if (hasUnresolvedChangeRequests(currentPages)) {
           return { abort: { refreshed: false, error: 'unresolved_change_requests' } };
         }
-        if (validateStoryPageSet(order.pageArtifacts, order.bookFormat, NEW_PROOF_LAYOUT_VERSION)) {
+        if (validateStoryPageSet(currentPages, order.bookFormat, NEW_PROOF_LAYOUT_VERSION)) {
           return { abort: { refreshed: false, error: 'incomplete_page_set' } };
         }
         if (isPrintFormat(order.bookFormat) && !isUsablePrintProofBuild(usable)) {
           return { abort: { refreshed: false, error: 'print_proof_build_incomplete' } };
         }
-        const orderForProof = { ...order, layoutVersion: NEW_PROOF_LAYOUT_VERSION };
-        if (proofSourceFingerprint(orderForProof) !== usable.sourceFingerprint) {
+        const orderForProof = {
+          ...order,
+          pageArtifacts: currentPages,
+          layoutVersion: NEW_PROOF_LAYOUT_VERSION,
+        };
+        if (proofSourceFingerprint(orderForProof, currentPages) !== usable.sourceFingerprint) {
           return { abort: { refreshed: false, error: 'proof_source_changed_during_rebuild' } };
         }
         let next = applyFulfillmentPatchTo(order, {
+          pageArtifacts: currentPages,
           layoutVersion: NEW_PROOF_LAYOUT_VERSION,
           storyArtifactUrl: usable.proofUrl,
           proofSourceFingerprint: usable.sourceFingerprint,

@@ -28,6 +28,7 @@ import {
   regeneratePage,
 } from '../src/lib/page-review.ts';
 import type { ImageProvider } from '../src/lib/image-provider-types.ts';
+import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION } from '../src/lib/fulfillment-types.ts';
 
 function makeTmp() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-audit-'));
@@ -68,6 +69,7 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_audit_test')
   const order: OrderRecord = {
     ...base,
     paymentStatus: 'paid',
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     storyArtifactUrl: 'https://example.com/proof.pdf',
     proofApprovalToken: 'tok_xyz',
     fulfillmentStatus: 'proof_ready',
@@ -80,6 +82,10 @@ async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_audit_test')
     auditEvents: [],
     ...overrides,
   };
+  order.pageArtifacts = order.pageArtifacts?.map((artifact) => ({
+    ...artifact,
+    textLayout: ensureRecommendedTextLayout(artifact.textLayout),
+  }));
   // Proof gates are revision-bound: a seeded proof URL without an
   // identity would (correctly) fail every one of them.
   if (order.storyArtifactUrl && !order.proofVersion) {

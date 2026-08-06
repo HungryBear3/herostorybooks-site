@@ -28,7 +28,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { padPageSet } from './support/full-page-set.ts';
 
-import { createOrderRecord, getOrder, persistOrder } from '../src/lib/orders.ts';
+import { createOrderRecord, getOrder, persistOrder, withOrderTransaction } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
 import type { ImageProvider } from '../src/lib/image-provider-types.ts';
 import {
@@ -36,6 +36,7 @@ import {
   proofSourceFingerprint,
 } from '../src/lib/fulfillment.ts';
 import type { ProofBuildResult } from '../src/lib/fulfillment.ts';
+import { isValidPageTextLayout } from '../src/lib/fulfillment-types.ts';
 import {
   acceptPage,
   acknowledgeProofReview,
@@ -241,6 +242,62 @@ test('REQ1/2: the builder itself validates its own output before claiming ok', a
       uploadArtifact: async () => '',
     });
     assert.equal(res.ok, false, 'an empty upload URL must fail closed');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('guarded publication migrates current legacy metadata without overwriting render-neutral concurrent state', async () => {
+  const dir = makeTmp();
+  try {
+    const orderId = 'ord_guarded_legacy_metadata';
+    const legacyPages = makeOrder(orderId).pageArtifacts!.map((artifact, i) => ({
+      ...artifact,
+      ...(i % 2 === 0
+        ? { textLayout: undefined }
+        : { textLayout: { panelStyle: 'invalid' } as never }),
+    }));
+    await persistOrder(makeOrder(orderId, {
+      layoutVersion: 'legacy_bottom_band',
+      pageArtifacts: legacyPages,
+      storyArtifactUrl: null,
+      proofSourceFingerprint: null,
+      proofVersion: null,
+      proofReviewedAt: null,
+      proofReviewedVersion: null,
+    }));
+
+    let renderedLayoutsAreValid = false;
+    const built = await buildProofArtifactFromPageArtifacts(orderId, {
+      buildPdf: async (story) => {
+        renderedLayoutsAreValid = story.pages.every((storyPage) => isValidPageTextLayout(storyPage.textLayout));
+        return Buffer.from('%PDF guarded modern');
+      },
+      uploadArtifact: async (_id, _buffer, filename) =>
+        `https://example.invalid/orders/${orderId}/${filename}`,
+    });
+    assert.equal(built.ok, true);
+    assert.equal(renderedLayoutsAreValid, true);
+
+    await withOrderTransaction(orderId, (current) => ({
+      commit: {
+        ...current,
+        pageArtifacts: current.pageArtifacts!.map((artifact, i) =>
+          i === 0 ? { ...artifact, reviewerNotes: 'preserve-current-operational-state' } : artifact,
+        ),
+      },
+      result: undefined,
+    }));
+
+    const published = await publishProofGuarded(orderId, built, {
+      actor: customerReviewActor(TOKEN),
+    });
+    assert.equal(published.refreshed, true, published.error);
+    const after = await getOrder(orderId);
+    assert.equal(after?.layoutVersion, 'modern_full_bleed');
+    assert.equal(after?.pageArtifacts?.every((artifact) => isValidPageTextLayout(artifact.textLayout)), true);
+    assert.equal(after?.pageArtifacts?.[0]?.reviewerNotes, 'preserve-current-operational-state');
+    assert.equal(proofSourceFingerprint(after!), after?.proofSourceFingerprint);
   } finally {
     cleanup(dir);
   }

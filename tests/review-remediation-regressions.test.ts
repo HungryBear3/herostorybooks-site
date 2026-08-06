@@ -9,6 +9,7 @@ import {
   getOrder,
   persistNewOrder,
   persistOrder,
+  withOrderTransaction,
   __resetOrderStoreAdapterFactoryForTests,
 } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
@@ -290,6 +291,110 @@ test('initial digital proof URL is immutable and keyed by its persisted proof ve
       persisted.pageArtifacts?.[0].textLayout,
       { zone: 'bottom_band', colorMode: 'dark', panelStyle: 'translucent_cream' },
     );
+  } finally {
+    store.cleanup();
+  }
+});
+
+test('initial digital and print fulfillment never publish a proof from a stale render-affecting order snapshot', async () => {
+  const store = withLocalStore();
+  try {
+    for (const format of ['digital', 'classic'] as const) {
+      const orderId = `ord_synthetic_initial_stale_${format}`;
+      const seeded = createOrderRecord(
+        { childName: 'Synthetic Original', bookFormat: format, email: 'reviewer@example.invalid' },
+        { id: orderId, now: NOW },
+      );
+      await persistOrder({ ...seeded, paymentStatus: 'paid', fulfillmentStatus: 'not_started' });
+      const story = {
+        title: 'Synthetic Concurrency Story',
+        characterDescription: 'Synthetic character',
+        pages: Array.from({ length: 24 }, (_, i) => ({
+          pageNum: i + 1,
+          sceneTitle: `Scene ${i + 1}`,
+          story: `Story ${i + 1}`,
+          imagePrompt: `Prompt ${i + 1}`,
+          textLayout: { zone: 'bottom_band' as const, colorMode: 'dark' as const, panelStyle: 'translucent_cream' as const },
+        })),
+      };
+      let mutated = false;
+      const deps: FulfillmentDeps = {
+        generateStory: async () => story,
+        generateImages: async (prompts) => prompts.map((_, i) => `https://example.invalid/${format}-${i}.png`),
+        buildPdf: async () => {
+          if (!mutated) {
+            mutated = true;
+            await withOrderTransaction(orderId, (current) => ({
+              commit: { ...current, childName: 'Synthetic Concurrent Change' },
+              result: undefined,
+            }));
+          }
+          return Buffer.from('%PDF stale-source probe');
+        },
+        buildPrintInteriorPdf: async () => Buffer.from('%PDF stale-source interior'),
+        uploadArtifact: async (id, _buffer, filename) => `https://example.invalid/${id}/${filename}`,
+        sleep: async () => {},
+      };
+      await triggerFulfillment(orderId, deps);
+      const after = await getOrder(orderId);
+      assert.equal(after?.childName, 'Synthetic Concurrent Change');
+      assert.equal(after?.storyArtifactUrl ?? null, null, `${format} must discard a stale proof`);
+      assert.equal(after?.proofSourceFingerprint ?? null, null);
+      assert.equal(after?.proofVersion ?? null, null);
+    }
+
+    const refundOrderId = 'ord_synthetic_initial_stale_refund';
+    const refundSeed = createOrderRecord(
+      { childName: 'Synthetic Refund Hero', bookFormat: 'digital', email: 'reviewer@example.invalid' },
+      { id: refundOrderId, now: NOW },
+    );
+    await persistOrder({ ...refundSeed, paymentStatus: 'paid', fulfillmentStatus: 'not_started' });
+    const refundStory = {
+      title: 'Synthetic Refund Story',
+      characterDescription: 'Synthetic character',
+      pages: Array.from({ length: 24 }, (_, i) => ({
+        pageNum: i + 1,
+        sceneTitle: `Refund Scene ${i + 1}`,
+        story: `Refund Story ${i + 1}`,
+        imagePrompt: `Refund Prompt ${i + 1}`,
+        textLayout: { zone: 'bottom_band' as const, colorMode: 'dark' as const, panelStyle: 'translucent_cream' as const },
+      })),
+    };
+    let refunded = false;
+    let refundPdfCalls = 0;
+    await triggerFulfillment(refundOrderId, {
+      generateStory: async () => {
+        if (!refunded) {
+          refunded = true;
+          await withOrderTransaction(refundOrderId, (current) => ({
+            commit: {
+              ...current,
+              paymentStatus: 'refunded',
+              refundedAt: '2026-08-05T21:00:00.000Z',
+              stripeRefundId: 're_synthetic_concurrent',
+            },
+            result: undefined,
+          }));
+        }
+        return refundStory;
+      },
+      generateImages: async (prompts) => prompts.map((_, i) => `https://example.invalid/refund-${i}.png`),
+      buildPdf: async () => {
+        refundPdfCalls += 1;
+        return Buffer.from('%PDF concurrent refund probe');
+      },
+      uploadArtifact: async (id, _buffer, filename) => `https://example.invalid/${id}/${filename}`,
+      sleep: async () => {},
+    });
+    const afterRefund = await getOrder(refundOrderId);
+    assert.equal(refundPdfCalls, 0, 'refund during story generation must stop before PDF build');
+    assert.equal(afterRefund?.paymentStatus, 'refunded');
+    assert.equal(afterRefund?.refundedAt, '2026-08-05T21:00:00.000Z');
+    assert.equal(afterRefund?.stripeRefundId, 're_synthetic_concurrent');
+    assert.equal(afterRefund?.fulfillmentAttempts, 1, 'refunded fulfillment must be terminal, not retried');
+    assert.equal(afterRefund?.storyArtifactUrl ?? null, null);
+    assert.equal(afterRefund?.proofSourceFingerprint ?? null, null);
+    assert.equal(afterRefund?.proofVersion ?? null, null);
   } finally {
     store.cleanup();
   }
