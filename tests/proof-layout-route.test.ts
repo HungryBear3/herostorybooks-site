@@ -227,7 +227,27 @@ test('reset with nothing to reset is an idempotent no-op (no mutation)', async (
     const r = await applyLayout({ pageIndex: 0, ...binding(order) });
     assert.equal(r.status, 200);
     assert.equal(r.body.noop, true);
+    assert.ok(r.body.snapshot, 'every successful public response carries authoritative review state');
+    const snapshot = r.body.snapshot as { proofVersion?: string | null; proofSourceFingerprint?: string | null };
+    assert.equal(snapshot.proofVersion, order.proofVersion);
+    assert.equal(snapshot.proofSourceFingerprint, order.proofSourceFingerprint);
     assert.equal((await getOrder(ORDER))?.storyArtifactUrl, order.storyArtifactUrl, 'proof untouched');
+  } finally { cleanup(dir); }
+});
+
+test('successful direct-service no-op reset carries an authoritative snapshot', async () => {
+  const dir = makeTmp();
+  try {
+    const order = await persistSeed();
+    const result = await setProofLayoutOverride({
+      orderId: ORDER, pageIndex: 0, geometry: null, ...binding(order),
+      appliedBy: 'internal_ops',
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.noop, true);
+    assert.ok(result.snapshot, 'service success must always include a snapshot');
+    assert.equal(result.snapshot.proofVersion, order.proofVersion);
+    assert.equal(result.snapshot.proofSourceFingerprint, order.proofSourceFingerprint);
   } finally { cleanup(dir); }
 });
 
@@ -321,6 +341,23 @@ test('direct service rejects non-finite geometry before persistence', async () =
       ...binding(order), appliedBy: 'customer', actor: customerReviewActor(TOKEN),
     });
     assert.equal(result.status, 422);
+    const after = await getOrder(ORDER);
+    assert.equal(after?.pageArtifacts?.[0].proofCardOverride ?? null, null);
+    assert.equal(after?.storyArtifactUrl, order.storyArtifactUrl);
+  } finally { cleanup(dir); }
+});
+
+test('direct service still rejects an unapproved text color on apply', async () => {
+  const dir = makeTmp();
+  try {
+    const order = await persistSeed();
+    const result = await setProofLayoutOverride({
+      orderId: ORDER, pageIndex: 0, geometry: ROOMY,
+      textColor: 'hot_pink' as never, ...binding(order), appliedBy: 'internal_ops',
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 422);
+    assert.equal(result.error, 'invalid_text_color');
     const after = await getOrder(ORDER);
     assert.equal(after?.pageArtifacts?.[0].proofCardOverride ?? null, null);
     assert.equal(after?.storyArtifactUrl, order.storyArtifactUrl);

@@ -6,6 +6,7 @@ import { isAdminAuthedFromCookie } from '@/lib/admin-auth-server';
 import { getOrder } from '@/lib/orders';
 import { buildOrderDiagnostics, formatDiagnosticsSummary } from '@/lib/order-diagnostics';
 import { CUSTOMER_QUEUE_STATUS_LABELS } from '@/lib/order-queue';
+import { proofIsFresh } from '@/lib/page-review';
 
 import OrderDetailActions from './detail-client';
 import PageReviewGrid from './page-review-grid';
@@ -267,7 +268,13 @@ export default async function AdminOrderDetail({ params }: Props) {
         )}
 
         {order.pageArtifacts && order.pageArtifacts.length > 0 && (
-          <PageReviewGrid orderId={order.id} pages={order.pageArtifacts} />
+          <PageReviewGrid
+            orderId={order.id}
+            pages={order.pageArtifacts}
+            proofVersion={order.proofVersion ?? null}
+            sourceFingerprint={order.proofSourceFingerprint ?? null}
+            proofFresh={proofIsFresh(order)}
+          />
         )}
 
         {order.pageArtifacts && order.pageArtifacts.length > 0 && (
