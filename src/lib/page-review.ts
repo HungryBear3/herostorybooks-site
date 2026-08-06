@@ -52,7 +52,7 @@ import {
   proofTextColorForFingerprint,
   type ProofCardGeometry,
 } from './proof-layout-override.ts';
-import { proofCardTextOverflows } from './pdf-builder.ts';
+import { proofCardTextOverflows, proofCardRendererFit } from './pdf-builder.ts';
 import type { ProofCardOverride, ProofTextColor } from './fulfillment-types.ts';
 import {
   hasUnresolvedChangeRequests,
@@ -1383,6 +1383,84 @@ export function evaluateProofLayoutEditCapability(order: OrderRecord): ProofLayo
     return { allowed: false, reason: 'proof_not_ready' };
   }
   return { allowed: true, reason: 'available' };
+}
+
+// ── Authoritative, read-only proof-fit (real renderer measurement) ───────────
+
+export interface ProofFitInput {
+  orderId: string;
+  pageIndex: number;
+  geometry: ProofCardGeometry;
+  authoredAgainstProofVersion?: string | null;
+  authoredAgainstFingerprint?: string | null;
+  actor?: ReviewActor;
+}
+export interface ProofFitDecision {
+  overflowed: boolean;
+  baseFontSize: number;
+  baseLineGap: number;
+  fontSize: number;
+  lineGap: number;
+  neededHeightPt: number;
+}
+export interface ProofFitResult {
+  ok: boolean;
+  status: 200 | 400 | 401 | 403 | 404 | 409 | 422;
+  fit?: ProofFitDecision;
+  error?: string;
+}
+
+/**
+ * Read-only, side-effect-free authoritative fit for one page's proposed card
+ * geometry, using the ACTUAL embedded-font PDFKit renderer against the order's
+ * authoritative story text. Same eligibility/lifecycle/freshness/binding gates
+ * as the mutation path (no commit). Never logs story text or the token. The
+ * client uses this to surface real overflow and gate Save so a preview can never
+ * look "fit" where the server renderer would reject it.
+ */
+export async function evaluateProofFit(input: ProofFitInput): Promise<ProofFitResult> {
+  const actor = input.actor ?? INTERNAL_REVIEW_ACTOR;
+  if (!isCompleteProofCardGeometry(input.geometry)) {
+    return { ok: false, status: 422, error: 'invalid_geometry' };
+  }
+  const order = await getOrder(input.orderId);
+  if (!order?.pageArtifacts?.length) return { ok: false, status: 404, error: 'order_not_found' };
+
+  const refusal = evaluateReviewMutationEligibility(order, actor);
+  if (refusal) return { ok: false, status: refusal.status as ProofFitResult['status'], error: refusal.error };
+  const lifecycle = evaluateProofLayoutMutationLifecycle(order);
+  if (lifecycle) return { ok: false, status: lifecycle.status, error: lifecycle.error };
+
+  const page = order.pageArtifacts.find((p) => p.pageIndex === input.pageIndex);
+  if (!page) return { ok: false, status: 404, error: 'page_not_found' };
+
+  const currentFingerprint = proofSourceFingerprint(order);
+  if (!order.proofVersion || !order.proofSourceFingerprint || !order.storyArtifactUrl) {
+    return { ok: false, status: 409, error: 'no_live_proof' };
+  }
+  if (order.proofSourceFingerprint !== currentFingerprint) {
+    return { ok: false, status: 409, error: 'proof_stale' };
+  }
+  if (input.authoredAgainstProofVersion != null && input.authoredAgainstProofVersion !== order.proofVersion) {
+    return { ok: false, status: 409, error: 'stale_revision' };
+  }
+  if (input.authoredAgainstFingerprint != null && input.authoredAgainstFingerprint !== currentFingerprint) {
+    return { ok: false, status: 409, error: 'stale_fingerprint' };
+  }
+
+  const fit = proofCardRendererFit(canonicalizeProofCardGeometry(input.geometry), page.storyText);
+  return {
+    ok: true,
+    status: 200,
+    fit: {
+      overflowed: fit.overflowed,
+      baseFontSize: fit.baseFontSize,
+      baseLineGap: fit.baseLineGap,
+      fontSize: fit.fontSize,
+      lineGap: fit.lineGap,
+      neededHeightPt: fit.neededHeightPt,
+    },
+  };
 }
 
 /** Bounded numeric geometry for the audit trail — never any customer data. */

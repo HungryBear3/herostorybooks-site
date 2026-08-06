@@ -13,11 +13,19 @@ import {
   createReviewMutationCoordinator,
 } from '../src/lib/proof-layout-editor-core.ts';
 
+// A genuinely valid page artifact — every field review-client renders / uses.
+function validPage(patch: Record<string, unknown> = {}) {
+  return {
+    pageIndex: 0, storyText: 'A short page.', currentImageUrl: 'data:image/svg+xml,x',
+    regenerateCount: 0, accepted: false, feedbackHistory: [],
+    ...patch,
+  };
+}
 // A FULLY-VALID render-critical ReviewSnapshot for order ord_x.
 function fullSnap(patch: Record<string, unknown> = {}) {
   return {
     orderId: 'ord_x', childName: 'Kid', reviewStatus: 'in_review',
-    pageArtifacts: [{ pageIndex: 0, storyText: 'A short page.' }],
+    pageArtifacts: [validPage()],
     storyArtifactUrl: null, proofVersion: null, proofSourceFingerprint: null,
     proofReviewedVersion: null, proofReviewedAt: null,
     proofAvailable: false, proofFresh: false,
@@ -92,6 +100,73 @@ test('malformed render-critical proof identity / freshness / booleans are failur
     const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot }, OID);
     assert.equal(out.ok, false, `snapshot ${JSON.stringify(Object.keys(snapshot))} should be rejected`);
   }
+});
+
+// ── R3 Blocker A: strict page-field + capability-coherence validation ─────────
+
+function reject(patch: Record<string, unknown>, label: string) {
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: fullSnap(patch) }, OID);
+  assert.equal(out.ok, false, `${label} must be rejected`);
+  // Malformed success must return the ambiguous failure (never fake success).
+  assert.match(out.message ?? '', /didn.t return|reload|confirm/i, `${label} → ambiguous failure copy`);
+}
+
+test('A1: absent / wrong-type currentImageUrl is rejected', () => {
+  reject({ pageArtifacts: [validPage({ currentImageUrl: undefined })] }, 'absent currentImageUrl');
+  reject({ pageArtifacts: [validPage({ currentImageUrl: 42 })] }, 'numeric currentImageUrl');
+  // null is valid (no image yet).
+  assert.equal(interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: fullSnap({ pageArtifacts: [validPage({ currentImageUrl: null })] }) }, OID).ok, true);
+});
+
+test('A2: absent / non-integer / negative / unsafe regenerateCount is rejected', () => {
+  reject({ pageArtifacts: [validPage({ regenerateCount: undefined })] }, 'absent regenerateCount');
+  reject({ pageArtifacts: [validPage({ regenerateCount: 'many' })] }, 'string regenerateCount');
+  reject({ pageArtifacts: [validPage({ regenerateCount: 1.5 })] }, 'non-integer regenerateCount');
+  reject({ pageArtifacts: [validPage({ regenerateCount: -1 })] }, 'negative regenerateCount');
+  reject({ pageArtifacts: [validPage({ regenerateCount: Number.MAX_SAFE_INTEGER + 2 })] }, 'unsafe regenerateCount');
+});
+
+test('A3: absent / non-boolean accepted is rejected', () => {
+  reject({ pageArtifacts: [validPage({ accepted: undefined })] }, 'absent accepted');
+  reject({ pageArtifacts: [validPage({ accepted: 'yes' })] }, 'string accepted');
+});
+
+test('A4: non-integer / negative / unsafe / duplicate pageIndex is rejected', () => {
+  reject({ pageArtifacts: [validPage({ pageIndex: 1.5 })] }, 'non-integer pageIndex');
+  reject({ pageArtifacts: [validPage({ pageIndex: -1 })] }, 'negative pageIndex');
+  reject({ pageArtifacts: [validPage({ pageIndex: Number.MAX_SAFE_INTEGER + 2 })] }, 'unsafe pageIndex');
+  reject({ pageArtifacts: [validPage({ pageIndex: 0 }), validPage({ pageIndex: 0 })] }, 'duplicate pageIndex');
+});
+
+test('A5: proofCardOverride accepts only absent/null or a valid override; {} is rejected', () => {
+  assert.equal(interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: fullSnap({ pageArtifacts: [validPage({ proofCardOverride: null })] }) }, OID).ok, true);
+  reject({ pageArtifacts: [validPage({ proofCardOverride: {} })] }, 'empty-object override');
+  reject({ pageArtifacts: [validPage({ proofCardOverride: { x: 0.1 } })] }, 'partial override');
+});
+
+test('A6: malformed customerReviewStatus / customerRequestedChange (approval-gating) is rejected', () => {
+  reject({ pageArtifacts: [validPage({ customerReviewStatus: 'bogus' })] }, 'bad customerReviewStatus enum');
+  reject({ pageArtifacts: [validPage({ customerRequestedChange: { note: 'x', lifecycleStatus: 'nope' } })] }, 'bad lifecycleStatus');
+  reject({ pageArtifacts: [validPage({ customerRequestedChange: { note: 42, lifecycleStatus: 'triage' } })] }, 'non-string note');
+  // Valid optionals accepted.
+  assert.equal(interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: fullSnap({ pageArtifacts: [validPage({ customerReviewStatus: 'changes_requested', customerRequestedChange: { requestedAt: 't', note: 'fix', lifecycleStatus: 'triage' } })] }) }, OID).ok, true);
+});
+
+test('A7/A8/A9: capability reason membership + allowed↔available coherence', () => {
+  reject({ proofLayoutEditing: { allowed: false, reason: 'totally_unknown' } }, 'unknown reason');
+  reject({ proofLayoutEditing: { allowed: true, reason: 'lifecycle_closed' } }, 'allowed:true with non-available reason');
+  reject({ proofLayoutEditing: { allowed: false, reason: 'available' } }, 'allowed:false with available');
+  // Coherent pairs accepted.
+  assert.equal(interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: fullSnap({ proofLayoutEditing: { allowed: true, reason: 'available' } }) }, OID).ok, true);
+});
+
+test('A10: review status / book format must be valid enums, not arbitrary strings', () => {
+  reject({ reviewStatus: 'weird_status' }, 'bad reviewStatus enum');
+  reject({ bookFormat: 'papyrus' }, 'bad bookFormat enum');
+});
+
+test('A11: one malformed page among otherwise-valid pages rejects the whole snapshot', () => {
+  reject({ pageArtifacts: [validPage({ pageIndex: 0 }), validPage({ pageIndex: 1, accepted: 'no' }), validPage({ pageIndex: 2 })] }, 'one bad page among many');
 });
 
 test('HTTP success with ok !== true is a failure', () => {

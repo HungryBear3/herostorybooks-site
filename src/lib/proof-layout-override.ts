@@ -367,53 +367,11 @@ export function resolveProofCardFontFit(params: {
   return { baseFontSize, baseLineGap, fontSize, lineGap, neededHeightPt, overflowed: neededHeightPt > safeHeightPt };
 }
 
-// Browser-safe Geist metrics, calibrated to PDFKit (Geist-Regular): a wrapped
-// line is `fontSize * 1.3 + lineGap` tall; average glyph advance ≈ 0.50em and a
-// space ≈ 0.25em. Used only to REPRODUCE the renderer's fit decision in CSS; it
-// never touches the printed output.
-const GEIST_LINE_HEIGHT_FACTOR = 1.3;
-const GEIST_CHAR_ADVANCE_EM = 0.5;
-const GEIST_SPACE_ADVANCE_EM = 0.25;
-
-/** Deterministic greedy word-wrap line count for `text` in `availWidthPt`. */
-function estimateWrappedLineCount(text: string, availWidthPt: number, fontSizePt: number): number {
-  const words = text.split(/\s+/).filter(Boolean);
-  if (words.length === 0) return 1;
-  const space = GEIST_SPACE_ADVANCE_EM * fontSizePt;
-  let lines = 1;
-  let cur = 0;
-  for (const w of words) {
-    const ww = w.length * GEIST_CHAR_ADVANCE_EM * fontSizePt;
-    if (cur === 0) cur = ww;
-    else if (cur + space + ww <= availWidthPt) cur += space + ww;
-    else { lines += 1; cur = ww; }
-  }
-  return lines;
-}
-
-/** Browser-safe estimate of PDFKit's `heightOfString` for Geist, in points. */
-export function estimateGeistTextHeightPt(text: string, availWidthPt: number, fontSizePt: number, lineGapPt: number): number {
-  const lines = estimateWrappedLineCount(text, availWidthPt, fontSizePt);
-  return lines * (fontSizePt * GEIST_LINE_HEIGHT_FACTOR + lineGapPt);
-}
-
-/**
- * The preview's fit decision for a canonical card geometry + story text, using
- * the shared policy with the browser-safe measurer. Mirrors the renderer's
- * points-space math (panel width/height × page dims, minus insets).
- */
-export function proofCardPreviewFit(geometry: ProofCardGeometry, storyText: string): ProofCardFit {
-  const g = canonicalizeProofCardGeometry(geometry);
-  const panelWidthPt = g.width * PROOF_PAGE_WIDTH_PT;
-  const panelHeightPt = g.height * PROOF_PAGE_HEIGHT_PT;
-  const textWidthPt = panelWidthPt - PROOF_CARD_TEXT_INSET_PT * 2;
-  const safeHeightPt = panelHeightPt - PROOF_CARD_VERTICAL_INSET_PT * 2;
-  return resolveProofCardFontFit({
-    measure: (fs, lg) => estimateGeistTextHeightPt(storyText, textWidthPt, fs, lg),
-    safeHeightPt,
-    fontScale: g.fontScale,
-  });
-}
+// NOTE: there is deliberately NO browser-side text estimator. An average-glyph
+// approximation cannot match PDFKit's embedded-font measurement, so the preview
+// derives its fit/overflow from the AUTHORITATIVE read-only fit route (real
+// renderer) — see evaluateProofFit / customerProofFitUrl. `resolveProofCardFontFit`
+// above stays shared with the renderer only.
 
 // ── Pure preview model (shared, CSS-ready) ───────────────────────────────────
 //
@@ -465,23 +423,23 @@ export interface ProofCardPreviewModel {
 
 /**
  * Build the CSS-ready preview model from normalized card geometry + optional
- * approved color + optional story text. When story text is supplied the preview
- * font follows the renderer's real adaptive fit; otherwise it uses the base
- * size. Canonicalizes first so preview == persisted == rendered.
+ * approved color + an optional AUTHORITATIVE fit (from the real renderer via the
+ * fit route). When `authoritativeFit` is supplied the preview font + overflow
+ * follow the renderer's actual decision; otherwise the font falls back to the
+ * base size and `overflowed` is false (Save is gated separately until the
+ * authoritative fit resolves). Canonicalizes first so preview == persisted ==
+ * rendered.
  */
 export function proofCardPreviewModel(
   geometry: ProofCardGeometry,
   textColor?: ProofTextColor | null,
-  storyText?: string,
+  authoritativeFit?: { fontSize: number; overflowed: boolean } | null,
 ): ProofCardPreviewModel {
   const g = canonicalizeProofCardGeometry(geometry);
   const resolved = resolveProofTextColor(textColor);
   const insetXFrac = PROOF_CARD_TEXT_INSET_PT / PROOF_PAGE_WIDTH_PT;
   const insetYFrac = PROOF_CARD_VERTICAL_INSET_PT / PROOF_PAGE_HEIGHT_PT;
-  // Renderer-aligned adaptive fit when story text is present; else base×scale.
-  const fit = storyText != null
-    ? proofCardPreviewFit(g, storyText)
-    : { fontSize: PROOF_CARD_BASE_FONT_PT * g.fontScale, overflowed: false };
+  const fit = authoritativeFit ?? { fontSize: PROOF_CARD_BASE_FONT_PT * g.fontScale, overflowed: false };
   return {
     page: { aspectRatio: PROOF_PAGE_WIDTH_PT / PROOF_PAGE_HEIGHT_PT },
     artFrameFraction: PROOF_ART_FRAME_FRACTION,

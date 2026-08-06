@@ -8,7 +8,7 @@
  * copy, which live in their respective adapters — never here.
  */
 import type { ProofCardGeometry } from './proof-layout-override.ts';
-import { canonicalizeProofCardGeometry } from './proof-layout-override.ts';
+import { canonicalizeProofCardGeometry, isValidProofCardOverride } from './proof-layout-override.ts';
 import type { ProofCardOverride, ProofTextColor } from './fulfillment-types.ts';
 import type { ReviewSnapshot } from './page-review.ts';
 
@@ -152,8 +152,36 @@ export function customerProofLayoutUrl(orderId: string, token: string | null | u
 export function customerRequestHelpUrl(orderId: string, token: string | null | undefined): string {
   return `/api/order/${encodeURIComponent(orderId)}/request-help?token=${encodeURIComponent(token ?? '')}`;
 }
+/** The read-only AUTHORITATIVE fit endpoint (real renderer measurement). */
+export function customerProofFitUrl(orderId: string, token: string | null | undefined): string {
+  return `/api/order/${encodeURIComponent(orderId)}/proof-fit?token=${encodeURIComponent(token ?? '')}`;
+}
 
 type LayoutBinding = { authoredAgainstProofVersion: string; authoredAgainstFingerprint: string };
+
+/** Fit-request body: page index + canonical geometry + current binding. No color
+ *  (irrelevant to fit), no token in the body, no story text (the server uses the
+ *  authoritative page text). */
+export function buildFitBody(pageIndex: number, geometry: ProofCardGeometry, binding: LayoutBinding): Record<string, unknown> {
+  return { pageIndex, geometry: canonicalizeProofCardGeometry(geometry), ...binding };
+}
+
+/**
+ * Latest-wins tracker for out-of-order async responses (e.g. authoritative fit
+ * requests during a drag): only the newest issued token is current, so a slow
+ * response for an older geometry can never overwrite the current preview.
+ */
+export interface LatestRequestTracker {
+  next(): number;
+  isCurrent(token: number): boolean;
+}
+export function createLatestRequestTracker(): LatestRequestTracker {
+  let latest = 0;
+  return {
+    next() { latest += 1; return latest; },
+    isCurrent(token: number) { return token === latest; },
+  };
+}
 
 /** Apply-body: exact page index, canonical geometry, optional approved color
  *  (omitted for legacy default), and the current revision+fingerprint binding.
@@ -273,29 +301,92 @@ export interface LayoutMutationOutcome {
 function isStringOrNull(v: unknown): boolean {
   return v === null || typeof v === 'string';
 }
+function isStr(v: unknown): v is string {
+  return typeof v === 'string';
+}
+/** A finite, safe, non-negative integer (counts / indices). */
+function isSafeNonNegInt(v: unknown): boolean {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+}
 
-/** A page artifact carries at least a numeric index and string story text. */
+// Authoritative enum memberships (mirrors orders.ts / page-review.ts).
+const REVIEW_STATUSES = new Set(['not_started', 'in_review', 'customer_changes_requested', 'approved']);
+const BOOK_FORMATS = new Set(['digital', 'classic', 'premium']);
+const PAGE_REVIEW_STATUSES = new Set(['pending', 'approved', 'changes_requested', 'resolved']);
+const CHANGE_LIFECYCLE_STATUSES = new Set(['triage', 'illustrator', 'qa', 'ready_for_customer', 'resolved']);
+const CAPABILITY_REASONS = new Set(['available', 'proof_not_ready', 'review_approved', 'lifecycle_closed', 'order_refunded', 'payment_incomplete']);
+
+/** Optional per-page feedback entries the UI renders (createdAt/rawText/tags). */
+function isValidFeedbackHistory(v: unknown): boolean {
+  if (!Array.isArray(v)) return false;
+  return v.every((f) => {
+    if (!f || typeof f !== 'object') return false;
+    const e = f as Record<string, unknown>;
+    return isStr(e.createdAt) && isStr(e.rawText) && Array.isArray(e.tags);
+  });
+}
+
+/** Optional customer-requested-change structure that drives approval gating. */
+function isValidRequestedChange(v: unknown): boolean {
+  if (v == null) return true;
+  if (typeof v !== 'object') return false;
+  const c = v as Record<string, unknown>;
+  return isStr(c.note)
+    && isStr(c.requestedAt)
+    && typeof c.lifecycleStatus === 'string'
+    && CHANGE_LIFECYCLE_STATUSES.has(c.lifecycleStatus);
+}
+
+/**
+ * A page artifact must have the right shape for EVERY field review-client
+ * renders or uses for a customer decision (accept / regenerate / approval
+ * gating / layout override). Strict finite/integer/boolean/enum/null-string —
+ * no coercion.
+ */
 function isValidPageArtifactLike(p: unknown): boolean {
-  return !!p
-    && typeof p === 'object'
-    && typeof (p as { pageIndex?: unknown }).pageIndex === 'number'
-    && typeof (p as { storyText?: unknown }).storyText === 'string';
+  if (!p || typeof p !== 'object') return false;
+  const a = p as Record<string, unknown>;
+  if (!isSafeNonNegInt(a.pageIndex)) return false;
+  if (!isStr(a.storyText)) return false;
+  if (!isStringOrNull(a.currentImageUrl)) return false;
+  if (!isSafeNonNegInt(a.regenerateCount)) return false;
+  if (typeof a.accepted !== 'boolean') return false;
+  if (!isValidFeedbackHistory(a.feedbackHistory)) return false;
+  // Override: only absent/null or a fully-valid override (reuse the runtime guard).
+  if (a.proofCardOverride != null && !isValidProofCardOverride(a.proofCardOverride)) return false;
+  // Optional approval-gating fields.
+  if (a.customerReviewStatus != null && !(isStr(a.customerReviewStatus) && PAGE_REVIEW_STATUSES.has(a.customerReviewStatus))) return false;
+  if (!isValidRequestedChange(a.customerRequestedChange)) return false;
+  return true;
+}
+
+/** allowed:true iff reason is exactly 'available'; reason must be a known member. */
+function isCoherentCapability(cap: unknown): boolean {
+  if (!cap || typeof cap !== 'object') return false;
+  const c = cap as { allowed?: unknown; reason?: unknown };
+  if (typeof c.allowed !== 'boolean' || typeof c.reason !== 'string') return false;
+  if (!CAPABILITY_REASONS.has(c.reason)) return false;
+  return c.allowed === (c.reason === 'available');
 }
 
 /**
  * Strict validation of a render-critical ReviewSnapshot bound to the EXPECTED
- * order. Every field the review UI renders must have the right shape; a partial
- * or cross-order snapshot is rejected. No coercion — malformed is malformed.
+ * order. Every field the review UI renders or decides on must have the right
+ * shape; a partial, cross-order, or contradictory snapshot is rejected. Page
+ * indices must be unique + safe non-negative integers. No coercion.
  */
 function isValidReviewSnapshot(value: unknown, expectedOrderId: string): value is ReviewSnapshot {
   if (!value || typeof value !== 'object') return false;
   const s = value as Record<string, unknown>;
   // Order binding: the response must be for the order we are editing.
   if (typeof s.orderId !== 'string' || s.orderId !== expectedOrderId) return false;
-  if (typeof s.childName !== 'string') return false;
-  if (typeof s.reviewStatus !== 'string') return false;
-  if (typeof s.bookFormat !== 'string') return false;
+  if (!isStr(s.childName)) return false;
+  if (!(isStr(s.reviewStatus) && REVIEW_STATUSES.has(s.reviewStatus))) return false;
+  if (!(isStr(s.bookFormat) && BOOK_FORMATS.has(s.bookFormat))) return false;
   if (!Array.isArray(s.pageArtifacts) || !s.pageArtifacts.every(isValidPageArtifactLike)) return false;
+  // Page indices must be unique.
+  const indices = (s.pageArtifacts as Array<{ pageIndex: number }>).map((a) => a.pageIndex);
+  if (new Set(indices).size !== indices.length) return false;
   // Nullable string identity/freshness fields.
   for (const k of ['storyArtifactUrl', 'proofVersion', 'proofSourceFingerprint', 'proofReviewedVersion', 'proofReviewedAt']) {
     if (!isStringOrNull(s[k])) return false;
@@ -304,9 +395,8 @@ function isValidReviewSnapshot(value: unknown, expectedOrderId: string): value i
   for (const k of ['proofAvailable', 'proofFresh', 'isPrint']) {
     if (typeof s[k] !== 'boolean') return false;
   }
-  // The capability the UI gates on.
-  const cap = s.proofLayoutEditing as { allowed?: unknown; reason?: unknown } | undefined;
-  if (!cap || typeof cap.allowed !== 'boolean' || typeof cap.reason !== 'string') return false;
+  // The capability the UI gates on — membership + allowed↔available coherence.
+  if (!isCoherentCapability(s.proofLayoutEditing)) return false;
   return true;
 }
 

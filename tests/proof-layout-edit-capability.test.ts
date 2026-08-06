@@ -10,7 +10,7 @@ import { createOrderRecord } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
 import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
 import { evaluateProofLayoutEditCapability, reviewSnapshotFromOrder } from '../src/lib/page-review.ts';
-import { canOfferCustomerLayoutEditing, customerLayoutUnavailableMessage } from '../src/lib/proof-layout-editor-core.ts';
+import { canOfferCustomerLayoutEditing, customerLayoutUnavailableMessage, interpretLayoutMutationResponse } from '../src/lib/proof-layout-editor-core.ts';
 
 const NOW = '2026-08-06T00:00:00.000Z';
 
@@ -104,6 +104,13 @@ test('missing proof binding → proof_not_ready', () => {
 test('reviewSnapshotFromOrder carries the capability', () => {
   const snap = reviewSnapshotFromOrder(seed());
   assert.deepEqual(snap.proofLayoutEditing, { allowed: true, reason: 'available' });
+});
+
+test('a REAL server snapshot passes the strict client validator (happy path preserved)', () => {
+  const snapshot = reviewSnapshotFromOrder(seed());
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot }, snapshot.orderId);
+  assert.equal(out.ok, true, 'the authoritative server snapshot must be adoptable');
+  assert.equal(out.snapshot?.orderId, snapshot.orderId);
 });
 
 test('customer copy: production states say production; refund/unpaid never do; unknown is fail-closed', () => {

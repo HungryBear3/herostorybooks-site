@@ -12,6 +12,22 @@ import { readFileSync } from 'node:fs';
 const editor = readFileSync('src/app/review/[orderId]/customer-proof-layout-editor.tsx', 'utf8');
 const client = readFileSync('src/app/review/[orderId]/review-client.tsx', 'utf8');
 
+test('R3-B: editor gets its fit/overflow from the AUTHORITATIVE fit route and gates Save on it', () => {
+  // Fetches the real-renderer fit route (not a browser estimate).
+  assert.match(editor, /customerProofFitUrl\(orderId, reviewToken\)/);
+  assert.match(editor, /buildFitBody\(pageIndex, geo, binding\)/);
+  // Stale/out-of-order responses are dropped via the latest-wins tracker.
+  assert.match(editor, /createLatestRequestTracker\(\)/);
+  assert.match(editor, /fitTrackerRef\.current\.isCurrent\(token\)/);
+  // Save is blocked until the renderer confirms this geometry fits.
+  assert.match(editor, /fitBlocksSave = fit\.state !== 'ready' \|\| fit\.overflowed/);
+  assert.match(editor, /disabled=\{busy \|\| !contrast\.ok \|\| fitBlocksSave\}/);
+  // Authoritative overflow is surfaced accessibly.
+  assert.match(editor, /aria-live="assertive"[\s\S]{0,120}data-testid="layout-overflow-note"/);
+  // No browser-side text estimator is used for the fit decision.
+  assert.doesNotMatch(editor, /proofCardPreviewFit|estimateGeistTextHeightPt/);
+});
+
 test('customer editor calls ONLY the tokenized customer endpoint, never the admin route', () => {
   assert.match(editor, /customerProofLayoutUrl\(orderId, reviewToken\)/);
   assert.match(editor, /customerRequestHelpUrl\(orderId, reviewToken\)/);

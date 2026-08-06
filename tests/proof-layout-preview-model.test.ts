@@ -44,15 +44,17 @@ test('panel opacity applies to the panel background only; text stays fully opaqu
   assert.equal(m.textOpacity ?? 1, 1);
 });
 
-test('fontScale scales preview text size linearly', () => {
+test('preview font uses the AUTHORITATIVE fit font size when supplied; else base fallback', () => {
+  // Fallback (no authoritative fit yet) → base 15pt × fontScale.
   const base = proofCardPreviewModel(canonicalizeProofCardGeometry({ ...GEO, fontScale: 1 }));
-  const big = proofCardPreviewModel(canonicalizeProofCardGeometry({ ...GEO, fontScale: 1.15 }));
-  assert.ok(big.text.fontSizePctOfFrameHeight > base.text.fontSizePctOfFrameHeight);
-  const ratio = big.text.fontSizePctOfFrameHeight / base.text.fontSizePctOfFrameHeight;
-  assert.ok(Math.abs(ratio - 1.15) < 1e-6, `expected ~1.15 scale, got ${ratio}`);
-  // Base size derives from the renderer's 15pt base font.
   const expectedBasePct = (PROOF_CARD_BASE_FONT_PT * 1) / PROOF_PAGE_HEIGHT_PT * 100;
   assert.ok(Math.abs(base.text.fontSizePctOfFrameHeight - expectedBasePct) < 1e-6);
+  assert.equal(base.overflowed, false);
+  // With an authoritative fit (e.g. renderer shrank to 12pt and flagged overflow),
+  // the preview font and overflow follow the renderer decision — not a guess.
+  const authoritative = proofCardPreviewModel(GEO, undefined, { fontSize: 12, overflowed: true });
+  assert.ok(Math.abs(authoritative.text.fontSizePctOfFrameHeight - (12 / PROOF_PAGE_HEIGHT_PT) * 100) < 1e-6);
+  assert.equal(authoritative.overflowed, true);
 });
 
 test('text zone uses the renderer normalized insets and centers vertically', () => {
