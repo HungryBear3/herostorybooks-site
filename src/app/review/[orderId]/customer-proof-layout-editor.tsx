@@ -168,7 +168,9 @@ export default function CustomerProofLayoutEditor(props: CustomerProofLayoutEdit
       if (!res.ok || !data?.snapshot) {
         setError('We couldn’t record your help request. Please try again.');
       } else {
-        onCommitted(data.snapshot);
+        // Request-help does NOT invalidate the proof or change any override, so we
+        // keep the editor open and surface the confirmation inline. Calling
+        // onCommitted here would close the editor before the customer sees it.
         setStatus('Thanks — we’ve noted that you’d like help with this page’s layout. Our team will take a look; no email has been sent yet.');
       }
     } catch {

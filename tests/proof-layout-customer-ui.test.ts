@@ -34,6 +34,18 @@ test('customer editor adopts the authoritative snapshot and never fakes success'
   assert.match(editor, /aria-live="assertive"/);
 });
 
+test('request-help keeps the editor open and shows a confirmation (does not close via onCommitted/onClose)', () => {
+  // Isolate the requestHelp() body so the guard is bounded to that handler.
+  const m = editor.match(/async function requestHelp\(\)[\s\S]*?\n {2}\}/);
+  assert.ok(m, 'requestHelp() function block not found');
+  const body = m![0];
+  // Request-help does NOT invalidate the proof, so the editor must stay open and
+  // surface a durable-audit confirmation — NOT collapse via the parent close path.
+  assert.match(body, /setStatus\(/);
+  assert.doesNotMatch(body, /onCommitted\(/);
+  assert.doesNotMatch(body, /onClose\(/);
+});
+
 test('customer editor controls are touch-safe (44px) and gestures use pointer capture + touch-none', () => {
   assert.match(editor, /h-11 w-11/);       // resize handle
   assert.match(editor, /min-h-11/);        // action buttons
