@@ -271,7 +271,7 @@ function ProofLayoutEditorState({
     <div className="space-y-2 border-t border-gray-100 pt-2">
       <div className="flex items-center justify-between">
         <p className="text-[10px] font-semibold text-forest uppercase tracking-wide">Proof layout editor</p>
-        <button type="button" onClick={onClose} className="text-[10px] underline text-gray-500">done</button>
+        <button type="button" onClick={onClose} className="min-h-11 px-2 text-[10px] underline text-gray-500">done</button>
       </div>
 
       {!proofFresh ? (
@@ -313,7 +313,7 @@ function ProofLayoutEditorState({
               </p>
               <span
                 onPointerDown={startResize}
-                className="absolute -right-3 -bottom-3 h-8 w-8 touch-none cursor-nwse-resize rounded-sm after:absolute after:right-2 after:bottom-2 after:h-3 after:w-3 after:rounded-sm after:bg-forest"
+                className="absolute -right-4 -bottom-4 h-11 w-11 touch-none cursor-nwse-resize rounded-sm after:absolute after:right-3 after:bottom-3 after:h-3 after:w-3 after:rounded-sm after:bg-forest"
                 aria-hidden
               />
             </div>
@@ -329,7 +329,7 @@ function ProofLayoutEditorState({
                 step={0.01}
                 value={geo.opacity}
                 onChange={(event) => update({ opacity: Number(event.target.value) })}
-                className="w-full"
+                className="w-full h-11"
                 disabled={busy}
               />
             </label>
@@ -342,7 +342,7 @@ function ProofLayoutEditorState({
                 step={0.01}
                 value={geo.fontScale}
                 onChange={(event) => update({ fontScale: Number(event.target.value) })}
-                className="w-full"
+                className="w-full h-11"
                 disabled={busy}
               />
             </label>
@@ -358,7 +358,7 @@ function ProofLayoutEditorState({
                   onClick={() => setColor(option.value)}
                   disabled={busy}
                   aria-pressed={color === option.value}
-                  className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] border ${color === option.value ? 'border-forest ring-1 ring-forest' : 'border-gray-300'}`}
+                  className={`flex min-h-11 items-center gap-1 px-3 py-1 rounded text-[10px] border ${color === option.value ? 'border-forest ring-1 ring-forest' : 'border-gray-300'}`}
                 >
                   <span className="inline-block h-3 w-3 rounded-sm border border-gray-300" style={{ backgroundColor: option.swatch }} aria-hidden />
                   {option.label}
@@ -383,7 +383,7 @@ function ProofLayoutEditorState({
               type="button"
               onClick={reset}
               disabled={busy || !hasOverride}
-              className="px-2 py-1 text-[11px] rounded font-semibold border border-gray-300 text-gray-700 disabled:opacity-40"
+              className="min-h-11 px-3 py-1 text-[11px] rounded font-semibold border border-gray-300 text-gray-700 disabled:opacity-40"
             >
               reset to default
             </button>
@@ -391,7 +391,7 @@ function ProofLayoutEditorState({
               type="button"
               onClick={save}
               disabled={busy || !contrast.ok}
-              className="px-2 py-1 text-[11px] rounded font-semibold bg-forest text-white disabled:opacity-40"
+              className="min-h-11 px-3 py-1 text-[11px] rounded font-semibold bg-forest text-white disabled:opacity-40"
             >
               {busy ? 'saving…' : 'save layout'}
             </button>

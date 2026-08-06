@@ -241,14 +241,14 @@ function PageTile({
             <button
               type="button"
               onClick={() => setLayoutOpen((v) => !v)}
-              className="underline text-forest"
+              className="inline-flex min-h-11 items-center px-1 underline text-forest"
             >
               {layoutOpen ? 'close layout' : 'edit layout'}
             </button>
             <button
               type="button"
               onClick={() => setOpen((v) => !v)}
-              className="underline text-forest"
+              className="inline-flex min-h-11 items-center px-1 underline text-forest"
             >
               {open ? 'close' : 'review'}
             </button>

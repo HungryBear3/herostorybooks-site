@@ -14,7 +14,12 @@ test('open page editor spans the review grid instead of staying in a half-width 
 test('editor color controls wrap and drag targets are touch-safe', () => {
   assert.match(editorSource, /flex flex-wrap gap-1/);
   assert.match(editorSource, /onPointerDown=\{startMove\}[\s\S]{0,180}touch-none/);
-  assert.match(editorSource, /onPointerDown=\{startResize\}[\s\S]{0,180}h-8 w-8[\s\S]{0,180}touch-none/);
+  assert.match(editorSource, /onPointerDown=\{startResize\}[\s\S]{0,180}h-11 w-11[\s\S]{0,180}touch-none/);
+  assert.match(editorSource, /className="w-full h-11"/);
+  assert.match(editorSource, /flex min-h-11 items-center gap-1/);
+  assert.match(editorSource, /min-h-11 px-3 py-1 text-\[11px\][\s\S]{0,220}reset to default/);
+  assert.match(editorSource, /min-h-11 px-3 py-1 text-\[11px\][\s\S]{0,220}save layout/);
+  assert.match(gridSource, /inline-flex min-h-11 items-center px-1 underline text-forest/);
 });
 
 test('story-only editor uses current binding names and consumes authoritative snapshot', () => {
