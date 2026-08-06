@@ -1313,11 +1313,16 @@ export interface ProofLayoutOverrideResult {
 
 /** Editing closes once the order is approved, print-submitted, in production,
  *  fulfilled, or shipped. (Refund/eligibility handled separately.) */
-function evaluateProofLayoutMutationLifecycle(order: OrderRecord): { status: 409; error: string } | null {
-  if (order.reviewStatus === 'approved') return { status: 409, error: 'order_approved' };
-  if (order.status === 'shipped') return { status: 409, error: 'order_shipped' };
+export function evaluateProofLayoutMutationLifecycle(order: OrderRecord): { status: 409; error: string } | null {
+  if (order.reviewStatus === 'approved' || order.proofApprovedAt || order.printApprovedAt) {
+    return { status: 409, error: 'order_approved' };
+  }
+  if (order.status === 'shipped' || order.shippedAt) return { status: 409, error: 'order_shipped' };
   if (order.status === 'print_in_production') return { status: 409, error: 'order_in_production' };
-  if (order.printJobId) return { status: 409, error: 'print_submitted' };
+  if (order.printJobId || order.printSubmittedAt || order.printSubmissionAttemptedAt) {
+    return { status: 409, error: 'print_submitted' };
+  }
+  if (order.internalDisposition) return { status: 409, error: 'order_finalized' };
   if (
     order.fulfillmentStatus === 'submitting_to_print'
     || order.fulfillmentStatus === 'proof_approved'
@@ -1414,7 +1419,13 @@ export async function setProofLayoutOverride(input: ProofLayoutOverrideInput): P
         if (isReset) {
           if (!isValidProofCardOverride(page.proofCardOverride)) {
             // Nothing to reset — do not churn the proof or audit trail (idempotent).
-            return { abort: { ok: true, status: 200, pageIndex: input.pageIndex, proofCardOverride: null, noop: true } };
+            return {
+              abort: {
+                ok: true, status: 200, pageIndex: input.pageIndex,
+                proofCardOverride: null, noop: true,
+                snapshot: reviewSnapshotFromOrder(order),
+              },
+            };
           }
           nextOverride = null;
         } else {
@@ -1464,8 +1475,11 @@ export async function setProofLayoutOverride(input: ProofLayoutOverrideInput): P
           {
             type: isReset ? 'page_layout_override_reset' : 'page_layout_override_applied',
             pageIndex: input.pageIndex,
-            reason: isReset ? 'customer_layout_reset' : 'customer_layout_edit',
+            reason: actor.kind === 'internal'
+              ? (isReset ? 'admin_layout_reset' : 'admin_layout_correction')
+              : (isReset ? 'customer_layout_reset' : 'customer_layout_edit'),
             meta: {
+              boundProofVersion: input.authoredAgainstProofVersion,
               boundProofFingerprint: currentFingerprint,
               beforeColor: (isValidProofCardOverride(page.proofCardOverride) ? page.proofCardOverride.textColor : null) ?? null,
               afterColor: nextOverride?.textColor ?? null,

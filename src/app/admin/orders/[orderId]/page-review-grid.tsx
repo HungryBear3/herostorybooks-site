@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 
 import type { PageArtifact } from '@/lib/orders';
 import type { ReviewSnapshot } from '@/lib/page-review';
+import { isValidProofCardOverride } from '@/lib/proof-layout-override';
+import ProofLayoutEditor from './proof-layout-editor';
 
 const HIGH_REGEN_THRESHOLD = 3;
 const NOTES_MAX = 500;
@@ -24,16 +26,48 @@ type GridPage = Pick<
   | 'generationModel'
   | 'customerReviewStatus'
   | 'customerRequestedChange'
+  | 'proofCardOverride'
 >;
 
 interface Props {
   orderId: string;
   pages: GridPage[];
+  /** Current proof identity used to revision-bind layout edits. Null/empty when
+   *  no live proof exists yet — the layout editor is gated closed in that case. */
+  proofVersion?: string | null;
+  sourceFingerprint?: string | null;
+  proofFresh?: boolean;
 }
 
-export default function PageReviewGrid({ orderId, pages }: Props) {
+export default function PageReviewGrid({
+  orderId,
+  pages,
+  proofVersion,
+  sourceFingerprint,
+  proofFresh,
+}: Props) {
   const [authoritativePages, setAuthoritativePages] = useState<GridPage[]>(pages);
+  const [proofIdentity, setProofIdentity] = useState({
+    proofVersion: proofVersion ?? null,
+    sourceFingerprint: sourceFingerprint ?? null,
+    proofFresh: Boolean(proofFresh),
+  });
   useEffect(() => setAuthoritativePages(pages), [pages]);
+  useEffect(() => {
+    setProofIdentity({
+      proofVersion: proofVersion ?? null,
+      sourceFingerprint: sourceFingerprint ?? null,
+      proofFresh: Boolean(proofFresh),
+    });
+  }, [proofVersion, sourceFingerprint, proofFresh]);
+  function applySnapshot(snapshot: ReviewSnapshot) {
+    setAuthoritativePages(snapshot.pageArtifacts);
+    setProofIdentity({
+      proofVersion: snapshot.proofVersion,
+      sourceFingerprint: snapshot.proofSourceFingerprint,
+      proofFresh: snapshot.proofFresh,
+    });
+  }
   const sorted = useMemo(
     () => [...authoritativePages].sort((a, b) => a.pageIndex - b.pageIndex),
     [authoritativePages],
@@ -57,13 +91,17 @@ export default function PageReviewGrid({ orderId, pages }: Props) {
         Internal-only. Click a tile to mark for targeted regeneration or add a note.
         Pages with a high regenerate count or an existing flag get a coral border.
       </p>
+
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {sorted.map((page) => (
           <PageTile
             key={page.pageIndex}
             orderId={orderId}
             page={page}
-            applySnapshot={(snapshot) => setAuthoritativePages(snapshot.pageArtifacts)}
+            proofVersion={proofIdentity.proofVersion}
+            sourceFingerprint={proofIdentity.sourceFingerprint}
+            proofFresh={proofIdentity.proofFresh}
+            applySnapshot={applySnapshot}
           />
         ))}
       </div>
@@ -74,14 +112,21 @@ export default function PageReviewGrid({ orderId, pages }: Props) {
 function PageTile({
   orderId,
   page,
+  proofVersion,
+  sourceFingerprint,
+  proofFresh,
   applySnapshot,
 }: {
   orderId: string;
   page: GridPage;
+  proofVersion: string | null;
+  sourceFingerprint: string | null;
+  proofFresh: boolean;
   applySnapshot: (snapshot: ReviewSnapshot) => void;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [layoutOpen, setLayoutOpen] = useState(false);
   const [notes, setNotes] = useState(page.reviewerNotes ?? '');
   const [flag, setFlag] = useState(Boolean(page.targetedRegenNeeded));
   const [busy, setBusy] = useState(false);
@@ -98,6 +143,9 @@ function PageTile({
 
   const hot = page.regenerateCount >= HIGH_REGEN_THRESHOLD;
   const flagged = Boolean(page.targetedRegenNeeded);
+  const validProofCardOverride = isValidProofCardOverride(page.proofCardOverride)
+    ? page.proofCardOverride
+    : null;
   const borderColor = flagged
     ? 'border-coral'
     : hot
@@ -160,7 +208,7 @@ function PageTile({
   const imgUrl = page.currentImageUrl ?? page.acceptedImageUrl ?? null;
 
   return (
-    <div className={`rounded-lg border ${borderColor} bg-cream/40 overflow-hidden flex flex-col`}>
+    <div className={`${layoutOpen ? 'col-span-2 sm:col-span-3 lg:col-span-4 sm:grid sm:grid-cols-2 sm:items-start' : 'flex flex-col'} rounded-lg border ${borderColor} bg-cream/40 overflow-hidden`}>
       <div className="relative aspect-square bg-gray-100">
         {imgUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -185,15 +233,41 @@ function PageTile({
       <div className="p-2 text-[11px] flex flex-col gap-1.5">
         <p className="text-gray-700 line-clamp-3 leading-snug">{page.storyText || <span className="text-gray-400">(no story text)</span>}</p>
         <div className="flex items-center justify-between text-gray-500 text-[10px]">
-          <span>{page.accepted ? 'accepted' : 'pending'} · regens {page.regenerateCount}</span>
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            className="underline text-forest"
-          >
-            {open ? 'close' : 'review'}
-          </button>
+          <span>
+            {page.accepted ? 'accepted' : 'pending'} · regens {page.regenerateCount}
+            {validProofCardOverride ? ' · layout✎' : ''}
+          </span>
+          <span className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setLayoutOpen((v) => !v)}
+              className="inline-flex min-h-11 items-center px-1 underline text-forest"
+            >
+              {layoutOpen ? 'close layout' : 'edit layout'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              className="inline-flex min-h-11 items-center px-1 underline text-forest"
+            >
+              {open ? 'close' : 'review'}
+            </button>
+          </span>
         </div>
+        {layoutOpen && (
+          <ProofLayoutEditor
+            orderId={orderId}
+            pageIndex={page.pageIndex}
+            imageUrl={imgUrl}
+            storyText={page.storyText}
+            proofVersion={proofVersion ?? ''}
+            sourceFingerprint={sourceFingerprint ?? ''}
+            proofFresh={proofFresh}
+            initialOverride={validProofCardOverride}
+            onCommitted={applySnapshot}
+            onClose={() => setLayoutOpen(false)}
+          />
+        )}
         {open && (
           <div className="space-y-2 border-t border-gray-100 pt-2">
             <label className="flex items-center gap-2 text-[11px] text-gray-700">
