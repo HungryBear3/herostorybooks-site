@@ -39,14 +39,16 @@ import {
 } from './fulfillment.ts';
 import { sendRegenManualReviewAlert } from './order-email.ts';
 import { validateStoryPageSet } from './story-page-contract.ts';
-import { NEW_PROOF_LAYOUT_VERSION } from './fulfillment-types.ts';
+import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION } from './fulfillment-types.ts';
 import {
   assembleProofCardOverride,
   canonicalizeProofCardGeometry,
   evaluateProofTextContrast,
+  isCompleteProofCardGeometry,
   isProofTextColor,
   isValidProofCardOverride,
   proofCardGeometryForFingerprint,
+  proofTextColorForFingerprint,
   type ProofCardGeometry,
 } from './proof-layout-override.ts';
 import { proofCardTextOverflows } from './pdf-builder.ts';
@@ -228,6 +230,7 @@ export function applyRegeneratePage(
     acceptedImageUrl: null,
     feedbackHistory: [...current.feedbackHistory, feedbackEntry],
     versionHistory: [...current.versionHistory, versionEntry],
+    textLayout: ensureRecommendedTextLayout(current.textLayout),
   };
   return { artifacts: next, page: next[idx] };
 }
@@ -1359,6 +1362,9 @@ export async function setProofLayoutOverride(input: ProofLayoutOverrideInput): P
   }
   const actor = input.actor ?? INTERNAL_REVIEW_ACTOR;
   const isReset = input.geometry == null;
+  if (!isReset && !isCompleteProofCardGeometry(input.geometry)) {
+    return { ok: false, status: 422, error: 'invalid_geometry' };
+  }
   try {
     return await withOrderTransaction<ProofLayoutOverrideResult>(
       input.orderId,
@@ -1412,6 +1418,20 @@ export async function setProofLayoutOverride(input: ProofLayoutOverrideInput): P
           }
           const colorCheck = resolveAndValidateLayoutColor(input.textColor, geometry.opacity);
           if ('refusal' in colorCheck) return { abort: { ok: false, ...colorCheck.refusal } };
+          if (
+            isValidProofCardOverride(page.proofCardOverride)
+            && JSON.stringify(proofCardGeometryForFingerprint(page.proofCardOverride)) === JSON.stringify(geometry)
+            && JSON.stringify(proofTextColorForFingerprint(page.proofCardOverride.textColor))
+              === JSON.stringify(proofTextColorForFingerprint(colorCheck.color))
+          ) {
+            return {
+              abort: {
+                ok: true, status: 200, pageIndex: input.pageIndex,
+                proofCardOverride: page.proofCardOverride, noop: true,
+                snapshot: reviewSnapshotFromOrder(order),
+              },
+            };
+          }
           nextOverride = assembleProofCardOverride({
             geometry,
             textColor: colorCheck.color,
@@ -1439,7 +1459,7 @@ export async function setProofLayoutOverride(input: ProofLayoutOverrideInput): P
             pageIndex: input.pageIndex,
             reason: isReset ? 'customer_layout_reset' : 'customer_layout_edit',
             meta: {
-              boundProofVersion: input.authoredAgainstProofVersion,
+              boundProofFingerprint: currentFingerprint,
               beforeColor: (isValidProofCardOverride(page.proofCardOverride) ? page.proofCardOverride.textColor : null) ?? null,
               afterColor: nextOverride?.textColor ?? null,
               ...layoutGeometryMeta('before', before),
@@ -1472,7 +1492,7 @@ export interface RequestLayoutHelpInput extends ReviewActorInput {
 }
 export interface RequestLayoutHelpResult {
   ok: boolean;
-  status: 200 | 403 | 404 | 409;
+  status: 200 | 403 | 404 | 409 | 422;
   noop?: boolean;
   snapshot?: ReviewSnapshot;
   error?: string;
@@ -1486,7 +1506,10 @@ export interface RequestLayoutHelpResult {
  */
 export async function requestLayoutHelp(input: RequestLayoutHelpInput): Promise<RequestLayoutHelpResult> {
   const actor = input.actor ?? INTERNAL_REVIEW_ACTOR;
-  const pageIndex = Number.isInteger(input.pageIndex) && (input.pageIndex as number) >= 0 ? (input.pageIndex as number) : null;
+  if (input.pageIndex != null && (!Number.isInteger(input.pageIndex) || input.pageIndex < 0)) {
+    return { ok: false, status: 422, error: 'invalid_page_index' };
+  }
+  const pageIndex = input.pageIndex ?? null;
   try {
     return await withOrderTransaction<RequestLayoutHelpResult>(
       input.orderId,
@@ -1495,8 +1518,20 @@ export async function requestLayoutHelp(input: RequestLayoutHelpInput): Promise<
         if (refusal) return { abort: { ok: false, status: refusal.status, error: refusal.error } };
         const lifecycle = evaluateProofLayoutMutationLifecycle(order);
         if (lifecycle) return { abort: { ok: false, status: lifecycle.status, error: lifecycle.error } };
+        if (pageIndex != null && !(order.pageArtifacts ?? []).some((p) => p.pageIndex === pageIndex)) {
+          return { abort: { ok: false, status: 422, error: 'invalid_page_index' } };
+        }
+        const currentFingerprint = proofSourceFingerprint(order);
+        if (!order.proofVersion || !order.proofSourceFingerprint || !order.storyArtifactUrl) {
+          return { abort: { ok: false, status: 409, error: 'no_live_proof' } };
+        }
+        if (order.proofSourceFingerprint !== currentFingerprint) {
+          return { abort: { ok: false, status: 409, error: 'proof_stale' } };
+        }
         const already = (order.auditEvents ?? []).some(
-          (e) => e.type === 'layout_help_requested' && (e.pageIndex ?? null) === pageIndex,
+          (e) => e.type === 'layout_help_requested'
+            && (e.pageIndex ?? null) === pageIndex
+            && e.meta?.boundProofFingerprint === currentFingerprint,
         );
         if (already) {
           return { abort: { ok: true, status: 200, noop: true, snapshot: reviewSnapshotFromOrder(order) } };
@@ -1504,7 +1539,10 @@ export async function requestLayoutHelp(input: RequestLayoutHelpInput): Promise<
         const now = input.now ?? new Date().toISOString();
         const next = appendAuditEventTo(
           order,
-          { type: 'layout_help_requested', ...(pageIndex != null ? { pageIndex } : {}), reason: 'customer_layout_help' },
+          {
+            type: 'layout_help_requested', ...(pageIndex != null ? { pageIndex } : {}),
+            reason: 'customer_layout_help', meta: { boundProofFingerprint: currentFingerprint },
+          },
           now,
         );
         return { commit: next, result: { ok: true, status: 200, snapshot: reviewSnapshotFromOrder(next) } };

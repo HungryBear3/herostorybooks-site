@@ -18,6 +18,7 @@ import {
 } from '../src/lib/image-prompt-builder.ts';
 import { pageImageUrlsFromArtifacts, imageUrlForPage } from '../src/lib/fulfillment.ts';
 import type { ImageProvider } from '../src/lib/image-provider-types.ts';
+import { isValidPageTextLayout } from '../src/lib/fulfillment-types.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -382,5 +383,18 @@ test('acceptPage: accepting one page does NOT overwrite any other page\u2019s st
     assert.equal(p1.acceptedImageUrl, 'https://example.com/p1-accepted.png');
   } finally {
     cleanup(dir);
+  }
+});
+
+test('applyRegeneratePage repairs missing or invalid text layout on the regenerated page', () => {
+  const feedback = {
+    createdAt: 't', rawText: '', tags: [], providerTried: 'openai' as const,
+    resultImageUrl: 'https://new.png', success: true,
+  };
+  for (const textLayout of [undefined, { zone: 'bogus' } as never]) {
+    const { page } = applyRegeneratePage(
+      [pageFixture(0, { textLayout })], 0, 'https://new.png', 'openai', 'm', 'p', feedback,
+    );
+    assert.ok(isValidPageTextLayout(page?.textLayout), 'regenerated page must carry valid metadata');
   }
 });

@@ -24,6 +24,16 @@ export interface ProofCardGeometry {
   fontScale: number;
 }
 
+/** Strict boundary guard for raw client/service input. Clamping is only for
+ * finite numeric values outside the allowed box; malformed/missing values must
+ * never be converted into a reset or canonical minimum. */
+export function isCompleteProofCardGeometry(value: unknown): value is ProofCardGeometry {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const o = value as Record<string, unknown>;
+  return ['x', 'y', 'width', 'height', 'opacity', 'fontScale']
+    .every((key) => typeof o[key] === 'number' && Number.isFinite(o[key]));
+}
+
 /** Conservative, server-enforced min/max for each control. */
 export const PROOF_CARD_BOUNDS = {
   width: { min: 0.15, max: 0.9 },

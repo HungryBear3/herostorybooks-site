@@ -297,3 +297,84 @@ test('request-help records a durable audit event with no email/proof/order side 
     assert.equal((after?.auditEvents ?? []).filter((e) => e.type === 'layout_help_requested').length, 1, 'idempotent');
   } finally { cleanup(dir); }
 });
+
+test('malformed geometry cannot apply or reset and causes no mutation', async () => {
+  const dir = makeTmp();
+  try {
+    const order = seedWithOverride();
+    await persistOrder(order);
+    const r = await applyLayout({ pageIndex: 0, geometry: 'malformed', ...binding(order) });
+    assert.equal(r.status, 422);
+    const after = await getOrder(ORDER);
+    assert.ok(after?.pageArtifacts?.[0].proofCardOverride, 'malformed geometry must not reset');
+    assert.equal(after?.storyArtifactUrl, order.storyArtifactUrl);
+    assert.equal(after?.auditEvents?.length ?? 0, order.auditEvents?.length ?? 0);
+  } finally { cleanup(dir); }
+});
+
+test('direct service rejects non-finite geometry before persistence', async () => {
+  const dir = makeTmp();
+  try {
+    const order = await persistSeed();
+    const result = await setProofLayoutOverride({
+      orderId: ORDER, pageIndex: 0, geometry: { ...ROOMY, x: Number.POSITIVE_INFINITY },
+      ...binding(order), appliedBy: 'customer', actor: customerReviewActor(TOKEN),
+    });
+    assert.equal(result.status, 422);
+    const after = await getOrder(ORDER);
+    assert.equal(after?.pageArtifacts?.[0].proofCardOverride ?? null, null);
+    assert.equal(after?.storyArtifactUrl, order.storyArtifactUrl);
+  } finally { cleanup(dir); }
+});
+
+test('byte-equivalent canonical apply is a no-op and preserves the live proof', async () => {
+  const dir = makeTmp();
+  try {
+    const order = seedWithOverride();
+    await persistOrder(order);
+    const beforeAudit = order.auditEvents?.length ?? 0;
+    const r = await applyLayout({ pageIndex: 0, geometry: { ...ROOMY, x: 0.10000001 }, textColor: 'dark_brown', ...binding(order) });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.noop, true);
+    const after = await getOrder(ORDER);
+    assert.equal(after?.storyArtifactUrl, order.storyArtifactUrl);
+    assert.equal(after?.proofVersion, order.proofVersion);
+    assert.equal(after?.auditEvents?.length ?? 0, beforeAudit);
+  } finally { cleanup(dir); }
+});
+
+test('request-help rejects malformed or nonexistent supplied page indexes without persistence', async () => {
+  const dir = makeTmp();
+  try {
+    await persistSeed();
+    for (const pageIndex of ['0', 999999]) {
+      const result = await requestHelp({ pageIndex });
+      assert.equal(result.status, 422);
+    }
+    const after = await getOrder(ORDER);
+    assert.equal(after?.auditEvents?.filter((e) => e.type === 'layout_help_requested').length, 0);
+  } finally { cleanup(dir); }
+});
+
+test('request-help idempotency is scoped to the current proof fingerprint', async () => {
+  const dir = makeTmp();
+  try {
+    const first = await persistSeed();
+    assert.equal((await requestHelp({ pageIndex: 0 })).status, 200);
+    assert.equal((await requestHelp({ pageIndex: 0 })).body.noop, true);
+    const afterFirst = (await getOrder(ORDER))!;
+    const changed: OrderRecord = {
+      ...afterFirst,
+      pageArtifacts: [page(0, { storyText: 'A newly rebuilt page.' }), page(1)],
+      proofVersion: 'pv_2', storyArtifactUrl: 'https://example.invalid/proof-2.pdf',
+    };
+    changed.proofSourceFingerprint = proofSourceFingerprint(changed);
+    assert.notEqual(changed.proofSourceFingerprint, first.proofSourceFingerprint);
+    await persistOrder(changed);
+    const second = await requestHelp({ pageIndex: 0 });
+    assert.equal(second.status, 200);
+    assert.notEqual(second.body.noop, true);
+    const events = (await getOrder(ORDER))?.auditEvents?.filter((e) => e.type === 'layout_help_requested') ?? [];
+    assert.equal(events.length, 2);
+  } finally { cleanup(dir); }
+});

@@ -9,6 +9,7 @@
 import { setProofLayoutOverride, requestLayoutHelp, customerReviewActor } from './page-review.ts';
 import { authorizeCustomerReviewWrite } from './review-route-auth.ts';
 import type { ProofTextColor } from './fulfillment-types.ts';
+import { isCompleteProofCardGeometry } from './proof-layout-override.ts';
 
 export interface RouteReply {
   status: number;
@@ -19,21 +20,24 @@ export async function handleProofLayoutOverrideRequest(request: Request, orderId
   const auth = await authorizeCustomerReviewWrite(request, orderId);
   if (!auth.ok) return { status: auth.status ?? 403, body: { ok: false, error: auth.error } };
 
-  const body = (await request.json().catch(() => ({}))) as Record<string, unknown> | null;
-  const pageIndex = Number(body?.pageIndex);
-  if (!Number.isInteger(pageIndex) || pageIndex < 0) {
+  let body: Record<string, unknown>;
+  try {
+    const parsed = await request.json();
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid_body');
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return { status: 400, body: { ok: false, error: 'invalid_json_body' } };
+  }
+  const pageIndex = body.pageIndex;
+  if (typeof pageIndex !== 'number' || !Number.isInteger(pageIndex) || pageIndex < 0) {
     return { status: 400, body: { ok: false, error: 'invalid_page_index' } };
   }
 
-  const rawGeometry = body?.geometry;
-  const hasGeometry = rawGeometry != null && typeof rawGeometry === 'object';
-  const g = rawGeometry as Record<string, unknown> | undefined;
-  const geometry = hasGeometry
-    ? {
-        x: Number(g?.x), y: Number(g?.y), width: Number(g?.width),
-        height: Number(g?.height), opacity: Number(g?.opacity), fontScale: Number(g?.fontScale),
-      }
-    : null; // null = reset
+  const rawGeometry = body.geometry;
+  if (rawGeometry != null && !isCompleteProofCardGeometry(rawGeometry)) {
+    return { status: 422, body: { ok: false, error: 'invalid_geometry' } };
+  }
+  const geometry = rawGeometry == null ? null : rawGeometry;
 
   const result = await setProofLayoutOverride({
     orderId,
@@ -66,9 +70,19 @@ export async function handleRequestLayoutHelpRequest(request: Request, orderId: 
   const auth = await authorizeCustomerReviewWrite(request, orderId);
   if (!auth.ok) return { status: auth.status ?? 403, body: { ok: false, error: auth.error } };
 
-  const body = (await request.json().catch(() => ({}))) as Record<string, unknown> | null;
-  const raw = Number(body?.pageIndex);
-  const pageIndex = Number.isInteger(raw) && raw >= 0 ? raw : null;
+  let body: Record<string, unknown>;
+  try {
+    const parsed = await request.json();
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid_body');
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return { status: 400, body: { ok: false, error: 'invalid_json_body' } };
+  }
+  const raw = body.pageIndex;
+  if (raw != null && (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0)) {
+    return { status: 422, body: { ok: false, error: 'invalid_page_index' } };
+  }
+  const pageIndex = raw == null ? null : raw as number;
 
   const result = await requestLayoutHelp({ orderId, pageIndex, actor: customerReviewActor(auth.reviewToken) });
   if (!result.ok) return { status: result.status, body: { ok: false, error: result.error } };
