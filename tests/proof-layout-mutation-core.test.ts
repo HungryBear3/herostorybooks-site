@@ -131,6 +131,20 @@ test('A3: absent / non-boolean accepted is rejected', () => {
   reject({ pageArtifacts: [validPage({ accepted: 'yes' })] }, 'string accepted');
 });
 
+test('A3b: nested feedback-history fields are strictly validated (the UI renders them)', () => {
+  // The review UI does `new Date(f.createdAt).toLocaleString()` and `f.tags.join(', ')`.
+  reject({ pageArtifacts: [validPage({ feedbackHistory: [{ createdAt: '2026-08-06T00:00:00.000Z', rawText: 'x', tags: [{}] }] })] }, 'object tag');
+  reject({ pageArtifacts: [validPage({ feedbackHistory: [{ createdAt: '2026-08-06T00:00:00.000Z', rawText: 'x', tags: [42] }] })] }, 'numeric tag');
+  reject({ pageArtifacts: [validPage({ feedbackHistory: [{ createdAt: 'not-a-date', rawText: 'x', tags: [] }] })] }, 'unparseable createdAt');
+  reject({ pageArtifacts: [validPage({ feedbackHistory: [{ createdAt: 42, rawText: 'x', tags: [] }] })] }, 'non-string createdAt');
+  reject({ pageArtifacts: [validPage({ feedbackHistory: [{ createdAt: '2026-08-06T00:00:00.000Z', rawText: 5, tags: [] }] })] }, 'non-string rawText');
+  // A legitimate feedback entry (parseable timestamp + string[] tags) adopts fine.
+  assert.equal(
+    interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: fullSnap({ pageArtifacts: [validPage({ feedbackHistory: [{ createdAt: '2026-08-06T12:00:00.000Z', rawText: 'fix hands', tags: ['face', 'hands'] }] })] }) }, OID).ok,
+    true,
+  );
+});
+
 test('A4: non-integer / negative / unsafe / duplicate pageIndex is rejected', () => {
   reject({ pageArtifacts: [validPage({ pageIndex: 1.5 })] }, 'non-integer pageIndex');
   reject({ pageArtifacts: [validPage({ pageIndex: -1 })] }, 'negative pageIndex');

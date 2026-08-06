@@ -1441,10 +1441,16 @@ export async function evaluateProofFit(input: ProofFitInput): Promise<ProofFitRe
   if (order.proofSourceFingerprint !== currentFingerprint) {
     return { ok: false, status: 409, error: 'proof_stale' };
   }
-  if (input.authoredAgainstProofVersion != null && input.authoredAgainstProofVersion !== order.proofVersion) {
+  // MANDATORY binding — mirror the mutation path exactly. Absent/empty either
+  // value fails closed BEFORE the equality comparisons (a bare, unbound probe
+  // must never receive an authoritative fit).
+  if (!input.authoredAgainstProofVersion || !input.authoredAgainstFingerprint) {
+    return { ok: false, status: 409, error: 'binding_required' };
+  }
+  if (input.authoredAgainstProofVersion !== order.proofVersion) {
     return { ok: false, status: 409, error: 'stale_revision' };
   }
-  if (input.authoredAgainstFingerprint != null && input.authoredAgainstFingerprint !== currentFingerprint) {
+  if (input.authoredAgainstFingerprint !== currentFingerprint) {
     return { ok: false, status: 409, error: 'stale_fingerprint' };
   }
 

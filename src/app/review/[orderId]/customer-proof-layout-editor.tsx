@@ -25,10 +25,15 @@ import {
   customerProofLayoutUrl,
   customerRequestHelpUrl,
   describeCardGeometry,
+  fitAuthoritativeFor,
+  fitBlocksSave,
+  fitKeyFor,
   geometryFromOverride,
   interpretLayoutMutationResponse,
   isEditorArrowKey,
   layoutMutationNotice,
+  parseFitResponse,
+  type FitState,
   type LayoutColorChoice,
 } from '@/lib/proof-layout-editor-core';
 
@@ -88,22 +93,25 @@ export default function CustomerProofLayoutEditor(props: CustomerProofLayoutEdit
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [announce, setAnnounce] = useState<string>('');
-  // AUTHORITATIVE fit from the real renderer (via the read-only fit route).
-  const [fit, setFit] = useState<{ state: 'pending' | 'ready' | 'error'; fontSize: number; overflowed: boolean }>(
-    { state: 'pending', fontSize: PROOF_CARD_BASE_FONT_PT, overflowed: false },
-  );
+  // AUTHORITATIVE fit from the real renderer (via the read-only fit route). Each
+  // result carries the fitKey it was measured for (see fitKeyFor), so it is only
+  // trusted for the CURRENT geometry.
+  const fitKey = fitKeyFor(geo, pageIndex);
+  const [fit, setFit] = useState<FitState>({ state: 'pending', key: fitKey, fontSize: PROOF_CARD_BASE_FONT_PT, overflowed: false });
   const fitTrackerRef = useRef(createLatestRequestTracker());
 
   const busy = busyOp != null;
   const hasPersistedOverride = initialOverride != null;
   const contrast = contrastFor(color, geo.opacity);
   const binding = { authoredAgainstProofVersion: proofVersion, authoredAgainstFingerprint: sourceFingerprint };
-  // Preview font + overflow come from the AUTHORITATIVE fit once known; before
-  // that the font falls back to base (Save stays disabled until fit resolves).
-  const authoritativeFit = fit.state === 'pending' ? null : { fontSize: fit.fontSize, overflowed: fit.overflowed };
+  // Preview font + overflow are authoritative ONLY when the held fit was measured
+  // for the current geometry key; otherwise fit is unavailable (base fallback,
+  // Save blocked) even during the committed render before the effect re-runs.
+  const authoritativeFit = fitAuthoritativeFor(fit, fitKey);
   const model = proofCardPreviewModel(geo, colorForModel(color), authoritativeFit);
-  // Save is blocked until the renderer confirms this exact geometry fits.
-  const fitBlocksSave = fit.state !== 'ready' || fit.overflowed;
+  const saveBlockedByFit = fitBlocksSave(fit, fitKey);
+  const showOverflow = authoritativeFit?.overflowed === true;
+  const showFitError = fit.state === 'error' && fit.key === fitKey;
 
   // B5: move focus into the editor (the interactive card) on open.
   useEffect(() => {
@@ -113,12 +121,13 @@ export default function CustomerProofLayoutEditor(props: CustomerProofLayoutEdit
   }, []);
 
   // Fetch the AUTHORITATIVE fit whenever the fit-relevant geometry changes (only
-  // size + fontScale affect fit; position does not). Debounced, and guarded by a
-  // latest-wins tracker so a slow response for an older geometry is dropped.
-  const fitKey = `${geo.width}:${geo.height}:${geo.fontScale}:${pageIndex}`;
+  // size + fontScale affect fit; position does not). Debounced, guarded by a
+  // latest-wins tracker AND by the request key so a slow response for an older
+  // geometry can never be adopted.
   useEffect(() => {
+    const requestKey = fitKey;
     const token = fitTrackerRef.current.next();
-    setFit((prev) => ({ state: 'pending', fontSize: prev.fontSize, overflowed: false }));
+    setFit((prev) => ({ state: 'pending', key: requestKey, fontSize: prev.fontSize, overflowed: false }));
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       const fallback = PROOF_CARD_BASE_FONT_PT * geo.fontScale;
@@ -131,16 +140,16 @@ export default function CustomerProofLayoutEditor(props: CustomerProofLayoutEdit
         });
         const data = await res.json().catch(() => null);
         if (!fitTrackerRef.current.isCurrent(token)) return; // superseded by a newer geometry
-        const f = (data as { ok?: boolean; fit?: { overflowed?: unknown; fontSize?: unknown } } | null)?.fit;
-        if (res.ok && (data as { ok?: boolean })?.ok && f && typeof f.overflowed === 'boolean' && typeof f.fontSize === 'number') {
-          setFit({ state: 'ready', fontSize: f.fontSize, overflowed: f.overflowed });
+        const parsed = res.ok ? parseFitResponse(data) : null;
+        if (parsed) {
+          setFit({ state: 'ready', key: requestKey, fontSize: parsed.fontSize, overflowed: parsed.overflowed });
         } else {
           // Couldn't confirm fit → fail closed (block Save) rather than guess.
-          setFit({ state: 'error', fontSize: fallback, overflowed: false });
+          setFit({ state: 'error', key: requestKey, fontSize: fallback, overflowed: false });
         }
       } catch {
         if (!fitTrackerRef.current.isCurrent(token)) return;
-        setFit({ state: 'error', fontSize: fallback, overflowed: false });
+        setFit({ state: 'error', key: requestKey, fontSize: fallback, overflowed: false });
       }
     }, 250);
     return () => { clearTimeout(timer); controller.abort(); };
@@ -420,11 +429,12 @@ export default function CustomerProofLayoutEditor(props: CustomerProofLayoutEdit
         </p>
       </fieldset>
 
-      {/* AUTHORITATIVE overflow surfaced accessibly (real renderer decision). */}
+      {/* AUTHORITATIVE overflow surfaced accessibly (real renderer decision,
+          only for the CURRENT geometry). */}
       <p aria-live="assertive" role="alert" className="mt-2 min-h-[1.25rem] text-xs text-red-600" data-testid="layout-overflow-note">
-        {fit.state === 'ready' && fit.overflowed
+        {showOverflow
           ? 'The text doesn’t fit this card at the current size — make the card larger or reduce the text size before saving.'
-          : fit.state === 'error'
+          : showFitError
             ? 'We couldn’t check whether the text fits this card. Adjust the card or try again before saving.'
             : ''}
       </p>
@@ -433,11 +443,11 @@ export default function CustomerProofLayoutEditor(props: CustomerProofLayoutEdit
         <button
           type="button"
           onClick={() => submitLayout('save')}
-          disabled={busy || !contrast.ok || fitBlocksSave}
+          disabled={busy || !contrast.ok || saveBlockedByFit}
           className="min-h-11 rounded-full bg-forest px-5 text-sm font-semibold text-white disabled:opacity-50"
           data-testid="layout-save"
         >
-          {busyOp === 'save' ? 'Saving…' : fit.state === 'pending' ? 'Checking fit…' : 'Save layout'}
+          {busyOp === 'save' ? 'Saving…' : (!authoritativeFit && !showFitError) ? 'Checking fit…' : 'Save layout'}
         </button>
         <button
           type="button"

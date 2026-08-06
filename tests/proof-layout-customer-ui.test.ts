@@ -19,9 +19,16 @@ test('R3-B: editor gets its fit/overflow from the AUTHORITATIVE fit route and ga
   // Stale/out-of-order responses are dropped via the latest-wins tracker.
   assert.match(editor, /createLatestRequestTracker\(\)/);
   assert.match(editor, /fitTrackerRef\.current\.isCurrent\(token\)/);
-  // Save is blocked until the renderer confirms this geometry fits.
-  assert.match(editor, /fitBlocksSave = fit\.state !== 'ready' \|\| fit\.overflowed/);
-  assert.match(editor, /disabled=\{busy \|\| !contrast\.ok \|\| fitBlocksSave\}/);
+  // Fit is keyed to the EXACT current geometry (R4-D2): the Save gate + preview
+  // use the shared decision helpers, so a stale-key ready result can't authorize.
+  assert.match(editor, /const fitKey = fitKeyFor\(geo, pageIndex\)/);
+  assert.match(editor, /fitAuthoritativeFor\(fit, fitKey\)/);
+  assert.match(editor, /saveBlockedByFit = fitBlocksSave\(fit, fitKey\)/);
+  assert.match(editor, /disabled=\{busy \|\| !contrast\.ok \|\| saveBlockedByFit\}/);
+  // Every fit write carries the request key it measured.
+  assert.match(editor, /setFit\(\{ state: 'ready', key: requestKey/);
+  // Responses are validated (boolean overflow + finite positive font) fail-closed.
+  assert.match(editor, /parseFitResponse\(data\)/);
   // Authoritative overflow is surfaced accessibly.
   assert.match(editor, /aria-live="assertive"[\s\S]{0,120}data-testid="layout-overflow-note"/);
   // No browser-side text estimator is used for the fit decision.

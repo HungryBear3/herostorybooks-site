@@ -491,3 +491,35 @@ test('fit route: invalid geometry is rejected 422', async () => {
     assert.equal(r.body.ok, false);
   } finally { cleanup(dir); }
 });
+
+// R4 Defect 1 — the read-only fit path must require a MANDATORY binding exactly
+// like the mutation path (absent/empty is 409 binding_required, never a fit).
+for (const [name, patch] of [
+  ['missing both', { authoredAgainstProofVersion: undefined, authoredAgainstFingerprint: undefined }],
+  ['version present, fingerprint missing', { authoredAgainstFingerprint: undefined }],
+  ['fingerprint present, version missing', { authoredAgainstProofVersion: undefined }],
+  ['empty-string version', { authoredAgainstProofVersion: '' }],
+  ['empty-string fingerprint', { authoredAgainstFingerprint: '' }],
+] as const) {
+  test(`fit route: ${name} fails closed with 409 binding_required and never mutates`, async () => {
+    const dir = makeTmp();
+    try {
+      const o = await persistSeed();
+      const before = JSON.stringify(await getOrder(ORDER));
+      const r = await fit({ pageIndex: 0, geometry: ROOMY, ...ROOMY_BINDING(o), ...patch });
+      assert.equal(r.status, 409);
+      assert.equal(r.body.error, 'binding_required');
+      assert.equal(JSON.stringify(await getOrder(ORDER)), before, 'read-only: no mutation');
+    } finally { cleanup(dir); }
+  });
+}
+
+test('fit route: a fully current binding still succeeds', async () => {
+  const dir = makeTmp();
+  try {
+    const o = await persistSeed();
+    const r = await fit({ pageIndex: 0, geometry: ROOMY, ...ROOMY_BINDING(o) });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
+  } finally { cleanup(dir); }
+});

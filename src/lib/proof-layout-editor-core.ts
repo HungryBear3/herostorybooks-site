@@ -183,6 +183,55 @@ export function createLatestRequestTracker(): LatestRequestTracker {
   };
 }
 
+// ── Authoritative-fit decision (keyed to the EXACT current geometry) ──────────
+//
+// The preview font + Save gate may only use a fit result that was measured for
+// the CURRENT fit-relevant geometry. Because React commits a new geometry before
+// the fit effect re-runs, a fit result must carry the key it measured, and every
+// render must compare it to the current key — otherwise the previous geometry's
+// "ready" result would briefly authorize Save for the new geometry.
+
+export interface FitState {
+  state: 'pending' | 'ready' | 'error';
+  /** The fitKey this state was produced for. */
+  key: string;
+  fontSize: number;
+  overflowed: boolean;
+}
+
+/** The fit-RELEVANT identity of a geometry: size + fontScale + page. Position
+ *  (x/y) does NOT affect fit, so moving the card never invalidates a fit. */
+export function fitKeyFor(geometry: ProofCardGeometry, pageIndex: number): string {
+  const g = canonicalizeProofCardGeometry(geometry);
+  return `${g.width}:${g.height}:${g.fontScale}:${pageIndex}`;
+}
+
+/** The authoritative fit for `currentKey`, or null when the held result belongs
+ *  to a different geometry (or is not ready) — i.e. fit is unavailable. */
+export function fitAuthoritativeFor(fit: FitState, currentKey: string): { fontSize: number; overflowed: boolean } | null {
+  return fit.state === 'ready' && fit.key === currentKey
+    ? { fontSize: fit.fontSize, overflowed: fit.overflowed }
+    : null;
+}
+
+/** Save is blocked unless the renderer has confirmed THIS exact geometry fits. */
+export function fitBlocksSave(fit: FitState, currentKey: string): boolean {
+  const a = fitAuthoritativeFor(fit, currentKey);
+  return a == null || a.overflowed;
+}
+
+/** Parse a fit response body: accept ONLY a boolean `overflowed` and a finite,
+ *  positive `fontSize`; anything else is null (fail closed). */
+export function parseFitResponse(body: unknown): { fontSize: number; overflowed: boolean } | null {
+  const b = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
+  if (b?.ok !== true) return null;
+  const f = b.fit && typeof b.fit === 'object' ? (b.fit as Record<string, unknown>) : null;
+  if (!f) return null;
+  if (typeof f.overflowed !== 'boolean') return null;
+  if (typeof f.fontSize !== 'number' || !Number.isFinite(f.fontSize) || f.fontSize <= 0) return null;
+  return { fontSize: f.fontSize, overflowed: f.overflowed };
+}
+
 /** Apply-body: exact page index, canonical geometry, optional approved color
  *  (omitted for legacy default), and the current revision+fingerprint binding.
  *  Never `appliedBy` (server fixes it to 'customer'); never the token. */
@@ -316,13 +365,23 @@ const PAGE_REVIEW_STATUSES = new Set(['pending', 'approved', 'changes_requested'
 const CHANGE_LIFECYCLE_STATUSES = new Set(['triage', 'illustrator', 'qa', 'ready_for_customer', 'resolved']);
 const CAPABILITY_REASONS = new Set(['available', 'proof_not_ready', 'review_approved', 'lifecycle_closed', 'order_refunded', 'payment_incomplete']);
 
-/** Optional per-page feedback entries the UI renders (createdAt/rawText/tags). */
+/** A parseable timestamp string (the UI does `new Date(createdAt).toLocaleString()`). */
+function isParseableTimestamp(v: unknown): boolean {
+  return isStr(v) && Number.isFinite(Date.parse(v));
+}
+
+/** Optional per-page feedback entries the UI renders: `new Date(createdAt)` and
+ *  `tags.join(', ')`. Every tag must be a string and createdAt must parse — no
+ *  coercion, so the UI can never render "[object Object]" or "Invalid Date". */
 function isValidFeedbackHistory(v: unknown): boolean {
   if (!Array.isArray(v)) return false;
   return v.every((f) => {
     if (!f || typeof f !== 'object') return false;
     const e = f as Record<string, unknown>;
-    return isStr(e.createdAt) && isStr(e.rawText) && Array.isArray(e.tags);
+    return isParseableTimestamp(e.createdAt)
+      && isStr(e.rawText)
+      && Array.isArray(e.tags)
+      && e.tags.every(isStr);
   });
 }
 
