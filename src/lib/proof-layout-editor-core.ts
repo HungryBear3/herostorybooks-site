@@ -132,7 +132,12 @@ export function customerLayoutUnavailableMessage(
       return null; // Approved books are frozen; no editing prompt is shown.
     case 'lifecycle_closed':
       return 'This book has moved into production, so text placement can no longer be changed here. Reply to your order email if something looks off.';
+    case 'order_refunded':
+      return 'This order was refunded, so its pages can no longer be edited here. Reply to your order email if you have questions.';
+    case 'payment_incomplete':
+      return 'This order isn’t active yet, so text placement can’t be changed. Check your order email for next steps.';
     default:
+      // Unknown/malformed reason: fail closed and NEVER invent a production state.
       return null;
   }
 }
@@ -265,39 +270,73 @@ export interface LayoutMutationOutcome {
   reload: boolean;
 }
 
-/** A minimal structural check: a real ReviewSnapshot the client can adopt. */
-function isReviewSnapshotLike(value: unknown): value is ReviewSnapshot {
-  return !!value
-    && typeof value === 'object'
-    && typeof (value as { orderId?: unknown }).orderId === 'string'
-    && Array.isArray((value as { pageArtifacts?: unknown }).pageArtifacts);
+function isStringOrNull(v: unknown): boolean {
+  return v === null || typeof v === 'string';
+}
+
+/** A page artifact carries at least a numeric index and string story text. */
+function isValidPageArtifactLike(p: unknown): boolean {
+  return !!p
+    && typeof p === 'object'
+    && typeof (p as { pageIndex?: unknown }).pageIndex === 'number'
+    && typeof (p as { storyText?: unknown }).storyText === 'string';
 }
 
 /**
- * Interpret a proof-layout / request-help response. Requires ok===true AND an
- * authoritative snapshot before any success path; a malformed 200 is a failure
- * (never a fake success). Stale-proof errors are flagged reload.
+ * Strict validation of a render-critical ReviewSnapshot bound to the EXPECTED
+ * order. Every field the review UI renders must have the right shape; a partial
+ * or cross-order snapshot is rejected. No coercion — malformed is malformed.
+ */
+function isValidReviewSnapshot(value: unknown, expectedOrderId: string): value is ReviewSnapshot {
+  if (!value || typeof value !== 'object') return false;
+  const s = value as Record<string, unknown>;
+  // Order binding: the response must be for the order we are editing.
+  if (typeof s.orderId !== 'string' || s.orderId !== expectedOrderId) return false;
+  if (typeof s.childName !== 'string') return false;
+  if (typeof s.reviewStatus !== 'string') return false;
+  if (typeof s.bookFormat !== 'string') return false;
+  if (!Array.isArray(s.pageArtifacts) || !s.pageArtifacts.every(isValidPageArtifactLike)) return false;
+  // Nullable string identity/freshness fields.
+  for (const k of ['storyArtifactUrl', 'proofVersion', 'proofSourceFingerprint', 'proofReviewedVersion', 'proofReviewedAt']) {
+    if (!isStringOrNull(s[k])) return false;
+  }
+  // Render-critical booleans.
+  for (const k of ['proofAvailable', 'proofFresh', 'isPrint']) {
+    if (typeof s[k] !== 'boolean') return false;
+  }
+  // The capability the UI gates on.
+  const cap = s.proofLayoutEditing as { allowed?: unknown; reason?: unknown } | undefined;
+  if (!cap || typeof cap.allowed !== 'boolean' || typeof cap.reason !== 'string') return false;
+  return true;
+}
+
+const AMBIGUOUS_SUCCESS_MESSAGE =
+  'We couldn’t confirm the change — the server didn’t return the updated proof state. Please reload and try again.';
+
+/**
+ * Interpret a proof-layout / request-help response against the EXPECTED order.
+ * A success requires: HTTP ok, `ok === true`, an EXACT boolean `noop`, and a
+ * fully-validated render-critical snapshot whose orderId matches. Anything
+ * else — malformed/partial/cross-order snapshot, missing/non-boolean noop,
+ * ok!==true — is a failure that keeps the editor open (never a fake success).
+ * Stale-proof errors are flagged reload. Nothing is coerced or defaulted.
  */
 export function interpretLayoutMutationResponse(
   httpOk: boolean,
   status: number,
   body: unknown,
+  expectedOrderId: string,
 ): LayoutMutationOutcome {
   const b = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
   const ok = b?.ok === true;
   const error = typeof b?.error === 'string' ? (b.error as string) : undefined;
   if (httpOk && ok) {
-    if (isReviewSnapshotLike(b?.snapshot)) {
-      return { ok: true, noop: b?.noop === true, snapshot: b!.snapshot as ReviewSnapshot, message: null, reload: false };
+    const noopIsBoolean = typeof b?.noop === 'boolean';
+    if (noopIsBoolean && isValidReviewSnapshot(b?.snapshot, expectedOrderId)) {
+      return { ok: true, noop: b!.noop as boolean, snapshot: b!.snapshot as ReviewSnapshot, message: null, reload: false };
     }
-    // ok but no adoptable snapshot — never synthesize proof state.
-    return {
-      ok: false,
-      noop: false,
-      snapshot: null,
-      reload: true,
-      message: 'We couldn’t confirm the change — the server didn’t return the updated proof state. Please reload and try again.',
-    };
+    // ok but ambiguous/malformed success — never synthesize proof state.
+    return { ok: false, noop: false, snapshot: null, reload: true, message: AMBIGUOUS_SUCCESS_MESSAGE };
   }
   return {
     ok: false,

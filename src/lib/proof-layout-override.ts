@@ -135,6 +135,9 @@ export const PROOF_CARD_CORNER_RADIUS_PT = 12;
  *  by fontScale. */
 export const PROOF_CARD_BASE_FONT_PT = 15;
 export const PROOF_CARD_BASE_LINE_GAP_PT = 5;
+/** Fit floor the renderer shrinks to before declaring overflow. */
+export const PROOF_CARD_MIN_FONT_PT = 12;
+export const PROOF_CARD_MIN_LINE_GAP_PT = 3;
 
 /** Fraction of page height occupied by the artwork frame (~0.7722). */
 export const PROOF_ART_FRAME_FRACTION = PROOF_ART_FRAME_HEIGHT_PT / PROOF_PAGE_HEIGHT_PT;
@@ -321,15 +324,108 @@ export function assembleProofCardOverride(params: {
   };
 }
 
+// ── Adaptive text fit (shared decision policy, browser-safe) ─────────────────
+//
+// The renderer measures the actual story text and shrinks the base font from
+// 15pt to 12pt (then the line gap 5→3) until it fits the panel's safe zone. The
+// FIT LOOP below is the single source of truth for that decision; the renderer
+// consumes it with a PDFKit measurer (byte-identical output) and the preview
+// consumes it with the browser-safe deterministic measurer below — so preview
+// typography follows the renderer's real 15→12 decision instead of a fixed size.
+
+export interface ProofCardFit {
+  baseFontSize: number;
+  baseLineGap: number;
+  fontSize: number;
+  lineGap: number;
+  neededHeightPt: number;
+  overflowed: boolean;
+}
+
+/**
+ * THE fit decision. `measure(fontSizePt, lineGapPt)` returns the wrapped text
+ * height in points. Shrinks font 15→12, then line gap 5→3, until it fits
+ * `safeHeightPt`; then applies `fontScale`. Pure — the measurer is injected so
+ * the same policy serves PDFKit (renderer) and the browser (preview).
+ */
+export function resolveProofCardFontFit(params: {
+  measure: (fontSizePt: number, lineGapPt: number) => number;
+  safeHeightPt: number;
+  fontScale: number;
+}): ProofCardFit {
+  const { measure, safeHeightPt, fontScale } = params;
+  let baseFontSize = PROOF_CARD_BASE_FONT_PT;
+  let baseLineGap = PROOF_CARD_BASE_LINE_GAP_PT;
+  while (measure(baseFontSize, baseLineGap) > safeHeightPt) {
+    if (baseFontSize > PROOF_CARD_MIN_FONT_PT) baseFontSize -= 1;
+    else if (baseLineGap > PROOF_CARD_MIN_LINE_GAP_PT) baseLineGap -= 1;
+    else break;
+  }
+  const fontSize = baseFontSize * fontScale;
+  const lineGap = baseLineGap * fontScale;
+  const neededHeightPt = measure(fontSize, lineGap);
+  return { baseFontSize, baseLineGap, fontSize, lineGap, neededHeightPt, overflowed: neededHeightPt > safeHeightPt };
+}
+
+// Browser-safe Geist metrics, calibrated to PDFKit (Geist-Regular): a wrapped
+// line is `fontSize * 1.3 + lineGap` tall; average glyph advance ≈ 0.50em and a
+// space ≈ 0.25em. Used only to REPRODUCE the renderer's fit decision in CSS; it
+// never touches the printed output.
+const GEIST_LINE_HEIGHT_FACTOR = 1.3;
+const GEIST_CHAR_ADVANCE_EM = 0.5;
+const GEIST_SPACE_ADVANCE_EM = 0.25;
+
+/** Deterministic greedy word-wrap line count for `text` in `availWidthPt`. */
+function estimateWrappedLineCount(text: string, availWidthPt: number, fontSizePt: number): number {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return 1;
+  const space = GEIST_SPACE_ADVANCE_EM * fontSizePt;
+  let lines = 1;
+  let cur = 0;
+  for (const w of words) {
+    const ww = w.length * GEIST_CHAR_ADVANCE_EM * fontSizePt;
+    if (cur === 0) cur = ww;
+    else if (cur + space + ww <= availWidthPt) cur += space + ww;
+    else { lines += 1; cur = ww; }
+  }
+  return lines;
+}
+
+/** Browser-safe estimate of PDFKit's `heightOfString` for Geist, in points. */
+export function estimateGeistTextHeightPt(text: string, availWidthPt: number, fontSizePt: number, lineGapPt: number): number {
+  const lines = estimateWrappedLineCount(text, availWidthPt, fontSizePt);
+  return lines * (fontSizePt * GEIST_LINE_HEIGHT_FACTOR + lineGapPt);
+}
+
+/**
+ * The preview's fit decision for a canonical card geometry + story text, using
+ * the shared policy with the browser-safe measurer. Mirrors the renderer's
+ * points-space math (panel width/height × page dims, minus insets).
+ */
+export function proofCardPreviewFit(geometry: ProofCardGeometry, storyText: string): ProofCardFit {
+  const g = canonicalizeProofCardGeometry(geometry);
+  const panelWidthPt = g.width * PROOF_PAGE_WIDTH_PT;
+  const panelHeightPt = g.height * PROOF_PAGE_HEIGHT_PT;
+  const textWidthPt = panelWidthPt - PROOF_CARD_TEXT_INSET_PT * 2;
+  const safeHeightPt = panelHeightPt - PROOF_CARD_VERTICAL_INSET_PT * 2;
+  return resolveProofCardFontFit({
+    measure: (fs, lg) => estimateGeistTextHeightPt(storyText, textWidthPt, fs, lg),
+    safeHeightPt,
+    fontScale: g.fontScale,
+  });
+}
+
 // ── Pure preview model (shared, CSS-ready) ───────────────────────────────────
 //
 // Structural translation of the renderer contract above into frame-relative
 // percentages so a customer CSS preview matches the printed proof's structure:
 // artwork frame vs paper band, panel rect, panel-only opacity, fully-opaque
-// vertically-centered text at the same normalized insets, and fontScale-driven
-// text size. This is a PLACEMENT preview — exact PDFKit line wrapping/fit is not
-// reproduced in CSS — but geometry, opacity separation, insets, centering, and
-// scale are faithful. No pdfkit, no I/O.
+// vertically-centered text at the same normalized insets, and renderer-aligned
+// adaptive text size. When story text is supplied the preview font follows the
+// renderer's real 15→12pt fit decision; otherwise it falls back to the base
+// size. This is a PLACEMENT preview — exact PDFKit line breaks are not
+// reproduced in CSS — but the fit DECISION, geometry, opacity separation,
+// insets, centering, and scale are faithful. No pdfkit, no I/O.
 
 export interface ProofCardPreviewRect {
   xPct: number;
@@ -355,27 +451,37 @@ export interface ProofCardPreviewModel {
    *  fully opaque and vertically centered within it, left-aligned. */
   text: ProofCardPreviewRect & {
     centered: true;
-    /** Base font (15pt) × fontScale, as a % of the frame height. */
+    /** Renderer-aligned fit font (post 15→12pt decision) × fontScale, as a % of
+     *  the frame height. Falls back to base×fontScale when no story text given. */
     fontSizePctOfFrameHeight: number;
     /** Text ink — always fully opaque (no opacity channel). */
     fill: string;
   };
   /** Explicit full text opacity, mirroring the renderer's opaque text. */
   textOpacity: 1;
+  /** True when the story text cannot fit at the minimum font (renderer rejects). */
+  overflowed: boolean;
 }
 
 /**
  * Build the CSS-ready preview model from normalized card geometry + optional
- * approved color. Canonicalizes first so preview == persisted == rendered.
+ * approved color + optional story text. When story text is supplied the preview
+ * font follows the renderer's real adaptive fit; otherwise it uses the base
+ * size. Canonicalizes first so preview == persisted == rendered.
  */
 export function proofCardPreviewModel(
   geometry: ProofCardGeometry,
   textColor?: ProofTextColor | null,
+  storyText?: string,
 ): ProofCardPreviewModel {
   const g = canonicalizeProofCardGeometry(geometry);
   const resolved = resolveProofTextColor(textColor);
   const insetXFrac = PROOF_CARD_TEXT_INSET_PT / PROOF_PAGE_WIDTH_PT;
   const insetYFrac = PROOF_CARD_VERTICAL_INSET_PT / PROOF_PAGE_HEIGHT_PT;
+  // Renderer-aligned adaptive fit when story text is present; else base×scale.
+  const fit = storyText != null
+    ? proofCardPreviewFit(g, storyText)
+    : { fontSize: PROOF_CARD_BASE_FONT_PT * g.fontScale, overflowed: false };
   return {
     page: { aspectRatio: PROOF_PAGE_WIDTH_PT / PROOF_PAGE_HEIGHT_PT },
     artFrameFraction: PROOF_ART_FRAME_FRACTION,
@@ -394,9 +500,10 @@ export function proofCardPreviewModel(
       widthPct: (g.width - 2 * insetXFrac) * 100,
       heightPct: (g.height - 2 * insetYFrac) * 100,
       centered: true,
-      fontSizePctOfFrameHeight: ((PROOF_CARD_BASE_FONT_PT * g.fontScale) / PROOF_PAGE_HEIGHT_PT) * 100,
+      fontSizePctOfFrameHeight: (fit.fontSize / PROOF_PAGE_HEIGHT_PT) * 100,
       fill: resolved.text,
     },
     textOpacity: 1,
+    overflowed: fit.overflowed,
   };
 }

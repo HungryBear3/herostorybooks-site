@@ -10,7 +10,7 @@ import { createOrderRecord } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
 import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
 import { evaluateProofLayoutEditCapability, reviewSnapshotFromOrder } from '../src/lib/page-review.ts';
-import { canOfferCustomerLayoutEditing } from '../src/lib/proof-layout-editor-core.ts';
+import { canOfferCustomerLayoutEditing, customerLayoutUnavailableMessage } from '../src/lib/proof-layout-editor-core.ts';
 
 const NOW = '2026-08-06T00:00:00.000Z';
 
@@ -70,10 +70,20 @@ test('shipped → not allowed, lifecycle_closed', () => {
   assert.equal(cap.reason, 'lifecycle_closed');
 });
 
-test('refunded → not allowed, lifecycle_closed', () => {
+test('refunded → not allowed, reason order_refunded (NEVER production)', () => {
   const cap = evaluateProofLayoutEditCapability(seed({ refundedAt: NOW }));
   assert.equal(cap.allowed, false);
-  assert.equal(cap.reason, 'lifecycle_closed');
+  assert.equal(cap.reason, 'order_refunded');
+  const cap2 = evaluateProofLayoutEditCapability(seed({ stripeRefundId: 're_123' }));
+  assert.equal(cap2.reason, 'order_refunded');
+});
+
+test('pending / failed payment → not allowed, reason payment_incomplete (NEVER production)', () => {
+  for (const paymentStatus of ['pending', 'failed'] as const) {
+    const cap = evaluateProofLayoutEditCapability(seed({ paymentStatus }));
+    assert.equal(cap.allowed, false, `${paymentStatus} must not allow editing`);
+    assert.equal(cap.reason, 'payment_incomplete', `${paymentStatus} → payment_incomplete`);
+  }
 });
 
 test('stale proof (fingerprint no longer matches pages) → proof_not_ready', () => {
@@ -94,6 +104,28 @@ test('missing proof binding → proof_not_ready', () => {
 test('reviewSnapshotFromOrder carries the capability', () => {
   const snap = reviewSnapshotFromOrder(seed());
   assert.deepEqual(snap.proofLayoutEditing, { allowed: true, reason: 'available' });
+});
+
+test('customer copy: production states say production; refund/unpaid never do; unknown is fail-closed', () => {
+  const msgFor = (order: OrderRecord) => customerLayoutUnavailableMessage(reviewSnapshotFromOrder(order));
+  // Real production closure → truthful production copy.
+  const prod = msgFor(seed({ fulfillmentStatus: 'complete' }));
+  assert.match(prod ?? '', /production/i);
+  // Refunded → denied, but NEVER "production".
+  const refunded = msgFor(seed({ refundedAt: NOW }));
+  assert.ok(refunded, 'refunded must show an explanation');
+  assert.doesNotMatch(refunded ?? '', /production/i);
+  assert.match(refunded ?? '', /refund/i);
+  // Unpaid → denied, but NEVER "production".
+  const unpaid = msgFor(seed({ paymentStatus: 'pending' }));
+  assert.ok(unpaid, 'unpaid must show an explanation');
+  assert.doesNotMatch(unpaid ?? '', /production/i);
+  // Proof not ready → non-production "being prepared" copy.
+  const notReady = msgFor(seed({ proofVersion: null }));
+  assert.doesNotMatch(notReady ?? '', /production/i);
+  // Unknown/malformed reason → fail closed, invents no production state.
+  assert.equal(customerLayoutUnavailableMessage({ proofLayoutEditing: { allowed: false, reason: 'totally_unknown' } } as never), null);
+  assert.equal(customerLayoutUnavailableMessage({} as never), null);
 });
 
 test('client gate defaults to false on missing/malformed capability', () => {

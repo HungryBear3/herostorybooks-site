@@ -1350,7 +1350,9 @@ export type ProofLayoutEditReason =
   | 'available'
   | 'proof_not_ready'
   | 'review_approved'
-  | 'lifecycle_closed';
+  | 'lifecycle_closed' // production/print-submitted/shipped/finalized ONLY
+  | 'order_refunded'
+  | 'payment_incomplete';
 
 export interface ProofLayoutEditCapability {
   allowed: boolean;
@@ -1358,13 +1360,19 @@ export interface ProofLayoutEditCapability {
 }
 
 export function evaluateProofLayoutEditCapability(order: OrderRecord): ProofLayoutEditCapability {
-  // Order-state eligibility (payment settled, not refunded). The per-request
-  // token is NOT part of order state, so it is checked at mutation time only.
-  if (order.paymentStatus !== 'paid' || order.refundedAt || order.stripeRefundId) {
-    return { allowed: false, reason: 'lifecycle_closed' };
+  // Order-state eligibility, split into TRUTHFUL, distinct reasons — a refunded
+  // or not-yet-paid order must NEVER be described as "in production". The
+  // per-request token is not order state, so it is checked at mutation time only.
+  if (order.refundedAt || order.stripeRefundId) {
+    return { allowed: false, reason: 'order_refunded' };
+  }
+  if (order.paymentStatus !== 'paid') {
+    return { allowed: false, reason: 'payment_incomplete' };
   }
   const lifecycle = evaluateProofLayoutMutationLifecycle(order);
   if (lifecycle) {
+    // 'lifecycle_closed' now means ACTUAL production closure only
+    // (shipped / in production / print-submitted / finalized).
     return {
       allowed: false,
       reason: lifecycle.error === 'order_approved' ? 'review_approved' : 'lifecycle_closed',

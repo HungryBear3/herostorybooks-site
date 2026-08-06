@@ -60,7 +60,8 @@ export async function handleProofLayoutOverrideRequest(request: Request, orderId
       ok: true,
       pageIndex: result.pageIndex,
       proofCardOverride: result.proofCardOverride ?? null,
-      ...(result.noop ? { noop: true } : {}),
+      // Always an explicit boolean so the client can require it (no default).
+      noop: result.noop === true,
       snapshot: result.snapshot,
     },
   };
@@ -86,5 +87,6 @@ export async function handleRequestLayoutHelpRequest(request: Request, orderId: 
 
   const result = await requestLayoutHelp({ orderId, pageIndex, actor: customerReviewActor(auth.reviewToken) });
   if (!result.ok) return { status: result.status, body: { ok: false, error: result.error } };
-  return { status: 200, body: { ok: true, ...(result.noop ? { noop: true } : {}), snapshot: result.snapshot } };
+  // Always an explicit boolean noop so the client's strict envelope accepts it.
+  return { status: 200, body: { ok: true, noop: result.noop === true, snapshot: result.snapshot } };
 }

@@ -13,38 +13,100 @@ import {
   createReviewMutationCoordinator,
 } from '../src/lib/proof-layout-editor-core.ts';
 
-const SNAP = { orderId: 'ord_x', pageArtifacts: [], proofLayoutEditing: { allowed: false, reason: 'proof_not_ready' } };
+// A FULLY-VALID render-critical ReviewSnapshot for order ord_x.
+function fullSnap(patch: Record<string, unknown> = {}) {
+  return {
+    orderId: 'ord_x', childName: 'Kid', reviewStatus: 'in_review',
+    pageArtifacts: [{ pageIndex: 0, storyText: 'A short page.' }],
+    storyArtifactUrl: null, proofVersion: null, proofSourceFingerprint: null,
+    proofReviewedVersion: null, proofReviewedAt: null,
+    proofAvailable: false, proofFresh: false,
+    proofLayoutEditing: { allowed: false, reason: 'proof_not_ready' },
+    isPrint: false, bookFormat: 'digital',
+    ...patch,
+  };
+}
+const OID = 'ord_x';
 
 // ── B4 / B7: response contract ───────────────────────────────────────────────
 
-test('a real mutation (ok, snapshot, no noop) is applied', () => {
-  const out = interpretLayoutMutationResponse(true, 200, { ok: true, snapshot: SNAP });
+test('a real mutation (ok, noop:false, full snapshot, matching order) is applied', () => {
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: fullSnap() }, OID);
   assert.equal(out.ok, true);
   assert.equal(out.noop, false);
   assert.equal(out.snapshot?.orderId, 'ord_x');
 });
 
-test('an equivalent no-op (ok, noop, snapshot) is a success but flagged noop', () => {
-  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: true, snapshot: SNAP });
+test('an equivalent no-op (ok, noop:true, full snapshot) is a success flagged noop', () => {
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: true, snapshot: fullSnap() }, OID);
   assert.equal(out.ok, true);
-  assert.equal(out.ok && out.noop, true);
+  assert.equal(out.noop, true);
 });
 
-test('a malformed 200 (ok but no snapshot) is a failure that instructs reload — never fake success', () => {
-  const out = interpretLayoutMutationResponse(true, 200, { ok: true });
+test('missing noop is a failure — noop must be an exact boolean', () => {
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, snapshot: fullSnap() }, OID);
+  assert.equal(out.ok, false);
+});
+
+test('non-boolean noop is a failure', () => {
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: 'no', snapshot: fullSnap() }, OID);
+  assert.equal(out.ok, false);
+});
+
+test('the two-field partial snapshot (the hostile probe) is REJECTED, never faked as success', () => {
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: { orderId: 'ord_x', pageArtifacts: [] } }, OID);
   assert.equal(out.ok, false);
   assert.equal(!out.ok && out.reload, true);
-  assert.match(!out.ok ? out.message : '', /didn.t return|reload/i);
+  assert.match(!out.ok ? out.message : '', /didn.t return|reload|confirm/i);
+});
+
+test('missing snapshot is a failure', () => {
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: false }, OID);
+  assert.equal(out.ok, false);
+});
+
+test('a cross-order / wrong-id snapshot is a failure (order binding enforced)', () => {
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: fullSnap({ orderId: 'ord_OTHER' }) }, OID);
+  assert.equal(out.ok, false);
+});
+
+test('a malformed capability inside the snapshot is a failure', () => {
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: fullSnap({ proofLayoutEditing: { allowed: 'yes' } }) }, OID);
+  assert.equal(out.ok, false);
+});
+
+test('a malformed page artifact is a failure', () => {
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: fullSnap({ pageArtifacts: [{ pageIndex: 'zero' }] }) }, OID);
+  assert.equal(out.ok, false);
+});
+
+test('malformed render-critical proof identity / freshness / booleans are failures', () => {
+  const bad = [
+    fullSnap({ proofVersion: 5 }),          // must be string|null
+    fullSnap({ proofFresh: 'no' }),         // must be boolean
+    fullSnap({ storyArtifactUrl: 12 }),     // must be string|null
+    fullSnap({ reviewStatus: 7 }),          // must be string
+    fullSnap({ bookFormat: null }),         // must be string
+  ];
+  for (const snapshot of bad) {
+    const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot }, OID);
+    assert.equal(out.ok, false, `snapshot ${JSON.stringify(Object.keys(snapshot))} should be rejected`);
+  }
+});
+
+test('HTTP success with ok !== true is a failure', () => {
+  const out = interpretLayoutMutationResponse(true, 200, { ok: false, noop: false, snapshot: fullSnap() }, OID);
+  assert.equal(out.ok, false);
 });
 
 test('ok:true with a non-object snapshot is still a failure', () => {
-  const out = interpretLayoutMutationResponse(true, 200, { ok: true, snapshot: 'nope' });
+  const out = interpretLayoutMutationResponse(true, 200, { ok: true, noop: false, snapshot: 'nope' }, OID);
   assert.equal(out.ok, false);
 });
 
 test('a stale-proof 409 fails with reload guidance, not endless retry', () => {
   for (const error of ['proof_stale', 'stale_revision', 'stale_fingerprint', 'no_live_proof']) {
-    const out = interpretLayoutMutationResponse(false, 409, { ok: false, error });
+    const out = interpretLayoutMutationResponse(false, 409, { ok: false, error }, OID);
     assert.equal(out.ok, false);
     assert.equal(!out.ok && out.reload, true, `${error} should instruct reload`);
     assert.match(!out.ok ? out.message : '', /reload/i);
@@ -52,15 +114,16 @@ test('a stale-proof 409 fails with reload guidance, not endless retry', () => {
 });
 
 test('a non-2xx contentful error maps to specific copy without reload', () => {
-  const out = interpretLayoutMutationResponse(false, 422, { ok: false, error: 'text_overflow' });
+  const out = interpretLayoutMutationResponse(false, 422, { ok: false, error: 'text_overflow' }, OID);
   assert.equal(out.ok, false);
   assert.equal(!out.ok && out.reload, false);
   assert.match(!out.ok ? out.message : '', /too large|font|card/i);
 });
 
-test('a completely malformed body (null) fails closed', () => {
-  const out = interpretLayoutMutationResponse(true, 200, null);
-  assert.equal(out.ok, false);
+test('malformed JSON / null / unknown body fails closed', () => {
+  assert.equal(interpretLayoutMutationResponse(true, 200, null, OID).ok, false);
+  assert.equal(interpretLayoutMutationResponse(true, 200, 'garbage', OID).ok, false);
+  assert.equal(interpretLayoutMutationResponse(true, 200, 42, OID).ok, false);
 });
 
 // ── B4 / B7: honest op-specific notices ──────────────────────────────────────

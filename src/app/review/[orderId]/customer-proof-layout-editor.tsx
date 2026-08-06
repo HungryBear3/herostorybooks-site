@@ -89,7 +89,7 @@ export default function CustomerProofLayoutEditor(props: CustomerProofLayoutEdit
   const hasPersistedOverride = initialOverride != null;
   const contrast = contrastFor(color, geo.opacity);
   const binding = { authoredAgainstProofVersion: proofVersion, authoredAgainstFingerprint: sourceFingerprint };
-  const model = proofCardPreviewModel(geo, colorForModel(color));
+  const model = proofCardPreviewModel(geo, colorForModel(color), storyText);
 
   // B5: move focus into the editor (the interactive card) on open.
   useEffect(() => {
@@ -158,7 +158,7 @@ export default function CustomerProofLayoutEditor(props: CustomerProofLayoutEdit
         return;
       }
       const data = await response.json().catch(() => null);
-      const outcome = interpretLayoutMutationResponse(response.ok, response.status, data);
+      const outcome = interpretLayoutMutationResponse(response.ok, response.status, data, orderId);
       if (!outcome.ok) { setError(outcome.message); return; }
       // Adopt the authoritative snapshot (guarded against stale ordering).
       applyIfCurrent(token, outcome.snapshot);
@@ -188,7 +188,7 @@ export default function CustomerProofLayoutEditor(props: CustomerProofLayoutEdit
         return;
       }
       const data = await response.json().catch(() => null);
-      const outcome = interpretLayoutMutationResponse(response.ok, response.status, data);
+      const outcome = interpretLayoutMutationResponse(response.ok, response.status, data, orderId);
       if (!outcome.ok) { setError(outcome.message); return; }
       // Help does NOT invalidate the proof: adopt in parent WITHOUT closing.
       applyIfCurrent(token, outcome.snapshot);
@@ -271,20 +271,22 @@ export default function CustomerProofLayoutEditor(props: CustomerProofLayoutEdit
           />
           {/* keyboard focus ring outline */}
           <span aria-hidden className="pointer-events-none absolute inset-0 rounded-lg border-2 border-forest/70" style={{ borderRadius: `${model.cornerRadiusPct}cqw` }} />
-          {/* 44×44 resize handle */}
-          <button
-            type="button"
-            aria-label="Resize the text card"
-            disabled={busy}
+          {/* 44×44 resize handle — POINTER-ONLY and NOT focusable, so arrow keys
+              can never land here and accidentally MOVE the card. The sole
+              keyboard resize path is the card's documented Alt+Arrow (see the
+              card's accessible name above). */}
+          <span
+            aria-hidden
+            role="presentation"
             onPointerDown={(e) => startGesture('resize', e)}
             onPointerMove={onPointerMove}
             onPointerUp={endGesture}
             onPointerCancel={endGesture}
-            className="absolute -bottom-2 -right-2 h-11 w-11 touch-none rounded-full border border-forest bg-white shadow disabled:opacity-50"
+            className={`absolute -bottom-2 -right-2 h-11 w-11 touch-none rounded-full border border-forest bg-white shadow ${busy ? 'pointer-events-none opacity-50' : 'cursor-se-resize'}`}
             data-testid="layout-resize-handle"
           >
             <span aria-hidden className="pointer-events-none absolute inset-0 m-auto h-3 w-3 rounded-sm border-b-2 border-r-2 border-forest" />
-          </button>
+          </span>
         </div>
 
         {/* Fully-opaque, vertically-centred text at the renderer's normalized insets. */}

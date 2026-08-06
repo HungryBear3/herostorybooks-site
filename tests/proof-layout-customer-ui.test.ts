@@ -58,6 +58,23 @@ test('customer editor controls are touch-safe (44px) and gestures use pointer ca
   assert.match(editor, /releasePointerCapture/);
 });
 
+test('B4: the resize handle is POINTER-ONLY and not keyboard-focusable (arrows cannot move the card via it)', () => {
+  // Isolate the resize-handle element block.
+  const m = editor.match(/data-testid="layout-resize-handle"[\s\S]{0,400}?data-testid="layout-resize-handle"|<span[\s\S]{0,600}?data-testid="layout-resize-handle"/);
+  assert.ok(m, 'resize handle element not found');
+  const block = m![0];
+  // It must be a non-focusable, aria-hidden span — NOT a focusable button.
+  assert.doesNotMatch(block, /<button[^>]*data-testid="layout-resize-handle"|type="button"[\s\S]{0,200}data-testid="layout-resize-handle"/);
+  assert.match(block, /aria-hidden/);
+  assert.doesNotMatch(block, /tabIndex/);
+  assert.doesNotMatch(block, /onKeyDown/);
+  // The card group remains the SOLE keyboard interface and documents Alt+Arrow resize.
+  assert.match(editor, /role="group"[\s\S]{0,200}Alt with arrows to resize/);
+  assert.match(editor, /tabIndex=\{0\}/);
+  // The only keyboard resize path is the shared Alt handler on the card.
+  assert.match(editor, /applyKeyboardGeometry\(geo, event\.key, \{ shift: event\.shiftKey, alt: event\.altKey \}\)/);
+});
+
 test('review-client mounts the editor gated on capability, keyed for remount, on the shared lock', () => {
   assert.match(client, /import CustomerProofLayoutEditor from '\.\/customer-proof-layout-editor'/);
   assert.match(client, /canOfferCustomerLayoutEditing\(snapshot\)/);
