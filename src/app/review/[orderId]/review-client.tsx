@@ -1,11 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { PageArtifact } from '@/lib/orders';
-import type { ReviewSnapshot } from '@/lib/page-review';
 import { hasUnresolvedChangeRequests } from '@/lib/customer-text-change-request';
-import { canOfferCustomerLayoutEditing, editorIdentityKey } from '@/lib/proof-layout-editor-core';
+import {
+  canOfferCustomerLayoutEditing,
+  createReviewMutationCoordinator,
+  customerLayoutUnavailableMessage,
+  editorIdentityKey,
+} from '@/lib/proof-layout-editor-core';
+import type { ProofLayoutEditCapability } from '@/lib/page-review';
 import { InlineProofPreview } from './inline-proof-preview';
 import CustomerProofLayoutEditor from './customer-proof-layout-editor';
 
@@ -41,6 +46,8 @@ interface Snapshot {
   proofReviewedAt: string | null;
   proofAvailable: boolean;
   proofFresh: boolean;
+  /** Server-derived, fail-closed capability gating the layout editor. */
+  proofLayoutEditing: ProofLayoutEditCapability;
   isPrint: boolean;
   bookFormat: 'digital' | 'classic' | 'premium';
 }
@@ -64,11 +71,51 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [feedback, setFeedback] = useState('');
   const [wordingNote, setWordingNote] = useState('');
-  const [busy, setBusy] = useState<'idle' | 'regenerating' | 'accepting' | 'wording' | 'approving' | 'acknowledging'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
   const [layoutEditorOpen, setLayoutEditorOpen] = useState(false);
+
+  // ── Single shared customer-mutation coordinator (B6) ──
+  // Every customer mutation (regenerate/accept/wording/ack/approval AND the
+  // layout editor's save/reset/help) runs through this ONE lock, so at most one
+  // is active and an older response can never overwrite a newer snapshot.
+  const coordinator = useRef(createReviewMutationCoordinator()).current;
+  const [activeOp, setActiveOp] = useState<string | null>(null);
+  const busy = activeOp !== null;
+
+  const runMutation = useCallback(
+    async (op: string, fn: (token: number) => Promise<void>) => {
+      const token = coordinator.begin(op);
+      if (token == null) return; // a mutation is already in flight — ignore
+      setActiveOp(op);
+      try {
+        await fn(token);
+      } finally {
+        coordinator.settle(token);
+        setActiveOp(coordinator.activeOp());
+      }
+    },
+    [coordinator],
+  );
+  // Adopt an authoritative snapshot ONLY if this token is still the current op.
+  const applyIfCurrent = useCallback(
+    (token: number, next: unknown) => {
+      if (coordinator.isCurrent(token)) setSnapshot(next as Snapshot);
+    },
+    [coordinator],
+  );
+
+  // ── Focus management for the layout editor (B5) ──
+  const openerRef = useRef<HTMLButtonElement>(null);
+  const layoutNoticeRef = useRef<HTMLParagraphElement>(null);
+  const [pendingFocus, setPendingFocus] = useState<null | 'opener' | 'notice'>(null);
+  useEffect(() => {
+    if (!pendingFocus) return;
+    if (pendingFocus === 'opener') openerRef.current?.focus();
+    else layoutNoticeRef.current?.focus();
+    setPendingFocus(null);
+  }, [pendingFocus, layoutEditorOpen, notice]);
 
   const selected = snapshot.pageArtifacts[selectedIdx];
   const canEditLayout = canOfferCustomerLayoutEditing(snapshot);
@@ -83,97 +130,93 @@ export default function ReviewClient({ initial }: { initial: Snapshot }) {
 
   async function regenerate() {
     if (!selected) return;
-    setBusy('regenerating');
-    setError(null);
-    setNotice(null);
-    try {
-      const res = await fetch(`/api/order/${snapshot.orderId}/regenerate-page${tokenQuery()}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pageIndex: selected.pageIndex, feedback }),
-      });
-      const data = await res.json();
-      // A failed provider call may still have committed review/audit state.
-      // Apply any authoritative snapshot before surfacing the error so the
-      // browser never advertises a proof or page state persistence already voided.
-      if (data.snapshot) setSnapshot(data.snapshot);
-      if (!res.ok || !data.ok) {
-        setError(data?.error ?? `Regeneration failed (${res.status})`);
-        return;
+    await runMutation('regenerate', async (token) => {
+      setError(null);
+      setNotice(null);
+      try {
+        const res = await fetch(`/api/order/${snapshot.orderId}/regenerate-page${tokenQuery()}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pageIndex: selected.pageIndex, feedback }),
+        });
+        const data = await res.json();
+        // A failed provider call may still have committed review/audit state.
+        // Adopt any authoritative snapshot (stale-ordering guarded) before
+        // surfacing an error so the browser never advertises voided state.
+        if (data.snapshot) applyIfCurrent(token, data.snapshot);
+        if (!res.ok || !data.ok) {
+          setError(data?.error ?? `Regeneration failed (${res.status})`);
+          return;
+        }
+        if (!data.snapshot) {
+          setError('The server did not return the updated book state. Refresh before continuing.');
+          return;
+        }
+        setFeedback('');
+        if (data.warning === 'regen_manual_review_threshold') {
+          setNotice('We\u2019ve regenerated this page several times. Our team will also take a look to make sure it lands right.');
+        } else if (data.warning === 'regen_threshold_warning') {
+          setNotice('Got it. If you\u2019re still not seeing what you want after a few tries, reply to your order email and we\u2019ll help directly.');
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Network error');
       }
-      if (!data.snapshot) {
-        setError('The server did not return the updated book state. Refresh before continuing.');
-        return;
-      }
-      setSnapshot(data.snapshot);
-      setFeedback('');
-      if (data.warning === 'regen_manual_review_threshold') {
-        setNotice('We\u2019ve regenerated this page several times. Our team will also take a look to make sure it lands right.');
-      } else if (data.warning === 'regen_threshold_warning') {
-        setNotice('Got it. If you\u2019re still not seeing what you want after a few tries, reply to your order email and we\u2019ll help directly.');
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Network error');
-    } finally {
-      setBusy('idle');
-    }
+    });
   }
 
   async function accept() {
     if (!selected) return;
-    setBusy('accepting');
-    setError(null);
-    try {
-      const res = await fetch(`/api/order/${snapshot.orderId}/accept-page${tokenQuery()}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pageIndex: selected.pageIndex }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        setError(data?.error ?? `Accept failed (${res.status})`);
-        return;
+    await runMutation('accept', async (token) => {
+      setError(null);
+      try {
+        const res = await fetch(`/api/order/${snapshot.orderId}/accept-page${tokenQuery()}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pageIndex: selected.pageIndex }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          setError(data?.error ?? `Accept failed (${res.status})`);
+          return;
+        }
+        if (!data.snapshot) {
+          setError('The server did not return the updated book state. Refresh before continuing.');
+          return;
+        }
+        applyIfCurrent(token, data.snapshot);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Network error');
       }
-      if (!data.snapshot) {
-        setError('The server did not return the updated book state. Refresh before continuing.');
-        return;
-      }
-      setSnapshot(data.snapshot);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Network error');
-    } finally {
-      setBusy('idle');
-    }
+    });
   }
 
   async function requestWordingChange() {
     if (!selected || !wordingNote.trim()) return;
-    setBusy('wording');
-    setError(null);
-    setNotice(null);
-    try {
-      const res = await fetch(`/api/order/${snapshot.orderId}/request-text-change${tokenQuery()}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pageIndex: selected.pageIndex, note: wordingNote }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        setError(data?.error ?? `Wording request failed (${res.status})`);
-        return;
+    await runMutation('wording', async (token) => {
+      setError(null);
+      setNotice(null);
+      try {
+        const res = await fetch(`/api/order/${snapshot.orderId}/request-text-change${tokenQuery()}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pageIndex: selected.pageIndex, note: wordingNote }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          setError(data?.error ?? `Wording request failed (${res.status})`);
+          return;
+        }
+        if (!data.snapshot) {
+          setError('The server did not return the updated book state. Refresh before continuing.');
+          return;
+        }
+        applyIfCurrent(token, data.snapshot);
+        setWordingNote('');
+        setNotice('Wording change requested. Approval is paused until our team resolves it and publishes a new proof.');
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Network error');
       }
-      if (!data.snapshot) {
-        setError('The server did not return the updated book state. Refresh before continuing.');
-        return;
-      }
-      setSnapshot(data.snapshot);
-      setWordingNote('');
-      setNotice('Wording change requested. Approval is paused until our team resolves it and publishes a new proof.');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Network error');
-    } finally {
-      setBusy('idle');
-    }
+    });
   }
 
   return (
@@ -294,25 +337,40 @@ No image yet
                   proofVersion={snapshot.proofVersion!}
                   sourceFingerprint={snapshot.proofSourceFingerprint!}
                   initialOverride={selected.proofCardOverride ?? null}
-                  onCommitted={(next: ReviewSnapshot) => {
-                    setSnapshot(next);
+                  busyOp={activeOp}
+                  runMutation={runMutation}
+                  applyIfCurrent={applyIfCurrent}
+                  onCommitted={(msg: string) => {
+                    // Snapshot already adopted (guarded) inside the editor's
+                    // mutation. Surface the durable notice in the PARENT so it
+                    // survives the editor's unmount, and return focus.
+                    setNotice(msg);
                     setLayoutEditorOpen(false);
+                    setPendingFocus('notice');
                   }}
-                  onClose={() => setLayoutEditorOpen(false)}
+                  onClose={() => {
+                    setLayoutEditorOpen(false);
+                    setPendingFocus('opener');
+                  }}
                 />
               ) : (
                 <button
                   type="button"
+                  ref={openerRef}
                   onClick={() => setLayoutEditorOpen(true)}
-                  className="mb-4 min-h-11 rounded-full border border-forest px-4 text-sm font-semibold text-forest"
+                  disabled={busy}
+                  className="mb-4 min-h-11 rounded-full border border-forest px-4 text-sm font-semibold text-forest disabled:opacity-50"
                   data-testid="open-layout-editor"
                 >
                   Adjust this page’s text placement
                 </button>
               )
-            ) : snapshot.reviewStatus !== 'approved' ? (
-              <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                An updated proof is being prepared — you’ll be able to adjust this page’s text placement once it’s ready.
+            ) : customerLayoutUnavailableMessage(snapshot) ? (
+              <p
+                className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+                data-testid="layout-unavailable-note"
+              >
+                {customerLayoutUnavailableMessage(snapshot)}
               </p>
             ) : null}
 
@@ -342,7 +400,14 @@ No image yet
               </p>
             )}
             {notice && (
-              <p className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              <p
+                ref={layoutNoticeRef}
+                tabIndex={-1}
+                role="status"
+                aria-live="polite"
+                className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 outline-none"
+                data-testid="review-notice"
+              >
                 {notice}
               </p>
             )}
@@ -351,18 +416,18 @@ No image yet
               <button
                 type="button"
                 onClick={regenerate}
-                disabled={busy !== 'idle'}
+                disabled={busy}
                 className="rounded-xl bg-[#10263d] px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
               >
-                {busy === 'regenerating' ? 'Regenerating\u2026' : 'Regenerate this page'}
+                {activeOp === 'regenerate' ? 'Regenerating\u2026' : 'Regenerate this page'}
               </button>
               <button
                 type="button"
                 onClick={accept}
-                disabled={busy !== 'idle' || !selected.currentImageUrl || selected.accepted}
+                disabled={busy || !selected.currentImageUrl || selected.accepted}
                 className="rounded-xl bg-[#c9a227] px-5 py-2.5 text-sm font-semibold text-[#10263d] disabled:opacity-50"
               >
-                {selected.accepted ? 'Accepted' : busy === 'accepting' ? 'Accepting…' : 'Accept this page'}
+                {selected.accepted ? 'Accepted' : activeOp === 'accept' ? 'Accepting…' : 'Accept this page'}
               </button>
             </div>
 
@@ -391,10 +456,10 @@ No image yet
               <button
                 type="button"
                 onClick={requestWordingChange}
-                disabled={busy !== 'idle' || !wordingNote.trim()}
+                disabled={busy || !wordingNote.trim()}
                 className="mt-3 rounded-xl border border-violet-700 px-4 py-2 text-sm font-semibold text-violet-900 disabled:opacity-50"
               >
-                {busy === 'wording' ? 'Saving request…' : 'Submit wording request'}
+                {activeOp === 'wording' ? 'Saving request…' : 'Submit wording request'}
               </button>
             </div>
 
@@ -491,37 +556,36 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
                     setError('The proof is being rebuilt. Refresh in a moment to review the latest version.');
                     return;
                   }
-                  setBusy('acknowledging');
-                  setError(null);
-                  try {
-                    const res = await fetch(
-                      `/api/order/${snapshot.orderId}/acknowledge-proof${tokenQuery()}`,
-                      {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        // Bind the acknowledgment to the exact revision shown.
-                        body: JSON.stringify({ proofVersion: snapshot.proofVersion }),
-                      },
-                    );
-                    const data = await res.json();
-                    if (!res.ok || !data.ok) {
-                      setError(data?.error ?? `Could not save acknowledgment (${res.status})`);
-                      return;
+                  await runMutation('acknowledge', async (token) => {
+                    setError(null);
+                    try {
+                      const res = await fetch(
+                        `/api/order/${snapshot.orderId}/acknowledge-proof${tokenQuery()}`,
+                        {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          // Bind the acknowledgment to the exact revision shown.
+                          body: JSON.stringify({ proofVersion: snapshot.proofVersion }),
+                        },
+                      );
+                      const data = await res.json();
+                      if (!res.ok || !data.ok) {
+                        setError(data?.error ?? `Could not save acknowledgment (${res.status})`);
+                        return;
+                      }
+                      if (!data.snapshot) {
+                        setError('The server did not return the updated book state. Refresh before continuing.');
+                        return;
+                      }
+                      applyIfCurrent(token, data.snapshot);
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : 'Network error');
                     }
-                    if (!data.snapshot) {
-                      setError('The server did not return the updated book state. Refresh before continuing.');
-                      return;
-                    }
-                    setSnapshot(data.snapshot);
-                  } catch (err) {
-                    setError(err instanceof Error ? err.message : 'Network error');
-                  } finally {
-                    setBusy('idle');
-                  }
+                  });
                 }}
                 className="mt-0.5 h-5 w-5 cursor-pointer"
                 data-testid="proof-ack-checkbox"
-                disabled={!snapshot.storyArtifactUrl || busy === 'acknowledging'}
+                disabled={!snapshot.storyArtifactUrl || busy}
               />
               <span>
                 {snapshot.isPrint
@@ -540,7 +604,7 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
                 unresolvedWording ||
                 !proofAck ||
                 !snapshot.storyArtifactUrl ||
-                busy !== 'idle' ||
+                busy ||
                 snapshot.reviewStatus === 'approved'
               }
               className="rounded-xl bg-emerald-700 px-6 py-3 text-base font-bold text-white disabled:opacity-50"
@@ -549,7 +613,7 @@ Step 3 — confirm you reviewed the whole {snapshot.isPrint ? 'printed-book proo
             >
               {snapshot.reviewStatus === 'approved'
                 ? 'Approved'
-                : busy === 'approving'
+                : activeOp === 'approve'
                   ? 'Approving\u2026'
                   : 'Approve the complete book'}
             </button>
@@ -593,7 +657,7 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
                 type="button"
                 className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
                 onClick={() => setShowApprovalConfirm(false)}
-                disabled={busy === 'approving'}
+                disabled={busy}
               >
                 Go back and review
               </button>
@@ -601,9 +665,8 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
                 type="button"
                 className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
                 data-testid="approval-confirm-submit"
-                disabled={busy !== 'idle'}
-                onClick={async () => {
-                  setBusy('approving');
+                disabled={busy}
+                onClick={() => runMutation('approve', async (token) => {
                   setError(null);
                   setNotice(null);
                   try {
@@ -619,7 +682,7 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
                       setError('The server did not return the updated book state. Refresh before continuing.');
                       return;
                     }
-                    setSnapshot(data.snapshot);
+                    applyIfCurrent(token, data.snapshot);
                     setShowApprovalConfirm(false);
                     setNotice('Approved — thank you. Our team will complete the final production check before print release.');
                     setTimeout(() => {
@@ -627,12 +690,10 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
                     }, 1500);
                   } catch (e) {
                     setError(e instanceof Error ? e.message : 'Network error');
-                  } finally {
-                    setBusy('idle');
                   }
-                }}
+                })}
               >
-                {busy === 'approving' ? 'Approving…' : 'Yes, approve and continue'}
+                {activeOp === 'approve' ? 'Approving…' : 'Yes, approve and continue'}
               </button>
             </div>
           </div>

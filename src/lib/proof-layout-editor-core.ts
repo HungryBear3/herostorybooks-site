@@ -104,17 +104,37 @@ export function layoutBinding(
 }
 
 /**
- * Offer layout editing only when a FRESH proof identity binding exists and the
- * review lifecycle is still open at the UI level (an approved book is frozen).
- * The server re-enforces the full lifecycle/CAS gate on every write; this is the
- * honest client-side "offer it or explain why not" decision.
+ * Offer layout editing ONLY when the server-derived capability says so. This is
+ * fail-closed: any missing/malformed capability data (older snapshot, partial
+ * payload, wrong type) yields false. The server re-enforces the full
+ * lifecycle/CAS gate on every write; this only decides whether to render the
+ * control. The authoritative reasons (approved / lifecycle-closed / proof not
+ * ready) live server-side so the client never duplicates the state machine.
  */
 export function canOfferCustomerLayoutEditing(
-  snapshot: Pick<ReviewSnapshot, 'proofFresh' | 'proofVersion' | 'proofSourceFingerprint' | 'reviewStatus'>,
+  snapshot: Pick<ReviewSnapshot, 'proofLayoutEditing'> | null | undefined,
 ): boolean {
-  if (snapshot.reviewStatus === 'approved') return false;
-  if (!snapshot.proofFresh) return false;
-  return layoutBinding(snapshot) !== null;
+  const cap = snapshot?.proofLayoutEditing as { allowed?: unknown } | undefined;
+  return cap != null && cap.allowed === true;
+}
+
+/** The honest, non-jargon explanation shown when editing is unavailable. Any
+ *  unknown/malformed reason falls through to the safe generic message. */
+export function customerLayoutUnavailableMessage(
+  snapshot: Pick<ReviewSnapshot, 'proofLayoutEditing'> | null | undefined,
+): string | null {
+  const cap = snapshot?.proofLayoutEditing as { allowed?: unknown; reason?: unknown } | undefined;
+  if (cap && cap.allowed === true) return null;
+  switch (cap?.reason) {
+    case 'proof_not_ready':
+      return 'An updated proof is being prepared — you’ll be able to adjust this page’s text placement once it’s ready.';
+    case 'review_approved':
+      return null; // Approved books are frozen; no editing prompt is shown.
+    case 'lifecycle_closed':
+      return 'This book has moved into production, so text placement can no longer be changed here. Reply to your order email if something looks off.';
+    default:
+      return null;
+  }
 }
 
 // ── Request shaping (endpoint URLs + bodies) ─────────────────────────────────
@@ -217,4 +237,153 @@ export function customerLayoutErrorMessage(error: string | undefined, status: nu
         ? 'We couldn’t reach the server. Check your connection and try again.'
         : 'Something went wrong saving your layout. Please try again.';
   }
+}
+
+// ── Response-contract interpretation (B4/B7) ─────────────────────────────────
+//
+// Parse the FULL contract (ok, noop, snapshot, error) so the UI never fakes a
+// success on a malformed 200 and never claims a proof rebuild for a no-op.
+
+/** Error codes whose only honest remedy is to reload the current proof (not to
+ *  keep retrying the same stale request). */
+const RELOAD_ERROR_CODES = new Set([
+  'no_live_proof', 'proof_stale', 'binding_required', 'stale_revision', 'stale_fingerprint',
+]);
+
+export type LayoutMutationOp = 'save' | 'reset' | 'help';
+
+/** Flat outcome shape (no discriminated union — narrowing on `!ok` is unreliable
+ *  under this repo's non-strict TS). When `ok`, `snapshot` is present and
+ *  `message` is null; when not, `message` is set and `snapshot` is null. */
+export interface LayoutMutationOutcome {
+  ok: boolean;
+  /** True when the server made no change (equivalent geometry / already recorded). */
+  noop: boolean;
+  snapshot: ReviewSnapshot | null;
+  message: string | null;
+  /** True → instruct the customer to reload; false → a retry may help. */
+  reload: boolean;
+}
+
+/** A minimal structural check: a real ReviewSnapshot the client can adopt. */
+function isReviewSnapshotLike(value: unknown): value is ReviewSnapshot {
+  return !!value
+    && typeof value === 'object'
+    && typeof (value as { orderId?: unknown }).orderId === 'string'
+    && Array.isArray((value as { pageArtifacts?: unknown }).pageArtifacts);
+}
+
+/**
+ * Interpret a proof-layout / request-help response. Requires ok===true AND an
+ * authoritative snapshot before any success path; a malformed 200 is a failure
+ * (never a fake success). Stale-proof errors are flagged reload.
+ */
+export function interpretLayoutMutationResponse(
+  httpOk: boolean,
+  status: number,
+  body: unknown,
+): LayoutMutationOutcome {
+  const b = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
+  const ok = b?.ok === true;
+  const error = typeof b?.error === 'string' ? (b.error as string) : undefined;
+  if (httpOk && ok) {
+    if (isReviewSnapshotLike(b?.snapshot)) {
+      return { ok: true, noop: b?.noop === true, snapshot: b!.snapshot as ReviewSnapshot, message: null, reload: false };
+    }
+    // ok but no adoptable snapshot — never synthesize proof state.
+    return {
+      ok: false,
+      noop: false,
+      snapshot: null,
+      reload: true,
+      message: 'We couldn’t confirm the change — the server didn’t return the updated proof state. Please reload and try again.',
+    };
+  }
+  return {
+    ok: false,
+    noop: false,
+    snapshot: null,
+    reload: error != null && RELOAD_ERROR_CODES.has(error),
+    message: customerLayoutErrorMessage(error, status),
+  };
+}
+
+/**
+ * Honest, durable notice copy for a completed mutation. A no-op NEVER claims a
+ * proof rebuild; a real Save/Reset does; request-help is audit-only and always
+ * states no email was sent.
+ */
+export function layoutMutationNotice(op: LayoutMutationOp, noop: boolean): string {
+  switch (op) {
+    case 'save':
+      return noop
+        ? 'No changes to save — this page already uses that text placement.'
+        : 'Layout saved. We’ll prepare an updated proof for you to review before final approval.';
+    case 'reset':
+      return noop
+        ? 'This page already uses the standard placement — there was nothing to reset.'
+        : 'Layout reset to the standard placement. We’ll prepare an updated proof for you to review.';
+    case 'help':
+      return noop
+        ? 'You’ve already asked us to help with this page’s layout — it’s on our list. No email has been sent.'
+        : 'Thanks — we’ve noted that you’d like help with this page’s layout. Our team will take a look; no email has been sent yet.';
+  }
+}
+
+// ── Accessible geometry announcement (B5) ────────────────────────────────────
+
+/** A concise, screen-reader-friendly description of the card's position/size —
+ *  announced on keyboard move/resize so a non-sighted user knows the result. */
+export function describeCardGeometry(geo: ProofCardGeometry): string {
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+  return `Text card at ${pct(geo.x)} from left, ${pct(geo.y)} from top, ${pct(geo.width)} wide, ${pct(geo.height)} tall.`;
+}
+
+// ── Single customer-mutation coordinator (B6) ────────────────────────────────
+//
+// One lock shared by EVERY customer review mutation (layout save/reset/help,
+// regenerate, accept, wording, acknowledgment, approval): at most one is active,
+// and a token issued for an older mutation can never apply its snapshot once a
+// newer mutation has begun. Pure + framework-free so the ordering guarantee is
+// unit-tested; the React surface wraps it and mirrors isBusy() into every
+// control's disabled state.
+
+export interface ReviewMutationCoordinator {
+  /** True while a mutation holds the lock. */
+  isBusy(): boolean;
+  /** The op currently holding the lock, or null. */
+  activeOp(): string | null;
+  /** Acquire the lock for `op`; returns a token, or null if one is already held. */
+  begin(op: string): number | null;
+  /** True only if `token` is the newest issued AND still the active owner — i.e.
+   *  its response is safe to apply. A superseded/settled token returns false. */
+  isCurrent(token: number): boolean;
+  /** Release the lock IFF `token` is the current owner (owner-aware cleanup). */
+  settle(token: number): void;
+}
+
+export function createReviewMutationCoordinator(): ReviewMutationCoordinator {
+  let activeGen = 0; // 0 = idle
+  let lastGen = 0; // highest token ever issued
+  let op: string | null = null;
+  return {
+    isBusy: () => activeGen !== 0,
+    activeOp: () => op,
+    begin(nextOp: string): number | null {
+      if (activeGen !== 0) return null; // single active mutation
+      lastGen += 1;
+      activeGen = lastGen;
+      op = nextOp;
+      return activeGen;
+    },
+    isCurrent(token: number): boolean {
+      return token === activeGen && token === lastGen;
+    },
+    settle(token: number): void {
+      if (token === activeGen) {
+        activeGen = 0;
+        op = null;
+      }
+    },
+  };
 }

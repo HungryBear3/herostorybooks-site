@@ -26,21 +26,25 @@ test('customer editor never sends appliedBy and never puts the token in the body
   assert.doesNotMatch(editor, /body:[\s\S]{0,120}token/);
 });
 
-test('customer editor adopts the authoritative snapshot and never fakes success', () => {
-  assert.match(editor, /onCommitted\(data\.snapshot\)/);
-  assert.match(editor, /did.?n.t return the updated proof state|didn’t return/);
+test('customer editor parses the full response contract and never fakes success', () => {
+  // Response handling routes through the behavioral interpreter (which requires
+  // ok===true + an adoptable snapshot, and fails a malformed 200) — not ad-hoc.
+  assert.match(editor, /interpretLayoutMutationResponse\(/);
+  // Snapshot adoption is stale-ordering-guarded through the shared coordinator.
+  assert.match(editor, /applyIfCurrent\(token,/);
   // aria-live status + assertive error regions for accessibility.
   assert.match(editor, /aria-live="polite"/);
   assert.match(editor, /aria-live="assertive"/);
 });
 
-test('request-help keeps the editor open and shows a confirmation (does not close via onCommitted/onClose)', () => {
+test('request-help keeps the editor open (no onCommitted/onClose) and adopts via applyIfCurrent', () => {
   // Isolate the requestHelp() body so the guard is bounded to that handler.
   const m = editor.match(/async function requestHelp\(\)[\s\S]*?\n {2}\}/);
   assert.ok(m, 'requestHelp() function block not found');
   const body = m![0];
-  // Request-help does NOT invalidate the proof, so the editor must stay open and
-  // surface a durable-audit confirmation — NOT collapse via the parent close path.
+  // Request-help does NOT invalidate the proof: adopt the snapshot in the parent
+  // WITHOUT closing, and show an inline confirmation. Never close via commit/close.
+  assert.match(body, /applyIfCurrent\(token,/);
   assert.match(body, /setStatus\(/);
   assert.doesNotMatch(body, /onCommitted\(/);
   assert.doesNotMatch(body, /onClose\(/);
@@ -54,11 +58,14 @@ test('customer editor controls are touch-safe (44px) and gestures use pointer ca
   assert.match(editor, /releasePointerCapture/);
 });
 
-test('review-client mounts the customer editor gated on eligibility, keyed for remount, adopting the snapshot', () => {
+test('review-client mounts the editor gated on capability, keyed for remount, on the shared lock', () => {
   assert.match(client, /import CustomerProofLayoutEditor from '\.\/customer-proof-layout-editor'/);
   assert.match(client, /canOfferCustomerLayoutEditing\(snapshot\)/);
   assert.match(client, /key=\{editorIdentityKey\(/);
-  assert.match(client, /onCommitted=\{\(next: ReviewSnapshot\) =>\s*\{[\s\S]{0,80}setSnapshot\(next\)/);
+  // Editor + all parent mutations share ONE coordinator (B6).
+  assert.match(client, /createReviewMutationCoordinator\(\)/);
+  assert.match(client, /runMutation=\{runMutation\}/);
+  assert.match(client, /applyIfCurrent=\{applyIfCurrent\}/);
   // Never the admin route from the customer surface.
   assert.doesNotMatch(client, /admin/);
 });

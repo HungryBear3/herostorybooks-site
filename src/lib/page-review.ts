@@ -1234,6 +1234,9 @@ export interface ReviewSnapshot {
   proofAvailable: boolean;
   /** True when that proof still describes the current pages. */
   proofFresh: boolean;
+  /** Server-derived, fail-closed capability that decides whether the customer
+   *  layout editor is offered (and, if not, the honest reason). */
+  proofLayoutEditing: ProofLayoutEditCapability;
   isPrint: boolean;
   bookFormat: OrderRecord['bookFormat'];
 }
@@ -1254,6 +1257,7 @@ export function reviewSnapshotFromOrder(order: OrderRecord): ReviewSnapshot {
     proofReviewedAt: order.proofReviewedAt ?? null,
     proofAvailable: fresh,
     proofFresh: fresh,
+    proofLayoutEditing: evaluateProofLayoutEditCapability(order),
     isPrint,
     bookFormat: order.bookFormat,
   };
@@ -1331,6 +1335,46 @@ export function evaluateProofLayoutMutationLifecycle(order: OrderRecord): { stat
     return { status: 409, error: 'order_finalized' };
   }
   return null;
+}
+
+/**
+ * The authoritative, fail-closed answer to "may the customer edit this page's
+ * layout right now?" — derived from the SAME server rules the mutation path
+ * enforces (payment/refund eligibility, terminal lifecycle, and live-proof
+ * freshness). Advertised on the ReviewSnapshot so the client never has to
+ * re-derive an incomplete copy of the lifecycle state machine. The mutation
+ * route still revalidates at transaction time; this only decides whether to
+ * OFFER the control and, if not, why.
+ */
+export type ProofLayoutEditReason =
+  | 'available'
+  | 'proof_not_ready'
+  | 'review_approved'
+  | 'lifecycle_closed';
+
+export interface ProofLayoutEditCapability {
+  allowed: boolean;
+  reason: ProofLayoutEditReason;
+}
+
+export function evaluateProofLayoutEditCapability(order: OrderRecord): ProofLayoutEditCapability {
+  // Order-state eligibility (payment settled, not refunded). The per-request
+  // token is NOT part of order state, so it is checked at mutation time only.
+  if (order.paymentStatus !== 'paid' || order.refundedAt || order.stripeRefundId) {
+    return { allowed: false, reason: 'lifecycle_closed' };
+  }
+  const lifecycle = evaluateProofLayoutMutationLifecycle(order);
+  if (lifecycle) {
+    return {
+      allowed: false,
+      reason: lifecycle.error === 'order_approved' ? 'review_approved' : 'lifecycle_closed',
+    };
+  }
+  // A live, current proof identity must exist to bind an edit against.
+  if (!proofIsFresh(order) || !order.proofVersion || !order.proofSourceFingerprint) {
+    return { allowed: false, reason: 'proof_not_ready' };
+  }
+  return { allowed: true, reason: 'available' };
 }
 
 /** Bounded numeric geometry for the audit trail — never any customer data. */

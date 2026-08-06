@@ -34,6 +34,7 @@ function snap(patch: Partial<ReviewSnapshot> = {}): ReviewSnapshot {
     orderId: 'ord_x', childName: 'Kid', reviewStatus: 'in_review', pageArtifacts: [],
     storyArtifactUrl: 'https://example.invalid/p.pdf', proofVersion: 'pv_1', proofSourceFingerprint: 'pf_1',
     proofReviewedVersion: null, proofReviewedAt: null, proofAvailable: true, proofFresh: true,
+    proofLayoutEditing: { allowed: true, reason: 'available' },
     isPrint: false, bookFormat: 'digital', ...patch,
   };
 }
@@ -90,12 +91,11 @@ test('geometry/color initialize from the persisted override, else defaults', () 
 
 // ── eligibility + binding ────────────────────────────────────────────────────
 
-test('editing is offered only with a fresh proof binding on an editable order', () => {
+test('editing is offered only when the server capability allows it (fail closed)', () => {
   assert.equal(canOfferCustomerLayoutEditing(snap()), true);
-  assert.equal(canOfferCustomerLayoutEditing(snap({ reviewStatus: 'approved' })), false);
-  assert.equal(canOfferCustomerLayoutEditing(snap({ proofFresh: false })), false);
-  assert.equal(canOfferCustomerLayoutEditing(snap({ proofVersion: null })), false);
-  assert.equal(canOfferCustomerLayoutEditing(snap({ proofSourceFingerprint: null })), false);
+  assert.equal(canOfferCustomerLayoutEditing(snap({ proofLayoutEditing: { allowed: false, reason: 'review_approved' } })), false);
+  assert.equal(canOfferCustomerLayoutEditing(snap({ proofLayoutEditing: { allowed: false, reason: 'lifecycle_closed' } })), false);
+  assert.equal(canOfferCustomerLayoutEditing(snap({ proofLayoutEditing: { allowed: false, reason: 'proof_not_ready' } })), false);
 });
 
 test('layoutBinding is null unless both version and fingerprint are present', () => {

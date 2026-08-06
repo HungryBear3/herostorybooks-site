@@ -14,7 +14,17 @@ import type {
   TextPanelStyle,
 } from './fulfillment-types.ts';
 import { isKnownLayoutVersion, isModernLayout, isValidPageTextLayout } from './fulfillment-types.ts';
-import { canonicalizeProofCardGeometry, isValidProofCardOverride, resolveProofTextColor } from './proof-layout-override.ts';
+import {
+  canonicalizeProofCardGeometry,
+  isValidProofCardOverride,
+  resolveProofTextColor,
+  PROOF_ART_FRAME_HEIGHT_PT,
+  PROOF_CARD_TEXT_INSET_PT,
+  PROOF_CARD_VERTICAL_INSET_PT,
+  PROOF_CARD_CORNER_RADIUS_PT,
+  PROOF_CARD_BASE_FONT_PT,
+  PROOF_CARD_BASE_LINE_GAP_PT,
+} from './proof-layout-override.ts';
 
 /**
  * Thrown when a book explicitly marked `modern_full_bleed` reaches the story
@@ -753,9 +763,11 @@ function drawCaptionText(
 // canonicalized at the render boundary so drawn pixels equal fingerprinted
 // values; overflow is detected (fail closed) rather than clipped.
 
-const PROOF_CARD_TEXT_INSET = 16;
-const PROOF_CARD_VERTICAL_INSET = 10;
-const PROOF_CARD_CORNER_RADIUS = 12;
+// Renderer card metrics are the SHARED single source of truth (see
+// proof-layout-override.ts) so the customer CSS preview cannot drift from print.
+const PROOF_CARD_TEXT_INSET = PROOF_CARD_TEXT_INSET_PT;
+const PROOF_CARD_VERTICAL_INSET = PROOF_CARD_VERTICAL_INSET_PT;
+const PROOF_CARD_CORNER_RADIUS = PROOF_CARD_CORNER_RADIUS_PT;
 
 /** Normalized card geometry (page-relative fractions). Structural type shared
  *  with proof-layout-override without importing it into the fingerprint path. */
@@ -779,7 +791,7 @@ function proofCardLayout(box: { x: number; y: number; width: number; height: num
     imageX: 0,
     imageY: 0,
     imageWidth: PAGE_WIDTH,
-    imageHeight: 650,
+    imageHeight: PROOF_ART_FRAME_HEIGHT_PT,
     textInset: PROOF_CARD_TEXT_INSET,
     panelVerticalInset: PROOF_CARD_VERTICAL_INSET,
     textPanelFillOpacity: 1,
@@ -818,8 +830,8 @@ function computeProofCardText(box: ProofCardGeometryLike, storyText: string): Pr
     .lineGap(lineGap)
     .heightOfString(storyText, { width: textWidth, align: 'left' });
 
-  let baseFontSize = 15;
-  let baseLineGap = 5;
+  let baseFontSize = PROOF_CARD_BASE_FONT_PT;
+  let baseLineGap = PROOF_CARD_BASE_LINE_GAP_PT;
   while (measuredHeight(baseFontSize, baseLineGap) > safeHeight) {
     if (baseFontSize > 12) baseFontSize -= 1;
     else if (baseLineGap > 3) baseLineGap -= 1;
