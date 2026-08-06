@@ -400,6 +400,144 @@ test('initial digital and print fulfillment never publish a proof from a stale r
   }
 });
 
+test('digital fulfillment stops before upload when refunded during proof rendering', async () => {
+  const store = withLocalStore();
+  const orderId = 'ord_synthetic_digital_refund_during_pdf';
+  try {
+    const seeded = createOrderRecord(
+      { childName: 'Synthetic Digital Refund Hero', bookFormat: 'digital', email: 'reviewer@example.invalid' },
+      { id: orderId, now: NOW },
+    );
+    await persistOrder({ ...seeded, paymentStatus: 'paid', fulfillmentStatus: 'not_started' });
+    const story = {
+      title: 'Synthetic Digital Refund Story',
+      characterDescription: 'Synthetic character',
+      pages: Array.from({ length: 24 }, (_, i) => ({
+        pageNum: i + 1,
+        sceneTitle: `Digital Refund Scene ${i + 1}`,
+        story: `Digital Refund Story ${i + 1}`,
+        imagePrompt: `Digital Refund Prompt ${i + 1}`,
+        textLayout: { zone: 'bottom_band' as const, colorMode: 'dark' as const, panelStyle: 'translucent_cream' as const },
+      })),
+    };
+    let uploadCalls = 0;
+    await triggerFulfillment(orderId, {
+      generateStory: async () => story,
+      generateImages: async (prompts) => prompts.map((_, i) => `https://example.invalid/digital-refund-${i}.png`),
+      buildPdf: async () => {
+        await withOrderTransaction(orderId, (current) => ({
+          commit: {
+            ...current,
+            paymentStatus: 'refunded',
+            refundedAt: '2026-08-05T22:56:00.000Z',
+            stripeRefundId: 're_synthetic_digital_pdf',
+          },
+          result: undefined,
+        }));
+        return Buffer.from('%PDF digital refund preview');
+      },
+      uploadArtifact: async (id, _buffer, filename) => {
+        uploadCalls += 1;
+        return `https://example.invalid/${id}/${filename}`;
+      },
+      sleep: async () => {},
+    });
+    const after = await getOrder(orderId);
+    assert.equal(uploadCalls, 0, 'refund during digital PDF build must stop before upload');
+    assert.equal(after?.paymentStatus, 'refunded');
+    assert.equal(after?.fulfillmentAttempts, 1);
+    assert.equal(after?.storyArtifactUrl ?? null, null);
+    assert.equal(after?.proofSourceFingerprint ?? null, null);
+    assert.equal(after?.proofVersion ?? null, null);
+  } finally {
+    store.cleanup();
+  }
+});
+
+test('print fulfillment stops after a concurrent refund at every expensive artifact phase', async () => {
+  const store = withLocalStore();
+  try {
+    const story = {
+      title: 'Synthetic Print Refund Story',
+      characterDescription: 'Synthetic character',
+      pages: Array.from({ length: 24 }, (_, i) => ({
+        pageNum: i + 1,
+        sceneTitle: `Print Refund Scene ${i + 1}`,
+        story: `Print Refund Story ${i + 1}`,
+        imagePrompt: `Print Refund Prompt ${i + 1}`,
+        textLayout: { zone: 'bottom_band' as const, colorMode: 'dark' as const, panelStyle: 'translucent_cream' as const },
+      })),
+    };
+
+    for (const scenario of [
+      { phase: 'preview' as const, expectedPreview: 1, expectedInterior: 0, expectedUploads: 0 },
+      { phase: 'interior' as const, expectedPreview: 1, expectedInterior: 1, expectedUploads: 0 },
+      { phase: 'first_upload' as const, expectedPreview: 1, expectedInterior: 1, expectedUploads: 1 },
+    ]) {
+      const orderId = `ord_synthetic_print_refund_${scenario.phase}`;
+      const seeded = createOrderRecord(
+        { childName: 'Synthetic Print Refund Hero', bookFormat: 'classic', email: 'reviewer@example.invalid' },
+        { id: orderId, now: NOW },
+      );
+      await persistOrder({ ...seeded, paymentStatus: 'paid', fulfillmentStatus: 'not_started' });
+
+      let previewCalls = 0;
+      let interiorCalls = 0;
+      let uploadCalls = 0;
+      let refunded = false;
+      const refund = async () => {
+        if (refunded) return;
+        refunded = true;
+        await withOrderTransaction(orderId, (current) => ({
+          commit: {
+            ...current,
+            paymentStatus: 'refunded',
+            refundedAt: '2026-08-05T22:55:00.000Z',
+            stripeRefundId: `re_synthetic_print_${scenario.phase}`,
+          },
+          result: undefined,
+        }));
+      };
+
+      await triggerFulfillment(orderId, {
+        generateStory: async () => story,
+        generateImages: async (prompts) => prompts.map((_, i) => `https://example.invalid/print-refund-${i}.png`),
+        buildPdf: async () => {
+          previewCalls += 1;
+          if (scenario.phase === 'preview') await refund();
+          return Buffer.from('%PDF print refund preview');
+        },
+        buildPrintInteriorPdf: async () => {
+          interiorCalls += 1;
+          if (scenario.phase === 'interior') await refund();
+          return Buffer.from('%PDF print refund interior');
+        },
+        uploadArtifact: async (id, _buffer, filename) => {
+          uploadCalls += 1;
+          if (scenario.phase === 'first_upload' && uploadCalls === 1) await refund();
+          return `https://example.invalid/${id}/${filename}`;
+        },
+        sleep: async () => {},
+      });
+
+      const after = await getOrder(orderId);
+      assert.equal(previewCalls, scenario.expectedPreview, `${scenario.phase}: preview calls`);
+      assert.equal(interiorCalls, scenario.expectedInterior, `${scenario.phase}: interior calls`);
+      assert.equal(uploadCalls, scenario.expectedUploads, `${scenario.phase}: upload calls`);
+      assert.equal(after?.paymentStatus, 'refunded', `${scenario.phase}: payment state`);
+      assert.equal(after?.refundedAt, '2026-08-05T22:55:00.000Z');
+      assert.equal(after?.stripeRefundId, `re_synthetic_print_${scenario.phase}`);
+      assert.equal(after?.fulfillmentAttempts, 1, `${scenario.phase}: refund must be terminal`);
+      assert.equal(after?.storyArtifactUrl ?? null, null);
+      assert.equal(after?.printInteriorArtifactUrl ?? null, null);
+      assert.equal(after?.proofSourceFingerprint ?? null, null);
+      assert.equal(after?.proofVersion ?? null, null);
+    }
+  } finally {
+    store.cleanup();
+  }
+});
+
 test('default proof uploader creates nested immutable local paths', async () => {
   const store = withLocalStore();
   const originalCwd = process.cwd();

@@ -99,6 +99,15 @@ function paidFulfillmentPatch(_order: OrderRecord, patch: Partial<OrderRecord>):
   return patch;
 }
 
+async function assertFulfillmentPaymentCurrent(orderId: string): Promise<void> {
+  const current = await getOrder(orderId);
+  if (!current) throw new Error('order_not_found');
+  if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
+    const status = current.refundedAt || current.stripeRefundId ? 'refunded' : current.paymentStatus;
+    throw new Error(`paymentStatus=${status}`);
+  }
+}
+
 /** Publish a proof only when its bytes still identify the current source. */
 async function commitProofPatchIfSourceCurrent(
   orderId: string,
@@ -432,6 +441,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     layoutVersion: NEW_PROOF_LAYOUT_VERSION,
   };
   const pdfBuffer = await _buildPdf(story, orderForBuild, allUrls);
+  await assertFulfillmentPaymentCurrent(order.id);
 
   const proofVersion = newProofVersion();
   const pdfUrl = await _upload(order.id, pdfBuffer, proofArtifactPath(proofVersion));
@@ -592,10 +602,13 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     layoutVersion: NEW_PROOF_LAYOUT_VERSION,
   };
   const previewBuffer = await _buildPdf(story, orderForBuild, allUrls);
+  await assertFulfillmentPaymentCurrent(order.id);
   const interiorBuffer = await _buildPrintInteriorPdf(story, orderForBuild, allUrls);
+  await assertFulfillmentPaymentCurrent(order.id);
 
   const proofVersion = newProofVersion();
   const proofUrl = await _upload(order.id, previewBuffer, proofArtifactPath(proofVersion));
+  await assertFulfillmentPaymentCurrent(order.id);
   const interiorUrl = await _upload(order.id, interiorBuffer, `interiors/${proofVersion}.pdf`);
   const sourceFingerprint = proofRenderSourceFingerprint({ story, order: orderForBuild, imageUrls: allUrls });
 
