@@ -57,6 +57,137 @@ export interface PageTextLayout {
   panelStyle: TextPanelStyle;
 }
 
+/**
+ * Durable discriminator for how a book's story pages are laid out and
+ * rendered. This is an explicit, per-order marker — never inferred at render
+ * time — so the renderer can fail closed for modern books with missing
+ * metadata instead of silently coercing to the legacy bottom band.
+ *
+ * - 'legacy_bottom_band' : the current Release-1 bottom paper band over art.
+ *                          Missing/legacy per-page metadata is tolerated and
+ *                          normalized (existing behavior).
+ * - 'modern_full_bleed'  : the full-bleed overlay system with explicit,
+ *                          validated per-page text placement. Missing or
+ *                          invalid page metadata MUST fail closed.
+ *
+ * Absent (undefined/null) on a record = unmarked historical order → treated as
+ * legacy at read time WITHOUT rewriting the record (migration boundary).
+ */
+export type LayoutVersion = 'legacy_bottom_band' | 'modern_full_bleed';
+
+const TEXT_ZONES: readonly TextZone[] = [
+  'top_left', 'top_right', 'bottom_left', 'bottom_right', 'bottom_band', 'top_band', 'natural',
+];
+const TEXT_COLOR_MODES: readonly TextColorMode[] = ['light', 'dark', 'auto'];
+const TEXT_PANEL_STYLES: readonly TextPanelStyle[] = [
+  'none', 'translucent_cream', 'translucent_dark', 'soft_scrim',
+];
+
+/**
+ * True iff `layout` is present and every field is a known enum member. Shared
+ * by the story-page contract validator and the PDF renderer's fail-closed
+ * gate so both agree on what "valid modern layout metadata" means.
+ */
+export function isValidPageTextLayout(layout: PageTextLayout | null | undefined): layout is PageTextLayout {
+  if (!layout || typeof layout !== 'object') return false;
+  return (
+    TEXT_ZONES.includes(layout.zone) &&
+    TEXT_COLOR_MODES.includes(layout.colorMode) &&
+    TEXT_PANEL_STYLES.includes(layout.panelStyle)
+  );
+}
+
+/** Runtime guard for persisted data. TypeScript's union cannot protect JSON
+ * records, so every non-null value must be recognized explicitly. */
+export function isKnownLayoutVersion(layoutVersion: unknown): layoutVersion is LayoutVersion | null | undefined {
+  return layoutVersion == null || layoutVersion === 'legacy_bottom_band' || layoutVersion === 'modern_full_bleed';
+}
+
+/**
+ * The recommended per-page text layout for a modern book — the bottom-band
+ * treatment the current renderer produces (dark prose on the approved cream
+ * paper band). Every generated / regenerated page is guaranteed a valid layout
+ * so a modern book never reaches the fail-closed gate with missing metadata.
+ */
+export function recommendedPageTextLayout(): PageTextLayout {
+  return { zone: 'bottom_band', colorMode: 'dark', panelStyle: 'translucent_cream' };
+}
+
+/** Return a VALID page layout: the page's own metadata when structurally valid,
+ *  otherwise the recommended default. Used at every page-seeding boundary so
+ *  modern books always carry valid per-page metadata. */
+export function ensureRecommendedTextLayout(layout: PageTextLayout | null | undefined): PageTextLayout {
+  return isValidPageTextLayout(layout) ? layout : recommendedPageTextLayout();
+}
+
+/** A book is rendered/validated under the modern contract ONLY when explicitly
+ * marked modern. Callers must reject unknown non-null values before using this
+ * predicate; only absent/null and explicit legacy are legacy-compatible. */
+export function isModernLayout(layoutVersion: LayoutVersion | null | undefined): boolean {
+  return layoutVersion === 'modern_full_bleed';
+}
+
+/**
+ * The layout version assigned to newly generated / regenerated proofs.
+ *
+ * Every producer using this discriminator must first guarantee valid per-page
+ * metadata. Initial generation does that through `withRecommendedPageMetadata`;
+ * rebuild/publication paths normalize legacy artifacts before validation,
+ * rendering, fingerprinting and persistence. The persisted proof tuple is thus
+ * always bound to the same modern page source the renderer consumed.
+ */
+export const NEW_PROOF_LAYOUT_VERSION: LayoutVersion = 'modern_full_bleed';
+
+/**
+ * Closed set of the three EXPLICIT approved proof text-color choices. Semantic,
+ * not free color input. Each maps to a FIXED (text, scrim-fill) pair in
+ * proof-layout-override so the UI preview and PDF renderer use identical values.
+ * Absence / no explicit choice is NOT in this enum — it resolves to the legacy
+ * default (#1F3A5F, a deep blue), so blue is never labeled brown. Arbitrary
+ * hex/RGB/CSS/gradients are never accepted.
+ */
+export type ProofTextColor = 'dark_brown' | 'cream' | 'charcoal';
+
+/**
+ * PROOF-ONLY per-page positioned text-card override for the customer-facing
+ * modern layout editor (the sanctioned exception to "copy must never sit over
+ * art"). When a page carries this override the customer-review PDF draws the
+ * story text as a positioned translucent legibility card that MAY overlap the
+ * illustration. A page with no override renders as it did before; the print
+ * master (`buildPrintInteriorPdf`) never reads this field.
+ *
+ * All geometry is normalized and resolution-independent: origin is the page
+ * top-left and every distance is a fraction of the page width/height in [0,1].
+ * Byte-affecting values (geometry + resolved color) fold into the proof
+ * fingerprint; operational metadata (appliedAt/appliedBy/authoredAgainst*) does
+ * not, so it cannot spuriously invalidate a proof.
+ */
+export interface ProofCardOverride {
+  /** Card top-left X, page-relative fraction [0,1]. */
+  x: number;
+  /** Card top-left Y, page-relative fraction [0,1]. */
+  y: number;
+  /** Card width, page-relative fraction [0,1]. */
+  width: number;
+  /** Card height, page-relative fraction [0,1]. */
+  height: number;
+  /** Card panel opacity, bounded so it is never unreadable nor a face-blocking
+   *  opaque slab. */
+  opacity: number;
+  /** Multiplier applied to the fitted body font size, bounded conservatively. */
+  fontScale: number;
+  /** Approved semantic text color. Absent renders as the legacy default. */
+  textColor?: ProofTextColor;
+  /** Proof revision this override was authored against (revision binding). */
+  authoredAgainstProofVersion: string;
+  /** Source/artwork fingerprint this override was authored against. */
+  authoredAgainstFingerprint: string;
+  /** ISO timestamp the override was applied. Operational — NOT fingerprinted. */
+  appliedAt: string;
+  /** Bounded actor identifier for the audit trail. Operational — NOT fingerprinted. */
+  appliedBy: string;
+}
+
 export interface StoryPage {
   pageNum: number;
   sceneTitle: string;
@@ -66,6 +197,10 @@ export interface StoryPage {
    *  translucent_dark/soft_scrim, but Release 1 PDFs coerce story prose to
    *  dark text on an approved cream paper band. */
   textLayout?: PageTextLayout;
+  /** Optional proof-only positioned text-card override. When present the proof
+   *  renderer draws an over-art card instead of the bottom band; the print
+   *  renderer ignores it. */
+  proofCardOverride?: ProofCardOverride | null;
 }
 
 export interface StoryContent {
@@ -73,6 +208,17 @@ export interface StoryContent {
   dedication?: string;
   characterDescription: string;
   pages: StoryPage[];
+}
+
+/** Guarantee every story page carries VALID per-page layout metadata (its own
+ *  when structurally valid, else the recommended default) so a modern book
+ *  never reaches the fail-closed gate/renderer with missing metadata. Applied
+ *  at each story-generation choke point — covering seeded artifacts AND render. */
+export function withRecommendedPageMetadata(story: StoryContent): StoryContent {
+  return {
+    ...story,
+    pages: story.pages.map((p) => ({ ...p, textLayout: ensureRecommendedTextLayout(p.textLayout) })),
+  };
 }
 
 /**

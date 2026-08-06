@@ -19,6 +19,7 @@ import path from 'node:path';
 import { createOrderRecord, persistOrder, getOrder } from '../src/lib/orders.ts';
 import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
+import { padPageSet } from './support/full-page-set.ts';
 import {
   acceptPage,
   acknowledgeProofReview,
@@ -69,10 +70,10 @@ async function seed(
     fulfillmentStatus: 'proof_ready',
     storyArtifactUrl: 'https://example.com/proof.pdf',
     proofReviewedAt: null,
-    pageArtifacts: [
+    pageArtifacts: padPageSet([
       pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
       pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
-    ],
+    ]),
     reviewStatus: 'in_review',
     ...overrides,
   };
@@ -118,10 +119,10 @@ test('approveWholeBook: rejects when not all pages accepted', async () => {
   try {
     await seed({
       proofReviewedAt: '2026-04-27T10:00:00Z',
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
-        pageFixture(1), // not accepted
-      ],
+        pageFixture(1, { accepted: false }), // not accepted
+      ]),
     });
     const r = await approveWholeBook('ord_gate_test');
     assert.equal(r.ok, false);
@@ -254,11 +255,11 @@ test('acceptPage: never flips reviewStatus to approved, even when accepting the 
     await seed({
       reviewStatus: 'in_review',
       proofReviewedAt: null,
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         { ...mkPage(0), accepted: true, acceptedImageUrl: 'https://x/0.png' },
         { ...mkPage(1), accepted: true, acceptedImageUrl: 'https://x/1.png' },
         mkPage(2),
-      ],
+      ]),
     });
     const r = await acceptPage({ orderId: 'ord_gate_test', pageIndex: 2 });
     assert.equal(r.ok, true);
@@ -274,11 +275,11 @@ test('approveWholeBook is the only path that sets reviewStatus=approved', async 
     await seed({
       reviewStatus: 'in_review',
       proofReviewedAt: '2026-04-27T11:00:00Z',
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         { ...mkPage(0), accepted: true, acceptedImageUrl: 'https://x/0.png' },
         { ...mkPage(1), accepted: true, acceptedImageUrl: 'https://x/1.png' },
         mkPage(2),
-      ],
+      ]),
     });
     // Accept the last page → must NOT flip to approved.
     await acceptPage({ orderId: 'ord_gate_test', pageIndex: 2 });

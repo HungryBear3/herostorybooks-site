@@ -5,11 +5,62 @@ import { fileURLToPath } from 'node:url';
 
 import type { OrderRecord } from './orders.ts';
 import type {
+  LayoutVersion,
   PageTextLayout,
+  ProofCardOverride,
+  ProofTextColor,
   StoryContent,
   TextColorMode,
   TextPanelStyle,
 } from './fulfillment-types.ts';
+import { isKnownLayoutVersion, isModernLayout, isValidPageTextLayout } from './fulfillment-types.ts';
+import { canonicalizeProofCardGeometry, isValidProofCardOverride, resolveProofTextColor } from './proof-layout-override.ts';
+
+/**
+ * Thrown when a book explicitly marked `modern_full_bleed` reaches the story
+ * renderer with a page whose layout metadata is missing or invalid. The build
+ * aborts (fail closed) rather than silently coercing to the legacy bottom
+ * band, so a partial/legacy proof is never produced for a modern book.
+ */
+export class ModernLayoutMetadataError extends Error {
+  readonly pageIndex: number | undefined;
+  constructor(pageIndex?: number) {
+    super(
+      `Modern book is missing valid per-page layout metadata` +
+        (pageIndex != null ? ` (page index ${pageIndex})` : '') +
+        ` — refusing to render through the legacy bottom band`,
+    );
+    this.name = 'ModernLayoutMetadataError';
+    this.pageIndex = pageIndex;
+  }
+}
+
+/**
+ * Thrown when a proof over-art card's text cannot fit its bounded card at the
+ * approved minimum font — the build fails closed rather than ellipsis-clipping
+ * customer prose. Deterministic and privacy-safe: it carries only the page
+ * index (never story text, child name, order id, email, or any PII).
+ */
+export class ProofCardOverflowError extends Error {
+  readonly pageIndex: number | undefined;
+  constructor(pageIndex?: number) {
+    super(
+      `Proof over-art card text overflows its bounded card` +
+        (pageIndex != null ? ` (page index ${pageIndex})` : '') +
+        ` — refusing to clip`,
+    );
+    this.name = 'ProofCardOverflowError';
+    this.pageIndex = pageIndex;
+  }
+}
+
+/** Unknown persisted layout markers must never silently select legacy output. */
+export class UnknownLayoutVersionError extends Error {
+  constructor() {
+    super('Unknown layout version — refusing to render through the legacy bottom band');
+    this.name = 'UnknownLayoutVersionError';
+  }
+}
 
 // Import the standalone PDFKit build directly. The default 'pdfkit' entry
 // (js/pdfkit.js) reads its AFM font metrics from node_modules/pdfkit/js/data
@@ -165,7 +216,20 @@ export function resolvePageTextLayout(layout?: PageTextLayout): {
 export function getPictureBookStoryLayout(
   kind: 'proof' | 'print',
   textLayout?: PageTextLayout,
+  layoutVersion?: LayoutVersion | null,
+  pageIndex?: number,
 ): PictureBookStoryLayout {
+  if (!isKnownLayoutVersion(layoutVersion)) {
+    throw new UnknownLayoutVersionError();
+  }
+  // Fail closed for modern books: an explicitly-modern book must carry valid
+  // per-page layout metadata. Never silently fall back to the legacy bottom
+  // band for a modern page. Legacy/unmarked books keep the existing tolerant
+  // normalization below.
+  if (isModernLayout(layoutVersion) && !isValidPageTextLayout(textLayout)) {
+    throw new ModernLayoutMetadataError(pageIndex);
+  }
+
   // Release 1 contract: story pages are always rendered as a clean bottom
   // paper band under the art. Legacy `textLayout.zone` metadata is parsed
   // through resolvePageTextLayout so panelStyle/colorMode normalization
@@ -680,6 +744,160 @@ function drawCaptionText(
     .text(text, x, y, { width, height, align: 'left', ellipsis: true });
 }
 
+// ── Proof-only positioned text-card override renderer ────────────────────────
+//
+// The sanctioned exception to the bottom-band invariant: when a story page
+// carries a customer-authored ProofCardOverride, the customer-review PDF draws
+// the story prose as a positioned translucent legibility card that may overlap
+// the artwork. The print master never reads this field. Geometry is
+// canonicalized at the render boundary so drawn pixels equal fingerprinted
+// values; overflow is detected (fail closed) rather than clipped.
+
+const PROOF_CARD_TEXT_INSET = 16;
+const PROOF_CARD_VERTICAL_INSET = 10;
+const PROOF_CARD_CORNER_RADIUS = 12;
+
+/** Normalized card geometry (page-relative fractions). Structural type shared
+ *  with proof-layout-override without importing it into the fingerprint path. */
+interface ProofCardGeometryLike {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontScale: number;
+}
+
+/** Map a normalized card box onto a PictureBookStoryLayout whose text panel IS
+ *  the card. Image fields use the standard proof frame so the artwork is
+ *  unaffected — only the text panel moves. */
+function proofCardLayout(box: { x: number; y: number; width: number; height: number }): PictureBookStoryLayout {
+  const panelX = box.x * PAGE_WIDTH;
+  const panelY = box.y * PAGE_HEIGHT;
+  const panelWidth = box.width * PAGE_WIDTH;
+  const panelHeight = box.height * PAGE_HEIGHT;
+  return {
+    imageX: 0,
+    imageY: 0,
+    imageWidth: PAGE_WIDTH,
+    imageHeight: 650,
+    textInset: PROOF_CARD_TEXT_INSET,
+    panelVerticalInset: PROOF_CARD_VERTICAL_INSET,
+    textPanelFillOpacity: 1,
+    pageNumberY: PAGE_HEIGHT - 24,
+    textPanelStyle: 'translucent_cream',
+    textColorMode: 'dark',
+    textPanelX: panelX,
+    textPanelY: panelY,
+    textPanelWidth: panelWidth,
+    textPanelHeight: panelHeight,
+    sceneTitleY: panelY + 12,
+  };
+}
+
+interface ProofCardText {
+  fontSize: number;
+  lineGap: number;
+  drawY: number;
+  drawHeight: number;
+  overflowed: boolean;
+}
+
+/** Deterministically fit the story body into an override card at the bounded
+ *  font scale, using the exact embedded font + PDFKit wrapping the renderer
+ *  uses. Reports overflow (used to fail closed) rather than clipping. */
+function computeProofCardText(box: ProofCardGeometryLike, storyText: string): ProofCardText {
+  const layout = proofCardLayout(box);
+  const textWidth = layout.textPanelWidth - layout.textInset * 2;
+  const safeTop = layout.textPanelY + layout.panelVerticalInset;
+  const safeBottom = layout.textPanelY + layout.textPanelHeight - layout.panelVerticalInset;
+  const safeHeight = safeBottom - safeTop;
+
+  const measureDoc = withNoLigatureText(new PDFDocument({ autoFirstPage: false })).font(EMBEDDED_BOOK_FONT);
+  const measuredHeight = (fontSize: number, lineGap: number) => measureDoc
+    .fontSize(fontSize)
+    .lineGap(lineGap)
+    .heightOfString(storyText, { width: textWidth, align: 'left' });
+
+  let baseFontSize = 15;
+  let baseLineGap = 5;
+  while (measuredHeight(baseFontSize, baseLineGap) > safeHeight) {
+    if (baseFontSize > 12) baseFontSize -= 1;
+    else if (baseLineGap > 3) baseLineGap -= 1;
+    else break;
+  }
+
+  const fontSize = baseFontSize * box.fontScale;
+  const lineGap = baseLineGap * box.fontScale;
+  const neededHeight = measuredHeight(fontSize, lineGap);
+  const overflowed = neededHeight > safeHeight;
+
+  const pad = Math.max(0, Math.floor((safeHeight - neededHeight) / 2));
+  const drawY = safeTop + pad;
+  const drawHeight = Math.max(24, safeBottom - drawY);
+  return { fontSize, lineGap, drawY, drawHeight, overflowed };
+}
+
+/** True when the story text cannot fit the card at the bounded font scale.
+ *  Exposed for the server-side save/preview guard (fail closed, no clipping). */
+export function proofCardTextOverflows(box: ProofCardGeometryLike, storyText: string): boolean {
+  return computeProofCardText(box, storyText).overflowed;
+}
+
+/** Draw the over-art card: the illustration stays as drawn; a translucent
+ *  legibility panel is laid at the normalized rect and the body text is fit
+ *  inside it. Called only from the proof story-page path. */
+function drawProofCardAt(
+  doc: InstanceType<typeof PDFDocument>,
+  text: string,
+  geometry: ProofCardGeometryLike & { opacity: number; textColor?: ProofTextColor },
+  pageIndex?: number,
+): void {
+  // Canonicalize at the render boundary so drawn pixels equal fingerprinted values.
+  const g = canonicalizeProofCardGeometry(geometry);
+  // Resolve the approved semantic color; absence === legacy default (#1F3A5F on
+  // cream), byte-identical to the prior hardcoded render.
+  const color = resolveProofTextColor(geometry.textColor);
+  const layout = proofCardLayout(g);
+  const fit = computeProofCardText(g, text);
+
+  // Fail closed: an over-art card whose prose does not fit the bounded card at
+  // the approved minimum font must NOT be drawn (drawCaptionText would clip via
+  // ellipsis). Throw so buildPdf rejects instead of returning a clipped proof.
+  if (fit.overflowed) {
+    throw new ProofCardOverflowError(pageIndex);
+  }
+
+  doc.save();
+  doc
+    .roundedRect(layout.textPanelX, layout.textPanelY, layout.textPanelWidth, layout.textPanelHeight, PROOF_CARD_CORNER_RADIUS)
+    .fillOpacity(g.opacity)
+    .fill(color.fill);
+  doc.restore();
+
+  drawCaptionText(
+    doc,
+    text,
+    layout.textPanelX + layout.textInset,
+    fit.drawY,
+    layout.textPanelWidth - layout.textInset * 2,
+    fit.drawHeight,
+    fit.fontSize,
+    fit.lineGap,
+    color.text,
+    true,
+  );
+}
+
+/** Draw a story-page over-art card (the sanctioned exception). */
+function drawProofOverrideCard(
+  doc: InstanceType<typeof PDFDocument>,
+  storyText: string,
+  override: ProofCardOverride,
+  pageIndex?: number,
+): void {
+  drawProofCardAt(doc, storyText, override, pageIndex);
+}
+
 function drawStoryPage(
   doc: InstanceType<typeof PDFDocument>,
   pageNum: number,
@@ -687,13 +905,11 @@ function drawStoryPage(
   storyText: string,
   imageBuffer: ArrayBuffer | null,
   textLayout?: PageTextLayout,
+  layoutVersion?: LayoutVersion | null,
+  pageIndex?: number,
+  cardOverride?: ProofCardOverride | null,
 ) {
-  const layout = getPictureBookStoryLayout('proof', textLayout);
-  // Body-only render — the proof draw site does NOT print sceneTitle,
-  // so we ask the fitter not to budget any vertical room for it. That
-  // lets the story body use the whole safe zone and removes the
-  // top-anchor whitespace bug.
-  const fitted = fitPictureBookText(layout, sceneTitle, storyText, { renderTitle: false });
+  const layout = getPictureBookStoryLayout('proof', textLayout, layoutVersion, pageIndex);
   doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill(CREAM);
 
   if (imageBuffer) {
@@ -720,31 +936,43 @@ function drawStoryPage(
       });
   }
 
-  const scrim = panelScrim(layout.textPanelStyle);
-  if (scrim) {
-    doc.save();
-    doc.roundedRect(
-      layout.textPanelX,
-      layout.textPanelY,
-      layout.textPanelWidth,
-      layout.textPanelHeight,
-      panelCornerRadius(layout.textPanelStyle),
-    ).fillOpacity(scrim.opacity).fill(scrim.color);
-    doc.restore();
-  }
+  if (isValidProofCardOverride(cardOverride)) {
+    // Sanctioned over-art exception: a customer-authored positioned card
+    // supersedes the bottom band for THIS page's text. Proof-only. A malformed
+    // / legacy override fails this guard and falls through to the bottom band,
+    // exactly as the fingerprint projection treats it (render == identity).
+    drawProofOverrideCard(doc, storyText, cardOverride, pageIndex);
+  } else {
+    // Default bottom-band render — byte-identical to prior behavior. Body-only:
+    // the proof draw site does NOT print sceneTitle, so the fitter budgets no
+    // vertical room for it and the body uses the whole safe zone.
+    const fitted = fitPictureBookText(layout, sceneTitle, storyText, { renderTitle: false });
+    const scrim = panelScrim(layout.textPanelStyle);
+    if (scrim) {
+      doc.save();
+      doc.roundedRect(
+        layout.textPanelX,
+        layout.textPanelY,
+        layout.textPanelWidth,
+        layout.textPanelHeight,
+        panelCornerRadius(layout.textPanelStyle),
+      ).fillOpacity(scrim.opacity).fill(scrim.color);
+      doc.restore();
+    }
 
-  drawCaptionText(
-    doc,
-    storyText,
-    layout.textPanelX + layout.textInset,
-    fitted.storyDrawY,
-    layout.textPanelWidth - layout.textInset * 2,
-    fitted.storyDrawHeight,
-    fitted.storyFontSize,
-    fitted.storyLineGap,
-    textFillColor(layout.textColorMode),
-    Boolean(scrim),
-  );
+    drawCaptionText(
+      doc,
+      storyText,
+      layout.textPanelX + layout.textInset,
+      fitted.storyDrawY,
+      layout.textPanelWidth - layout.textInset * 2,
+      fitted.storyDrawHeight,
+      fitted.storyFontSize,
+      fitted.storyLineGap,
+      textFillColor(layout.textColorMode),
+      Boolean(scrim),
+    );
+  }
 
   doc
     .fillColor(SLATE)
@@ -948,7 +1176,7 @@ export async function buildPdf(
     // Story pages
     story.pages.forEach((page, i) => {
       doc.addPage();
-      drawStoryPage(doc, renderedPageNumber, page.sceneTitle, page.story, imageBuffers[i + 1] ?? null, page.textLayout);
+      drawStoryPage(doc, renderedPageNumber, page.sceneTitle, page.story, imageBuffers[i + 1] ?? null, page.textLayout, order.layoutVersion, i, page.proofCardOverride ?? null);
       renderedPageNumber += 1;
     });
 
@@ -1055,7 +1283,7 @@ export async function buildPrintInteriorPdf(
 
     story.pages.forEach((page, index) => {
       doc.addPage();
-      const layout = getPictureBookStoryLayout('print', page.textLayout);
+      const layout = getPictureBookStoryLayout('print', page.textLayout, order.layoutVersion, index);
       // Body-only render — the print loop does NOT print sceneTitle on
       // story pages, so the fitter must not budget for a title or the
       // story copy sits in the upper half of the cream band with

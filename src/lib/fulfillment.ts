@@ -1,10 +1,12 @@
 import crypto from 'node:crypto';
 import { put } from '@vercel/blob';
 
-import { getOrder, getOrderPhotoUrl, isPrintFormat, orderRequiresReferenceImage, updateFulfillmentState, withBlobNamespace } from './orders.ts';
+import { applyFulfillmentPatchTo, getOrder, getOrderPhotoUrl, isPrintFormat, OrderVersionConflictError, orderRequiresReferenceImage, updateFulfillmentState, withBlobNamespace, withOrderTransaction } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
+import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION, withRecommendedPageMetadata } from './fulfillment-types.ts';
+import { assertStoryPageSet, validateStoryPageSet } from './story-page-contract.ts';
 import { generateStory, generateStoryWithMeta } from './story-generator.ts';
 import type { StoryWithMeta } from './story-generator.ts';
 import { generateStoryImageResults, requireCompleteImageResults } from './image-generator.ts';
@@ -33,6 +35,18 @@ export function pageImageUrlsFromArtifacts(
   return [...artifacts]
     .sort((a, b) => a.pageIndex - b.pageIndex)
     .map(imageUrlForPage);
+}
+
+/**
+ * Normalize legacy page-layout metadata without changing any other rendered or
+ * operational field. Already-valid pages are returned by reference; only a
+ * page with missing/invalid metadata is copied with the recommended layout.
+ */
+export function normalizePageArtifactTextLayouts(artifacts: PageArtifact[]): PageArtifact[] {
+  return artifacts.map((artifact) => {
+    const textLayout = ensureRecommendedTextLayout(artifact.textLayout);
+    return textLayout === artifact.textLayout ? artifact : { ...artifact, textLayout };
+  });
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -77,13 +91,52 @@ export interface FulfillmentDeps {
   getBaseUrl?: () => string;
 }
 
-function paidFulfillmentPatch(order: OrderRecord, patch: Partial<OrderRecord>): Partial<OrderRecord> {
-  return {
-    ...patch,
-    paymentStatus: 'paid',
-    ...(order.stripeSessionId ? { stripeSessionId: order.stripeSessionId } : {}),
-    ...(order.shippingAddress ? { shippingAddress: order.shippingAddress } : {}),
-  };
+function paidFulfillmentPatch(_order: OrderRecord, patch: Partial<OrderRecord>): Partial<OrderRecord> {
+  // Payment, refund, Stripe-session, and shipping state are authoritative on the
+  // current persisted record. Never replay them from a stale fulfillment
+  // snapshot; updateFulfillmentState enforces paid-only fields/statuses against
+  // its current read.
+  return patch;
+}
+
+async function assertFulfillmentPaymentCurrent(orderId: string): Promise<void> {
+  const current = await getOrder(orderId);
+  if (!current) throw new Error('order_not_found');
+  if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
+    const status = current.refundedAt || current.stripeRefundId ? 'refunded' : current.paymentStatus;
+    throw new Error(`paymentStatus=${status}`);
+  }
+}
+
+/** Publish a proof only when its bytes still identify the current source. */
+async function commitProofPatchIfSourceCurrent(
+  orderId: string,
+  sourceFingerprint: string,
+  patch: Partial<OrderRecord>,
+  auditEvent?: NonNullable<OrderRecord['auditEvents']>[number],
+): Promise<boolean> {
+  return withOrderTransaction(
+    orderId,
+    (current) => {
+      // Never revive or publish onto an order refunded while bytes rendered.
+      if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
+        return { abort: false };
+      }
+      const currentPages = normalizePageArtifactTextLayouts(current.pageArtifacts ?? []);
+      const next = applyFulfillmentPatchTo(current, paidFulfillmentPatch(current, {
+        ...patch,
+        // Preserve current operational page state; normalize only metadata.
+        pageArtifacts: currentPages,
+        layoutVersion: NEW_PROOF_LAYOUT_VERSION,
+        ...(auditEvent ? { auditEvents: [...(current.auditEvents ?? []), auditEvent] } : {}),
+      }));
+      if (proofSourceFingerprint(next, currentPages) !== sourceFingerprint) {
+        return { abort: false };
+      }
+      return { commit: next, result: true };
+    },
+    { notFound: () => false },
+  );
 }
 
 function proofReleasePatch(order: OrderRecord): Partial<OrderRecord> {
@@ -155,22 +208,22 @@ async function runStoryGeneration(
   order: OrderRecord,
   deps: FulfillmentDeps,
 ): Promise<StoryWithMeta> {
-  if (deps.generateStoryWithMeta) {
-    return deps.generateStoryWithMeta(order);
-  }
-  if (deps.generateStory) {
-    const story = await deps.generateStory(order);
-    return {
-      story,
-      meta: {
-        source: 'template',
-        model: 'test_mock_legacy',
-        generatedAt: new Date().toISOString(),
-        fallbackError: null,
-      },
-    };
-  }
-  return generateStoryWithMeta(order);
+  const result = deps.generateStoryWithMeta
+    ? await deps.generateStoryWithMeta(order)
+    : deps.generateStory
+      ? {
+          story: await deps.generateStory(order),
+          meta: {
+            source: 'template' as const,
+            model: 'test_mock_legacy',
+            generatedAt: new Date().toISOString(),
+            fallbackError: null,
+          },
+        }
+      : await generateStoryWithMeta(order);
+  // Single choke point: guarantee valid recommended per-page metadata for every
+  // generated story before it seeds artifacts or renders.
+  return { ...result, story: withRecommendedPageMetadata(result.story) };
 }
 
 async function runImageGeneration(
@@ -227,6 +280,28 @@ async function runWithRetry(
       attempt++;
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[fulfillment] orderId=${orderId} attempt=${attempt} error: ${errMsg}`);
+
+      // The rendered bytes are bound to an obsolete source snapshot. Retrying
+      // the same closure cannot make them current and may replay stale paid
+      // state over a concurrent refund, so terminate without another build.
+      if (
+        errMsg === 'proof_source_changed_during_build'
+        || errMsg.includes('paymentStatus=refunded')
+      ) {
+        const current = await getOrder(orderId);
+        const stillPaid = current?.paymentStatus === 'paid' && !current.refundedAt && !current.stripeRefundId;
+        await updateFulfillmentState(orderId, {
+          ...(stillPaid ? { fulfillmentStatus: 'failed_manual_review' as const } : {}),
+          fulfillmentAttempts: attempt,
+          fulfillmentLastError: errMsg,
+        });
+        if (stillPaid && current) {
+          sendOperatorFailureAlert(current, errMsg).catch(e =>
+            console.error(`[fulfillment] operator alert failed for ${orderId}:`, e),
+          );
+        }
+        return;
+      }
 
       if (attempt >= MAX_RETRIES) {
         await updateFulfillmentState(orderId, {
@@ -353,13 +428,24 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
+  // Fail closed BEFORE building/publishing a proof: the story page set must
+  // satisfy the book contract (exact count, unique/contiguous indices, story
+  // text + illustration on every page). A partial/duplicated set never reaches
+  // preview_ready. New proofs use the explicit modern layout discriminator.
+  assertStoryPageSet(seededPageArtifacts, order.bookFormat, NEW_PROOF_LAYOUT_VERSION);
   // Include cover image (first imageUrl) + per-page images
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
-  const pdfBuffer = await _buildPdf(story, order, allUrls);
+  const orderForBuild = {
+    ...order,
+    pageArtifacts: seededPageArtifacts,
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
+  };
+  const pdfBuffer = await _buildPdf(story, orderForBuild, allUrls);
+  await assertFulfillmentPaymentCurrent(order.id);
 
   const proofVersion = newProofVersion();
   const pdfUrl = await _upload(order.id, pdfBuffer, proofArtifactPath(proofVersion));
-  const sourceFingerprint = proofRenderSourceFingerprint({ story, order, imageUrls: allUrls });
+  const sourceFingerprint = proofRenderSourceFingerprint({ story, order: orderForBuild, imageUrls: allUrls });
 
   const proofApprovalToken = order.proofApprovalToken ?? crypto.randomBytes(24).toString('hex');
   const reviewUrl = `${_getBaseUrl()}/review/${order.id}?token=${proofApprovalToken}`;
@@ -372,6 +458,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   const finalDigitalPatch: Partial<OrderRecord> = {
     fulfillmentStatus: 'complete',
     status: 'preview_ready',
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     storyArtifactUrl: pdfUrl,
     // Identity of the artifact just published. Without these the review
     // surface has a URL it cannot verify, and every proof gate fails closed.
@@ -386,9 +473,14 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     reviewStatus: 'in_review',
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
-    auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   };
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, finalDigitalPatch));
+  const digitalPublished = await commitProofPatchIfSourceCurrent(
+    order.id,
+    sourceFingerprint,
+    finalDigitalPatch,
+    proofGeneratedEvent,
+  );
+  if (!digitalPublished) throw new Error('proof_source_changed_during_build');
 
   // Delivery email runs AFTER the artifacts are durably persisted at
   // fulfillmentStatus='complete'. If the email fails (e.g. Resend domain
@@ -500,14 +592,25 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
 
   await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
+  // Fail closed on a partial/duplicated page set before building the print
+  // proof + interior — no preview_ready with an undersized book.
+  assertStoryPageSet(seededPageArtifacts, order.bookFormat, NEW_PROOF_LAYOUT_VERSION);
   const allUrls: (string | null)[] = [imageUrls[0] ?? null, ...imageUrls];
-  const previewBuffer = await _buildPdf(story, order, allUrls);
-  const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
+  const orderForBuild = {
+    ...order,
+    pageArtifacts: seededPageArtifacts,
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
+  };
+  const previewBuffer = await _buildPdf(story, orderForBuild, allUrls);
+  await assertFulfillmentPaymentCurrent(order.id);
+  const interiorBuffer = await _buildPrintInteriorPdf(story, orderForBuild, allUrls);
+  await assertFulfillmentPaymentCurrent(order.id);
 
   const proofVersion = newProofVersion();
   const proofUrl = await _upload(order.id, previewBuffer, proofArtifactPath(proofVersion));
+  await assertFulfillmentPaymentCurrent(order.id);
   const interiorUrl = await _upload(order.id, interiorBuffer, `interiors/${proofVersion}.pdf`);
-  const sourceFingerprint = proofRenderSourceFingerprint({ story, order, imageUrls: allUrls });
+  const sourceFingerprint = proofRenderSourceFingerprint({ story, order: orderForBuild, imageUrls: allUrls });
 
   const proofApprovalToken = crypto.randomBytes(24).toString('hex');
   const baseUrl = _getBaseUrl();
@@ -527,6 +630,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   const finalPrintProofPatch: Partial<OrderRecord> = {
     fulfillmentStatus: 'proof_ready',
     status: 'preview_ready',
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     storyArtifactUrl: proofUrl,
     proofSourceFingerprint: sourceFingerprint,
     proofVersion,
@@ -535,18 +639,26 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     printInteriorArtifactUrl: interiorUrl,
     printInteriorMd5: md5Hex(interiorBuffer),
     printInteriorPageCount: interiorPageCount,
+    printInteriorProofVersion: proofVersion,
     printTitle: story.title,
     printCoverArtifactUrl: null,
     printCoverMd5: null,
+    printSubmissionAttemptedAt: null,
+    printSubmissionProofVersion: null,
     pageArtifacts: seededPageArtifacts,
     storyMeta,
     reviewStatus: 'in_review',
     proofApprovalToken,
     fulfillmentAttempts: 0,
     fulfillmentLastError: null,
-    auditEvents: [...(order.auditEvents ?? []), proofGeneratedEvent],
   };
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, finalPrintProofPatch));
+  const printPublished = await commitProofPatchIfSourceCurrent(
+    order.id,
+    sourceFingerprint,
+    finalPrintProofPatch,
+    proofGeneratedEvent,
+  );
+  if (!printPublished) throw new Error('proof_source_changed_during_build');
 
   // Mirror of the digital path: proof artifacts are durably persisted at
   // fulfillmentStatus='proof_ready'. If the proof-ready email fails we
@@ -574,6 +686,40 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
 
 // ── Print production (post-approval) ──────────────────────────────────────────
 
+function printReleaseRefusal(
+  order: OrderRecord,
+  allowedFulfillmentStatuses: readonly string[],
+): string | null {
+  if (!isPrintFormat(order.bookFormat)) return 'not_print_order';
+  if (order.paymentStatus !== 'paid') return 'order_not_paid';
+  if (order.refundedAt) return 'order_refunded';
+  if (order.printJobId || order.status === 'print_in_production' || order.status === 'shipped') {
+    return 'print_already_submitted';
+  }
+  const fulfillmentStatus = order.fulfillmentStatus ?? 'not_started';
+  if (!allowedFulfillmentStatuses.includes(fulfillmentStatus)) return 'proof_not_ready';
+  if (order.reviewStatus !== 'approved') return 'whole_book_not_approved';
+  if (!order.pageArtifacts?.every((page) => page.accepted && page.acceptedImageUrl)) {
+    return 'pages_not_accepted';
+  }
+  if (validateStoryPageSet(order.pageArtifacts, order.bookFormat, order.layoutVersion)) {
+    return 'incomplete_page_set';
+  }
+  if (!order.storyArtifactUrl || !order.proofVersion || !order.proofSourceFingerprint) {
+    return 'proof_unavailable';
+  }
+  if (order.proofSourceFingerprint !== proofSourceFingerprint(order)) return 'proof_stale';
+  if (!order.proofReviewedAt || !order.proofReviewedVersion) return 'proof_ack_missing';
+  if (order.proofReviewedVersion !== order.proofVersion) return 'proof_ack_stale';
+  if (!order.printInteriorArtifactUrl || !order.printInteriorMd5 || !order.printInteriorPageCount || !order.printTitle) {
+    return 'print_artifacts_missing';
+  }
+  if (!order.printInteriorProofVersion || order.printInteriorProofVersion !== order.proofVersion) {
+    return 'print_interior_stale';
+  }
+  return null;
+}
+
 async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Promise<void> {
   const _submitPrint = deps.submitPrint ?? submitPrintJob;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
@@ -589,25 +735,8 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
   //     (the latter for retries that re-enter mid-flow)
   //   - the order must not be refunded
   //   - the order must not already be in print/shipped
-  if (order.paymentStatus !== 'paid') {
-    throw new Error(`Refusing print: paymentStatus=${order.paymentStatus}`);
-  }
-  if (order.refundedAt) {
-    throw new Error('Refusing print: order has been refunded');
-  }
-  if (order.status === 'shipped' || order.status === 'print_in_production') {
-    throw new Error(`Refusing print: order.status=${order.status}`);
-  }
-  const fs = order.fulfillmentStatus ?? 'not_started';
-  if (fs !== 'proof_approved' && fs !== 'submitting_to_print') {
-    throw new Error(`Refusing print: fulfillmentStatus=${fs} — proof not approved`);
-  }
-
-  if (!order.printInteriorArtifactUrl || !order.printInteriorMd5 || !order.printInteriorPageCount || !order.printTitle) {
-    throw new Error('Missing print interior artifacts — cannot submit to print without interior PDF metadata');
-  }
-
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'submitting_to_print' }));
+  const initialRefusal = printReleaseRefusal(order, ['submitting_to_print']);
+  if (initialRefusal) throw new Error(`Refusing print: ${initialRefusal}`);
 
   let hydratedOrder = order;
   if (!order.printCoverArtifactUrl || !order.printCoverMd5) {
@@ -621,7 +750,44 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
     }))) ?? { ...order, printCoverArtifactUrl: coverUrl, printCoverMd5: md5Hex(coverBuffer) };
   }
 
-  const result = await _submitPrint(hydratedOrder);
+  // Cover generation is slow. Re-read and re-evaluate the complete gate at the
+  // actual irreversible boundary; the durable submitting_to_print state remains
+  // the single-flight claim acquired by approvePrintProof's CAS transaction.
+  const authoritative = await getOrder(order.id);
+  const boundaryRefusal = authoritative
+    ? printReleaseRefusal(authoritative, ['submitting_to_print'])
+    : 'order_not_found';
+  if (boundaryRefusal) throw new Error(`Refusing print: ${boundaryRefusal}`);
+
+  // Persist the ambiguity fence BEFORE the irreversible POST. A crash or lost
+  // response after this write must require provider reconciliation, never an
+  // ordinary retry that could create a second physical print job.
+  const expectedProofVersion = authoritative!.proofVersion;
+  const submissionOrder = await withOrderTransaction<OrderRecord | null>(
+    order.id,
+    (current) => {
+      const refusal = printReleaseRefusal(current, ['submitting_to_print']);
+      if (
+        refusal ||
+        current.proofVersion !== expectedProofVersion ||
+        current.printInteriorProofVersion !== expectedProofVersion ||
+        current.printSubmissionAttemptedAt
+      ) {
+        return { abort: null };
+      }
+      const next = {
+        ...current,
+        printSubmissionAttemptedAt: new Date().toISOString(),
+        printSubmissionProofVersion: expectedProofVersion,
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: next, result: next };
+    },
+    { notFound: () => null },
+  );
+  if (!submissionOrder) throw new Error('Refusing print: submission_attempt_fence_failed');
+
+  const result = await _submitPrint(submissionOrder);
 
   const afterPrint = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
     fulfillmentStatus: 'complete',
@@ -658,7 +824,7 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
  * can refuse to publish a proof whose source moved underneath it.
  */
 export function proofSourceFingerprint(
-  order: Pick<OrderRecord, 'id' | 'childName' | 'bookFormat' | 'printTitle' | 'pageArtifacts'>,
+  order: Pick<OrderRecord, 'id' | 'childName' | 'bookFormat' | 'printTitle' | 'pageArtifacts' | 'layoutVersion'>,
   pages: PageArtifact[] = order.pageArtifacts ?? [],
 ): string | null {
   const story = proofStoryFromPageArtifacts(order, pages);
@@ -677,20 +843,46 @@ export function proofSourceFingerprint(
  * receives `ok: true` with a missing field, and the producer validates this at
  * RUNTIME rather than trusting the type checker.
  */
+export type ProofBuildSuccess = {
+  ok: true;
+  proofUrl: string;
+  sourceFingerprint: string;
+  proofVersion: string;
+  printInteriorArtifactUrl?: string;
+  printInteriorMd5?: string;
+  printInteriorPageCount?: number;
+  printInteriorProofVersion?: string;
+  printTitle?: string;
+};
+
 export type ProofBuildResult =
-  | { ok: true; proofUrl: string; sourceFingerprint: string; proofVersion: string }
+  | ProofBuildSuccess
   | { ok: false; error: string };
 
 /** Runtime validation of a claimed-successful build. Never trust the type. */
 export function isUsableProofBuild(
   result: ProofBuildResult | null | undefined,
-): result is { ok: true; proofUrl: string; sourceFingerprint: string; proofVersion: string } {
+): result is ProofBuildSuccess {
   if (!result || result.ok !== true) return false;
   const r = result as { proofUrl?: unknown; sourceFingerprint?: unknown; proofVersion?: unknown };
   return (
     typeof r.proofUrl === 'string' && r.proofUrl.length > 0 &&
     typeof r.sourceFingerprint === 'string' && r.sourceFingerprint.length > 0 &&
     typeof r.proofVersion === 'string' && r.proofVersion.length > 0
+  );
+}
+
+/** Print proof publication is atomic across customer proof and print interior. */
+export function isUsablePrintProofBuild(
+  result: ProofBuildResult | null | undefined,
+): result is ProofBuildSuccess {
+  if (!isUsableProofBuild(result)) return false;
+  return (
+    typeof result.printInteriorArtifactUrl === 'string' && result.printInteriorArtifactUrl.length > 0 &&
+    typeof result.printInteriorMd5 === 'string' && result.printInteriorMd5.length > 0 &&
+    typeof result.printInteriorPageCount === 'number' && result.printInteriorPageCount > 0 &&
+    result.printInteriorProofVersion === result.proofVersion &&
+    typeof result.printTitle === 'string' && result.printTitle.length > 0
   );
 }
 
@@ -728,46 +920,63 @@ export async function buildProofArtifactFromPageArtifacts(
   }
 
   const _buildPdf = deps.buildPdf ?? buildPdf;
+  const _buildPrintInteriorPdf = deps.buildPrintInteriorPdf ?? buildPrintInteriorPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
-  const pages = order.pageArtifacts;
+  // Legacy records can predate per-page layout metadata. Normalize the exact
+  // source used by every downstream validation/render/fingerprint operation.
+  const pages = normalizePageArtifactTextLayouts(order.pageArtifacts);
   const proofVersion = newProofVersion();
+
+  if (validateStoryPageSet(pages, order.bookFormat, NEW_PROOF_LAYOUT_VERSION)) {
+    return { ok: false, error: 'incomplete_page_set' };
+  }
 
   const story = proofStoryFromPageArtifacts(order, pages);
   if (!story) return { ok: false, error: 'page_artifacts_incomplete' };
 
   const pageUrls = pageImageUrlsFromArtifacts(pages);
   const allUrls: (string | null)[] = [pageUrls[0] ?? null, ...pageUrls];
-  // Fingerprint the exact production-renderer inputs before the slow render.
-  const sourceFingerprint = proofRenderSourceFingerprint({ story, order, imageUrls: allUrls });
+  // The renderer and fingerprint see the same normalized modern source.
+  const orderForBuild = { ...order, pageArtifacts: pages, layoutVersion: NEW_PROOF_LAYOUT_VERSION };
+  const sourceFingerprint = proofRenderSourceFingerprint({ story, order: orderForBuild, imageUrls: allUrls });
 
-  let proofUrl: string;
+  let candidate: ProofBuildSuccess;
   try {
-    const pdfBuffer = await _buildPdf(story, order, allUrls);
+    const pdfBuffer = await _buildPdf(story, orderForBuild, allUrls);
     // Immutable, version-keyed path. Never reuses a published proof path.
-    proofUrl = await _upload(order.id, pdfBuffer, proofArtifactPath(proofVersion));
+    const proofUrl = await _upload(order.id, pdfBuffer, proofArtifactPath(proofVersion));
+    candidate = { ok: true, proofUrl, sourceFingerprint, proofVersion };
+    if (isPrintFormat(order.bookFormat)) {
+      const interiorBuffer = await _buildPrintInteriorPdf(story, orderForBuild, allUrls);
+      candidate.printInteriorArtifactUrl = await _upload(
+        order.id,
+        interiorBuffer,
+        `interiors/${proofVersion}.pdf`,
+      );
+      candidate.printInteriorMd5 = md5Hex(interiorBuffer);
+      candidate.printInteriorPageCount = getPrintInteriorPageCount(story, orderForBuild);
+      candidate.printInteriorProofVersion = proofVersion;
+      candidate.printTitle = story.title;
+    }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 
-  const candidate = { ok: true, proofUrl, sourceFingerprint, proofVersion } as ProofBuildResult;
   // Fail closed: an upload that produced no usable URL — or any other way of
   // ending up without all three identity fields — is NOT a successful build.
   if (!isUsableProofBuild(candidate)) {
     return { ok: false, error: 'proof_build_incomplete' };
   }
+  if (isPrintFormat(order.bookFormat) && !isUsablePrintProofBuild(candidate)) {
+    return { ok: false, error: 'print_proof_build_incomplete' };
+  }
   return candidate;
 }
 
 /**
- * Rebuild the proof and persist it with a LAST-WRITE-WINS update.
- *
- * NOT safe for concurrent callers and NOT used by the customer editable-review
- * flows, which build via `buildProofArtifactFromPageArtifacts` and publish
- * through their own conditional, fingerprint-checked commit.
- *
- * Fully guarded regardless: it can never persist a URL without the matching
- * fingerprint and version, so it cannot produce a record that passes a proof
- * gate without an identifiable artifact.
+ * Rebuild the proof and persist it only when its source still matches the
+ * current transactional record. Older callers use this path directly, so it
+ * independently rejects stale build snapshots.
  */
 export async function rebuildProofFromPageArtifacts(
   orderId: string,
@@ -782,15 +991,43 @@ export async function rebuildProofFromPageArtifacts(
   const built = await buildProofArtifactFromPageArtifacts(orderId, deps);
   if (built.ok !== true) return { ok: false, error: built.error };
 
+  // Prove the build snapshot was internally coherent before checking it
+  // against the current transactional record below.
+  const normalizedPages = normalizePageArtifactTextLayouts(order.pageArtifacts);
+  const normalizedOrder = {
+    ...order,
+    pageArtifacts: normalizedPages,
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
+  };
+  if (proofSourceFingerprint(normalizedOrder, normalizedPages) !== built.sourceFingerprint) {
+    return { ok: false, error: 'proof_source_changed_during_rebuild' };
+  }
+
   // Stale-ack invalidation: a new PDF has not been acknowledged. The identity
   // fields move with the URL, so no record can carry a proof without one.
-  await updateFulfillmentState(order.id, {
+  const rebuiltPublished = await commitProofPatchIfSourceCurrent(order.id, built.sourceFingerprint, {
+    pageArtifacts: normalizedPages,
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     storyArtifactUrl: built.proofUrl,
     proofSourceFingerprint: built.sourceFingerprint,
     proofVersion: built.proofVersion,
     proofReviewedAt: null,
     proofReviewedVersion: null,
+    ...(isPrintFormat(order.bookFormat) && isUsablePrintProofBuild(built)
+      ? {
+          printInteriorArtifactUrl: built.printInteriorArtifactUrl,
+          printInteriorMd5: built.printInteriorMd5,
+          printInteriorPageCount: built.printInteriorPageCount,
+          printInteriorProofVersion: built.printInteriorProofVersion,
+          printTitle: built.printTitle,
+          printCoverArtifactUrl: null,
+          printCoverMd5: null,
+          printSubmissionAttemptedAt: null,
+          printSubmissionProofVersion: null,
+        }
+      : {}),
   });
+  if (!rebuiltPublished) return { ok: false, error: 'proof_source_changed_during_rebuild' };
   return { ok: true, proofUrl: built.proofUrl };
 }
 
@@ -959,40 +1196,78 @@ export async function approvePrintProof(
   token: string,
   deps: FulfillmentDeps = {},
 ): Promise<{ ok: boolean; error?: string }> {
-  const order = await getOrder(orderId);
-  if (!order) return { ok: false, error: 'Order not found' };
-  if (!order.proofApprovalToken) return { ok: false, error: 'No proof pending approval' };
-  const storedToken = order.proofApprovalToken ?? '';
-  const tokensMatch =
-    storedToken.length === token.length &&
-    crypto.timingSafeEqual(Buffer.from(storedToken), Buffer.from(token));
-  if (!tokensMatch) return { ok: false, error: 'Invalid approval token' };
-  if (order.fulfillmentStatus === 'proof_approved' || order.fulfillmentStatus === 'submitting_to_print' || order.fulfillmentStatus === 'complete') {
+  type ClaimResult = { claimed: true; order: OrderRecord } | { claimed: false; ok: boolean; error?: string };
+  let claim: ClaimResult;
+  try {
+    claim = await withOrderTransaction<ClaimResult>(
+      orderId,
+      (order) => {
+        if (!order.proofApprovalToken) {
+          return { abort: { claimed: false, ok: false, error: 'No proof pending approval' } };
+        }
+        const storedToken = order.proofApprovalToken;
+        const tokensMatch =
+          storedToken.length === token.length &&
+          crypto.timingSafeEqual(Buffer.from(storedToken), Buffer.from(token));
+        if (!tokensMatch) {
+          return { abort: { claimed: false, ok: false, error: 'Invalid approval token' } };
+        }
+        // A committed claim or completed job is idempotent: the contender must
+        // not submit, but the operator action need not surface as an error.
+        if (
+          order.fulfillmentStatus === 'submitting_to_print' ||
+          order.fulfillmentStatus === 'complete' ||
+          order.printJobId
+        ) {
+          return { abort: { claimed: false, ok: true } };
+        }
+        const refusal = printReleaseRefusal(order, ['proof_ready']);
+        if (refusal) return { abort: { claimed: false, ok: false, error: refusal } };
+
+        const claimedOrder: OrderRecord = {
+          ...order,
+          fulfillmentStatus: 'submitting_to_print',
+          proofApprovedAt: order.proofApprovedAt ?? new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        return {
+          commit: claimedOrder,
+          result: { claimed: true, order: claimedOrder },
+        };
+      },
+      { notFound: () => ({ claimed: false, ok: false, error: 'Order not found' }) },
+    );
+  } catch (error) {
+    if (error instanceof OrderVersionConflictError) {
+      return { ok: false, error: 'print_release_busy' };
+    }
+    throw error;
+  }
+
+  if (!claim.claimed && 'ok' in claim) {
+    return { ok: claim.ok, ...(claim.error ? { error: claim.error } : {}) };
+  }
+  if (!('order' in claim)) return { ok: false, error: 'print_release_busy' };
+
+  // No automatic retry around an irreversible provider call. Retrying after an
+  // ambiguous response can create a second physical job. A failure is parked
+  // for explicit reconciliation against the durable submitting_to_print claim.
+  try {
+    await runPrintProduction(claim.order, deps);
     return { ok: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const current = await getOrder(orderId);
+    const ambiguous = Boolean(current?.printSubmissionAttemptedAt);
+    await updateFulfillmentState(orderId, ambiguous
+      ? {
+          fulfillmentStatus: 'submitting_to_print',
+          fulfillmentLastError: `print_submission_ambiguous: ${message.slice(0, 500)}`,
+        }
+      : {
+          fulfillmentStatus: 'failed_manual_review',
+          fulfillmentLastError: `print_submission_failed_before_attempt: ${message.slice(0, 500)}`,
+        });
+    return { ok: false, error: ambiguous ? 'print_submission_ambiguous' : 'print_submission_failed' };
   }
-  if (order.fulfillmentStatus !== 'proof_ready') {
-    return { ok: false, error: `Proof is in state ${order.fulfillmentStatus} — cannot approve` };
-  }
-
-  // Use the authoritative in-memory record returned by updateFulfillmentState
-  // rather than doing a second getOrder reload. The two-step variant could
-  // produce a stale snapshot (read-after-write inconsistency on the blob
-  // backend) where runPrintProduction's gate observed fulfillmentStatus=
-  // 'proof_ready' and refused — which then burned all retry attempts and
-  // pushed the order to failed_manual_review even though approval had
-  // already persisted. updateFulfillmentState returns the post-write state
-  // it just persisted; using it directly closes that race.
-  const updatedOrder = await updateFulfillmentState(orderId, {
-    fulfillmentStatus: 'proof_approved',
-    proofApprovedAt: new Date().toISOString(),
-  });
-  if (!updatedOrder) return { ok: false, error: 'Failed to update order state' };
-
-  await runWithRetry(
-    orderId,
-    () => runPrintProduction(updatedOrder, deps),
-    deps,
-  );
-
-  return { ok: true };
 }

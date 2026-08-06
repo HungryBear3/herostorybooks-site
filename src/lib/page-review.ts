@@ -21,8 +21,10 @@ import {
   applyFulfillmentPatchTo,
   getOrder,
   getOrderPhotoUrl,
+  isPrintFormat,
   OrderVersionConflictError,
   orderRequiresReferenceImage,
+  readOrderVersioned,
   withOrderTransaction,
 } from './orders.ts';
 import type { OrderRecord, PageArtifact, PageFeedbackEntry, PageVersionEntry } from './orders.ts';
@@ -31,9 +33,27 @@ import { buildRegeneratePrompt } from './image-prompt-builder.ts';
 import {
   buildProofArtifactFromPageArtifacts,
   isUsableProofBuild,
+  isUsablePrintProofBuild,
+  normalizePageArtifactTextLayouts,
   proofSourceFingerprint,
+  type ProofBuildSuccess,
 } from './fulfillment.ts';
 import { sendRegenManualReviewAlert } from './order-email.ts';
+import { validateStoryPageSet } from './story-page-contract.ts';
+import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION } from './fulfillment-types.ts';
+import {
+  assembleProofCardOverride,
+  canonicalizeProofCardGeometry,
+  evaluateProofTextContrast,
+  isCompleteProofCardGeometry,
+  isProofTextColor,
+  isValidProofCardOverride,
+  proofCardGeometryForFingerprint,
+  proofTextColorForFingerprint,
+  type ProofCardGeometry,
+} from './proof-layout-override.ts';
+import { proofCardTextOverflows } from './pdf-builder.ts';
+import type { ProofCardOverride, ProofTextColor } from './fulfillment-types.ts';
 import {
   hasUnresolvedChangeRequests,
   recordCustomerTextChangeRequest,
@@ -211,6 +231,7 @@ export function applyRegeneratePage(
     acceptedImageUrl: null,
     feedbackHistory: [...current.feedbackHistory, feedbackEntry],
     versionHistory: [...current.versionHistory, versionEntry],
+    textLayout: ensureRecommendedTextLayout(current.textLayout),
   };
   return { artifacts: next, page: next[idx] };
 }
@@ -262,7 +283,7 @@ export async function publishProofGuarded(
         : 'proof_build_incomplete';
     return { refreshed: false, error: err };
   }
-  const usable = built as { proofUrl: string; sourceFingerprint: string; proofVersion: string };
+  const usable = built as ProofBuildSuccess;
 
   try {
     return await withOrderTransaction<ProofPublishResult>(
@@ -274,19 +295,46 @@ export async function publishProofGuarded(
         if (order.reviewStatus === 'approved') {
           return { abort: { refreshed: false, error: 'already_approved' } };
         }
-        if (hasUnresolvedChangeRequests(order.pageArtifacts ?? [])) {
+        const currentPages = normalizePageArtifactTextLayouts(order.pageArtifacts ?? []);
+        if (hasUnresolvedChangeRequests(currentPages)) {
           return { abort: { refreshed: false, error: 'unresolved_change_requests' } };
         }
-        if (proofSourceFingerprint(order) !== usable.sourceFingerprint) {
+        if (validateStoryPageSet(currentPages, order.bookFormat, NEW_PROOF_LAYOUT_VERSION)) {
+          return { abort: { refreshed: false, error: 'incomplete_page_set' } };
+        }
+        if (isPrintFormat(order.bookFormat) && !isUsablePrintProofBuild(usable)) {
+          return { abort: { refreshed: false, error: 'print_proof_build_incomplete' } };
+        }
+        const orderForProof = {
+          ...order,
+          pageArtifacts: currentPages,
+          layoutVersion: NEW_PROOF_LAYOUT_VERSION,
+        };
+        if (proofSourceFingerprint(orderForProof, currentPages) !== usable.sourceFingerprint) {
           return { abort: { refreshed: false, error: 'proof_source_changed_during_rebuild' } };
         }
         let next = applyFulfillmentPatchTo(order, {
+          pageArtifacts: currentPages,
+          layoutVersion: NEW_PROOF_LAYOUT_VERSION,
           storyArtifactUrl: usable.proofUrl,
           proofSourceFingerprint: usable.sourceFingerprint,
           proofVersion: usable.proofVersion,
           // A newly published revision has not been acknowledged.
           proofReviewedAt: null,
           proofReviewedVersion: null,
+          ...(isPrintFormat(order.bookFormat)
+            ? {
+                printInteriorArtifactUrl: usable.printInteriorArtifactUrl,
+                printInteriorMd5: usable.printInteriorMd5,
+                printInteriorPageCount: usable.printInteriorPageCount,
+                printInteriorProofVersion: usable.printInteriorProofVersion,
+                printTitle: usable.printTitle,
+                printCoverArtifactUrl: null,
+                printCoverMd5: null,
+                printSubmissionAttemptedAt: null,
+                printSubmissionProofVersion: null,
+              }
+            : {}),
         });
         next = appendAuditEventTo(next, {
           type: 'proof_published',
@@ -744,6 +792,8 @@ export async function approveWholeBook(
           proof_not_ready: 'Full proof PDF is not ready yet',
           proof_ack_missing:
             'Proof acknowledgment required — confirm you reviewed the full proof PDF before approving',
+          incomplete_page_set:
+            'This book does not yet have its full set of story pages — it cannot be approved',
         };
         const reject = (
           reason: string,
@@ -769,6 +819,14 @@ export async function approveWholeBook(
             acceptedCount: order.pageArtifacts.filter((p) => p.accepted).length,
             totalPages: order.pageArtifacts.length,
           });
+        }
+        // Fail closed on the book contract: an approved order must carry the
+        // full, valid story-page set (exact count, unique/contiguous indices,
+        // text + illustration per page; layout metadata for modern books).
+        // Only the safe failure code is audited — never story text or PII.
+        const pageSetFailure = validateStoryPageSet(order.pageArtifacts, order.bookFormat, order.layoutVersion);
+        if (pageSetFailure) {
+          return reject('incomplete_page_set', 'incomplete_page_set', { failure: pageSetFailure.code });
         }
         if (hasUnresolvedChangeRequests(order.pageArtifacts)) {
           return reject('unresolved_change_requests', undefined, {
@@ -1163,6 +1221,12 @@ export interface ReviewSnapshot {
   storyArtifactUrl: string | null;
   /** Revision the client must echo back when acknowledging. */
   proofVersion: string | null;
+  /**
+   * Current proof source fingerprint (a content hash, not PII) the layout
+   * editor echoes back as `authoredAgainstFingerprint` for optimistic
+   * concurrency — like an ETag. Null unless a fresh proof is advertised.
+   */
+  proofSourceFingerprint: string | null;
   /** Revision the customer has already acknowledged, if any. */
   proofReviewedVersion: string | null;
   proofReviewedAt: string | null;
@@ -1185,6 +1249,7 @@ export function reviewSnapshotFromOrder(order: OrderRecord): ReviewSnapshot {
     // Advertise the proof ONLY when it is complete and current.
     storyArtifactUrl: fresh ? (order.storyArtifactUrl ?? null) : null,
     proofVersion: fresh ? (order.proofVersion ?? null) : null,
+    proofSourceFingerprint: fresh ? (order.proofSourceFingerprint ?? null) : null,
     proofReviewedVersion: order.proofReviewedVersion ?? null,
     proofReviewedAt: order.proofReviewedAt ?? null,
     proofAvailable: fresh,
@@ -1209,11 +1274,307 @@ async function freshMutationSnapshot(
   return reviewSnapshotFromOrder(current);
 }
 
+// ── Bounded customer layout override (proof-only positioned text card) ───────
+//
+// Re-homed from the reviewed internal editor (PR #125) for the tokenized
+// customer route. Every write is a single withOrderTransaction: eligibility +
+// lifecycle gates, revision + fingerprint binding (reset binds too), full
+// server-side validation (clamp → overflow → contrast) BEFORE persistence, an
+// atomic proof-invalidating commit, and a privacy-safe audit event (bounded
+// numeric geometry + enum color only — never story text, token, email, name,
+// or order id). The print master never reads the override.
+
+export interface ProofLayoutOverrideInput extends ReviewActorInput {
+  orderId: string;
+  pageIndex: number;
+  /** Raw client geometry; clamped/canonicalized server-side. Omit/null = reset. */
+  geometry?: Partial<ProofCardGeometry> | null;
+  /** Approved semantic text color; validated + contrast-checked server-side. */
+  textColor?: ProofTextColor | null;
+  /** Proof revision the editor was bound to (must equal current). */
+  authoredAgainstProofVersion?: string | null;
+  /** Source fingerprint the editor was bound to (must equal current). */
+  authoredAgainstFingerprint?: string | null;
+  /** Bounded, non-PII actor identifier for the audit trail (route sets 'customer'). */
+  appliedBy: string;
+  now?: string;
+}
+
+export interface ProofLayoutOverrideResult {
+  ok: boolean;
+  status: 200 | 403 | 404 | 409 | 422;
+  pageIndex?: number;
+  proofCardOverride?: ProofCardOverride | null;
+  noop?: boolean;
+  snapshot?: ReviewSnapshot;
+  error?: string;
+  detail?: Record<string, string | number>;
+}
+
+/** Editing closes once the order is approved, print-submitted, in production,
+ *  fulfilled, or shipped. (Refund/eligibility handled separately.) */
+function evaluateProofLayoutMutationLifecycle(order: OrderRecord): { status: 409; error: string } | null {
+  if (order.reviewStatus === 'approved') return { status: 409, error: 'order_approved' };
+  if (order.status === 'shipped') return { status: 409, error: 'order_shipped' };
+  if (order.status === 'print_in_production') return { status: 409, error: 'order_in_production' };
+  if (order.printJobId) return { status: 409, error: 'print_submitted' };
+  if (
+    order.fulfillmentStatus === 'submitting_to_print'
+    || order.fulfillmentStatus === 'proof_approved'
+    || order.fulfillmentStatus === 'complete'
+  ) {
+    return { status: 409, error: 'order_finalized' };
+  }
+  return null;
+}
+
+/** Bounded numeric geometry for the audit trail — never any customer data. */
+function layoutGeometryMeta(prefix: 'before' | 'after', g: ProofCardGeometry | null): Record<string, number | null> {
+  return {
+    [`${prefix}X`]: g ? g.x : null,
+    [`${prefix}Y`]: g ? g.y : null,
+    [`${prefix}Width`]: g ? g.width : null,
+    [`${prefix}Height`]: g ? g.height : null,
+    [`${prefix}Opacity`]: g ? g.opacity : null,
+    [`${prefix}FontScale`]: g ? g.fontScale : null,
+  };
+}
+
+type LayoutColorRefusal = { status: 422; error: string; detail?: Record<string, string | number> };
+function resolveAndValidateLayoutColor(
+  raw: ProofTextColor | null | undefined,
+  cardOpacity: number,
+): { color?: ProofTextColor } | { refusal: LayoutColorRefusal } {
+  if (raw != null && !isProofTextColor(raw)) return { refusal: { status: 422, error: 'invalid_text_color' } };
+  const color = isProofTextColor(raw) ? raw : undefined;
+  const contrast = evaluateProofTextContrast(color, cardOpacity);
+  if (!contrast.ok) {
+    return {
+      refusal: {
+        status: 422,
+        error: 'insufficient_contrast',
+        detail: { textColor: color ?? 'legacy_default', contrastRatio: contrast.ratio, threshold: contrast.threshold },
+      },
+    };
+  }
+  return { color };
+}
+
+export async function setProofLayoutOverride(input: ProofLayoutOverrideInput): Promise<ProofLayoutOverrideResult> {
+  if (!Number.isInteger(input.pageIndex) || input.pageIndex < 0) {
+    return { ok: false, status: 404, error: 'page_not_found' };
+  }
+  if (typeof input.appliedBy !== 'string' || input.appliedBy.length === 0 || input.appliedBy.length > 64) {
+    return { ok: false, status: 422, error: 'invalid_applied_by' };
+  }
+  const actor = input.actor ?? INTERNAL_REVIEW_ACTOR;
+  const isReset = input.geometry == null;
+  if (!isReset && !isCompleteProofCardGeometry(input.geometry)) {
+    return { ok: false, status: 422, error: 'invalid_geometry' };
+  }
+  try {
+    return await withOrderTransaction<ProofLayoutOverrideResult>(
+      input.orderId,
+      (order) => {
+        const refusal = evaluateReviewMutationEligibility(order, actor);
+        if (refusal) return { abort: { ok: false, status: refusal.status, error: refusal.error } };
+        const lifecycle = evaluateProofLayoutMutationLifecycle(order);
+        if (lifecycle) return { abort: { ok: false, status: lifecycle.status, error: lifecycle.error } };
+
+        const pages = order.pageArtifacts ?? [];
+        const idx = pages.findIndex((p) => p.pageIndex === input.pageIndex);
+        if (idx < 0) return { abort: { ok: false, status: 404, error: 'page_not_found' } };
+        const page = pages[idx];
+
+        // Live-proof presence + revision + fingerprint binding — reset binds too,
+        // so a stale tab can never silently discard/replace a customer's card.
+        const currentFingerprint = proofSourceFingerprint(order);
+        if (!order.proofVersion || !order.proofSourceFingerprint || !order.storyArtifactUrl) {
+          return { abort: { ok: false, status: 409, error: 'no_live_proof' } };
+        }
+        if (order.proofSourceFingerprint !== currentFingerprint) {
+          return { abort: { ok: false, status: 409, error: 'proof_stale' } };
+        }
+        if (!input.authoredAgainstProofVersion || !input.authoredAgainstFingerprint) {
+          return { abort: { ok: false, status: 409, error: 'binding_required' } };
+        }
+        if (input.authoredAgainstProofVersion !== order.proofVersion) {
+          return { abort: { ok: false, status: 409, error: 'stale_revision' } };
+        }
+        if (input.authoredAgainstFingerprint !== currentFingerprint) {
+          return { abort: { ok: false, status: 409, error: 'stale_fingerprint' } };
+        }
+
+        const before = isValidProofCardOverride(page.proofCardOverride)
+          ? proofCardGeometryForFingerprint(page.proofCardOverride)
+          : null;
+        const now = input.now ?? new Date().toISOString();
+
+        let nextOverride: ProofCardOverride | null;
+        if (isReset) {
+          if (!isValidProofCardOverride(page.proofCardOverride)) {
+            // Nothing to reset — do not churn the proof or audit trail (idempotent).
+            return { abort: { ok: true, status: 200, pageIndex: input.pageIndex, proofCardOverride: null, noop: true } };
+          }
+          nextOverride = null;
+        } else {
+          // Validate BEFORE any persistence: clamp/canonicalize → overflow → contrast.
+          const geometry = canonicalizeProofCardGeometry(input.geometry as Partial<ProofCardGeometry>);
+          if (proofCardTextOverflows(geometry, page.storyText)) {
+            return { abort: { ok: false, status: 422, error: 'text_overflow' } };
+          }
+          const colorCheck = resolveAndValidateLayoutColor(input.textColor, geometry.opacity);
+          if ('refusal' in colorCheck) return { abort: { ok: false, ...colorCheck.refusal } };
+          if (
+            isValidProofCardOverride(page.proofCardOverride)
+            && JSON.stringify(proofCardGeometryForFingerprint(page.proofCardOverride)) === JSON.stringify(geometry)
+            && JSON.stringify(proofTextColorForFingerprint(page.proofCardOverride.textColor))
+              === JSON.stringify(proofTextColorForFingerprint(colorCheck.color))
+          ) {
+            return {
+              abort: {
+                ok: true, status: 200, pageIndex: input.pageIndex,
+                proofCardOverride: page.proofCardOverride, noop: true,
+                snapshot: reviewSnapshotFromOrder(order),
+              },
+            };
+          }
+          nextOverride = assembleProofCardOverride({
+            geometry,
+            textColor: colorCheck.color,
+            authoredAgainstProofVersion: input.authoredAgainstProofVersion,
+            authoredAgainstFingerprint: input.authoredAgainstFingerprint,
+            appliedBy: input.appliedBy,
+            appliedAt: now,
+          });
+        }
+
+        const nextPage: PageArtifact = { ...page };
+        if (nextOverride) nextPage.proofCardOverride = nextOverride;
+        else delete nextPage.proofCardOverride;
+        const nextPages = pages.slice();
+        nextPages[idx] = nextPage;
+
+        // Atomic: content change + proof invalidation in one commit, so a stale
+        // proof/acknowledgment is never advertised after a layout edit.
+        let next = applyFulfillmentPatchTo(order, { pageArtifacts: nextPages, ...CLEARED_PROOF_STATE }, now);
+        const after = nextOverride ? proofCardGeometryForFingerprint(nextOverride) : null;
+        next = appendAuditEventTo(
+          next,
+          {
+            type: isReset ? 'page_layout_override_reset' : 'page_layout_override_applied',
+            pageIndex: input.pageIndex,
+            reason: isReset ? 'customer_layout_reset' : 'customer_layout_edit',
+            meta: {
+              boundProofFingerprint: currentFingerprint,
+              beforeColor: (isValidProofCardOverride(page.proofCardOverride) ? page.proofCardOverride.textColor : null) ?? null,
+              afterColor: nextOverride?.textColor ?? null,
+              ...layoutGeometryMeta('before', before),
+              ...layoutGeometryMeta('after', after),
+            },
+          },
+          now,
+        );
+        next = appendAuditEventTo(next, { type: 'proof_invalidated', pageIndex: input.pageIndex, reason: 'layout_edit' }, now);
+
+        return {
+          commit: next,
+          result: { ok: true, status: 200, pageIndex: input.pageIndex, proofCardOverride: nextOverride, snapshot: reviewSnapshotFromOrder(next) },
+        };
+      },
+      { notFound: () => ({ ok: false, status: 404, error: 'order_not_found' }) },
+    );
+  } catch (error) {
+    if (error instanceof OrderVersionConflictError) {
+      return { ok: false, status: 409, error: 'order_mutation_busy' };
+    }
+    throw error;
+  }
+}
+
+export interface RequestLayoutHelpInput extends ReviewActorInput {
+  orderId: string;
+  pageIndex?: number | null;
+  now?: string;
+}
+export interface RequestLayoutHelpResult {
+  ok: boolean;
+  status: 200 | 403 | 404 | 409 | 422;
+  noop?: boolean;
+  snapshot?: ReviewSnapshot;
+  error?: string;
+}
+
+/**
+ * Durable, non-emailing "request help with layout" review request. Appends a
+ * privacy-safe audit event only — it sends no email and triggers no provider,
+ * print, proof, or order-advancement work. Idempotent: a matching unresolved
+ * help request already on record is a no-op.
+ */
+export async function requestLayoutHelp(input: RequestLayoutHelpInput): Promise<RequestLayoutHelpResult> {
+  const actor = input.actor ?? INTERNAL_REVIEW_ACTOR;
+  if (input.pageIndex != null && (!Number.isInteger(input.pageIndex) || input.pageIndex < 0)) {
+    return { ok: false, status: 422, error: 'invalid_page_index' };
+  }
+  const pageIndex = input.pageIndex ?? null;
+  try {
+    return await withOrderTransaction<RequestLayoutHelpResult>(
+      input.orderId,
+      (order) => {
+        const refusal = evaluateReviewMutationEligibility(order, actor);
+        if (refusal) return { abort: { ok: false, status: refusal.status, error: refusal.error } };
+        const lifecycle = evaluateProofLayoutMutationLifecycle(order);
+        if (lifecycle) return { abort: { ok: false, status: lifecycle.status, error: lifecycle.error } };
+        if (pageIndex != null && !(order.pageArtifacts ?? []).some((p) => p.pageIndex === pageIndex)) {
+          return { abort: { ok: false, status: 422, error: 'invalid_page_index' } };
+        }
+        const currentFingerprint = proofSourceFingerprint(order);
+        if (!order.proofVersion || !order.proofSourceFingerprint || !order.storyArtifactUrl) {
+          return { abort: { ok: false, status: 409, error: 'no_live_proof' } };
+        }
+        if (order.proofSourceFingerprint !== currentFingerprint) {
+          return { abort: { ok: false, status: 409, error: 'proof_stale' } };
+        }
+        const already = (order.auditEvents ?? []).some(
+          (e) => e.type === 'layout_help_requested'
+            && (e.pageIndex ?? null) === pageIndex
+            && e.meta?.boundProofFingerprint === currentFingerprint,
+        );
+        if (already) {
+          return { abort: { ok: true, status: 200, noop: true, snapshot: reviewSnapshotFromOrder(order) } };
+        }
+        const now = input.now ?? new Date().toISOString();
+        const next = appendAuditEventTo(
+          order,
+          {
+            type: 'layout_help_requested', ...(pageIndex != null ? { pageIndex } : {}),
+            reason: 'customer_layout_help', meta: { boundProofFingerprint: currentFingerprint },
+          },
+          now,
+        );
+        return { commit: next, result: { ok: true, status: 200, snapshot: reviewSnapshotFromOrder(next) } };
+      },
+      { notFound: () => ({ ok: false, status: 404, error: 'order_not_found' }) },
+    );
+  } catch (error) {
+    if (error instanceof OrderVersionConflictError) {
+      return { ok: false, status: 409, error: 'order_mutation_busy' };
+    }
+    throw error;
+  }
+}
+
 export async function getReviewSnapshot(
   orderId: string,
   input: ReviewAccessInput = {},
 ): Promise<ReviewSnapshot | null> {
-  const order = await getOrder(orderId);
+  // Read the AUTHORITATIVE, version-bound record — not the unversioned public
+  // `getOrder`, whose CDN copy can lag an authoritative order update and render
+  // a known-stale proof/layout on the review page. `readOrderVersioned` binds
+  // the bytes to the current Blob version (#127) and fails closed on an
+  // incoherent read rather than returning stale content.
+  const versioned = await readOrderVersioned(orderId);
+  const order = versioned?.order;
   if (!order) return null;
   if (!order.pageArtifacts || order.pageArtifacts.length === 0) return null;
   if (!hasReviewAccess(order, input)) return null;

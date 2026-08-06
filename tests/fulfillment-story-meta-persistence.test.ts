@@ -40,10 +40,13 @@ const MOCK_STORY: StoryContent = {
   title: "Luna's Tale",
   dedication: 'For Luna.',
   characterDescription: 'A brave child named Luna.',
-  pages: [
-    { pageNum: 1, sceneTitle: 'A', story: 'A', imagePrompt: 'A' },
-    { pageNum: 2, sceneTitle: 'B', story: 'B', imagePrompt: 'B' },
-  ],
+  // 24 story pages to satisfy the digital/classic page-count contract.
+  pages: Array.from({ length: 24 }, (_, i) => ({
+    pageNum: i + 1,
+    sceneTitle: `Scene ${i + 1}`,
+    story: `Story ${i + 1}`,
+    imagePrompt: `Prompt ${i + 1}`,
+  })),
 };
 
 const MOCK_PDF = Buffer.from('%PDF-1.4 mock');

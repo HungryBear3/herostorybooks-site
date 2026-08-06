@@ -11,12 +11,12 @@ import {
 
 import type { CheckoutTracking } from './checkout-tracking.ts';
 import type { CustomerQueueStatus } from './order-queue.ts';
-import type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta } from './fulfillment-types.ts';
+import type { FulfillmentStatus, LayoutVersion, PageTextLayout, ProofCardOverride, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts';
 import { validateOrderPhotoFile } from './photo-file-validation.ts';
 import { PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
-export type { FulfillmentStatus, PageTextLayout, VoiceTranscriptMeta };
+export type { FulfillmentStatus, LayoutVersion, PageTextLayout, VoiceTranscriptMeta };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
 export type BookFormat = 'digital' | 'classic' | 'premium';
@@ -183,7 +183,10 @@ export type ReviewAuditEventType =
   | 'print_upgrade_paid'
   | 'refund_issued'
   | 'refund_refused'
-  | 'internal_disposition_marked';
+  | 'internal_disposition_marked'
+  | 'page_layout_override_applied'
+  | 'page_layout_override_reset'
+  | 'layout_help_requested';
 
 export interface ReviewAuditEvent {
   /** ISO timestamp the event was recorded. */
@@ -246,6 +249,13 @@ export interface PageArtifact {
   /** Optional picture-book text layout persisted on newer generated/rebuilt pages.
    *  Legacy orders may omit it, so scripts should provide a fallback when needed. */
   textLayout?: PageTextLayout | null;
+  /** Proof-only positioned text-card override authored via the customer layout
+   *  editor. When present the customer-review PDF draws an over-art card for
+   *  this page; the print master ignores it. Its geometry + resolved color fold
+   *  into the proof fingerprint, so setting/clearing it invalidates any cached
+   *  proof. Optional for backward compatibility. */
+  proofCardOverride?: ProofCardOverride | null;
+
   /** Internal-only flag set by an operator from the admin page-review grid
    *  to mark this page as needing a targeted regeneration in a later pass.
    *  Never surfaced to the customer. Optional for backward compatibility
@@ -314,6 +324,8 @@ export interface OrderRecord extends OrderInput {
   printInteriorArtifactUrl?: string | null;
   printInteriorMd5?: string | null;
   printInteriorPageCount?: number | null;
+  /** Exact proof revision whose accepted pages produced the print interior. */
+  printInteriorProofVersion?: string | null;
   printCoverArtifactUrl?: string | null;
   printCoverMd5?: string | null;
   printTitle?: string | null;
@@ -352,8 +364,19 @@ export interface OrderRecord extends OrderInput {
   proofSourceFingerprint?: string | null;
   proofVersion?: string | null;
   proofReviewedVersion?: string | null;
+  /**
+   * How this book's story pages are laid out/rendered. Explicit and durable:
+   * new/regenerated proofs set it; absence marks an unmarked historical order
+   * treated as legacy at read time (never rewritten). Modern books fail closed
+   * on missing/invalid per-page layout metadata; legacy books do not.
+   */
+  layoutVersion?: LayoutVersion | null;
   printJobId?: string | null;
   printJobStatus?: string | null;
+  /** Durable pre-POST fence. Once set, ordinary retry is forbidden until the
+   * provider is reconciled because the first response may have been lost. */
+  printSubmissionAttemptedAt?: string | null;
+  printSubmissionProofVersion?: string | null;
   trackingNumber?: string | null;
   trackingUrl?: string | null;
   shippedAt?: string | null;
@@ -1555,12 +1578,16 @@ type FulfillmentPatch = Partial<Pick<
   | 'fulfillmentAttempts'
   | 'fulfillmentLastError'
   | 'storyArtifactUrl'
+  | 'layoutVersion'
   | 'storyMeta'
   | 'printInteriorArtifactUrl'
   | 'printInteriorMd5'
   | 'printInteriorPageCount'
+  | 'printInteriorProofVersion'
   | 'printCoverArtifactUrl'
   | 'printCoverMd5'
+  | 'printSubmissionAttemptedAt'
+  | 'printSubmissionProofVersion'
   | 'printTitle'
   | 'proofApprovalToken'
   | 'proofApprovedAt'

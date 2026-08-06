@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 
 import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
+import { isValidProofCardOverride, proofCardGeometryForFingerprint, proofTextColorForFingerprint } from './proof-layout-override.ts';
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -59,7 +60,7 @@ export function pageGenerationSourceFingerprint(input: {
  */
 export function proofRenderSourceFingerprint(input: {
   story: StoryContent;
-  order: Pick<OrderRecord, 'id' | 'childName' | 'bookFormat'>;
+  order: Pick<OrderRecord, 'id' | 'childName' | 'bookFormat' | 'layoutVersion'>;
   imageUrls: (string | null)[];
 }): string {
   const { story, order, imageUrls } = input;
@@ -70,6 +71,18 @@ export function proofRenderSourceFingerprint(input: {
       sceneTitle: page.sceneTitle,
       story: page.story,
       textLayout: page.textLayout ?? null,
+      // Only byte-affecting values move the fingerprint: canonical card geometry
+      // plus the RESOLVED text/scrim RGB. Operational metadata
+      // (appliedAt/appliedBy/authoredAgainst*) is excluded so it cannot
+      // spuriously invalidate a proof. A malformed/legacy override fails the
+      // shared guard and is treated as ABSENT here — identical to how the
+      // renderer treats it — so a `{}` never alters proof identity.
+      proofCardOverride: isValidProofCardOverride(page.proofCardOverride)
+        ? {
+            ...proofCardGeometryForFingerprint(page.proofCardOverride),
+            color: proofTextColorForFingerprint(page.proofCardOverride.textColor),
+          }
+        : null,
     })),
   };
   const digest = canonicalSourceHash({
@@ -78,6 +91,7 @@ export function proofRenderSourceFingerprint(input: {
       id: order.id,
       childName: order.childName,
       bookFormat: order.bookFormat,
+      layoutVersion: order.layoutVersion ?? 'legacy_bottom_band',
     },
     imageUrls,
   });
@@ -100,6 +114,14 @@ export function proofStoryFromPageArtifacts(
       story: page.storyText,
       imagePrompt: page.basePrompt,
       ...(page.textLayout ? { textLayout: page.textLayout } : {}),
+      // Carry the proof-only positioned card override through to the render +
+      // fingerprint inputs, so a customer layout edit both renders and moves the
+      // proof identity. Only a structurally valid override is forwarded — a
+      // malformed/legacy value is dropped here so it never reaches a direct
+      // StoryContent render or fingerprint path.
+      ...(isValidProofCardOverride(page.proofCardOverride)
+        ? { proofCardOverride: page.proofCardOverride }
+        : {}),
     })),
   };
 }

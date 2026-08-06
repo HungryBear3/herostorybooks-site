@@ -22,6 +22,7 @@ import path from 'node:path';
 import { createOrderRecord, getOrder, persistOrder } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
 import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
+import { padPageSet } from './support/full-page-set.ts';
 import {
   acceptPage,
   acknowledgeProofReview,
@@ -33,6 +34,7 @@ import {
   saveTextChangeRequest,
 } from '../src/lib/page-review.ts';
 import type { ImageProvider } from '../src/lib/image-provider-types.ts';
+import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION } from '../src/lib/fulfillment-types.ts';
 
 const REPO = process.cwd();
 const NOW = '2026-08-03T12:00:00.000Z';
@@ -49,17 +51,21 @@ function page(i: number, o: Partial<PageArtifact> = {}): PageArtifact {
   };
 }
 function makeOrder(id: string, o: Partial<OrderRecord> = {}): OrderRecord {
-  const pages = [page(0), page(1)];
+  const pages = padPageSet([page(0), page(1)]);
   const order: OrderRecord = {
     ...createOrderRecord(
       { childName: 'Testkid', bookFormat: 'digital', email: 'reviewer@example.invalid' },
       { id, now: NOW }),
-    paymentStatus: 'paid', reviewStatus: 'in_review',
+    paymentStatus: 'paid', reviewStatus: 'in_review', layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     storyArtifactUrl: IMMUTABLE_PROOF,
     proofSourceFingerprint: null,
     proofVersion: 'v4', proofReviewedAt: NOW, proofReviewedVersion: 'v4',
     proofApprovalToken: TOKEN, pageArtifacts: pages, auditEvents: [], ...o,
   };
+  order.pageArtifacts = order.pageArtifacts?.map((artifact) => ({
+    ...artifact,
+    textLayout: ensureRecommendedTextLayout(artifact.textLayout),
+  }));
   if (o.proofSourceFingerprint === undefined) {
     order.proofSourceFingerprint = proofSourceFingerprint(order);
   }
@@ -139,7 +145,7 @@ test('REQ8: successful mutations return the exact committed review snapshot', as
   try {
     const acceptId = 'ord_snapshot_accept';
     await persistOrder(makeOrder(acceptId, {
-      pageArtifacts: [page(0, { accepted: false, acceptedImageUrl: null }), page(1)],
+      pageArtifacts: padPageSet([page(0, { accepted: false, acceptedImageUrl: null }), page(1)]),
     }));
     const accepted = await acceptPage({
       orderId: acceptId,
@@ -210,7 +216,7 @@ test('REQ17: unresolved wording blocks server approval; resolved wording permits
   try {
     const blockedId = 'ord_unresolved_wording_gate';
     const blocked = makeOrder(blockedId, {
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         page(0, {
           customerReviewStatus: 'changes_requested',
           customerRequestedChange: {
@@ -220,7 +226,7 @@ test('REQ17: unresolved wording blocks server approval; resolved wording permits
           },
         }),
         page(1),
-      ],
+      ]),
       printInteriorArtifactUrl: 'https://example.invalid/interior.pdf',
       fulfillmentStatus: 'proof_ready',
     });
@@ -239,7 +245,7 @@ test('REQ17: unresolved wording blocks server approval; resolved wording permits
 
     const resolvedId = 'ord_resolved_wording_gate';
     const resolved = makeOrder(resolvedId, {
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         page(0, {
           customerReviewStatus: 'resolved',
           customerRequestedChange: {
@@ -249,7 +255,7 @@ test('REQ17: unresolved wording blocks server approval; resolved wording permits
           },
         }),
         page(1),
-      ],
+      ]),
     });
     resolved.proofSourceFingerprint = proofSourceFingerprint(resolved);
     await persistOrder(resolved);

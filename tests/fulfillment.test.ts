@@ -9,11 +9,13 @@ import {
   approvePrintProof,
   backoffMs,
   MAX_RETRIES,
+  proofSourceFingerprint,
   type FulfillmentDeps,
 } from '../src/lib/fulfillment.ts';
 import { createOrderRecord, persistOrder, getOrder, updateFulfillmentState } from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 import type { StoryContent } from '../src/lib/fulfillment-types.ts';
+import { padPageSet } from './support/full-page-set.ts';
 
 // ── Shared test fixtures ──────────────────────────────────────────────────────
 
@@ -21,10 +23,19 @@ const MOCK_STORY: StoryContent = {
   title: "Luna's Great Adventure",
   dedication: 'For Luna, with love.',
   characterDescription: 'A brave child named Luna.',
+  // 24 story pages — the digital/classic contract now enforced before proof
+  // readiness. The first three keep their named scenes; the rest are valid
+  // filler so the set satisfies the count/contiguity gate.
   pages: [
     { pageNum: 1, sceneTitle: 'The Beginning', story: 'Luna set off on her quest.', imagePrompt: 'Luna in a forest' },
     { pageNum: 2, sceneTitle: 'The Challenge', story: 'Luna faced a great challenge.', imagePrompt: 'Luna climbing' },
     { pageNum: 3, sceneTitle: 'The Victory', story: 'Luna triumphed and returned home.', imagePrompt: 'Luna cheering' },
+    ...Array.from({ length: 21 }, (_, i) => ({
+      pageNum: i + 4,
+      sceneTitle: `Scene ${i + 4}`,
+      story: `Luna adventure page ${i + 4}.`,
+      imagePrompt: `Luna scene ${i + 4}`,
+    })),
   ],
 };
 
@@ -316,9 +327,23 @@ test('valid token approves proof, creates cover artifact, and triggers print pro
       printInteriorArtifactUrl: 'https://cdn.example.com/interior.pdf',
       printInteriorMd5: 'INTERIORMD5',
       printInteriorPageCount: 32,
+      printInteriorProofVersion: 'proof-v1',
       printTitle: MOCK_STORY.title,
       proofApprovalToken: 'valid-token-abc',
+      reviewStatus: 'approved',
+      pageArtifacts: padPageSet([]),
+      proofVersion: 'proof-v1',
+      proofReviewedAt: '2026-04-23T10:00:00Z',
+      proofReviewedVersion: 'proof-v1',
     }, dir);
+
+    // Persist the identity of the exact approved/acknowledged source. The print
+    // release gate must reject stale or partial fixtures rather than treating a
+    // valid capability token as whole-book approval.
+    await persistOrder({
+      ...order,
+      proofSourceFingerprint: proofSourceFingerprint(order),
+    });
 
     const result = await approvePrintProof(order.id, 'valid-token-abc', PASS_DEPS);
     assert.equal(result.ok, true, result.error);

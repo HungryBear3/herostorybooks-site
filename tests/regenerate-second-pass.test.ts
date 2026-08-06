@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { padPageSet } from './support/full-page-set.ts';
 import assert from 'node:assert/strict';
 
 import { proofSourceFingerprint } from '../src/lib/fulfillment.ts';
@@ -8,6 +9,7 @@ import path from 'node:path';
 
 import { createOrderRecord, persistOrder, getOrder } from '../src/lib/orders.ts';
 import type { OrderRecord, PageArtifact } from '../src/lib/orders.ts';
+import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION, recommendedPageTextLayout } from '../src/lib/fulfillment-types.ts';
 import {
   regeneratePage,
   approveWholeBook,
@@ -42,6 +44,7 @@ function pageFixture(i: number, overrides: Partial<PageArtifact> = {}): PageArti
     accepted: false,
     feedbackHistory: [],
     versionHistory: [],
+    textLayout: recommendedPageTextLayout(),
     ...overrides,
   };
 }
@@ -57,11 +60,16 @@ async function seedOrder(
   const order: OrderRecord = {
     ...base,
     paymentStatus: 'paid',
-    pageArtifacts: [pageFixture(0), pageFixture(1), pageFixture(2)],
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
+    pageArtifacts: padPageSet([pageFixture(0), pageFixture(1), pageFixture(2)]),
     reviewStatus: 'in_review',
     proofApprovalToken: 're_test_stub_token',
     ...overrides,
   };
+  order.pageArtifacts = order.pageArtifacts?.map((artifact) => ({
+    ...artifact,
+    textLayout: ensureRecommendedTextLayout(artifact.textLayout),
+  }));
   // Proof gates are revision-bound: a seeded proof URL without an
   // identity would (correctly) fail every one of them.
   if (order.storyArtifactUrl && !order.proofVersion) {
@@ -312,10 +320,10 @@ test('approveWholeBook on a PRINT order performs no print handoff and no rebuild
       bookFormat: 'classic',
       storyArtifactUrl: 'https://example.com/orders/x/proofs/pv_test.pdf',
       proofReviewedAt: '2026-04-27T09:00:00Z',
-      pageArtifacts: [
+      pageArtifacts: padPageSet([
         pageFixture(0, { accepted: true, acceptedImageUrl: 'https://x/0.png' }),
         pageFixture(1, { accepted: true, acceptedImageUrl: 'https://x/1.png' }),
-      ],
+      ]),
     });
     const before = await getOrder('ord_secondpass_test');
 

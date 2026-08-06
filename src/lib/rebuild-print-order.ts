@@ -50,6 +50,8 @@ import {
   type StoryWithMeta,
 } from './story-generator.ts';
 import type { StoryContent } from './fulfillment-types.ts';
+import { NEW_PROOF_LAYOUT_VERSION, withRecommendedPageMetadata } from './fulfillment-types.ts';
+import { assertStoryPageSet } from './story-page-contract.ts';
 import { newProofVersion, proofArtifactPath } from './fulfillment.ts';
 import { proofRenderSourceFingerprint } from './review-source-identity.ts';
 
@@ -218,7 +220,10 @@ export async function rebuildPrintOrder(
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
   const now = (deps.now ?? (() => new Date()))();
 
-  const { story, meta: storyMeta } = await _generateStoryWithMeta(order);
+  const { story: rawStory, meta: storyMeta } = await _generateStoryWithMeta(order);
+  // Guarantee valid recommended per-page metadata before seeding artifacts or
+  // rendering, so the (modern) rebuild never fails closed on missing metadata.
+  const story = withRecommendedPageMetadata(rawStory);
 
   // Image generation — long-form story now means N images per print order.
   const characterAnchor = story.characterDescription ?? null;
@@ -294,13 +299,19 @@ export async function rebuildPrintOrder(
   // print interior that goes to Lulu (buildPrintInteriorPdf). The slice
   // 2 print interior renderer is what introduces the matter pages and
   // reduces filler — that's the fix we're delivering to these orders.
-  const proofBuffer = await _buildPdf(story, order, allUrls);
-  const interiorBuffer = await _buildPrintInteriorPdf(story, order, allUrls);
+  // Fail closed: the rebuilt page set must satisfy the book contract before we
+  // publish a proof/interior or move the order to preview_ready. This is the
+  // exact defect that produced a 6-page/14-page partial — a short regenerated
+  // set now aborts the rebuild instead of shipping.
+  assertStoryPageSet(newPageArtifacts, order.bookFormat, NEW_PROOF_LAYOUT_VERSION);
+  const orderForBuild = { ...order, layoutVersion: NEW_PROOF_LAYOUT_VERSION };
+  const proofBuffer = await _buildPdf(story, orderForBuild, allUrls);
+  const interiorBuffer = await _buildPrintInteriorPdf(story, orderForBuild, allUrls);
 
   const proofVersion = newProofVersion();
   const proofUrl = await _upload(order.id, proofBuffer, proofArtifactPath(proofVersion));
   const interiorUrl = await _upload(order.id, interiorBuffer, `interiors/${proofVersion}.pdf`);
-  const proofSourceFingerprint = proofRenderSourceFingerprint({ story, order, imageUrls: allUrls });
+  const proofSourceFingerprint = proofRenderSourceFingerprint({ story, order: orderForBuild, imageUrls: allUrls });
   const interiorMd5 = md5Hex(interiorBuffer);
   const interiorPageCount = getPrintInteriorPageCount(story, order);
 
@@ -316,10 +327,12 @@ export async function rebuildPrintOrder(
     storyArtifactUrl: proofUrl,
     proofSourceFingerprint,
     proofVersion,
+    layoutVersion: NEW_PROOF_LAYOUT_VERSION,
     storyMeta,
     printInteriorArtifactUrl: interiorUrl,
     printInteriorMd5: interiorMd5,
     printInteriorPageCount: interiorPageCount,
+    printInteriorProofVersion: proofVersion,
     printTitle: story.title,
     // Force cover regeneration on next print submission — old cover
     // dimensions were calculated against the wrong interior page count.
@@ -330,6 +343,8 @@ export async function rebuildPrintOrder(
     // anyway — being explicit guards against future safety regressions.
     printJobId: null,
     printJobStatus: null,
+    printSubmissionAttemptedAt: null,
+    printSubmissionProofVersion: null,
     pageArtifacts: newPageArtifacts,
     reviewStatus: 'in_review',
     proofApprovalToken,

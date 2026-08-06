@@ -42,6 +42,13 @@ export async function retryOrderFulfillment(
   if (order.paymentStatus !== 'paid') {
     return { ok: false, status: 400, error: 'Cannot retry: payment not confirmed' };
   }
+  if (order.fulfillmentStatus === 'submitting_to_print' || order.printSubmissionAttemptedAt) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Print submission may already exist; reconcile the provider before any retry',
+    };
+  }
 
   // Smart short-circuit: when the order's artifacts are already persisted
   // and the only failure was the delivery email (Resend domain not
