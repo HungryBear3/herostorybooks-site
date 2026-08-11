@@ -418,7 +418,16 @@ export async function sendLifecycleEmail(
 
 export function buildDigitalDeliveryEmail(
   order: OrderRecord,
-  options: { pdfUrl: string; reviewUrl?: string; supportEmail?: string },
+  options: {
+    pdfUrl: string;
+    reviewUrl?: string;
+    supportEmail?: string;
+    printUpgrade?: {
+      checkoutUrl: string;
+      targetLabel: string;
+      amountCents: number;
+    };
+  },
 ) {
   const supportEmail = options.supportEmail || getSupportEmail();
   const name = order.childName;
@@ -430,12 +439,24 @@ export function buildDigitalDeliveryEmail(
       </div>
       <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">Private review link: ${escapeHtml(options.reviewUrl)}</p>`
     : '<p style="margin:0 0 16px;">Your personalized storybook PDF is ready.</p>';
+  const upgradeDollars = options.printUpgrade
+    ? (options.printUpgrade.amountCents / 100).toFixed(2)
+    : null;
+  const upgradeHtml = options.printUpgrade
+    ? `<div style="margin:28px 0;padding:20px;border:1px solid #e5d7a8;border-radius:12px;background:#fffbeb;">
+        <h2 style="font-size:20px;color:#1F3A5F;margin:0 0 8px;">Want a printed keepsake too?</h2>
+        <p style="margin:0 0 14px;">Add a ${escapeHtml(options.printUpgrade.targetLabel)} for $${upgradeDollars} plus shipping and applicable tax.</p>
+        <a href="${escapeHtml(options.printUpgrade.checkoutUrl)}" style="background:#1F3A5F;color:#fff;font-weight:bold;text-decoration:none;padding:12px 22px;border-radius:10px;display:inline-block;">View print upgrade</a>
+        <p style="margin:14px 0 0;color:#6b7280;font-size:13px;">Optional: your digital book remains yours either way. Nothing is printed until payment, proof approval, print QA, and our final print-go review are complete. Shipping timing is confirmed separately.</p>
+      </div>`
+    : '';
 
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937;line-height:1.5;">
       <h1 style="font-size:28px;color:#1F3A5F;margin-bottom:12px;">${escapeHtml(name)}'s book is done ✨</h1>
       ${reviewHtml}
       <p style="margin:0 0 12px;">Direct PDF: <a href="${escapeHtml(options.pdfUrl)}">Download ${escapeHtml(name)}'s Storybook</a></p>
+      ${upgradeHtml}
       <p style="margin:0 0 12px;">Questions? Reply to this email or contact <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>.</p>
       <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Order ID: ${escapeHtml(order.id)} · Proof approval before print</p>
     </div>
@@ -446,6 +467,12 @@ export function buildDigitalDeliveryEmail(
     '',
     ...(options.reviewUrl ? [`Private review page: ${options.reviewUrl}`] : []),
     `Direct PDF download: ${options.pdfUrl}`,
+    ...(options.printUpgrade ? [
+      '',
+      `Optional print upgrade: ${options.printUpgrade.targetLabel} for $${upgradeDollars} plus shipping and applicable tax.`,
+      `View the upgrade: ${options.printUpgrade.checkoutUrl}`,
+      'Your digital book remains yours either way. Nothing is printed until payment, proof approval, print QA, and final print-go review are complete. Shipping timing is confirmed separately.',
+    ] : []),
     '',
     `Questions? ${supportEmail}`,
     `Order ID: ${order.id}`,
@@ -456,7 +483,15 @@ export function buildDigitalDeliveryEmail(
 
 export async function sendDigitalDeliveryEmail(
   order: OrderRecord,
-  options: { pdfUrl: string; reviewUrl?: string },
+  options: {
+    pdfUrl: string;
+    reviewUrl?: string;
+    printUpgrade?: {
+      checkoutUrl: string;
+      targetLabel: string;
+      amountCents: number;
+    };
+  },
 ) {
   const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
   if (!apiKey) return { skipped: true as const, reason: 'missing_resend_api_key' };
@@ -466,6 +501,7 @@ export async function sendDigitalDeliveryEmail(
   const email = buildDigitalDeliveryEmail(order, {
     pdfUrl: options.pdfUrl,
     reviewUrl: options.reviewUrl,
+    printUpgrade: options.printUpgrade,
     supportEmail,
   });
 

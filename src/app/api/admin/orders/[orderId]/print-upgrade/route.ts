@@ -28,7 +28,12 @@ export async function POST(
 
   const { orderId } = await context.params;
 
-  let body: { targetFormat?: unknown; printProvider?: unknown } = {};
+  let body: {
+    targetFormat?: unknown;
+    printProvider?: unknown;
+    createCheckout?: unknown;
+    confirmCreateCheckout?: unknown;
+  } = {};
   try {
     body = await request.json();
   } catch {
@@ -40,6 +45,7 @@ export async function POST(
     typeof body.printProvider === 'string' && body.printProvider.trim().length > 0
       ? body.printProvider.trim()
       : 'rpi';
+  const createCheckout = body.createCheckout === true && body.confirmCreateCheckout === true;
 
   const order = await getOrder(orderId);
   if (!order) {
@@ -49,6 +55,18 @@ export async function POST(
   const upgrade = calculatePrintUpgrade(order, targetFormat);
   if (upgrade.ok === false) {
     return NextResponse.json({ error: upgrade.error }, { status: upgrade.status });
+  }
+
+  if (!createCheckout) {
+    return NextResponse.json({
+      ok: true,
+      dryRun: true,
+      orderId: order.id,
+      targetFormat: upgrade.targetFormat,
+      amountCents: upgrade.amountCents,
+      printProvider,
+      safety: 'Preview only. No Stripe Checkout Session, email, print job, or provider action was created.',
+    });
   }
 
   const stripe = new Stripe(getRequiredStripeSecretKey());
@@ -80,16 +98,18 @@ export async function POST(
     ],
     shipping_address_collection: { allowed_countries: ['US', 'CA', 'GB', 'AU', 'NZ'] },
     success_url: `${baseUrl}/thank-you?orderId=${encodeURIComponent(order.id)}&printUpgrade=success`,
-    cancel_url: `${baseUrl}/admin/orders?printUpgrade=cancelled&orderId=${encodeURIComponent(order.id)}`,
+    cancel_url: `${baseUrl}/thank-you?orderId=${encodeURIComponent(order.id)}&printUpgrade=cancelled`,
   });
 
   return NextResponse.json({
     ok: true,
+    dryRun: false,
     orderId: order.id,
     targetFormat: upgrade.targetFormat,
     amountCents: upgrade.amountCents,
     printProvider,
     redirectTo: session.url,
     sessionId: session.id,
+    safety: 'Checkout created after double confirmation. No email, print job, or provider action was triggered.',
   });
 }
