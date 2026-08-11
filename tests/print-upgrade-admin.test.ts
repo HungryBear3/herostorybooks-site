@@ -107,14 +107,19 @@ test('recordPrintUpgradePayment: records upgrade payment without starting fulfil
   }
 });
 
-test('admin print-upgrade route: admin-only Stripe checkout allows promo codes and collects shipping', () => {
+test('admin print-upgrade route: defaults to preview and double-confirms Stripe checkout', () => {
   const src = readFileSync('src/app/api/admin/orders/[orderId]/print-upgrade/route.ts', 'utf8');
 
   assert.match(src, /isAdminAuthedFromRequest\(request\)/);
+  assert.match(src, /body\.createCheckout === true && body\.confirmCreateCheckout === true/);
+  assert.match(src, /dryRun: true/);
+  assert.match(src, /No Stripe Checkout Session, email, print job, or provider action was created/);
   assert.match(src, /allow_promotion_codes:\s*true/);
   assert.match(src, /shipping_address_collection/);
   assert.match(src, /kind:\s*'print_upgrade'/);
   assert.match(src, /targetFormat/);
+  assert.match(src, /cancel_url:.*\/thank-you\?/);
+  assert.doesNotMatch(src, /cancel_url:.*\/admin\//);
   assert.doesNotMatch(src, /scheduleFulfillmentKickoff|triggerFulfillment|submitPrintJob/);
 });
 

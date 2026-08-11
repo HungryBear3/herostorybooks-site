@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildDigitalDeliveryEmail,
   buildOrderConfirmationEmail,
   buildPreviewReadyEmail,
   buildPrintInProductionEmail,
@@ -44,6 +45,24 @@ function makeDigitalOrder() {
     { id: 'ord_test_digital' },
   );
 }
+
+test('digital final delivery can include an optional, gated print-upgrade link', () => {
+  const email = buildDigitalDeliveryEmail(makeDigitalOrder(), {
+    pdfUrl: 'https://private.example/final.pdf',
+    printUpgrade: {
+      checkoutUrl: 'https://checkout.stripe.com/c/pay/cs_test_upgrade',
+      targetLabel: 'Premium hardcover',
+      amountCents: 4500,
+    },
+    supportEmail: SUPPORT,
+  });
+
+  assert.match(email.html, /Want a printed keepsake too/);
+  assert.match(email.html, /Premium hardcover/);
+  assert.match(email.text, /\$45\.00 plus shipping and applicable tax/);
+  assert.match(email.text, /Nothing is printed until payment, proof approval, print QA, and final print-go review/);
+  assert.match(email.text, /checkout\.stripe\.com/);
+});
 
 // ── Support alias defaults ─────────────────────────────────────────────────────
 
