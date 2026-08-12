@@ -83,6 +83,7 @@ test('webhook source: payment write is awaited before responding (must commit be
 test('webhook source: verifies exact settlement facts and returns retryable conflicts', () => {
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
   assert.match(src, /isExactSettledCheckoutSession\(session, existing, session\.id\)/);
+  assert.match(src, /settledAmountCents:\s*session\.amount_total/);
   assert.match(src, /Payment transition conflict/);
   assert.match(src, /status:\s*409/);
 });
@@ -171,16 +172,19 @@ test('pending → paid first webhook still flips state to paid', async () => {
   } finally { cleanup(dir); }
 });
 
-test('paid → paid replay: matching condition for the skip branch is satisfied', async () => {
+test('paid → paid replay backfills missing settled amount without changing session', async () => {
   const dir = makeTmp();
   try {
     await seed(
-      { paymentStatus: 'paid', stripeSessionId: 'cs_dup' },
+      { paymentStatus: 'paid', stripeSessionId: 'cs_dup', settledAmountCents: null },
       'ord_dup',
     );
-    const reloaded = await getOrder('ord_dup');
-    const webhookWouldSkip =
-      reloaded?.stripeSessionId === 'cs_dup' && reloaded?.paymentStatus === 'paid';
-    assert.equal(webhookWouldSkip, true);
+    const updated = await updateOrderPayment('ord_dup', 'paid', {
+      stripeSessionId: 'cs_dup',
+      settledAmountCents: 950,
+    });
+    assert.equal(updated?.paymentStatus, 'paid');
+    assert.equal(updated?.stripeSessionId, 'cs_dup');
+    assert.equal(updated?.settledAmountCents, 950);
   } finally { cleanup(dir); }
 });

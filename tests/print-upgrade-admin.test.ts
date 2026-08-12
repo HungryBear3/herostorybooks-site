@@ -20,6 +20,7 @@ function makeDigitalOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
       { id: 'ord_dog_city_upgrade', now: '2026-07-07T12:00:00Z' },
     ),
     paymentStatus: 'paid',
+    settledAmountCents: 1900,
     stripeSessionId: 'cs_original_digital',
     fulfillmentStatus: 'proof_ready',
     storyArtifactUrl: 'https://example.com/proof.pdf',
@@ -37,6 +38,18 @@ test('calculatePrintUpgrade: paid digital to premium charges only hardcover delt
   assert.equal(result.targetFormat, 'premium');
   assert.match(result.description, /Digital proof/i);
   assert.match(result.description, /Premium hardcover/i);
+});
+
+test('calculatePrintUpgrade: uses actual settled total and fails closed without it', () => {
+  const discounted = calculatePrintUpgrade(makeDigitalOrder({ settledAmountCents: 950 }), 'premium');
+  const free = calculatePrintUpgrade(makeDigitalOrder({ settledAmountCents: 0 }), 'premium');
+  assert.equal(discounted.ok && discounted.amountCents, 5450);
+  assert.equal(free.ok && free.amountCents, 6400);
+  assert.deepEqual(calculatePrintUpgrade(makeDigitalOrder({ settledAmountCents: null }), 'premium'), {
+    ok: false,
+    status: 409,
+    error: 'original_settled_amount_unknown',
+  });
 });
 
 test('calculatePrintUpgrade: refuses unpaid, already-print, and non-upgrade targets', () => {
@@ -107,20 +120,16 @@ test('recordPrintUpgradePayment: records upgrade payment without starting fulfil
   }
 });
 
-test('admin print-upgrade route: defaults to preview and double-confirms Stripe checkout', () => {
+test('admin print-upgrade route: remains preview-only and retires checkout creation', () => {
   const src = readFileSync('src/app/api/admin/orders/[orderId]/print-upgrade/route.ts', 'utf8');
 
   assert.match(src, /isAdminAuthedFromRequest\(request\)/);
   assert.match(src, /body\.createCheckout === true && body\.confirmCreateCheckout === true/);
   assert.match(src, /dryRun: true/);
   assert.match(src, /No Stripe Checkout Session, email, print job, or provider action was created/);
-  assert.match(src, /allow_promotion_codes:\s*true/);
-  assert.match(src, /shipping_address_collection/);
-  assert.match(src, /kind:\s*'print_upgrade'/);
-  assert.match(src, /targetFormat/);
-  assert.match(src, /cancel_url:.*\/thank-you\?/);
-  assert.doesNotMatch(src, /cancel_url:.*\/admin\//);
-  assert.doesNotMatch(src, /scheduleFulfillmentKickoff|triggerFulfillment|submitPrintJob/);
+  assert.match(src, /print_upgrade_checkout_retired/);
+  assert.match(src, /status:\s*410/);
+  assert.doesNotMatch(src, /new Stripe|checkout\.sessions\.create|scheduleFulfillmentKickoff|triggerFulfillment|submitPrintJob/);
 });
 
 test('stripe webhook route: print upgrade sessions record payment but do not kick off fulfillment', () => {

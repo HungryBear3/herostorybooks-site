@@ -216,6 +216,7 @@ export async function POST(request: Request) {
       const shipping = extractShipping(session);
       const updated = await updateOrderPayment(orderId, 'paid', {
         stripeSessionId: session.id,
+        settledAmountCents: session.amount_total!,
         ...(shipping ? { shippingAddress: shipping } : {}),
       });
 

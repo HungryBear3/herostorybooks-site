@@ -296,6 +296,8 @@ export interface OrderRecord extends OrderInput {
    * from updatedAt or any scan clock. Absent on legacy/unpaid orders.
    */
   paidAt?: string | null;
+  /** Exact Stripe Checkout amount_total accepted for the original order. */
+  settledAmountCents?: number | null;
   /** Fulfillment routing intent — see FulfillmentMode. Undefined = fail closed. */
   fulfillmentMode?: FulfillmentMode;
   stripeSessionId?: string | null;
@@ -2453,7 +2455,7 @@ export async function withOrderTransaction<T>(
 export async function updateOrderPayment(
   orderId: string,
   paymentStatus: PaymentStatus,
-  opts: { stripeSessionId?: string; shippingAddress?: ShippingAddress } = {},
+  opts: { stripeSessionId?: string; shippingAddress?: ShippingAddress; settledAmountCents?: number } = {},
 ) {
   const now = new Date().toISOString();
   return withOrderTransaction<OrderRecord | null>(
@@ -2467,7 +2469,13 @@ export async function updateOrderPayment(
           && !current.stripeRefundId
           && !current.refundClaimId
         ) {
-          const replay = { ...current, updatedAt: now };
+          const replay = {
+            ...current,
+            ...(current.settledAmountCents == null && opts.settledAmountCents != null
+              ? { settledAmountCents: opts.settledAmountCents }
+              : {}),
+            updatedAt: now,
+          };
           return { commit: replay, result: replay };
         }
         if (
@@ -2485,6 +2493,9 @@ export async function updateOrderPayment(
         paymentStatus,
         ...(opts.stripeSessionId != null ? { stripeSessionId: opts.stripeSessionId } : {}),
         ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
+        ...(paymentStatus === 'paid' && opts.settledAmountCents != null
+          ? { settledAmountCents: opts.settledAmountCents }
+          : {}),
         ...(paymentStatus === 'paid' && !current.paidAt ? { paidAt: now } : {}),
         updatedAt: now,
       };

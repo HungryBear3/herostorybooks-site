@@ -55,7 +55,10 @@ export function calculatePrintUpgrade(
 
   const source = getBookFormatMeta(order.bookFormat);
   const target = getBookFormatMeta(targetFormat);
-  const amountCents = target.priceCents - source.priceCents;
+  if (typeof order.settledAmountCents !== 'number' || order.settledAmountCents < 0) {
+    return { ok: false, status: 409, error: 'original_settled_amount_unknown' };
+  }
+  const amountCents = target.priceCents - order.settledAmountCents;
 
   if (amountCents <= 0) {
     return { ok: false, status: 400, error: 'target_not_higher_value' };
