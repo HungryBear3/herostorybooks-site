@@ -97,6 +97,7 @@ class PublicBlobSim {
         return readPublicOrderBlobVersioned(pathname, 'sim-token', {
           listImpl: sim.listImpl,
           fetchImpl: sim.fetchImpl,
+          sleepImpl: async () => {},
         });
       },
       async createIfAbsent(pathname, body) {
