@@ -1814,7 +1814,7 @@ export function normalizeEtag(raw: string | null | undefined): string | null {
 
 type PublicVersionedReadDeps = {
   listImpl?: (options: { prefix: string; token: string }) => Promise<{
-    blobs: Array<{ pathname: string; url: string; etag: string }>;
+    blobs: Array<{ pathname: string; url: string; downloadUrl?: string; etag: string }>;
   }>;
   fetchImpl?: typeof fetch;
 };
@@ -1851,7 +1851,7 @@ export async function readPublicOrderBlobVersioned(
 ): Promise<{ body: string; version: string } | null> {
   const listImpl = deps.listImpl ?? ((options) => list(options));
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const findBlob = (blobs: Array<{ pathname: string; url: string; etag: string }>) =>
+  const findBlob = (blobs: Array<{ pathname: string; url: string; downloadUrl?: string; etag: string }>) =>
     blobs.find((candidate) => candidate.pathname === pathname);
 
   for (let attempt = 1; attempt <= PUBLIC_VERSIONED_READ_MAX_ATTEMPTS; attempt += 1) {
@@ -1863,7 +1863,13 @@ export async function readPublicOrderBlobVersioned(
     }
     const listVersion = normalizeEtag(blob.etag);
 
-    const url = new URL(blob.url);
+    // Use the download URL when available. Vercel's normal public URL can keep
+    // serving the previous overwritten object for its fixed CDN max-age even
+    // with a cache-busting query and `cache: no-store` (observed on a paid-order
+    // kickoff immediately after the retry-state write). The download URL is a
+    // separate, freshly revalidated representation of the same object; its ETag
+    // is still bound to the authoritative metadata ETag below.
+    const url = new URL(blob.downloadUrl ?? blob.url);
     url.searchParams.set('hsb-cas-read', `${Date.now()}-${attempt}`);
     const response = await fetchImpl(url, { cache: 'no-store' });
 

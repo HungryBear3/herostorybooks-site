@@ -46,6 +46,29 @@ test('public versioned read fetches the listed URL without authorization and ret
   assert.equal(headers.has('authorization'), false);
 });
 
+test('public versioned read prefers the fresh download URL over a stale normal CDN URL', async () => {
+  let requestedUrl = '';
+  const result = await readPublicOrderBlobVersioned(PATHNAME, 'synthetic-token', {
+    listImpl: async () => listed(),
+    fetchImpl: async (input) => {
+      requestedUrl = String(input);
+      if (!requestedUrl.includes('download=1')) {
+        return new Response('{"stale":true}', {
+          status: 200,
+          headers: { etag: 'W/"previous-etag"' },
+        });
+      }
+      return new Response('{"fresh":true}', {
+        status: 200,
+        headers: { etag: 'W/"etag-1"' },
+      });
+    },
+  });
+
+  assert.ok(requestedUrl.includes('download=1'));
+  assert.deepEqual(result, { body: '{"fresh":true}', version: '"etag-1"' });
+});
+
 test('public versioned read treats an HTTP-equivalent (weak / requoted) ETag as the same version', async () => {
   // Reproduces the production 503: `list()` returns a strong quoted validator
   // while the public CDN returns the SAME validator weakened/unquoted. Raw
