@@ -80,6 +80,13 @@ test('webhook source: payment write is awaited before responding (must commit be
   assert.match(src, /const\s+updated\s*=\s*await\s+updateOrderPayment\(/);
 });
 
+test('webhook source: verifies exact settlement facts and returns retryable conflicts', () => {
+  const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
+  assert.match(src, /isExactSettledCheckoutSession\(session, existing, session\.id\)/);
+  assert.match(src, /Payment transition conflict/);
+  assert.match(src, /status:\s*409/);
+});
+
 test('webhook source: refuses to resurrect a refunded order on replay', () => {
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
   assert.match(src, /paymentStatus === 'refunded'/);
