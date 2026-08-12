@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -150,6 +150,15 @@ test('retryOrderFulfillment: unpaid order → 400, no state change', async () =>
     const after = await getOrder('ord_retry_unpaid');
     assert.equal(after?.paymentStatus, 'pending');
   } finally { cleanup(dir); }
+});
+
+test('retryOrderFulfillment source avoids a redundant write for an already-clean paid kickoff', () => {
+  const source = readFileSync(
+    new URL('../src/lib/admin-actions.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /const alreadyCleanStart\s*=/);
+  assert.match(source, /if \(!alreadyCleanStart\) \{\s*await updateFulfillmentState/);
 });
 
 test('retryOrderFulfillment: provider failure stays failed and returns an honest 502', async () => {
