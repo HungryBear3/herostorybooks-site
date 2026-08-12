@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { isOrderStatus, getOrder, updateOrderStatus } from '@/lib/orders';
-import { sendLifecycleEmail } from '@/lib/order-email';
+import { getOrder } from '@/lib/orders';
 
 function getAdminKey() {
   return process.env.HSB_ORDER_ADMIN_KEY;
@@ -53,30 +52,12 @@ export async function PATCH(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const body = await request.json();
-  if (!body?.status || !isOrderStatus(body.status)) {
-    return NextResponse.json({ error: 'Invalid order status' }, { status: 400 });
-  }
-
-  const { orderId } = await context.params;
-  const order = await updateOrderStatus(orderId, body.status);
-  if (!order) {
-    return NextResponse.json({ error: 'Order not found' }, { status: 404 });
-  }
-
-  // Send lifecycle email for the new status. Email failure does not fail the request.
-  let emailResult: { skipped: boolean; reason?: string; id?: string | null } = {
-    skipped: true,
-    reason: 'not_attempted',
-  };
-  try {
-    emailResult = await sendLifecycleEmail(order, {
-      trackingNumber: typeof body.trackingNumber === 'string' ? body.trackingNumber : undefined,
-      trackingUrl: typeof body.trackingUrl === 'string' ? body.trackingUrl : undefined,
-    });
-  } catch {
-    emailResult = { skipped: true, reason: 'email_send_error' };
-  }
-
-  return NextResponse.json({ ok: true, order, email: emailResult });
+  void context;
+  // Retired: generic status mutation bypassed payment/refund, print-release,
+  // shipping, provider-identity, and lifecycle-email gates. Operators must use
+  // the dedicated guarded admin actions/routes for each transition.
+  return NextResponse.json(
+    { error: 'Generic order status mutation is retired; use a guarded admin action' },
+    { status: 410 },
+  );
 }

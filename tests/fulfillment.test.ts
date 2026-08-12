@@ -414,6 +414,8 @@ test('failures exhausting MAX_RETRIES move order to failed_manual_review', async
     assert.equal(after?.fulfillmentStatus, 'failed_manual_review');
     assert.equal(after?.fulfillmentAttempts, MAX_RETRIES);
     assert.match(after?.fulfillmentLastError ?? '', /persistent failure/);
+    assert.equal(after?.fulfillmentKickoffId ?? null, null);
+    assert.equal(after?.fulfillmentKickoffAt ?? null, null);
   } finally {
     cleanupTmpDir(dir);
   }

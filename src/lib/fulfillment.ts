@@ -458,6 +458,8 @@ async function runWithRetry(
           ...(stillPaid ? { fulfillmentStatus: 'failed_manual_review' as const } : {}),
           fulfillmentAttempts: attempt,
           fulfillmentLastError: errMsg,
+          fulfillmentKickoffId: null,
+          fulfillmentKickoffAt: null,
         });
         if (stillPaid && current) {
           sendOperatorFailureAlert(current, errMsg).catch(e =>
@@ -472,6 +474,8 @@ async function runWithRetry(
           fulfillmentStatus: 'failed_manual_review',
           fulfillmentAttempts: attempt,
           fulfillmentLastError: errMsg,
+          fulfillmentKickoffId: null,
+          fulfillmentKickoffAt: null,
         });
         console.error(`[fulfillment] orderId=${orderId} moved to failed_manual_review after ${attempt} attempts`);
         const failedOrder = await getOrder(orderId);
