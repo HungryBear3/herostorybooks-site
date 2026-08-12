@@ -1817,6 +1817,7 @@ type PublicVersionedReadDeps = {
     blobs: Array<{ pathname: string; url: string; downloadUrl?: string; etag: string }>;
   }>;
   fetchImpl?: typeof fetch;
+  sleepImpl?: (ms: number) => Promise<void>;
 };
 
 const PUBLIC_VERSIONED_READ_MAX_ATTEMPTS = 3;
@@ -1851,6 +1852,7 @@ export async function readPublicOrderBlobVersioned(
 ): Promise<{ body: string; version: string } | null> {
   const listImpl = deps.listImpl ?? ((options) => list(options));
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const sleepImpl = deps.sleepImpl ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const findBlob = (blobs: Array<{ pathname: string; url: string; downloadUrl?: string; etag: string }>) =>
     blobs.find((candidate) => candidate.pathname === pathname);
 
@@ -1873,7 +1875,10 @@ export async function readPublicOrderBlobVersioned(
     url.searchParams.set('hsb-cas-read', `${Date.now()}-${attempt}`);
     const response = await fetchImpl(url, { cache: 'no-store' });
 
-    if (response.status === 404 || response.status === 412) continue;
+    if (response.status === 404 || response.status === 412) {
+      await sleepImpl(500 * attempt);
+      continue;
+    }
     if (!response.ok) {
       throw new Error(`Public Blob fetch failed: ${response.status} ${response.statusText}`.trim());
     }
@@ -1884,7 +1889,10 @@ export async function readPublicOrderBlobVersioned(
     if (responseVersion) {
       // The CDN gave a validator: accept iff it matches the authoritative
       // version modulo decoration; otherwise the bytes are stale/advanced.
-      if (responseVersion !== listVersion) continue;
+      if (responseVersion !== listVersion) {
+        await sleepImpl(500 * attempt);
+        continue;
+      }
       return { body, version: blob.etag };
     }
 
@@ -1892,7 +1900,10 @@ export async function readPublicOrderBlobVersioned(
     // while we read it, so the bytes still correspond to `listVersion`.
     const confirm = await listImpl({ prefix: pathname, token });
     const confirmBlob = findBlob(confirm.blobs);
-    if (!confirmBlob || normalizeEtag(confirmBlob.etag) !== listVersion) continue;
+    if (!confirmBlob || normalizeEtag(confirmBlob.etag) !== listVersion) {
+      await sleepImpl(500 * attempt);
+      continue;
+    }
     return { body, version: blob.etag };
   }
 

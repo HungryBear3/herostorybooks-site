@@ -143,6 +143,7 @@ test('public versioned read retries a list/fetch race and returns only matching 
         headers: { etag: '"etag-2"' },
       });
     },
+    sleepImpl: async () => {},
   });
 
   assert.equal(lists, 2);
@@ -158,6 +159,7 @@ test('public versioned read fails closed when response ETags never match the lis
         status: 200,
         headers: { etag: '"different"' },
       }),
+      sleepImpl: async () => {},
     }),
     /changed during 3 versioned read attempt/,
   );
