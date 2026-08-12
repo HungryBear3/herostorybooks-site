@@ -27,6 +27,7 @@ import { buildCheckoutTracking } from '@/lib/checkout-tracking';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
+import { getRequiredStripeProductId } from '@/lib/stripe-products';
 import { statusForShape, validateCustomStoryBrief, type CustomStoryBrief, type ValidationResult } from '@/lib/custom-story';
 import { validateOrderPhotoFile } from '@/lib/photo-file-validation';
 
@@ -358,6 +359,12 @@ export async function POST(request: Request) {
       fulfillmentMode: 'manual_hold',
     });
 
+    // Resolve the stable Stripe Product before creating the durable order or
+    // uploading customer media. Product-scoped promotion codes depend on this
+    // binding, and a missing/malformed live configuration must fail closed
+    // without leaving an abandoned order or upload behind.
+    const stripeProductId = getRequiredStripeProductId(draftOrder.bookFormat);
+
     // Create the durable owner record before uploading any public customer
     // media. If cleanup itself later fails, the deterministic orders/<id>/
     // Blob prefix still has an owning record for retention/deletion handling.
@@ -582,10 +589,7 @@ export async function POST(request: Request) {
           price_data: {
             currency: 'usd',
             unit_amount: order.priceCents,
-            product_data: {
-              name: `${order.formatLabel} HeroStoryBook — ${order.heroName ?? order.childName}`,
-              description: order.deliveryExpectation,
-            },
+            product: stripeProductId,
           },
           quantity: 1,
         },
