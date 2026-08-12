@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -56,6 +56,11 @@ const happyStripe: StripeRefundClient = {
 test('preprintRefundRefusalReason: paid + proof_ready → null (allowed)', { concurrency: false }, () => {
   const order = { paymentStatus: 'paid', status: 'order_received', fulfillmentStatus: 'proof_ready' } as OrderRecord;
   assert.equal(preprintRefundRefusalReason(order), null);
+});
+
+test('print release refusal source blocks an active refund claim', { concurrency: false }, () => {
+  const source = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
+  assert.match(source, /if \(order\.refundClaimId\) return 'refund_in_progress'/);
 });
 
 test('preprintRefundRefusalReason: not paid → not_paid', { concurrency: false }, () => {

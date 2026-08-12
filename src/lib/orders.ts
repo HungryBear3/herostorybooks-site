@@ -1635,6 +1635,7 @@ export async function listOrdersAuthoritative(deps: {
   const getOrderImpl = deps.getOrderImpl ?? getOrderAuthoritative;
   const orders: OrderRecord[] = [];
   let cursor: string | undefined;
+  const seenCursors = new Set<string>();
   do {
     const page = await listImpl({
       prefix: getOrdersListPrefix(),
@@ -1655,6 +1656,13 @@ export async function listOrdersAuthoritative(deps: {
         'Blob listing reported hasMore without a cursor',
       );
     }
+    if (cursor && seenCursors.has(cursor)) {
+      throw new OrderPersistenceError(
+        'fulfillment-sweep',
+        'Blob listing repeated a cursor',
+      );
+    }
+    if (cursor) seenCursors.add(cursor);
   } while (cursor);
   return orders;
 }

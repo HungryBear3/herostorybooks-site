@@ -173,7 +173,7 @@ export async function resendDigitalDelivery(orderId: string): Promise<ActionResu
     const sendResult = await sendDigitalDeliveryEmail(order, {
       pdfUrl: order.storyArtifactUrl!,
       reviewUrl: await deliveryReviewUrl(order),
-      idempotencyKeyBase: `admin-digital-${order.id}-${claimId}`,
+      idempotencyKeyBase: `digital-delivery-${order.id}-${order.proofVersion ?? 'legacy'}`,
     });
     if (sendResult.skipped) {
       await finalizeEmailResend(orderId, claimId, {
@@ -277,7 +277,7 @@ export async function resendProofEmail(
     const sendResult = await sendProofReadyEmail(order, {
       proofUrl: order.storyArtifactUrl!,
       reviewUrl,
-      idempotencyKeyBase: `admin-proof-${order.id}-${claimId}`,
+      idempotencyKeyBase: `proof-ready-${order.id}-${order.proofVersion ?? 'legacy'}`,
     });
     if (sendResult.skipped) {
       await finalizeEmailResend(orderId, claimId, {

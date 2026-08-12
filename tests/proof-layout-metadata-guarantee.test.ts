@@ -95,6 +95,6 @@ test('a generated digital order has valid layout metadata on EVERY page + the cu
       after?.proofSourceFingerprint,
       'initial generation must persist the fingerprint of its normalized modern page source',
     );
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
   } finally { cleanup(dir); }
 });

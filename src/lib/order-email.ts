@@ -86,7 +86,10 @@ function assertResendSuccess(
     throw new Error(actionable);
   }
 
-  return { skipped: false as const, id: result.data?.id ?? null };
+  if (!result.data?.id) {
+    throw new Error(`${context} returned no provider message id; outcome requires reconciliation`);
+  }
+  return { skipped: false as const, id: result.data.id };
 }
 
 /**

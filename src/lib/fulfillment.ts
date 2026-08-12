@@ -656,7 +656,11 @@ async function runDigitalFulfillment(order: OrderRecord, claimId: string, deps: 
   // how to recover by resending just the email.
   try {
     const emailOrder = await requireClaimedFulfillmentState(order.id, claimId, {});
-    const emailResult = await sendDigitalDeliveryEmail(emailOrder, { pdfUrl, reviewUrl });
+    const emailResult = await sendDigitalDeliveryEmail(emailOrder, {
+      pdfUrl,
+      reviewUrl,
+      idempotencyKeyBase: `digital-delivery-${order.id}-${proofVersion}`,
+    });
     if (!emailResult.skipped) {
       await requireClaimedFulfillmentState(order.id, claimId, {
         ...proofReleasePatch(order),
@@ -846,7 +850,11 @@ async function runPrintFulfillment(order: OrderRecord, claimId: string, deps: Fu
   // `failed_manual_review`. Admin can resend the proof email separately.
   try {
     const emailOrder = await requireClaimedFulfillmentState(order.id, claimId, {});
-    const emailResult = await sendProofReadyEmail(emailOrder, { reviewUrl, proofUrl });
+    const emailResult = await sendProofReadyEmail(emailOrder, {
+      reviewUrl,
+      proofUrl,
+      idempotencyKeyBase: `proof-ready-${order.id}-${proofVersion}`,
+    });
     if (!emailResult.skipped) {
       await requireClaimedFulfillmentState(order.id, claimId, {
         ...proofReleasePatch(order),
@@ -885,6 +893,7 @@ function printReleaseRefusal(
   if (!isPrintFormat(order.bookFormat)) return 'not_print_order';
   if (order.paymentStatus !== 'paid') return 'order_not_paid';
   if (order.refundedAt) return 'order_refunded';
+  if (order.refundClaimId) return 'refund_in_progress';
   if (order.printJobId || order.status === 'print_in_production' || order.status === 'shipped') {
     return 'print_already_submitted';
   }

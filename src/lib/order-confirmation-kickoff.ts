@@ -1,8 +1,9 @@
 import { sendOrderConfirmationEmail as defaultSendOrderConfirmationEmail } from './order-email.ts';
-import type { OrderRecord } from './orders.ts';
+import { getOrderAuthoritative, type OrderRecord } from './orders.ts';
 
 export interface ScheduleOrderConfirmationEmailDeps {
   send?: typeof defaultSendOrderConfirmationEmail;
+  getOrder?: typeof getOrderAuthoritative;
   setImmediateImpl?: (cb: () => void) => unknown;
   afterImpl?: ((cb: () => void | Promise<void>) => void) | null;
   log?: (line: string) => void;
@@ -40,7 +41,21 @@ export function scheduleOrderConfirmationEmail(
     }
 
     const promise = (async () => {
-      const result = await send(order);
+      const current = deps.getOrder
+        ? await deps.getOrder(order.id)
+        : deps.send
+          ? order
+          : await getOrderAuthoritative(order.id);
+      if (
+        !current
+        || current.paymentStatus !== 'paid'
+        || current.refundedAt
+        || current.stripeRefundId
+        || current.refundClaimId
+      ) {
+        throw new Error('confirmation_email_blocked_by_authoritative_order_state');
+      }
+      const result = await send(current);
       if (result.skipped) {
         throw new Error(`confirmation_email_skipped:${result.reason}`);
       }

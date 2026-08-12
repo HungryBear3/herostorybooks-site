@@ -125,14 +125,16 @@ test('submitPrintJob: works without shippingAddress', withCreds(async () => {
   assert.equal(result.estimatedShipDate, undefined);
 }));
 
-test('submitPrintJob: falls back to lulu-{timestamp} jobId when id missing from response', withCreds(async () => {
+test('submitPrintJob: fails closed when id is missing from response', withCreds(async () => {
   const _fetch = mockFetch([
     { ok: true, body: TOKEN_RESPONSE },
     { ok: true, body: { status: 'CREATED' } },
   ]);
 
-  const result = await submitPrintJob(BASE_ORDER, { fetch: _fetch });
-  assert.match(result.jobId, /^lulu-\d+$/);
+  await assert.rejects(
+    () => submitPrintJob(BASE_ORDER, { fetch: _fetch }),
+    /missing print job id/,
+  );
 }));
 
 // ── API error ─────────────────────────────────────────────────────────────────

@@ -139,6 +139,16 @@ test('authoritative sweep enumeration paginates Blob listing to exhaustion', asy
   assert.deepEqual(orders.map((order) => order.id), ['ord_page_1', 'ord_page_2']);
 });
 
+test('authoritative sweep enumeration fails closed on a repeated Blob cursor', async () => {
+  await assert.rejects(
+    () => withEnv({ BLOB_READ_WRITE_TOKEN: 'blob_rw_test' }, () => listOrdersAuthoritative({
+      listImpl: async () => ({ blobs: [], hasMore: true, cursor: 'same-page' } as never),
+      getOrderImpl: async () => null,
+    })),
+    /repeated a cursor/,
+  );
+});
+
 test('triggerFulfillment uses a durable claim so concurrent callers do not double-start the same paid not_started order', async () => {
   await localStore(async () => {
     const base = createOrderRecord(
