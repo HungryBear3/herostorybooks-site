@@ -108,8 +108,14 @@ export async function POST(request: Request) {
         }
         const upgrade = calculatePrintUpgrade(upgradeOrder, targetFormat);
         if (
-          !upgrade.ok
-          || !isExactSettledCheckoutSession(session, upgradeOrder, session.id, upgrade.amountCents)
+          upgradeOrder.printUpgradeStripeSessionId !== session.id
+          || !upgrade.ok
+          || !isExactSettledCheckoutSession(
+            session,
+            upgradeOrder,
+            upgradeOrder.printUpgradeStripeSessionId,
+            upgrade.amountCents,
+          )
         ) {
           console.error(`Stripe webhook: print-upgrade settlement verification failed for ${upgradeOrderId}`);
           const conflict = await recordPrintUpgradeSettlementConflict(upgradeOrderId, {
@@ -117,7 +123,9 @@ export async function POST(request: Request) {
             targetFormat,
             amountSubtotalCents: session.amount_subtotal,
             amountTotalCents: session.amount_total,
-            reason: upgrade.ok === false ? upgrade.error : 'settlement_facts_mismatch',
+            reason: upgradeOrder.printUpgradeStripeSessionId !== session.id
+              ? 'stripe_session_binding_mismatch'
+              : upgrade.ok === false ? upgrade.error : 'settlement_facts_mismatch',
           });
           if (!conflict) {
             return NextResponse.json({ error: 'Print upgrade conflict persistence failed' }, { status: 500 });

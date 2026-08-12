@@ -23,6 +23,8 @@ function makeDigitalOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
     paymentStatus: 'paid',
     settledAmountCents: 1900,
     stripeSessionId: 'cs_original_digital',
+    printUpgradeStatus: 'checkout_open',
+    printUpgradeStripeSessionId: 'cs_upgrade_premium',
     fulfillmentStatus: 'proof_ready',
     storyArtifactUrl: 'https://example.com/proof.pdf',
     ...overrides,
@@ -121,6 +123,33 @@ test('recordPrintUpgradePayment: records upgrade payment without starting fulfil
   }
 });
 
+test('recordPrintUpgradePayment refuses a different session inside the transaction', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-upgrade-binding-'));
+  process.env.HSB_ORDER_STORE_DIR = dir;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    await persistOrder(makeDigitalOrder());
+    await assert.rejects(
+      recordPrintUpgradePayment('ord_dog_city_upgrade', {
+        stripeSessionId: 'cs_different',
+        amountCents: 4500,
+        targetFormat: 'premium',
+      }),
+      /stripe_session_binding_mismatch/,
+    );
+    const reloaded = await getOrder('ord_dog_city_upgrade');
+    assert.equal(reloaded?.bookFormat, 'digital');
+    assert.equal(reloaded?.printUpgradeStatus, 'checkout_open');
+    assert.equal(reloaded?.printUpgradeStripeSessionId, 'cs_upgrade_premium');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.HSB_ORDER_STORE_DIR;
+  }
+});
+
 test('settled upgrade conflict is durably idempotent by incoming session', async () => {
   const { mkdtempSync, rmSync } = await import('node:fs');
   const os = await import('node:os');
@@ -169,6 +198,8 @@ test('stripe webhook route: print upgrade sessions record payment but do not kic
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
 
   assert.match(src, /kind\s*===\s*'print_upgrade'/);
+  assert.match(src, /upgradeOrder\.printUpgradeStripeSessionId !== session\.id/);
+  assert.match(src, /recordPrintUpgradeSettlementConflict/);
   assert.match(src, /recordPrintUpgradePayment/);
   const upgradeBranch = src.slice(src.indexOf("kind === 'print_upgrade'"), src.indexOf('const orderId', src.indexOf("kind === 'print_upgrade'")));
   assert.doesNotMatch(upgradeBranch, /scheduleFulfillmentKickoff|sendOrderConfirmationEmail|updateOrderPayment/);

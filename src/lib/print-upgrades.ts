@@ -89,6 +89,9 @@ export async function recordPrintUpgradePayment(
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
+      if (current.printUpgradeStripeSessionId !== input.stripeSessionId) {
+        throw new Error(`print upgrade refused for ${orderId}: stripe_session_binding_mismatch`);
+      }
       const upgrade = calculatePrintUpgrade(current, input.targetFormat);
       if (upgrade.ok === false) {
         throw new Error(`print upgrade refused for ${orderId}: ${upgrade.error}`);
