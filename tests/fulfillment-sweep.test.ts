@@ -124,6 +124,21 @@ test('authoritative sweep enumeration fails closed without Blob in production-li
   );
 });
 
+test('authoritative sweep enumeration paginates Blob listing to exhaustion', async () => {
+  const cursors: Array<string | undefined> = [];
+  const orders = await withEnv({ BLOB_READ_WRITE_TOKEN: 'blob_rw_test' }, () => listOrdersAuthoritative({
+    listImpl: async (options) => {
+      cursors.push(options.cursor);
+      return options.cursor
+        ? { blobs: [{ pathname: 'orders/ord_page_2.json' }], hasMore: false }
+        : { blobs: [{ pathname: 'orders/ord_page_1.json' }], hasMore: true, cursor: 'next-page' };
+    },
+    getOrderImpl: async (orderId) => makeSweepOrder({ id: orderId }),
+  }));
+  assert.deepEqual(cursors, [undefined, 'next-page']);
+  assert.deepEqual(orders.map((order) => order.id), ['ord_page_1', 'ord_page_2']);
+});
+
 test('triggerFulfillment uses a durable claim so concurrent callers do not double-start the same paid not_started order', async () => {
   await localStore(async () => {
     const base = createOrderRecord(

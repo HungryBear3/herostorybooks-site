@@ -170,11 +170,14 @@ export async function resendDigitalDelivery(orderId: string): Promise<ActionResu
   }
   const { order, claimId } = claimed;
   try {
-    await sendDigitalDeliveryEmail(order, {
+    const sendResult = await sendDigitalDeliveryEmail(order, {
       pdfUrl: order.storyArtifactUrl!,
       reviewUrl: await deliveryReviewUrl(order),
       idempotencyKeyBase: `admin-digital-${order.id}-${claimId}`,
     });
+    if (sendResult.skipped) {
+      return { ok: false, status: 503, error: `Delivery email not sent: ${sendResult.reason}` };
+    }
     const completed = await finalizeEmailResend(orderId, claimId, {
       fulfillmentStatus: 'complete',
       fulfillmentLastError: null,
@@ -185,13 +188,12 @@ export async function resendDigitalDelivery(orderId: string): Promise<ActionResu
     return { ok: true, detail: 'Digital delivery email resent' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await finalizeEmailResend(orderId, claimId, {
-      fulfillmentLastError: `delivery_email_failed (manual resend): ${message.slice(0, 500)}`,
-    });
+    // Preserve the claim and stable provider idempotency key: an exception may
+    // be a lost response after Resend accepted the message.
     return {
       ok: false,
       status: 502,
-      error: `Delivery email failed: ${message.slice(0, 240)}`,
+      error: `Delivery email outcome requires reconciliation: ${message.slice(0, 220)}`,
     };
   }
 }
@@ -221,12 +223,15 @@ export async function markOrderShipped(
   const tracking = (input.trackingNumber ?? '').trim();
   const trackingUrl = (input.trackingUrl ?? '').trim();
 
-  await updateFulfillmentState(orderId, {
+  const shipped = await updateFulfillmentState(orderId, {
     status: 'shipped',
     ...(tracking ? { trackingNumber: tracking } : {}),
     ...(trackingUrl ? { trackingUrl } : {}),
     shippedAt: new Date().toISOString(),
   });
+  if (!shipped) {
+    return { ok: false, status: 409, error: 'Shipping transition blocked by an active refund operation' };
+  }
 
   const updated = await getOrder(orderId);
   if (updated) {
@@ -266,20 +271,23 @@ export async function resendProofEmail(
   const { order, claimId } = claimed;
   const reviewUrl = `${baseUrl.replace(/\/$/, '')}/review/${order.id}?token=${order.proofApprovalToken}`;
   try {
-    await sendProofReadyEmail(order, {
+    const sendResult = await sendProofReadyEmail(order, {
       proofUrl: order.storyArtifactUrl!,
       reviewUrl,
       idempotencyKeyBase: `admin-proof-${order.id}-${claimId}`,
     });
+    if (sendResult.skipped) {
+      return { ok: false, status: 503, error: `Proof email not sent: ${sendResult.reason}` };
+    }
     const finalized = await finalizeEmailResend(orderId, claimId);
     if (!finalized) {
       return { ok: false, status: 409, error: 'Email sent, but resend claim was lost before finalization' };
     }
     return { ok: true, detail: 'Proof email resent' };
   } catch (err) {
-    await finalizeEmailResend(orderId, claimId);
     const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, status: 502, error: `Proof email failed: ${message.slice(0, 240)}` };
+    // Preserve the claim and stable provider idempotency key for reconciliation.
+    return { ok: false, status: 502, error: `Proof email outcome requires reconciliation: ${message.slice(0, 220)}` };
   }
 }
 
@@ -455,7 +463,11 @@ export async function refundOrder(
   const persisted = await withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
-      if (current.refundClaimId !== claimId || current.refundPaymentIntent !== paymentIntent) {
+      if (
+        current.refundClaimId !== claimId
+        || current.refundPaymentIntent !== paymentIntent
+        || preprintRefundRefusalReason(current)
+      ) {
         return { abort: null };
       }
       const updated: OrderRecord = {
@@ -498,8 +510,12 @@ export function preprintRefundRefusalReason(order: OrderRecord): string | null {
   }
   if (order.status === 'shipped') return 'already_shipped';
   if (order.status === 'print_in_production') return 'already_in_print';
+  if (order.fulfillmentKickoffId) return 'fulfillment_active';
   if (
-    order.fulfillmentStatus === 'submitting_to_print'
+    order.fulfillmentStatus === 'generating_story'
+    || order.fulfillmentStatus === 'generating_images'
+    || order.fulfillmentStatus === 'building_pdf'
+    || order.fulfillmentStatus === 'submitting_to_print'
     || order.fulfillmentStatus === 'complete'
   ) {
     return 'already_finalized';
@@ -587,7 +603,10 @@ export async function applyLuluStatusUpdate(
     patch.fulfillmentLastError = `Lulu returned ${status}`;
   }
 
-  await updateFulfillmentState(orderId, patch);
+  const applied = await updateFulfillmentState(orderId, patch);
+  if (!applied) {
+    return { ok: false, status: 409, error: 'Lulu transition blocked by an active refund operation' };
+  }
 
   // Send shipped email on SHIPPED transition (idempotent: only if not already shipped)
   if (status === 'SHIPPED' && order.status !== 'shipped') {

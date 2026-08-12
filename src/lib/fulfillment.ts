@@ -134,7 +134,12 @@ async function claimFulfillmentKickoff(orderId: string): Promise<KickoffClaimRes
   return withOrderTransaction<KickoffClaimResult>(
     orderId,
     (current) => {
-      if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
+      if (
+        current.paymentStatus !== 'paid'
+        || current.refundedAt
+        || current.stripeRefundId
+        || current.refundClaimId
+      ) {
         return { abort: { kind: 'payment_no_longer_paid' } };
       }
       if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {
@@ -228,14 +233,17 @@ async function updateClaimedFulfillmentState(
         current.paymentStatus !== 'paid'
         || current.refundedAt
         || current.stripeRefundId
+        || current.refundClaimId
         || current.fulfillmentMode !== 'auto'
         || current.internalDisposition != null
       ) return { abort: null };
       const updated = applyFulfillmentPatchTo(current, {
         ...patch,
-        // Heartbeat the claim at every fenced transition. Recovery takeover is
-        // allowed only after this lease exceeds the platform execution bound.
-        fulfillmentKickoffAt: new Date().toISOString(),
+        // Heartbeat active claims, but allow the owning worker to close its
+        // lease atomically at the terminal transition.
+        fulfillmentKickoffAt: patch.fulfillmentKickoffId === null
+          ? null
+          : new Date().toISOString(),
       });
       return { commit: updated, result: updated };
     },
@@ -650,7 +658,16 @@ async function runDigitalFulfillment(order: OrderRecord, claimId: string, deps: 
     const emailOrder = await requireClaimedFulfillmentState(order.id, claimId, {});
     const emailResult = await sendDigitalDeliveryEmail(emailOrder, { pdfUrl, reviewUrl });
     if (!emailResult.skipped) {
-      await requireClaimedFulfillmentState(order.id, claimId, proofReleasePatch(order));
+      await requireClaimedFulfillmentState(order.id, claimId, {
+        ...proofReleasePatch(order),
+        fulfillmentKickoffId: null,
+        fulfillmentKickoffAt: null,
+      });
+    } else {
+      await requireClaimedFulfillmentState(order.id, claimId, {
+        fulfillmentKickoffId: null,
+        fulfillmentKickoffAt: null,
+      });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -661,6 +678,8 @@ async function runDigitalFulfillment(order: OrderRecord, claimId: string, deps: 
     await updateClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'delivery_email_failed',
       fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+      fulfillmentKickoffId: null,
+      fulfillmentKickoffAt: null,
     }));
   }
 }
@@ -827,7 +846,16 @@ async function runPrintFulfillment(order: OrderRecord, claimId: string, deps: Fu
     const emailOrder = await requireClaimedFulfillmentState(order.id, claimId, {});
     const emailResult = await sendProofReadyEmail(emailOrder, { reviewUrl, proofUrl });
     if (!emailResult.skipped) {
-      await requireClaimedFulfillmentState(order.id, claimId, proofReleasePatch(order));
+      await requireClaimedFulfillmentState(order.id, claimId, {
+        ...proofReleasePatch(order),
+        fulfillmentKickoffId: null,
+        fulfillmentKickoffAt: null,
+      });
+    } else {
+      await requireClaimedFulfillmentState(order.id, claimId, {
+        fulfillmentKickoffId: null,
+        fulfillmentKickoffAt: null,
+      });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -838,6 +866,8 @@ async function runPrintFulfillment(order: OrderRecord, claimId: string, deps: Fu
     await updateClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'delivery_email_failed',
       fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+      fulfillmentKickoffId: null,
+      fulfillmentKickoffAt: null,
     }));
   }
 }

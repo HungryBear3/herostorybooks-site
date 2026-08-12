@@ -277,3 +277,31 @@ test('ambiguous Stripe refund leaves a durable reconciliation claim', { concurre
     assert.equal(after?.paymentStatus, 'paid');
   } finally { cleanup(dir); }
 });
+
+test('refund is refused while automatic fulfillment is actively generating', { concurrency: false }, async () => {
+  const dir = makeTmp();
+  try {
+    await seed({ fulfillmentStatus: 'generating_images', fulfillmentKickoffId: 'active-worker' });
+    let createCalls = 0;
+    const result = await refundOrder('ord_r', 'race', { getStripe: () => ({
+      retrieveSession: async () => ({ payment_intent: 'pi_race' }),
+      createRefund: async () => { createCalls += 1; return { id: 're_race' }; },
+    }) });
+    assert.equal(result.ok, false);
+    assert.equal(createCalls, 0);
+  } finally { cleanup(dir); }
+});
+
+test('refund is refused while a proof-ready fulfillment worker still owns the email lease', { concurrency: false }, async () => {
+  const dir = makeTmp();
+  try {
+    await seed({ fulfillmentKickoffId: 'email-worker', fulfillmentKickoffAt: new Date().toISOString() });
+    let createCalls = 0;
+    const result = await refundOrder('ord_r', 'race', { getStripe: () => ({
+      retrieveSession: async () => ({ payment_intent: 'pi_email_race' }),
+      createRefund: async () => { createCalls += 1; return { id: 're_email_race' }; },
+    }) });
+    assert.equal(result.ok, false);
+    assert.equal(createCalls, 0);
+  } finally { cleanup(dir); }
+});

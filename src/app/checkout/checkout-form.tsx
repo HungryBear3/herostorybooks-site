@@ -2143,6 +2143,7 @@ export function CheckoutForm() {
                     <button
                       type="button"
                       onClick={() => {
+                        heroPhotoOperationRef.current += 1;
                         setForm((prev) => ({
                           ...prev,
                           photoFile: null,

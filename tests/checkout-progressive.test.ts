@@ -72,6 +72,11 @@ test('checkout source fences overlapping and reset photo callbacks with operatio
   assert.match(CHECKOUT_FORM_SRC, /operation !== supportingPhotoOperationRef\.current/);
   assert.match(CHECKOUT_FORM_SRC, /heroPhotoOperationRef\.current \+= 1/);
   assert.match(CHECKOUT_FORM_SRC, /supportingPhotoOperationRef\.current \+= 1/);
+  const heroRemove = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('Change Photo') - 500,
+    CHECKOUT_FORM_SRC.indexOf('Change Photo') + 200,
+  );
+  assert.match(heroRemove, /heroPhotoOperationRef\.current \+= 1/);
 });
 
 test('supporting photo completion is draft-only and cancel/remove invalidate pending work', () => {

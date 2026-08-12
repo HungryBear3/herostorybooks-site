@@ -456,6 +456,22 @@ test('concurrent digital resends acquire one durable claim and send once', async
   assert.equal(persisted?.fulfillmentStatus, 'complete');
 });
 
+test('digital resend without provider config reports failure and does not mark complete', async (t) => {
+  const dir = makeTmpDir();
+  t.after(() => cleanupTmpDir(dir));
+  delete process.env.HSB_RESEND_API_KEY;
+  delete process.env.RESEND_API_KEY;
+  const order = await makeDigitalOrder({
+    fulfillmentStatus: 'delivery_email_failed',
+    storyArtifactUrl: 'https://cdn.example.com/ord/missing-key.pdf',
+  });
+  const result = await resendDigitalDelivery(order.id);
+  assert.equal(result.ok, false);
+  const persisted = await getOrder(order.id);
+  assert.equal(persisted?.fulfillmentStatus, 'delivery_email_failed');
+  assert.ok(persisted?.emailResendClaimId);
+});
+
 // ── Test 4: triggerFulfillment skips an order already at delivery_email_failed
 
 test('triggerFulfillment skips delivery_email_failed instead of regenerating', async (t) => {

@@ -113,9 +113,11 @@ test('resendProofEmail: no proof yet → 409', async () => {
   } finally { cleanup(dir); }
 });
 
-test('resendProofEmail: proof_ready state → ok (email skipped without key)', async () => {
+test('resendProofEmail: proof_ready state without provider key fails closed and retains claim', async () => {
   const dir = makeTmp();
   try {
+    delete process.env.HSB_RESEND_API_KEY;
+    delete process.env.RESEND_API_KEY;
     await seed({
       bookFormat: 'classic',
       paymentStatus: 'paid',
@@ -125,7 +127,9 @@ test('resendProofEmail: proof_ready state → ok (email skipped without key)', a
     }, 'ord_proof_ready');
 
     const r = await resendProofEmail('ord_proof_ready', 'https://h.com');
-    assert.equal(r.ok, true);
+    assert.equal(r.ok, false);
+    const persisted = await getOrder('ord_proof_ready');
+    assert.ok(persisted?.emailResendClaimId);
   } finally { cleanup(dir); }
 });
 

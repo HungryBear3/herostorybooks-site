@@ -1616,7 +1616,10 @@ export async function listOrders(): Promise<OrderRecord[]> {
 /** Strict durable enumeration for recovery/cron paths.
  * Never falls back to ephemeral storage in production-like environments and
  * re-reads every listed order through the authoritative version-bound path. */
-export async function listOrdersAuthoritative(): Promise<OrderRecord[]> {
+export async function listOrdersAuthoritative(deps: {
+  listImpl?: typeof list;
+  getOrderImpl?: typeof getOrderAuthoritative;
+} = {}): Promise<OrderRecord[]> {
   const token = getBlobToken();
   if (!token) {
     if (requiresDurablePersistence()) {
@@ -1628,15 +1631,31 @@ export async function listOrdersAuthoritative(): Promise<OrderRecord[]> {
     return listOrders();
   }
 
-  const { blobs } = await list({ prefix: getOrdersListPrefix(), token });
+  const listImpl = deps.listImpl ?? list;
+  const getOrderImpl = deps.getOrderImpl ?? getOrderAuthoritative;
   const orders: OrderRecord[] = [];
-  for (const blob of blobs) {
-    if (!blob.pathname.endsWith('.json')) continue;
-    const orderId = blob.pathname.slice(getOrdersListPrefix().length, -'.json'.length);
-    if (!orderId || orderId.includes('/')) continue;
-    const order = await getOrderAuthoritative(orderId);
-    if (order) orders.push(order);
-  }
+  let cursor: string | undefined;
+  do {
+    const page = await listImpl({
+      prefix: getOrdersListPrefix(),
+      token,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const blob of page.blobs) {
+      if (!blob.pathname.endsWith('.json')) continue;
+      const orderId = blob.pathname.slice(getOrdersListPrefix().length, -'.json'.length);
+      if (!orderId || orderId.includes('/')) continue;
+      const order = await getOrderImpl(orderId);
+      if (order) orders.push(order);
+    }
+    cursor = page.hasMore ? page.cursor : undefined;
+    if (page.hasMore && !cursor) {
+      throw new OrderPersistenceError(
+        'fulfillment-sweep',
+        'Blob listing reported hasMore without a cursor',
+      );
+    }
+  } while (cursor);
   return orders;
 }
 
@@ -1753,6 +1772,13 @@ export async function updateFulfillmentState(
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
+      if (
+        current.refundClaimId
+        && patch.refundedAt === undefined
+        && patch.stripeRefundId === undefined
+      ) {
+        return { abort: null };
+      }
       if (
         current.emailResendClaimId
         && (patch.internalDisposition !== undefined || patch.refundedAt !== undefined || patch.stripeRefundId !== undefined)
