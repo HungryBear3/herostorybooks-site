@@ -152,13 +152,13 @@ test('retryOrderFulfillment: unpaid order → 400, no state change', async () =>
   } finally { cleanup(dir); }
 });
 
-test('retryOrderFulfillment source avoids a redundant write for an already-clean paid kickoff', () => {
+test('retryOrderFulfillment uses the transactional retry preparation helper instead of a blind state reset', () => {
   const source = readFileSync(
     new URL('../src/lib/admin-actions.ts', import.meta.url),
     'utf8',
   );
-  assert.match(source, /const alreadyCleanStart\s*=/);
-  assert.match(source, /if \(!alreadyCleanStart\) \{\s*await updateFulfillmentState/);
+  assert.match(source, /await prepareOrderForAdminFulfillmentRetry\(orderId\)/);
+  assert.doesNotMatch(source, /await updateFulfillmentState\(orderId,\s*\{\s*fulfillmentStatus:\s*['"]not_started['"]/);
 });
 
 test('retryOrderFulfillment: provider failure stays failed and returns an honest 502', async () => {

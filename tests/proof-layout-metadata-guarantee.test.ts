@@ -76,7 +76,10 @@ test('withRecommendedPageMetadata fills a valid layout on every page (choke poin
 test('a generated digital order has valid layout metadata on EVERY page + the current layout version', async () => {
   const dir = makeTmp();
   try {
-    const order = createOrderRecord({ childName: 'Kid', bookFormat: 'digital', email: 'r@example.invalid' }, { id: 'ord_meta', now: '2026-08-05T00:00:00.000Z' });
+    const order = createOrderRecord(
+      { childName: 'Kid', bookFormat: 'digital', email: 'r@example.invalid' },
+      { id: 'ord_meta', now: '2026-08-05T00:00:00.000Z', fulfillmentMode: 'auto' },
+    );
     await persistOrder({ ...order, paymentStatus: 'paid' });
 
     await triggerFulfillment('ord_meta', DEPS);

@@ -301,6 +301,10 @@ export interface OrderRecord extends OrderInput {
   stripeSessionId?: string | null;
   shippingAddress?: ShippingAddress | null;
   fulfillmentStatus?: FulfillmentStatus;
+  /** Durable kickoff-claim timestamp for fulfillment start dedupe/recovery. */
+  fulfillmentKickoffAt?: string | null;
+  /** Opaque kickoff-claim ownership token paired with fulfillmentKickoffAt. */
+  fulfillmentKickoffId?: string | null;
   fulfillmentAttempts?: number;
   fulfillmentLastError?: string | null;
   storyArtifactUrl?: string | null;
@@ -1511,6 +1515,53 @@ export async function getOrder(orderId: string) {
   }
 }
 
+export async function getOrderAuthoritative(
+  orderId: string,
+  deps: PublicVersionedReadDeps = {},
+) {
+  const token = getBlobToken();
+  const requireDurable = requiresDurablePersistence();
+
+  if (token) {
+    try {
+      if (getBlobAccessMode() === 'public') {
+        const raw = await readAuthoritativeOrderBlobVersioned(getOrderBlobPath(orderId), token, deps);
+        return raw ? parseOrderRecord(raw.body) : null;
+      }
+      const versioned = await readOrderVersioned(orderId);
+      return versioned?.order ?? null;
+    } catch (err) {
+      if (requireDurable) {
+        console.error(
+          `[orders] getOrderAuthoritative: blob read failed in production-like env (orderId=${orderId}):`,
+          err,
+        );
+        throw err;
+      }
+      console.warn(`[orders] getOrderAuthoritative blob read failed in dev for ${orderId}:`, err);
+    }
+  } else if (requireDurable) {
+    console.error(
+      `[orders] getOrderAuthoritative: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=${orderId}).`,
+    );
+    throw new OrderPersistenceError(
+      orderId,
+      'BLOB_READ_WRITE_TOKEN missing in production — cannot read order authoritatively',
+    );
+  }
+
+  try {
+    const file = await readFile(`${getOrderStoreDir()}/${orderId}.json`, 'utf8');
+    return parseOrderRecord(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
 export async function listOrders(): Promise<OrderRecord[]> {
   const token = getBlobToken();
 
@@ -1575,6 +1626,8 @@ export async function updateOrderStatus(orderId: string, status: OrderStatus) {
 type FulfillmentPatch = Partial<Pick<
   OrderRecord,
   | 'fulfillmentStatus'
+  | 'fulfillmentKickoffAt'
+  | 'fulfillmentKickoffId'
   | 'fulfillmentAttempts'
   | 'fulfillmentLastError'
   | 'storyArtifactUrl'
@@ -1666,6 +1719,42 @@ export async function updateFulfillmentState(
       const updated: OrderRecord = {
         ...current,
         ...patch,
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+/** Explicit operator transition from a paid, undisposed order back to auto. */
+export async function prepareOrderForAdminFulfillmentRetry(
+  orderId: string,
+): Promise<OrderRecord | null> {
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
+        return { abort: null };
+      }
+      if (current.internalDisposition != null) return { abort: null };
+      const status = current.fulfillmentStatus ?? 'not_started';
+      if (!['not_started', 'failed_manual_review'].includes(status)) return { abort: null };
+      if (
+        current.fulfillmentKickoffId
+        || current.printSubmissionAttemptedAt
+        || current.printJobId
+        || current.status === 'print_in_production'
+        || current.status === 'shipped'
+      ) return { abort: null };
+      const updated: OrderRecord = {
+        ...current,
+        fulfillmentMode: 'auto',
+        fulfillmentStatus: 'not_started',
+        fulfillmentKickoffAt: null,
+        fulfillmentKickoffId: null,
+        fulfillmentAttempts: 0,
+        fulfillmentLastError: null,
         updatedAt: new Date().toISOString(),
       };
       return { commit: updated, result: updated };
@@ -1909,6 +1998,54 @@ export async function readPublicOrderBlobVersioned(
 
   throw new Error(
     `Public Blob changed during ${PUBLIC_VERSIONED_READ_MAX_ATTEMPTS} versioned read attempt(s)`,
+  );
+}
+
+/**
+ * Authoritative public-store read for payment/fulfillment safety boundaries.
+ *
+ * This binds the bytes to the strongly-consistent `list()` metadata record but
+ * retrieves the body from the exact listed `downloadUrl`, avoiding stale public
+ * CDN bytes immediately after an overwrite. Ordinary public read-only paths
+ * stay on `blob.url`; this helper is intentionally narrow.
+ */
+export async function readAuthoritativeOrderBlobVersioned(
+  pathname: string,
+  token: string,
+  deps: PublicVersionedReadDeps = {},
+): Promise<{ body: string; version: string } | null> {
+  const listImpl = deps.listImpl ?? ((options) => list(options));
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const findBlob = (blobs: Array<{ pathname: string; url: string; etag: string; downloadUrl?: string }>) =>
+    blobs.find((candidate) => candidate.pathname === pathname);
+
+  for (let attempt = 1; attempt <= PUBLIC_VERSIONED_READ_MAX_ATTEMPTS; attempt += 1) {
+    const { blobs } = await listImpl({ prefix: pathname, token });
+    const blob = findBlob(blobs);
+    if (!blob) return null;
+    if (!blob.etag) {
+      throw new Error('Authoritative Blob list response omitted the order ETag');
+    }
+    const listedVersion = normalizeEtag(blob.etag);
+    const url = new URL(
+      blob.downloadUrl || `${blob.url}${blob.url.includes('?') ? '&' : '?'}download=1`,
+    );
+    url.searchParams.set('hsb-authoritative-read', `${Date.now()}-${attempt}`);
+
+    const response = await fetchImpl(url, { cache: 'no-store' });
+    if (response.status === 404 || response.status === 412) continue;
+    if (!response.ok) {
+      throw new Error(`Authoritative Blob fetch failed: ${response.status} ${response.statusText}`.trim());
+    }
+
+    const body = await response.text();
+    const responseVersion = normalizeEtag(response.headers.get('etag'));
+    if (!responseVersion || responseVersion !== listedVersion) continue;
+    return { body, version: blob.etag };
+  }
+
+  throw new Error(
+    `Authoritative Blob changed during ${PUBLIC_VERSIONED_READ_MAX_ATTEMPTS} versioned read attempt(s)`,
   );
 }
 

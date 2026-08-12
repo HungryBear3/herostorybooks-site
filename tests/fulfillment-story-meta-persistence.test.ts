@@ -78,6 +78,7 @@ async function makeDigitalOrder(
     {
       id: `ord_${Math.random().toString(36).slice(2, 10)}`,
       now: '2026-05-15T10:00:00Z',
+      fulfillmentMode: 'auto',
     },
   );
   const order: OrderRecord = {
@@ -98,6 +99,7 @@ async function makePrintOrder(
     {
       id: `ord_${Math.random().toString(36).slice(2, 10)}`,
       now: '2026-05-15T10:00:00Z',
+      fulfillmentMode: 'auto',
     },
   );
   const order: OrderRecord = {

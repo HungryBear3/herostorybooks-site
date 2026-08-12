@@ -2,7 +2,15 @@ import Stripe from 'stripe';
 
 import { getOptionalStripeSecretKey } from './stripe-env.ts';
 
-import { appendAuditEvent, getOrder, updateFulfillmentState, updateOrderStatus, type OrderRecord } from './orders.ts';
+import {
+  appendAuditEvent,
+  getOrder,
+  prepareOrderForAdminFulfillmentRetry,
+  updateFulfillmentState,
+  updateOrderStatus,
+  withOrderTransaction,
+  type OrderRecord,
+} from './orders.ts';
 import { triggerFulfillment, approvePrintProof, type FulfillmentDeps } from './fulfillment.ts';
 import {
   sendProofReadyEmail,
@@ -50,78 +58,21 @@ export async function retryOrderFulfillment(
     };
   }
 
-  // Smart short-circuit: when the order's artifacts are already persisted
-  // and the only failure was the delivery email (Resend domain not
-  // verified, transient SMTP error, etc.), we MUST NOT reset to
-  // not_started and regenerate. That would re-pay for the entire image
-  // pipeline for a book that's already correct. Resend just the email.
+  // Email delivery is a customer-visible side effect and cannot be made atomic
+  // with refund/disposition changes inside this generic retry action. Fail
+  // closed and require the dedicated resend operation instead of sending from
+  // a stale pre-read or silently regenerating already-correct artifacts.
   if (order.fulfillmentStatus === 'delivery_email_failed') {
-    const isDigital = order.bookFormat === 'digital';
-    if (isDigital && order.storyArtifactUrl) {
-      try {
-        await sendDigitalDeliveryEmail(order, {
-          pdfUrl: order.storyArtifactUrl,
-          reviewUrl: await deliveryReviewUrl(order),
-        });
-        await updateFulfillmentState(orderId, {
-          fulfillmentStatus: 'complete',
-          fulfillmentLastError: null,
-        });
-        return { ok: true, detail: 'Delivery email resent (artifacts already existed)' };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        await updateFulfillmentState(orderId, {
-          fulfillmentLastError: `delivery_email_failed (retry): ${message.slice(0, 500)}`,
-        });
-        return {
-          ok: false,
-          status: 502,
-          error: `Delivery email still failing: ${message.slice(0, 240)}`,
-        };
-      }
-    }
-    if (!isDigital && order.storyArtifactUrl && order.proofApprovalToken) {
-      const baseUrl = process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'http://localhost:3000';
-      const reviewUrl = `${baseUrl}/review/${order.id}?token=${order.proofApprovalToken}`;
-      try {
-        await sendProofReadyEmail(order, { reviewUrl, proofUrl: order.storyArtifactUrl });
-        await updateFulfillmentState(orderId, {
-          fulfillmentStatus: 'proof_ready',
-          fulfillmentLastError: null,
-        });
-        return { ok: true, detail: 'Proof-ready email resent (artifacts already existed)' };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        await updateFulfillmentState(orderId, {
-          fulfillmentLastError: `delivery_email_failed (retry): ${message.slice(0, 500)}`,
-        });
-        return {
-          ok: false,
-          status: 502,
-          error: `Proof email still failing: ${message.slice(0, 240)}`,
-        };
-      }
-    }
-    // delivery_email_failed but somehow no artifact URL — fall through to
-    // a normal full retry; that path will at least regenerate properly.
+    return {
+      ok: false,
+      status: 409,
+      error: 'Artifacts already exist; use the dedicated email resend action after revalidating the order',
+    };
   }
 
-  // Do not overwrite an already-clean kickoff state. On Vercel Blob the
-  // metadata ETag advances before the public bytes necessarily converge; a
-  // redundant reset immediately followed by triggerFulfillment can therefore
-  // manufacture its own read-after-write race. Failed/manual-review orders
-  // still receive the reset they need, while a paid untouched order starts
-  // directly from its already-authoritative record.
-  const alreadyCleanStart =
-    (order.fulfillmentStatus ?? 'not_started') === 'not_started'
-    && (order.fulfillmentAttempts ?? 0) === 0
-    && !order.fulfillmentLastError;
-  if (!alreadyCleanStart) {
-    await updateFulfillmentState(orderId, {
-      fulfillmentStatus: 'not_started',
-      fulfillmentAttempts: 0,
-      fulfillmentLastError: null,
-    });
+  const prepared = await prepareOrderForAdminFulfillmentRetry(orderId);
+  if (!prepared) {
+    return { ok: false, status: 409, error: 'Order is not eligible for an automatic retry' };
   }
 
   // Awaited so the admin retry actually waits for fulfillment to start.
@@ -154,7 +105,24 @@ export async function retryOrderFulfillment(
  * `retryOrderFulfillment` or `resendProofEmail` paths in that case).
  */
 export async function resendDigitalDelivery(orderId: string): Promise<ActionResult> {
-  const order = await getOrder(orderId);
+  const order = await withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (
+        current.bookFormat !== 'digital'
+        || current.paymentStatus !== 'paid'
+        || current.refundedAt
+        || current.stripeRefundId
+        || current.internalDisposition != null
+        || current.fulfillmentStatus !== 'delivery_email_failed'
+        || !current.storyArtifactUrl
+      ) return { abort: null };
+      // No write is needed: the authoritative transaction read itself is the
+      // final eligibility snapshot immediately before the explicit send.
+      return { abort: current };
+    },
+    { notFound: () => null },
+  );
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
   if (order.bookFormat !== 'digital') {
     return {
@@ -171,16 +139,47 @@ export async function resendDigitalDelivery(orderId: string): Promise<ActionResu
       pdfUrl: order.storyArtifactUrl,
       reviewUrl: await deliveryReviewUrl(order),
     });
-    await updateFulfillmentState(orderId, {
-      fulfillmentStatus: 'complete',
-      fulfillmentLastError: null,
-    });
+    const completed = await withOrderTransaction<OrderRecord | null>(
+      orderId,
+      (current) => {
+        if (
+          current.paymentStatus !== 'paid'
+          || current.refundedAt
+          || current.stripeRefundId
+          || current.internalDisposition != null
+          || current.fulfillmentStatus !== 'delivery_email_failed'
+          || current.storyArtifactUrl !== order.storyArtifactUrl
+        ) return { abort: null };
+        const updated = { ...current, fulfillmentStatus: 'complete' as const, fulfillmentLastError: null };
+        return { commit: updated, result: updated };
+      },
+      { notFound: () => null },
+    );
+    if (!completed) {
+      return { ok: false, status: 409, error: 'Email sent, but order changed before resend finalization' };
+    }
     return { ok: true, detail: 'Digital delivery email resent' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await updateFulfillmentState(orderId, {
-      fulfillmentLastError: `delivery_email_failed (manual resend): ${message.slice(0, 500)}`,
-    });
+    await withOrderTransaction<OrderRecord | null>(
+      orderId,
+      (current) => {
+        if (
+          current.paymentStatus !== 'paid'
+          || current.refundedAt
+          || current.stripeRefundId
+          || current.internalDisposition != null
+          || current.fulfillmentStatus !== 'delivery_email_failed'
+          || current.storyArtifactUrl !== order.storyArtifactUrl
+        ) return { abort: null };
+        const updated = {
+          ...current,
+          fulfillmentLastError: `delivery_email_failed (manual resend): ${message.slice(0, 500)}`,
+        };
+        return { commit: updated, result: updated };
+      },
+      { notFound: () => null },
+    );
     return {
       ok: false,
       status: 502,

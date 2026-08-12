@@ -51,7 +51,7 @@ function order(id: string, overrides: Partial<OrderRecord> = {}): OrderRecord {
   return {
     ...createOrderRecord(
       { childName: 'Synthetic Child', bookFormat: 'digital', email: 'reviewer@example.invalid' },
-      { id, now: NOW },
+      { id, now: NOW, fulfillmentMode: 'auto' },
     ),
     paymentStatus: 'paid',
     reviewStatus: 'in_review',
@@ -303,7 +303,7 @@ test('initial digital and print fulfillment never publish a proof from a stale r
       const orderId = `ord_synthetic_initial_stale_${format}`;
       const seeded = createOrderRecord(
         { childName: 'Synthetic Original', bookFormat: format, email: 'reviewer@example.invalid' },
-        { id: orderId, now: NOW },
+        { id: orderId, now: NOW, fulfillmentMode: 'auto' },
       );
       await persistOrder({ ...seeded, paymentStatus: 'paid', fulfillmentStatus: 'not_started' });
       const story = {
@@ -346,7 +346,7 @@ test('initial digital and print fulfillment never publish a proof from a stale r
     const refundOrderId = 'ord_synthetic_initial_stale_refund';
     const refundSeed = createOrderRecord(
       { childName: 'Synthetic Refund Hero', bookFormat: 'digital', email: 'reviewer@example.invalid' },
-      { id: refundOrderId, now: NOW },
+      { id: refundOrderId, now: NOW, fulfillmentMode: 'auto' },
     );
     await persistOrder({ ...refundSeed, paymentStatus: 'paid', fulfillmentStatus: 'not_started' });
     const refundStory = {
@@ -391,7 +391,8 @@ test('initial digital and print fulfillment never publish a proof from a stale r
     assert.equal(afterRefund?.paymentStatus, 'refunded');
     assert.equal(afterRefund?.refundedAt, '2026-08-05T21:00:00.000Z');
     assert.equal(afterRefund?.stripeRefundId, 're_synthetic_concurrent');
-    assert.equal(afterRefund?.fulfillmentAttempts, 1, 'refunded fulfillment must be terminal, not retried');
+    assert.equal(afterRefund?.fulfillmentAttempts, undefined, 'stale worker must not write diagnostics onto refund');
+    assert.equal(afterRefund?.fulfillmentLastError ?? null, null);
     assert.equal(afterRefund?.storyArtifactUrl ?? null, null);
     assert.equal(afterRefund?.proofSourceFingerprint ?? null, null);
     assert.equal(afterRefund?.proofVersion ?? null, null);
@@ -406,7 +407,7 @@ test('digital fulfillment stops before upload when refunded during proof renderi
   try {
     const seeded = createOrderRecord(
       { childName: 'Synthetic Digital Refund Hero', bookFormat: 'digital', email: 'reviewer@example.invalid' },
-      { id: orderId, now: NOW },
+      { id: orderId, now: NOW, fulfillmentMode: 'auto' },
     );
     await persistOrder({ ...seeded, paymentStatus: 'paid', fulfillmentStatus: 'not_started' });
     const story = {
@@ -445,7 +446,8 @@ test('digital fulfillment stops before upload when refunded during proof renderi
     const after = await getOrder(orderId);
     assert.equal(uploadCalls, 0, 'refund during digital PDF build must stop before upload');
     assert.equal(after?.paymentStatus, 'refunded');
-    assert.equal(after?.fulfillmentAttempts, 1);
+    assert.equal(after?.fulfillmentAttempts, undefined);
+    assert.equal(after?.fulfillmentLastError ?? null, null);
     assert.equal(after?.storyArtifactUrl ?? null, null);
     assert.equal(after?.proofSourceFingerprint ?? null, null);
     assert.equal(after?.proofVersion ?? null, null);
@@ -477,7 +479,7 @@ test('print fulfillment stops after a concurrent refund at every expensive artif
       const orderId = `ord_synthetic_print_refund_${scenario.phase}`;
       const seeded = createOrderRecord(
         { childName: 'Synthetic Print Refund Hero', bookFormat: 'classic', email: 'reviewer@example.invalid' },
-        { id: orderId, now: NOW },
+        { id: orderId, now: NOW, fulfillmentMode: 'auto' },
       );
       await persistOrder({ ...seeded, paymentStatus: 'paid', fulfillmentStatus: 'not_started' });
 
@@ -527,7 +529,8 @@ test('print fulfillment stops after a concurrent refund at every expensive artif
       assert.equal(after?.paymentStatus, 'refunded', `${scenario.phase}: payment state`);
       assert.equal(after?.refundedAt, '2026-08-05T22:55:00.000Z');
       assert.equal(after?.stripeRefundId, `re_synthetic_print_${scenario.phase}`);
-      assert.equal(after?.fulfillmentAttempts, 1, `${scenario.phase}: refund must be terminal`);
+      assert.equal(after?.fulfillmentAttempts, undefined, `${scenario.phase}: stale worker cannot annotate refund`);
+      assert.equal(after?.fulfillmentLastError ?? null, null);
       assert.equal(after?.storyArtifactUrl ?? null, null);
       assert.equal(after?.printInteriorArtifactUrl ?? null, null);
       assert.equal(after?.proofSourceFingerprint ?? null, null);

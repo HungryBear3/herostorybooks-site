@@ -74,7 +74,11 @@ async function makeOrder(
 ): Promise<OrderRecord> {
   const base = createOrderRecord(
     { childName: 'Luna', bookFormat: 'digital', email: 'luna@example.com' },
-    { id: `ord_${Math.random().toString(36).slice(2, 10)}`, now: '2026-04-23T10:00:00Z' },
+    {
+      id: `ord_${Math.random().toString(36).slice(2, 10)}`,
+      now: '2026-04-23T10:00:00Z',
+      fulfillmentMode: 'auto',
+    },
   );
   const order: OrderRecord = { ...base, ...overrides };
   await persistOrder(order);
