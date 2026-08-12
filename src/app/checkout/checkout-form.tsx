@@ -21,6 +21,13 @@ import {
 import { getFathersDayCountdown } from "@/lib/fathers-day";
 import { track } from "@/lib/analytics";
 import { buildAutoShrinkNotice, shrinkPhotoForUpload } from "@/lib/photo-upload";
+import {
+  createSupportingCharacterDraft,
+  canNavigateToCheckoutStep,
+  getCheckoutPaymentBlockers,
+  getCheckoutProgress,
+  supportingCharacterDraftMissingFields,
+} from "@/lib/checkout-progressive";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -379,6 +386,14 @@ function checkoutReferralCode(): string {
 
 export function CheckoutForm() {
   const [form, setForm] = useState<FormState>(emptyForm);
+  const [currentStepId, setCurrentStepId] = useState<"hero-details" | "hero-appearance" | "story" | "people" | "review">("hero-details");
+  const [supportingCharacterDraft, setSupportingCharacterDraft] = useState<SupportingCharacter | null>(null);
+  const [editingSupportingCharacterId, setEditingSupportingCharacterId] = useState<string | null>(null);
+  const [supportingPhotoPendingId, setSupportingPhotoPendingId] = useState<string | null>(null);
+  const heroPhotoOperationRef = useRef(0);
+  const supportingPhotoOperationRef = useRef(0);
+  const [stepError, setStepError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, boolean>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   // Specific, inline submit error. We use an in-page banner rather than
@@ -390,6 +405,8 @@ export function CheckoutForm() {
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
+  const stepRefs = useRef<Record<string, HTMLElement | null>>({});
+  const fieldRefs = useRef<Record<string, HTMLElement | null>>({});
   const guidedCaptureEnabled = isGuidedPhotoCaptureEnabled();
   const [guidedFrames, setGuidedFrames] = useState<GuidedPhotoFile[]>([]);
   const [guidedConsent, setGuidedConsent] = useState(false);
@@ -496,40 +513,41 @@ export function CheckoutForm() {
   const set = (key: keyof FormState, value: string) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
+  const registerStepRef = (stepId: string) => (node: HTMLElement | null) => {
+    stepRefs.current[stepId] = node;
+  };
+
+  const registerFieldRef = (fieldId: string) => (node: HTMLElement | null) => {
+    fieldRefs.current[fieldId] = node;
+  };
+
   const addSupportingCharacter = (
     preset: (typeof SUPPORTING_CHARACTER_PRESETS)[number],
   ) => {
-    setForm((prev) => {
-      if (prev.familyCharacters.length >= SUPPORTING_CHARACTER_LIMIT) return prev;
-      return {
-        ...prev,
-        familyCharacters: [
-          ...prev.familyCharacters,
-          {
-            id: `${preset.role}-${Date.now()}-${prev.familyCharacters.length}`,
-            role: preset.role,
-            name: "",
-            relationshipLabel: preset.relationshipLabel,
-            pronouns: preset.pronouns,
-            notes: "",
-            isGiftRecipient: preset.isGiftRecipient,
-            appearsInStory: true,
-            photoFile: null,
-            photoDataUrl: null,
-            mustInclude: [],
-            mustIncludeOther: "",
-            focusPersonLabel: "",
-            cropHint: "",
-          },
-        ],
-      };
+    if (supportingCharacterDraft || form.familyCharacters.length >= SUPPORTING_CHARACTER_LIMIT) {
+      return;
+    }
+    const draft = createSupportingCharacterDraft({
+      role: preset.role,
+      relationshipLabel: preset.relationshipLabel,
+      pronouns: preset.pronouns,
+      isGiftRecipient: preset.isGiftRecipient,
     });
+    if (!draft) return;
+    setSupportingCharacterDraft(draft);
+    setEditingSupportingCharacterId(null);
+    setCurrentStepId("people");
+    setStepError(null);
   };
 
   const updateSupportingCharacter = (
     id: string,
     patch: Partial<SupportingCharacter>,
   ) => {
+    if (supportingCharacterDraft?.id === id) {
+      setSupportingCharacterDraft((prev) => (prev ? { ...prev, ...patch } : prev));
+      return;
+    }
     setForm((prev) => ({
       ...prev,
       familyCharacters: prev.familyCharacters.map((character) =>
@@ -543,6 +561,57 @@ export function CheckoutForm() {
       ...prev,
       familyCharacters: prev.familyCharacters.filter((character) => character.id !== id),
     }));
+    if (editingSupportingCharacterId === id) {
+      setSupportingCharacterDraft(null);
+      setEditingSupportingCharacterId(null);
+    }
+  };
+
+  const editSupportingCharacter = (id: string) => {
+    if (supportingCharacterDraft) return;
+    const existing = form.familyCharacters.find((character) => character.id === id);
+    if (!existing) return;
+    setSupportingCharacterDraft({ ...existing });
+    setEditingSupportingCharacterId(id);
+    setCurrentStepId("people");
+    setStepError(null);
+  };
+
+  const cancelSupportingCharacter = () => {
+    setSupportingCharacterDraft(null);
+    setEditingSupportingCharacterId(null);
+    setStepError(null);
+    setFieldErrors({});
+  };
+
+  const saveSupportingCharacter = () => {
+    if (!supportingCharacterDraft || supportingPhotoPendingId === supportingCharacterDraft.id) return;
+    const missing = supportingCharacterDraftMissingFields(supportingCharacterDraft);
+    if (missing.length > 0) {
+      setStepError(`Missing: ${missing.join(", ")}`);
+      setFieldErrors({ "supportingCharacter.name": true });
+      return;
+    }
+
+    setForm((prev) => {
+      const existingIndex = prev.familyCharacters.findIndex((character) => character.id === supportingCharacterDraft.id);
+      if (existingIndex >= 0) {
+        return {
+          ...prev,
+          familyCharacters: prev.familyCharacters.map((character) =>
+            character.id === supportingCharacterDraft.id ? supportingCharacterDraft : character,
+          ),
+        };
+      }
+      return {
+        ...prev,
+        familyCharacters: [...prev.familyCharacters, supportingCharacterDraft],
+      };
+    });
+    setSupportingCharacterDraft(null);
+    setEditingSupportingCharacterId(null);
+    setStepError(null);
+    setFieldErrors({});
   };
 
   const selectedFormat =
@@ -574,6 +643,35 @@ export function CheckoutForm() {
   const guidedPhotoSummary = guidedFrames.length > 0
     ? `${guidedFrames.length} guided photo${guidedFrames.length === 1 ? "" : "s"} added`
     : "5 quick angles, about a minute (optional).";
+  const checkoutProgress = getCheckoutProgress({
+    theme: form.theme,
+    childName: form.childName,
+    characterNotes: form.characterNotes,
+    photoFile: form.photoFile,
+    familyCharacters: form.familyCharacters,
+    bookFormat: form.bookFormat,
+    email: form.email,
+    voiceFile: form.voiceFile,
+    voiceConsent: form.voiceConsent,
+    activeSupportingCharacterDraft: supportingCharacterDraft,
+  });
+  const checkoutSteps = checkoutProgress.steps;
+  const currentStep = checkoutSteps.find((step) => step.id === currentStepId) ?? checkoutSteps[0];
+  const currentStepIndex = checkoutSteps.findIndex((step) => step.id === currentStep.id);
+  const paymentBlockers = getCheckoutPaymentBlockers({
+    theme: form.theme,
+    childName: form.childName,
+    characterNotes: form.characterNotes,
+    photoFile: form.photoFile,
+    familyCharacters: form.familyCharacters,
+    bookFormat: form.bookFormat,
+    email: form.email,
+    voiceFile: form.voiceFile,
+    voiceConsent: form.voiceConsent,
+    activeSupportingCharacterDraft: supportingCharacterDraft,
+  });
+  const missingVoiceConsent =
+    STORY_UPLOAD_ENABLED && form.voiceFile != null && !form.voiceConsent;
   const isReadyToPay =
     Boolean(form.theme) &&
     Boolean(form.childName) &&
@@ -581,7 +679,8 @@ export function CheckoutForm() {
     Boolean(form.email) &&
     Boolean(form.photoFile || form.characterNotes.trim()) &&
     missingSupportingDescriptionLabels.length === 0 &&
-    (!STORY_UPLOAD_ENABLED || form.voiceFile == null || form.voiceConsent);
+    !supportingCharacterDraft &&
+    !missingVoiceConsent;
   const completedStepCount = [
     Boolean(form.theme),
     Boolean(form.childName),
@@ -591,14 +690,60 @@ export function CheckoutForm() {
   ].filter(Boolean).length;
   const progressValue = (completedStepCount / CHECKOUT_STEPS.length) * 100;
 
+  useEffect(() => {
+    const firstBlockingStep = checkoutProgress.currentStep.id;
+    const currentIndex = checkoutSteps.findIndex((step) => step.id === currentStepId);
+    const blockingIndex = checkoutSteps.findIndex((step) => step.id === firstBlockingStep);
+    if (blockingIndex >= 0 && currentIndex >= 0 && blockingIndex < currentIndex) {
+      setCurrentStepId(firstBlockingStep);
+    }
+  }, [checkoutProgress.currentStep.id, checkoutSteps, currentStepId]);
+
+  const scrollToField = useCallback((fieldName: string | null, stepId?: string) => {
+    if (stepId) {
+      setCurrentStepId(stepId as typeof currentStepId);
+    }
+    requestAnimationFrame(() => {
+      const target = (fieldName ? fieldRefs.current[fieldName] : null) ?? (stepId ? stepRefs.current[stepId] : null);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        if ("focus" in target) {
+          (target as HTMLElement).focus();
+        }
+      }
+    });
+  }, [currentStepId]);
+
+  const continueCurrentStep = useCallback(() => {
+    if (currentStep.missingFields.length > 0 || currentStep.status === "needs_attention") {
+      setStepError(`Missing: ${currentStep.missingFields.join(", ")}`);
+      if (currentStep.firstInvalidField) {
+        setFieldErrors({ [currentStep.firstInvalidField]: true });
+      }
+      scrollToField(currentStep.firstInvalidField, currentStep.id);
+      return;
+    }
+
+    setStepError(null);
+    setFieldErrors({});
+    const nextStep = checkoutSteps[currentStepIndex + 1];
+    if (nextStep) {
+      setCurrentStepId(nextStep.id);
+      scrollToField(null, nextStep.id);
+    }
+  }, [checkoutSteps, currentStep, currentStepIndex, scrollToField]);
+
   const processPhoto = useCallback(async (file: File) => {
+    const operation = ++heroPhotoOperationRef.current;
     try {
       const uploadFile = await shrinkPhotoForUpload(file, CHECKOUT_PHOTO_MAX_BYTES);
+      if (operation !== heroPhotoOperationRef.current) return;
       if (uploadFile.size < file.size) {
         setPhotoNotice(buildAutoShrinkNotice(file.size, uploadFile.size));
       }
       const reader = new FileReader();
       reader.onload = (e) => {
+        if (operation !== heroPhotoOperationRef.current) return;
         setForm((prev) => ({
           ...prev,
           photoFile: uploadFile,
@@ -607,6 +752,7 @@ export function CheckoutForm() {
       };
       reader.readAsDataURL(uploadFile);
     } catch {
+      if (operation !== heroPhotoOperationRef.current) return;
       setSubmitError(
         "That photo is too large for checkout on this device. Please choose a smaller JPG/PNG, screenshot/crop it, or continue without the child photo and add it later.",
       );
@@ -614,28 +760,38 @@ export function CheckoutForm() {
   }, []);
 
   const processSupportingCharacterPhoto = useCallback(async (id: string, file: File) => {
+    const operation = ++supportingPhotoOperationRef.current;
+    setSupportingPhotoPendingId(id);
     try {
       const uploadFile = await shrinkPhotoForUpload(file, CHECKOUT_PHOTO_MAX_BYTES);
+      if (operation !== supportingPhotoOperationRef.current) return;
       if (uploadFile.size < file.size) {
         setPhotoNotice(buildAutoShrinkNotice(file.size, uploadFile.size));
       }
       const reader = new FileReader();
       reader.onload = (e) => {
+        if (operation !== supportingPhotoOperationRef.current) return;
+        const photoDataUrl = e.target?.result as string;
+        setSupportingCharacterDraft((prev) =>
+          prev && prev.id === id ? { ...prev, photoFile: uploadFile, photoDataUrl } : prev,
+        );
         setForm((prev) => ({
           ...prev,
           familyCharacters: prev.familyCharacters.map((character) =>
-            character.id === id
-              ? {
-                  ...character,
-                  photoFile: uploadFile,
-                  photoDataUrl: e.target?.result as string,
-                }
-              : character,
+            character.id === id ? { ...character, photoFile: uploadFile, photoDataUrl } : character,
           ),
         }));
+        setSupportingPhotoPendingId(null);
+      };
+      reader.onerror = () => {
+        if (operation !== supportingPhotoOperationRef.current) return;
+        setSupportingPhotoPendingId(null);
+        setSubmitError("We couldn't read that family/pet photo. Please choose it again.");
       };
       reader.readAsDataURL(uploadFile);
     } catch {
+      if (operation !== supportingPhotoOperationRef.current) return;
+      setSupportingPhotoPendingId(null);
       setSubmitError(
         "That family/pet photo is too large for checkout on this device. Please choose a smaller JPG/PNG or crop/screenshot it before retrying.",
       );
@@ -654,6 +810,10 @@ export function CheckoutForm() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (currentStepId !== "review" || !isReadyToPay) {
+      setStepError("Finish the checkout steps before continuing to payment.");
+      return;
+    }
     setIsSubmitting(true);
     setSubmitError(null);
     // Fire BOTH the brief's "purchase_intent" alias and the more literal
@@ -869,26 +1029,63 @@ export function CheckoutForm() {
       </div>
 
       <div className="border-b border-[#ded0b3] bg-[#efe3ca]">
-        <div className="mx-auto flex max-w-xl items-center justify-center gap-3 px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.22em] text-[#8c7b68] sm:gap-5">
-          {["Review", "Details", "Pay"].map((step, index) => {
-            const active = index === 1;
-            const done = index === 0;
-            return (
-              <React.Fragment key={step}>
-                <span
-                  className={`flex items-center gap-2 ${active ? "text-deep-gold" : done ? "text-[#241914]" : "text-[#9f927f]"}`}
+        <div className="mx-auto max-w-6xl px-4 py-4 sm:px-6">
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#8c7b68]">
+                  Step {currentStepIndex + 1} of {checkoutSteps.length}
+                </p>
+                <h1 className="font-serif text-2xl text-[#241914]">
+                  {currentStep.title}
+                </h1>
+              </div>
+              <button
+                type="button"
+                onClick={continueCurrentStep}
+                className="rounded-full border border-[#cbbda4] bg-[#fff8ec] px-4 py-2 text-sm font-semibold text-[#241914] transition hover:border-deep-gold"
+              >
+                Continue
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c7b68]">
+              {checkoutSteps.map((step, index) => (
+                <button
+                  key={step.id}
+                  type="button"
+                  onClick={() => {
+                    if (!canNavigateToCheckoutStep(checkoutSteps, step.id)) return;
+                    setCurrentStepId(step.id);
+                    scrollToField(null, step.id);
+                  }}
+                  disabled={!canNavigateToCheckoutStep(checkoutSteps, step.id)}
+                  aria-current={step.id === currentStep.id ? "step" : undefined}
+                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                    step.id === currentStep.id
+                      ? "border-deep-gold bg-[#fff8ec] text-[#241914]"
+                      : step.status === "complete"
+                        ? "border-[#cbbda4] bg-[#fff8ec] text-[#241914]"
+                        : step.status === "needs_attention"
+                          ? "border-[#a64c4c]/40 bg-[#a64c4c]/10 text-[#241914]"
+                          : "border-[#d8c6a2] bg-[#f8f0dd] text-[#8c7b68]"
+                  }`}
                 >
-                  <span
-                    className={`flex h-5 w-5 items-center justify-center rounded-full border text-[10px] ${done ? "border-deep-gold bg-deep-gold text-navy" : active ? "border-deep-gold bg-cream text-deep-gold" : "border-[#cbbda4] bg-[#f8f0dd] text-[#9f927f]"}`}
-                  >
-                    {done ? "✓" : index + 1}
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full border border-current text-[10px]">
+                    {step.complete ? "✓" : index + 1}
                   </span>
-                  {step}
-                </span>
-                {index < 2 && <span className="h-px w-8 bg-[#cbbda4]" />}
-              </React.Fragment>
-            );
-          })}
+                  {step.title}
+                </button>
+              ))}
+            </div>
+            {stepError && (
+              <div
+                role="alert"
+                className="rounded-2xl border border-[#a64c4c]/30 bg-[#a64c4c]/10 px-4 py-3 text-sm text-[#241914]"
+              >
+                {stepError}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -906,7 +1103,20 @@ export function CheckoutForm() {
               </span>
               <button
                 onClick={() => {
+                  heroPhotoOperationRef.current += 1;
+                  supportingPhotoOperationRef.current += 1;
                   setForm(emptyForm);
+                  setSupportingCharacterDraft(null);
+                  setEditingSupportingCharacterId(null);
+                  setSupportingPhotoPendingId(null);
+                  setGuidedFrames([]);
+                  setGuidedConsent(false);
+                  setShowGuidedPhotos(false);
+                  setStepError(null);
+                  setFieldErrors({});
+                  setSubmitError(null);
+                  setPhotoNotice(null);
+                  setCurrentStepId("hero-details");
                   localStorage.removeItem(STORAGE_KEY);
                   setShowRecovery(false);
                 }}
@@ -930,7 +1140,13 @@ export function CheckoutForm() {
         >
           <div className="space-y-5">
             {/* ── 1. Theme ── */}
-            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+            <section
+              ref={(node) => {
+                registerStepRef("hero-details")(node);
+                registerFieldRef("theme")(node);
+              }}
+              className={`${currentStepId !== "hero-details" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
+            >
               <div>
                 <h2 className="font-serif text-2xl text-[#1f1a16]">
                   Choose a story direction
@@ -1022,7 +1238,10 @@ export function CheckoutForm() {
             </section>
 
             {isCustomStorySelected && (
-              <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+              <section
+                ref={registerStepRef("story")}
+                className={`${currentStepId !== "story" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
+              >
                 <div>
                   <h2 className="font-serif text-2xl text-[#1f1a16]">
                     Tell us the memory in your own words
@@ -1120,8 +1339,23 @@ export function CheckoutForm() {
               </section>
             )}
 
+            {!isCustomStorySelected && (
+              <section
+                ref={registerStepRef("story")}
+                className={`${currentStepId !== "story" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
+              >
+                <h2 className="font-serif text-2xl text-[#1f1a16]">Story details</h2>
+                <p className="text-sm leading-6 text-[#695f54]">
+                  Your selected adventure is ready. Extra lesson, occasion, and dedication details are optional and can be reviewed by going back to Hero details.
+                </p>
+                <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm font-semibold text-[#35564d]">
+                  ✓ No additional story information is required.
+                </div>
+              </section>
+            )}
+
             {/* ── 2. Hero / main character details ── */}
-            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-5">
+            <section className={`${currentStepId !== "hero-details" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-5`}>
               <div>
                 <h2 className="font-serif text-2xl text-[#1f1a16]">
                   Who this story celebrates
@@ -1172,13 +1406,16 @@ export function CheckoutForm() {
                     Main hero&apos;s name <span className="text-red-400">*</span>
                   </label>
                   <input
+                    ref={registerFieldRef("childName")}
                     id="childName"
                     type="text"
                     value={form.childName}
                     onChange={(e) => set("childName", e.target.value)}
                     placeholder={PRIMARY_HERO_BETA_ENABLED ? "e.g., Emma, Dad, Grandpa Joe, the Rivera family" : "e.g., Emma, Liam, Sofia"}
                     required
-                    className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                    className={`w-full px-4 py-3 border-2 rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1] ${
+                      fieldErrors.childName ? "border-[#a64c4c]" : "border-[#dfd2b8]"
+                    }`}
                   />
                 </div>
                 <div>
@@ -1389,7 +1626,10 @@ export function CheckoutForm() {
             </section>
 
             {/* ── 2.5 Hero appearance ── */}
-            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+            <section
+              ref={registerStepRef("hero-appearance")}
+              className={`${currentStepId !== "hero-appearance" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
+            >
               <div>
                 <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
                   How should the hero look?
@@ -1427,13 +1667,16 @@ export function CheckoutForm() {
                     Describe the hero <span className="text-[#a64c4c]">(required without a photo)</span>
                   </label>
                   <textarea
+                    ref={registerFieldRef("characterNotes")}
                     value={form.characterNotes}
                     onChange={(e) => set("characterNotes", e.target.value)}
                     placeholder="Example: 6 years old, warm brown skin, short curly dark hair, bright green hoodie"
                     rows={3}
                     maxLength={240}
                     required
-                    className="w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                    className={`w-full resize-none rounded-2xl border-2 bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30 ${
+                      fieldErrors.characterNotes ? "border-[#a64c4c]" : "border-[#dfd2b8]"
+                    }`}
                   />
                   <p className="mt-1 text-xs text-[#8a7b6a]">
                     We&apos;ll match the details you provide, but not a real face.
@@ -1485,18 +1728,19 @@ export function CheckoutForm() {
             </section>
 
             {/* ── 2.75 Supporting characters ── */}
-            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+            <section
+              ref={registerStepRef("people")}
+              className={`${currentStepId !== "people" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
+            >
               <div>
                 <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
                   People, pets, and family details
                 </h2>
                 <p className="text-sm text-[#695f54]">
                   Add co-heroes, family members, gift recipients, or pets for the
-                  story text and scene notes. Everyone here can be part of the
-                  adventure — not just background characters. Photos are optional
-                  and used as operator-review references only, not guaranteed
-                  exact likeness. If a visible person has no photo, add written
-                  details so we can draw them as a storybook character.
+                  story text and scene notes. Human drafts need a name and either
+                  appearance details or a reference photo before they can be saved.
+                  Pets still need a name, but photo and notes stay optional.
                 </p>
               </div>
 
@@ -1506,7 +1750,7 @@ export function CheckoutForm() {
                     key={preset.role}
                     type="button"
                     onClick={() => addSupportingCharacter(preset)}
-                    disabled={form.familyCharacters.length >= SUPPORTING_CHARACTER_LIMIT}
+                    disabled={Boolean(supportingCharacterDraft) || form.familyCharacters.length >= SUPPORTING_CHARACTER_LIMIT}
                     className="rounded-full border-2 border-[#dfd2b8] px-3 py-2 text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     + {preset.label}
@@ -1514,294 +1758,311 @@ export function CheckoutForm() {
                 ))}
               </div>
 
-              {form.familyCharacters.length > 0 && (
-                <div className="space-y-3">
-                  {form.familyCharacters.map((character, index) => (
-                    <div
-                      key={character.id}
-                      className="rounded-2xl border border-[#dfd2b8] bg-[#fffaf1] p-4"
-                    >
-                      <div className="mb-3 flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-bold text-[#1f1a16]">
-                            Character {index + 1}
-                            {character.name || character.relationshipLabel
-                              ? `: ${character.name || character.relationshipLabel}`
-                              : ""}
-                          </p>
-                          <p className="text-xs leading-5 text-[#8a7b6a]">
-                            Co-hero, family member, gift recipient, or pet. Use
-                            notes for pets: breed, color, markings, size,
-                            personality, or how the family talks about them.
-                          </p>
-                        </div>
+              {supportingCharacterDraft && (
+                <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#fffaf1] p-4">
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-bold text-[#1f1a16]">
+                        {editingSupportingCharacterId ? "Edit person" : "Add person"}
+                      </p>
+                      <p className="text-xs leading-5 text-[#8a7b6a]">
+                        Save or cancel this draft before adding another person.
+                      </p>
+                    </div>
+                    <span className="rounded-full border border-[#dfd2b8] bg-[#f8f0dd] px-3 py-1 text-xs font-semibold text-[#695f54]">
+                      Draft open
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
+                        Name
+                      </label>
+                      <input
+                        ref={registerFieldRef("supportingCharacter.name")}
+                        type="text"
+                        value={supportingCharacterDraft.name}
+                        onChange={(e) => updateSupportingCharacter(supportingCharacterDraft.id, { name: e.target.value })}
+                        placeholder={supportingCharacterDraft.role === "pet" ? "e.g., Brody" : "e.g., Alexy"}
+                        maxLength={80}
+                        className={`w-full rounded-2xl border-2 bg-[#fffaf1] px-4 py-3 text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30 ${
+                          fieldErrors["supportingCharacter.name"] ? "border-[#a64c4c]" : "border-[#dfd2b8]"
+                        }`}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
+                        Who are they in the story?
+                      </label>
+                      <input
+                        type="text"
+                        value={supportingCharacterDraft.relationshipLabel}
+                        onChange={(e) => updateSupportingCharacter(supportingCharacterDraft.id, { relationshipLabel: e.target.value })}
+                        placeholder="Dad, Grandma, big sister, family dog..."
+                        maxLength={80}
+                        className="w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                      />
+                    </div>
+                  </div>
+
+                  <label className="mt-3 block text-sm font-semibold text-[#1f1a16]">
+                    {supportingCharacterDraft.role === "pet" ? "Pet details" : "Appearance details"}
+                  </label>
+                  <textarea
+                    value={supportingCharacterDraft.notes}
+                    onChange={(e) => updateSupportingCharacter(supportingCharacterDraft.id, { notes: e.target.value })}
+                    placeholder={
+                      supportingCharacterDraft.role === "pet"
+                        ? PET_NOTES_PLACEHOLDER
+                        : "Hair, skin tone, glasses, clothing, size, or other visual details if you are not uploading a photo"
+                    }
+                    rows={2}
+                    maxLength={180}
+                    className="mt-1.5 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                  />
+
+                  <label className="mt-3 flex items-center gap-3 rounded-2xl border border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm font-semibold text-[#1f1a16]">
+                    <input
+                      type="checkbox"
+                      checked={supportingCharacterDraft.isGiftRecipient}
+                      onChange={(e) => updateSupportingCharacter(supportingCharacterDraft.id, {
+                        isGiftRecipient: e.target.checked,
+                      })}
+                    />
+                    This person is the gift recipient
+                  </label>
+
+                  <div className="mt-3">
+                    <p className="mb-2 text-sm font-semibold text-[#1f1a16]">
+                      Must include <span className="font-normal text-[#8a7b6a]">(optional)</span>
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {MUST_INCLUDE_OPTIONS.map((option) => {
+                        const selected = supportingCharacterDraft.mustInclude.includes(option.id);
+                        return (
+                          <button
+                            key={option.id}
+                            type="button"
+                            aria-pressed={selected}
+                            onClick={() => updateSupportingCharacter(supportingCharacterDraft.id, {
+                              mustInclude: selected
+                                ? supportingCharacterDraft.mustInclude.filter((item) => item !== option.id)
+                                : [...supportingCharacterDraft.mustInclude, option.id],
+                            })}
+                            className={`rounded-full border-2 px-3 py-2 text-xs font-semibold transition ${
+                              selected
+                                ? "border-deep-gold bg-deep-gold/15 text-navy"
+                                : "border-[#dfd2b8] text-[#695f54] hover:border-[#a64c4c]/60"
+                            }`}
+                          >
+                            {selected ? "✓ " : ""}{option.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {supportingCharacterDraft.mustInclude.includes("custom-detail") && (
+                      <input
+                        type="text"
+                        value={supportingCharacterDraft.mustIncludeOther}
+                        onChange={(e) => updateSupportingCharacter(supportingCharacterDraft.id, {
+                          mustIncludeOther: e.target.value.slice(0, 80),
+                        })}
+                        placeholder="Another must-include detail"
+                        className="mt-3 w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                      />
+                    )}
+                  </div>
+
+                  <div className="mt-3 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] p-3">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-[#1f1a16]">
+                          Reference photo
+                        </p>
+                        <p className="text-xs leading-5 text-[#8a7b6a]">
+                          Human photos are proof-team references only, not guaranteed direct likeness conditioning.
+                        </p>
+                      </div>
+                      {supportingCharacterDraft.photoFile && (
                         <button
                           type="button"
-                          onClick={() => removeSupportingCharacter(character.id)}
-                          className="rounded-full border border-[#dfd2b8] px-3 py-1 text-xs font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:text-[#a64c4c]"
+                          onClick={() => updateSupportingCharacter(supportingCharacterDraft.id, { photoFile: null, photoDataUrl: null })}
+                          className="rounded-full border border-[#dfd2b8] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:text-[#a64c4c]"
                         >
-                          Remove
+                          Remove photo
                         </button>
-                      </div>
+                      )}
+                    </div>
 
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div>
-                          <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
-                            Name
-                          </label>
-                          <input
-                            type="text"
-                            value={character.name}
-                            onChange={(e) =>
-                              updateSupportingCharacter(character.id, {
-                                name: e.target.value,
-                              })
-                            }
-                            placeholder={character.role === "pet" ? "e.g., Brody" : "e.g., Alexy"}
-                            maxLength={80}
-                            className="w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                    {supportingCharacterDraft.photoDataUrl ? (
+                      <div className="grid gap-3 sm:grid-cols-[96px_1fr] sm:items-center">
+                        <div className="overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fffaf1]">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={supportingCharacterDraft.photoDataUrl}
+                            alt="Supporting character reference"
+                            className="h-24 w-full object-cover"
                           />
                         </div>
-                        <div>
-                          <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
-                            Who are they in the story?
-                          </label>
-                          <input
-                            type="text"
-                            value={character.relationshipLabel}
-                            onChange={(e) =>
-                              updateSupportingCharacter(character.id, {
-                                relationshipLabel: e.target.value,
-                              })
-                            }
-                            placeholder="Dad, Grandma, big sister, family dog..."
-                            maxLength={80}
-                            className="w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                          />
-                          <p className="mt-1 text-xs leading-5 text-[#8a7b6a]">
-                            Example: “Dad” means this person is the hero’s dad. “Grandma” means the hero’s grandma.
+                        <div className="min-w-0 text-sm text-[#35564d]">
+                          <p className="truncate font-semibold">
+                            {supportingCharacterDraft.photoFile?.name}
+                          </p>
+                          <p className="text-xs text-[#5f766f]">
+                            Saved with this person for operator review.
                           </p>
                         </div>
-                        <label className="flex items-center gap-2 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] px-4 py-3 text-sm font-semibold text-[#1f1a16]">
+                        <div className="space-y-2 sm:col-span-2">
+                          <p className="text-xs font-semibold text-[#1f1a16]">
+                            If this photo has multiple people, tell us who to use and where they are.
+                          </p>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <input
+                              type="text"
+                              value={supportingCharacterDraft.focusPersonLabel}
+                              onChange={(e) => updateSupportingCharacter(supportingCharacterDraft.id, {
+                                focusPersonLabel: e.target.value.slice(0, 120),
+                              })}
+                              placeholder="Who to use (e.g., Grandpa on the left)"
+                              className="w-full rounded-xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-3 py-2 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                            />
+                            <select
+                              value={supportingCharacterDraft.cropHint}
+                              onChange={(e) => updateSupportingCharacter(supportingCharacterDraft.id, {
+                                cropHint: e.target.value,
+                              })}
+                              className="w-full rounded-xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-3 py-2 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
+                            >
+                              <option value="">Where in the photo? (optional)</option>
+                              <option value="only-person">Only one person</option>
+                              <option value="left">Left</option>
+                              <option value="center">Center</option>
+                              <option value="right">Right</option>
+                              <option value="top-left">Top-left</option>
+                              <option value="top-right">Top-right</option>
+                              <option value="bottom-left">Bottom-left</option>
+                              <option value="bottom-right">Bottom-right</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-4 text-center text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
+                          <span>Use camera roll</span>
+                          <span className="text-xs font-normal text-[#8a7b6a]">
+                            JPG/PNG/WebP
+                          </span>
                           <input
-                            type="checkbox"
-                            checked={character.isGiftRecipient}
-                            onChange={(e) =>
-                              updateSupportingCharacter(character.id, {
-                                isGiftRecipient: e.target.checked,
-                              })
-                            }
+                            type="file"
+                            accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) processSupportingCharacterPhoto(supportingCharacterDraft.id, f);
+                              e.currentTarget.value = "";
+                            }}
                           />
-                          Gift recipient
+                        </label>
+                        <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-4 text-center text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
+                          <span>Take a new picture</span>
+                          <span className="text-xs font-normal text-[#8a7b6a]">
+                            Still photo only
+                          </span>
+                          <input
+                            type="file"
+                            accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
+                            capture="user"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) processSupportingCharacterPhoto(supportingCharacterDraft.id, f);
+                              e.currentTarget.value = "";
+                            }}
+                          />
                         </label>
                       </div>
+                    )}
+                  </div>
 
-                      <label className="mt-3 block text-sm font-semibold text-[#1f1a16]">
-                        Details to capture
-                      </label>
-                      <textarea
-                        value={character.notes}
-                        onChange={(e) =>
-                          updateSupportingCharacter(character.id, {
-                            notes: e.target.value,
-                          })
-                        }
-                        placeholder={
-                          character.role === "pet"
-                            ? PET_NOTES_PLACEHOLDER
-                            : "Personality, favorite activity, nickname, inside joke, or how this character should show up in the story..."
-                        }
-                        rows={2}
-                        maxLength={180}
-                        className="mt-1.5 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                      />
-                      <p className="mt-0.5 text-right text-xs text-[#8a7b6a]">
-                        {character.notes.length}/180
-                      </p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={saveSupportingCharacter}
+                      disabled={supportingPhotoPendingId === supportingCharacterDraft.id}
+                      className="rounded-full bg-deep-gold px-4 py-2 text-sm font-bold text-navy disabled:cursor-wait disabled:opacity-50"
+                    >
+                      {supportingPhotoPendingId === supportingCharacterDraft.id ? "Processing photo…" : "Save person"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelSupportingCharacter}
+                      className="rounded-full border border-[#dfd2b8] px-4 py-2 text-sm font-semibold text-[#695f54]"
+                    >
+                      {editingSupportingCharacterId ? "Cancel edit" : "Cancel"}
+                    </button>
+                  </div>
+                </div>
+              )}
 
-                      <div className="mt-3">
-                        <p className="mb-2 text-sm font-semibold text-[#1f1a16]">
-                          Must include <span className="font-normal text-[#8a7b6a]">(optional)</span>
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {MUST_INCLUDE_OPTIONS.map((option) => {
-                            const selected = character.mustInclude.includes(option.id);
-                            return (
-                              <button
-                                key={option.id}
-                                type="button"
-                                aria-pressed={selected}
-                                onClick={() =>
-                                  updateSupportingCharacter(character.id, {
-                                    mustInclude: selected
-                                      ? character.mustInclude.filter((item) => item !== option.id)
-                                      : [...character.mustInclude, option.id],
-                                  })
-                                }
-                                className={`rounded-full border-2 px-3 py-2 text-xs font-semibold transition ${
-                                  selected
-                                    ? "border-deep-gold bg-deep-gold/15 text-navy"
-                                    : "border-[#dfd2b8] text-[#695f54] hover:border-[#a64c4c]/60"
-                                }`}
-                              >
-                                {selected ? "✓ " : ""}{option.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        {character.mustInclude.includes("custom-detail") && (
-                          <input
-                            type="text"
-                            value={character.mustIncludeOther}
-                            onChange={(e) =>
-                              updateSupportingCharacter(character.id, {
-                                mustIncludeOther: e.target.value.slice(0, 80),
-                              })
-                            }
-                            placeholder="Another must-include detail"
-                            className="mt-3 w-full rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                          />
-                        )}
-                      </div>
-
-                      <div className="mt-3 rounded-2xl border border-[#dfd2b8] bg-[#f8f0dd] p-3">
-                        <div className="mb-2 flex items-center justify-between gap-3">
+              {form.familyCharacters.length > 0 && (
+                <div className="space-y-3">
+                  {form.familyCharacters.map((character, index) => {
+                    const needsAttention = supportingCharacterDraftMissingFields(character).length > 0;
+                    return (
+                      <div
+                        key={character.id}
+                        className="rounded-2xl border border-[#dfd2b8] bg-[#fffaf1] p-4"
+                      >
+                        <div className="mb-3 flex items-start justify-between gap-3">
                           <div>
-                            <p className="text-sm font-semibold text-[#1f1a16]">
-                              Reference photo
+                            <p className="text-sm font-bold text-[#1f1a16]">
+                              {needsAttention ? "Needs attention" : "✓ Added"} · Character {index + 1}
                               {character.name || character.relationshipLabel
-                                ? ` for ${character.name || character.relationshipLabel}`
+                                ? `: ${character.name || character.relationshipLabel}`
                                 : ""}
                             </p>
                             <p className="text-xs leading-5 text-[#8a7b6a]">
-                              Optional. If you add one, our team uses it as a visual reference during review.
+                              {character.role === "pet"
+                                ? "Pets only require a name to stay complete."
+                                : "Humans stay complete when they have a name and either appearance details or a reference photo."}
                             </p>
                           </div>
-                          {character.photoFile && (
+                          <div className="flex gap-2">
                             <button
                               type="button"
-                              onClick={() =>
-                                updateSupportingCharacter(character.id, {
-                                  photoFile: null,
-                                  photoDataUrl: null,
-                                })
-                              }
-                              className="rounded-full border border-[#dfd2b8] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:text-[#a64c4c]"
+                              onClick={() => editSupportingCharacter(character.id)}
+                              disabled={Boolean(supportingCharacterDraft)}
+                              className="rounded-full border border-[#dfd2b8] px-3 py-1 text-xs font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:text-[#a64c4c] disabled:opacity-40"
                             >
-                              Remove photo
+                              Edit
                             </button>
-                          )}
+                            <button
+                              type="button"
+                              onClick={() => removeSupportingCharacter(character.id)}
+                              className="rounded-full border border-[#dfd2b8] px-3 py-1 text-xs font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:text-[#a64c4c]"
+                            >
+                              Remove
+                            </button>
+                          </div>
                         </div>
 
-                        {character.photoDataUrl ? (
-                          <div className="grid gap-3 sm:grid-cols-[96px_1fr] sm:items-center">
-                            <div className="overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#fffaf1]">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={character.photoDataUrl}
-                                alt={`${character.relationshipLabel || "Supporting character"} reference`}
-                                className="h-24 w-full object-cover"
-                              />
-                            </div>
-                            <div className="min-w-0 text-sm text-[#35564d]">
-                              <p className="truncate font-semibold">
-                                {character.photoFile?.name}
-                              </p>
-                              <p className="text-xs text-[#5f766f]">
-                                Saved with this character for operator review.
-                              </p>
-                            </div>
-                            <div className="sm:col-span-2 space-y-2">
-                              <p className="text-xs font-semibold text-[#1f1a16]">
-                                If this photo has multiple people, tell us who to use and where they are.
-                              </p>
-                              <div className="grid gap-2 sm:grid-cols-2">
-                                <input
-                                  type="text"
-                                  value={character.focusPersonLabel}
-                                  onChange={(e) =>
-                                    updateSupportingCharacter(character.id, {
-                                      focusPersonLabel: e.target.value.slice(0, 120),
-                                    })
-                                  }
-                                  placeholder="Who to use (e.g., Grandpa on the left)"
-                                  className="w-full rounded-xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-3 py-2 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                                />
-                                <select
-                                  value={character.cropHint}
-                                  onChange={(e) =>
-                                    updateSupportingCharacter(character.id, {
-                                      cropHint: e.target.value,
-                                    })
-                                  }
-                                  className="w-full rounded-xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-3 py-2 text-sm text-[#1f1a16] transition focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                                >
-                                  <option value="">Where in the photo? (optional)</option>
-                                  <option value="only-person">Only one person</option>
-                                  <option value="left">Left</option>
-                                  <option value="center">Center</option>
-                                  <option value="right">Right</option>
-                                  <option value="top-left">Top-left</option>
-                                  <option value="top-right">Top-right</option>
-                                  <option value="bottom-left">Bottom-left</option>
-                                  <option value="bottom-right">Bottom-right</option>
-                                </select>
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            {isHumanSupportingCharacter(character) && !character.notes.trim() && (
-                              <p className="rounded-xl border border-[#a64c4c]/20 bg-[#a64c4c]/10 px-3 py-2 text-xs font-semibold text-[#1f1a16]">
-                                Add a few written details for {character.name || character.relationshipLabel || "this family member"} before checkout if you aren&apos;t uploading a photo.
-                              </p>
-                            )}
-                            <div className="grid gap-2 sm:grid-cols-2">
-                              <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-4 text-center text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
-                                <span>Use camera roll</span>
-                                <span className="text-xs font-normal text-[#8a7b6a]">
-                                  JPG/PNG/WebP
-                                </span>
-                                <input
-                                  type="file"
-                                  accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
-                                  className="hidden"
-                                  onChange={(e) => {
-                                    const f = e.target.files?.[0];
-                                    if (f) processSupportingCharacterPhoto(character.id, f);
-                                    e.currentTarget.value = "";
-                                  }}
-                                />
-                              </label>
-                              <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#d8c6a2] bg-[#fffaf1] px-4 py-4 text-center text-sm font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:bg-[#f5ead2]">
-                                <span>Take a new picture</span>
-                                <span className="text-xs font-normal text-[#8a7b6a]">
-                                  Still photo only — never video
-                                </span>
-                                <input
-                                  type="file"
-                                  accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
-                                  capture="user"
-                                  className="hidden"
-                                  onChange={(e) => {
-                                    const f = e.target.files?.[0];
-                                    if (f) processSupportingCharacterPhoto(character.id, f);
-                                    e.currentTarget.value = "";
-                                  }}
-                                />
-                              </label>
-                            </div>
-                          </div>
-                        )}
+                        <div className="grid gap-2 text-sm text-[#695f54] sm:grid-cols-2">
+                          <p><span className="font-semibold text-[#1f1a16]">Role:</span> {character.relationshipLabel || character.role || "Not set"}</p>
+                          <p><span className="font-semibold text-[#1f1a16]">Name:</span> {character.name || "Missing"}</p>
+                          <p><span className="font-semibold text-[#1f1a16]">Appearance details:</span> {character.notes.trim() ? "Added" : character.role === "pet" ? "Optional" : "Missing"}</p>
+                          <p><span className="font-semibold text-[#1f1a16]">Reference photo:</span> {character.photoFile ? "Added" : "None"}</p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </section>
 
             {/* ── 3. Hero photo ── */}
-            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+            <section className={`${currentStepId !== "hero-appearance" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}>
               <div>
                 <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
                   Add one clear photo for the main character
@@ -2027,7 +2288,10 @@ export function CheckoutForm() {
             </section>
 
             {/* ── 4. Format + Delivery ── */}
-            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+            <section
+              ref={registerStepRef("review")}
+              className={`${currentStepId !== "review" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
+            >
               <h2 className="font-serif text-2xl text-[#1f1a16]">
                 Choose your format
               </h2>
@@ -2044,6 +2308,7 @@ export function CheckoutForm() {
                 {FORMATS.map((fmt) => (
                   <button
                     key={fmt.id}
+                    ref={fmt.id === DEFAULT_BOOK_FORMAT ? registerFieldRef("bookFormat") : undefined}
                     type="button"
                     onClick={() => {
                       set("bookFormat", fmt.id);
@@ -2098,7 +2363,7 @@ export function CheckoutForm() {
             </section>
 
             {/* ── 5. Email + Preview Promise ── */}
-            <section className="rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+            <section className={`${currentStepId !== "review" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}>
               <div>
                 <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
                   Where should we send everything?
@@ -2109,13 +2374,16 @@ export function CheckoutForm() {
                 </p>
               </div>
               <input
+                ref={registerFieldRef("email")}
                 id="email"
                 type="email"
                 value={form.email}
                 onChange={(e) => set("email", e.target.value)}
                 placeholder="your@email.com"
                 required
-                className="w-full px-4 py-3 border-2 border-[#dfd2b8] rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1]"
+                className={`w-full px-4 py-3 border-2 rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1] ${
+                  fieldErrors.email ? "border-[#a64c4c]" : "border-[#dfd2b8]"
+                }`}
               />
               <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm text-[#35564d]">
                 ✨ {PRINT_PREVIEW_PROMISE}
@@ -2327,27 +2595,34 @@ export function CheckoutForm() {
                   reader / sighted reviewer immediately knows WHY the button
                   is greyed instead of guessing. Computed from the same
                   inputs that gate isReadyToPay. */}
-              {!isReadyToPay && !isSubmitting && (() => {
-                const missing: string[] = [];
-                if (!form.theme) missing.push('story direction');
-                if (!form.childName) missing.push("child's name");
-                if (!form.bookFormat) missing.push('format');
-                if (!form.email) missing.push('email');
-                if (!form.photoFile && !form.characterNotes.trim()) {
-                  missing.push('hero photo or description');
-                }
-                if (missingSupportingDescriptionLabels.length > 0) {
-                  missing.push('supporting character details');
-                }
-                if (STORY_UPLOAD_ENABLED && form.voiceFile != null && !form.voiceConsent) {
-                  missing.push('story inspiration consent');
-                }
-                return (
-                  <p className="rounded-xl border border-deep-gold/40 bg-deep-gold/10 px-3 py-2 text-center text-xs font-medium text-navy">
-                    Finish these before continuing: {missing.join(' · ')}
+              {!isReadyToPay && !isSubmitting && (
+                <div className="rounded-xl border border-deep-gold/40 bg-deep-gold/10 px-3 py-3 text-xs text-navy">
+                  <p className="text-center font-medium">
+                    Finish these before continuing to payment, including the hero photo or description when it is still missing.
                   </p>
-                );
-              })()}
+                  <div className="mt-2 flex flex-wrap justify-center gap-2">
+                    {paymentBlockers.map((blocker) => {
+                      const [stepTitle, fieldLabel] = blocker.split(": ");
+                      const targetStep = checkoutSteps.find((step) => step.title === stepTitle);
+                      return (
+                        <button
+                          key={blocker}
+                          type="button"
+                          onClick={() => {
+                            if (targetStep) {
+                              setCurrentStepId(targetStep.id);
+                              scrollToField(targetStep.firstInvalidField, targetStep.id);
+                            }
+                          }}
+                          className="rounded-full border border-deep-gold/40 bg-[#fff8ec] px-3 py-1.5 text-left font-semibold text-navy"
+                        >
+                          {fieldLabel ?? blocker}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               {/* Inline submit error. Shows the SPECIFIC server reason and
                   reassures the customer nothing was saved or charged — so a
                   failed submission (e.g. a voice-save abort) never looks like
@@ -2380,7 +2655,7 @@ export function CheckoutForm() {
               )}
               <button
                 type="submit"
-                disabled={isSubmitting || !isReadyToPay}
+                disabled={isSubmitting || !isReadyToPay || currentStepId !== "review"}
                 className="w-full rounded-2xl bg-deep-gold py-4 text-lg font-bold text-navy shadow-md transition-all hover:-translate-y-0.5 hover:bg-deep-gold/90 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
               >
                 {isSubmitting
