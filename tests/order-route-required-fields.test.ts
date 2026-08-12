@@ -92,15 +92,14 @@ test('server contract: print shipping is restricted to US only', () => {
   assert.doesNotMatch(src, /allowed_countries:[^\]]*['"](?:CA|GB|AU|NZ)['"]/);
 });
 
-// P2: receipts + the thank-you handoff must name the hero, not assume the
-// legacy childName field. heroName is always populated (falls back to
-// childName in createOrderRecord), so this is correct today and stays
-// correct once a non-child primary hero can make heroName != childName.
-test('server contract: Stripe product name + success param use heroName ?? childName', () => {
+// P2: the thank-you handoff must name the hero, not assume the legacy
+// childName field. Stripe line items now bind to stable catalog Products so
+// product-scoped promotion codes cannot spill across Digital and Print.
+test('server contract: stable Stripe Product binding preserves personalized success param', () => {
   const src = readFileSync('src/app/api/order/route.ts', 'utf8');
   assert.match(src, /childName:\s*order\.heroName\s*\?\?\s*order\.childName/);
-  assert.match(src, /HeroStoryBook — \$\{order\.heroName \?\? order\.childName\}/);
-  assert.doesNotMatch(src, /HeroStoryBook — \$\{order\.childName\}/);
+  assert.match(src, /product:\s*stripeProductId/);
+  assert.doesNotMatch(src, /product_data:\s*\{/);
 });
 
 test('checkout contract: simplified appearance UI removes stale single-select and suggestion copy', () => {
