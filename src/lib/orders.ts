@@ -181,6 +181,7 @@ export type ReviewAuditEventType =
   | 'whole_book_approved'
   | 'whole_book_approval_rejected'
   | 'print_upgrade_paid'
+  | 'print_upgrade_settlement_conflict'
   | 'refund_issued'
   | 'refund_refused'
   | 'internal_disposition_marked'

@@ -28,6 +28,14 @@ export interface RecordPrintUpgradePaymentInput {
   paidAt?: string;
 }
 
+export interface RecordPrintUpgradeSettlementConflictInput {
+  stripeSessionId: string;
+  targetFormat: BookFormat;
+  amountSubtotalCents: number | null;
+  amountTotalCents: number | null;
+  reason: string;
+}
+
 export function parsePrintUpgradeTargetFormat(value: unknown): BookFormat | null {
   if (value === 'classic' || value === 'premium') return value;
   return null;
@@ -119,6 +127,44 @@ export async function recordPrintUpgradePayment(
           },
         ],
         updatedAt: paidAt,
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+/** Durable, idempotent non-PII recovery anchor for an unapplied signed settlement. */
+export async function recordPrintUpgradeSettlementConflict(
+  orderId: string,
+  input: RecordPrintUpgradeSettlementConflictInput,
+): Promise<OrderRecord | null> {
+  const now = new Date().toISOString();
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const alreadyRecorded = (current.auditEvents ?? []).some((event) =>
+        event.type === 'print_upgrade_settlement_conflict'
+        && event.meta?.stripeSessionId === input.stripeSessionId,
+      );
+      if (alreadyRecorded) return { abort: current };
+      const updated: OrderRecord = {
+        ...current,
+        auditEvents: [
+          ...(current.auditEvents ?? []),
+          {
+            at: now,
+            type: 'print_upgrade_settlement_conflict',
+            meta: {
+              stripeSessionId: input.stripeSessionId,
+              targetFormat: input.targetFormat,
+              amountSubtotalCents: input.amountSubtotalCents,
+              amountTotalCents: input.amountTotalCents,
+              reason: input.reason,
+            },
+          },
+        ],
+        updatedAt: now,
       };
       return { commit: updated, result: updated };
     },

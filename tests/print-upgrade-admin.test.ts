@@ -11,6 +11,7 @@ import {
 import {
   calculatePrintUpgrade,
   recordPrintUpgradePayment,
+  recordPrintUpgradeSettlementConflict,
 } from '../src/lib/print-upgrades.ts';
 
 function makeDigitalOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
@@ -114,6 +115,38 @@ test('recordPrintUpgradePayment: records upgrade payment without starting fulfil
 
     const reloaded = await getOrder('ord_dog_city_upgrade');
     assert.equal(reloaded?.printUpgradeStatus, 'paid');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.HSB_ORDER_STORE_DIR;
+  }
+});
+
+test('settled upgrade conflict is durably idempotent by incoming session', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-upgrade-conflict-'));
+  process.env.HSB_ORDER_STORE_DIR = dir;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    await persistOrder(makeDigitalOrder());
+    const input = {
+      stripeSessionId: 'cs_legacy_discount_delta',
+      targetFormat: 'premium' as const,
+      amountSubtotalCents: 4500,
+      amountTotalCents: 4500,
+      reason: 'settlement_facts_mismatch',
+    };
+    await recordPrintUpgradeSettlementConflict('ord_dog_city_upgrade', input);
+    await recordPrintUpgradeSettlementConflict('ord_dog_city_upgrade', input);
+    const reloaded = await getOrder('ord_dog_city_upgrade');
+    const events = reloaded?.auditEvents?.filter((event) =>
+      event.type === 'print_upgrade_settlement_conflict'
+      && event.meta?.stripeSessionId === input.stripeSessionId,
+    );
+    assert.equal(events?.length, 1);
+    assert.equal(events?.[0]?.meta?.amountTotalCents, 4500);
+    assert.equal(reloaded?.bookFormat, 'digital');
   } finally {
     rmSync(dir, { recursive: true, force: true });
     delete process.env.HSB_ORDER_STORE_DIR;

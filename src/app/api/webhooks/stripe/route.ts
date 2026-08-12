@@ -5,7 +5,7 @@ import { getOrder, isPrintFormat, updateOrderPayment, type ShippingAddress } fro
 import { scheduleFulfillmentKickoff } from '@/lib/fulfillment-kickoff';
 import { scheduleOrderConfirmationEmail } from '@/lib/order-confirmation-kickoff';
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
-import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment } from '@/lib/print-upgrades';
+import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment, recordPrintUpgradeSettlementConflict } from '@/lib/print-upgrades';
 import { isExactSettledCheckoutSession } from '@/lib/checkout-session-confirmation';
 
 export const runtime = 'nodejs';
@@ -95,7 +95,7 @@ export async function POST(request: Request) {
           orderId: upgradeOrderId,
           targetFormat: session.metadata?.targetFormat ?? null,
         });
-        return NextResponse.json({ received: true, printUpgradeSkipped: true });
+        return NextResponse.json({ error: 'Invalid print upgrade metadata' }, { status: 409 });
       }
 
       try {
@@ -112,7 +112,17 @@ export async function POST(request: Request) {
           || !isExactSettledCheckoutSession(session, upgradeOrder, session.id, upgrade.amountCents)
         ) {
           console.error(`Stripe webhook: print-upgrade settlement verification failed for ${upgradeOrderId}`);
-          return NextResponse.json({ error: 'Print upgrade settlement verification failed' }, { status: 409 });
+          const conflict = await recordPrintUpgradeSettlementConflict(upgradeOrderId, {
+            stripeSessionId: session.id,
+            targetFormat,
+            amountSubtotalCents: session.amount_subtotal,
+            amountTotalCents: session.amount_total,
+            reason: upgrade.ok === false ? upgrade.error : 'settlement_facts_mismatch',
+          });
+          if (!conflict) {
+            return NextResponse.json({ error: 'Print upgrade conflict persistence failed' }, { status: 500 });
+          }
+          return NextResponse.json({ received: true, printUpgradeRecoveryRecorded: true });
         }
         const updated = await recordPrintUpgradePayment(upgradeOrderId, {
           stripeSessionId: session.id,
