@@ -1,4 +1,5 @@
 import Stripe from 'stripe';
+import { randomUUID } from 'node:crypto';
 
 import { getOptionalStripeSecretKey } from './stripe-env.ts';
 
@@ -38,6 +39,55 @@ export type ActionResult =
   | { ok: false; status: 400 | 404 | 409 | 502 | 503; error: string };
 
 export type RetryResult = ActionResult;
+
+type EmailResendKind = NonNullable<OrderRecord['emailResendClaimKind']>;
+
+async function claimEmailResend(
+  orderId: string,
+  kind: EmailResendKind,
+  eligible: (order: OrderRecord) => boolean,
+): Promise<{ order: OrderRecord; claimId: string } | null> {
+  const claimId = randomUUID();
+  const order = await withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (!eligible(current) || current.emailResendClaimId || current.refundClaimId) return { abort: null };
+      const updated: OrderRecord = {
+        ...current,
+        emailResendClaimId: claimId,
+        emailResendClaimKind: kind,
+        emailResendClaimArtifact: current.storyArtifactUrl ?? null,
+        emailResendClaimAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+  return order ? { order, claimId } : null;
+}
+
+async function finalizeEmailResend(
+  orderId: string,
+  claimId: string,
+  patch: Partial<OrderRecord> = {},
+): Promise<OrderRecord | null> {
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.emailResendClaimId !== claimId) return { abort: null };
+      const updated: OrderRecord = {
+        ...current,
+        ...patch,
+        emailResendClaimId: null,
+        emailResendClaimKind: null,
+        emailResendClaimArtifact: null,
+        emailResendClaimAt: null,
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
 
 // ── Retry ─────────────────────────────────────────────────────────────────────
 
@@ -105,81 +155,39 @@ export async function retryOrderFulfillment(
  * `retryOrderFulfillment` or `resendProofEmail` paths in that case).
  */
 export async function resendDigitalDelivery(orderId: string): Promise<ActionResult> {
-  const order = await withOrderTransaction<OrderRecord | null>(
-    orderId,
-    (current) => {
-      if (
-        current.bookFormat !== 'digital'
-        || current.paymentStatus !== 'paid'
-        || current.refundedAt
-        || current.stripeRefundId
-        || current.internalDisposition != null
-        || current.fulfillmentStatus !== 'delivery_email_failed'
-        || !current.storyArtifactUrl
-      ) return { abort: null };
-      // No write is needed: the authoritative transaction read itself is the
-      // final eligibility snapshot immediately before the explicit send.
-      return { abort: current };
-    },
-    { notFound: () => null },
-  );
-  if (!order) return { ok: false, status: 404, error: 'Order not found' };
-  if (order.bookFormat !== 'digital') {
-    return {
-      ok: false,
-      status: 400,
-      error: `Use resendProofEmail / lifecycle paths for ${order.bookFormat} orders`,
-    };
+  if (!await getOrder(orderId)) return { ok: false, status: 404, error: 'Order not found' };
+  const claimed = await claimEmailResend(orderId, 'digital_delivery', (current) => (
+    current.bookFormat === 'digital'
+    && current.paymentStatus === 'paid'
+    && !current.refundedAt
+    && !current.stripeRefundId
+    && current.internalDisposition == null
+    && current.fulfillmentStatus === 'delivery_email_failed'
+    && Boolean(current.storyArtifactUrl)
+  ));
+  if (!claimed) {
+    return { ok: false, status: 409, error: 'Order is not eligible or an email/refund operation is already active' };
   }
-  if (!order.storyArtifactUrl) {
-    return { ok: false, status: 409, error: 'No digital artifact URL to resend' };
-  }
+  const { order, claimId } = claimed;
   try {
     await sendDigitalDeliveryEmail(order, {
-      pdfUrl: order.storyArtifactUrl,
+      pdfUrl: order.storyArtifactUrl!,
       reviewUrl: await deliveryReviewUrl(order),
+      idempotencyKeyBase: `admin-digital-${order.id}-${claimId}`,
     });
-    const completed = await withOrderTransaction<OrderRecord | null>(
-      orderId,
-      (current) => {
-        if (
-          current.paymentStatus !== 'paid'
-          || current.refundedAt
-          || current.stripeRefundId
-          || current.internalDisposition != null
-          || current.fulfillmentStatus !== 'delivery_email_failed'
-          || current.storyArtifactUrl !== order.storyArtifactUrl
-        ) return { abort: null };
-        const updated = { ...current, fulfillmentStatus: 'complete' as const, fulfillmentLastError: null };
-        return { commit: updated, result: updated };
-      },
-      { notFound: () => null },
-    );
+    const completed = await finalizeEmailResend(orderId, claimId, {
+      fulfillmentStatus: 'complete',
+      fulfillmentLastError: null,
+    });
     if (!completed) {
-      return { ok: false, status: 409, error: 'Email sent, but order changed before resend finalization' };
+      return { ok: false, status: 409, error: 'Email sent, but resend claim was lost before finalization' };
     }
     return { ok: true, detail: 'Digital delivery email resent' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await withOrderTransaction<OrderRecord | null>(
-      orderId,
-      (current) => {
-        if (
-          current.paymentStatus !== 'paid'
-          || current.refundedAt
-          || current.stripeRefundId
-          || current.internalDisposition != null
-          || current.fulfillmentStatus !== 'delivery_email_failed'
-          || current.storyArtifactUrl !== order.storyArtifactUrl
-        ) return { abort: null };
-        const updated = {
-          ...current,
-          fulfillmentLastError: `delivery_email_failed (manual resend): ${message.slice(0, 500)}`,
-        };
-        return { commit: updated, result: updated };
-      },
-      { notFound: () => null },
-    );
+    await finalizeEmailResend(orderId, claimId, {
+      fulfillmentLastError: `delivery_email_failed (manual resend): ${message.slice(0, 500)}`,
+    });
     return {
       ok: false,
       status: 502,
@@ -241,18 +249,38 @@ export async function resendProofEmail(
   orderId: string,
   baseUrl: string,
 ): Promise<ActionResult> {
-  const order = await getOrder(orderId);
-  if (!order) return { ok: false, status: 404, error: 'Order not found' };
-  if (!order.storyArtifactUrl || !order.proofApprovalToken) {
-    return { ok: false, status: 409, error: 'No proof ready to resend' };
+  if (!await getOrder(orderId)) return { ok: false, status: 404, error: 'Order not found' };
+  const claimed = await claimEmailResend(orderId, 'proof_ready', (current) => (
+    (current.bookFormat === 'classic' || current.bookFormat === 'premium')
+    && current.paymentStatus === 'paid'
+    && !current.refundedAt
+    && !current.stripeRefundId
+    && current.internalDisposition == null
+    && current.fulfillmentStatus === 'proof_ready'
+    && Boolean(current.storyArtifactUrl)
+    && Boolean(current.proofApprovalToken)
+  ));
+  if (!claimed) {
+    return { ok: false, status: 409, error: 'Proof is not eligible or an email/refund operation is already active' };
   }
-  if (order.fulfillmentStatus !== 'proof_ready') {
-    return { ok: false, status: 409, error: `Proof is in state ${order.fulfillmentStatus}` };
-  }
-
+  const { order, claimId } = claimed;
   const reviewUrl = `${baseUrl.replace(/\/$/, '')}/review/${order.id}?token=${order.proofApprovalToken}`;
-  await sendProofReadyEmail(order, { proofUrl: order.storyArtifactUrl, reviewUrl });
-  return { ok: true, detail: 'Proof email resent' };
+  try {
+    await sendProofReadyEmail(order, {
+      proofUrl: order.storyArtifactUrl!,
+      reviewUrl,
+      idempotencyKeyBase: `admin-proof-${order.id}-${claimId}`,
+    });
+    const finalized = await finalizeEmailResend(orderId, claimId);
+    if (!finalized) {
+      return { ok: false, status: 409, error: 'Email sent, but resend claim was lost before finalization' };
+    }
+    return { ok: true, detail: 'Proof email resent' };
+  } catch (err) {
+    await finalizeEmailResend(orderId, claimId);
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, status: 502, error: `Proof email failed: ${message.slice(0, 240)}` };
+  }
 }
 
 // ── Manual proof approval (ops override) ──────────────────────────────────────
@@ -287,7 +315,7 @@ export interface RefundDeps {
 
 export interface StripeRefundClient {
   retrieveSession: (sessionId: string) => Promise<{ payment_intent: string | null }>;
-  createRefund: (paymentIntent: string, reason?: string) => Promise<{ id: string }>;
+  createRefund: (paymentIntent: string, reason: string, idempotencyKey: string) => Promise<{ id: string }>;
 }
 
 function defaultStripeRefundClient(): StripeRefundClient | null {
@@ -303,8 +331,11 @@ function defaultStripeRefundClient(): StripeRefundClient | null {
           : s.payment_intent?.id ?? null;
       return { payment_intent: intent };
     },
-    async createRefund(paymentIntent) {
-      const r = await stripe.refunds.create({ payment_intent: paymentIntent });
+    async createRefund(paymentIntent, _reason, idempotencyKey) {
+      const r = await stripe.refunds.create(
+        { payment_intent: paymentIntent },
+        { idempotencyKey },
+      );
       return { id: r.id };
     },
   };
@@ -325,24 +356,24 @@ export async function refundOrder(
   reason: string,
   deps: RefundDeps = {},
 ): Promise<ActionResult> {
-  const order = await getOrder(orderId);
-  if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  const initial = await getOrder(orderId);
+  if (!initial) return { ok: false, status: 404, error: 'Order not found' };
 
-  const refusal = preprintRefundRefusalReason(order);
+  const refusal = preprintRefundRefusalReason(initial);
   if (refusal) {
-    await appendAuditEvent(order.id, {
+    await appendAuditEvent(initial.id, {
       type: 'refund_refused',
       reason: refusal,
       meta: {
-        paymentStatus: order.paymentStatus,
-        fulfillmentStatus: order.fulfillmentStatus ?? null,
-        status: order.status,
+        paymentStatus: initial.paymentStatus,
+        fulfillmentStatus: initial.fulfillmentStatus ?? null,
+        status: initial.status,
       },
     });
     return { ok: false, status: 409, error: refusal };
   }
 
-  if (!order.stripeSessionId) {
+  if (!initial.stripeSessionId) {
     return {
       ok: false,
       status: 409,
@@ -361,10 +392,9 @@ export async function refundOrder(
 
   const trimmedReason = (reason || 'customer_request').trim().slice(0, 240);
   const now = deps.now ? deps.now() : new Date().toISOString();
-
-  let refundId: string;
+  let paymentIntent: string;
   try {
-    const session = await stripe.retrieveSession(order.stripeSessionId);
+    const session = await stripe.retrieveSession(initial.stripeSessionId);
     if (!session.payment_intent) {
       return {
         ok: false,
@@ -372,27 +402,83 @@ export async function refundOrder(
         error: 'Stripe session has no payment_intent — refund cannot run',
       };
     }
-    const refund = await stripe.createRefund(session.payment_intent, trimmedReason);
+    paymentIntent = session.payment_intent;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, status: 502, error: `Stripe session lookup failed: ${message.slice(0, 200)}` };
+  }
+
+  const claimId = randomUUID();
+  const claimed = await withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (
+        preprintRefundRefusalReason(current)
+        || current.emailResendClaimId
+        || current.refundClaimId
+        || current.stripeSessionId !== initial.stripeSessionId
+      ) return { abort: null };
+      const updated: OrderRecord = {
+        ...current,
+        refundClaimId: claimId,
+        refundClaimAt: now,
+        refundPaymentIntent: paymentIntent,
+        refundReason: trimmedReason,
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+  if (!claimed) {
+    return { ok: false, status: 409, error: 'Refund is no longer eligible or another email/refund operation is active' };
+  }
+
+  let refundId: string;
+  try {
+    const refund = await stripe.createRefund(
+      paymentIntent,
+      trimmedReason,
+      `admin-refund-${orderId}-${claimId}`,
+    );
     refundId = refund.id;
   } catch (err) {
+    // Keep the durable claim: the provider may have completed despite a lost
+    // response. Operations must reconcile this exact idempotency key before retry.
     const message = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
       status: 502,
-      error: `Stripe refund failed: ${message.slice(0, 200)}`,
+      error: `Stripe refund outcome requires reconciliation: ${message.slice(0, 180)}`,
     };
   }
 
-  await updateFulfillmentState(order.id, {
-    paymentStatus: 'refunded',
-    refundedAt: now,
-    refundReason: trimmedReason,
-    stripeRefundId: refundId,
-    fulfillmentStatus: 'failed_manual_review',
-    fulfillmentLastError: `refunded_pre_print: ${trimmedReason}`,
-  });
+  const persisted = await withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.refundClaimId !== claimId || current.refundPaymentIntent !== paymentIntent) {
+        return { abort: null };
+      }
+      const updated: OrderRecord = {
+        ...current,
+        paymentStatus: 'refunded',
+        refundedAt: now,
+        refundReason: trimmedReason,
+        stripeRefundId: refundId,
+        refundClaimId: null,
+        refundClaimAt: null,
+        refundPaymentIntent: null,
+        fulfillmentStatus: 'failed_manual_review',
+        fulfillmentLastError: `refunded_pre_print: ${trimmedReason}`,
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+  if (!persisted) {
+    return { ok: false, status: 409, error: 'Refund issued, but durable order finalization requires reconciliation' };
+  }
 
-  await appendAuditEvent(order.id, {
+  await appendAuditEvent(orderId, {
     type: 'refund_issued',
     reason: trimmedReason,
     meta: { stripeRefundId: refundId },

@@ -414,6 +414,15 @@ export interface OrderRecord extends OrderInput {
    *  through the processor. Null on legacy orders or refunds that fell
    *  back to manual processing. */
   stripeRefundId?: string | null;
+  /** Durable single-flight owner for an operator-triggered customer email. */
+  emailResendClaimId?: string | null;
+  emailResendClaimKind?: 'digital_delivery' | 'proof_ready' | null;
+  emailResendClaimArtifact?: string | null;
+  emailResendClaimAt?: string | null;
+  /** Durable pre-provider refund fence and reconciliation identity. */
+  refundClaimId?: string | null;
+  refundClaimAt?: string | null;
+  refundPaymentIntent?: string | null;
   /** Optional digital-to-print upgrade state. Admin/internal-only until a
    *  customer explicitly pays a separate upgrade checkout; never by itself
    *  releases a proof or submits a print job. */
@@ -1604,6 +1613,33 @@ export async function listOrders(): Promise<OrderRecord[]> {
   }
 }
 
+/** Strict durable enumeration for recovery/cron paths.
+ * Never falls back to ephemeral storage in production-like environments and
+ * re-reads every listed order through the authoritative version-bound path. */
+export async function listOrdersAuthoritative(): Promise<OrderRecord[]> {
+  const token = getBlobToken();
+  if (!token) {
+    if (requiresDurablePersistence()) {
+      throw new OrderPersistenceError(
+        'fulfillment-sweep',
+        'BLOB_READ_WRITE_TOKEN missing in production — cannot enumerate orders authoritatively',
+      );
+    }
+    return listOrders();
+  }
+
+  const { blobs } = await list({ prefix: getOrdersListPrefix(), token });
+  const orders: OrderRecord[] = [];
+  for (const blob of blobs) {
+    if (!blob.pathname.endsWith('.json')) continue;
+    const orderId = blob.pathname.slice(getOrdersListPrefix().length, -'.json'.length);
+    if (!orderId || orderId.includes('/')) continue;
+    const order = await getOrderAuthoritative(orderId);
+    if (order) orders.push(order);
+  }
+  return orders;
+}
+
 export function isOrderStatus(value: string): value is OrderStatus {
   return ['order_received', 'preview_ready', 'print_in_production', 'shipped'].includes(value);
 }
@@ -1667,6 +1703,13 @@ type FulfillmentPatch = Partial<Pick<
   | 'refundedAt'
   | 'refundReason'
   | 'stripeRefundId'
+  | 'emailResendClaimId'
+  | 'emailResendClaimKind'
+  | 'emailResendClaimArtifact'
+  | 'emailResendClaimAt'
+  | 'refundClaimId'
+  | 'refundClaimAt'
+  | 'refundPaymentIntent'
 >>;
 
 const PAYMENT_GATED_FULFILLMENT_STATUSES: FulfillmentStatus[] = [
@@ -1710,6 +1753,12 @@ export async function updateFulfillmentState(
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
+      if (
+        current.emailResendClaimId
+        && (patch.internalDisposition !== undefined || patch.refundedAt !== undefined || patch.stripeRefundId !== undefined)
+      ) {
+        return { abort: null };
+      }
       const effectivePaymentStatus = patch.paymentStatus ?? current.paymentStatus;
       if (patchRequiresPaidOrder(patch) && effectivePaymentStatus !== 'paid') {
         throw new Error(

@@ -129,6 +129,38 @@ test('resendProofEmail: proof_ready state → ok (email skipped without key)', a
   } finally { cleanup(dir); }
 });
 
+test('resendProofEmail: concurrent requests send exactly once', async (t) => {
+  const dir = makeTmp();
+  const originalFetch = globalThis.fetch;
+  process.env.HSB_RESEND_API_KEY = 're_test_stub';
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return new Response(JSON.stringify({ id: 'proof_once' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; cleanup(dir); });
+  await seed({
+    bookFormat: 'classic',
+    paymentStatus: 'paid',
+    fulfillmentStatus: 'proof_ready',
+    storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
+    proofApprovalToken: 'tok_once',
+  }, 'ord_proof_once');
+
+  const results = await Promise.all([
+    resendProofEmail('ord_proof_once', 'https://h.com'),
+    resendProofEmail('ord_proof_once', 'https://h.com'),
+  ]);
+  assert.equal(results.filter((result) => result.ok).length, 1);
+  assert.equal(calls, 1);
+  const after = await getOrder('ord_proof_once');
+  assert.equal(after?.emailResendClaimId ?? null, null);
+});
+
 // ── manuallyApproveProof ──────────────────────────────────────────────────────
 
 test('manuallyApproveProof: rejects order not in proof_ready state', async () => {

@@ -7,6 +7,9 @@ import { scheduleOrderConfirmationEmail } from '@/lib/order-confirmation-kickoff
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
 import { parsePrintUpgradeTargetFormat, recordPrintUpgradePayment } from '@/lib/print-upgrades';
 
+export const runtime = 'nodejs';
+export const maxDuration = 300;
+
 // kept for future use (print-vs-digital branching); referenced by tests
 void isPrintFormat;
 

@@ -74,6 +74,26 @@ test('checkout source fences overlapping and reset photo callbacks with operatio
   assert.match(CHECKOUT_FORM_SRC, /supportingPhotoOperationRef\.current \+= 1/);
 });
 
+test('supporting photo completion is draft-only and cancel/remove invalidate pending work', () => {
+  const processor = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('const processSupportingCharacterPhoto'),
+    CHECKOUT_FORM_SRC.indexOf('const handleDrop'),
+  );
+  assert.doesNotMatch(processor, /setForm\s*\(/, 'async completion must not mutate a saved character');
+  const cancel = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('const cancelSupportingCharacter'),
+    CHECKOUT_FORM_SRC.indexOf('const saveSupportingCharacter'),
+  );
+  assert.match(cancel, /supportingPhotoOperationRef\.current \+= 1/);
+  assert.match(cancel, /setSupportingPhotoPendingId\(null\)/);
+  const removeButton = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('{supportingCharacterDraft.photoFile && ('),
+    CHECKOUT_FORM_SRC.indexOf('{supportingCharacterDraft.photoDataUrl ? ('),
+  );
+  assert.match(removeButton, /supportingPhotoOperationRef\.current \+= 1/);
+  assert.match(removeButton, /setSupportingPhotoPendingId\(null\)/);
+});
+
 test('incomplete human draft cannot save', () => {
   const draft = createSupportingCharacterDraft({ role: 'dad', relationshipLabel: 'Dad' });
   const state = createSupportingCharacterEditorState([]);

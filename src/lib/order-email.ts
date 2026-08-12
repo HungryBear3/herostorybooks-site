@@ -486,6 +486,7 @@ export async function sendDigitalDeliveryEmail(
   options: {
     pdfUrl: string;
     reviewUrl?: string;
+    idempotencyKeyBase?: string;
     printUpgrade?: {
       checkoutUrl: string;
       targetLabel: string;
@@ -512,7 +513,10 @@ export async function sendDigitalDeliveryEmail(
     html: email.html,
     text: email.text,
     replyTo: supportEmail,
-  });
+  }, options.idempotencyKeyBase ? {
+    primaryIdempotencyKey: `${options.idempotencyKeyBase}-primary`,
+    fallbackIdempotencyKey: `${options.idempotencyKeyBase}-fallback`,
+  } : {});
 }
 
 export function buildProofReadyEmail(
@@ -569,7 +573,7 @@ export function buildProofReadyEmail(
 
 export async function sendProofReadyEmail(
   order: OrderRecord,
-  options: { reviewUrl: string; proofUrl: string },
+  options: { reviewUrl: string; proofUrl: string; idempotencyKeyBase?: string },
 ) {
   const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
   if (!apiKey) return { skipped: true as const, reason: 'missing_resend_api_key' };
@@ -585,7 +589,10 @@ export async function sendProofReadyEmail(
     html: email.html,
     text: email.text,
     replyTo: supportEmail,
-  });
+  }, options.idempotencyKeyBase ? {
+    primaryIdempotencyKey: `${options.idempotencyKeyBase}-primary`,
+    fallbackIdempotencyKey: `${options.idempotencyKeyBase}-fallback`,
+  } : {});
 }
 
 // ── Operator alert ────────────────────────────────────────────────────────────

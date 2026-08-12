@@ -557,6 +557,10 @@ export function CheckoutForm() {
   };
 
   const removeSupportingCharacter = (id: string) => {
+    if (editingSupportingCharacterId === id) {
+      supportingPhotoOperationRef.current += 1;
+      setSupportingPhotoPendingId(null);
+    }
     setForm((prev) => ({
       ...prev,
       familyCharacters: prev.familyCharacters.filter((character) => character.id !== id),
@@ -571,6 +575,8 @@ export function CheckoutForm() {
     if (supportingCharacterDraft) return;
     const existing = form.familyCharacters.find((character) => character.id === id);
     if (!existing) return;
+    supportingPhotoOperationRef.current += 1;
+    setSupportingPhotoPendingId(null);
     setSupportingCharacterDraft({ ...existing });
     setEditingSupportingCharacterId(id);
     setCurrentStepId("people");
@@ -578,6 +584,8 @@ export function CheckoutForm() {
   };
 
   const cancelSupportingCharacter = () => {
+    supportingPhotoOperationRef.current += 1;
+    setSupportingPhotoPendingId(null);
     setSupportingCharacterDraft(null);
     setEditingSupportingCharacterId(null);
     setStepError(null);
@@ -608,6 +616,8 @@ export function CheckoutForm() {
         familyCharacters: [...prev.familyCharacters, supportingCharacterDraft],
       };
     });
+    supportingPhotoOperationRef.current += 1;
+    setSupportingPhotoPendingId(null);
     setSupportingCharacterDraft(null);
     setEditingSupportingCharacterId(null);
     setStepError(null);
@@ -775,12 +785,8 @@ export function CheckoutForm() {
         setSupportingCharacterDraft((prev) =>
           prev && prev.id === id ? { ...prev, photoFile: uploadFile, photoDataUrl } : prev,
         );
-        setForm((prev) => ({
-          ...prev,
-          familyCharacters: prev.familyCharacters.map((character) =>
-            character.id === id ? { ...character, photoFile: uploadFile, photoDataUrl } : character,
-          ),
-        }));
+        // The saved character is intentionally untouched until Save person.
+        // This preserves cancel semantics even when FileReader completes late.
         setSupportingPhotoPendingId(null);
       };
       reader.onerror = () => {
@@ -1887,7 +1893,11 @@ export function CheckoutForm() {
                       {supportingCharacterDraft.photoFile && (
                         <button
                           type="button"
-                          onClick={() => updateSupportingCharacter(supportingCharacterDraft.id, { photoFile: null, photoDataUrl: null })}
+                          onClick={() => {
+                            supportingPhotoOperationRef.current += 1;
+                            setSupportingPhotoPendingId(null);
+                            updateSupportingCharacter(supportingCharacterDraft.id, { photoFile: null, photoDataUrl: null });
+                          }}
                           className="rounded-full border border-[#dfd2b8] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54] transition hover:border-[#a64c4c]/60 hover:text-[#a64c4c]"
                         >
                           Remove photo

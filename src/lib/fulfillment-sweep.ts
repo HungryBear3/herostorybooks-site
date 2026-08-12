@@ -1,4 +1,4 @@
-import { listOrders } from './orders.ts';
+import { listOrdersAuthoritative } from './orders.ts';
 import type { OrderRecord } from './orders.ts';
 import { triggerFulfillment, type TriggerResult } from './fulfillment.ts';
 
@@ -78,7 +78,7 @@ export function evaluateFulfillmentSweepEligibility(
 
 export function buildDefaultFulfillmentSweepDeps(): FulfillmentSweepDeps {
   return {
-    listOrders,
+    listOrders: listOrdersAuthoritative,
     triggerFulfillment: (orderId: string) => triggerFulfillment(orderId),
     now: () => Date.now(),
     graceMs: 15 * 60 * 1000,

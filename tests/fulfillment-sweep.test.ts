@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   createOrderRecord,
   getOrderAuthoritative,
+  listOrdersAuthoritative,
   persistOrder,
   type OrderRecord,
   updateOrderPayment,
@@ -110,6 +111,17 @@ test('authoritative read returns the freshly-written paid order even if the publ
 
   assert.equal(order?.paymentStatus, 'paid');
   assert.equal(order?.paidAt, '2026-08-12T16:39:24.566Z');
+});
+
+test('authoritative sweep enumeration fails closed without Blob in production-like environments', async () => {
+  await assert.rejects(
+    () => withEnv({
+      HSB_REQUIRE_DURABLE_PERSISTENCE: 'true',
+      BLOB_READ_WRITE_TOKEN: undefined,
+      NODE_ENV: 'production',
+    }, () => listOrdersAuthoritative()),
+    /cannot enumerate orders authoritatively/,
+  );
 });
 
 test('triggerFulfillment uses a durable claim so concurrent callers do not double-start the same paid not_started order', async () => {

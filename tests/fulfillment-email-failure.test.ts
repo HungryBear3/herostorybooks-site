@@ -420,6 +420,42 @@ test('resendDigitalDelivery resends the email for a digital order that already h
   assert.equal(persisted!.fulfillmentStatus, 'complete');
 });
 
+test('concurrent digital resends acquire one durable claim and send once', async (t) => {
+  const dir = makeTmpDir();
+  const originalKey = process.env.HSB_RESEND_API_KEY;
+  const originalFetch = globalThis.fetch;
+  process.env.HSB_RESEND_API_KEY = 're_test_stub';
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return new Response(JSON.stringify({ id: 'email_once' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  t.after(() => {
+    if (originalKey === undefined) delete process.env.HSB_RESEND_API_KEY;
+    else process.env.HSB_RESEND_API_KEY = originalKey;
+    globalThis.fetch = originalFetch;
+    cleanupTmpDir(dir);
+  });
+
+  const order = await makeDigitalOrder({
+    fulfillmentStatus: 'delivery_email_failed',
+    storyArtifactUrl: 'https://cdn.example.com/ord/once.pdf',
+  });
+  const results = await Promise.all([
+    resendDigitalDelivery(order.id),
+    resendDigitalDelivery(order.id),
+  ]);
+  assert.equal(results.filter((result) => result.ok).length, 1);
+  assert.equal(calls, 1);
+  const persisted = await getOrder(order.id);
+  assert.equal(persisted?.emailResendClaimId ?? null, null);
+  assert.equal(persisted?.fulfillmentStatus, 'complete');
+});
+
 // ── Test 4: triggerFulfillment skips an order already at delivery_email_failed
 
 test('triggerFulfillment skips delivery_email_failed instead of regenerating', async (t) => {

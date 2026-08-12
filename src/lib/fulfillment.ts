@@ -231,7 +231,12 @@ async function updateClaimedFulfillmentState(
         || current.fulfillmentMode !== 'auto'
         || current.internalDisposition != null
       ) return { abort: null };
-      const updated = applyFulfillmentPatchTo(current, patch);
+      const updated = applyFulfillmentPatchTo(current, {
+        ...patch,
+        // Heartbeat the claim at every fenced transition. Recovery takeover is
+        // allowed only after this lease exceeds the platform execution bound.
+        fulfillmentKickoffAt: new Date().toISOString(),
+      });
       return { commit: updated, result: updated };
     },
     { notFound: () => null },
