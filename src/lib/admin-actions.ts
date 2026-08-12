@@ -106,11 +106,23 @@ export async function retryOrderFulfillment(
     // a normal full retry; that path will at least regenerate properly.
   }
 
-  await updateFulfillmentState(orderId, {
-    fulfillmentStatus: 'not_started',
-    fulfillmentAttempts: 0,
-    fulfillmentLastError: null,
-  });
+  // Do not overwrite an already-clean kickoff state. On Vercel Blob the
+  // metadata ETag advances before the public bytes necessarily converge; a
+  // redundant reset immediately followed by triggerFulfillment can therefore
+  // manufacture its own read-after-write race. Failed/manual-review orders
+  // still receive the reset they need, while a paid untouched order starts
+  // directly from its already-authoritative record.
+  const alreadyCleanStart =
+    (order.fulfillmentStatus ?? 'not_started') === 'not_started'
+    && (order.fulfillmentAttempts ?? 0) === 0
+    && !order.fulfillmentLastError;
+  if (!alreadyCleanStart) {
+    await updateFulfillmentState(orderId, {
+      fulfillmentStatus: 'not_started',
+      fulfillmentAttempts: 0,
+      fulfillmentLastError: null,
+    });
+  }
 
   // Awaited so the admin retry actually waits for fulfillment to start.
   // On Vercel/serverless a fire-and-forget promise gets dropped when the
