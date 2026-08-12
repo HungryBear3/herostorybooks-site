@@ -371,7 +371,7 @@ export function buildShippedEmail(
 
 export async function sendLifecycleEmail(
   order: OrderRecord,
-  options: { trackingNumber?: string; trackingUrl?: string } = {},
+  options: { trackingNumber?: string; trackingUrl?: string; idempotencyKeyBase?: string } = {},
 ) {
   const supportEmail = getSupportEmail();
 
@@ -414,6 +414,10 @@ export async function sendLifecycleEmail(
       text: email.text,
       replyTo: supportEmail,
     },
+    options.idempotencyKeyBase ? {
+      primaryIdempotencyKey: `${options.idempotencyKeyBase}-primary`,
+      fallbackIdempotencyKey: `${options.idempotencyKeyBase}-fallback`,
+    } : {},
   );
 }
 

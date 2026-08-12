@@ -206,46 +206,79 @@ export async function resendDigitalDelivery(orderId: string): Promise<ActionResu
 export interface ShipInput {
   trackingNumber?: string;
   trackingUrl?: string;
+  printJobStatus?: string;
 }
 
 export async function markOrderShipped(
   orderId: string,
   input: ShipInput,
 ): Promise<ActionResult> {
-  const order = await getOrder(orderId);
-  if (!order) return { ok: false, status: 404, error: 'Order not found' };
-
-  const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
-  if (!isPrint) {
+  const initial = await getOrder(orderId);
+  if (!initial) return { ok: false, status: 404, error: 'Order not found' };
+  if (initial.bookFormat !== 'classic' && initial.bookFormat !== 'premium') {
     return { ok: false, status: 400, error: 'Only print orders can be marked shipped' };
   }
-  if (order.paymentStatus !== 'paid') {
+  if (initial.paymentStatus !== 'paid') {
     return { ok: false, status: 400, error: 'Payment not confirmed' };
   }
-
-  const tracking = (input.trackingNumber ?? '').trim();
-  const trackingUrl = (input.trackingUrl ?? '').trim();
-
-  const shipped = await updateFulfillmentState(orderId, {
-    status: 'shipped',
-    ...(tracking ? { trackingNumber: tracking } : {}),
-    ...(trackingUrl ? { trackingUrl } : {}),
-    shippedAt: new Date().toISOString(),
-  });
-  if (!shipped) {
-    return { ok: false, status: 409, error: 'Shipping transition blocked by an active refund operation' };
+  if (initial.status === 'shipped' && initial.shippedEmailSentAt) {
+    return { ok: true, detail: 'already_shipped_and_notified' };
   }
 
-  const updated = await getOrder(orderId);
-  if (updated) {
-    try {
-      await sendLifecycleEmail(updated, {
-        trackingNumber: tracking || undefined,
-        trackingUrl: trackingUrl || undefined,
-      });
-    } catch (err) {
-      console.error(`[admin] shipped email failed for ${orderId}:`, err);
+  const claimId = randomUUID();
+  const tracking = (input.trackingNumber ?? '').trim();
+  const trackingUrl = (input.trackingUrl ?? '').trim();
+  const shipped = await withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const isPrint = current.bookFormat === 'classic' || current.bookFormat === 'premium';
+      if (
+        !isPrint
+        || current.paymentStatus !== 'paid'
+        || current.refundedAt
+        || current.stripeRefundId
+        || current.refundClaimId
+        || current.emailResendClaimId
+        || !current.printJobId
+        || (current.status !== 'print_in_production' && !(current.status === 'shipped' && !current.shippedEmailSentAt))
+      ) return { abort: null };
+      const now = new Date().toISOString();
+      const updated: OrderRecord = {
+        ...current,
+        status: 'shipped',
+        ...(tracking ? { trackingNumber: tracking } : {}),
+        ...(trackingUrl ? { trackingUrl } : {}),
+        ...(input.printJobStatus ? { printJobStatus: input.printJobStatus } : {}),
+        shippedAt: now,
+        emailResendClaimId: claimId,
+        emailResendClaimKind: 'shipped',
+        emailResendClaimArtifact: current.printJobId,
+        emailResendClaimAt: now,
+        updatedAt: now,
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+  if (!shipped) {
+    return { ok: false, status: 409, error: 'Shipping requires a paid in-production print job with no active refund/email operation' };
+  }
+
+  try {
+    const result = await sendLifecycleEmail(shipped, {
+      trackingNumber: shipped.trackingNumber ?? undefined,
+      trackingUrl: shipped.trackingUrl ?? undefined,
+      idempotencyKeyBase: `shipped-${shipped.id}-${shipped.printJobId}`,
+    });
+    if (result.skipped) {
+      await finalizeEmailResend(orderId, claimId);
+      return { ok: false, status: 503, error: `Shipped email not sent: ${result.reason}` };
     }
+    await finalizeEmailResend(orderId, claimId, { shippedEmailSentAt: new Date().toISOString() });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Keep the durable claim because Resend may have accepted the message.
+    return { ok: false, status: 502, error: `Shipped email outcome requires reconciliation: ${message.slice(0, 220)}` };
   }
 
   return { ok: true };
@@ -588,6 +621,9 @@ export async function applyLuluStatusUpdate(
 
   const order = await getOrder(orderId);
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  if (!jobId || !order.printJobId || order.printJobId !== jobId) {
+    return { ok: false, status: 409, error: 'Lulu job identity does not match the persisted print job' };
+  }
 
   const status = extractLuluStatus(payload);
   const tracking = extractTracking(payload);
@@ -609,24 +645,13 @@ export async function applyLuluStatusUpdate(
     patch.fulfillmentLastError = `Lulu returned ${status}`;
   }
 
+  if (status === 'SHIPPED') {
+    return markOrderShipped(orderId, { ...tracking, printJobStatus: status });
+  }
+
   const applied = await updateFulfillmentState(orderId, patch);
   if (!applied) {
     return { ok: false, status: 409, error: 'Lulu transition blocked by an active refund operation' };
-  }
-
-  // Send shipped email on SHIPPED transition (idempotent: only if not already shipped)
-  if (status === 'SHIPPED' && order.status !== 'shipped') {
-    const updated = await getOrder(orderId);
-    if (updated) {
-      try {
-        await sendLifecycleEmail(updated, {
-          trackingNumber: tracking.trackingNumber,
-          trackingUrl: tracking.trackingUrl,
-        });
-      } catch (err) {
-        console.error(`[lulu-webhook] lifecycle email failed for ${orderId}:`, err);
-      }
-    }
   }
 
   return { ok: true, detail: status ?? 'updated' };

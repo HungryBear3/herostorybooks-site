@@ -26,11 +26,12 @@ export async function POST(request: Request) {
   const secret = process.env.LULU_WEBHOOK_SECRET;
   const body = await request.text();
 
-  if (secret) {
-    const sig = request.headers.get('lulu-hmac-sha256');
-    if (!verifyHmac(body, sig, secret)) {
-      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
-    }
+  if (!secret) {
+    return NextResponse.json({ error: 'Lulu webhook secret is not configured' }, { status: 503 });
+  }
+  const sig = request.headers.get('lulu-hmac-sha256');
+  if (!verifyHmac(body, sig, secret)) {
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
   }
 
   let payload: LuluWebhookPayload;
@@ -43,7 +44,11 @@ export async function POST(request: Request) {
   const result = await applyLuluStatusUpdate(payload, resolveOrderByJobId);
   if (result.ok === true) return NextResponse.json({ received: true });
 
-  // Lulu retries on non-2xx. Log + 200 for unknown orders to prevent infinite retries.
+  // Unknown provider objects are acknowledged to prevent infinite retries.
+  // Temporary conflicts/persistence failures must remain non-2xx so Lulu retries.
   console.warn(`[lulu-webhook] ${result.error}`);
-  return NextResponse.json({ received: true, warning: result.error });
+  if (result.status === 404) {
+    return NextResponse.json({ received: true, warning: result.error });
+  }
+  return NextResponse.json({ error: result.error }, { status: result.status });
 }

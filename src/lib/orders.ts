@@ -416,9 +416,11 @@ export interface OrderRecord extends OrderInput {
   stripeRefundId?: string | null;
   /** Durable single-flight owner for an operator-triggered customer email. */
   emailResendClaimId?: string | null;
-  emailResendClaimKind?: 'digital_delivery' | 'proof_ready' | null;
+  emailResendClaimKind?: 'digital_delivery' | 'proof_ready' | 'shipped' | 'order_confirmation' | null;
   emailResendClaimArtifact?: string | null;
   emailResendClaimAt?: string | null;
+  /** Durable receipt that the shipped lifecycle email was accepted by Resend. */
+  shippedEmailSentAt?: string | null;
   /** Durable pre-provider refund fence and reconciliation identity. */
   refundClaimId?: string | null;
   refundClaimAt?: string | null;
