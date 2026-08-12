@@ -2080,6 +2080,7 @@ export function __setOrderStoreAdapterFactoryForTests(
 
 export function __resetOrderStoreAdapterFactoryForTests(): void {
   orderStoreAdapterFactoryOverride = null;
+  recentConditionalCommits.clear();
 }
 
 function resolveOrderStoreAdapter(): OrderStoreAdapter {
@@ -2095,8 +2096,17 @@ function resolveOrderStoreAdapter(): OrderStoreAdapter {
   return localOrderStoreAdapter();
 }
 
+const recentConditionalCommits = new Map<string, VersionedOrder>();
+
 /** Read an order together with its CAS version token. */
-export async function readOrderVersioned(orderId: string): Promise<VersionedOrder | null> {
+export async function readOrderVersioned(
+  orderId: string,
+  opts: { preferRecentCommit?: boolean } = {},
+): Promise<VersionedOrder | null> {
+  if (opts.preferRecentCommit) {
+    const recent = recentConditionalCommits.get(orderId);
+    if (recent) return recent;
+  }
   const adapter = resolveOrderStoreAdapter();
   const raw = await adapter.readVersioned(getOrderBlobPath(orderId));
   if (!raw) return null;
@@ -2194,7 +2204,7 @@ export async function withOrderTransaction<T>(
   const maxAttempts = opts.maxAttempts ?? ORDER_TRANSACTION_MAX_ATTEMPTS;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const current = await readOrderVersioned(orderId);
+    const current = await readOrderVersioned(orderId, { preferRecentCommit: attempt === 1 });
     if (!current) {
       if (opts.notFound) return opts.notFound();
       throw new OrderPersistenceError(orderId, 'Order not found for guarded commit');
@@ -2202,7 +2212,16 @@ export async function withOrderTransaction<T>(
     const outcome = await mutate(current.order);
     if ('abort' in outcome) return outcome.abort;
     const committed = await commitOrderConditional(outcome.commit, current.version);
-    if (committed.ok) return outcome.result;
+    if (committed.ok) {
+      recentConditionalCommits.set(orderId, {
+        order: scrubRetiredPrivateFields(outcome.commit),
+        version: committed.version,
+      });
+      return outcome.result;
+    }
+    // A real concurrent writer won the conditional commit. Evict the local
+    // version so the next attempt must re-read the authoritative store.
+    recentConditionalCommits.delete(orderId);
   }
   throw new OrderVersionConflictError(orderId, maxAttempts);
 }

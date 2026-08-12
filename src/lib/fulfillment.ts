@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { put } from '@vercel/blob';
 
-import { applyFulfillmentPatchTo, getOrder, getOrderPhotoUrl, isPrintFormat, OrderVersionConflictError, orderRequiresReferenceImage, updateFulfillmentState, withBlobNamespace, withOrderTransaction } from './orders.ts';
+import { applyFulfillmentPatchTo, getOrder, getOrderPhotoUrl, isPrintFormat, OrderVersionConflictError, orderRequiresReferenceImage, readOrderVersioned, updateFulfillmentState, withBlobNamespace, withOrderTransaction } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
@@ -1102,7 +1102,8 @@ async function readbackUntilPaid(
   let lastSeen: OrderRecord | null = null;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     attempts++;
-    const order = await getOrder(orderId);
+    const versioned = await readOrderVersioned(orderId, { preferRecentCommit: true });
+    const order = versioned?.order ?? null;
     lastSeen = order ?? lastSeen;
     if (order && order.paymentStatus === 'paid') {
       return { order, attempts, notFound: false };

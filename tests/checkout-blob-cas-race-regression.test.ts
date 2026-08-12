@@ -155,6 +155,26 @@ test('re-reading through the public path does not treat the writer\'s own commit
   assert.equal((sim.current(orderPath(ORDER_ID)) as unknown as { childName: string }).childName, 'B');
 });
 
+test('sequential guarded mutations reuse the exact committed version without a CDN reread', async () => {
+  const sim = new PublicBlobSim();
+  __setOrderStoreAdapterFactoryForTests(() => sim.adapter());
+  await persistNewOrder(draftOrder(ORDER_ID));
+
+  await withOrderTransaction(ORDER_ID, (o) => ({
+    commit: { ...o, childName: 'FIRST' } as OrderRecord,
+    result: 1,
+  }));
+  sim.cdnDecorate = () => '"stale-edge"';
+  await withOrderTransaction(ORDER_ID, (o) => ({
+    commit: { ...o, recipientName: 'SECOND' } as OrderRecord,
+    result: 1,
+  }));
+
+  const final = sim.current(orderPath(ORDER_ID)) as unknown as { childName: string; recipientName: string };
+  assert.equal(final.childName, 'FIRST');
+  assert.equal(final.recipientName, 'SECOND');
+});
+
 test('a genuine competing writer through the public path is not overwritten (fail-closed retry)', async () => {
   const sim = new PublicBlobSim();
   sim.cdnDecorate = (listEtag) => `W/${listEtag}`;
