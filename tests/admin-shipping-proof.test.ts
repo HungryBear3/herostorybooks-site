@@ -129,7 +129,7 @@ test('resendProofEmail: proof_ready state without provider key fails closed and 
     const r = await resendProofEmail('ord_proof_ready', 'https://h.com');
     assert.equal(r.ok, false);
     const persisted = await getOrder('ord_proof_ready');
-    assert.ok(persisted?.emailResendClaimId);
+    assert.equal(persisted?.emailResendClaimId ?? null, null);
   } finally { cleanup(dir); }
 });
 

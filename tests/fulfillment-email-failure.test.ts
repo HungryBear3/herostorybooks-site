@@ -469,7 +469,7 @@ test('digital resend without provider config reports failure and does not mark c
   assert.equal(result.ok, false);
   const persisted = await getOrder(order.id);
   assert.equal(persisted?.fulfillmentStatus, 'delivery_email_failed');
-  assert.ok(persisted?.emailResendClaimId);
+  assert.equal(persisted?.emailResendClaimId ?? null, null);
 });
 
 // ── Test 4: triggerFulfillment skips an order already at delivery_email_failed

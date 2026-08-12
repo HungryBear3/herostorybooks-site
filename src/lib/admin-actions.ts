@@ -176,6 +176,9 @@ export async function resendDigitalDelivery(orderId: string): Promise<ActionResu
       idempotencyKeyBase: `admin-digital-${order.id}-${claimId}`,
     });
     if (sendResult.skipped) {
+      await finalizeEmailResend(orderId, claimId, {
+        fulfillmentLastError: `delivery_email_failed (manual resend): ${sendResult.reason}`,
+      });
       return { ok: false, status: 503, error: `Delivery email not sent: ${sendResult.reason}` };
     }
     const completed = await finalizeEmailResend(orderId, claimId, {
@@ -277,6 +280,9 @@ export async function resendProofEmail(
       idempotencyKeyBase: `admin-proof-${order.id}-${claimId}`,
     });
     if (sendResult.skipped) {
+      await finalizeEmailResend(orderId, claimId, {
+        fulfillmentLastError: `proof_email_failed (manual resend): ${sendResult.reason}`,
+      });
       return { ok: false, status: 503, error: `Proof email not sent: ${sendResult.reason}` };
     }
     const finalized = await finalizeEmailResend(orderId, claimId);

@@ -665,6 +665,8 @@ async function runDigitalFulfillment(order: OrderRecord, claimId: string, deps: 
       });
     } else {
       await requireClaimedFulfillmentState(order.id, claimId, {
+        fulfillmentStatus: 'delivery_email_failed',
+        fulfillmentLastError: `delivery_email_failed: ${emailResult.reason}`,
         fulfillmentKickoffId: null,
         fulfillmentKickoffAt: null,
       });
@@ -853,6 +855,8 @@ async function runPrintFulfillment(order: OrderRecord, claimId: string, deps: Fu
       });
     } else {
       await requireClaimedFulfillmentState(order.id, claimId, {
+        fulfillmentStatus: 'delivery_email_failed',
+        fulfillmentLastError: `delivery_email_failed: ${emailResult.reason}`,
         fulfillmentKickoffId: null,
         fulfillmentKickoffAt: null,
       });
