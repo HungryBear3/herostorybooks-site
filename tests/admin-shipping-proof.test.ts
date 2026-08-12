@@ -319,7 +319,19 @@ test('applyLuluStatusUpdate: rejects external_id when provider job id mismatches
   } finally { cleanup(dir); }
 });
 
-test('applyLuluStatusUpdate: unresolvable → 404', async () => {
+test('applyLuluStatusUpdate: unbound job-only event is retryable 409', async () => {
+  const dir = makeTmp();
+  try {
+    const result = await applyLuluStatusUpdate(
+      { data: { id: 'job-not-bound-yet', status: 'IN_PRODUCTION' } },
+      async () => null,
+    );
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.status, 409);
+  } finally { cleanup(dir); }
+});
+
+test('applyLuluStatusUpdate: unresolvable without provider job id → 404', async () => {
   const dir = makeTmp();
   try {
     const r = await applyLuluStatusUpdate({ data: { status: 'IN_PRODUCTION' } });

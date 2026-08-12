@@ -93,11 +93,42 @@ test('webhook source: rejects same-session replay for any non-pending paymentSta
   assert.match(src, /paymentStatus !== 'pending'/);
 });
 
-// ── Behavioral guards: the order-update path is what the webhook drives.
-// On a refunded order, calling updateOrderPayment(_, 'paid', ...) WOULD
-// resurrect state — these tests document that the webhook MUST refuse
-// before reaching that call. The dedicated source-level guards above
-// confirm the webhook does refuse.
+// ── Behavioral guards: the order-update primitive is independently fail-closed.
+// Route pre-reads are advisory; CAS must still reject refunded/terminal state and
+// a different already-bound Stripe session on every retry.
+
+test('refunded order cannot be resurrected by a different paid Stripe session', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      paymentStatus: 'refunded',
+      stripeSessionId: 'cs_original',
+      refundedAt: '2026-04-30T00:00:00Z',
+      stripeRefundId: 're_x',
+    }, 'ord_refunded_different');
+    const result = await updateOrderPayment('ord_refunded_different', 'paid', {
+      stripeSessionId: 'cs_delayed_other',
+    });
+    assert.equal(result, null);
+    const after = await getOrder('ord_refunded_different');
+    assert.equal(after?.paymentStatus, 'refunded');
+    assert.equal(after?.stripeSessionId, 'cs_original');
+  } finally { cleanup(dir); }
+});
+
+test('pending order bound to another Stripe session cannot be rebound by settlement', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({ paymentStatus: 'pending', stripeSessionId: 'cs_expected' }, 'ord_bound_pending');
+    const result = await updateOrderPayment('ord_bound_pending', 'paid', {
+      stripeSessionId: 'cs_wrong',
+    });
+    assert.equal(result, null);
+    const after = await getOrder('ord_bound_pending');
+    assert.equal(after?.paymentStatus, 'pending');
+    assert.equal(after?.stripeSessionId, 'cs_expected');
+  } finally { cleanup(dir); }
+});
 
 test('refunded order is detectable on replay: paymentStatus and refundedAt both set', async () => {
   const dir = makeTmp();

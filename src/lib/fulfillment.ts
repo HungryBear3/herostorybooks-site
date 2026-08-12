@@ -991,17 +991,38 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
     { notFound: () => null },
   );
   if (!submissionOrder) throw new Error('Refusing print: submission_attempt_fence_failed');
+  const expectedSubmissionAt = submissionOrder.printSubmissionAttemptedAt;
 
   const result = await _submitPrint(submissionOrder);
 
-  const afterPrint = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
-    fulfillmentStatus: 'complete',
-    status: 'print_in_production',
-    printJobId: result.jobId,
-    fulfillmentLastError: null,
-  }));
+  const afterPrint = await withOrderTransaction<OrderRecord | null>(
+    order.id,
+    (current) => {
+      if (
+        current.fulfillmentStatus !== 'submitting_to_print'
+        || current.paymentStatus !== 'paid'
+        || current.refundedAt
+        || current.stripeRefundId
+        || current.refundClaimId
+        || current.printSubmissionAttemptedAt !== expectedSubmissionAt
+        || current.printSubmissionProofVersion !== expectedProofVersion
+        || (current.printJobId != null && current.printJobId !== result.jobId)
+      ) return { abort: null };
+      const next: OrderRecord = {
+        ...current,
+        fulfillmentStatus: 'complete',
+        status: 'print_in_production',
+        printJobId: result.jobId,
+        fulfillmentLastError: null,
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: next, result: next };
+    },
+    { notFound: () => null },
+  );
+  if (!afterPrint) throw new Error('print_job_binding_requires_reconciliation');
 
-  await sendLifecycleEmail(afterPrint ?? { ...hydratedOrder, status: 'print_in_production' });
+  await sendLifecycleEmail(afterPrint);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -1468,15 +1489,24 @@ export async function approvePrintProof(
     const message = error instanceof Error ? error.message : String(error);
     const current = await getOrder(orderId);
     const ambiguous = Boolean(current?.printSubmissionAttemptedAt);
-    await updateFulfillmentState(orderId, ambiguous
-      ? {
-          fulfillmentStatus: 'submitting_to_print',
-          fulfillmentLastError: `print_submission_ambiguous: ${message.slice(0, 500)}`,
+    await withOrderTransaction(
+      orderId,
+      (fresh) => {
+        if (fresh.printJobId || fresh.fulfillmentStatus !== 'submitting_to_print') {
+          return { abort: null };
         }
-      : {
-          fulfillmentStatus: 'failed_manual_review',
-          fulfillmentLastError: `print_submission_failed_before_attempt: ${message.slice(0, 500)}`,
-        });
+        const next: OrderRecord = {
+          ...fresh,
+          fulfillmentStatus: ambiguous ? 'submitting_to_print' : 'failed_manual_review',
+          fulfillmentLastError: ambiguous
+            ? `print_submission_ambiguous: ${message.slice(0, 500)}`
+            : `print_submission_failed_before_attempt: ${message.slice(0, 500)}`,
+          updatedAt: new Date().toISOString(),
+        };
+        return { commit: next, result: next };
+      },
+      { notFound: () => null },
+    );
     return { ok: false, error: ambiguous ? 'print_submission_ambiguous' : 'print_submission_failed' };
   }
 }

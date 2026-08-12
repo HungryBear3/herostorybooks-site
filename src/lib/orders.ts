@@ -2459,6 +2459,27 @@ export async function updateOrderPayment(
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
+      if (paymentStatus === 'paid') {
+        if (
+          current.paymentStatus === 'paid'
+          && (!opts.stripeSessionId || current.stripeSessionId === opts.stripeSessionId)
+          && !current.refundedAt
+          && !current.stripeRefundId
+          && !current.refundClaimId
+        ) {
+          const replay = { ...current, updatedAt: now };
+          return { commit: replay, result: replay };
+        }
+        if (
+          current.paymentStatus !== 'pending'
+          || current.refundedAt
+          || current.stripeRefundId
+          || current.refundClaimId
+          || (current.stripeSessionId != null
+            && opts.stripeSessionId != null
+            && current.stripeSessionId !== opts.stripeSessionId)
+        ) return { abort: null };
+      }
       const updated: OrderRecord = {
         ...current,
         paymentStatus,

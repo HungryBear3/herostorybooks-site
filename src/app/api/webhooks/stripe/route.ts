@@ -1,7 +1,7 @@
 import { NextResponse, after } from 'next/server';
 import Stripe from 'stripe';
 
-import { isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
+import { getOrder, isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
 import { scheduleFulfillmentKickoff } from '@/lib/fulfillment-kickoff';
 import { scheduleOrderConfirmationEmail } from '@/lib/order-confirmation-kickoff';
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
@@ -192,6 +192,14 @@ export async function POST(request: Request) {
       });
 
       if (!updated) {
+        const blocked = await getOrder(orderId);
+        if (blocked) {
+          console.warn(
+            `Stripe webhook: refusing paid transition for order ${orderId}; ` +
+              `current payment/session state does not match this settlement`,
+          );
+          return NextResponse.json({ received: true, paymentTransitionSkipped: true });
+        }
         // Two distinct meanings collapse here in production: (a) the order
         // record was never durably persisted before Stripe completed (a
         // recovery candidate — run scripts/recover-orders.ts), (b) the order

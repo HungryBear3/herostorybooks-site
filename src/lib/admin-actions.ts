@@ -618,6 +618,9 @@ export async function applyLuluStatusUpdate(
     orderId = await resolveOrderByJobId(jobId);
   }
   if (!orderId) {
+    if (jobId) {
+      return { ok: false, status: 409, error: 'Lulu print job is not durably bound yet; retry required' };
+    }
     return { ok: false, status: 404, error: 'Could not resolve order from Lulu payload' };
   }
 
