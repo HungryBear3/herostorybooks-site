@@ -207,6 +207,7 @@ export interface ShipInput {
   trackingNumber?: string;
   trackingUrl?: string;
   printJobStatus?: string;
+  expectedPrintJobId?: string;
 }
 
 export async function markOrderShipped(
@@ -240,6 +241,7 @@ export async function markOrderShipped(
         || current.refundClaimId
         || current.emailResendClaimId
         || !current.printJobId
+        || (input.expectedPrintJobId != null && current.printJobId !== input.expectedPrintJobId)
         || (current.status !== 'print_in_production' && !(current.status === 'shipped' && !current.shippedEmailSentAt))
       ) return { abort: null };
       const now = new Date().toISOString();
@@ -646,10 +648,36 @@ export async function applyLuluStatusUpdate(
   }
 
   if (status === 'SHIPPED') {
-    return markOrderShipped(orderId, { ...tracking, printJobStatus: status });
+    return markOrderShipped(orderId, {
+      ...tracking,
+      printJobStatus: status,
+      expectedPrintJobId: jobId,
+    });
   }
 
-  const applied = await updateFulfillmentState(orderId, patch);
+  const applied = await withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (
+        current.printJobId !== jobId
+        || current.paymentStatus !== 'paid'
+        || current.refundedAt
+        || current.stripeRefundId
+        || current.refundClaimId
+        || current.internalDisposition != null
+      ) return { abort: null };
+      // Provider events can arrive out of order. Once shipped, no older Lulu
+      // production/rejection event may regress customer or fulfillment state.
+      if (current.status === 'shipped') return { abort: current };
+      const updated: OrderRecord = {
+        ...current,
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
   if (!applied) {
     return { ok: false, status: 409, error: 'Lulu transition blocked by an active refund operation' };
   }

@@ -228,6 +228,13 @@ test('applyLuluStatusUpdate: exact external_id and job id apply SHIPPED once', a
     assert.ok(after?.trackingUrl?.includes('fedex.com'));
     assert.ok(after?.shippedAt);
     assert.ok(after?.shippedEmailSentAt);
+    const stale = await applyLuluStatusUpdate({
+      data: { id: 12345, external_id: 'ord_lulu_ship', status: 'IN_PRODUCTION' },
+    });
+    assert.equal(stale.ok, true);
+    const afterStale = await getOrder('ord_lulu_ship');
+    assert.equal(afterStale?.status, 'shipped');
+    assert.equal(afterStale?.printJobStatus, 'SHIPPED');
   } finally { /* cleanup handled by t.after */ }
 });
 

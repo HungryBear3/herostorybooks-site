@@ -53,6 +53,7 @@ export function scheduleOrderConfirmationEmail(
         || current.refundedAt
         || current.stripeRefundId
         || current.refundClaimId
+        || current.confirmationEmailSentAt
       ) {
         throw new Error('confirmation_email_blocked_by_authoritative_order_state');
       }
@@ -66,6 +67,7 @@ export function scheduleOrderConfirmationEmail(
             || latest.stripeRefundId
             || latest.refundClaimId
             || latest.emailResendClaimId
+            || latest.confirmationEmailSentAt
           ) return { abort: null };
           const updated: OrderRecord = {
             ...latest,
@@ -105,6 +107,7 @@ export function scheduleOrderConfirmationEmail(
           return {
             commit: {
               ...latest,
+              confirmationEmailSentAt: new Date().toISOString(),
               emailResendClaimId: null,
               emailResendClaimKind: null,
               emailResendClaimArtifact: null,

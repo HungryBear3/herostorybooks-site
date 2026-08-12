@@ -421,6 +421,8 @@ export interface OrderRecord extends OrderInput {
   emailResendClaimAt?: string | null;
   /** Durable receipt that the shipped lifecycle email was accepted by Resend. */
   shippedEmailSentAt?: string | null;
+  /** Durable receipt that the initial paid-order confirmation was accepted. */
+  confirmationEmailSentAt?: string | null;
   /** Durable pre-provider refund fence and reconciliation identity. */
   refundClaimId?: string | null;
   refundClaimAt?: string | null;

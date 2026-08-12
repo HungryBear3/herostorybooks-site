@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   _resetConfirmationEmailInFlightForTest,
@@ -138,4 +139,10 @@ test('authoritative refunded state blocks a stale deferred confirmation email', 
   queue.shift()!();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(sends, 0);
+});
+
+test('production confirmation path persists and gates on a durable acceptance receipt', () => {
+  const source = readFileSync(new URL('../src/lib/order-confirmation-kickoff.ts', import.meta.url), 'utf8');
+  assert.match(source, /latest\.confirmationEmailSentAt/);
+  assert.match(source, /confirmationEmailSentAt: new Date\(\)\.toISOString\(\)/);
 });
