@@ -1326,20 +1326,35 @@ async function uploadOrderPhotoAtPath(
   }
 }
 
-export async function uploadOrderPhoto(orderId: string, file: File): Promise<UploadedPhotoRef | null> {
-  return uploadOrderPhotoAtPath(orderId, file, (safeName) => `orders/${orderId}/photo-${safeName}`);
+function checkoutMediaScope(checkoutLeaseId?: string): string {
+  if (!checkoutLeaseId) return '';
+  if (!/^[0-9a-f-]{36}$/i.test(checkoutLeaseId)) {
+    throw new OrderPersistenceError('unknown', 'invalid_checkout_media_scope');
+  }
+  return `checkout-${checkoutLeaseId}/`;
+}
+
+export async function uploadOrderPhoto(
+  orderId: string,
+  file: File,
+  checkoutLeaseId?: string,
+): Promise<UploadedPhotoRef | null> {
+  const scope = checkoutMediaScope(checkoutLeaseId);
+  return uploadOrderPhotoAtPath(orderId, file, (safeName) => `orders/${orderId}/${scope}photo-${safeName}`);
 }
 
 export async function uploadOrderSupportingPhoto(
   orderId: string,
   index: number,
   file: File,
+  checkoutLeaseId?: string,
 ): Promise<UploadedPhotoRef | null> {
   const safeIndex = Number.isInteger(index) && index >= 0 ? index + 1 : 1;
+  const scope = checkoutMediaScope(checkoutLeaseId);
   return uploadOrderPhotoAtPath(
     orderId,
     file,
-    (safeName) => `orders/${orderId}/supporting-${safeIndex}-photo-${safeName}`,
+    (safeName) => `orders/${orderId}/${scope}supporting-${safeIndex}-photo-${safeName}`,
   );
 }
 

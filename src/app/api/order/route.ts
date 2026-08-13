@@ -444,7 +444,7 @@ export async function POST(request: Request) {
     let photoBlobUrl: string | null = null;
     if (photo instanceof File && photo.size > 0) {
       try {
-        const uploaded = await uploadOrderPhoto(draftOrder.id, photo);
+        const uploaded = await uploadOrderPhoto(draftOrder.id, photo, draftOrder.checkoutLeaseId ?? undefined);
         if (uploaded) {
           photoBlobPath = uploaded.pathname;
           photoBlobUrl = uploaded.url;
@@ -487,7 +487,12 @@ export async function POST(request: Request) {
         continue;
       }
       try {
-        const uploaded = await uploadOrderSupportingPhoto(draftOrder.id, index, familyPhoto);
+        const uploaded = await uploadOrderSupportingPhoto(
+          draftOrder.id,
+          index,
+          familyPhoto,
+          draftOrder.checkoutLeaseId ?? undefined,
+        );
         if (!uploaded) {
           console.error(`[order] ABORT BEFORE STRIPE: supporting photo upload failed; supporting photo persistence failed for ${draftOrder.id}`);
           await rollbackUploadedMedia('supporting photo upload returned no durable reference');

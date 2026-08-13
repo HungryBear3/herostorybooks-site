@@ -33,6 +33,10 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   assert.match(route, /checkoutFingerprint\(form\)/);
   assert.match(route, /value\.arrayBuffer\(\)/);
   assert.match(route, /current\.checkoutLeaseId !== draftOrder\.checkoutLeaseId/);
+  assert.match(route, /uploadOrderPhoto\(draftOrder\.id, photo, draftOrder\.checkoutLeaseId/);
+  assert.match(route, /uploadOrderSupportingPhoto\([\s\S]*draftOrder\.checkoutLeaseId/);
+  const orders = readFileSync('src/lib/orders.ts', 'utf8');
+  assert.match(orders, /checkout-\$\{checkoutLeaseId\}/);
   assert.match(route, /checkout\.sessions\.retrieve\(persistedDraft\.stripeSessionId\)/);
   assert.match(route, /idempotencyKey: `hsb_checkout_\$\{order\.id\}`/);
   const createAt = route.indexOf('stripe.checkout.sessions.create');
