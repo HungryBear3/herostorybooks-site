@@ -284,6 +284,7 @@ export type FulfillmentMode = 'auto' | 'manual_hold';
 
 export interface OrderRecord extends OrderInput {
   id: string;
+  checkoutAttemptId?: string | null;
   /** Non-PII compatibility signal derived while reading retired legacy data. */
   legacyVoiceUploadPresent?: boolean;
   bookFormat: BookFormat;
@@ -2359,6 +2360,21 @@ export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> 
     throw new OrderPersistenceError(order.id, 'Refusing to overwrite an existing order during creation');
   }
   return sanitized;
+}
+
+export async function persistOrResumeCheckoutOrder(order: OrderRecord): Promise<OrderRecord> {
+  try {
+    return await persistNewOrder(order);
+  } catch (error) {
+    const existing = await getOrderAuthoritative(order.id);
+    if (error instanceof OrderPersistenceError
+      && existing?.paymentStatus === 'pending'
+      && existing.checkoutAttemptId === order.checkoutAttemptId
+      && existing.email === order.email
+      && existing.bookFormat === order.bookFormat
+      && existing.priceCents === order.priceCents) return existing;
+    throw error;
+  }
 }
 
 /** Commit an order record only if the stored version is still `expectedVersion`. */

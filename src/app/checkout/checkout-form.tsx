@@ -842,6 +842,13 @@ export function CheckoutForm() {
 
     try {
       const payload = new FormData();
+      const attemptStorageKey = "hsb-checkout-attempt-id";
+      let checkoutAttemptId = sessionStorage.getItem(attemptStorageKey);
+      if (!checkoutAttemptId) {
+        checkoutAttemptId = crypto.randomUUID().replace(/-/g, "");
+        sessionStorage.setItem(attemptStorageKey, checkoutAttemptId);
+      }
+      payload.set("checkoutAttemptId", checkoutAttemptId);
       const familyCharactersForOrder = form.familyCharacters
         .filter((character) =>
           Boolean(
@@ -973,6 +980,7 @@ export function CheckoutForm() {
       localStorage.removeItem(STORAGE_KEY);
       setTimeout(() => {
         window.location.href = result.redirectTo;
+        sessionStorage.removeItem(attemptStorageKey);
       }, 1200);
     } catch (error) {
       console.error(error);

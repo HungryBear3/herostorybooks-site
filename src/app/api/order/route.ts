@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import Stripe from 'stripe';
+import crypto from 'node:crypto';
 
 import {
   bindOrderCheckoutSession,
@@ -7,7 +8,7 @@ import {
   isPrintFormat,
   MAX_VOICE_BYTES,
   OrderPersistenceError,
-  persistNewOrder,
+  persistOrResumeCheckoutOrder,
   rollbackOrderMediaUploads,
   sanitizeFamilyCharacters,
   uploadOrderPhoto,
@@ -112,6 +113,10 @@ export async function POST(request: Request) {
     }
 
     const form = await request.formData();
+    const checkoutAttemptId = String(form.get('checkoutAttemptId') || '').trim();
+    if (!/^[a-f0-9]{32}$/i.test(checkoutAttemptId)) {
+      return NextResponse.json({ error: 'Invalid checkout attempt. Please reload and try again.' }, { status: 400 });
+    }
     const checkoutTracking = buildCheckoutTracking({
       cohort: form.get('cohort'),
       invite: form.get('invite'),
@@ -354,11 +359,13 @@ export async function POST(request: Request) {
       customStoryValidation,
       checkoutTracking,
     }, {
+      id: `ord_${crypto.createHash('sha256').update(checkoutAttemptId).digest('hex').slice(0, 16)}`,
       // Explicit workflow intent (NOT a default): every current customer-checkout
       // order is produced on the manual path — no HSB workflow is approved as
       // automatic (DECISIONS.md:51). Never inferred from product/payment/cohort.
       fulfillmentMode: 'manual_hold',
     });
+    draftOrder.checkoutAttemptId = checkoutAttemptId;
 
     // Resolve the stable Stripe Product before creating the durable order or
     // uploading customer media. Product-scoped promotion codes depend on this
@@ -370,7 +377,14 @@ export async function POST(request: Request) {
     // media. If cleanup itself later fails, the deterministic orders/<id>/
     // Blob prefix still has an owning record for retention/deletion handling.
     try {
-      await persistNewOrder(draftOrder);
+      const persistedDraft = await persistOrResumeCheckoutOrder(draftOrder);
+      if (persistedDraft.stripeSessionId) {
+        const existingSession = await getStripe().checkout.sessions.retrieve(persistedDraft.stripeSessionId);
+        if (existingSession.url && existingSession.status === 'open') {
+          return NextResponse.json({ ok: true, redirectTo: existingSession.url });
+        }
+        return NextResponse.json({ error: 'This checkout attempt already reached payment. Contact support before retrying.' }, { status: 409 });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[order] ABORT BEFORE MEDIA/STRIPE: durable draft persistence failed for ${draftOrder.id}: ${message}`);
@@ -604,7 +618,7 @@ export async function POST(request: Request) {
       // is delayed; it is never trusted without exact order/amount checks.
       success_url: `${baseUrl}/thank-you?${successParams.toString()}&sessionId={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/checkout`,
-    });
+    }, { idempotencyKey: `hsb_checkout_${order.id}` });
 
     const bound = await bindOrderCheckoutSession(order.id, session.id);
     if (!bound) {

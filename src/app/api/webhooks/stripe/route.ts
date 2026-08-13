@@ -2,6 +2,7 @@ import { NextResponse, after } from 'next/server';
 import Stripe from 'stripe';
 
 import { getOrder, isPrintFormat, recordPaymentSettlementConflict, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
+import { recordUnmatchedPaymentSettlement } from '@/lib/payment-recovery';
 import { scheduleFulfillmentKickoff } from '@/lib/fulfillment-kickoff';
 import { scheduleOrderConfirmationEmail } from '@/lib/order-confirmation-kickoff';
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
@@ -165,14 +166,36 @@ export async function POST(request: Request) {
 
     if (!orderId) {
       console.error('Stripe webhook: no orderId in session metadata');
-      return NextResponse.json({ error: 'Missing durable order identity' }, { status: 409 });
+      try {
+        await recordUnmatchedPaymentSettlement({
+          stripeSessionId: session.id,
+          claimedOrderId: null,
+          amountSubtotalCents: session.amount_subtotal,
+          amountTotalCents: session.amount_total,
+          reason: 'missing_order_identity',
+        });
+      } catch {
+        return NextResponse.json({ error: 'Payment recovery persistence failed' }, { status: 500 });
+      }
+      return NextResponse.json({ error: 'Missing durable order identity; recovery recorded' }, { status: 409 });
     }
 
     try {
       const existing = await getOrder(orderId);
       if (!existing) {
         console.error(`[webhook] CRITICAL: order ${orderId} not found for Stripe session ${session.id}`);
-        return NextResponse.json({ error: 'Order not found in durable store' }, { status: 500 });
+        try {
+          await recordUnmatchedPaymentSettlement({
+            stripeSessionId: session.id,
+            claimedOrderId: orderId,
+            amountSubtotalCents: session.amount_subtotal,
+            amountTotalCents: session.amount_total,
+            reason: 'order_not_found',
+          });
+        } catch {
+          return NextResponse.json({ error: 'Payment recovery persistence failed' }, { status: 500 });
+        }
+        return NextResponse.json({ error: 'Order not found; recovery recorded' }, { status: 409 });
       }
       if (
         existing.stripeSessionId !== session.id

@@ -121,9 +121,9 @@ test('checkout contract: order route validates real photo bytes, derives intent,
   assert.match(src, /likenessIntent: likenessIntentForPhoto\(photoReady\)/);
   assert.match(src, /clearUntrustedSupportingPhotoMetadata/);
   assert.match(src, /new Set\(supportingPhotoFiles\.keys\(\)\)/);
-  assert.match(src, /await persistNewOrder\(draftOrder\)/);
+  assert.match(src, /await persistOrResumeCheckoutOrder\(draftOrder\)/);
   assert.match(src, /withOrderTransaction\(draftOrder\.id/);
-  assert.ok(src.indexOf('await persistNewOrder(draftOrder)') < src.indexOf('await uploadOrderPhoto'));
+  assert.ok(src.indexOf('await persistOrResumeCheckoutOrder(draftOrder)') < src.indexOf('await uploadOrderPhoto'));
   assert.match(src, /rollbackOrderMediaUploads/);
   assert.match(src, /rollbackUploadedMedia\('supporting photo persistence failure'\)/);
   assert.match(src, /rollbackUploadedMedia\('voice persistence failure'\)/);
