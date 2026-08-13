@@ -181,6 +181,8 @@ export type ReviewAuditEventType =
   | 'whole_book_approved'
   | 'whole_book_approval_rejected'
   | 'print_upgrade_paid'
+  | 'print_upgrade_settlement_conflict'
+  | 'payment_settlement_conflict'
   | 'refund_issued'
   | 'refund_refused'
   | 'internal_disposition_marked'
@@ -282,6 +284,10 @@ export type FulfillmentMode = 'auto' | 'manual_hold';
 
 export interface OrderRecord extends OrderInput {
   id: string;
+  checkoutAttemptId?: string | null;
+  checkoutFingerprint?: string | null;
+  checkoutLeaseId?: string | null;
+  checkoutLeaseExpiresAt?: string | null;
   /** Non-PII compatibility signal derived while reading retired legacy data. */
   legacyVoiceUploadPresent?: boolean;
   bookFormat: BookFormat;
@@ -296,11 +302,17 @@ export interface OrderRecord extends OrderInput {
    * from updatedAt or any scan clock. Absent on legacy/unpaid orders.
    */
   paidAt?: string | null;
+  /** Exact Stripe Checkout amount_total accepted for the original order. */
+  settledAmountCents?: number | null;
   /** Fulfillment routing intent — see FulfillmentMode. Undefined = fail closed. */
   fulfillmentMode?: FulfillmentMode;
   stripeSessionId?: string | null;
   shippingAddress?: ShippingAddress | null;
   fulfillmentStatus?: FulfillmentStatus;
+  /** Durable kickoff-claim timestamp for fulfillment start dedupe/recovery. */
+  fulfillmentKickoffAt?: string | null;
+  /** Opaque kickoff-claim ownership token paired with fulfillmentKickoffAt. */
+  fulfillmentKickoffId?: string | null;
   fulfillmentAttempts?: number;
   fulfillmentLastError?: string | null;
   storyArtifactUrl?: string | null;
@@ -410,6 +422,19 @@ export interface OrderRecord extends OrderInput {
    *  through the processor. Null on legacy orders or refunds that fell
    *  back to manual processing. */
   stripeRefundId?: string | null;
+  /** Durable single-flight owner for an operator-triggered customer email. */
+  emailResendClaimId?: string | null;
+  emailResendClaimKind?: 'digital_delivery' | 'proof_ready' | 'shipped' | 'order_confirmation' | null;
+  emailResendClaimArtifact?: string | null;
+  emailResendClaimAt?: string | null;
+  /** Durable receipt that the shipped lifecycle email was accepted by Resend. */
+  shippedEmailSentAt?: string | null;
+  /** Durable receipt that the initial paid-order confirmation was accepted. */
+  confirmationEmailSentAt?: string | null;
+  /** Durable pre-provider refund fence and reconciliation identity. */
+  refundClaimId?: string | null;
+  refundClaimAt?: string | null;
+  refundPaymentIntent?: string | null;
   /** Optional digital-to-print upgrade state. Admin/internal-only until a
    *  customer explicitly pays a separate upgrade checkout; never by itself
    *  releases a proof or submits a print job. */
@@ -1185,7 +1210,11 @@ function voiceExtForMime(mime: string): string {
  * Upload an attached child-voice audio file to durable blob storage. Mirrors
  * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
  */
-export async function uploadOrderVoice(orderId: string, file: File): Promise<UploadedVoiceRef | null> {
+export async function uploadOrderVoice(
+  orderId: string,
+  file: File,
+  checkoutLeaseId?: string,
+): Promise<UploadedVoiceRef | null> {
   const token = getBlobToken();
 
   if (typeof file.arrayBuffer !== 'function') {
@@ -1207,7 +1236,8 @@ export async function uploadOrderVoice(orderId: string, file: File): Promise<Upl
 
   // Never derive durable identifiers from the caller-controlled filename.
   const assetId = crypto.randomBytes(12).toString('base64url');
-  const pathname = withBlobNamespace(`orders/${orderId}/voice-${assetId}.${voiceExtForMime(file.type)}`);
+  const scope = checkoutMediaScope(checkoutLeaseId);
+  const pathname = withBlobNamespace(`orders/${orderId}/${scope}voice-${assetId}.${voiceExtForMime(file.type)}`);
   const buffer = Buffer.from(await file.arrayBuffer());
 
   try {
@@ -1301,20 +1331,35 @@ async function uploadOrderPhotoAtPath(
   }
 }
 
-export async function uploadOrderPhoto(orderId: string, file: File): Promise<UploadedPhotoRef | null> {
-  return uploadOrderPhotoAtPath(orderId, file, (safeName) => `orders/${orderId}/photo-${safeName}`);
+function checkoutMediaScope(checkoutLeaseId?: string): string {
+  if (!checkoutLeaseId) return '';
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(checkoutLeaseId)) {
+    throw new OrderPersistenceError('unknown', 'invalid_checkout_media_scope');
+  }
+  return `checkout-${checkoutLeaseId}/`;
+}
+
+export async function uploadOrderPhoto(
+  orderId: string,
+  file: File,
+  checkoutLeaseId?: string,
+): Promise<UploadedPhotoRef | null> {
+  const scope = checkoutMediaScope(checkoutLeaseId);
+  return uploadOrderPhotoAtPath(orderId, file, (safeName) => `orders/${orderId}/${scope}photo-${safeName}`);
 }
 
 export async function uploadOrderSupportingPhoto(
   orderId: string,
   index: number,
   file: File,
+  checkoutLeaseId?: string,
 ): Promise<UploadedPhotoRef | null> {
   const safeIndex = Number.isInteger(index) && index >= 0 ? index + 1 : 1;
+  const scope = checkoutMediaScope(checkoutLeaseId);
   return uploadOrderPhotoAtPath(
     orderId,
     file,
-    (safeName) => `orders/${orderId}/supporting-${safeIndex}-photo-${safeName}`,
+    (safeName) => `orders/${orderId}/${scope}supporting-${safeIndex}-photo-${safeName}`,
   );
 }
 
@@ -1331,14 +1376,19 @@ export interface OrderMediaRollbackDeps {
 export async function rollbackOrderMediaUploads(
   orderId: string,
   pathnames: readonly string[],
+  checkoutLeaseId?: string,
   deps: OrderMediaRollbackDeps = {},
 ): Promise<number> {
   const uniquePaths = [...new Set(pathnames.filter(Boolean))];
   if (uniquePaths.length === 0) return 0;
 
-  const expectedPrefix = withBlobNamespace(`orders/${orderId}/`);
+  const scope = checkoutMediaScope(checkoutLeaseId);
+  const expectedPrefix = withBlobNamespace(`orders/${orderId}/${scope}`);
   for (const pathname of uniquePaths) {
-    if (!pathname.startsWith(expectedPrefix)) {
+    const relative = pathname.slice(expectedPrefix.length);
+    if (!pathname.startsWith(expectedPrefix)
+      || !relative
+      || relative.split('/').some((segment) => segment === '.' || segment === '..')) {
       throw new OrderPersistenceError(
         orderId,
         `Refusing checkout-media rollback outside the order namespace: ${pathname}`,
@@ -1511,6 +1561,53 @@ export async function getOrder(orderId: string) {
   }
 }
 
+export async function getOrderAuthoritative(
+  orderId: string,
+  deps: PublicVersionedReadDeps = {},
+) {
+  const token = getBlobToken();
+  const requireDurable = requiresDurablePersistence();
+
+  if (token) {
+    try {
+      if (getBlobAccessMode() === 'public') {
+        const raw = await readAuthoritativeOrderBlobVersioned(getOrderBlobPath(orderId), token, deps);
+        return raw ? parseOrderRecord(raw.body) : null;
+      }
+      const versioned = await readOrderVersioned(orderId);
+      return versioned?.order ?? null;
+    } catch (err) {
+      if (requireDurable) {
+        console.error(
+          `[orders] getOrderAuthoritative: blob read failed in production-like env (orderId=${orderId}):`,
+          err,
+        );
+        throw err;
+      }
+      console.warn(`[orders] getOrderAuthoritative blob read failed in dev for ${orderId}:`, err);
+    }
+  } else if (requireDurable) {
+    console.error(
+      `[orders] getOrderAuthoritative: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=${orderId}).`,
+    );
+    throw new OrderPersistenceError(
+      orderId,
+      'BLOB_READ_WRITE_TOKEN missing in production — cannot read order authoritatively',
+    );
+  }
+
+  try {
+    const file = await readFile(`${getOrderStoreDir()}/${orderId}.json`, 'utf8');
+    return parseOrderRecord(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
 export async function listOrders(): Promise<OrderRecord[]> {
   const token = getBlobToken();
 
@@ -1553,6 +1650,60 @@ export async function listOrders(): Promise<OrderRecord[]> {
   }
 }
 
+/** Strict durable enumeration for recovery/cron paths.
+ * Never falls back to ephemeral storage in production-like environments and
+ * re-reads every listed order through the authoritative version-bound path. */
+export async function listOrdersAuthoritative(deps: {
+  listImpl?: typeof list;
+  getOrderImpl?: typeof getOrderAuthoritative;
+} = {}): Promise<OrderRecord[]> {
+  const token = getBlobToken();
+  if (!token) {
+    if (requiresDurablePersistence()) {
+      throw new OrderPersistenceError(
+        'fulfillment-sweep',
+        'BLOB_READ_WRITE_TOKEN missing in production — cannot enumerate orders authoritatively',
+      );
+    }
+    return listOrders();
+  }
+
+  const listImpl = deps.listImpl ?? list;
+  const getOrderImpl = deps.getOrderImpl ?? getOrderAuthoritative;
+  const orders: OrderRecord[] = [];
+  let cursor: string | undefined;
+  const seenCursors = new Set<string>();
+  do {
+    const page = await listImpl({
+      prefix: getOrdersListPrefix(),
+      token,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const blob of page.blobs) {
+      if (!blob.pathname.endsWith('.json')) continue;
+      const orderId = blob.pathname.slice(getOrdersListPrefix().length, -'.json'.length);
+      if (!orderId || orderId.includes('/')) continue;
+      const order = await getOrderImpl(orderId);
+      if (order) orders.push(order);
+    }
+    cursor = page.hasMore ? page.cursor : undefined;
+    if (page.hasMore && !cursor) {
+      throw new OrderPersistenceError(
+        'fulfillment-sweep',
+        'Blob listing reported hasMore without a cursor',
+      );
+    }
+    if (cursor && seenCursors.has(cursor)) {
+      throw new OrderPersistenceError(
+        'fulfillment-sweep',
+        'Blob listing repeated a cursor',
+      );
+    }
+    if (cursor) seenCursors.add(cursor);
+  } while (cursor);
+  return orders;
+}
+
 export function isOrderStatus(value: string): value is OrderStatus {
   return ['order_received', 'preview_ready', 'print_in_production', 'shipped'].includes(value);
 }
@@ -1575,6 +1726,8 @@ export async function updateOrderStatus(orderId: string, status: OrderStatus) {
 type FulfillmentPatch = Partial<Pick<
   OrderRecord,
   | 'fulfillmentStatus'
+  | 'fulfillmentKickoffAt'
+  | 'fulfillmentKickoffId'
   | 'fulfillmentAttempts'
   | 'fulfillmentLastError'
   | 'storyArtifactUrl'
@@ -1614,6 +1767,13 @@ type FulfillmentPatch = Partial<Pick<
   | 'refundedAt'
   | 'refundReason'
   | 'stripeRefundId'
+  | 'emailResendClaimId'
+  | 'emailResendClaimKind'
+  | 'emailResendClaimArtifact'
+  | 'emailResendClaimAt'
+  | 'refundClaimId'
+  | 'refundClaimAt'
+  | 'refundPaymentIntent'
 >>;
 
 const PAYMENT_GATED_FULFILLMENT_STATUSES: FulfillmentStatus[] = [
@@ -1657,6 +1817,19 @@ export async function updateFulfillmentState(
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
+      if (
+        current.refundClaimId
+        && patch.refundedAt === undefined
+        && patch.stripeRefundId === undefined
+      ) {
+        return { abort: null };
+      }
+      if (
+        current.emailResendClaimId
+        && (patch.internalDisposition !== undefined || patch.refundedAt !== undefined || patch.stripeRefundId !== undefined)
+      ) {
+        return { abort: null };
+      }
       const effectivePaymentStatus = patch.paymentStatus ?? current.paymentStatus;
       if (patchRequiresPaidOrder(patch) && effectivePaymentStatus !== 'paid') {
         throw new Error(
@@ -1666,6 +1839,42 @@ export async function updateFulfillmentState(
       const updated: OrderRecord = {
         ...current,
         ...patch,
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+/** Explicit operator transition from a paid, undisposed order back to auto. */
+export async function prepareOrderForAdminFulfillmentRetry(
+  orderId: string,
+): Promise<OrderRecord | null> {
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
+        return { abort: null };
+      }
+      if (current.internalDisposition != null) return { abort: null };
+      const status = current.fulfillmentStatus ?? 'not_started';
+      if (!['not_started', 'failed_manual_review'].includes(status)) return { abort: null };
+      if (
+        current.fulfillmentKickoffId
+        || current.printSubmissionAttemptedAt
+        || current.printJobId
+        || current.status === 'print_in_production'
+        || current.status === 'shipped'
+      ) return { abort: null };
+      const updated: OrderRecord = {
+        ...current,
+        fulfillmentMode: 'auto',
+        fulfillmentStatus: 'not_started',
+        fulfillmentKickoffAt: null,
+        fulfillmentKickoffId: null,
+        fulfillmentAttempts: 0,
+        fulfillmentLastError: null,
         updatedAt: new Date().toISOString(),
       };
       return { commit: updated, result: updated };
@@ -1912,6 +2121,54 @@ export async function readPublicOrderBlobVersioned(
   );
 }
 
+/**
+ * Authoritative public-store read for payment/fulfillment safety boundaries.
+ *
+ * This binds the bytes to the strongly-consistent `list()` metadata record but
+ * retrieves the body from the exact listed `downloadUrl`, avoiding stale public
+ * CDN bytes immediately after an overwrite. Ordinary public read-only paths
+ * stay on `blob.url`; this helper is intentionally narrow.
+ */
+export async function readAuthoritativeOrderBlobVersioned(
+  pathname: string,
+  token: string,
+  deps: PublicVersionedReadDeps = {},
+): Promise<{ body: string; version: string } | null> {
+  const listImpl = deps.listImpl ?? ((options) => list(options));
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const findBlob = (blobs: Array<{ pathname: string; url: string; etag: string; downloadUrl?: string }>) =>
+    blobs.find((candidate) => candidate.pathname === pathname);
+
+  for (let attempt = 1; attempt <= PUBLIC_VERSIONED_READ_MAX_ATTEMPTS; attempt += 1) {
+    const { blobs } = await listImpl({ prefix: pathname, token });
+    const blob = findBlob(blobs);
+    if (!blob) return null;
+    if (!blob.etag) {
+      throw new Error('Authoritative Blob list response omitted the order ETag');
+    }
+    const listedVersion = normalizeEtag(blob.etag);
+    const url = new URL(
+      blob.downloadUrl || `${blob.url}${blob.url.includes('?') ? '&' : '?'}download=1`,
+    );
+    url.searchParams.set('hsb-authoritative-read', `${Date.now()}-${attempt}`);
+
+    const response = await fetchImpl(url, { cache: 'no-store' });
+    if (response.status === 404 || response.status === 412) continue;
+    if (!response.ok) {
+      throw new Error(`Authoritative Blob fetch failed: ${response.status} ${response.statusText}`.trim());
+    }
+
+    const body = await response.text();
+    const responseVersion = normalizeEtag(response.headers.get('etag'));
+    if (!responseVersion || responseVersion !== listedVersion) continue;
+    return { body, version: blob.etag };
+  }
+
+  throw new Error(
+    `Authoritative Blob changed during ${PUBLIC_VERSIONED_READ_MAX_ATTEMPTS} versioned read attempt(s)`,
+  );
+}
+
 function blobOrderStoreAdapter(token: string): OrderStoreAdapter {
   return {
     kind: 'blob',
@@ -2133,6 +2390,77 @@ export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> 
   return sanitized;
 }
 
+export async function persistOrResumeCheckoutOrder(
+  order: OrderRecord,
+  opts: { now?: Date } = {},
+): Promise<OrderRecord> {
+  try {
+    return await persistNewOrder(order);
+  } catch (error) {
+    const existing = await getOrderAuthoritative(order.id);
+    if (!(error instanceof OrderPersistenceError)
+      || existing?.paymentStatus !== 'pending'
+      || !order.checkoutFingerprint
+      || existing.checkoutAttemptId !== order.checkoutAttemptId
+      || existing.checkoutFingerprint !== order.checkoutFingerprint) throw error;
+
+    // A completed create-before-bind retry may immediately resume the exact
+    // already-bound Session. No media or order mutation is needed in that path.
+    if (existing.stripeSessionId) return existing;
+
+    const now = opts.now ?? new Date();
+    const leaseExpiresAt = Date.parse(existing.checkoutLeaseExpiresAt ?? '');
+    if (existing.checkoutLeaseId && Number.isFinite(leaseExpiresAt) && leaseExpiresAt > now.getTime()) {
+      throw new OrderPersistenceError(order.id, 'checkout_attempt_in_progress');
+    }
+
+    const claimed = await withOrderTransaction<OrderRecord | null>(order.id, (current) => {
+      if (current.paymentStatus !== 'pending'
+        || current.stripeSessionId
+        || current.checkoutAttemptId !== order.checkoutAttemptId
+        || current.checkoutFingerprint !== order.checkoutFingerprint) {
+        return { abort: null };
+      }
+      const currentExpiry = Date.parse(current.checkoutLeaseExpiresAt ?? '');
+      if (current.checkoutLeaseId && Number.isFinite(currentExpiry) && currentExpiry > now.getTime()) {
+        return { abort: null };
+      }
+      const updated = {
+        ...current,
+        checkoutLeaseId: order.checkoutLeaseId,
+        checkoutLeaseExpiresAt: order.checkoutLeaseExpiresAt,
+      };
+      return { commit: updated, result: updated };
+    });
+    if (claimed) return claimed;
+    throw error;
+  }
+}
+
+/** Atomically verify ownership and extend the checkout lease before a slow side effect. */
+export async function renewCheckoutLease(
+  orderId: string,
+  checkoutLeaseId: string,
+  checkoutFingerprint: string,
+  opts: { now?: Date; leaseMs?: number } = {},
+): Promise<OrderRecord | null> {
+  const now = opts.now ?? new Date();
+  const leaseMs = opts.leaseMs ?? 5 * 60_000;
+  return withOrderTransaction<OrderRecord | null>(orderId, (current) => {
+    if (current.paymentStatus !== 'pending'
+      || current.stripeSessionId
+      || current.checkoutLeaseId !== checkoutLeaseId
+      || current.checkoutFingerprint !== checkoutFingerprint) {
+      return { abort: null };
+    }
+    const updated = {
+      ...current,
+      checkoutLeaseExpiresAt: new Date(now.getTime() + leaseMs).toISOString(),
+    };
+    return { commit: updated, result: updated };
+  });
+}
+
 /** Commit an order record only if the stored version is still `expectedVersion`. */
 export async function commitOrderConditional(
   order: OrderRecord,
@@ -2229,18 +2557,100 @@ export async function withOrderTransaction<T>(
 export async function updateOrderPayment(
   orderId: string,
   paymentStatus: PaymentStatus,
-  opts: { stripeSessionId?: string; shippingAddress?: ShippingAddress } = {},
+  opts: { stripeSessionId?: string; shippingAddress?: ShippingAddress; settledAmountCents?: number } = {},
 ) {
   const now = new Date().toISOString();
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
+      if (paymentStatus === 'paid') {
+        if (
+          current.paymentStatus === 'paid'
+          && (!opts.stripeSessionId || current.stripeSessionId === opts.stripeSessionId)
+          && !current.refundedAt
+          && !current.stripeRefundId
+          && !current.refundClaimId
+        ) {
+          const replay = {
+            ...current,
+            ...(current.settledAmountCents == null && opts.settledAmountCents != null
+              ? { settledAmountCents: opts.settledAmountCents }
+              : {}),
+            updatedAt: now,
+          };
+          return { commit: replay, result: replay };
+        }
+        if (
+          current.paymentStatus !== 'pending'
+          || current.refundedAt
+          || current.stripeRefundId
+          || current.refundClaimId
+          || !opts.stripeSessionId
+          || current.stripeSessionId !== opts.stripeSessionId
+        ) return { abort: null };
+      }
       const updated: OrderRecord = {
         ...current,
         paymentStatus,
         ...(opts.stripeSessionId != null ? { stripeSessionId: opts.stripeSessionId } : {}),
         ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
+        ...(paymentStatus === 'paid' && opts.settledAmountCents != null
+          ? { settledAmountCents: opts.settledAmountCents }
+          : {}),
         ...(paymentStatus === 'paid' && !current.paidAt ? { paidAt: now } : {}),
+        updatedAt: now,
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+export async function bindOrderCheckoutSession(
+  orderId: string,
+  stripeSessionId: string,
+  checkout?: { leaseId: string; fingerprint: string; now?: Date },
+): Promise<OrderRecord | null> {
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.paymentStatus !== 'pending') return { abort: null };
+      if (checkout) {
+        const leaseExpiresAt = Date.parse(current.checkoutLeaseExpiresAt ?? '');
+        const nowMs = (checkout.now ?? new Date()).getTime();
+        if (current.checkoutLeaseId !== checkout.leaseId
+          || current.checkoutFingerprint !== checkout.fingerprint
+          || !Number.isFinite(leaseExpiresAt)
+          || leaseExpiresAt <= nowMs) return { abort: null };
+      }
+      if (current.stripeSessionId && current.stripeSessionId !== stripeSessionId) return { abort: null };
+      const updated = { ...current, stripeSessionId, updatedAt: new Date().toISOString() };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+export async function recordPaymentSettlementConflict(
+  orderId: string,
+  input: { stripeSessionId: string; amountSubtotalCents: number | null; amountTotalCents: number | null; reason: string },
+): Promise<OrderRecord | null> {
+  const now = new Date().toISOString();
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const duplicate = (current.auditEvents ?? []).some((event) =>
+        event.type === 'payment_settlement_conflict'
+        && event.meta?.stripeSessionId === input.stripeSessionId,
+      );
+      if (duplicate) return { abort: current };
+      const updated: OrderRecord = {
+        ...current,
+        auditEvents: [...(current.auditEvents ?? []), {
+          at: now,
+          type: 'payment_settlement_conflict',
+          meta: input,
+        }],
         updatedAt: now,
       };
       return { commit: updated, result: updated };

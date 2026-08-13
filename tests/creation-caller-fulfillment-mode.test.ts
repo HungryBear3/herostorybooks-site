@@ -27,7 +27,7 @@ test('recovery workflow produces manual_hold', () => {
 test('every authorized creation caller explicitly passes manual_hold', () => {
   const callers = {
     'production checkout (POST /api/order)': '../src/app/api/order/route.ts',
-    'lulu sandbox utility': '../src/app/api/lulu-sandbox-check/route.ts',
+
     'order recovery': '../src/lib/order-recovery.ts',
   };
   for (const [label, rel] of Object.entries(callers)) {

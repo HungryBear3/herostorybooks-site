@@ -74,7 +74,11 @@ async function makeOrder(
 ): Promise<OrderRecord> {
   const base = createOrderRecord(
     { childName: 'Luna', bookFormat: 'digital', email: 'luna@example.com' },
-    { id: `ord_${Math.random().toString(36).slice(2, 10)}`, now: '2026-04-23T10:00:00Z' },
+    {
+      id: `ord_${Math.random().toString(36).slice(2, 10)}`,
+      now: '2026-04-23T10:00:00Z',
+      fulfillmentMode: 'auto',
+    },
   );
   const order: OrderRecord = { ...base, ...overrides };
   await persistOrder(order);
@@ -192,13 +196,13 @@ test('updateFulfillmentState: paid proof release timestamp is allowed and preser
 
 // ── Digital fulfillment ───────────────────────────────────────────────────────
 
-test('paid digital order reaches complete with storyArtifactUrl set', async () => {
+test('paid digital order preserves artifact and reports delivery_email_failed without provider config', async () => {
   const dir = makeTmpDir();
   try {
     const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'digital' }, dir);
     await triggerFulfillment(order.id, PASS_DEPS);
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
     assert.equal(after?.status, 'preview_ready');
     assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
     assert.ok(!after?.customerProofReleasedAt, 'missing Resend key must not mark delivery released');
@@ -271,13 +275,13 @@ test('digital fulfillment mints a review capability token', async () => {
 
 // ── Print fulfillment — proof flow ────────────────────────────────────────────
 
-test('paid print order reaches proof_ready and gets proofApprovalToken', async () => {
+test('paid print order preserves proof and reports delivery_email_failed without provider config', async () => {
   const dir = makeTmpDir();
   try {
     const order = await makeOrder({ paymentStatus: 'paid', bookFormat: 'classic' }, dir);
     await triggerFulfillment(order.id, PASS_DEPS);
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'proof_ready');
+    assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
     assert.equal(after?.status, 'preview_ready');
     assert.ok(after?.proofApprovalToken, 'print order should have a proofApprovalToken');
     assert.ok(after?.proofVersion);
@@ -390,7 +394,7 @@ test('single failure followed by success resolves correctly', async () => {
     await triggerFulfillment(order.id, flakyDeps);
     const after = await getOrder(order.id);
     // With only 1 failure, retry should succeed
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
   } finally {
     cleanupTmpDir(dir);
   }
@@ -410,6 +414,8 @@ test('failures exhausting MAX_RETRIES move order to failed_manual_review', async
     assert.equal(after?.fulfillmentStatus, 'failed_manual_review');
     assert.equal(after?.fulfillmentAttempts, MAX_RETRIES);
     assert.match(after?.fulfillmentLastError ?? '', /persistent failure/);
+    assert.equal(after?.fulfillmentKickoffId ?? null, null);
+    assert.equal(after?.fulfillmentKickoffAt ?? null, null);
   } finally {
     cleanupTmpDir(dir);
   }
@@ -486,7 +492,7 @@ test('payment pending cannot produce complete fulfillment (readback gate)', asyn
   } finally { cleanupTmpDir(dir); }
 });
 
-test('paid update + queued kickoff: confirmed-paid persistence drives fulfillment to complete', async () => {
+test('paid update + queued kickoff preserves artifacts when delivery provider is unavailable', async () => {
   const dir = makeTmpDir();
   try {
     const order = await makeOrder(
@@ -495,7 +501,7 @@ test('paid update + queued kickoff: confirmed-paid persistence drives fulfillmen
     );
     await triggerFulfillment(order.id, PASS_DEPS);
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
     assert.equal(after?.paymentStatus, 'paid', 'paymentStatus must remain paid through fulfillment');
     assert.equal(after?.stripeSessionId, 'cs_test_paid_kickoff', 'stripeSessionId must persist through fulfillment');
     assert.ok(after?.storyArtifactUrl?.startsWith('https://'));
@@ -517,7 +523,7 @@ test('digital fulfillment never calls submitPrint — Lulu must not be triggered
     await triggerFulfillment(order.id, luluTrap);
     assert.equal(submitPrintCalls, 0, 'submitPrint must NOT be called for digital orders');
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
     assert.ok(!after?.printJobId, 'digital order must not carry a print job id');
   } finally { cleanupTmpDir(dir); }
 });
@@ -598,7 +604,7 @@ test('triggerFulfillment returns started on a paid order', async () => {
     const result = await triggerFulfillment(order.id, PASS_DEPS);
     assert.equal(result.status, 'started');
     const after = await getOrder(order.id);
-    assert.equal(after?.fulfillmentStatus, 'complete');
+    assert.equal(after?.fulfillmentStatus, 'delivery_email_failed');
   } finally { cleanupTmpDir(dir); }
 });
 

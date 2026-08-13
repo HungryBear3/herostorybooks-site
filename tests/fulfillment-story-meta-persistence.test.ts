@@ -78,6 +78,7 @@ async function makeDigitalOrder(
     {
       id: `ord_${Math.random().toString(36).slice(2, 10)}`,
       now: '2026-05-15T10:00:00Z',
+      fulfillmentMode: 'auto',
     },
   );
   const order: OrderRecord = {
@@ -98,6 +99,7 @@ async function makePrintOrder(
     {
       id: `ord_${Math.random().toString(36).slice(2, 10)}`,
       now: '2026-05-15T10:00:00Z',
+      fulfillmentMode: 'auto',
     },
   );
   const order: OrderRecord = {
@@ -148,7 +150,7 @@ test('digital fulfillment persists storyMeta.source=gemini_page_prose through fi
 
   const persisted = await getOrder(order.id);
   assert.ok(persisted, 'order must persist');
-  assert.equal(persisted!.fulfillmentStatus, 'complete');
+  assert.equal(persisted!.fulfillmentStatus, 'delivery_email_failed');
   // The exact regression Rex caught:
   assert.ok(persisted!.storyMeta, 'final persisted storyMeta must NOT be null');
   assert.equal(persisted!.storyMeta!.source, 'gemini_page_prose');
@@ -178,7 +180,7 @@ test('digital fulfillment preserves an injected story meta verbatim through fina
   await triggerFulfillment(order.id, deps);
 
   const persisted = await getOrder(order.id);
-  assert.equal(persisted!.fulfillmentStatus, 'complete');
+  assert.equal(persisted!.fulfillmentStatus, 'delivery_email_failed');
   assert.deepEqual(persisted!.storyMeta, injectedMeta);
 });
 
@@ -274,7 +276,7 @@ test('print fulfillment persists storyMeta through final proof_ready state', asy
 
   const persisted = await getOrder(order.id);
   assert.ok(persisted);
-  assert.equal(persisted!.fulfillmentStatus, 'proof_ready');
+  assert.equal(persisted!.fulfillmentStatus, 'delivery_email_failed');
   assert.equal(persisted!.storyMeta?.source, 'gemini_page_prose');
   assert.ok(persisted!.proofVersion);
   assert.ok(persisted!.storyArtifactUrl?.endsWith(`/proofs/${persisted!.proofVersion}.pdf`));

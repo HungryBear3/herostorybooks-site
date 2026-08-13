@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { sendOrderConfirmationEmail as defaultSendOrderConfirmationEmail } from './order-email.ts';
-import type { OrderRecord } from './orders.ts';
+import { getOrderAuthoritative, withOrderTransaction, type OrderRecord } from './orders.ts';
 
 export interface ScheduleOrderConfirmationEmailDeps {
   send?: typeof defaultSendOrderConfirmationEmail;
+  getOrder?: typeof getOrderAuthoritative;
   setImmediateImpl?: (cb: () => void) => unknown;
   afterImpl?: ((cb: () => void | Promise<void>) => void) | null;
   log?: (line: string) => void;
@@ -40,9 +42,80 @@ export function scheduleOrderConfirmationEmail(
     }
 
     const promise = (async () => {
-      const result = await send(order);
+      const current = deps.getOrder
+        ? await deps.getOrder(order.id)
+        : deps.send
+          ? order
+          : await getOrderAuthoritative(order.id);
+      if (
+        !current
+        || current.paymentStatus !== 'paid'
+        || current.refundedAt
+        || current.stripeRefundId
+        || current.refundClaimId
+        || current.confirmationEmailSentAt
+      ) {
+        throw new Error('confirmation_email_blocked_by_authoritative_order_state');
+      }
+      const claimId = randomUUID();
+      const claimed = deps.send ? current : await withOrderTransaction<OrderRecord | null>(
+        order.id,
+        (latest) => {
+          if (
+            latest.paymentStatus !== 'paid'
+            || latest.refundedAt
+            || latest.stripeRefundId
+            || latest.refundClaimId
+            || latest.emailResendClaimId
+            || latest.confirmationEmailSentAt
+          ) return { abort: null };
+          const updated: OrderRecord = {
+            ...latest,
+            emailResendClaimId: claimId,
+            emailResendClaimKind: 'order_confirmation',
+            emailResendClaimArtifact: latest.stripeSessionId ?? latest.id,
+            emailResendClaimAt: new Date().toISOString(),
+          };
+          return { commit: updated, result: updated };
+        },
+        { notFound: () => null },
+      );
+      if (!claimed) throw new Error('confirmation_email_claim_blocked');
+
+      const result = await send(claimed);
       if (result.skipped) {
+        if (!deps.send) {
+          await withOrderTransaction(order.id, (latest) => {
+            if (latest.emailResendClaimId !== claimId) return { abort: null };
+            return {
+              commit: {
+                ...latest,
+                emailResendClaimId: null,
+                emailResendClaimKind: null,
+                emailResendClaimArtifact: null,
+                emailResendClaimAt: null,
+              },
+              result: null,
+            };
+          }, { notFound: () => null });
+        }
         throw new Error(`confirmation_email_skipped:${result.reason}`);
+      }
+      if (!deps.send) {
+        await withOrderTransaction(order.id, (latest) => {
+          if (latest.emailResendClaimId !== claimId) return { abort: null };
+          return {
+            commit: {
+              ...latest,
+              confirmationEmailSentAt: new Date().toISOString(),
+              emailResendClaimId: null,
+              emailResendClaimKind: null,
+              emailResendClaimArtifact: null,
+              emailResendClaimAt: null,
+            },
+            result: null,
+          };
+        }, { notFound: () => null });
       }
       log(`[confirmation-email] ${scheduler} completed for ${order.id}`);
     })();

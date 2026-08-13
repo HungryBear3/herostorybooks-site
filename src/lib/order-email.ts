@@ -86,7 +86,10 @@ function assertResendSuccess(
     throw new Error(actionable);
   }
 
-  return { skipped: false as const, id: result.data?.id ?? null };
+  if (!result.data?.id) {
+    throw new Error(`${context} returned no provider message id; outcome requires reconciliation`);
+  }
+  return { skipped: false as const, id: result.data.id };
 }
 
 /**
@@ -368,7 +371,7 @@ export function buildShippedEmail(
 
 export async function sendLifecycleEmail(
   order: OrderRecord,
-  options: { trackingNumber?: string; trackingUrl?: string } = {},
+  options: { trackingNumber?: string; trackingUrl?: string; idempotencyKeyBase?: string } = {},
 ) {
   const supportEmail = getSupportEmail();
 
@@ -411,6 +414,10 @@ export async function sendLifecycleEmail(
       text: email.text,
       replyTo: supportEmail,
     },
+    options.idempotencyKeyBase ? {
+      primaryIdempotencyKey: `${options.idempotencyKeyBase}-primary`,
+      fallbackIdempotencyKey: `${options.idempotencyKeyBase}-fallback`,
+    } : {},
   );
 }
 
@@ -486,6 +493,7 @@ export async function sendDigitalDeliveryEmail(
   options: {
     pdfUrl: string;
     reviewUrl?: string;
+    idempotencyKeyBase?: string;
     printUpgrade?: {
       checkoutUrl: string;
       targetLabel: string;
@@ -512,7 +520,10 @@ export async function sendDigitalDeliveryEmail(
     html: email.html,
     text: email.text,
     replyTo: supportEmail,
-  });
+  }, options.idempotencyKeyBase ? {
+    primaryIdempotencyKey: `${options.idempotencyKeyBase}-primary`,
+    fallbackIdempotencyKey: `${options.idempotencyKeyBase}-fallback`,
+  } : {});
 }
 
 export function buildProofReadyEmail(
@@ -569,7 +580,7 @@ export function buildProofReadyEmail(
 
 export async function sendProofReadyEmail(
   order: OrderRecord,
-  options: { reviewUrl: string; proofUrl: string },
+  options: { reviewUrl: string; proofUrl: string; idempotencyKeyBase?: string },
 ) {
   const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
   if (!apiKey) return { skipped: true as const, reason: 'missing_resend_api_key' };
@@ -585,7 +596,10 @@ export async function sendProofReadyEmail(
     html: email.html,
     text: email.text,
     replyTo: supportEmail,
-  });
+  }, options.idempotencyKeyBase ? {
+    primaryIdempotencyKey: `${options.idempotencyKeyBase}-primary`,
+    fallbackIdempotencyKey: `${options.idempotencyKeyBase}-fallback`,
+  } : {});
 }
 
 // ── Operator alert ────────────────────────────────────────────────────────────

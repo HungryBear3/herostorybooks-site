@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server';
 import Stripe from 'stripe';
+import crypto from 'node:crypto';
 
 import {
+  bindOrderCheckoutSession,
   createOrderRecord,
   isPrintFormat,
   MAX_VOICE_BYTES,
   OrderPersistenceError,
-  persistNewOrder,
+  type OrderRecord,
+  persistOrResumeCheckoutOrder,
+  renewCheckoutLease,
   rollbackOrderMediaUploads,
   sanitizeFamilyCharacters,
   uploadOrderPhoto,
@@ -33,6 +37,27 @@ import { validateOrderPhotoFile } from '@/lib/photo-file-validation';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+async function checkoutFingerprint(form: FormData): Promise<string> {
+  const entries: string[] = [];
+  for (const [key, value] of form.entries()) {
+    if (value instanceof File) {
+      const bytes = Buffer.from(await value.arrayBuffer());
+      entries.push(JSON.stringify([
+        key,
+        'file',
+        value.name,
+        value.type,
+        value.size,
+        crypto.createHash('sha256').update(bytes).digest('hex'),
+      ]));
+    } else {
+      entries.push(JSON.stringify([key, 'text', value]));
+    }
+  }
+  entries.sort();
+  return crypto.createHash('sha256').update(entries.join('\n')).digest('hex');
 }
 
 function getStripe() {
@@ -111,6 +136,11 @@ export async function POST(request: Request) {
     }
 
     const form = await request.formData();
+    const checkoutAttemptId = String(form.get('checkoutAttemptId') || '').trim();
+    if (!/^[a-f0-9]{32}$/i.test(checkoutAttemptId)) {
+      return NextResponse.json({ error: 'Invalid checkout attempt. Please reload and try again.' }, { status: 400 });
+    }
+    const requestFingerprint = await checkoutFingerprint(form);
     const checkoutTracking = buildCheckoutTracking({
       cohort: form.get('cohort'),
       invite: form.get('invite'),
@@ -353,11 +383,16 @@ export async function POST(request: Request) {
       customStoryValidation,
       checkoutTracking,
     }, {
+      id: `ord_${crypto.createHash('sha256').update(checkoutAttemptId).digest('hex').slice(0, 16)}`,
       // Explicit workflow intent (NOT a default): every current customer-checkout
       // order is produced on the manual path — no HSB workflow is approved as
       // automatic (DECISIONS.md:51). Never inferred from product/payment/cohort.
       fulfillmentMode: 'manual_hold',
     });
+    draftOrder.checkoutAttemptId = checkoutAttemptId;
+    draftOrder.checkoutFingerprint = requestFingerprint;
+    draftOrder.checkoutLeaseId = crypto.randomUUID();
+    draftOrder.checkoutLeaseExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
 
     // Resolve the stable Stripe Product before creating the durable order or
     // uploading customer media. Product-scoped promotion codes depend on this
@@ -369,7 +404,14 @@ export async function POST(request: Request) {
     // media. If cleanup itself later fails, the deterministic orders/<id>/
     // Blob prefix still has an owning record for retention/deletion handling.
     try {
-      await persistNewOrder(draftOrder);
+      const persistedDraft = await persistOrResumeCheckoutOrder(draftOrder);
+      if (persistedDraft.stripeSessionId) {
+        const existingSession = await getStripe().checkout.sessions.retrieve(persistedDraft.stripeSessionId);
+        if (existingSession.url && existingSession.status === 'open') {
+          return NextResponse.json({ ok: true, redirectTo: existingSession.url });
+        }
+        return NextResponse.json({ error: 'This checkout attempt already reached payment. Contact support before retrying.' }, { status: 409 });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[order] ABORT BEFORE MEDIA/STRIPE: durable draft persistence failed for ${draftOrder.id}: ${message}`);
@@ -383,10 +425,23 @@ export async function POST(request: Request) {
     }
 
     const uploadedMediaPaths: string[] = [];
+    const requireActiveLease = async () => {
+      const renewed = await renewCheckoutLease(
+        draftOrder.id,
+        draftOrder.checkoutLeaseId!,
+        draftOrder.checkoutFingerprint!,
+      );
+      if (!renewed) throw new OrderPersistenceError(draftOrder.id, 'checkout_lease_lost');
+      draftOrder.checkoutLeaseExpiresAt = renewed.checkoutLeaseExpiresAt;
+    };
     const rollbackUploadedMedia = async (reason: string) => {
       if (uploadedMediaPaths.length === 0) return;
       try {
-        await rollbackOrderMediaUploads(draftOrder.id, uploadedMediaPaths);
+        await rollbackOrderMediaUploads(
+          draftOrder.id,
+          uploadedMediaPaths,
+          draftOrder.checkoutLeaseId ?? undefined,
+        );
         uploadedMediaPaths.length = 0;
       } catch (rollbackError) {
         // The durable draft above remains the owner-of-record even when Blob
@@ -403,7 +458,8 @@ export async function POST(request: Request) {
     let photoBlobUrl: string | null = null;
     if (photo instanceof File && photo.size > 0) {
       try {
-        const uploaded = await uploadOrderPhoto(draftOrder.id, photo);
+        await requireActiveLease();
+        const uploaded = await uploadOrderPhoto(draftOrder.id, photo, draftOrder.checkoutLeaseId ?? undefined);
         if (uploaded) {
           photoBlobPath = uploaded.pathname;
           photoBlobUrl = uploaded.url;
@@ -446,7 +502,13 @@ export async function POST(request: Request) {
         continue;
       }
       try {
-        const uploaded = await uploadOrderSupportingPhoto(draftOrder.id, index, familyPhoto);
+        await requireActiveLease();
+        const uploaded = await uploadOrderSupportingPhoto(
+          draftOrder.id,
+          index,
+          familyPhoto,
+          draftOrder.checkoutLeaseId ?? undefined,
+        );
         if (!uploaded) {
           console.error(`[order] ABORT BEFORE STRIPE: supporting photo upload failed; supporting photo persistence failed for ${draftOrder.id}`);
           await rollbackUploadedMedia('supporting photo upload returned no durable reference');
@@ -488,7 +550,12 @@ export async function POST(request: Request) {
     let voiceConsentAt: string | null = null;
     if (hasVoiceUpload) {
       try {
-        const uploadedVoice = await uploadOrderVoice(draftOrder.id, voiceRaw as File);
+        await requireActiveLease();
+        const uploadedVoice = await uploadOrderVoice(
+          draftOrder.id,
+          voiceRaw as File,
+          draftOrder.checkoutLeaseId ?? undefined,
+        );
         if (uploadedVoice) {
           voiceBlobPath = uploadedVoice.pathname;
           voiceBlobUrl = uploadedVoice.url;
@@ -532,7 +599,11 @@ export async function POST(request: Request) {
     // for an order the webhook + status page can never find.
     let order;
     try {
-      order = await withOrderTransaction(draftOrder.id, (current) => {
+      order = await withOrderTransaction<OrderRecord | null>(draftOrder.id, (current) => {
+        if (current.checkoutLeaseId !== draftOrder.checkoutLeaseId
+          || current.checkoutFingerprint !== draftOrder.checkoutFingerprint) {
+          return { abort: null };
+        }
         const updated = {
           ...current,
           familyCharacters: familyCharactersWithPhotos,
@@ -545,6 +616,7 @@ export async function POST(request: Request) {
         };
         return { commit: updated, result: updated };
       });
+      if (!order) throw new OrderPersistenceError(draftOrder.id, 'checkout_lease_lost');
     } catch (error) {
       await rollbackUploadedMedia('final order persistence failure');
       if (error instanceof OrderPersistenceError) {
@@ -574,6 +646,7 @@ export async function POST(request: Request) {
       email: order.email,
     });
 
+    await requireActiveLease();
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       allow_promotion_codes: true,
@@ -603,7 +676,19 @@ export async function POST(request: Request) {
       // is delayed; it is never trusted without exact order/amount checks.
       success_url: `${baseUrl}/thank-you?${successParams.toString()}&sessionId={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/checkout`,
+    }, { idempotencyKey: `hsb_checkout_${order.id}` });
+
+    const bound = await bindOrderCheckoutSession(order.id, session.id, {
+      leaseId: draftOrder.checkoutLeaseId!,
+      fingerprint: draftOrder.checkoutFingerprint!,
     });
+    if (!bound) {
+      console.error(`[order] Stripe Session ${session.id} created but durable binding failed for ${order.id}`);
+      return NextResponse.json(
+        { error: 'Checkout requires reconciliation. No checkout link was released.' },
+        { status: 503 },
+      );
+    }
 
     return NextResponse.json({ ok: true, redirectTo: session.url });
   } catch (error) {

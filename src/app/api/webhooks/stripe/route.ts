@@ -1,11 +1,16 @@
 import { NextResponse, after } from 'next/server';
 import Stripe from 'stripe';
 
-import { isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
+import { getOrder, isPrintFormat, recordPaymentSettlementConflict, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
+import { recordUnmatchedPaymentSettlement } from '@/lib/payment-recovery';
 import { scheduleFulfillmentKickoff } from '@/lib/fulfillment-kickoff';
 import { scheduleOrderConfirmationEmail } from '@/lib/order-confirmation-kickoff';
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
-import { parsePrintUpgradeTargetFormat, recordPrintUpgradePayment } from '@/lib/print-upgrades';
+import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment, recordPrintUpgradeSettlementConflict } from '@/lib/print-upgrades';
+import { isExactSettledCheckoutSession } from '@/lib/checkout-session-confirmation';
+
+export const runtime = 'nodejs';
+export const maxDuration = 300;
 
 // kept for future use (print-vs-digital branching); referenced by tests
 void isPrintFormat;
@@ -15,6 +20,10 @@ interface StripeCheckoutSession {
   metadata?: Record<string, string> | null;
   client_reference_id?: string | null;
   amount_total?: number | null;
+  amount_subtotal?: number | null;
+  currency?: string | null;
+  mode?: string | null;
+  payment_status?: string | null;
   customer_email?: string | null;
   shipping_details?: {
     address?: {
@@ -87,10 +96,43 @@ export async function POST(request: Request) {
           orderId: upgradeOrderId,
           targetFormat: session.metadata?.targetFormat ?? null,
         });
-        return NextResponse.json({ received: true, printUpgradeSkipped: true });
+        return NextResponse.json({ error: 'Invalid print upgrade metadata' }, { status: 409 });
       }
 
       try {
+        const upgradeOrder = await getOrder(upgradeOrderId);
+        if (!upgradeOrder) {
+          return NextResponse.json({ error: 'Print upgrade order not found' }, { status: 500 });
+        }
+        if (upgradeOrder.printUpgradeStripeSessionId === session.id && upgradeOrder.printUpgradeStatus === 'paid') {
+          return NextResponse.json({ received: true, printUpgradeRecorded: true, replay: true });
+        }
+        const upgrade = calculatePrintUpgrade(upgradeOrder, targetFormat);
+        if (
+          upgradeOrder.printUpgradeStripeSessionId !== session.id
+          || !upgrade.ok
+          || !isExactSettledCheckoutSession(
+            session,
+            upgradeOrder,
+            upgradeOrder.printUpgradeStripeSessionId,
+            upgrade.amountCents,
+          )
+        ) {
+          console.error(`Stripe webhook: print-upgrade settlement verification failed for ${upgradeOrderId}`);
+          const conflict = await recordPrintUpgradeSettlementConflict(upgradeOrderId, {
+            stripeSessionId: session.id,
+            targetFormat,
+            amountSubtotalCents: session.amount_subtotal,
+            amountTotalCents: session.amount_total,
+            reason: upgradeOrder.printUpgradeStripeSessionId !== session.id
+              ? 'stripe_session_binding_mismatch'
+              : upgrade.ok === false ? upgrade.error : 'settlement_facts_mismatch',
+          });
+          if (!conflict) {
+            return NextResponse.json({ error: 'Print upgrade conflict persistence failed' }, { status: 500 });
+          }
+          return NextResponse.json({ received: true, printUpgradeRecoveryRecorded: true });
+        }
         const updated = await recordPrintUpgradePayment(upgradeOrderId, {
           stripeSessionId: session.id,
           amountCents: session.amount_total ?? 0,
@@ -124,11 +166,55 @@ export async function POST(request: Request) {
 
     if (!orderId) {
       console.error('Stripe webhook: no orderId in session metadata');
-      return NextResponse.json({ received: true });
+      try {
+        await recordUnmatchedPaymentSettlement({
+          stripeSessionId: session.id,
+          claimedOrderId: null,
+          amountSubtotalCents: session.amount_subtotal,
+          amountTotalCents: session.amount_total,
+          reason: 'missing_order_identity',
+        });
+      } catch {
+        return NextResponse.json({ error: 'Payment recovery persistence failed' }, { status: 500 });
+      }
+      return NextResponse.json({ error: 'Missing durable order identity; recovery recorded' }, { status: 409 });
     }
 
     try {
-      const existing = await (await import('@/lib/orders')).getOrder(orderId);
+      const existing = await getOrder(orderId);
+      if (!existing) {
+        console.error(`[webhook] CRITICAL: order ${orderId} not found for Stripe session ${session.id}`);
+        try {
+          await recordUnmatchedPaymentSettlement({
+            stripeSessionId: session.id,
+            claimedOrderId: orderId,
+            amountSubtotalCents: session.amount_subtotal,
+            amountTotalCents: session.amount_total,
+            reason: 'order_not_found',
+          });
+        } catch {
+          return NextResponse.json({ error: 'Payment recovery persistence failed' }, { status: 500 });
+        }
+        return NextResponse.json({ error: 'Order not found; recovery recorded' }, { status: 409 });
+      }
+      if (
+        existing.stripeSessionId !== session.id
+        || !isExactSettledCheckoutSession(session, existing, existing.stripeSessionId)
+      ) {
+        console.error(`Stripe webhook: settlement facts do not match order ${orderId} for session ${session.id}`);
+        const conflict = await recordPaymentSettlementConflict(orderId, {
+          stripeSessionId: session.id,
+          amountSubtotalCents: session.amount_subtotal,
+          amountTotalCents: session.amount_total,
+          reason: existing.stripeSessionId !== session.id
+            ? 'stripe_session_binding_mismatch'
+            : 'settlement_facts_mismatch',
+        });
+        if (!conflict) {
+          return NextResponse.json({ error: 'Payment conflict persistence failed' }, { status: 500 });
+        }
+        return NextResponse.json({ received: true, paymentRecoveryRecorded: true });
+      }
 
       // Refund-safe idempotency:
       //   1. If a prior session-completed already moved this order to paid,
@@ -185,10 +271,19 @@ export async function POST(request: Request) {
       const shipping = extractShipping(session);
       const updated = await updateOrderPayment(orderId, 'paid', {
         stripeSessionId: session.id,
+        settledAmountCents: session.amount_total!,
         ...(shipping ? { shippingAddress: shipping } : {}),
       });
 
       if (!updated) {
+        const blocked = await getOrder(orderId);
+        if (blocked) {
+          console.error(
+            `Stripe webhook: unresolved paid-session conflict for order ${orderId}; ` +
+              `session ${session.id} was not durably applied`,
+          );
+          return NextResponse.json({ error: 'Payment transition conflict' }, { status: 409 });
+        }
         // Two distinct meanings collapse here in production: (a) the order
         // record was never durably persisted before Stripe completed (a
         // recovery candidate — run scripts/recover-orders.ts), (b) the order

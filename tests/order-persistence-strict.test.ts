@@ -219,15 +219,15 @@ test('order route contract: persistOrder throws BEFORE any Stripe call would hap
   );
 });
 
-test('order route source: create-only persistence and final CAS both precede Stripe', async () => {
+test('order route source: atomic create-or-exact-resume persistence and final CAS both precede Stripe', async () => {
   // Static guard against future regressions that re-order the route.
   const { readFile } = await import('node:fs/promises');
   const src = await readFile('src/app/api/order/route.ts', 'utf8');
-  const createIdx = src.indexOf('await persistNewOrder');
+  const createIdx = src.indexOf('await persistOrResumeCheckoutOrder');
   const casIdx = src.indexOf('await withOrderTransaction');
   const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
   const orderPersistenceErrorIdx = src.indexOf('OrderPersistenceError');
-  assert.ok(createIdx > -1, 'route must create the durable owner record atomically');
+  assert.ok(createIdx > -1, 'route must atomically create or resume the exact durable owner record');
   assert.ok(casIdx > createIdx, 'route must update the draft through versioned CAS');
   assert.ok(stripeIdx > -1, 'route must call stripe.checkout.sessions.create');
   assert.ok(casIdx < stripeIdx, 'all durable writes must complete before Stripe');

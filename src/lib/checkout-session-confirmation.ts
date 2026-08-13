@@ -25,18 +25,22 @@ export interface CheckoutConfirmationDeps {
   retrieveSession: (sessionId: string) => Promise<CheckoutSessionForConfirmation>;
 }
 
-function isExactPaidSession(
+export function isExactSettledCheckoutSession(
   session: CheckoutSessionForConfirmation,
   order: OrderRecord,
   requestedSessionId: string,
+  expectedSubtotalCents: number = order.priceCents,
 ): boolean {
   return (
     session.id === requestedSessionId
     && session.mode === 'payment'
-    && session.payment_status === 'paid'
+    && (
+      session.payment_status === 'paid'
+      || (session.payment_status === 'no_payment_required' && session.amount_total === 0)
+    )
     && session.client_reference_id === order.id
     && session.metadata?.orderId === order.id
-    && session.amount_subtotal === order.priceCents
+    && session.amount_subtotal === expectedSubtotalCents
     && typeof session.amount_total === 'number'
     && session.amount_total >= 0
     && session.amount_total <= session.amount_subtotal
@@ -84,7 +88,7 @@ export async function confirmCheckoutPayment(
   }
 
   const session = await deps.retrieveSession(sessionId);
-  if (!isExactPaidSession(session, order, sessionId)) {
+  if (!isExactSettledCheckoutSession(session, order, sessionId)) {
     return {
       status: 'pending',
       order,

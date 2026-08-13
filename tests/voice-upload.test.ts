@@ -27,6 +27,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
+  bindOrderCheckoutSession,
   createOrderRecord,
   getOrder,
   MAX_VOICE_BYTES,
@@ -157,7 +158,10 @@ test('legacy voice filenames are scrubbed whenever an order is re-persisted', as
         assert.equal((loaded as unknown as Record<string, unknown>).voiceFileName, undefined);
         assert.equal(loaded.legacyVoiceUploadPresent, true);
 
-        const paymentResult = await updateOrderPayment('ord_legacy_voice', 'paid');
+        await bindOrderCheckoutSession('ord_legacy_voice', 'cs_legacy_voice');
+        const paymentResult = await updateOrderPayment('ord_legacy_voice', 'paid', {
+          stripeSessionId: 'cs_legacy_voice',
+        });
         assert.equal((paymentResult as unknown as Record<string, unknown>).voiceFileName, undefined);
         assert.equal(paymentResult?.legacyVoiceUploadPresent, true);
         const afterPayment = JSON.parse(await readFile(filePath, 'utf8')) as Record<string, unknown>;

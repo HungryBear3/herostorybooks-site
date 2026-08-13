@@ -108,18 +108,176 @@ async function assertFulfillmentPaymentCurrent(orderId: string): Promise<void> {
   }
 }
 
+// Longer than the cron route's 5-minute maxDuration. A replacement may reclaim
+// only after the platform should have terminated the prior invocation.
+const FULFILLMENT_KICKOFF_TTL_MS = 6 * 60 * 1000;
+const RECOVERABLE_FULFILLMENT_STATUSES = new Set([
+  'generating_story',
+  'generating_images',
+  'building_pdf',
+]);
+
+type KickoffClaimResult =
+  | { kind: 'claimed'; claimId: string }
+  | { kind: 'skipped_already_running'; fulfillmentStatus: string }
+  | { kind: 'skipped_already_complete'; fulfillmentStatus: string }
+  | { kind: 'payment_no_longer_paid' }
+  | { kind: 'policy_not_auto' }
+  | { kind: 'not_found' };
+
+async function claimFulfillmentKickoff(orderId: string): Promise<KickoffClaimResult> {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const claimId = crypto.randomBytes(8).toString('hex');
+  const nowMs = now.getTime();
+
+  return withOrderTransaction<KickoffClaimResult>(
+    orderId,
+    (current) => {
+      if (
+        current.paymentStatus !== 'paid'
+        || current.refundedAt
+        || current.stripeRefundId
+        || current.refundClaimId
+      ) {
+        return { abort: { kind: 'payment_no_longer_paid' } };
+      }
+      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {
+        return { abort: { kind: 'policy_not_auto' } };
+      }
+
+      const cur = current.fulfillmentStatus;
+      if (cur === 'complete' || cur === 'delivery_email_failed') {
+        return { abort: { kind: 'skipped_already_complete', fulfillmentStatus: cur } };
+      }
+
+      const claimedAtMs = current.fulfillmentKickoffAt
+        ? Date.parse(current.fulfillmentKickoffAt)
+        : Number.NaN;
+      if (
+        current.fulfillmentKickoffId &&
+        Number.isFinite(claimedAtMs) &&
+        nowMs - claimedAtMs < FULFILLMENT_KICKOFF_TTL_MS
+      ) {
+        return {
+          abort: {
+            kind: 'skipped_already_running',
+            fulfillmentStatus: cur ?? 'not_started',
+          },
+        };
+      }
+      if (cur && cur !== 'not_started' && !RECOVERABLE_FULFILLMENT_STATUSES.has(cur)) {
+        return { abort: { kind: 'skipped_already_running', fulfillmentStatus: cur } };
+      }
+      if (RECOVERABLE_FULFILLMENT_STATUSES.has(cur ?? '') && !current.fulfillmentKickoffId) {
+        return { abort: { kind: 'skipped_already_running', fulfillmentStatus: cur ?? 'in_progress' } };
+      }
+
+      return {
+        commit: {
+          ...current,
+          fulfillmentKickoffAt: nowIso,
+          fulfillmentKickoffId: claimId,
+          updatedAt: nowIso,
+        },
+        result: { kind: 'claimed', claimId },
+      };
+    },
+    { notFound: () => ({ kind: 'not_found' }) },
+  );
+}
+
+async function startClaimedFulfillment(
+  orderId: string,
+  claimId: string,
+): Promise<OrderRecord | null> {
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.fulfillmentKickoffId !== claimId) {
+        return { abort: null };
+      }
+      if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
+        return { abort: null };
+      }
+      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {
+        return { abort: null };
+      }
+      const cur = current.fulfillmentStatus;
+      if (cur && cur !== 'not_started' && !RECOVERABLE_FULFILLMENT_STATUSES.has(cur)) {
+        return { abort: null };
+      }
+      const updated = applyFulfillmentPatchTo(current, {
+        fulfillmentStatus: 'generating_story',
+        // Keep the run lease/fence through generation. Recovery is allowed only
+        // after the lease exceeds the route's maximum execution lifetime.
+        fulfillmentKickoffAt: current.fulfillmentKickoffAt,
+        fulfillmentKickoffId: claimId,
+      });
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+async function updateClaimedFulfillmentState(
+  orderId: string,
+  claimId: string,
+  patch: Partial<OrderRecord>,
+): Promise<OrderRecord | null> {
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.fulfillmentKickoffId !== claimId) return { abort: null };
+      if (
+        current.paymentStatus !== 'paid'
+        || current.refundedAt
+        || current.stripeRefundId
+        || current.refundClaimId
+        || current.fulfillmentMode !== 'auto'
+        || current.internalDisposition != null
+      ) return { abort: null };
+      const updated = applyFulfillmentPatchTo(current, {
+        ...patch,
+        // Heartbeat active claims, but allow the owning worker to close its
+        // lease atomically at the terminal transition.
+        fulfillmentKickoffAt: patch.fulfillmentKickoffId === null
+          ? null
+          : new Date().toISOString(),
+      });
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+async function requireClaimedFulfillmentState(
+  orderId: string,
+  claimId: string,
+  patch: Partial<OrderRecord>,
+): Promise<OrderRecord> {
+  const updated = await updateClaimedFulfillmentState(orderId, claimId, patch);
+  if (!updated) throw new Error('fulfillment_claim_lost_or_policy_blocked');
+  return updated;
+}
+
 /** Publish a proof only when its bytes still identify the current source. */
 async function commitProofPatchIfSourceCurrent(
   orderId: string,
   sourceFingerprint: string,
   patch: Partial<OrderRecord>,
   auditEvent?: NonNullable<OrderRecord['auditEvents']>[number],
+  claimId?: string,
 ): Promise<boolean> {
   return withOrderTransaction(
     orderId,
     (current) => {
+      if (claimId && current.fulfillmentKickoffId !== claimId) return { abort: false };
       // Never revive or publish onto an order refunded while bytes rendered.
       if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
+        return { abort: false };
+      }
+      if (claimId && (current.fulfillmentMode !== 'auto' || current.internalDisposition != null)) {
         return { abort: false };
       }
       const currentPages = normalizePageArtifactTextLayouts(current.pageArtifacts ?? []);
@@ -266,6 +424,7 @@ async function runImageGeneration(
 
 async function runWithRetry(
   orderId: string,
+  claimId: string,
   fn: (attempt: number) => Promise<void>,
   deps: Pick<FulfillmentDeps, 'sleep'>,
 ): Promise<void> {
@@ -281,6 +440,11 @@ async function runWithRetry(
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[fulfillment] orderId=${orderId} attempt=${attempt} error: ${errMsg}`);
 
+      // A replacement owner or a policy/refund transition is authoritative.
+      // The old worker must stop without writing diagnostics through a claim it
+      // no longer owns and without retrying any external work.
+      if (errMsg === 'fulfillment_claim_lost_or_policy_blocked') return;
+
       // The rendered bytes are bound to an obsolete source snapshot. Retrying
       // the same closure cannot make them current and may replay stale paid
       // state over a concurrent refund, so terminate without another build.
@@ -290,10 +454,12 @@ async function runWithRetry(
       ) {
         const current = await getOrder(orderId);
         const stillPaid = current?.paymentStatus === 'paid' && !current.refundedAt && !current.stripeRefundId;
-        await updateFulfillmentState(orderId, {
+        await updateClaimedFulfillmentState(orderId, claimId, {
           ...(stillPaid ? { fulfillmentStatus: 'failed_manual_review' as const } : {}),
           fulfillmentAttempts: attempt,
           fulfillmentLastError: errMsg,
+          fulfillmentKickoffId: null,
+          fulfillmentKickoffAt: null,
         });
         if (stillPaid && current) {
           sendOperatorFailureAlert(current, errMsg).catch(e =>
@@ -304,10 +470,12 @@ async function runWithRetry(
       }
 
       if (attempt >= MAX_RETRIES) {
-        await updateFulfillmentState(orderId, {
+        await updateClaimedFulfillmentState(orderId, claimId, {
           fulfillmentStatus: 'failed_manual_review',
           fulfillmentAttempts: attempt,
           fulfillmentLastError: errMsg,
+          fulfillmentKickoffId: null,
+          fulfillmentKickoffAt: null,
         });
         console.error(`[fulfillment] orderId=${orderId} moved to failed_manual_review after ${attempt} attempts`);
         const failedOrder = await getOrder(orderId);
@@ -319,7 +487,7 @@ async function runWithRetry(
         return;
       }
 
-      await updateFulfillmentState(orderId, {
+      await requireClaimedFulfillmentState(orderId, claimId, {
         fulfillmentAttempts: attempt,
         fulfillmentLastError: errMsg,
       });
@@ -330,16 +498,15 @@ async function runWithRetry(
 
 // ── Digital fulfillment ───────────────────────────────────────────────────────
 
-async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps): Promise<void> {
+async function runDigitalFulfillment(order: OrderRecord, claimId: string, deps: FulfillmentDeps): Promise<void> {
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
   const _getBaseUrl = deps.getBaseUrl ?? defaultGetBaseUrl;
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
   // Persist storyMeta as soon as it's known so diagnostics can answer
   // "which story path ran?" even before image gen completes.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta }));
+  await requireClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, { storyMeta }));
 
   // Every subsequent updateFulfillmentState in this function is a
   // read-modify-write against blob. If the blob read returns a slightly
@@ -351,7 +518,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // blob-read freshness. Defense-in-depth: also carry it through
   // delivery_email_failed so an email-side failure cannot drop it
   // either.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta }));
+  await requireClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta }));
   // Build per-page prompts that LEAD with the frozen character anchor + identity
   // section + continuity rules + quality constraints. Initial generation now
   // goes through buildPagePrompt so it gets the same identity scaffolding the
@@ -425,9 +592,9 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // function dies before the proof PDF is built. The final updateFulfillmentState
   // below re-writes the same array (idempotent) plus the proof URL. storyMeta
   // carried forward to survive stale blob-readback (see comment above).
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
+  await requireClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
+  await requireClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
   // Fail closed BEFORE building/publishing a proof: the story page set must
   // satisfy the book contract (exact count, unique/contiguous indices, story
   // text + illustration on every page). A partial/duplicated set never reaches
@@ -441,7 +608,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     layoutVersion: NEW_PROOF_LAYOUT_VERSION,
   };
   const pdfBuffer = await _buildPdf(story, orderForBuild, allUrls);
-  await assertFulfillmentPaymentCurrent(order.id);
+  await requireClaimedFulfillmentState(order.id, claimId, {});
 
   const proofVersion = newProofVersion();
   const pdfUrl = await _upload(order.id, pdfBuffer, proofArtifactPath(proofVersion));
@@ -479,6 +646,7 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     sourceFingerprint,
     finalDigitalPatch,
     proofGeneratedEvent,
+    claimId,
   );
   if (!digitalPublished) throw new Error('proof_source_changed_during_build');
 
@@ -491,9 +659,25 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
   // whose PDF is already correct. Admin's `retryOrderFulfillment` knows
   // how to recover by resending just the email.
   try {
-    const emailResult = await sendDigitalDeliveryEmail(order, { pdfUrl, reviewUrl });
+    const emailOrder = await requireClaimedFulfillmentState(order.id, claimId, {});
+    const emailResult = await sendDigitalDeliveryEmail(emailOrder, {
+      pdfUrl,
+      reviewUrl,
+      idempotencyKeyBase: `digital-delivery-${order.id}-${proofVersion}`,
+    });
     if (!emailResult.skipped) {
-      await updateFulfillmentState(order.id, proofReleasePatch(order));
+      await requireClaimedFulfillmentState(order.id, claimId, {
+        ...proofReleasePatch(order),
+        fulfillmentKickoffId: null,
+        fulfillmentKickoffAt: null,
+      });
+    } else {
+      await requireClaimedFulfillmentState(order.id, claimId, {
+        fulfillmentStatus: 'delivery_email_failed',
+        fulfillmentLastError: `delivery_email_failed: ${emailResult.reason}`,
+        fulfillmentKickoffId: null,
+        fulfillmentKickoffAt: null,
+      });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -501,31 +685,32 @@ async function runDigitalFulfillment(order: OrderRecord, deps: FulfillmentDeps):
     // Patch only email/fulfillment diagnostics onto the latest versioned record.
     // Never replay proof or page fields captured before the email call: customer
     // review may have committed concurrently while the network request was open.
-    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    await updateClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'delivery_email_failed',
       fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+      fulfillmentKickoffId: null,
+      fulfillmentKickoffAt: null,
     }));
   }
 }
 
 // ── Print fulfillment ─────────────────────────────────────────────────────────
 
-async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): Promise<void> {
+async function runPrintFulfillment(order: OrderRecord, claimId: string, deps: FulfillmentDeps): Promise<void> {
   const _buildPdf = deps.buildPdf ?? buildPdf;
   const _buildPrintInteriorPdf = deps.buildPrintInteriorPdf ?? buildPrintInteriorPdf;
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
   const _getBaseUrl = deps.getBaseUrl ?? defaultGetBaseUrl;
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_story' }));
   const { story, meta: storyMeta } = await runStoryGeneration(order, deps);
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { storyMeta }));
+  await requireClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, { storyMeta }));
 
   // Mirror of the digital path: carry storyMeta forward in every later
   // patch so a stale blob-read cannot drop it during the proof_ready
   // write. The 2026-05-15 Gemini preview proof test reproduced the
   // dropped-storyMeta failure on the digital path; same risk applies
   // here.
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta }));
+  await requireClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, { fulfillmentStatus: 'generating_images', storyMeta }));
   // Same identity-anchored prompt construction as the digital path — keeps the
   // same child consistent across all pages of the print book.
   const characterAnchor = story.characterDescription ?? null;
@@ -589,9 +774,9 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
         : [],
     };
   });
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
+  await requireClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, { pageArtifacts: seededPageArtifacts, storyMeta }));
 
-  await updateFulfillmentState(order.id, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
+  await requireClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, { fulfillmentStatus: 'building_pdf', storyMeta }));
   // Fail closed on a partial/duplicated page set before building the print
   // proof + interior — no preview_ready with an undersized book.
   assertStoryPageSet(seededPageArtifacts, order.bookFormat, NEW_PROOF_LAYOUT_VERSION);
@@ -602,13 +787,13 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     layoutVersion: NEW_PROOF_LAYOUT_VERSION,
   };
   const previewBuffer = await _buildPdf(story, orderForBuild, allUrls);
-  await assertFulfillmentPaymentCurrent(order.id);
+  await requireClaimedFulfillmentState(order.id, claimId, {});
   const interiorBuffer = await _buildPrintInteriorPdf(story, orderForBuild, allUrls);
-  await assertFulfillmentPaymentCurrent(order.id);
+  await requireClaimedFulfillmentState(order.id, claimId, {});
 
   const proofVersion = newProofVersion();
   const proofUrl = await _upload(order.id, previewBuffer, proofArtifactPath(proofVersion));
-  await assertFulfillmentPaymentCurrent(order.id);
+  await requireClaimedFulfillmentState(order.id, claimId, {});
   const interiorUrl = await _upload(order.id, interiorBuffer, `interiors/${proofVersion}.pdf`);
   const sourceFingerprint = proofRenderSourceFingerprint({ story, order: orderForBuild, imageUrls: allUrls });
 
@@ -657,6 +842,7 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     sourceFingerprint,
     finalPrintProofPatch,
     proofGeneratedEvent,
+    claimId,
   );
   if (!printPublished) throw new Error('proof_source_changed_during_build');
 
@@ -667,9 +853,25 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
   // already-correct PDFs and eventually move the order to
   // `failed_manual_review`. Admin can resend the proof email separately.
   try {
-    const emailResult = await sendProofReadyEmail(order, { reviewUrl, proofUrl });
+    const emailOrder = await requireClaimedFulfillmentState(order.id, claimId, {});
+    const emailResult = await sendProofReadyEmail(emailOrder, {
+      reviewUrl,
+      proofUrl,
+      idempotencyKeyBase: `proof-ready-${order.id}-${proofVersion}`,
+    });
     if (!emailResult.skipped) {
-      await updateFulfillmentState(order.id, proofReleasePatch(order));
+      await requireClaimedFulfillmentState(order.id, claimId, {
+        ...proofReleasePatch(order),
+        fulfillmentKickoffId: null,
+        fulfillmentKickoffAt: null,
+      });
+    } else {
+      await requireClaimedFulfillmentState(order.id, claimId, {
+        fulfillmentStatus: 'delivery_email_failed',
+        fulfillmentLastError: `delivery_email_failed: ${emailResult.reason}`,
+        fulfillmentKickoffId: null,
+        fulfillmentKickoffAt: null,
+      });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -677,9 +879,11 @@ async function runPrintFulfillment(order: OrderRecord, deps: FulfillmentDeps): P
     // Patch only email/fulfillment diagnostics onto the latest versioned record.
     // The proof/page tuple may have been invalidated by customer review while
     // the email request was in flight and must never be replayed here.
-    await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
+    await updateClaimedFulfillmentState(order.id, claimId, paidFulfillmentPatch(order, {
       fulfillmentStatus: 'delivery_email_failed',
       fulfillmentLastError: `delivery_email_failed: ${message.slice(0, 500)}`,
+      fulfillmentKickoffId: null,
+      fulfillmentKickoffAt: null,
     }));
   }
 }
@@ -693,6 +897,7 @@ function printReleaseRefusal(
   if (!isPrintFormat(order.bookFormat)) return 'not_print_order';
   if (order.paymentStatus !== 'paid') return 'order_not_paid';
   if (order.refundedAt) return 'order_refunded';
+  if (order.refundClaimId) return 'refund_in_progress';
   if (order.printJobId || order.status === 'print_in_production' || order.status === 'shipped') {
     return 'print_already_submitted';
   }
@@ -786,17 +991,38 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
     { notFound: () => null },
   );
   if (!submissionOrder) throw new Error('Refusing print: submission_attempt_fence_failed');
+  const expectedSubmissionAt = submissionOrder.printSubmissionAttemptedAt;
 
   const result = await _submitPrint(submissionOrder);
 
-  const afterPrint = await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
-    fulfillmentStatus: 'complete',
-    status: 'print_in_production',
-    printJobId: result.jobId,
-    fulfillmentLastError: null,
-  }));
+  const afterPrint = await withOrderTransaction<OrderRecord | null>(
+    order.id,
+    (current) => {
+      if (
+        current.fulfillmentStatus !== 'submitting_to_print'
+        || current.paymentStatus !== 'paid'
+        || current.refundedAt
+        || current.stripeRefundId
+        || current.refundClaimId
+        || current.printSubmissionAttemptedAt !== expectedSubmissionAt
+        || current.printSubmissionProofVersion !== expectedProofVersion
+        || (current.printJobId != null && current.printJobId !== result.jobId)
+      ) return { abort: null };
+      const next: OrderRecord = {
+        ...current,
+        fulfillmentStatus: 'complete',
+        status: 'print_in_production',
+        printJobId: result.jobId,
+        fulfillmentLastError: null,
+        updatedAt: new Date().toISOString(),
+      };
+      return { commit: next, result: next };
+    },
+    { notFound: () => null },
+  );
+  if (!afterPrint) throw new Error('print_job_binding_requires_reconciliation');
 
-  await sendLifecycleEmail(afterPrint ?? { ...hydratedOrder, status: 'print_in_production' });
+  await sendLifecycleEmail(afterPrint);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -1153,38 +1379,41 @@ export async function triggerFulfillment(
     `[fulfillment] order ${orderId} confirmed paid after ${readback.attempts} readback attempt(s) (stripeSessionId=${order.stripeSessionId ? 'present' : 'absent'}, fulfillmentStatus=${order.fulfillmentStatus ?? 'unset'})`,
   );
 
-  // fulfillmentStatus state machine:
-  //   - undefined / 'not_started' / 'failed_manual_review' → eligible to (re)start
-  //   - 'complete' → already-done (idempotent skip)
-  //   - 'delivery_email_failed' → artifacts already exist; full pipeline
-  //       re-run would burn money on a regenerated story. Treat as
-  //       skipped_already_complete so callers (e.g. webhook re-deliveries)
-  //       don't trigger a wasted regeneration. Admin's `retryOrderFulfillment`
-  //       handles the email-only recovery path explicitly.
-  //   - any in-progress state ('generating_story', 'generating_images',
-  //     'building_pdf', 'proof_ready', 'proof_approved',
-  //     'submitting_to_print', 'print_in_production') → in-progress skip
-  const cur = order.fulfillmentStatus;
-  if (cur === 'complete') {
-    console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=complete — skipping (idempotent)`);
-    return { status: 'skipped_already_complete', fulfillmentStatus: cur };
+  const claim = await claimFulfillmentKickoff(orderId);
+  if (claim.kind === 'not_found') {
+    console.error(`[fulfillment] order ${orderId} disappeared before kickoff claim — refusing`);
+    return { status: 'not_found' };
   }
-  if (cur === 'delivery_email_failed') {
-    console.warn(`[fulfillment] order ${orderId} has fulfillmentStatus=delivery_email_failed — artifacts already exist, use admin resend rather than re-running fulfillment`);
-    return { status: 'skipped_already_complete', fulfillmentStatus: cur };
+  if (claim.kind === 'payment_no_longer_paid') {
+    console.warn(`[fulfillment] order ${orderId} is no longer paid at kickoff claim time — refusing`);
+    return { status: 'skipped_already_complete', fulfillmentStatus: 'payment_not_paid' };
   }
-  if (cur && cur !== 'not_started' && cur !== 'failed_manual_review') {
-    console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=${cur} — skipping (in progress)`);
-    return { status: 'skipped_already_running', fulfillmentStatus: cur };
+  if (claim.kind === 'policy_not_auto') {
+    console.warn(`[fulfillment] order ${orderId} is not explicitly auto-fulfillable — refusing`);
+    return { status: 'skipped_already_running', fulfillmentStatus: 'policy_not_auto' };
+  }
+  if (claim.kind === 'skipped_already_complete') {
+    console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=${claim.fulfillmentStatus} — skipping (complete)`);
+    return { status: 'skipped_already_complete', fulfillmentStatus: claim.fulfillmentStatus };
+  }
+  if (claim.kind === 'skipped_already_running') {
+    console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=${claim.fulfillmentStatus} or a live kickoff claim — skipping (in progress)`);
+    return { status: 'skipped_already_running', fulfillmentStatus: claim.fulfillmentStatus };
   }
 
-  const isDigital = !isPrintFormat(order.bookFormat);
+  const startedOrder = await startClaimedFulfillment(orderId, claim.claimId);
+  if (!startedOrder) {
+    console.warn(`[fulfillment] order ${orderId} lost kickoff claim before start boundary — skipping`);
+    return { status: 'skipped_already_running', fulfillmentStatus: 'not_started' };
+  }
+
+  const isDigital = !isPrintFormat(startedOrder.bookFormat);
   console.log(`[fulfillment] starting ${isDigital ? 'digital' : 'print'} run for ${orderId}`);
   const run = isDigital
-    ? (_attempt: number) => runDigitalFulfillment(order, deps)
-    : (_attempt: number) => runPrintFulfillment(order, deps);
+    ? (_attempt: number) => runDigitalFulfillment(startedOrder, claim.claimId, deps)
+    : (_attempt: number) => runPrintFulfillment(startedOrder, claim.claimId, deps);
 
-  await runWithRetry(orderId, run, deps);
+  await runWithRetry(orderId, claim.claimId, run, deps);
   console.log(`[fulfillment] runWithRetry returned for ${orderId}`);
   return { status: 'started' };
 }
@@ -1260,15 +1489,24 @@ export async function approvePrintProof(
     const message = error instanceof Error ? error.message : String(error);
     const current = await getOrder(orderId);
     const ambiguous = Boolean(current?.printSubmissionAttemptedAt);
-    await updateFulfillmentState(orderId, ambiguous
-      ? {
-          fulfillmentStatus: 'submitting_to_print',
-          fulfillmentLastError: `print_submission_ambiguous: ${message.slice(0, 500)}`,
+    await withOrderTransaction(
+      orderId,
+      (fresh) => {
+        if (fresh.printJobId || fresh.fulfillmentStatus !== 'submitting_to_print') {
+          return { abort: null };
         }
-      : {
-          fulfillmentStatus: 'failed_manual_review',
-          fulfillmentLastError: `print_submission_failed_before_attempt: ${message.slice(0, 500)}`,
-        });
+        const next: OrderRecord = {
+          ...fresh,
+          fulfillmentStatus: ambiguous ? 'submitting_to_print' : 'failed_manual_review',
+          fulfillmentLastError: ambiguous
+            ? `print_submission_ambiguous: ${message.slice(0, 500)}`
+            : `print_submission_failed_before_attempt: ${message.slice(0, 500)}`,
+          updatedAt: new Date().toISOString(),
+        };
+        return { commit: next, result: next };
+      },
+      { notFound: () => null },
+    );
     return { ok: false, error: ambiguous ? 'print_submission_ambiguous' : 'print_submission_failed' };
   }
 }

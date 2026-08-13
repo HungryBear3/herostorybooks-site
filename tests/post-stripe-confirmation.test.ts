@@ -5,7 +5,7 @@ import {
   CONFIRMATION_POLL_INTERVAL_MS,
   getConfirmationPollDecision,
 } from '../src/lib/confirmation-poll.ts';
-import { confirmCheckoutPayment } from '../src/lib/checkout-session-confirmation.ts';
+import { confirmCheckoutPayment, isExactSettledCheckoutSession } from '../src/lib/checkout-session-confirmation.ts';
 import { createOrderRecord, type OrderRecord } from '../src/lib/orders.ts';
 
 test('confirmation polls every 1.5 seconds and waits five seconds before Stripe fallback', () => {
@@ -150,6 +150,22 @@ test('paid discounted session validates list-price subtotal without writing paym
   assert.equal(result.status, 'paid');
   assert.equal(result.verifiedViaStripe, true);
   assert.equal(updates, 0);
+});
+
+test('exact settlement predicate accepts MARK100 no-payment-required checkout only at zero total', () => {
+  const order = makeOrder();
+  const base = {
+    id: 'cs_mark100',
+    mode: 'payment',
+    payment_status: 'no_payment_required',
+    amount_subtotal: 3_900,
+    amount_total: 0,
+    currency: 'usd',
+    client_reference_id: order.id,
+    metadata: { orderId: order.id },
+  };
+  assert.equal(isExactSettledCheckoutSession(base, order, base.id), true);
+  assert.equal(isExactSettledCheckoutSession({ ...base, amount_total: 1 }, order, base.id), false);
 });
 
 test('fallback refuses unpaid, mismatched-order, wrong-amount, and wrong-currency sessions', async () => {

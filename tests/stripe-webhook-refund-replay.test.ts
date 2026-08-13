@@ -19,9 +19,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  bindOrderCheckoutSession,
   createOrderRecord,
   getOrder,
   persistOrder,
+  recordPaymentSettlementConflict,
   updateOrderPayment,
   type OrderRecord,
 } from '../src/lib/orders.ts';
@@ -80,6 +82,24 @@ test('webhook source: payment write is awaited before responding (must commit be
   assert.match(src, /const\s+updated\s*=\s*await\s+updateOrderPayment\(/);
 });
 
+test('webhook source: verifies exact settlement facts and returns retryable conflicts', () => {
+  const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
+  assert.match(src, /existing\.stripeSessionId !== session\.id/);
+  assert.match(src, /isExactSettledCheckoutSession\(session, existing, existing\.stripeSessionId\)/);
+  assert.match(src, /recordPaymentSettlementConflict/);
+  assert.match(src, /settledAmountCents:\s*session\.amount_total/);
+  assert.match(src, /Payment transition conflict/);
+  assert.match(src, /status:\s*409/);
+});
+
+test('checkout source binds Stripe Session before releasing redirect URL', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const createAt = src.indexOf('stripe.checkout.sessions.create');
+  const bindAt = src.indexOf('bindOrderCheckoutSession(order.id, session.id, {');
+  const redirectAt = src.indexOf('redirectTo: session.url');
+  assert.ok(createAt > -1 && bindAt > createAt && redirectAt > bindAt);
+});
+
 test('webhook source: refuses to resurrect a refunded order on replay', () => {
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
   assert.match(src, /paymentStatus === 'refunded'/);
@@ -93,11 +113,42 @@ test('webhook source: rejects same-session replay for any non-pending paymentSta
   assert.match(src, /paymentStatus !== 'pending'/);
 });
 
-// ── Behavioral guards: the order-update path is what the webhook drives.
-// On a refunded order, calling updateOrderPayment(_, 'paid', ...) WOULD
-// resurrect state — these tests document that the webhook MUST refuse
-// before reaching that call. The dedicated source-level guards above
-// confirm the webhook does refuse.
+// ── Behavioral guards: the order-update primitive is independently fail-closed.
+// Route pre-reads are advisory; CAS must still reject refunded/terminal state and
+// a different already-bound Stripe session on every retry.
+
+test('refunded order cannot be resurrected by a different paid Stripe session', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      paymentStatus: 'refunded',
+      stripeSessionId: 'cs_original',
+      refundedAt: '2026-04-30T00:00:00Z',
+      stripeRefundId: 're_x',
+    }, 'ord_refunded_different');
+    const result = await updateOrderPayment('ord_refunded_different', 'paid', {
+      stripeSessionId: 'cs_delayed_other',
+    });
+    assert.equal(result, null);
+    const after = await getOrder('ord_refunded_different');
+    assert.equal(after?.paymentStatus, 'refunded');
+    assert.equal(after?.stripeSessionId, 'cs_original');
+  } finally { cleanup(dir); }
+});
+
+test('pending order bound to another Stripe session cannot be rebound by settlement', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({ paymentStatus: 'pending', stripeSessionId: 'cs_expected' }, 'ord_bound_pending');
+    const result = await updateOrderPayment('ord_bound_pending', 'paid', {
+      stripeSessionId: 'cs_wrong',
+    });
+    assert.equal(result, null);
+    const after = await getOrder('ord_bound_pending');
+    assert.equal(after?.paymentStatus, 'pending');
+    assert.equal(after?.stripeSessionId, 'cs_expected');
+  } finally { cleanup(dir); }
+});
 
 test('refunded order is detectable on replay: paymentStatus and refundedAt both set', async () => {
   const dir = makeTmp();
@@ -123,26 +174,53 @@ test('refunded order is detectable on replay: paymentStatus and refundedAt both 
   } finally { cleanup(dir); }
 });
 
-test('pending → paid first webhook still flips state to paid', async () => {
+test('pending pre-bound → paid first webhook still flips state to paid', async () => {
   const dir = makeTmp();
   try {
-    await seed({ paymentStatus: 'pending' }, 'ord_first');
+    await seed({ paymentStatus: 'pending', stripeSessionId: 'cs_first' }, 'ord_first');
     const updated = await updateOrderPayment('ord_first', 'paid', { stripeSessionId: 'cs_first' });
     assert.equal(updated?.paymentStatus, 'paid');
     assert.equal(updated?.stripeSessionId, 'cs_first');
   } finally { cleanup(dir); }
 });
 
-test('paid → paid replay: matching condition for the skip branch is satisfied', async () => {
+test('unbound pending order cannot be claimed by settlement', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({ paymentStatus: 'pending', stripeSessionId: null }, 'ord_unbound');
+    const updated = await updateOrderPayment('ord_unbound', 'paid', { stripeSessionId: 'cs_claim' });
+    assert.equal(updated, null);
+    assert.equal((await getOrder('ord_unbound'))?.paymentStatus, 'pending');
+  } finally { cleanup(dir); }
+});
+
+test('checkout binding and conflict ledger are durable and idempotent', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({ paymentStatus: 'pending', stripeSessionId: null }, 'ord_bind');
+    assert.equal((await bindOrderCheckoutSession('ord_bind', 'cs_bound'))?.stripeSessionId, 'cs_bound');
+    assert.equal(await bindOrderCheckoutSession('ord_bind', 'cs_other'), null);
+    const conflict = { stripeSessionId: 'cs_other', amountSubtotalCents: 1900, amountTotalCents: 950, reason: 'stripe_session_binding_mismatch' };
+    await recordPaymentSettlementConflict('ord_bind', conflict);
+    await recordPaymentSettlementConflict('ord_bind', conflict);
+    const reloaded = await getOrder('ord_bind');
+    assert.equal(reloaded?.auditEvents?.filter((e) => e.type === 'payment_settlement_conflict').length, 1);
+  } finally { cleanup(dir); }
+});
+
+test('paid → paid replay backfills missing settled amount without changing session', async () => {
   const dir = makeTmp();
   try {
     await seed(
-      { paymentStatus: 'paid', stripeSessionId: 'cs_dup' },
+      { paymentStatus: 'paid', stripeSessionId: 'cs_dup', settledAmountCents: null },
       'ord_dup',
     );
-    const reloaded = await getOrder('ord_dup');
-    const webhookWouldSkip =
-      reloaded?.stripeSessionId === 'cs_dup' && reloaded?.paymentStatus === 'paid';
-    assert.equal(webhookWouldSkip, true);
+    const updated = await updateOrderPayment('ord_dup', 'paid', {
+      stripeSessionId: 'cs_dup',
+      settledAmountCents: 950,
+    });
+    assert.equal(updated?.paymentStatus, 'paid');
+    assert.equal(updated?.stripeSessionId, 'cs_dup');
+    assert.equal(updated?.settledAmountCents, 950);
   } finally { cleanup(dir); }
 });

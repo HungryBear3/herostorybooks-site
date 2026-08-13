@@ -88,38 +88,29 @@ test('public versioned read treats an HTTP-equivalent (weak / requoted) ETag as 
   }
 });
 
-test('public versioned read converges when the CDN omits an ETag but the version is stable', async () => {
-  // Some public edges return no validator on GET. Coherence is then confirmed by
-  // re-listing: a stable authoritative ETag across the read means the bytes are
-  // current. The returned version is the authoritative `list()` ETag.
+test('public versioned read accepts a response without ETag only after the authoritative version is reconfirmed', async () => {
   let lists = 0;
   const result = await readPublicOrderBlobVersioned(PATHNAME, 'synthetic-token', {
     listImpl: async () => {
       lists += 1;
       return listed('"stable"');
     },
-    fetchImpl: async () => new Response('{"ok":true}', { status: 200 }),
+    fetchImpl: async () => new Response('{"confirmed":true}', { status: 200 }),
   });
-  assert.deepEqual(result, { body: '{"ok":true}', version: '"stable"' });
-  assert.equal(lists, 2, 'expected a confirming re-list when the CDN omits an ETag');
+  assert.equal(lists, 2);
+  assert.deepEqual(result, { body: '{"confirmed":true}', version: '"stable"' });
 });
 
-test('public versioned read retries when the CDN omits an ETag and the version advanced mid-read', async () => {
-  // No CDN validator AND a genuine concurrent overwrite between fetch and the
-  // confirming re-list: the authoritative ETag moved, so the stale bytes must
-  // not be accepted — retry, then converge on the settled version.
+test('public versioned read fails closed without a response ETag when authoritative state advances during fetch', async () => {
   let lists = 0;
-  const result = await readPublicOrderBlobVersioned(PATHNAME, 'synthetic-token', {
-    listImpl: async () => {
-      lists += 1;
-      // attempt 1: read v1, confirm sees v2 (advanced) -> retry;
-      // attempt 2: read v2, confirm sees v2 (stable)   -> accept.
-      const etag = lists <= 1 ? '"v1"' : '"v2"';
-      return listed(etag);
-    },
-    fetchImpl: async () => new Response('{"settled":true}', { status: 200 }),
-  });
-  assert.deepEqual(result, { body: '{"settled":true}', version: '"v2"' });
+  await assert.rejects(
+    readPublicOrderBlobVersioned(PATHNAME, 'synthetic-token', {
+      listImpl: async () => listed(`"version-${++lists}"`),
+      fetchImpl: async () => new Response('{"possibly-stale":true}', { status: 200 }),
+      sleepImpl: async () => {},
+    }),
+    /changed during 3 versioned read attempt/,
+  );
 });
 
 test('public versioned read returns null when the exact order pathname is absent', async () => {

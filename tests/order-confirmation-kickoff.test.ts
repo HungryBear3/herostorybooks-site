@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   _resetConfirmationEmailInFlightForTest,
@@ -8,10 +9,13 @@ import {
 import { createOrderRecord } from '../src/lib/orders.ts';
 
 function makeOrder() {
-  return createOrderRecord(
-    { childName: 'Luna', bookFormat: 'digital', email: 'buyer@example.com' },
-    { id: 'ord_email_kickoff', now: '2026-07-31T12:00:00.000Z' },
-  );
+  return {
+    ...createOrderRecord(
+      { childName: 'Luna', bookFormat: 'digital', email: 'buyer@example.com' },
+      { id: 'ord_email_kickoff', now: '2026-07-31T12:00:00.000Z' },
+    ),
+    paymentStatus: 'paid' as const,
+  };
 }
 
 test('joined deferred email failure is contained and a later delivery can retry', async () => {
@@ -116,6 +120,29 @@ test('a skipped email send clears dedupe so a later webhook replay can recover',
   });
   retry.shift()!();
   await new Promise((resolve) => setImmediate(resolve));
-
   assert.equal(sends, 2);
+});
+
+test('authoritative refunded state blocks a stale deferred confirmation email', async () => {
+  _resetConfirmationEmailInFlightForTest();
+  const queue: Array<() => void> = [];
+  let sends = 0;
+  const stale = makeOrder();
+  scheduleOrderConfirmationEmail(stale, {
+    getOrder: async () => ({ ...stale, paymentStatus: 'refunded', refundedAt: '2026-08-12T20:00:00.000Z' }),
+    send: async () => { sends += 1; return { skipped: false as const, id: 'must-not-send' }; },
+    setImmediateImpl: (cb) => { queue.push(cb); return null; },
+    afterImpl: null,
+    log: () => {},
+    errorLog: () => {},
+  });
+  queue.shift()!();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sends, 0);
+});
+
+test('production confirmation path persists and gates on a durable acceptance receipt', () => {
+  const source = readFileSync(new URL('../src/lib/order-confirmation-kickoff.ts', import.meta.url), 'utf8');
+  assert.match(source, /latest\.confirmationEmailSentAt/);
+  assert.match(source, /confirmationEmailSentAt: new Date\(\)\.toISOString\(\)/);
 });

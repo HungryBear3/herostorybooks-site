@@ -11,6 +11,7 @@ import {
 import {
   calculatePrintUpgrade,
   recordPrintUpgradePayment,
+  recordPrintUpgradeSettlementConflict,
 } from '../src/lib/print-upgrades.ts';
 
 function makeDigitalOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
@@ -20,7 +21,12 @@ function makeDigitalOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
       { id: 'ord_dog_city_upgrade', now: '2026-07-07T12:00:00Z' },
     ),
     paymentStatus: 'paid',
+    settledAmountCents: 1900,
     stripeSessionId: 'cs_original_digital',
+    printUpgradeStatus: 'checkout_open',
+    printUpgradeStripeSessionId: 'cs_upgrade_premium',
+    printUpgradeTargetFormat: 'premium',
+    printUpgradeAmountCents: 4500,
     fulfillmentStatus: 'proof_ready',
     storyArtifactUrl: 'https://example.com/proof.pdf',
     ...overrides,
@@ -37,6 +43,18 @@ test('calculatePrintUpgrade: paid digital to premium charges only hardcover delt
   assert.equal(result.targetFormat, 'premium');
   assert.match(result.description, /Digital proof/i);
   assert.match(result.description, /Premium hardcover/i);
+});
+
+test('calculatePrintUpgrade: uses actual settled total and fails closed without it', () => {
+  const discounted = calculatePrintUpgrade(makeDigitalOrder({ settledAmountCents: 950 }), 'premium');
+  const free = calculatePrintUpgrade(makeDigitalOrder({ settledAmountCents: 0 }), 'premium');
+  assert.equal(discounted.ok && discounted.amountCents, 5450);
+  assert.equal(free.ok && free.amountCents, 6400);
+  assert.deepEqual(calculatePrintUpgrade(makeDigitalOrder({ settledAmountCents: null }), 'premium'), {
+    ok: false,
+    status: 409,
+    error: 'original_settled_amount_unknown',
+  });
 });
 
 test('calculatePrintUpgrade: refuses unpaid, already-print, and non-upgrade targets', () => {
@@ -107,26 +125,112 @@ test('recordPrintUpgradePayment: records upgrade payment without starting fulfil
   }
 });
 
-test('admin print-upgrade route: defaults to preview and double-confirms Stripe checkout', () => {
+test('recordPrintUpgradePayment refuses a different session inside the transaction', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-upgrade-binding-'));
+  process.env.HSB_ORDER_STORE_DIR = dir;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    await persistOrder(makeDigitalOrder());
+    await assert.rejects(
+      recordPrintUpgradePayment('ord_dog_city_upgrade', {
+        stripeSessionId: 'cs_different',
+        amountCents: 4500,
+        targetFormat: 'premium',
+      }),
+      /durable_upgrade_contract_mismatch/,
+    );
+    const reloaded = await getOrder('ord_dog_city_upgrade');
+    assert.equal(reloaded?.bookFormat, 'digital');
+    assert.equal(reloaded?.printUpgradeStatus, 'checkout_open');
+    assert.equal(reloaded?.printUpgradeStripeSessionId, 'cs_upgrade_premium');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.HSB_ORDER_STORE_DIR;
+  }
+});
+
+test('recordPrintUpgradePayment refuses same-session target or amount drift', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-upgrade-contract-'));
+  process.env.HSB_ORDER_STORE_DIR = dir;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    await persistOrder(makeDigitalOrder());
+    for (const input of [
+      { stripeSessionId: 'cs_upgrade_premium', amountCents: 2000, targetFormat: 'premium' as const },
+      { stripeSessionId: 'cs_upgrade_premium', amountCents: 4500, targetFormat: 'classic' as const },
+    ]) {
+      await assert.rejects(
+        recordPrintUpgradePayment('ord_dog_city_upgrade', input),
+        /durable_upgrade_contract_mismatch/,
+      );
+    }
+    const reloaded = await getOrder('ord_dog_city_upgrade');
+    assert.equal(reloaded?.bookFormat, 'digital');
+    assert.equal(reloaded?.printUpgradeStatus, 'checkout_open');
+    assert.equal(reloaded?.printUpgradeTargetFormat, 'premium');
+    assert.equal(reloaded?.printUpgradeAmountCents, 4500);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.HSB_ORDER_STORE_DIR;
+  }
+});
+
+test('settled upgrade conflict is durably idempotent by incoming session', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-upgrade-conflict-'));
+  process.env.HSB_ORDER_STORE_DIR = dir;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    await persistOrder(makeDigitalOrder());
+    const input = {
+      stripeSessionId: 'cs_legacy_discount_delta',
+      targetFormat: 'premium' as const,
+      amountSubtotalCents: 4500,
+      amountTotalCents: 4500,
+      reason: 'settlement_facts_mismatch',
+    };
+    await recordPrintUpgradeSettlementConflict('ord_dog_city_upgrade', input);
+    await recordPrintUpgradeSettlementConflict('ord_dog_city_upgrade', input);
+    const reloaded = await getOrder('ord_dog_city_upgrade');
+    const events = reloaded?.auditEvents?.filter((event) =>
+      event.type === 'print_upgrade_settlement_conflict'
+      && event.meta?.stripeSessionId === input.stripeSessionId,
+    );
+    assert.equal(events?.length, 1);
+    assert.equal(events?.[0]?.meta?.amountTotalCents, 4500);
+    assert.equal(reloaded?.bookFormat, 'digital');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.HSB_ORDER_STORE_DIR;
+  }
+});
+
+test('admin print-upgrade route: remains preview-only and retires checkout creation', () => {
   const src = readFileSync('src/app/api/admin/orders/[orderId]/print-upgrade/route.ts', 'utf8');
 
   assert.match(src, /isAdminAuthedFromRequest\(request\)/);
   assert.match(src, /body\.createCheckout === true && body\.confirmCreateCheckout === true/);
   assert.match(src, /dryRun: true/);
   assert.match(src, /No Stripe Checkout Session, email, print job, or provider action was created/);
-  assert.match(src, /allow_promotion_codes:\s*true/);
-  assert.match(src, /shipping_address_collection/);
-  assert.match(src, /kind:\s*'print_upgrade'/);
-  assert.match(src, /targetFormat/);
-  assert.match(src, /cancel_url:.*\/thank-you\?/);
-  assert.doesNotMatch(src, /cancel_url:.*\/admin\//);
-  assert.doesNotMatch(src, /scheduleFulfillmentKickoff|triggerFulfillment|submitPrintJob/);
+  assert.match(src, /print_upgrade_checkout_retired/);
+  assert.match(src, /status:\s*410/);
+  assert.doesNotMatch(src, /new Stripe|checkout\.sessions\.create|scheduleFulfillmentKickoff|triggerFulfillment|submitPrintJob/);
 });
 
 test('stripe webhook route: print upgrade sessions record payment but do not kick off fulfillment', () => {
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
 
   assert.match(src, /kind\s*===\s*'print_upgrade'/);
+  assert.match(src, /upgradeOrder\.printUpgradeStripeSessionId !== session\.id/);
+  assert.match(src, /recordPrintUpgradeSettlementConflict/);
   assert.match(src, /recordPrintUpgradePayment/);
   const upgradeBranch = src.slice(src.indexOf("kind === 'print_upgrade'"), src.indexOf('const orderId', src.indexOf("kind === 'print_upgrade'")));
   assert.doesNotMatch(upgradeBranch, /scheduleFulfillmentKickoff|sendOrderConfirmationEmail|updateOrderPayment/);

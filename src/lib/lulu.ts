@@ -225,7 +225,10 @@ export async function submitPrintJob(
     estimated_shipping_dates?: { earliest?: string };
   };
 
-  const jobId = data.id != null ? String(data.id) : `lulu-${Date.now()}`;
+  if (data.id == null || String(data.id).trim() === '') {
+    throw new Error('Lulu API success response missing print job id; outcome requires reconciliation');
+  }
+  const jobId = String(data.id);
 
   return {
     jobId,

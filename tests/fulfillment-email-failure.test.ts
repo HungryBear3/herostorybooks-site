@@ -57,7 +57,11 @@ async function makeDigitalOrder(
 ): Promise<OrderRecord> {
   const base = createOrderRecord(
     { childName: 'Luna', bookFormat: 'digital', email: 'luna@example.com' },
-    { id: `ord_${Math.random().toString(36).slice(2, 10)}`, now: '2026-05-12T10:00:00Z' },
+    {
+      id: `ord_${Math.random().toString(36).slice(2, 10)}`,
+      now: '2026-05-12T10:00:00Z',
+      fulfillmentMode: 'auto',
+    },
   );
   const order: OrderRecord = {
     ...base,
@@ -225,7 +229,11 @@ test('print email failure cannot replay stale proof/page state over a concurrent
 
   const base = createOrderRecord(
     { childName: 'Synthetic Print Child', bookFormat: 'classic', email: 'print@example.invalid' },
-    { id: `ord_${Math.random().toString(36).slice(2, 10)}`, now: '2026-05-12T10:00:00Z' },
+    {
+      id: `ord_${Math.random().toString(36).slice(2, 10)}`,
+      now: '2026-05-12T10:00:00Z',
+      fulfillmentMode: 'auto',
+    },
   );
   await persistOrder({ ...base, paymentStatus: 'paid', stripeSessionId: 'cs_test_print_race' });
   const deps: FulfillmentDeps = {
@@ -299,7 +307,11 @@ for (const bookFormat of ['digital', 'classic'] as const) {
           bookFormat: 'classic',
           email: 'print@example.invalid',
         },
-        { id: 'ord_synthetic_print_success_race', now: '2026-05-12T10:00:00Z' },
+        {
+          id: 'ord_synthetic_print_success_race',
+          now: '2026-05-12T10:00:00Z',
+          fulfillmentMode: 'auto',
+        },
       );
       order = { ...base, paymentStatus: 'paid', stripeSessionId: 'cs_test_print_success_race' };
       await persistOrder(order);
@@ -332,7 +344,7 @@ for (const bookFormat of ['digital', 'classic'] as const) {
 
 // ── Test 2: retryOrderFulfillment short-circuits when only email failed ───────
 
-test('retryOrderFulfillment after delivery_email_failed resends email — does NOT regenerate', async (t) => {
+test('retryOrderFulfillment after delivery_email_failed fails closed without resending or regenerating', async (t) => {
   const dir = makeTmpDir();
   const originalKey = process.env.HSB_RESEND_API_KEY;
   const originalFetch = globalThis.fetch;
@@ -362,17 +374,17 @@ test('retryOrderFulfillment after delivery_email_failed resends email — does N
   let storyCalls = 0;
   const result = await retryOrderFulfillment(order.id);
 
-  // The smart-retry path returns ok without calling triggerFulfillment.
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.match(result.detail ?? '', /resent|email/i);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.status, 409);
+    assert.match(result.error, /dedicated email resend/i);
   }
-  assert.equal(storyCalls, 0, 'story generator must not be called during email-only retry');
+  assert.equal(storyCalls, 0, 'story generator must not be called during refused email-only retry');
 
   const persisted = await getOrder(order.id);
   assert.ok(persisted);
-  assert.equal(persisted!.fulfillmentStatus, 'complete');
-  assert.equal(persisted!.fulfillmentLastError, null);
+  assert.equal(persisted!.fulfillmentStatus, 'delivery_email_failed');
+  assert.equal(persisted!.fulfillmentLastError, 'delivery_email_failed: ...');
   assert.equal(persisted!.storyArtifactUrl, 'https://cdn.example.com/ord/luna-storybook.pdf');
 });
 
@@ -406,6 +418,58 @@ test('resendDigitalDelivery resends the email for a digital order that already h
 
   const persisted = await getOrder(order.id);
   assert.equal(persisted!.fulfillmentStatus, 'complete');
+});
+
+test('concurrent digital resends acquire one durable claim and send once', async (t) => {
+  const dir = makeTmpDir();
+  const originalKey = process.env.HSB_RESEND_API_KEY;
+  const originalFetch = globalThis.fetch;
+  process.env.HSB_RESEND_API_KEY = 're_test_stub';
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return new Response(JSON.stringify({ id: 'email_once' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  t.after(() => {
+    if (originalKey === undefined) delete process.env.HSB_RESEND_API_KEY;
+    else process.env.HSB_RESEND_API_KEY = originalKey;
+    globalThis.fetch = originalFetch;
+    cleanupTmpDir(dir);
+  });
+
+  const order = await makeDigitalOrder({
+    fulfillmentStatus: 'delivery_email_failed',
+    storyArtifactUrl: 'https://cdn.example.com/ord/once.pdf',
+  });
+  const results = await Promise.all([
+    resendDigitalDelivery(order.id),
+    resendDigitalDelivery(order.id),
+  ]);
+  assert.equal(results.filter((result) => result.ok).length, 1);
+  assert.equal(calls, 1);
+  const persisted = await getOrder(order.id);
+  assert.equal(persisted?.emailResendClaimId ?? null, null);
+  assert.equal(persisted?.fulfillmentStatus, 'complete');
+});
+
+test('digital resend without provider config reports failure and does not mark complete', async (t) => {
+  const dir = makeTmpDir();
+  t.after(() => cleanupTmpDir(dir));
+  delete process.env.HSB_RESEND_API_KEY;
+  delete process.env.RESEND_API_KEY;
+  const order = await makeDigitalOrder({
+    fulfillmentStatus: 'delivery_email_failed',
+    storyArtifactUrl: 'https://cdn.example.com/ord/missing-key.pdf',
+  });
+  const result = await resendDigitalDelivery(order.id);
+  assert.equal(result.ok, false);
+  const persisted = await getOrder(order.id);
+  assert.equal(persisted?.fulfillmentStatus, 'delivery_email_failed');
+  assert.equal(persisted?.emailResendClaimId ?? null, null);
 });
 
 // ── Test 4: triggerFulfillment skips an order already at delivery_email_failed
