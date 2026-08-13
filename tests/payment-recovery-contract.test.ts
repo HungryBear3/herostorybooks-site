@@ -110,12 +110,22 @@ test('checkout resume rejects active duplicates and payload mismatch, then permi
         await bindOrderCheckoutSession(original.id, 'cs_stale_a', {
           leaseId: '11111111-1111-4111-8111-111111111111',
           fingerprint: 'fingerprint-a',
+          now: new Date('2026-08-12T20:06:02.000Z'),
+        }),
+        null,
+      );
+      assert.equal(
+        await bindOrderCheckoutSession(original.id, 'cs_expired_b', {
+          leaseId: '22222222-2222-4222-8222-222222222222',
+          fingerprint: 'fingerprint-a',
+          now: new Date('2026-08-12T20:11:02.000Z'),
         }),
         null,
       );
       const bound = await bindOrderCheckoutSession(original.id, 'cs_winner_b', {
         leaseId: '22222222-2222-4222-8222-222222222222',
         fingerprint: 'fingerprint-a',
+        now: new Date('2026-08-12T20:06:02.000Z'),
       });
       assert.equal(bound?.stripeSessionId, 'cs_winner_b');
     });

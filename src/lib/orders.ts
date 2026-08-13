@@ -2609,14 +2609,20 @@ export async function updateOrderPayment(
 export async function bindOrderCheckoutSession(
   orderId: string,
   stripeSessionId: string,
-  checkout?: { leaseId: string; fingerprint: string },
+  checkout?: { leaseId: string; fingerprint: string; now?: Date },
 ): Promise<OrderRecord | null> {
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
       if (current.paymentStatus !== 'pending') return { abort: null };
-      if (checkout && (current.checkoutLeaseId !== checkout.leaseId
-        || current.checkoutFingerprint !== checkout.fingerprint)) return { abort: null };
+      if (checkout) {
+        const leaseExpiresAt = Date.parse(current.checkoutLeaseExpiresAt ?? '');
+        const nowMs = (checkout.now ?? new Date()).getTime();
+        if (current.checkoutLeaseId !== checkout.leaseId
+          || current.checkoutFingerprint !== checkout.fingerprint
+          || !Number.isFinite(leaseExpiresAt)
+          || leaseExpiresAt <= nowMs) return { abort: null };
+      }
       if (current.stripeSessionId && current.stripeSessionId !== stripeSessionId) return { abort: null };
       const updated = { ...current, stripeSessionId, updatedAt: new Date().toISOString() };
       return { commit: updated, result: updated };
