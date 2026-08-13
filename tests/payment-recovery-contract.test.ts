@@ -10,6 +10,7 @@ import { recordUnmatchedPaymentSettlement } from '../src/lib/payment-recovery.ts
 import {
   createOrderRecord,
   persistOrResumeCheckoutOrder,
+  renewCheckoutLease,
 } from '../src/lib/orders.ts';
 
 async function withEnv<T>(env: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
@@ -35,6 +36,8 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   assert.match(route, /current\.checkoutLeaseId !== draftOrder\.checkoutLeaseId/);
   assert.match(route, /uploadOrderPhoto\(draftOrder\.id, photo, draftOrder\.checkoutLeaseId/);
   assert.match(route, /uploadOrderSupportingPhoto\([\s\S]*draftOrder\.checkoutLeaseId/);
+  assert.match(route, /uploadOrderVoice\([\s\S]*draftOrder\.checkoutLeaseId/);
+  assert.match(route, /await requireActiveLease\(\);\s*const session = await stripe\.checkout\.sessions\.create/);
   const orders = readFileSync('src/lib/orders.ts', 'utf8');
   assert.match(orders, /checkout-\$\{checkoutLeaseId\}/);
   assert.match(route, /checkout\.sessions\.retrieve\(persistedDraft\.stripeSessionId\)/);
@@ -64,12 +67,12 @@ test('checkout resume rejects active duplicates and payload mismatch, then permi
       Object.assign(original, {
         checkoutAttemptId: 'a'.repeat(32),
         checkoutFingerprint: 'fingerprint-a',
-        checkoutLeaseId: 'lease-original',
+        checkoutLeaseId: '11111111-1111-4111-8111-111111111111',
         checkoutLeaseExpiresAt: '2026-08-12T20:05:00.000Z',
       });
       await persistOrResumeCheckoutOrder(original, { now: new Date('2026-08-12T20:00:00.000Z') });
 
-      const duplicate = { ...original, checkoutLeaseId: 'lease-duplicate' };
+      const duplicate = { ...original, checkoutLeaseId: '22222222-2222-4222-8222-222222222222' };
       await assert.rejects(
         persistOrResumeCheckoutOrder(duplicate, { now: new Date('2026-08-12T20:01:00.000Z') }),
         /checkout_attempt_in_progress/,
@@ -84,8 +87,24 @@ test('checkout resume rejects active duplicates and payload mismatch, then permi
         duplicate,
         { now: new Date('2026-08-12T20:06:00.000Z') },
       );
-      assert.equal(takeover.checkoutLeaseId, 'lease-duplicate');
+      assert.equal(takeover.checkoutLeaseId, '22222222-2222-4222-8222-222222222222');
       assert.equal(takeover.checkoutFingerprint, 'fingerprint-a');
+      assert.equal(
+        await renewCheckoutLease(
+          original.id,
+          '11111111-1111-4111-8111-111111111111',
+          'fingerprint-a',
+          { now: new Date('2026-08-12T20:06:01.000Z') },
+        ),
+        null,
+      );
+      const renewed = await renewCheckoutLease(
+        original.id,
+        '22222222-2222-4222-8222-222222222222',
+        'fingerprint-a',
+        { now: new Date('2026-08-12T20:06:01.000Z'), leaseMs: 300_000 },
+      );
+      assert.equal(renewed?.checkoutLeaseExpiresAt, '2026-08-12T20:11:01.000Z');
     });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

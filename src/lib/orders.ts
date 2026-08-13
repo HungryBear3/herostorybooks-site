@@ -1210,7 +1210,11 @@ function voiceExtForMime(mime: string): string {
  * Upload an attached child-voice audio file to durable blob storage. Mirrors
  * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
  */
-export async function uploadOrderVoice(orderId: string, file: File): Promise<UploadedVoiceRef | null> {
+export async function uploadOrderVoice(
+  orderId: string,
+  file: File,
+  checkoutLeaseId?: string,
+): Promise<UploadedVoiceRef | null> {
   const token = getBlobToken();
 
   if (typeof file.arrayBuffer !== 'function') {
@@ -1232,7 +1236,8 @@ export async function uploadOrderVoice(orderId: string, file: File): Promise<Upl
 
   // Never derive durable identifiers from the caller-controlled filename.
   const assetId = crypto.randomBytes(12).toString('base64url');
-  const pathname = withBlobNamespace(`orders/${orderId}/voice-${assetId}.${voiceExtForMime(file.type)}`);
+  const scope = checkoutMediaScope(checkoutLeaseId);
+  const pathname = withBlobNamespace(`orders/${orderId}/${scope}voice-${assetId}.${voiceExtForMime(file.type)}`);
   const buffer = Buffer.from(await file.arrayBuffer());
 
   try {
@@ -1328,7 +1333,7 @@ async function uploadOrderPhotoAtPath(
 
 function checkoutMediaScope(checkoutLeaseId?: string): string {
   if (!checkoutLeaseId) return '';
-  if (!/^[0-9a-f-]{36}$/i.test(checkoutLeaseId)) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(checkoutLeaseId)) {
     throw new OrderPersistenceError('unknown', 'invalid_checkout_media_scope');
   }
   return `checkout-${checkoutLeaseId}/`;
@@ -1371,14 +1376,19 @@ export interface OrderMediaRollbackDeps {
 export async function rollbackOrderMediaUploads(
   orderId: string,
   pathnames: readonly string[],
+  checkoutLeaseId?: string,
   deps: OrderMediaRollbackDeps = {},
 ): Promise<number> {
   const uniquePaths = [...new Set(pathnames.filter(Boolean))];
   if (uniquePaths.length === 0) return 0;
 
-  const expectedPrefix = withBlobNamespace(`orders/${orderId}/`);
+  const scope = checkoutMediaScope(checkoutLeaseId);
+  const expectedPrefix = withBlobNamespace(`orders/${orderId}/${scope}`);
   for (const pathname of uniquePaths) {
-    if (!pathname.startsWith(expectedPrefix)) {
+    const relative = pathname.slice(expectedPrefix.length);
+    if (!pathname.startsWith(expectedPrefix)
+      || !relative
+      || relative.split('/').some((segment) => segment === '.' || segment === '..')) {
       throw new OrderPersistenceError(
         orderId,
         `Refusing checkout-media rollback outside the order namespace: ${pathname}`,
@@ -2425,6 +2435,30 @@ export async function persistOrResumeCheckoutOrder(
     if (claimed) return claimed;
     throw error;
   }
+}
+
+/** Atomically verify ownership and extend the checkout lease before a slow side effect. */
+export async function renewCheckoutLease(
+  orderId: string,
+  checkoutLeaseId: string,
+  checkoutFingerprint: string,
+  opts: { now?: Date; leaseMs?: number } = {},
+): Promise<OrderRecord | null> {
+  const now = opts.now ?? new Date();
+  const leaseMs = opts.leaseMs ?? 5 * 60_000;
+  return withOrderTransaction<OrderRecord | null>(orderId, (current) => {
+    if (current.paymentStatus !== 'pending'
+      || current.stripeSessionId
+      || current.checkoutLeaseId !== checkoutLeaseId
+      || current.checkoutFingerprint !== checkoutFingerprint) {
+      return { abort: null };
+    }
+    const updated = {
+      ...current,
+      checkoutLeaseExpiresAt: new Date(now.getTime() + leaseMs).toISOString(),
+    };
+    return { commit: updated, result: updated };
+  });
 }
 
 /** Commit an order record only if the stored version is still `expectedVersion`. */

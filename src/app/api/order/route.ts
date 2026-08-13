@@ -10,6 +10,7 @@ import {
   OrderPersistenceError,
   type OrderRecord,
   persistOrResumeCheckoutOrder,
+  renewCheckoutLease,
   rollbackOrderMediaUploads,
   sanitizeFamilyCharacters,
   uploadOrderPhoto,
@@ -424,10 +425,23 @@ export async function POST(request: Request) {
     }
 
     const uploadedMediaPaths: string[] = [];
+    const requireActiveLease = async () => {
+      const renewed = await renewCheckoutLease(
+        draftOrder.id,
+        draftOrder.checkoutLeaseId!,
+        draftOrder.checkoutFingerprint!,
+      );
+      if (!renewed) throw new OrderPersistenceError(draftOrder.id, 'checkout_lease_lost');
+      draftOrder.checkoutLeaseExpiresAt = renewed.checkoutLeaseExpiresAt;
+    };
     const rollbackUploadedMedia = async (reason: string) => {
       if (uploadedMediaPaths.length === 0) return;
       try {
-        await rollbackOrderMediaUploads(draftOrder.id, uploadedMediaPaths);
+        await rollbackOrderMediaUploads(
+          draftOrder.id,
+          uploadedMediaPaths,
+          draftOrder.checkoutLeaseId ?? undefined,
+        );
         uploadedMediaPaths.length = 0;
       } catch (rollbackError) {
         // The durable draft above remains the owner-of-record even when Blob
@@ -444,6 +458,7 @@ export async function POST(request: Request) {
     let photoBlobUrl: string | null = null;
     if (photo instanceof File && photo.size > 0) {
       try {
+        await requireActiveLease();
         const uploaded = await uploadOrderPhoto(draftOrder.id, photo, draftOrder.checkoutLeaseId ?? undefined);
         if (uploaded) {
           photoBlobPath = uploaded.pathname;
@@ -487,6 +502,7 @@ export async function POST(request: Request) {
         continue;
       }
       try {
+        await requireActiveLease();
         const uploaded = await uploadOrderSupportingPhoto(
           draftOrder.id,
           index,
@@ -534,7 +550,12 @@ export async function POST(request: Request) {
     let voiceConsentAt: string | null = null;
     if (hasVoiceUpload) {
       try {
-        const uploadedVoice = await uploadOrderVoice(draftOrder.id, voiceRaw as File);
+        await requireActiveLease();
+        const uploadedVoice = await uploadOrderVoice(
+          draftOrder.id,
+          voiceRaw as File,
+          draftOrder.checkoutLeaseId ?? undefined,
+        );
         if (uploadedVoice) {
           voiceBlobPath = uploadedVoice.pathname;
           voiceBlobUrl = uploadedVoice.url;
@@ -625,6 +646,7 @@ export async function POST(request: Request) {
       email: order.email,
     });
 
+    await requireActiveLease();
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       allow_promotion_codes: true,
