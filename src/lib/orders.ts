@@ -285,6 +285,9 @@ export type FulfillmentMode = 'auto' | 'manual_hold';
 export interface OrderRecord extends OrderInput {
   id: string;
   checkoutAttemptId?: string | null;
+  checkoutFingerprint?: string | null;
+  checkoutLeaseId?: string | null;
+  checkoutLeaseExpiresAt?: string | null;
   /** Non-PII compatibility signal derived while reading retired legacy data. */
   legacyVoiceUploadPresent?: boolean;
   bookFormat: BookFormat;
@@ -2362,17 +2365,49 @@ export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> 
   return sanitized;
 }
 
-export async function persistOrResumeCheckoutOrder(order: OrderRecord): Promise<OrderRecord> {
+export async function persistOrResumeCheckoutOrder(
+  order: OrderRecord,
+  opts: { now?: Date } = {},
+): Promise<OrderRecord> {
   try {
     return await persistNewOrder(order);
   } catch (error) {
     const existing = await getOrderAuthoritative(order.id);
-    if (error instanceof OrderPersistenceError
-      && existing?.paymentStatus === 'pending'
-      && existing.checkoutAttemptId === order.checkoutAttemptId
-      && existing.email === order.email
-      && existing.bookFormat === order.bookFormat
-      && existing.priceCents === order.priceCents) return existing;
+    if (!(error instanceof OrderPersistenceError)
+      || existing?.paymentStatus !== 'pending'
+      || !order.checkoutFingerprint
+      || existing.checkoutAttemptId !== order.checkoutAttemptId
+      || existing.checkoutFingerprint !== order.checkoutFingerprint) throw error;
+
+    // A completed create-before-bind retry may immediately resume the exact
+    // already-bound Session. No media or order mutation is needed in that path.
+    if (existing.stripeSessionId) return existing;
+
+    const now = opts.now ?? new Date();
+    const leaseExpiresAt = Date.parse(existing.checkoutLeaseExpiresAt ?? '');
+    if (existing.checkoutLeaseId && Number.isFinite(leaseExpiresAt) && leaseExpiresAt > now.getTime()) {
+      throw new OrderPersistenceError(order.id, 'checkout_attempt_in_progress');
+    }
+
+    const claimed = await withOrderTransaction<OrderRecord | null>(order.id, (current) => {
+      if (current.paymentStatus !== 'pending'
+        || current.stripeSessionId
+        || current.checkoutAttemptId !== order.checkoutAttemptId
+        || current.checkoutFingerprint !== order.checkoutFingerprint) {
+        return { abort: null };
+      }
+      const currentExpiry = Date.parse(current.checkoutLeaseExpiresAt ?? '');
+      if (current.checkoutLeaseId && Number.isFinite(currentExpiry) && currentExpiry > now.getTime()) {
+        return { abort: null };
+      }
+      const updated = {
+        ...current,
+        checkoutLeaseId: order.checkoutLeaseId,
+        checkoutLeaseExpiresAt: order.checkoutLeaseExpiresAt,
+      };
+      return { commit: updated, result: updated };
+    });
+    if (claimed) return claimed;
     throw error;
   }
 }

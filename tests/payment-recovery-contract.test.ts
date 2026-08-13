@@ -7,6 +7,10 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 
 import { recordUnmatchedPaymentSettlement } from '../src/lib/payment-recovery.ts';
+import {
+  createOrderRecord,
+  persistOrResumeCheckoutOrder,
+} from '../src/lib/orders.ts';
 
 async function withEnv<T>(env: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
   const old: Record<string, string | undefined> = {};
@@ -26,12 +30,60 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   assert.match(client, /window\.location\.href = result\.redirectTo;\s*sessionStorage\.removeItem\(attemptStorageKey\)/);
   assert.match(route, /createHash\('sha256'\)\.update\(checkoutAttemptId\)/);
   assert.match(route, /persistOrResumeCheckoutOrder\(draftOrder\)/);
+  assert.match(route, /checkoutFingerprint\(form\)/);
+  assert.match(route, /value\.arrayBuffer\(\)/);
+  assert.match(route, /current\.checkoutLeaseId !== draftOrder\.checkoutLeaseId/);
   assert.match(route, /checkout\.sessions\.retrieve\(persistedDraft\.stripeSessionId\)/);
   assert.match(route, /idempotencyKey: `hsb_checkout_\$\{order\.id\}`/);
   const createAt = route.indexOf('stripe.checkout.sessions.create');
   const bindAt = route.indexOf('bindOrderCheckoutSession(order.id, session.id)');
   const redirectAt = route.indexOf('redirectTo: session.url');
   assert.ok(createAt >= 0 && bindAt > createAt && redirectAt > bindAt);
+});
+
+test('checkout resume rejects active duplicates and payload mismatch, then permits exact expired takeover', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-checkout-lease-'));
+  try {
+    await withEnv({
+      HSB_ORDER_STORE_DIR: dir,
+      BLOB_READ_WRITE_TOKEN: undefined,
+      HSB_REQUIRE_DURABLE_PERSISTENCE: 'false',
+      NODE_ENV: 'test',
+      VERCEL: undefined,
+    }, async () => {
+      const original = createOrderRecord({
+        childName: 'Hero',
+        theme: 'Adventure',
+        bookFormat: 'digital',
+        email: 'buyer@example.com',
+      }, { id: 'ord_checkout_lease' });
+      Object.assign(original, {
+        checkoutAttemptId: 'a'.repeat(32),
+        checkoutFingerprint: 'fingerprint-a',
+        checkoutLeaseId: 'lease-original',
+        checkoutLeaseExpiresAt: '2026-08-12T20:05:00.000Z',
+      });
+      await persistOrResumeCheckoutOrder(original, { now: new Date('2026-08-12T20:00:00.000Z') });
+
+      const duplicate = { ...original, checkoutLeaseId: 'lease-duplicate' };
+      await assert.rejects(
+        persistOrResumeCheckoutOrder(duplicate, { now: new Date('2026-08-12T20:01:00.000Z') }),
+        /checkout_attempt_in_progress/,
+      );
+
+      const mismatch = { ...duplicate, checkoutFingerprint: 'fingerprint-b' };
+      await assert.rejects(
+        persistOrResumeCheckoutOrder(mismatch, { now: new Date('2026-08-12T20:06:00.000Z') }),
+      );
+
+      const takeover = await persistOrResumeCheckoutOrder(
+        duplicate,
+        { now: new Date('2026-08-12T20:06:00.000Z') },
+      );
+      assert.equal(takeover.checkoutLeaseId, 'lease-duplicate');
+      assert.equal(takeover.checkoutFingerprint, 'fingerprint-a');
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('unmatched settlement recovery is durable and idempotent by Stripe Session', async () => {

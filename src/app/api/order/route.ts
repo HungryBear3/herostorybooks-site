@@ -8,6 +8,7 @@ import {
   isPrintFormat,
   MAX_VOICE_BYTES,
   OrderPersistenceError,
+  type OrderRecord,
   persistOrResumeCheckoutOrder,
   rollbackOrderMediaUploads,
   sanitizeFamilyCharacters,
@@ -35,6 +36,27 @@ import { validateOrderPhotoFile } from '@/lib/photo-file-validation';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+async function checkoutFingerprint(form: FormData): Promise<string> {
+  const entries: string[] = [];
+  for (const [key, value] of form.entries()) {
+    if (value instanceof File) {
+      const bytes = Buffer.from(await value.arrayBuffer());
+      entries.push(JSON.stringify([
+        key,
+        'file',
+        value.name,
+        value.type,
+        value.size,
+        crypto.createHash('sha256').update(bytes).digest('hex'),
+      ]));
+    } else {
+      entries.push(JSON.stringify([key, 'text', value]));
+    }
+  }
+  entries.sort();
+  return crypto.createHash('sha256').update(entries.join('\n')).digest('hex');
 }
 
 function getStripe() {
@@ -117,6 +139,7 @@ export async function POST(request: Request) {
     if (!/^[a-f0-9]{32}$/i.test(checkoutAttemptId)) {
       return NextResponse.json({ error: 'Invalid checkout attempt. Please reload and try again.' }, { status: 400 });
     }
+    const requestFingerprint = await checkoutFingerprint(form);
     const checkoutTracking = buildCheckoutTracking({
       cohort: form.get('cohort'),
       invite: form.get('invite'),
@@ -366,6 +389,9 @@ export async function POST(request: Request) {
       fulfillmentMode: 'manual_hold',
     });
     draftOrder.checkoutAttemptId = checkoutAttemptId;
+    draftOrder.checkoutFingerprint = requestFingerprint;
+    draftOrder.checkoutLeaseId = crypto.randomUUID();
+    draftOrder.checkoutLeaseExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
 
     // Resolve the stable Stripe Product before creating the durable order or
     // uploading customer media. Product-scoped promotion codes depend on this
@@ -547,7 +573,11 @@ export async function POST(request: Request) {
     // for an order the webhook + status page can never find.
     let order;
     try {
-      order = await withOrderTransaction(draftOrder.id, (current) => {
+      order = await withOrderTransaction<OrderRecord | null>(draftOrder.id, (current) => {
+        if (current.checkoutLeaseId !== draftOrder.checkoutLeaseId
+          || current.checkoutFingerprint !== draftOrder.checkoutFingerprint) {
+          return { abort: null };
+        }
         const updated = {
           ...current,
           familyCharacters: familyCharactersWithPhotos,
@@ -560,6 +590,7 @@ export async function POST(request: Request) {
         };
         return { commit: updated, result: updated };
       });
+      if (!order) throw new OrderPersistenceError(draftOrder.id, 'checkout_lease_lost');
     } catch (error) {
       await rollbackUploadedMedia('final order persistence failure');
       if (error instanceof OrderPersistenceError) {
