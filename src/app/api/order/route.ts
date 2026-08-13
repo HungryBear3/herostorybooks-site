@@ -678,7 +678,10 @@ export async function POST(request: Request) {
       cancel_url: `${baseUrl}/checkout`,
     }, { idempotencyKey: `hsb_checkout_${order.id}` });
 
-    const bound = await bindOrderCheckoutSession(order.id, session.id);
+    const bound = await bindOrderCheckoutSession(order.id, session.id, {
+      leaseId: draftOrder.checkoutLeaseId!,
+      fingerprint: draftOrder.checkoutFingerprint!,
+    });
     if (!bound) {
       console.error(`[order] Stripe Session ${session.id} created but durable binding failed for ${order.id}`);
       return NextResponse.json(

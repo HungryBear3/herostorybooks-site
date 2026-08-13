@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { recordUnmatchedPaymentSettlement } from '../src/lib/payment-recovery.ts';
 import {
   createOrderRecord,
+  bindOrderCheckoutSession,
   persistOrResumeCheckoutOrder,
   renewCheckoutLease,
 } from '../src/lib/orders.ts';
@@ -43,7 +44,7 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   assert.match(route, /checkout\.sessions\.retrieve\(persistedDraft\.stripeSessionId\)/);
   assert.match(route, /idempotencyKey: `hsb_checkout_\$\{order\.id\}`/);
   const createAt = route.indexOf('stripe.checkout.sessions.create');
-  const bindAt = route.indexOf('bindOrderCheckoutSession(order.id, session.id)');
+  const bindAt = route.indexOf('bindOrderCheckoutSession(order.id, session.id, {');
   const redirectAt = route.indexOf('redirectTo: session.url');
   assert.ok(createAt >= 0 && bindAt > createAt && redirectAt > bindAt);
 });
@@ -105,6 +106,18 @@ test('checkout resume rejects active duplicates and payload mismatch, then permi
         { now: new Date('2026-08-12T20:06:01.000Z'), leaseMs: 300_000 },
       );
       assert.equal(renewed?.checkoutLeaseExpiresAt, '2026-08-12T20:11:01.000Z');
+      assert.equal(
+        await bindOrderCheckoutSession(original.id, 'cs_stale_a', {
+          leaseId: '11111111-1111-4111-8111-111111111111',
+          fingerprint: 'fingerprint-a',
+        }),
+        null,
+      );
+      const bound = await bindOrderCheckoutSession(original.id, 'cs_winner_b', {
+        leaseId: '22222222-2222-4222-8222-222222222222',
+        fingerprint: 'fingerprint-a',
+      });
+      assert.equal(bound?.stripeSessionId, 'cs_winner_b');
     });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

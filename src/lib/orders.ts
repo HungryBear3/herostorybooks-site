@@ -2609,11 +2609,14 @@ export async function updateOrderPayment(
 export async function bindOrderCheckoutSession(
   orderId: string,
   stripeSessionId: string,
+  checkout?: { leaseId: string; fingerprint: string },
 ): Promise<OrderRecord | null> {
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
       if (current.paymentStatus !== 'pending') return { abort: null };
+      if (checkout && (current.checkoutLeaseId !== checkout.leaseId
+        || current.checkoutFingerprint !== checkout.fingerprint)) return { abort: null };
       if (current.stripeSessionId && current.stripeSessionId !== stripeSessionId) return { abort: null };
       const updated = { ...current, stripeSessionId, updatedAt: new Date().toISOString() };
       return { commit: updated, result: updated };

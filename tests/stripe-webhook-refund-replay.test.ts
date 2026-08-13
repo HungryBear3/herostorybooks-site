@@ -95,7 +95,7 @@ test('webhook source: verifies exact settlement facts and returns retryable conf
 test('checkout source binds Stripe Session before releasing redirect URL', () => {
   const src = readFileSync('src/app/api/order/route.ts', 'utf8');
   const createAt = src.indexOf('stripe.checkout.sessions.create');
-  const bindAt = src.indexOf('bindOrderCheckoutSession(order.id, session.id)');
+  const bindAt = src.indexOf('bindOrderCheckoutSession(order.id, session.id, {');
   const redirectAt = src.indexOf('redirectTo: session.url');
   assert.ok(createAt > -1 && bindAt > createAt && redirectAt > bindAt);
 });
