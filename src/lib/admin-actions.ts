@@ -549,6 +549,9 @@ export function preprintRefundRefusalReason(order: OrderRecord): string | null {
   if (order.paymentStatus !== 'paid') {
     return 'not_paid';
   }
+  if (order.printUpgradeStatus === 'paid' && order.printUpgradeStripeSessionId) {
+    return 'multi_payment_refund_required';
+  }
   if (order.status === 'shipped') return 'already_shipped';
   if (order.status === 'print_in_production') return 'already_in_print';
   if (order.fulfillmentKickoffId) return 'fulfillment_active';

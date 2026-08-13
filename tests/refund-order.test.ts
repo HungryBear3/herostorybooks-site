@@ -58,6 +58,14 @@ test('preprintRefundRefusalReason: paid + proof_ready → null (allowed)', { con
   assert.equal(preprintRefundRefusalReason(order), null);
 });
 
+test('preprintRefundRefusalReason: upgraded multi-payment order requires explicit reconciliation', { concurrency: false }, () => {
+  const order = {
+    paymentStatus: 'paid', status: 'order_received', fulfillmentStatus: 'proof_ready',
+    printUpgradeStatus: 'paid', printUpgradeStripeSessionId: 'cs_upgrade',
+  } as OrderRecord;
+  assert.equal(preprintRefundRefusalReason(order), 'multi_payment_refund_required');
+});
+
 test('print release refusal source blocks an active refund claim', { concurrency: false }, () => {
   const source = readFileSync(new URL('../src/lib/fulfillment.ts', import.meta.url), 'utf8');
   assert.match(source, /if \(order\.refundClaimId\) return 'refund_in_progress'/);

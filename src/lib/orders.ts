@@ -182,6 +182,7 @@ export type ReviewAuditEventType =
   | 'whole_book_approval_rejected'
   | 'print_upgrade_paid'
   | 'print_upgrade_settlement_conflict'
+  | 'payment_settlement_conflict'
   | 'refund_issued'
   | 'refund_refused'
   | 'internal_disposition_marked'
@@ -2484,9 +2485,8 @@ export async function updateOrderPayment(
           || current.refundedAt
           || current.stripeRefundId
           || current.refundClaimId
-          || (current.stripeSessionId != null
-            && opts.stripeSessionId != null
-            && current.stripeSessionId !== opts.stripeSessionId)
+          || !opts.stripeSessionId
+          || current.stripeSessionId !== opts.stripeSessionId
         ) return { abort: null };
       }
       const updated: OrderRecord = {
@@ -2498,6 +2498,50 @@ export async function updateOrderPayment(
           ? { settledAmountCents: opts.settledAmountCents }
           : {}),
         ...(paymentStatus === 'paid' && !current.paidAt ? { paidAt: now } : {}),
+        updatedAt: now,
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+export async function bindOrderCheckoutSession(
+  orderId: string,
+  stripeSessionId: string,
+): Promise<OrderRecord | null> {
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.paymentStatus !== 'pending') return { abort: null };
+      if (current.stripeSessionId && current.stripeSessionId !== stripeSessionId) return { abort: null };
+      const updated = { ...current, stripeSessionId, updatedAt: new Date().toISOString() };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+export async function recordPaymentSettlementConflict(
+  orderId: string,
+  input: { stripeSessionId: string; amountSubtotalCents: number | null; amountTotalCents: number | null; reason: string },
+): Promise<OrderRecord | null> {
+  const now = new Date().toISOString();
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const duplicate = (current.auditEvents ?? []).some((event) =>
+        event.type === 'payment_settlement_conflict'
+        && event.meta?.stripeSessionId === input.stripeSessionId,
+      );
+      if (duplicate) return { abort: current };
+      const updated: OrderRecord = {
+        ...current,
+        auditEvents: [...(current.auditEvents ?? []), {
+          at: now,
+          type: 'payment_settlement_conflict',
+          meta: input,
+        }],
         updatedAt: now,
       };
       return { commit: updated, result: updated };

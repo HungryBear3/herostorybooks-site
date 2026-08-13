@@ -19,9 +19,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  bindOrderCheckoutSession,
   createOrderRecord,
   getOrder,
   persistOrder,
+  recordPaymentSettlementConflict,
   updateOrderPayment,
   type OrderRecord,
 } from '../src/lib/orders.ts';
@@ -82,10 +84,20 @@ test('webhook source: payment write is awaited before responding (must commit be
 
 test('webhook source: verifies exact settlement facts and returns retryable conflicts', () => {
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
-  assert.match(src, /isExactSettledCheckoutSession\(session, existing, session\.id\)/);
+  assert.match(src, /existing\.stripeSessionId !== session\.id/);
+  assert.match(src, /isExactSettledCheckoutSession\(session, existing, existing\.stripeSessionId\)/);
+  assert.match(src, /recordPaymentSettlementConflict/);
   assert.match(src, /settledAmountCents:\s*session\.amount_total/);
   assert.match(src, /Payment transition conflict/);
   assert.match(src, /status:\s*409/);
+});
+
+test('checkout source binds Stripe Session before releasing redirect URL', () => {
+  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const createAt = src.indexOf('stripe.checkout.sessions.create');
+  const bindAt = src.indexOf('bindOrderCheckoutSession(order.id, session.id)');
+  const redirectAt = src.indexOf('redirectTo: session.url');
+  assert.ok(createAt > -1 && bindAt > createAt && redirectAt > bindAt);
 });
 
 test('webhook source: refuses to resurrect a refunded order on replay', () => {
@@ -162,13 +174,37 @@ test('refunded order is detectable on replay: paymentStatus and refundedAt both 
   } finally { cleanup(dir); }
 });
 
-test('pending → paid first webhook still flips state to paid', async () => {
+test('pending pre-bound → paid first webhook still flips state to paid', async () => {
   const dir = makeTmp();
   try {
-    await seed({ paymentStatus: 'pending' }, 'ord_first');
+    await seed({ paymentStatus: 'pending', stripeSessionId: 'cs_first' }, 'ord_first');
     const updated = await updateOrderPayment('ord_first', 'paid', { stripeSessionId: 'cs_first' });
     assert.equal(updated?.paymentStatus, 'paid');
     assert.equal(updated?.stripeSessionId, 'cs_first');
+  } finally { cleanup(dir); }
+});
+
+test('unbound pending order cannot be claimed by settlement', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({ paymentStatus: 'pending', stripeSessionId: null }, 'ord_unbound');
+    const updated = await updateOrderPayment('ord_unbound', 'paid', { stripeSessionId: 'cs_claim' });
+    assert.equal(updated, null);
+    assert.equal((await getOrder('ord_unbound'))?.paymentStatus, 'pending');
+  } finally { cleanup(dir); }
+});
+
+test('checkout binding and conflict ledger are durable and idempotent', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({ paymentStatus: 'pending', stripeSessionId: null }, 'ord_bind');
+    assert.equal((await bindOrderCheckoutSession('ord_bind', 'cs_bound'))?.stripeSessionId, 'cs_bound');
+    assert.equal(await bindOrderCheckoutSession('ord_bind', 'cs_other'), null);
+    const conflict = { stripeSessionId: 'cs_other', amountSubtotalCents: 1900, amountTotalCents: 950, reason: 'stripe_session_binding_mismatch' };
+    await recordPaymentSettlementConflict('ord_bind', conflict);
+    await recordPaymentSettlementConflict('ord_bind', conflict);
+    const reloaded = await getOrder('ord_bind');
+    assert.equal(reloaded?.auditEvents?.filter((e) => e.type === 'payment_settlement_conflict').length, 1);
   } finally { cleanup(dir); }
 });
 

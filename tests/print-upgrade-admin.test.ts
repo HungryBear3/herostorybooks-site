@@ -25,6 +25,8 @@ function makeDigitalOrder(overrides: Partial<OrderRecord> = {}): OrderRecord {
     stripeSessionId: 'cs_original_digital',
     printUpgradeStatus: 'checkout_open',
     printUpgradeStripeSessionId: 'cs_upgrade_premium',
+    printUpgradeTargetFormat: 'premium',
+    printUpgradeAmountCents: 4500,
     fulfillmentStatus: 'proof_ready',
     storyArtifactUrl: 'https://example.com/proof.pdf',
     ...overrides,
@@ -138,12 +140,41 @@ test('recordPrintUpgradePayment refuses a different session inside the transacti
         amountCents: 4500,
         targetFormat: 'premium',
       }),
-      /stripe_session_binding_mismatch/,
+      /durable_upgrade_contract_mismatch/,
     );
     const reloaded = await getOrder('ord_dog_city_upgrade');
     assert.equal(reloaded?.bookFormat, 'digital');
     assert.equal(reloaded?.printUpgradeStatus, 'checkout_open');
     assert.equal(reloaded?.printUpgradeStripeSessionId, 'cs_upgrade_premium');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.HSB_ORDER_STORE_DIR;
+  }
+});
+
+test('recordPrintUpgradePayment refuses same-session target or amount drift', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-upgrade-contract-'));
+  process.env.HSB_ORDER_STORE_DIR = dir;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    await persistOrder(makeDigitalOrder());
+    for (const input of [
+      { stripeSessionId: 'cs_upgrade_premium', amountCents: 2000, targetFormat: 'premium' as const },
+      { stripeSessionId: 'cs_upgrade_premium', amountCents: 4500, targetFormat: 'classic' as const },
+    ]) {
+      await assert.rejects(
+        recordPrintUpgradePayment('ord_dog_city_upgrade', input),
+        /durable_upgrade_contract_mismatch/,
+      );
+    }
+    const reloaded = await getOrder('ord_dog_city_upgrade');
+    assert.equal(reloaded?.bookFormat, 'digital');
+    assert.equal(reloaded?.printUpgradeStatus, 'checkout_open');
+    assert.equal(reloaded?.printUpgradeTargetFormat, 'premium');
+    assert.equal(reloaded?.printUpgradeAmountCents, 4500);
   } finally {
     rmSync(dir, { recursive: true, force: true });
     delete process.env.HSB_ORDER_STORE_DIR;

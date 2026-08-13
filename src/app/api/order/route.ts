@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import Stripe from 'stripe';
 
 import {
+  bindOrderCheckoutSession,
   createOrderRecord,
   isPrintFormat,
   MAX_VOICE_BYTES,
@@ -604,6 +605,15 @@ export async function POST(request: Request) {
       success_url: `${baseUrl}/thank-you?${successParams.toString()}&sessionId={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/checkout`,
     });
+
+    const bound = await bindOrderCheckoutSession(order.id, session.id);
+    if (!bound) {
+      console.error(`[order] Stripe Session ${session.id} created but durable binding failed for ${order.id}`);
+      return NextResponse.json(
+        { error: 'Checkout requires reconciliation. No checkout link was released.' },
+        { status: 503 },
+      );
+    }
 
     return NextResponse.json({ ok: true, redirectTo: session.url });
   } catch (error) {

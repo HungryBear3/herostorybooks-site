@@ -89,8 +89,13 @@ export async function recordPrintUpgradePayment(
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
-      if (current.printUpgradeStripeSessionId !== input.stripeSessionId) {
-        throw new Error(`print upgrade refused for ${orderId}: stripe_session_binding_mismatch`);
+      if (
+        current.printUpgradeStatus !== 'checkout_open'
+        || current.printUpgradeStripeSessionId !== input.stripeSessionId
+        || current.printUpgradeTargetFormat !== input.targetFormat
+        || current.printUpgradeAmountCents !== input.amountCents
+      ) {
+        throw new Error(`print upgrade refused for ${orderId}: durable_upgrade_contract_mismatch`);
       }
       const upgrade = calculatePrintUpgrade(current, input.targetFormat);
       if (upgrade.ok === false) {

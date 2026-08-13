@@ -1,7 +1,7 @@
 import { NextResponse, after } from 'next/server';
 import Stripe from 'stripe';
 
-import { getOrder, isPrintFormat, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
+import { getOrder, isPrintFormat, recordPaymentSettlementConflict, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
 import { scheduleFulfillmentKickoff } from '@/lib/fulfillment-kickoff';
 import { scheduleOrderConfirmationEmail } from '@/lib/order-confirmation-kickoff';
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
@@ -165,7 +165,7 @@ export async function POST(request: Request) {
 
     if (!orderId) {
       console.error('Stripe webhook: no orderId in session metadata');
-      return NextResponse.json({ received: true });
+      return NextResponse.json({ error: 'Missing durable order identity' }, { status: 409 });
     }
 
     try {
@@ -174,9 +174,23 @@ export async function POST(request: Request) {
         console.error(`[webhook] CRITICAL: order ${orderId} not found for Stripe session ${session.id}`);
         return NextResponse.json({ error: 'Order not found in durable store' }, { status: 500 });
       }
-      if (!isExactSettledCheckoutSession(session, existing, session.id)) {
+      if (
+        existing.stripeSessionId !== session.id
+        || !isExactSettledCheckoutSession(session, existing, existing.stripeSessionId)
+      ) {
         console.error(`Stripe webhook: settlement facts do not match order ${orderId} for session ${session.id}`);
-        return NextResponse.json({ error: 'Settlement verification failed' }, { status: 409 });
+        const conflict = await recordPaymentSettlementConflict(orderId, {
+          stripeSessionId: session.id,
+          amountSubtotalCents: session.amount_subtotal,
+          amountTotalCents: session.amount_total,
+          reason: existing.stripeSessionId !== session.id
+            ? 'stripe_session_binding_mismatch'
+            : 'settlement_facts_mismatch',
+        });
+        if (!conflict) {
+          return NextResponse.json({ error: 'Payment conflict persistence failed' }, { status: 500 });
+        }
+        return NextResponse.json({ received: true, paymentRecoveryRecorded: true });
       }
 
       // Refund-safe idempotency:
