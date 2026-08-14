@@ -377,6 +377,66 @@ test('a guarded commit after a direct persist builds on the persisted record', a
   }
 });
 
+test('a direct persist re-claims on completion, so a mid-flight commit cannot leave a stale entry', async () => {
+  // The generation orders write STARTS, not write LANDINGS. persistOrder writes
+  // unconditionally and carries no version token, so a commit that starts AFTER
+  // it but lands BEFORE it would hold the newer generation — and, without the
+  // re-claim in persistOrder's `finally`, its entry would survive as a
+  // permanently stale record that no CAS retry can heal.
+  //
+  // Ordering here is deterministic, not timing-based: persistOrder claims its
+  // generation synchronously and then suspends on real filesystem I/O, while
+  // the mock-adapter commit resolves entirely in microtasks, which always drain
+  // before an I/O completion.
+  const store = makeStore();
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-reclaim-'));
+  process.env.HSB_ORDER_STORE_DIR = dir;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  delete process.env.HSB_REQUIRE_DURABLE_PERSISTENCE;
+  try {
+    store.seed();
+
+    const inFlight = persistOrder(order('DIRECT_LANDS_LAST')); // claims a generation now
+    await commitVia('MIDFLIGHT');                              // starts later, publishes first
+    await inFlight;                                            // lands last, must invalidate
+
+    store.resetReads();
+    await observedByGuardedRead();
+    assert.ok(
+      store.reads() > 0,
+      'the mid-flight commit\'s entry survived a later-landing unconditional '
+      + 'write — persistOrder must re-claim its generation on completion',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.HSB_ORDER_STORE_DIR;
+    store.cleanup();
+  }
+});
+
+test('a create that provably wrote nothing must not evict a valid entry', async () => {
+  // `reason: 'exists'` is a PROVABLE no-write in both adapters, so the caller
+  // has authority over nothing. Evicting here would destroy another writer's
+  // correct entry and push the next guarded read onto the fail-closed
+  // public-blob path — the 5xx shape this cache exists to avoid.
+  const store = makeStore();
+  try {
+    store.seed();
+    await commitVia('WINNER');
+
+    await assert.rejects(
+      () => persistNewOrder(order('DUPLICATE_SUBMIT')),
+      /Refusing to overwrite an existing order/,
+    );
+
+    store.resetReads();
+    assert.equal(await observedByGuardedRead(), 'WINNER');
+    assert.equal(store.reads(), 0, 'a no-write create evicted a valid cache entry');
+  } finally {
+    store.cleanup();
+  }
+});
+
 test('persistNewOrder does not let a previous incarnation of an id linger', async () => {
   const store = localStore();
   try {

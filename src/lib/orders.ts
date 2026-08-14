@@ -2450,6 +2450,9 @@ function publishConditionalCommit(
     forgetRecentConditionalCommit(order.id, generation);
     return;
   }
+  // Defence in depth: unreachable today, because isNewestOrderWrite above
+  // already established `generation` is the maximum and generations are unique.
+  // Kept so the monotonicity rule holds locally if that ever stops being true.
   const existing = recentConditionalCommits.get(order.id);
   if (existing && existing.generation > generation) return;
   recentConditionalCommits.set(order.id, {
@@ -2484,20 +2487,29 @@ export async function readOrderVersioned(
 export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> {
   const sanitized = scrubRetiredPrivateFields(order);
   const adapter = resolveOrderStoreAdapter();
-  // Same contract as persistOrder: claim the generation, then evict either way.
+  // Same contract as persistOrder: claim the generation, then evict — but ONLY
+  // if this call may actually have written.
   beginOrderWrite(order.id);
+  // A `reason: 'exists'` result is a PROVABLE no-write in both adapters (blob
+  // rejects with BlobAlreadyExists under allowOverwrite:false; the local store
+  // gets EEXIST from link() and unlinks its temp file). Such a call has
+  // authority over nothing, so evicting would destroy another writer's valid
+  // entry and push the next guarded read onto the fail-closed public-blob path.
+  // A THROW, by contrast, stays ambiguous and must still evict.
+  let mayHaveWritten = true;
   try {
     const created = await adapter.createIfAbsent(
       getOrderBlobPath(order.id),
       JSON.stringify(sanitized, null, 2),
     );
     if (!created.ok) {
+      mayHaveWritten = false;
       throw new OrderPersistenceError(order.id, 'Refusing to overwrite an existing order during creation');
     }
     return sanitized;
   } finally {
     // Same reasoning as persistOrder: re-claim on completion.
-    forgetRecentConditionalCommit(order.id, beginOrderWrite(order.id));
+    if (mayHaveWritten) forgetRecentConditionalCommit(order.id, beginOrderWrite(order.id));
   }
 }
 
