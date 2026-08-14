@@ -2392,6 +2392,13 @@ const recentConditionalCommits = new Map<string, CachedCommit>();
  * staleness the cache eviction is meant to prevent. That is reachable from two
  * ordinary concurrent `withOrderTransaction` calls, with no direct write
  * involved at all.
+ *
+ * UNBOUNDED, deliberately — as is `recentConditionalCommits`, which predates
+ * this and holds whole order records rather than a number. Serverless instances
+ * recycle. If a TTL/LRU is ever added, it MUST prune both structures together
+ * and MUST NOT lower a per-order counter while a cache entry for that order
+ * survives: a reset counter reissues a generation the surviving entry already
+ * claims, after which nothing can publish or evict for that order again.
  */
 const orderWriteGeneration = new Map<string, number>();
 
@@ -2405,6 +2412,27 @@ function beginOrderWrite(orderId: string): number {
 /** True when no newer write has started since `generation` was claimed. */
 function isNewestOrderWrite(orderId: string, generation: number): boolean {
   return orderWriteGeneration.get(orderId) === generation;
+}
+
+/**
+ * Give a claim back when the write PROVABLY did not happen.
+ *
+ * A claim exists to say "I may have written, so nothing older than me may
+ * publish". A writer that is proven not to have written — a lost CAS, or a
+ * create that lost to an existing record — makes no such claim truthfully, and
+ * leaving it standing silently strips the publish right from the writer that
+ * actually won. That costs a cache entry, and a missing entry pushes the next
+ * guarded read onto the fail-closed public-blob path.
+ *
+ * Safe because the check and the rollback are synchronous, and because only the
+ * newest claim can be rolled back: if a later writer has already claimed, this
+ * one is superseded and harmless where it is. Generations are never reused by a
+ * writer that has retracted, since a retracting writer never publishes.
+ */
+function retractOrderWrite(orderId: string, generation: number): void {
+  if (orderWriteGeneration.get(orderId) !== generation) return; // superseded already
+  if (generation <= 1) orderWriteGeneration.delete(orderId);
+  else orderWriteGeneration.set(orderId, generation - 1);
 }
 
 /**
@@ -2487,12 +2515,19 @@ export async function readOrderVersioned(
 export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> {
   const sanitized = scrubRetiredPrivateFields(order);
   const adapter = resolveOrderStoreAdapter();
-  // Same contract as persistOrder: claim the generation, then evict — but ONLY
-  // if this call may actually have written.
-  beginOrderWrite(order.id);
+  // NO up-front generation claim here, unlike persistOrder. A create that loses
+  // to an existing record is a provable no-write, and an up-front claim would
+  // suppress the publish of a commit already in flight — destroying a valid
+  // entry by a second route, which is exactly what this function must not do.
+  // The claim in the `finally` dominates anyway: it runs strictly after the
+  // write, so it still invalidates anything published mid-flight.
+  //
   // A `reason: 'exists'` result is a PROVABLE no-write in both adapters (blob
   // rejects with BlobAlreadyExists under allowOverwrite:false; the local store
-  // gets EEXIST from link() and unlinks its temp file). Such a call has
+  // gets EEXIST from link() and unlinks its temp file; a `put` retry that
+  // re-reports AlreadyExists for our own earlier write is equally harmless,
+  // since no cache entry can exist for an order whose record was absent).
+  // Such a call has
   // authority over nothing, so evicting would destroy another writer's valid
   // entry and push the next guarded read onto the fail-closed public-blob path.
   // A THROW, by contrast, stays ambiguous and must still evict.
@@ -2618,12 +2653,17 @@ export async function commitOrderConditional(
   if (result.ok) {
     publishConditionalCommit(order, result.version, generation);
   }
-  // A LOST CAS deliberately touches nothing. This write did not land, so it
+  // A LOST CAS deliberately evicts nothing. This write did not land, so it
   // learned nothing about current truth — and the entry it would have evicted
   // belongs to the writer that WON and is still correct. Evicting here is what
   // reopens the fail-closed public-blob read (see forgetRecentConditionalCommit).
   // The transaction retry does not need it either: attempt 2+ reads with
   // preferRecentCommit: false and so always re-reads authoritative state.
+  //
+  // It must also give its CLAIM back. A lost CAS is a provable no-write, so
+  // holding the newest generation would suppress the publish of the writer that
+  // actually won — same lost cache entry, reached a different way.
+  else retractOrderWrite(order.id, generation);
   return result;
 }
 

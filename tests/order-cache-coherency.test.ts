@@ -437,6 +437,72 @@ test('a create that provably wrote nothing must not evict a valid entry', async 
   }
 });
 
+// ── a provable no-write must leave NO trace: not an eviction, not a claim ────
+//
+// Holding a write generation asserts "I may have written, so nothing older than
+// me may publish". A writer proven not to have written makes that claim
+// falsely, and the cost is the winner's cache entry — which pushes the next
+// guarded read onto the fail-closed public-blob path.
+
+test('a create that provably wrote nothing must not suppress an in-flight winner', async () => {
+  const store = makeStore();
+  try {
+    store.seed();
+
+    // The winner's write lands, but its acknowledgement is still in flight.
+    store.holdAckFor('WINNER');
+    const winner = commitVia('WINNER');
+    await new Promise((r) => setTimeout(r, 20));
+
+    // A duplicate submit loses to the existing record: a provable no-write.
+    await assert.rejects(() => persistNewOrder(order('DUPLICATE_SUBMIT')));
+
+    store.releaseAck();
+    await winner;
+
+    store.resetReads();
+    assert.equal(await observedByGuardedRead(), 'WINNER');
+    assert.equal(
+      store.reads(), 0,
+      'a no-write create held a generation and suppressed the winner\'s publish',
+    );
+  } finally {
+    store.cleanup();
+  }
+});
+
+test('a losing CAS must not suppress an in-flight winner', async () => {
+  const store = makeStore();
+  try {
+    store.seed();
+
+    // The print-rebuild shape: read a version, then take a long time.
+    const stale = (await readOrderVersioned(ID))!;
+
+    store.holdAckFor('WINNER');
+    const winner = commitVia('WINNER');
+    await new Promise((r) => setTimeout(r, 20));
+
+    const lost = await commitOrderConditional(
+      { ...stale.order, childName: 'LOSER' } as OrderRecord,
+      stale.version,
+    );
+    assert.equal(lost.ok, false, 'the stale commit must lose');
+
+    store.releaseAck();
+    await winner;
+
+    store.resetReads();
+    assert.equal(await observedByGuardedRead(), 'WINNER');
+    assert.equal(
+      store.reads(), 0,
+      'a losing CAS held a generation and suppressed the winner\'s publish',
+    );
+  } finally {
+    store.cleanup();
+  }
+});
+
 test('persistNewOrder does not let a previous incarnation of an id linger', async () => {
   const store = localStore();
   try {
