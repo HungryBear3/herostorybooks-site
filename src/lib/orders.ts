@@ -2404,7 +2404,14 @@ const recentConditionalCommits = new Map<string, CachedCommit>();
  */
 const orderWriteGeneration = new Map<string, number>();
 
-/** Proven-no-write generations awaiting fold-down, keyed by order id. */
+/**
+ * Proven-no-write generations awaiting fold-down, keyed by order id.
+ *
+ * An entry strands permanently when the generation above it belongs to a writer
+ * that published, since publishers never retract — so for a hot order this set
+ * grows with the number of lost CAS attempts. Bounded by the same recycling
+ * argument as the other two maps, and covered by the pruning warning above.
+ */
 const retractedOrderWrites = new Map<string, Set<number>>();
 
 /** Claim the newest write generation for this order. Synchronous by contract. */
@@ -2684,8 +2691,16 @@ export async function commitOrderConditional(
   // preferRecentCommit: false and so always re-reads authoritative state.
   //
   // It must also give its CLAIM back. A lost CAS is a provable no-write, so
-  // holding the newest generation would suppress the publish of the writer that
-  // actually won — same lost cache entry, reached a different way.
+  // holding the newest generation can suppress the publish of the writer that
+  // actually won — the same lost cache entry, reached a different way.
+  //
+  // This closes the case where the retraction happens BEFORE the winner's
+  // acknowledgement resolves. The reverse ordering — a loser that claims before
+  // the winner publishes and retracts after — still costs that publish, because
+  // the winner has already given up by then. That is a cache MISS, not a wrong
+  // answer: the read path retries with backoff and the store is authoritative.
+  // Recovering it would mean stashing the suppressed record and replaying it on
+  // fold-down, which is a fourth structure; deliberately not built here.
   else retractOrderWrite(order.id, generation);
   return result;
 }

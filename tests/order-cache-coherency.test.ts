@@ -538,6 +538,51 @@ test('TWO concurrent losing writers must not strand the generation counter', asy
   }
 });
 
+test('a direct persist that LANDS LAST must invalidate a commit that published first', async () => {
+  // The re-claim in persistOrder's `finally` is what makes this safe, and the
+  // eviction alone is not enough: here the commit publishes AFTER persistOrder
+  // has already evicted, so only the re-claimed generation can stop its record
+  // — now superseded by the later-landing unconditional write — from persisting
+  // in the cache. No CAS retry can heal that, because nothing fails.
+  const store = makeStore();
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-landlast-'));
+  process.env.HSB_ORDER_STORE_DIR = dir;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  delete process.env.HSB_REQUIRE_DURABLE_PERSISTENCE;
+  try {
+    store.seed();
+
+    // persistOrder claims FIRST (synchronously), then suspends on real fs I/O.
+    const direct = persistOrder(order('DIRECT_LANDS_LAST'));
+
+    // The commit claims SECOND, so it holds the newer generation. Its write
+    // lands (in microtasks, before the fs I/O completes) but its ack is held,
+    // so it has not published yet.
+    store.holdAckFor('COMMIT_PUBLISHES_LATE');
+    const commit = commitVia('COMMIT_PUBLISHES_LATE');
+
+    // The unconditional write lands last and its `finally` runs.
+    await direct;
+
+    // Only now is the commit allowed to publish — with a generation that the
+    // re-claim must have superseded.
+    store.releaseAck();
+    await commit;
+
+    store.resetReads();
+    await observedByGuardedRead();
+    assert.ok(
+      store.reads() > 0,
+      'a commit published a record already superseded by a later-landing '
+      + 'unconditional write — persistOrder must re-claim, not merely evict',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.HSB_ORDER_STORE_DIR;
+    store.cleanup();
+  }
+});
+
 test('a superseded commit must not republish when the newer writer left no entry', async () => {
   // The publish guard is load-bearing precisely when the newer writer EVICTED
   // rather than published: with no entry to compare against, only the
