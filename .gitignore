@@ -25,3 +25,9 @@ tmp_*.jsonl
 
 # Knowledge-graph output (regenerated from source)
 graphify-out/
+
+# Playwright e2e (customer text-editor regression suite)
+.e2e-store/
+test-results/
+playwright-report/
+blob-report/
