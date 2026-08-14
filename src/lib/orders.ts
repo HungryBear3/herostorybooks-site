@@ -1453,6 +1453,26 @@ function parseOrderRecord(serialized: string): OrderRecord {
 }
 
 export async function persistOrder(order: OrderRecord) {
+  // Claim the newest generation up front so any commit already in flight loses
+  // its right to publish, then evict unconditionally in the `finally` below.
+  // A throwing write does NOT imply nothing was stored — a timeout or reset on
+  // the RESPONSE can leave the record written — so success-only invalidation
+  // would re-create the exact staleness this guards against. Reading through is
+  // always safe; keeping a possibly-superseded entry is not.
+  beginOrderWrite(order.id);
+  try {
+    return await persistOrderUnsafe(order);
+  } finally {
+    // Bump AGAIN on completion. The generation orders write STARTS, not write
+    // LANDINGS; an unconditional write carries no version token, so a commit
+    // that started later but landed earlier would otherwise still hold the
+    // newest generation and publish a record this write has just superseded.
+    // Re-claiming here strips that right from anything still in flight.
+    forgetRecentConditionalCommit(order.id, beginOrderWrite(order.id));
+  }
+}
+
+async function persistOrderUnsafe(order: OrderRecord) {
   const token = getBlobToken();
   const sanitized = scrubRetiredPrivateFields(order);
   const serialized = JSON.stringify(sanitized, null, 2);
@@ -2338,6 +2358,7 @@ export function __setOrderStoreAdapterFactoryForTests(
 export function __resetOrderStoreAdapterFactoryForTests(): void {
   orderStoreAdapterFactoryOverride = null;
   recentConditionalCommits.clear();
+  orderWriteGeneration.clear();
 }
 
 function resolveOrderStoreAdapter(): OrderStoreAdapter {
@@ -2353,7 +2374,90 @@ function resolveOrderStoreAdapter(): OrderStoreAdapter {
   return localOrderStoreAdapter();
 }
 
-const recentConditionalCommits = new Map<string, VersionedOrder>();
+/** A cached commit, tagged with the write generation that published it. */
+interface CachedCommit extends VersionedOrder {
+  generation: number;
+}
+
+const recentConditionalCommits = new Map<string, CachedCommit>();
+
+/**
+ * Monotonic per-order write generation.
+ *
+ * Every writer bumps this SYNCHRONOUSLY before it starts, and may only publish
+ * a cache entry afterwards if its own generation is still the newest. Without
+ * it, `recentConditionalCommits.set` runs after an `await` with no
+ * happens-before relation to any other writer, so a slow acknowledgement can
+ * re-insert a record the store has already moved past — resurrecting the very
+ * staleness the cache eviction is meant to prevent. That is reachable from two
+ * ordinary concurrent `withOrderTransaction` calls, with no direct write
+ * involved at all.
+ */
+const orderWriteGeneration = new Map<string, number>();
+
+/** Claim the newest write generation for this order. Synchronous by contract. */
+function beginOrderWrite(orderId: string): number {
+  const next = (orderWriteGeneration.get(orderId) ?? 0) + 1;
+  orderWriteGeneration.set(orderId, next);
+  return next;
+}
+
+/** True when no newer write has started since `generation` was claimed. */
+function isNewestOrderWrite(orderId: string, generation: number): boolean {
+  return orderWriteGeneration.get(orderId) === generation;
+}
+
+/**
+ * Drop this order's read-your-own-writes entry — but NEVER one published by a
+ * newer write than `generation`.
+ *
+ * Evicting is not free. `getBlobAccessMode()` defaults to `'public'`, so a
+ * guarded read that misses the cache goes through `readPublicOrderBlobVersioned`,
+ * which FAILS CLOSED by throwing when the CDN validator moves under it. The
+ * cache is therefore not a latency optimisation — it is what lets a follow-up
+ * mutation skip a read that can hard-fail. Every unnecessary eviction converts a
+ * guaranteed-correct cache hit into a possible 5xx (the shape PR #137 fixed).
+ *
+ * So a writer may only clear what it has authority over: its own record, or one
+ * older than it. Omitting `generation` means "clear unconditionally", which is
+ * only for the test reset hook.
+ */
+function forgetRecentConditionalCommit(orderId: string, generation?: number): void {
+  if (generation !== undefined) {
+    const existing = recentConditionalCommits.get(orderId);
+    if (existing && existing.generation > generation) return; // a newer write owns it
+  }
+  recentConditionalCommits.delete(orderId);
+}
+
+/**
+ * Publish the record a commit just wrote.
+ *
+ * Two guards, both necessary:
+ *  - if a newer write began while this one was in flight, this record may
+ *    already be superseded, so it must not be published;
+ *  - if a newer write already published, its entry must not be clobbered.
+ *
+ * A superseded writer clears only entries not newer than its own, so it can
+ * tidy up after itself without destroying a fresher writer's correct entry.
+ */
+function publishConditionalCommit(
+  order: OrderRecord,
+  version: string,
+  generation: number,
+): void {
+  if (!isNewestOrderWrite(order.id, generation)) {
+    forgetRecentConditionalCommit(order.id, generation);
+    return;
+  }
+  const existing = recentConditionalCommits.get(order.id);
+  if (existing && existing.generation > generation) return;
+  recentConditionalCommits.set(order.id, {
+    order: scrubRetiredPrivateFields(order),
+    version,
+    generation,
+  });
+}
 
 /** Read an order together with its CAS version token. */
 export async function readOrderVersioned(
@@ -2380,14 +2484,21 @@ export async function readOrderVersioned(
 export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> {
   const sanitized = scrubRetiredPrivateFields(order);
   const adapter = resolveOrderStoreAdapter();
-  const created = await adapter.createIfAbsent(
-    getOrderBlobPath(order.id),
-    JSON.stringify(sanitized, null, 2),
-  );
-  if (!created.ok) {
-    throw new OrderPersistenceError(order.id, 'Refusing to overwrite an existing order during creation');
+  // Same contract as persistOrder: claim the generation, then evict either way.
+  beginOrderWrite(order.id);
+  try {
+    const created = await adapter.createIfAbsent(
+      getOrderBlobPath(order.id),
+      JSON.stringify(sanitized, null, 2),
+    );
+    if (!created.ok) {
+      throw new OrderPersistenceError(order.id, 'Refusing to overwrite an existing order during creation');
+    }
+    return sanitized;
+  } finally {
+    // Same reasoning as persistOrder: re-claim on completion.
+    forgetRecentConditionalCommit(order.id, beginOrderWrite(order.id));
   }
-  return sanitized;
 }
 
 export async function persistOrResumeCheckoutOrder(
@@ -2461,17 +2572,47 @@ export async function renewCheckoutLease(
   });
 }
 
-/** Commit an order record only if the stored version is still `expectedVersion`. */
+/**
+ * Commit an order record only if the stored version is still `expectedVersion`.
+ *
+ * This function OWNS the `recentConditionalCommits` invariant. It is exported
+ * and called directly outside `withOrderTransaction` (e.g. the print rebuild in
+ * rebuild-print-order.ts), so cache maintenance lives here rather than in the
+ * transaction helper — otherwise every such caller silently advances the store
+ * while leaving a stale entry behind, and the next guarded transaction decides
+ * against superseded state.
+ */
 export async function commitOrderConditional(
   order: OrderRecord,
   expectedVersion: string,
 ): Promise<ConditionalCommitResult> {
   const adapter = resolveOrderStoreAdapter();
-  return adapter.replaceIfVersion(
-    getOrderBlobPath(order.id),
-    JSON.stringify(scrubRetiredPrivateFields(order), null, 2),
-    expectedVersion,
-  );
+  // Claimed synchronously, before any await, so a concurrent writer cannot
+  // interleave between the claim and the write.
+  const generation = beginOrderWrite(order.id);
+  let result: ConditionalCommitResult;
+  try {
+    result = await adapter.replaceIfVersion(
+      getOrderBlobPath(order.id),
+      JSON.stringify(scrubRetiredPrivateFields(order), null, 2),
+      expectedVersion,
+    );
+  } catch (error) {
+    // Ambiguous: the write may or may not have landed, so anything this write
+    // or an older one published is suspect. A newer writer's entry is not.
+    forgetRecentConditionalCommit(order.id, generation);
+    throw error;
+  }
+  if (result.ok) {
+    publishConditionalCommit(order, result.version, generation);
+  }
+  // A LOST CAS deliberately touches nothing. This write did not land, so it
+  // learned nothing about current truth — and the entry it would have evicted
+  // belongs to the writer that WON and is still correct. Evicting here is what
+  // reopens the fail-closed public-blob read (see forgetRecentConditionalCommit).
+  // The transaction retry does not need it either: attempt 2+ reads with
+  // preferRecentCommit: false and so always re-reads authoritative state.
+  return result;
 }
 
 // ── Pure record transforms (compose a whole mutation before committing) ─────
@@ -2539,17 +2680,11 @@ export async function withOrderTransaction<T>(
     }
     const outcome = await mutate(current.order);
     if ('abort' in outcome) return outcome.abort;
+    // commitOrderConditional owns the cache: it publishes the committed record
+    // when this write is still the newest, and evicts otherwise. Doing it here
+    // as well would re-introduce an unguarded `set` after the await.
     const committed = await commitOrderConditional(outcome.commit, current.version);
-    if (committed.ok) {
-      recentConditionalCommits.set(orderId, {
-        order: scrubRetiredPrivateFields(outcome.commit),
-        version: committed.version,
-      });
-      return outcome.result;
-    }
-    // A real concurrent writer won the conditional commit. Evict the local
-    // version so the next attempt must re-read the authoritative store.
-    recentConditionalCommits.delete(orderId);
+    if (committed.ok) return outcome.result;
   }
   throw new OrderVersionConflictError(orderId, maxAttempts);
 }
