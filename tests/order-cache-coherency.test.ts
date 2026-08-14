@@ -503,6 +503,76 @@ test('a losing CAS must not suppress an in-flight winner', async () => {
   }
 });
 
+test('TWO concurrent losing writers must not strand the generation counter', async () => {
+  // Retraction has to fold in ANY completion order. Two losers that claim
+  // g+1 and g+2 and then retract oldest-first would strand the counter on a
+  // value no live writer holds, which suppresses the winner's publish just as
+  // surely as an eviction would. The single-loser case cannot detect this.
+  const store = makeStore();
+  try {
+    store.seed();
+    const staleA = (await readOrderVersioned(ID))!;
+    const staleB = (await readOrderVersioned(ID))!;
+
+    store.holdAckFor('WINNER');
+    const winner = commitVia('WINNER');
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Both claim synchronously, then resolve in the order they started.
+    const a = commitOrderConditional({ ...staleA.order, childName: 'LOSER_A' } as OrderRecord, staleA.version);
+    const b = commitOrderConditional({ ...staleB.order, childName: 'LOSER_B' } as OrderRecord, staleB.version);
+    assert.equal((await a).ok, false);
+    assert.equal((await b).ok, false);
+
+    store.releaseAck();
+    await winner;
+
+    store.resetReads();
+    assert.equal(await observedByGuardedRead(), 'WINNER');
+    assert.equal(
+      store.reads(), 0,
+      'two concurrent no-writers stranded the counter and suppressed the winner',
+    );
+  } finally {
+    store.cleanup();
+  }
+});
+
+test('a superseded commit must not republish when the newer writer left no entry', async () => {
+  // The publish guard is load-bearing precisely when the newer writer EVICTED
+  // rather than published: with no entry to compare against, only the
+  // generation check stands between a stale record and the cache.
+  const store = makeStore();
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-supersede-'));
+  process.env.HSB_ORDER_STORE_DIR = dir;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  delete process.env.HSB_REQUIRE_DURABLE_PERSISTENCE;
+  try {
+    store.seed();
+
+    store.holdAckFor('T1');
+    const t1 = commitVia('T1');
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Claims a newer generation and EVICTS, leaving the cache empty.
+    await persistOrder(order('DIRECT_NEWEST'));
+
+    store.releaseAck();
+    await t1;
+
+    store.resetReads();
+    await observedByGuardedRead();
+    assert.ok(
+      store.reads() > 0,
+      'a superseded commit republished a stale record into an empty cache',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.HSB_ORDER_STORE_DIR;
+    store.cleanup();
+  }
+});
+
 test('persistNewOrder does not let a previous incarnation of an id linger', async () => {
   const store = localStore();
   try {

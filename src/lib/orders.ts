@@ -2359,6 +2359,7 @@ export function __resetOrderStoreAdapterFactoryForTests(): void {
   orderStoreAdapterFactoryOverride = null;
   recentConditionalCommits.clear();
   orderWriteGeneration.clear();
+  retractedOrderWrites.clear();
 }
 
 function resolveOrderStoreAdapter(): OrderStoreAdapter {
@@ -2395,12 +2396,16 @@ const recentConditionalCommits = new Map<string, CachedCommit>();
  *
  * UNBOUNDED, deliberately — as is `recentConditionalCommits`, which predates
  * this and holds whole order records rather than a number. Serverless instances
- * recycle. If a TTL/LRU is ever added, it MUST prune both structures together
+ * recycle. If a TTL/LRU is ever added, it MUST prune all three structures
+ * (cache, generations, retractions) together
  * and MUST NOT lower a per-order counter while a cache entry for that order
  * survives: a reset counter reissues a generation the surviving entry already
  * claims, after which nothing can publish or evict for that order again.
  */
 const orderWriteGeneration = new Map<string, number>();
+
+/** Proven-no-write generations awaiting fold-down, keyed by order id. */
+const retractedOrderWrites = new Map<string, Set<number>>();
 
 /** Claim the newest write generation for this order. Synchronous by contract. */
 function beginOrderWrite(orderId: string): number {
@@ -2424,15 +2429,29 @@ function isNewestOrderWrite(orderId: string, generation: number): boolean {
  * actually won. That costs a cache entry, and a missing entry pushes the next
  * guarded read onto the fail-closed public-blob path.
  *
- * Safe because the check and the rollback are synchronous, and because only the
- * newest claim can be rolled back: if a later writer has already claimed, this
- * one is superseded and harmless where it is. Generations are never reused by a
- * writer that has retracted, since a retracting writer never publishes.
+ * Retractions must fold in ANY completion order, not just newest-first. Two
+ * concurrent no-writers that finish oldest-first would otherwise strand the
+ * counter on a value no live writer holds — and a stranded counter suppresses
+ * the publish of the writer that actually won, emptying the cache and pushing
+ * the next guarded read onto the fail-closed path. So a retraction that is not
+ * currently the top is remembered, and the counter is unwound as far as the
+ * recorded retractions allow.
+ *
+ * This can never lower the counter past a live writer: only proven no-writers
+ * are ever recorded, and a proven no-writer never publishes. Generations are
+ * therefore reusable, but only by writers that have provably written nothing.
  */
 function retractOrderWrite(orderId: string, generation: number): void {
-  if (orderWriteGeneration.get(orderId) !== generation) return; // superseded already
-  if (generation <= 1) orderWriteGeneration.delete(orderId);
-  else orderWriteGeneration.set(orderId, generation - 1);
+  const retracted = retractedOrderWrites.get(orderId) ?? new Set<number>();
+  retracted.add(generation);
+  retractedOrderWrites.set(orderId, retracted);
+
+  let top = orderWriteGeneration.get(orderId) ?? 0;
+  while (retracted.delete(top)) top -= 1;
+
+  if (top <= 0) orderWriteGeneration.delete(orderId);
+  else orderWriteGeneration.set(orderId, top);
+  if (retracted.size === 0) retractedOrderWrites.delete(orderId);
 }
 
 /**
@@ -2478,9 +2497,10 @@ function publishConditionalCommit(
     forgetRecentConditionalCommit(order.id, generation);
     return;
   }
-  // Defence in depth: unreachable today, because isNewestOrderWrite above
-  // already established `generation` is the maximum and generations are unique.
-  // Kept so the monotonicity rule holds locally if that ever stops being true.
+  // Defence in depth. Unreachable today — but NOT because generations are
+  // unique; retraction hands numbers back, so they are reused. It holds because
+  // the counter can never fall below a surviving entry's generation: only
+  // proven no-writers retract, and a proven no-writer never publishes.
   const existing = recentConditionalCommits.get(order.id);
   if (existing && existing.generation > generation) return;
   recentConditionalCommits.set(order.id, {
@@ -2538,7 +2558,10 @@ export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> 
       JSON.stringify(sanitized, null, 2),
     );
     if (!created.ok) {
-      mayHaveWritten = false;
+      // ONLY `exists` is provable. The adapter type permits other failure
+      // reasons, and a test double may return one; anything else stays
+      // ambiguous and must still evict.
+      if ('reason' in created && created.reason === 'exists') mayHaveWritten = false;
       throw new OrderPersistenceError(order.id, 'Refusing to overwrite an existing order during creation');
     }
     return sanitized;
