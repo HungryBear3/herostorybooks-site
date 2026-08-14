@@ -1,0 +1,149 @@
+name: CI
+
+# Reproduces the merge gates used to verify pull requests locally:
+#   1. npm test          — Node test suite
+#   2. npm run test:e2e  — Playwright Chromium suite
+#   3. npx next build    — production build + TypeScript gate
+#
+# `pull_request` (never `pull_request_target`): a fork's PR runs with a
+# read-only token and NO access to repository secrets, and the code being run
+# is the PR's own code. `pull_request_target` would run untrusted code with a
+# privileged token and secrets, which is exactly what must not happen here.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Read-only. Nothing here writes to the repo, publishes, comments, or deploys.
+permissions:
+  contents: read
+
+# One live run per PR (or per branch on push); supersede older ones.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # ── Credential blanking ───────────────────────────────────────────────────
+  # Every provider / blob / payment / email / print credential is forced empty
+  # so that no code path can reach a live service even if a test regressed or a
+  # secret were somehow present in the environment. Blank rather than unset,
+  # so a lookup finds an empty value instead of falling through to a default.
+  BLOB_READ_WRITE_TOKEN: ''
+  OPENAI_API_KEY: ''
+  FAL_KEY: ''
+  GEMINI_API_KEY: ''
+  RESEND_API_KEY: ''
+  STRIPE_SECRET_KEY: ''
+  HSB_STRIPE_SECRET_KEY: ''
+  STRIPE_WEBHOOK_SECRET: ''
+  LULU_CLIENT_KEY: ''
+  LULU_CLIENT_SECRET: ''
+  TWENTYFIRST_API_KEY: ''
+  # Never let the order store think it is on Vercel (that would redirect the
+  # local store path and flip durable-persistence on).
+  VERCEL: ''
+  VERCEL_ENV: ''
+  # Force the public-blob code path off by keeping the store local.
+  HSB_BLOB_ACCESS_MODE: ''
+  # The documented test-only opt-out in src/lib/orders.ts. This changes WHERE
+  # orders are stored — it relaxes no authorization, lifecycle, freshness,
+  # isolation, or bounds rule.
+  HSB_REQUIRE_DURABLE_PERSISTENCE: 'false'
+  # Keep Next from phoning home during CI.
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  # ── Gate 1 + 3: Node suite and production build ──────────────────────────
+  unit-and-build:
+    name: npm test + next build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Do not leave the job token in .git/config for later steps to reuse.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          # Pinned to the version the local verification of PR #138 ran on.
+          # The repo has no engines/.nvmrc field; `node --experimental-strip-types`
+          # in the `test` script requires a modern Node, so this is pinned
+          # explicitly rather than floated.
+          node-version: '24.18.0'
+          # Caches ~/.npm only, keyed on package-lock.json. Never caches
+          # node_modules, .next, or any generated order store.
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Node test suite
+        # Synthetic fixtures only; each test creates and tears down its own
+        # temp order store.
+        run: npm test
+        env:
+          HSB_ORDER_STORE_DIR: ${{ runner.temp }}/hsb-order-store-unit
+
+      - name: Production build + TypeScript gate
+        run: npx next build
+
+  # ── Gate 2: Playwright Chromium suite ────────────────────────────────────
+  # Separate job so a browser failure is distinguishable at a glance from a
+  # unit or build failure, and so the two run in parallel.
+  e2e:
+    name: npm run test:e2e (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify the e2e suite is present
+        # Fails loudly rather than skipping. A silently-skipped browser gate is
+        # worse than a red one: it would let a PR that deletes the suite pass.
+        run: |
+          missing=0
+          [ -f playwright.config.ts ] || { echo "::error::playwright.config.ts is missing"; missing=1; }
+          node -e "process.exit(require('./package.json').scripts['test:e2e'] ? 0 : 1)" \
+            || { echo "::error::package.json has no test:e2e script"; missing=1; }
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::The Playwright suite is not present on this branch. It is introduced by PR #138; this gate cannot pass until that lands."
+            exit 1
+          fi
+
+      - name: Install Chromium + Linux deps
+        # Only Chromium. The version comes from the @playwright/test pinned in
+        # package-lock.json, so browser and client can never drift apart.
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright suite
+        # playwright.config.ts builds and starts the app itself, binds to
+        # 127.0.0.1, blanks credentials for the server process, and points
+        # HSB_ORDER_STORE_DIR at a throwaway .e2e-store/ in the workspace.
+        run: npm run test:e2e
+
+      - name: Upload Playwright report on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ github.run_id }}
+          # Reports and traces only. The generated order store (.e2e-store/) is
+          # deliberately NOT uploaded — it holds synthetic records, but there is
+          # no reason to publish a store at all.
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: ignore
