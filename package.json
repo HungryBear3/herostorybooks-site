@@ -9,7 +9,10 @@
     "lint": "eslint .",
     "order:status": "node --experimental-strip-types scripts/order-status.ts",
     "start": "next start",
-    "test": "node --experimental-strip-types --test tests/*.test.ts"
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:e2e": "playwright test",
+    "test:e2e:desktop": "playwright test --project=desktop-chromium",
+    "test:e2e:mobile": "playwright test --project=mobile-chromium"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
@@ -71,6 +74,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4.2.0",
     "@types/node": "^22",
     "@types/pdfkit": "^0.17.6",
