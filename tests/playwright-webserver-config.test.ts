@@ -26,9 +26,19 @@ import {
 } from './e2e/webserver-env.ts';
 
 const CONFIG = readFileSync(path.join(process.cwd(), 'playwright.config.ts'), 'utf8');
-/** Executable lines only — prose about 0.0.0.0 must not trip a host assertion. */
+/**
+ * Executable text only. Two separate jobs:
+ *  - drop whole comment lines, so prose about 0.0.0.0 cannot trip a negative
+ *    host assertion;
+ *  - drop trailing `//` comments, so a commented-out correct fragment cannot
+ *    satisfy a positive assertion while the live line beside it is wrong.
+ *
+ * The trailing strip deliberately ignores `//` preceded by `:` — otherwise it
+ * would eat the `//` in `http://…` and break the address assertions.
+ */
 const CONFIG_CODE = CONFIG.split('\n')
   .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+  .map((line) => line.replace(/(^|[^:])\/\/.*$/, '$1'))
   .join('\n');
 
 // ── loopback binding ─────────────────────────────────────────────────────────
