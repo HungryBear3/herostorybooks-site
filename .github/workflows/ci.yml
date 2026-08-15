@@ -15,6 +15,11 @@ name: CI
 # BOTH jobs are expected RED on `main` as of b94a97d, for two separate reasons:
 #   - `npm test` has 14 pre-existing failures (order-cache state leaking between
 #     tests via the module-level map in src/lib/orders.ts), which PR #138 fixes.
+#     That count was measured on macOS. The first CI run on ubuntu-latest showed
+#     23, and the 9 extra were environment gaps in this workflow, not product
+#     defects: 8 pdf-builder tests need `pdffonts` (poppler-utils, now installed
+#     below) and REQ16 needs full git history (fetch-depth: 0, now set). With
+#     both fixed the runner should match the macOS count of 14.
 #   - the e2e job's guard step fails until #138 introduces the Playwright suite
 #     (the job runs; it cannot pass).
 # Do NOT register either check as REQUIRED until #138 has landed, or `main`
@@ -122,6 +127,10 @@ jobs:
           # Do not leave the job token in .git/config where a malicious
           # postinstall script could read it.
           persist-credentials: false
+          # Full history. tests/review-snapshot-and-guards.test.ts (REQ16) runs
+          # `git diff --name-only <base-sha>` to find committable files; the
+          # default shallow clone does not contain that SHA and the test errors.
+          fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -136,6 +145,14 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Install poppler-utils (pdffonts)
+        # tests/pdf-builder.test.ts shells out to `pdffonts` to assert that
+        # every font is embedded for commercial printing. It is present on the
+        # macOS dev machines via Homebrew but not on ubuntu-latest, where its
+        # absence fails 8 tests with ENOENT — a missing system dependency, not a
+        # product defect. Discovered by running this workflow, not predicted.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
 
       - name: Node test suite
         run: npm test
@@ -160,6 +177,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
