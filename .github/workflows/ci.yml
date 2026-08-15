@@ -12,6 +12,13 @@ name: CI
 #     npm run test:e2e (Chromium)
 # (GitHub registers the job `name:` strings, not the job keys.)
 #
+# BOTH jobs are expected RED on `main` as of b94a97d, for two separate reasons:
+#   - `npm test` has 14 pre-existing failures (order-cache state leaking between
+#     tests via the module-level map in src/lib/orders.ts), which PR #138 fixes.
+#   - the e2e job cannot run at all until #138 introduces the Playwright suite.
+# Do NOT register either check as REQUIRED until #138 has landed, or `main`
+# becomes un-mergeable.
+#
 # `pull_request` (never `pull_request_target`): a fork's PR runs its own code
 # with a read-only token and NO access to repository secrets.
 # `pull_request_target` would run untrusted code with a privileged token and
@@ -48,10 +55,14 @@ env:
   # through src/lib/stripe-env.ts), so it is not a plain grep of literal reads.
   #
   # Each name below was checked individually to be fail-closed on an empty
-  # value. FAMILY_REVIEW_ADMIN_KEY is deliberately NOT in this list: it is read
-  # as `process.env.FAMILY_REVIEW_ADMIN_KEY || 'reviewer-preview'`, so blanking
-  # it selects a hardcoded key rather than closing anything. Leaving it unset
-  # behaves identically and does not imply a guarantee that is not there.
+  # value. Two credential-bearing variables are deliberately NOT in this list,
+  # because each falls back to a hardcoded default, so blanking would SELECT a
+  # known value rather than close anything — and leaving them unset behaves
+  # identically without implying a guarantee that is not there:
+  #   FAMILY_REVIEW_ADMIN_KEY -> || 'reviewer-preview'
+  #                              (src/lib/family-review/admin-auth.ts)
+  #   FAMILY_REVIEW_CODES     -> falls through to DEFAULT_INVITE_CODES
+  #                              (src/app/api/family-review/upload/route.ts)
   BLOB_READ_WRITE_TOKEN: ''
   CRON_SECRET: ''
   FAL_KEY: ''
@@ -69,15 +80,23 @@ env:
   STRIPE_WEBHOOK_SECRET: ''
 
   # ── Environment shaping (not credentials) ─────────────────────────────────
-  # Empty string is falsy, so both of these keep src/lib/orders.ts off its
-  # Vercel code path: the '/tmp/hsb/orders' store location and the automatic
-  # durable-persistence enable. VERCEL_ENV also avoids the 'preview' branch
-  # that throws BlobNamespaceError.
+  # These do different things; empty string is falsy for both.
+  #   VERCEL=''     keeps src/lib/orders.ts off BOTH its Vercel behaviours —
+  #                 the '/tmp/hsb/orders' store location (:1110) and the
+  #                 automatic durable-persistence enable (:1095). Each gates on
+  #                 process.env.VERCEL alone.
+  #   VERCEL_ENV='' contributes to neither of those. It only avoids the
+  #                 'preview' branch of getBlobNamespace() that throws
+  #                 BlobNamespaceError.
   VERCEL: ''
   VERCEL_ENV: ''
   # getBlobAccessMode() defaults to 'public'; '' would fall through to that
-  # default and change nothing. 'private' actually forces the public-CDN read
-  # path off, which is what is wanted here.
+  # default and change nothing, so 'private' is used to actually force the
+  # unauthenticated public-CDN read path off.
+  # This is a DELIBERATE divergence from production, which runs 'public' by
+  # design (the prod token rejects private writes). With BLOB_READ_WRITE_TOKEN
+  # blank no blob path is reachable either way, so it changes no result — it is
+  # defence in depth, not fidelity.
   HSB_BLOB_ACCESS_MODE: 'private'
   NEXT_TELEMETRY_DISABLED: '1'
   #
@@ -177,8 +196,12 @@ jobs:
       # playwright.config.ts; see the PR description.
       - name: Playwright suite
         # playwright.config.ts builds and starts the app itself, binds to
-        # 127.0.0.1, blanks credentials for the server process, and points
-        # HSB_ORDER_STORE_DIR at a throwaway .e2e-store/ in the workspace.
+        # 127.0.0.1, and points HSB_ORDER_STORE_DIR at a throwaway .e2e-store/
+        # in the workspace. It also blanks a credential list of its own, but
+        # that list is narrower than this workflow's and misses several names
+        # the app reads; the workflow-level env block above is what actually
+        # closes the gap, because webServer launches with
+        # {...defaults, ...process.env, ...webServer.env}.
         run: npm run test:e2e
 
       - name: Upload Playwright report on failure
