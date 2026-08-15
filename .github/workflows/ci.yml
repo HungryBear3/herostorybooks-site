@@ -17,8 +17,9 @@ name: CI
 #     tests via the module-level map in src/lib/orders.ts), which PR #138 fixes.
 #     That count was measured on macOS. The first CI run on ubuntu-latest showed
 #     23, and the 9 extra were environment gaps in this workflow, not product
-#     defects: 8 pdf-builder tests need `pdffonts` (poppler-utils, now installed
-#     below) and REQ16 needs full git history (fetch-depth: 0, now set). With
+#     defects: 8 pdf-builder tests need poppler-utils (6 use `pdftotext`, 2 use
+#     `pdffonts`; now installed below) and REQ16 needs full git history
+#     (fetch-depth: 0 on this job, now set). With
 #     both fixed the runner should match the macOS count of 14.
 #   - the e2e job's guard step fails until #138 introduces the Playwright suite
 #     (the job runs; it cannot pass).
@@ -143,16 +144,26 @@ jobs:
           # so a fork PR cannot write a cache that a later main run reads.
           cache: 'npm'
 
+      - name: Install poppler-utils (pdftotext, pdffonts)
+        # tests/pdf-builder.test.ts shells out to poppler's `pdftotext` (page
+        # text assertions, 6 tests) and `pdffonts` (font-embedding assertions
+        # for commercial printing, 2 tests). Both ship in poppler-utils and are
+        # present on the macOS dev machines via Homebrew, but absent on
+        # ubuntu-latest, where they fail those 8 tests with ENOENT — a missing
+        # system dependency, not a product defect. Discovered by running this
+        # workflow, not predicted.
+        #
+        # Ordered BEFORE `npm ci` so a compromised dependency's install script
+        # cannot influence apt sources or PATH first. (The runner user already
+        # has passwordless sudo either way, so this is hygiene, not a privilege
+        # boundary.) The update is retried once so a transient mirror failure
+        # does not red a gate that is meant to be authoritative.
+        run: |
+          sudo apt-get update || (sleep 5 && sudo apt-get update)
+          sudo apt-get install -y --no-install-recommends poppler-utils
+
       - name: Install dependencies
         run: npm ci
-
-      - name: Install poppler-utils (pdffonts)
-        # tests/pdf-builder.test.ts shells out to `pdffonts` to assert that
-        # every font is embedded for commercial printing. It is present on the
-        # macOS dev machines via Homebrew but not on ubuntu-latest, where its
-        # absence fails 8 tests with ENOENT — a missing system dependency, not a
-        # product defect. Discovered by running this workflow, not predicted.
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
 
       - name: Node test suite
         run: npm test
@@ -177,7 +188,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-          fetch-depth: 0
+          # Shallow on purpose: nothing in the e2e path reads git history (the
+          # suite's only child_process use spawns node for the fixture seeder).
+          # Fetching full history here would be an unnecessary grant.
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
