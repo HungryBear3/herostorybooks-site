@@ -16,6 +16,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import {
   WEBSERVER_HOST,
   DEFAULT_WEBSERVER_TIMEOUT_MS,
@@ -32,6 +34,28 @@ const CONFIG = playwrightConfig as {
   webServer: { command: string; url: string; timeout: number; env: Record<string, string> };
 };
 const { command, url, timeout, env } = CONFIG.webServer;
+
+interface ResolvedConfig {
+  command: string; url: string; timeout: number; baseURL: string; storeDir: string;
+}
+
+/**
+ * Re-resolve the config in a CHILD process under `overrides`.
+ *
+ * In-process assertions cannot tell "read through the strict resolver" from
+ * "hardcoded to the same value" — a literal `timeout: 120_000` would satisfy
+ * them while the CI override was silently dead. Re-resolving under a different
+ * environment is what actually proves the wiring.
+ */
+function resolveUnderEnv(overrides: Record<string, string>): ResolvedConfig {
+  const out = execFileSync(
+    process.execPath,
+    ['--experimental-strip-types', '--no-warnings',
+      path.join(process.cwd(), 'tests', 'e2e', 'print-resolved-config.ts')],
+    { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, ...overrides } },
+  );
+  return JSON.parse(out) as ResolvedConfig;
+}
 
 // ── loopback binding ─────────────────────────────────────────────────────────
 
@@ -51,6 +75,19 @@ test('the webServer command binds the server to loopback with -H', () => {
 test('the port is still supplied explicitly and remains overridable', () => {
   assert.match(command, /\s-p\s+3178(\s|$)/, 'the -p flag must survive the -H addition');
   assert.match(url, /:3178\//);
+
+  // Overridability must be exercised, not merely asserted about the source.
+  const overridden = resolveUnderEnv({ HSB_E2E_PORT: '4111' });
+  assert.match(overridden.command, /\s-p\s+4111(\s|$)/);
+  assert.equal(overridden.url, 'http://127.0.0.1:4111/');
+  assert.equal(overridden.baseURL, 'http://127.0.0.1:4111');
+  // The host must not drift when the port does.
+  assert.match(overridden.command, /-H\s+127\.0\.0\.1(\s|$)/);
+});
+
+test('the server is built before it is started', () => {
+  assert.match(command, /^npx next build && npx next start\b/,
+    'the e2e target is a production build; dropping it would test a stale .next');
 });
 
 test('every address Playwright dials is loopback', () => {
@@ -71,6 +108,22 @@ test('the readiness timeout defaults to 120000ms when unset', () => {
 
 test('the resolved webServer timeout is the strict default', () => {
   assert.equal(timeout, DEFAULT_WEBSERVER_TIMEOUT_MS);
+});
+
+test('the timeout is wired through the resolver, not hardcoded to the default', () => {
+  // A literal `timeout: 120_000` satisfies the value check above while the CI
+  // override is dead. Only re-resolving under a different environment catches
+  // that, so this is the assertion that actually guards the feature.
+  assert.equal(resolveUnderEnv({ [WEBSERVER_TIMEOUT_ENV]: '240000' }).timeout, 240_000);
+  assert.equal(resolveUnderEnv({ [WEBSERVER_TIMEOUT_ENV]: '300000' }).timeout, 300_000);
+});
+
+test('a malformed timeout aborts config resolution rather than falling back', () => {
+  assert.throws(
+    () => resolveUnderEnv({ [WEBSERVER_TIMEOUT_ENV]: 'soon' }),
+    /HSB_E2E_WEBSERVER_TIMEOUT_MS/,
+    'config load must fail closed, not silently use the default',
+  );
 });
 
 test('the timeout variable is dedicated, not a provider or production name', () => {
@@ -161,6 +214,8 @@ test('credential blanking, store isolation, and the durable opt-out are intact',
   ]) {
     assert.equal(env[name], '', `${name} must still be blanked for the server`);
   }
-  assert.match(env.HSB_ORDER_STORE_DIR, /\.e2e-store$/, 'the store must stay a throwaway');
+  // Exact, not a suffix: '../../.e2e-store' also ends in .e2e-store but escapes
+  // the workspace.
+  assert.equal(env.HSB_ORDER_STORE_DIR, path.join(process.cwd(), '.e2e-store'));
   assert.equal(env.HSB_REQUIRE_DURABLE_PERSISTENCE, 'false');
 });

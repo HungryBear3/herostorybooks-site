@@ -2,9 +2,9 @@
  * Strictly-parsed knobs for the Playwright-managed Next server.
  *
  * Kept in its own module (not inline in playwright.config.ts) so the parsing
- * can be unit-tested by the node suite without importing the Playwright
- * runtime. Playwright never collects this file: its testMatch only picks up
- * *.spec.ts / *.test.ts.
+ * can be unit-tested directly, input by input, without going through a config
+ * load for each case. Playwright never collects this file: its testMatch only
+ * picks up *.spec.ts / *.test.ts.
  */
 
 /** Loopback only. The server must not be reachable off the machine. */
