@@ -15,7 +15,8 @@ name: CI
 # BOTH jobs are expected RED on `main` as of b94a97d, for two separate reasons:
 #   - `npm test` has 14 pre-existing failures (order-cache state leaking between
 #     tests via the module-level map in src/lib/orders.ts), which PR #138 fixes.
-#   - the e2e job cannot run at all until #138 introduces the Playwright suite.
+#   - the e2e job's guard step fails until #138 introduces the Playwright suite
+#     (the job runs; it cannot pass).
 # Do NOT register either check as REQUIRED until #138 has landed, or `main`
 # becomes un-mergeable.
 #
@@ -63,6 +64,9 @@ env:
   #                              (src/lib/family-review/admin-auth.ts)
   #   FAMILY_REVIEW_CODES     -> falls through to DEFAULT_INVITE_CODES
   #                              (src/app/api/family-review/upload/route.ts)
+  # NEXT_PUBLIC_FAMILY_REVIEW_CODES feeds that same invite-code check and is
+  # likewise absent; it is not treated as a credential because Next inlines
+  # NEXT_PUBLIC_* into the client bundle by construction.
   BLOB_READ_WRITE_TOKEN: ''
   CRON_SECRET: ''
   FAL_KEY: ''
@@ -195,9 +199,18 @@ jobs:
       # build. The real fix is to make that timeout env-overridable in
       # playwright.config.ts; see the PR description.
       - name: Playwright suite
-        # playwright.config.ts builds and starts the app itself, binds to
-        # 127.0.0.1, and points HSB_ORDER_STORE_DIR at a throwaway .e2e-store/
-        # in the workspace. It also blanks a credential list of its own, but
+        # playwright.config.ts builds and starts the app itself and points
+        # HSB_ORDER_STORE_DIR at a throwaway .e2e-store/ in the workspace.
+        #
+        # It ADDRESSES the server at 127.0.0.1 (baseURL and the readiness url)
+        # but does NOT bind it there: the command is `next start -p PORT` with
+        # no -H, and Next defaults to 0.0.0.0. Verified by measurement — the
+        # listening socket is `TCP *:PORT`, and HOSTNAME=127.0.0.1 does not
+        # change it. On a GitHub-hosted runner the VM is ephemeral and inbound
+        # traffic is firewalled, so the practical exposure is nil, but this is
+        # NOT loopback-bound and should not be described as such. The fix is
+        # `-H 127.0.0.1` in playwright.config.ts, which lives in PR #138 and is
+        # out of scope here; tracked as a follow-up. It also blanks a credential list of its own, but
         # that list is narrower than this workflow's and misses several names
         # the app reads; the workflow-level env block above is what actually
         # closes the gap, because webServer launches with
