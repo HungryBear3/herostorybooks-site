@@ -6,8 +6,11 @@ name: CI
 #   3. npx next build    — production build + TypeScript gate
 #
 # NOTE: reporting these checks does NOT enforce them. `main` currently has no
-# branch protection, so until both job names below are registered as REQUIRED
-# status checks, a red run does not block a merge. See the PR description.
+# branch protection, so a red run does not block a merge. To make these gates
+# real, register these two check names as REQUIRED on `main`:
+#     npm test + next build
+#     npm run test:e2e (Chromium)
+# (GitHub registers the job `name:` strings, not the job keys.)
 #
 # `pull_request` (never `pull_request_target`): a fork's PR runs its own code
 # with a read-only token and NO access to repository secrets.
@@ -25,8 +28,9 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  # Supersede stale PR runs, but never cancel a post-merge run on main — that
-  # per-commit verdict is the one you most want to keep.
+  # Supersede stale PR runs. On push to main this is false, which protects an
+  # IN-PROGRESS run; GitHub still cancels queued-but-not-started runs in the
+  # group, so a rapid burst of merges can still lose an intermediate verdict.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -39,14 +43,18 @@ env:
   #
   # These are blanked anyway so that a future `environment:` addition, a
   # self-hosted runner, or a leaked value cannot reach a live service. The list
-  # is every credential-bearing variable the application actually reads
-  # (derived from `process.env` across src/ and scripts/), not a guess. Empty
-  # string rather than unset: every consumer below is a truthiness or explicit
-  # `===` check, and none uses `?? 'default'`, so '' is the safe choice.
+  # covers the credential-bearing variables the application reads, including
+  # ones reached dynamically via `process.env[name]` (e.g. STRIPE_WEBHOOK_SECRET
+  # through src/lib/stripe-env.ts), so it is not a plain grep of literal reads.
+  #
+  # Each name below was checked individually to be fail-closed on an empty
+  # value. FAMILY_REVIEW_ADMIN_KEY is deliberately NOT in this list: it is read
+  # as `process.env.FAMILY_REVIEW_ADMIN_KEY || 'reviewer-preview'`, so blanking
+  # it selects a hardcoded key rather than closing anything. Leaving it unset
+  # behaves identically and does not imply a guarantee that is not there.
   BLOB_READ_WRITE_TOKEN: ''
   CRON_SECRET: ''
   FAL_KEY: ''
-  FAMILY_REVIEW_ADMIN_KEY: ''
   GOOGLE_GEMINI_API_KEY: ''
   HSB_ORDER_ADMIN_KEY: ''
   # Read FIRST, before RESEND_API_KEY (src/lib/order-email.ts) — blanking only
@@ -157,14 +165,16 @@ jobs:
         # the guard so it can never fetch Playwright on a branch without it.
         run: npx playwright install --with-deps chromium
 
-      - name: Warm the Next build cache
-        # playwright.config.ts starts its own `next build && next start` under a
-        # webServer readiness budget that this workflow cannot override. Doing a
-        # build here first means that one is incremental, buying headroom
-        # against a false-red timeout. See the PR description for the residual
-        # risk and the proposed permanent fix.
-        run: npx next build
-
+      # KNOWN LIMITATION, not mitigated here. playwright.config.ts starts its
+      # own `next build && next start` under a 120s webServer readiness budget
+      # that this workflow cannot override (the config lives in PR #138). A cold
+      # production build measured ~35s locally and will be slower on a 4-vCPU
+      # runner, so a false red is possible on a loaded runner. Pre-building here
+      # was tried and removed: Next 16's Turbopack production build persists no
+      # compilation cache (a second build measured 31s vs 35s, and .next/cache
+      # holds only 412K of metadata), so it bought nothing and cost a full extra
+      # build. The real fix is to make that timeout env-overridable in
+      # playwright.config.ts; see the PR description.
       - name: Playwright suite
         # playwright.config.ts builds and starts the app itself, binds to
         # 127.0.0.1, blanks credentials for the server process, and points
