@@ -1,6 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 import path from 'node:path';
 
+import { WEBSERVER_HOST, resolveWebServerTimeoutMs } from './tests/e2e/webserver-env.ts';
+
 /**
  * Playwright config for the customer text-placement editor regression suite.
  *
@@ -32,7 +34,7 @@ export default defineConfig({
   timeout: 60_000,
 
   use: {
-    baseURL: `http://127.0.0.1:${PORT}`,
+    baseURL: `http://${WEBSERVER_HOST}:${PORT}`,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
@@ -56,11 +58,16 @@ export default defineConfig({
     // hydrate this app under test (React loads but never attaches), so every
     // interaction would silently no-op. `next start` is also the faithful
     // target: it is what a customer actually receives.
-    command: `npx next build && npx next start -p ${PORT}`,
+    // -H binds the listening socket to loopback. Without it Next defaults to
+    // 0.0.0.0, and the 127.0.0.1 below would only be the address Playwright
+    // dials — not a restriction on who else can reach the server.
+    command: `npx next build && npx next start -H ${WEBSERVER_HOST} -p ${PORT}`,
     // No dedicated health route in this app — the landing page is the readiness probe.
-    url: `http://127.0.0.1:${PORT}/`,
+    url: `http://${WEBSERVER_HOST}:${PORT}/`,
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    // 120s locally; overridable for slower CI runners via
+    // HSB_E2E_WEBSERVER_TIMEOUT_MS. Malformed values throw rather than coerce.
+    timeout: resolveWebServerTimeoutMs(),
     stdout: 'pipe',
     stderr: 'pipe',
     env: {
