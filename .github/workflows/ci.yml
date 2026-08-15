@@ -1,0 +1,245 @@
+name: CI
+
+# Reproduces the merge gates used to verify pull requests locally:
+#   1. npm test          — Node test suite
+#   2. npm run test:e2e  — Playwright Chromium suite
+#   3. npx next build    — production build + TypeScript gate
+#
+# NOTE: reporting these checks does NOT enforce them. Until branch protection
+# is configured, a red run does not block a merge. Register these two check
+# names as REQUIRED on `main` after this workflow lands:
+#     npm test + next build
+#     npm run test:e2e (Chromium)
+# (GitHub registers the job `name:` strings, not the job keys.)
+#
+# Both jobs were expected RED on the former `main` at b94a97d, for two reasons:
+#   - `npm test` has 14 pre-existing failures (order-cache state leaking between
+#     tests via the module-level map in src/lib/orders.ts), which PR #138 fixes.
+#     That count was measured on macOS. The first CI run on ubuntu-latest showed
+#     23, and the 9 extra were environment gaps in this workflow, not product
+#     defects: 8 pdf-builder tests need poppler-utils (6 use `pdftotext`, 2 use
+#     `pdffonts`; now installed below) and REQ16 needs full git history
+#     (fetch-depth: 0 on this job, now set). With
+#     both fixed the runner should match the macOS count of 14.
+#   - the e2e job's guard step fails until #138 introduces the Playwright suite
+#     (the job runs; it cannot pass).
+# PR #138 has now landed and supplies both fixes. This PR must itself be green
+# before these names are registered as required checks.
+#
+# `pull_request` (never `pull_request_target`): a fork's PR runs its own code
+# with a read-only token and NO access to repository secrets.
+# `pull_request_target` would run untrusted code with a privileged token and
+# secrets, which is exactly what must not happen here.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Read-only. Nothing here writes to the repo, publishes, comments, or deploys.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Supersede stale PR runs. On push to main this is false, which protects an
+  # IN-PROGRESS run; GitHub still cancels queued-but-not-started runs in the
+  # group, so a rapid burst of merges can still lose an intermediate verdict.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # ── Credential blanking (defence in depth) ────────────────────────────────
+  #
+  # The load-bearing guarantee is structural, not this list: this workflow
+  # references no `secrets.*`, declares no `environment:`, and runs on
+  # GitHub-hosted runners, so no repository or environment secret is available
+  # to it at all — including on fork PRs.
+  #
+  # These are blanked anyway so that a future `environment:` addition, a
+  # self-hosted runner, or a leaked value cannot reach a live service. The list
+  # covers the credential-bearing variables the application reads, including
+  # ones reached dynamically via `process.env[name]` (e.g. STRIPE_WEBHOOK_SECRET
+  # through src/lib/stripe-env.ts), so it is not a plain grep of literal reads.
+  #
+  # Each name below was checked individually to be fail-closed on an empty
+  # value. Two credential-bearing variables are deliberately NOT in this list,
+  # because each falls back to a hardcoded default, so blanking would SELECT a
+  # known value rather than close anything — and leaving them unset behaves
+  # identically without implying a guarantee that is not there:
+  #   FAMILY_REVIEW_ADMIN_KEY -> || 'reviewer-preview'
+  #                              (src/lib/family-review/admin-auth.ts)
+  #   FAMILY_REVIEW_CODES     -> falls through to DEFAULT_INVITE_CODES
+  #                              (src/app/api/family-review/upload/route.ts)
+  # NEXT_PUBLIC_FAMILY_REVIEW_CODES feeds that same invite-code check and is
+  # likewise absent; it is not treated as a credential because Next inlines
+  # NEXT_PUBLIC_* into the client bundle by construction.
+  BLOB_READ_WRITE_TOKEN: ''
+  CRON_SECRET: ''
+  FAL_KEY: ''
+  GOOGLE_GEMINI_API_KEY: ''
+  HSB_ORDER_ADMIN_KEY: ''
+  # Read FIRST, before RESEND_API_KEY (src/lib/order-email.ts) — blanking only
+  # the fallback would have left the primary live.
+  HSB_RESEND_API_KEY: ''
+  LULU_CLIENT_KEY: ''
+  LULU_CLIENT_SECRET: ''
+  LULU_WEBHOOK_SECRET: ''
+  OPENAI_API_KEY: ''
+  RESEND_API_KEY: ''
+  STRIPE_SECRET_KEY: ''
+  STRIPE_WEBHOOK_SECRET: ''
+
+  # ── Environment shaping (not credentials) ─────────────────────────────────
+  # These do different things; empty string is falsy for both.
+  #   VERCEL=''     keeps src/lib/orders.ts off BOTH its Vercel behaviours —
+  #                 the '/tmp/hsb/orders' store location (:1110) and the
+  #                 automatic durable-persistence enable (:1095). Each gates on
+  #                 process.env.VERCEL alone.
+  #   VERCEL_ENV='' contributes to neither of those. It only avoids the
+  #                 'preview' branch of getBlobNamespace() that throws
+  #                 BlobNamespaceError.
+  VERCEL: ''
+  VERCEL_ENV: ''
+  # getBlobAccessMode() defaults to 'public'; '' would fall through to that
+  # default and change nothing, so 'private' is used to actually force the
+  # unauthenticated public-CDN read path off.
+  # This is a DELIBERATE divergence from production, which runs 'public' by
+  # design (the prod token rejects private writes). With BLOB_READ_WRITE_TOKEN
+  # blank no blob path is reachable either way, so it changes no result — it is
+  # defence in depth, not fidelity.
+  HSB_BLOB_ACCESS_MODE: 'private'
+  NEXT_TELEMETRY_DISABLED: '1'
+  #
+  # HSB_REQUIRE_DURABLE_PERSISTENCE is deliberately NOT set at workflow level.
+  # The unit tests set and delete it themselves, and playwright.config.ts sets
+  # it for the server it starts. Setting it here would also apply to
+  # `npx next build`, making the build gate LESS production-like than the real
+  # Vercel build it is meant to approximate.
+
+jobs:
+  # ── Gates 1 + 3: Node suite and production build ─────────────────────────
+  unit-and-build:
+    name: npm test + next build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Do not leave the job token in .git/config where a malicious
+          # postinstall script could read it.
+          persist-credentials: false
+          # Full history. tests/review-snapshot-and-guards.test.ts (REQ16) runs
+          # `git diff --name-only <base-sha>` to find committable files; the
+          # default shallow clone does not contain that SHA and the test errors.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          # Pinned to the version the gates were verified on. The repo declares
+          # no engines/.nvmrc, and `node --experimental-strip-types` in the
+          # `test` script needs a modern Node, so this is explicit not floated.
+          node-version: '24.18.0'
+          # Caches ~/.npm only, keyed on package-lock.json. Never node_modules,
+          # .next, or any generated order store. GitHub scopes caches by ref,
+          # so a fork PR cannot write a cache that a later main run reads.
+          cache: 'npm'
+
+      - name: Install poppler-utils (pdftotext, pdffonts)
+        # tests/pdf-builder.test.ts shells out to poppler's `pdftotext` (page
+        # text assertions, 6 tests) and `pdffonts` (font-embedding assertions
+        # for commercial printing, 2 tests). Both ship in poppler-utils and are
+        # present on the macOS dev machines via Homebrew, but absent on
+        # ubuntu-latest, where they fail those 8 tests with ENOENT — a missing
+        # system dependency, not a product defect. Discovered by running this
+        # workflow, not predicted.
+        #
+        # Ordered BEFORE `npm ci` so a compromised dependency's install script
+        # cannot influence apt sources or PATH first. (The runner user already
+        # has passwordless sudo either way, so this is hygiene, not a privilege
+        # boundary.) The update is retried once so a transient mirror failure
+        # does not red a gate that is meant to be authoritative.
+        run: |
+          sudo apt-get update || (sleep 5 && sudo apt-get update)
+          sudo apt-get install -y --no-install-recommends poppler-utils
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Node test suite
+        run: npm test
+        env:
+          # Synthetic, throwaway. The tests override and delete this themselves;
+          # it is set so that nothing can fall back to the workspace .data/orders.
+          HSB_ORDER_STORE_DIR: ${{ runner.temp }}/hsb-order-store-unit
+
+      - name: Production build + TypeScript gate
+        run: npx next build
+        env:
+          HSB_ORDER_STORE_DIR: ${{ runner.temp }}/hsb-order-store-build
+
+  # ── Gate 2: Playwright Chromium suite ────────────────────────────────────
+  # Separate job so a browser failure is distinguishable at a glance from a
+  # unit or build failure, and so the two run in parallel.
+  e2e:
+    name: npm run test:e2e (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          # Shallow on purpose: nothing in the e2e path reads git history (the
+          # suite's only child_process use spawns node for the fixture seeder).
+          # Fetching full history here would be an unnecessary grant.
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify the e2e suite is present
+        # Fails loudly rather than skipping. A silently-skipped browser gate is
+        # worse than a red one: it would let a PR deleting the suite pass.
+        run: |
+          missing=0
+          [ -f playwright.config.ts ] || { echo "::error::playwright.config.ts is missing"; missing=1; }
+          node -e "process.exit(require('./package.json').scripts['test:e2e'] ? 0 : 1)" \
+            || { echo "::error::package.json has no test:e2e script"; missing=1; }
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::The Playwright suite is not present on this branch. It is introduced by PR #138; this gate cannot pass until that lands."
+            exit 1
+          fi
+
+      - name: Install Chromium + Linux deps
+        # Only Chromium. The version comes from the @playwright/test pinned in
+        # package-lock.json, so browser and client cannot drift. Ordered AFTER
+        # the guard so it can never fetch Playwright on a branch without it.
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright suite
+        # playwright.config.ts builds and starts the app itself and points
+        # HSB_ORDER_STORE_DIR at a throwaway .e2e-store/ in the workspace.
+        #
+        # PR #138 hardened that server command to bind explicitly to
+        # 127.0.0.1 and made the readiness timeout strictly configurable through
+        # HSB_E2E_WEBSERVER_TIMEOUT_MS. Its regression tests verify the resolved
+        # Playwright config rather than trusting source-text patterns.
+        run: npm run test:e2e
+
+      - name: Upload Playwright report on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report-${{ github.run_id }}
+          # Reports and traces only. The generated order store (.e2e-store/) is
+          # deliberately NOT uploaded. This repo is public, so artifacts are
+          # world-readable: everything here is synthetic (example.invalid hosts,
+          # tokens minted for ephemeral synthetic orders in a throwaway store).
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: ignore
