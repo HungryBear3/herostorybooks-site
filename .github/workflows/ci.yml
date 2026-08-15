@@ -5,10 +5,14 @@ name: CI
 #   2. npm run test:e2e  — Playwright Chromium suite
 #   3. npx next build    — production build + TypeScript gate
 #
-# `pull_request` (never `pull_request_target`): a fork's PR runs with a
-# read-only token and NO access to repository secrets, and the code being run
-# is the PR's own code. `pull_request_target` would run untrusted code with a
-# privileged token and secrets, which is exactly what must not happen here.
+# NOTE: reporting these checks does NOT enforce them. `main` currently has no
+# branch protection, so until both job names below are registered as REQUIRED
+# status checks, a red run does not block a merge. See the PR description.
+#
+# `pull_request` (never `pull_request_target`): a fork's PR runs its own code
+# with a read-only token and NO access to repository secrets.
+# `pull_request_target` would run untrusted code with a privileged token and
+# secrets, which is exactly what must not happen here.
 on:
   pull_request:
     branches: [main]
@@ -19,76 +23,100 @@ on:
 permissions:
   contents: read
 
-# One live run per PR (or per branch on push); supersede older ones.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Supersede stale PR runs, but never cancel a post-merge run on main — that
+  # per-commit verdict is the one you most want to keep.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # ── Credential blanking ───────────────────────────────────────────────────
-  # Every provider / blob / payment / email / print credential is forced empty
-  # so that no code path can reach a live service even if a test regressed or a
-  # secret were somehow present in the environment. Blank rather than unset,
-  # so a lookup finds an empty value instead of falling through to a default.
+  # ── Credential blanking (defence in depth) ────────────────────────────────
+  #
+  # The load-bearing guarantee is structural, not this list: this workflow
+  # references no `secrets.*`, declares no `environment:`, and runs on
+  # GitHub-hosted runners, so no repository or environment secret is available
+  # to it at all — including on fork PRs.
+  #
+  # These are blanked anyway so that a future `environment:` addition, a
+  # self-hosted runner, or a leaked value cannot reach a live service. The list
+  # is every credential-bearing variable the application actually reads
+  # (derived from `process.env` across src/ and scripts/), not a guess. Empty
+  # string rather than unset: every consumer below is a truthiness or explicit
+  # `===` check, and none uses `?? 'default'`, so '' is the safe choice.
   BLOB_READ_WRITE_TOKEN: ''
-  OPENAI_API_KEY: ''
+  CRON_SECRET: ''
   FAL_KEY: ''
-  GEMINI_API_KEY: ''
-  RESEND_API_KEY: ''
-  STRIPE_SECRET_KEY: ''
-  HSB_STRIPE_SECRET_KEY: ''
-  STRIPE_WEBHOOK_SECRET: ''
+  FAMILY_REVIEW_ADMIN_KEY: ''
+  GOOGLE_GEMINI_API_KEY: ''
+  HSB_ORDER_ADMIN_KEY: ''
+  # Read FIRST, before RESEND_API_KEY (src/lib/order-email.ts) — blanking only
+  # the fallback would have left the primary live.
+  HSB_RESEND_API_KEY: ''
   LULU_CLIENT_KEY: ''
   LULU_CLIENT_SECRET: ''
-  TWENTYFIRST_API_KEY: ''
-  # Never let the order store think it is on Vercel (that would redirect the
-  # local store path and flip durable-persistence on).
+  LULU_WEBHOOK_SECRET: ''
+  OPENAI_API_KEY: ''
+  RESEND_API_KEY: ''
+  STRIPE_SECRET_KEY: ''
+  STRIPE_WEBHOOK_SECRET: ''
+
+  # ── Environment shaping (not credentials) ─────────────────────────────────
+  # Empty string is falsy, so both of these keep src/lib/orders.ts off its
+  # Vercel code path: the '/tmp/hsb/orders' store location and the automatic
+  # durable-persistence enable. VERCEL_ENV also avoids the 'preview' branch
+  # that throws BlobNamespaceError.
   VERCEL: ''
   VERCEL_ENV: ''
-  # Force the public-blob code path off by keeping the store local.
-  HSB_BLOB_ACCESS_MODE: ''
-  # The documented test-only opt-out in src/lib/orders.ts. This changes WHERE
-  # orders are stored — it relaxes no authorization, lifecycle, freshness,
-  # isolation, or bounds rule.
-  HSB_REQUIRE_DURABLE_PERSISTENCE: 'false'
-  # Keep Next from phoning home during CI.
+  # getBlobAccessMode() defaults to 'public'; '' would fall through to that
+  # default and change nothing. 'private' actually forces the public-CDN read
+  # path off, which is what is wanted here.
+  HSB_BLOB_ACCESS_MODE: 'private'
   NEXT_TELEMETRY_DISABLED: '1'
+  #
+  # HSB_REQUIRE_DURABLE_PERSISTENCE is deliberately NOT set at workflow level.
+  # The unit tests set and delete it themselves, and playwright.config.ts sets
+  # it for the server it starts. Setting it here would also apply to
+  # `npx next build`, making the build gate LESS production-like than the real
+  # Vercel build it is meant to approximate.
 
 jobs:
-  # ── Gate 1 + 3: Node suite and production build ──────────────────────────
+  # ── Gates 1 + 3: Node suite and production build ─────────────────────────
   unit-and-build:
     name: npm test + next build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # Do not leave the job token in .git/config for later steps to reuse.
+          # Do not leave the job token in .git/config where a malicious
+          # postinstall script could read it.
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          # Pinned to the version the local verification of PR #138 ran on.
-          # The repo has no engines/.nvmrc field; `node --experimental-strip-types`
-          # in the `test` script requires a modern Node, so this is pinned
-          # explicitly rather than floated.
+          # Pinned to the version the gates were verified on. The repo declares
+          # no engines/.nvmrc, and `node --experimental-strip-types` in the
+          # `test` script needs a modern Node, so this is explicit not floated.
           node-version: '24.18.0'
-          # Caches ~/.npm only, keyed on package-lock.json. Never caches
-          # node_modules, .next, or any generated order store.
+          # Caches ~/.npm only, keyed on package-lock.json. Never node_modules,
+          # .next, or any generated order store. GitHub scopes caches by ref,
+          # so a fork PR cannot write a cache that a later main run reads.
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
 
       - name: Node test suite
-        # Synthetic fixtures only; each test creates and tears down its own
-        # temp order store.
         run: npm test
         env:
+          # Synthetic, throwaway. The tests override and delete this themselves;
+          # it is set so that nothing can fall back to the workspace .data/orders.
           HSB_ORDER_STORE_DIR: ${{ runner.temp }}/hsb-order-store-unit
 
       - name: Production build + TypeScript gate
         run: npx next build
+        env:
+          HSB_ORDER_STORE_DIR: ${{ runner.temp }}/hsb-order-store-build
 
   # ── Gate 2: Playwright Chromium suite ────────────────────────────────────
   # Separate job so a browser failure is distinguishable at a glance from a
@@ -98,11 +126,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24.18.0'
           cache: 'npm'
@@ -112,7 +140,7 @@ jobs:
 
       - name: Verify the e2e suite is present
         # Fails loudly rather than skipping. A silently-skipped browser gate is
-        # worse than a red one: it would let a PR that deletes the suite pass.
+        # worse than a red one: it would let a PR deleting the suite pass.
         run: |
           missing=0
           [ -f playwright.config.ts ] || { echo "::error::playwright.config.ts is missing"; missing=1; }
@@ -125,8 +153,17 @@ jobs:
 
       - name: Install Chromium + Linux deps
         # Only Chromium. The version comes from the @playwright/test pinned in
-        # package-lock.json, so browser and client can never drift apart.
+        # package-lock.json, so browser and client cannot drift. Ordered AFTER
+        # the guard so it can never fetch Playwright on a branch without it.
         run: npx playwright install --with-deps chromium
+
+      - name: Warm the Next build cache
+        # playwright.config.ts starts its own `next build && next start` under a
+        # webServer readiness budget that this workflow cannot override. Doing a
+        # build here first means that one is incremental, buying headroom
+        # against a false-red timeout. See the PR description for the residual
+        # risk and the proposed permanent fix.
+        run: npx next build
 
       - name: Playwright suite
         # playwright.config.ts builds and starts the app itself, binds to
@@ -136,12 +173,13 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-report-${{ github.run_id }}
           # Reports and traces only. The generated order store (.e2e-store/) is
-          # deliberately NOT uploaded — it holds synthetic records, but there is
-          # no reason to publish a store at all.
+          # deliberately NOT uploaded. This repo is public, so artifacts are
+          # world-readable: everything here is synthetic (example.invalid hosts,
+          # tokens minted for ephemeral synthetic orders in a throwaway store).
           path: |
             playwright-report/
             test-results/
