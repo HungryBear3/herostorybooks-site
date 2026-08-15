@@ -7,6 +7,10 @@
  * no -H bound 0.0.0.0 — so the server was reachable from the network and the
  * config merely looked loopback-only. A source-level check is what keeps the
  * -H flag from being dropped again.
+ *
+ * All source assertions read CONFIG_CODE (comment-stripped), never the raw
+ * file: a commented-out correct line would otherwise satisfy a positive match
+ * while an incorrect line below it does the real work.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,7 +36,7 @@ const CONFIG_CODE = CONFIG.split('\n')
 test('the webServer command binds the server to loopback with -H', () => {
   assert.equal(WEBSERVER_HOST, '127.0.0.1');
   assert.match(
-    CONFIG,
+    CONFIG_CODE,
     /command:\s*`npx next build && npx next start -H \$\{WEBSERVER_HOST\} -p \$\{PORT\}`/,
     'next start must pass -H; without it Next binds 0.0.0.0 and the server is '
     + 'reachable off-machine even though Playwright dials 127.0.0.1',
@@ -40,13 +44,13 @@ test('the webServer command binds the server to loopback with -H', () => {
 });
 
 test('the port is still supplied explicitly and remains overridable', () => {
-  assert.match(CONFIG, /-p \$\{PORT\}/, 'the -p flag must survive the -H addition');
-  assert.match(CONFIG, /const PORT = Number\(process\.env\.HSB_E2E_PORT \?\? 3178\)/);
+  assert.match(CONFIG_CODE, /-p \$\{PORT\}/, 'the -p flag must survive the -H addition');
+  assert.match(CONFIG_CODE, /const PORT = Number\(process\.env\.HSB_E2E_PORT \?\? 3178\)/);
 });
 
 test('every address Playwright dials is loopback', () => {
-  assert.match(CONFIG, /baseURL: `http:\/\/\$\{WEBSERVER_HOST\}:\$\{PORT\}`/);
-  assert.match(CONFIG, /url: `http:\/\/\$\{WEBSERVER_HOST\}:\$\{PORT\}\/`/);
+  assert.match(CONFIG_CODE, /baseURL: `http:\/\/\$\{WEBSERVER_HOST\}:\$\{PORT\}`/);
+  assert.match(CONFIG_CODE, /url: `http:\/\/\$\{WEBSERVER_HOST\}:\$\{PORT\}\/`/);
   // No literal non-loopback host may creep back into executable config.
   assert.doesNotMatch(CONFIG_CODE, /0\.0\.0\.0/);
   assert.doesNotMatch(CONFIG_CODE, /http:\/\/localhost/);
@@ -61,8 +65,8 @@ test('the readiness timeout defaults to 120000ms when unset', () => {
 });
 
 test('the config reads the timeout through the strict resolver, not a literal', () => {
-  assert.match(CONFIG, /timeout: resolveWebServerTimeoutMs\(\)/);
-  assert.doesNotMatch(CONFIG, /timeout: 120_000/);
+  assert.match(CONFIG_CODE, /timeout: resolveWebServerTimeoutMs\(\)/);
+  assert.doesNotMatch(CONFIG_CODE, /timeout: 120_000/);
 });
 
 test('the timeout variable is dedicated, not a provider or production name', () => {
@@ -151,9 +155,9 @@ test('credential blanking, store isolation, and the durable opt-out are intact',
     'BLOB_READ_WRITE_TOKEN', 'RESEND_API_KEY', 'OPENAI_API_KEY', 'FAL_KEY',
     'LULU_CLIENT_KEY', 'LULU_CLIENT_SECRET', 'STRIPE_SECRET_KEY',
   ]) {
-    assert.ok(CONFIG.includes(`'${name}'`), `${name} must still be stripped for the server`);
+    assert.ok(CONFIG_CODE.includes(`'${name}'`), `${name} must still be stripped for the server`);
   }
-  assert.match(CONFIG, /HSB_ORDER_STORE_DIR: E2E_STORE_DIR/);
-  assert.match(CONFIG, /HSB_REQUIRE_DURABLE_PERSISTENCE: 'false'/);
-  assert.match(CONFIG, /E2E_STORE_DIR = path\.join\(process\.cwd\(\), '\.e2e-store'\)/);
+  assert.match(CONFIG_CODE, /HSB_ORDER_STORE_DIR: E2E_STORE_DIR/);
+  assert.match(CONFIG_CODE, /HSB_REQUIRE_DURABLE_PERSISTENCE: 'false'/);
+  assert.match(CONFIG_CODE, /E2E_STORE_DIR = path\.join\(process\.cwd\(\), '\.e2e-store'\)/);
 });
