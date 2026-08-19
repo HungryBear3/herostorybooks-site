@@ -1,5 +1,6 @@
 import { getOrder } from './orders.ts';
 import { hasReviewWriteAccess } from './page-review.ts';
+import { getReviewTokenFromRequest } from './review-capability.ts';
 
 export interface ReviewWriteAuth {
   ok: boolean;
@@ -34,7 +35,7 @@ export async function authorizeCustomerReviewWrite(
   request: Request,
   orderId: string,
 ): Promise<ReviewWriteAuth> {
-  const token = new URL(request.url).searchParams.get('token');
+  const token = getReviewTokenFromRequest(request, orderId);
   const order = await getOrder(orderId);
   if (!order) return { ok: false, status: 404, error: 'order_not_found' };
   if (!hasReviewWriteAccess(order, { reviewToken: token })) {

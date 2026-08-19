@@ -202,6 +202,19 @@ export interface ReviewAuditEvent {
   meta?: Record<string, string | number | boolean | null> | null;
 }
 
+export interface PrivateArtifactRetentionMetadata {
+  createdAt: string;
+  retentionUntil: string;
+  deletionRequestedAt?: string | null;
+}
+
+export interface PrivateArtifactMetadata extends PrivateArtifactRetentionMetadata {
+  pathname: string;
+  sha256: string;
+  contentType: string;
+  bytes: number;
+}
+
 export interface ProofReleaseOverride {
   /** ISO timestamp this override/spot-check was recorded. */
   recordedAt: string;
@@ -257,6 +270,8 @@ export interface PageArtifact {
    *  into the proof fingerprint, so setting/clearing it invalidates any cached
    *  proof. Optional for backward compatibility. */
   proofCardOverride?: ProofCardOverride | null;
+  /** Optional server-only private-review artifact backing the tokenless proxy URL. */
+  privateReviewAsset?: PrivateArtifactMetadata | null;
 
   /** Internal-only flag set by an operator from the admin page-review grid
    *  to mark this page as needing a targeted regeneration in a later pass.
@@ -316,6 +331,7 @@ export interface OrderRecord extends OrderInput {
   fulfillmentAttempts?: number;
   fulfillmentLastError?: string | null;
   storyArtifactUrl?: string | null;
+  privateStoryArtifact?: PrivateArtifactMetadata | null;
   /** Persisted record of how the story was generated (template/openai/etc).
    *  Recorded by fulfillment once; optional for backward compatibility with older orders. */
   storyMeta?: import('./fulfillment-types.ts').StoryMeta | null;
@@ -342,6 +358,8 @@ export interface OrderRecord extends OrderInput {
   printCoverMd5?: string | null;
   printTitle?: string | null;
   proofApprovalToken?: string | null;
+  proofApprovalTokenHash?: string | null;
+  proofApprovalTokenExpiresAt?: string | null;
   proofApprovedAt?: string | null;
   /** ISO timestamp print was approved for production; optional for legacy/ops records. */
   printApprovedAt?: string | null;
@@ -1751,6 +1769,7 @@ type FulfillmentPatch = Partial<Pick<
   | 'fulfillmentAttempts'
   | 'fulfillmentLastError'
   | 'storyArtifactUrl'
+  | 'privateStoryArtifact'
   | 'layoutVersion'
   | 'storyMeta'
   | 'printInteriorArtifactUrl'
@@ -1763,6 +1782,8 @@ type FulfillmentPatch = Partial<Pick<
   | 'printSubmissionProofVersion'
   | 'printTitle'
   | 'proofApprovalToken'
+  | 'proofApprovalTokenHash'
+  | 'proofApprovalTokenExpiresAt'
   | 'proofApprovedAt'
   | 'customerProofReleasedAt'
   | 'proofReviewedAt'
@@ -1812,10 +1833,13 @@ const PAYMENT_GATED_FULFILLMENT_STATUSES: FulfillmentStatus[] = [
 
 function patchRequiresPaidOrder(patch: FulfillmentPatch): boolean {
   if (patch.storyArtifactUrl !== undefined) return true;
+  if (patch.privateStoryArtifact !== undefined) return true;
   if (patch.pageArtifacts !== undefined) return true;
   if (patch.printInteriorArtifactUrl !== undefined) return true;
   if (patch.printCoverArtifactUrl !== undefined) return true;
   if (patch.proofApprovalToken !== undefined) return true;
+  if (patch.proofApprovalTokenHash !== undefined) return true;
+  if (patch.proofApprovalTokenExpiresAt !== undefined) return true;
   if (patch.customerProofReleasedAt !== undefined) return true;
   if (patch.printJobId !== undefined) return true;
   if (patch.status === 'preview_ready' || patch.status === 'print_in_production' || patch.status === 'shipped') return true;

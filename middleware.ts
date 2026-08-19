@@ -33,6 +33,7 @@ import {
  */
 
 const FAMILY_REVIEW_PATH = /^\/(?:api\/)?family-review(?:\/|$)/;
+const CUSTOMER_REVIEW_PRIVATE_PATH = /^\/(?:review\/|api\/order\/[^/]+\/(?:review|review-session|review-asset\/))/;
 const OPERATIONAL_NOINDEX_PATH = /^\/(?:admin|api|checkout|order|partner|review|status|thank-you)(?:\/|$)/;
 
 const FAMILY_REVIEW_CSP = [
@@ -69,6 +70,14 @@ function applyNoIndexHeaders(response: NextResponse): void {
   response.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet');
 }
 
+function applyCustomerReviewPrivacyHeaders(response: NextResponse): void {
+  applyNoIndexHeaders(response);
+  response.headers.set('Referrer-Policy', 'no-referrer');
+  if (!response.headers.has('Cache-Control')) {
+    response.headers.set('Cache-Control', 'private, no-store, max-age=0');
+  }
+}
+
 export function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const isFamilyReview = FAMILY_REVIEW_PATH.test(pathname);
@@ -80,6 +89,9 @@ export function middleware(request: NextRequest) {
   }
 
   const response = NextResponse.next();
+  if (CUSTOMER_REVIEW_PRIVATE_PATH.test(pathname)) {
+    applyCustomerReviewPrivacyHeaders(response);
+  }
   if (OPERATIONAL_NOINDEX_PATH.test(pathname)) {
     applyNoIndexHeaders(response);
   }
