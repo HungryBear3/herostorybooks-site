@@ -67,7 +67,7 @@ test('gift index carries route-owned OG/Twitter metadata matching its canonical'
   assert.match(giftIndex, /siteName:\s*['"]HeroStoryBooks['"]/);
   assert.match(giftIndex, /locale:\s*['"]en_US['"]/);
   assert.match(giftIndex, /type:\s*['"]website['"]/);
-  assert.match(giftIndex, /images:\s*\[\s*\{[^}]*url:\s*['"]\/assets\/og-social-share\.png['"][^}]*width:\s*1200[^}]*height:\s*630[^}]*\}/s);
+  assert.match(giftIndex, /images:\s*\[\s*\{[^}]*url:\s*['"]\/assets\/og-social-share\.png['"][^}]*width:\s*1200[^}]*height:\s*630[^}]*\}/);
   assert.match(giftIndex, /twitter:\s*\{/);
   assert.match(giftIndex, /card:\s*['"]summary_large_image['"]/);
 });
@@ -81,7 +81,7 @@ test('gift occasion detail carries route-owned OG/Twitter metadata sourced from 
   assert.match(giftDetail, /siteName:\s*['"]HeroStoryBooks['"]/);
   assert.match(giftDetail, /locale:\s*['"]en_US['"]/);
   assert.match(giftDetail, /type:\s*['"]website['"]/);
-  assert.match(giftDetail, /images:\s*\[\s*\{[^}]*url:\s*['"]\/assets\/og-social-share\.png['"][^}]*width:\s*1200[^}]*height:\s*630[^}]*\}/s);
+  assert.match(giftDetail, /images:\s*\[\s*\{[^}]*url:\s*['"]\/assets\/og-social-share\.png['"][^}]*width:\s*1200[^}]*height:\s*630[^}]*\}/);
   assert.match(giftDetail, /twitter:\s*\{/);
   assert.match(giftDetail, /card:\s*['"]summary_large_image['"]/);
 });
