@@ -59,6 +59,33 @@ test('homepage social metadata does not leak into child routes', () => {
   assert.match(homeSource, /\btwitter\s*:/);
 });
 
+test('gift index carries route-owned OG/Twitter metadata matching its canonical', () => {
+  const giftIndex = read('src/app/gifts/page.tsx');
+  assert.match(giftIndex, /import\s*\{[^}]*\bPRODUCTION_ORIGIN\b[^}]*\}\s*from\s*['"]@\/lib\/site-url['"]/);
+  assert.match(giftIndex, /openGraph:\s*\{/);
+  assert.match(giftIndex, /url:\s*`\$\{PRODUCTION_ORIGIN\}\/gifts`/);
+  assert.match(giftIndex, /siteName:\s*['"]HeroStoryBooks['"]/);
+  assert.match(giftIndex, /locale:\s*['"]en_US['"]/);
+  assert.match(giftIndex, /type:\s*['"]website['"]/);
+  assert.match(giftIndex, /images:\s*\[\s*\{[^}]*url:\s*['"]\/assets\/og-social-share\.png['"][^}]*width:\s*1200[^}]*height:\s*630[^}]*\}/s);
+  assert.match(giftIndex, /twitter:\s*\{/);
+  assert.match(giftIndex, /card:\s*['"]summary_large_image['"]/);
+});
+
+test('gift occasion detail carries route-owned OG/Twitter metadata sourced from the occasion and preserves the {} fallback', () => {
+  const giftDetail = read('src/app/gifts/[occasion]/page.tsx');
+  assert.match(giftDetail, /import\s*\{[^}]*\bPRODUCTION_ORIGIN\b[^}]*\}\s*from\s*['"]@\/lib\/site-url['"]/);
+  assert.match(giftDetail, /if \(!occasion\) return \{\};/, 'unknown occasion must still short-circuit to an empty metadata object');
+  assert.match(giftDetail, /openGraph:\s*\{/);
+  assert.match(giftDetail, /url:\s*`\$\{PRODUCTION_ORIGIN\}\/gifts\/\$\{occasion\.id\}`/);
+  assert.match(giftDetail, /siteName:\s*['"]HeroStoryBooks['"]/);
+  assert.match(giftDetail, /locale:\s*['"]en_US['"]/);
+  assert.match(giftDetail, /type:\s*['"]website['"]/);
+  assert.match(giftDetail, /images:\s*\[\s*\{[^}]*url:\s*['"]\/assets\/og-social-share\.png['"][^}]*width:\s*1200[^}]*height:\s*630[^}]*\}/s);
+  assert.match(giftDetail, /twitter:\s*\{/);
+  assert.match(giftDetail, /card:\s*['"]summary_large_image['"]/);
+});
+
 test('gift index is internally linked from the current editorial surface', () => {
   const editorialSource = read('src/components/editorial-site.tsx');
   assert.match(editorialSource, /['"]Gift ideas['"]\s*,\s*['"]\/gifts['"]/);
