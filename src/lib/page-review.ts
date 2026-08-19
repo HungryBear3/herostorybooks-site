@@ -60,6 +60,7 @@ import {
   type RecordCustomerTextChangeInput,
 } from './customer-text-change-request.ts';
 import { pageGenerationSourceFingerprint } from './review-source-identity.ts';
+import { hasAnyReviewCapability, hasReviewCapability } from './review-capability.ts';
 
 // Soft internal thresholds (runbook): warn at 3, manual review at 5.
 export const REGEN_WARNING_THRESHOLD = 3;
@@ -922,6 +923,7 @@ export interface ReviewAccessInput {
    *  once a proofApprovalToken exists, so a bare order id is not enough to
    *  open the public-facing proof review route. */
   reviewToken?: string | null;
+  now?: Date;
 }
 
 
@@ -1733,21 +1735,11 @@ export async function getReviewSnapshot(
 
 // ── Capability helpers ─────────────────────────────────────────────────────
 
-/** Constant-time token comparison. Never `===` on a secret. */
-function tokensMatch(stored: string, provided: string): boolean {
-  if (!stored || !provided || stored.length !== provided.length) return false;
-  try {
-    return crypto.timingSafeEqual(Buffer.from(stored), Buffer.from(provided));
-  } catch {
-    return false;
-  }
-}
-
 /** Public review reads are capability-gated for every order. Operator access
  * belongs on authenticated admin surfaces, never on this public helper. */
 export function hasReviewAccess(order: OrderRecord, input: ReviewAccessInput = {}): boolean {
-  if (!order.proofApprovalToken) return false;
-  return tokensMatch(order.proofApprovalToken, input.reviewToken ?? '');
+  if (!hasAnyReviewCapability(order)) return false;
+  return hasReviewCapability(order, input.reviewToken ?? '', input.now);
 }
 
 /**
@@ -1756,8 +1748,8 @@ export function hasReviewAccess(order: OrderRecord, input: ReviewAccessInput = {
  * a customer mutation.
  */
 export function hasReviewWriteAccess(order: OrderRecord, input: ReviewAccessInput = {}): boolean {
-  if (!order.proofApprovalToken) return false;
-  return tokensMatch(order.proofApprovalToken, input.reviewToken ?? '');
+  if (!hasAnyReviewCapability(order)) return false;
+  return hasReviewCapability(order, input.reviewToken ?? '', input.now);
 }
 
 export function reviewPathFor(orderId: string, token: string): string {
