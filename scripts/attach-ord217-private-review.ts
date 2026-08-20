@@ -109,7 +109,7 @@ function manifestRowsFromUnknown(input: unknown): Record<string, unknown>[] {
   throw new Error('manifest_rows_invalid');
 }
 
-function parseApprovedManifest(input: unknown): {
+export function parseApprovedManifest(input: unknown): {
   manifest: Ord217ApprovedManifest;
   pageScaffold: Array<Pick<Ord217PageInput, 'storyPage' | 'pdfPage' | 'assetId' | 'contentType' | 'bytes' | 'sha256' | 'storyText' | 'basePrompt'> & { fileName: string }>;
 } {
@@ -149,6 +149,29 @@ function parseApprovedManifest(input: unknown): {
     });
   }
   return { manifest: { rows }, pageScaffold };
+}
+
+export function parseApprovedManifestDocument(text: string): ReturnType<typeof parseApprovedManifest> {
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    return parseApprovedManifest(JSON.parse(trimmed) as unknown);
+  }
+
+  const rows: Record<string, unknown>[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*`([^`]+)`\s*\|\s*([\d,]+)\s*\|\s*`([a-fA-F0-9]{64})`\s*\|$/);
+    if (!match) continue;
+    rows.push({
+      storyPage: Number(match[1]),
+      pdfPage: Number(match[2]),
+      fileName: match[3],
+      bytes: Number(match[4].replaceAll(',', '')),
+      sha256: match[5].toLowerCase(),
+      contentType: 'image/png',
+    });
+  }
+  if (rows.length !== 24) throw new Error('manifest_markdown_row_count_mismatch');
+  return parseApprovedManifest({ rows });
 }
 
 async function loadPinnedFile(filePath: string, expectedSha256: string, expectedBytes?: number): Promise<Buffer> {
@@ -297,7 +320,7 @@ export async function runAttachOrd217PrivateReviewCli(argv: string[], deps: CliD
   if (normalizeSha(approval.sha256sumsSha256) !== ORD217_PINS.sha256sumsSha256) throw new Error('approval_sha256sums_mismatch');
   if (normalizeSha(approval.zipSha256) !== ORD217_PINS.zipSha256) throw new Error('approval_zip_mismatch');
 
-  const { manifest, pageScaffold } = parseApprovedManifest(JSON.parse(manifestBytes.toString('utf8')) as unknown);
+  const { manifest, pageScaffold } = parseApprovedManifestDocument(manifestBytes.toString('utf8'));
   const pages = await loadPageInputs(args.rendersDir, pageScaffold);
   const proof: Ord217ProofInput = {
     body: pdfBytes,
