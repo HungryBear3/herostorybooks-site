@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import os from 'node:os';
 import path from 'node:path';
 
-import { runAttachOrd217PrivateReviewCli } from '../scripts/attach-ord217-private-review.ts';
+import { parseApprovedManifestDocument, runAttachOrd217PrivateReviewCli } from '../scripts/attach-ord217-private-review.ts';
 import { createOrderRecord, OrderVersionConflictError } from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 import {
@@ -434,4 +434,24 @@ test('CLI refuses before any network call on local artifact hash or approval err
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('CLI parses the exact approved Markdown manifest table into 24 bound PNG rows', () => {
+  const lines = Array.from({ length: 24 }, (_, index) => {
+    const storyPage = index + 1;
+    const pdfPage = storyPage + 2;
+    const sha = crypto.createHash('sha256').update(`page-${storyPage}`).digest('hex');
+    return `| ${storyPage} | ${pdfPage} | \`renders/pdf-page-${String(pdfPage).padStart(2, '0')}.png\` | ${String(1000 + storyPage).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} | \`${sha}\` |`;
+  });
+  const parsed = parseApprovedManifestDocument([
+    '# manifest',
+    '| Story page | PDF page | Render | Bytes | SHA-256 |',
+    '|---:|---:|---|---:|---|',
+    ...lines,
+  ].join('\n'));
+  assert.equal(parsed.manifest.rows.length, 24);
+  assert.equal(parsed.manifest.rows[0]?.pdfPage, 3);
+  assert.equal(parsed.manifest.rows[23]?.pdfPage, 26);
+  assert.equal(parsed.manifest.rows[0]?.contentType, 'image/png');
+  assert.equal(parsed.pageScaffold[0]?.fileName, 'pdf-page-03.png');
 });
