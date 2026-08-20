@@ -455,3 +455,24 @@ test('CLI parses the exact approved Markdown manifest table into 24 bound PNG ro
   assert.equal(parsed.manifest.rows[0]?.contentType, 'image/png');
   assert.equal(parsed.pageScaffold[0]?.fileName, 'pdf-page-03.png');
 });
+
+test('legacy paid digital order may omit settledAmountCents when order price and fresh Stripe amount both match', async () => {
+  const { manifest, pages } = makePagesAndManifest();
+  const result = await runOrd217PrivateReviewAttachment(
+    {
+      mode: 'preflight',
+      env: { HSB_PRIVATE_READ_WRITE_TOKEN: 'private', BLOB_READ_WRITE_TOKEN: 'public' },
+      approval: makeApproval(),
+      manifest,
+      proof: makeProof(),
+      pages,
+    },
+    {
+      now: () => new Date(NOW),
+      readOrderVersioned: async () => ({ order: makeOrder({ settledAmountCents: undefined }), version: 'v1' }),
+      readStripeFacts: async () => makeStripeFacts(),
+      putPrivateArtifact: async () => { throw new Error('preflight_must_not_upload'); },
+    },
+  );
+  assert.equal(result.ok, true);
+});
