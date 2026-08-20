@@ -251,7 +251,7 @@ async function defaultReadStripeFacts(order: OrderRecord): Promise<Ord217StripeF
     disputed,
     livemode: session.livemode === true,
     amountCents: typeof session.amount_total === 'number' ? session.amount_total : 0,
-    product: typeof metadata?.bookFormat === 'string' ? metadata.bookFormat : 'unknown',
+    product: typeof metadata?.bookFormat === 'string' ? metadata.bookFormat : order.bookFormat,
   };
 }
 

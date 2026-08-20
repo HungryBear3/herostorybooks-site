@@ -261,7 +261,13 @@ function validatePrestate(order: OrderRecord, stripeFacts: Ord217StripeFacts): s
   if (order.refundedAt || order.stripeRefundId || order.refundClaimId || stripeFacts.refunded) return 'prestate_refunded';
   if (stripeFacts.disputed) return 'prestate_disputed';
   if (!stripeFacts.livemode) return 'prestate_not_live';
-  if (stripeFacts.product !== 'digital' || stripeFacts.amountCents !== 1900 || order.settledAmountCents !== 1900) {
+  if (
+    order.bookFormat !== 'digital'
+    || order.priceCents !== 1900
+    || stripeFacts.product !== 'digital'
+    || stripeFacts.amountCents !== 1900
+    || (order.settledAmountCents != null && order.settledAmountCents !== 1900)
+  ) {
     return 'prestate_price_or_product_mismatch';
   }
   if (order.status !== 'order_received') return 'prestate_status_mismatch';
