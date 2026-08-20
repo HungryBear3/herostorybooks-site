@@ -8,6 +8,7 @@ import { scheduleOrderConfirmationEmail } from '@/lib/order-confirmation-kickoff
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
 import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment, recordPrintUpgradeSettlementConflict } from '@/lib/print-upgrades';
 import { isExactSettledCheckoutSession } from '@/lib/checkout-session-confirmation';
+import { scheduleGa4Purchase } from '@/lib/ga4-purchase';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -154,6 +155,15 @@ export async function POST(request: Request) {
           `Stripe webhook: recorded print upgrade for ${upgradeOrderId} session=${session.id}; ` +
             `manual print-go still required after QA`,
         );
+        scheduleGa4Purchase({
+          transactionId: session.id,
+          amountCents: session.amount_total ?? 0,
+          currency: session.currency,
+          itemId: `print_upgrade_${targetFormat}`,
+          itemName: `Print upgrade: ${targetFormat}`,
+          paymentStatus: session.payment_status,
+          clientId: session.metadata?.gaClientId,
+        }, after);
       } catch (err) {
         console.error(`Stripe webhook: failed to process print upgrade for ${upgradeOrderId}:`, err);
         return NextResponse.json({ error: 'Processing failed' }, { status: 500 });
@@ -229,6 +239,15 @@ export async function POST(request: Request) {
       if (existing?.stripeSessionId === session.id) {
         if (existing.paymentStatus === 'paid') {
           console.warn(`Stripe webhook: session ${session.id} already processed — skipping payment update`);
+          scheduleGa4Purchase({
+            transactionId: session.id,
+            amountCents: session.amount_total ?? 0,
+            currency: session.currency,
+            itemId: `book_${existing.bookFormat}`,
+            itemName: `HeroStoryBooks ${existing.bookFormat}`,
+            paymentStatus: session.payment_status,
+            clientId: session.metadata?.gaClientId,
+          }, after);
           scheduleOrderConfirmationEmail(existing, { afterImpl: after });
           if (!existing.fulfillmentStatus || existing.fulfillmentStatus === 'not_started') {
             // Repair path: a prior webhook/replay marked the order paid but
@@ -303,6 +322,15 @@ export async function POST(request: Request) {
       }
 
       scheduleOrderConfirmationEmail(updated, { afterImpl: after });
+      scheduleGa4Purchase({
+        transactionId: session.id,
+        amountCents: session.amount_total ?? 0,
+        currency: session.currency,
+        itemId: `book_${updated.bookFormat}`,
+        itemName: `HeroStoryBooks ${updated.bookFormat}`,
+        paymentStatus: session.payment_status,
+        clientId: session.metadata?.gaClientId,
+      }, after);
 
       // Webhook contract:
       //   - The payment write (above) is awaited so the order is durably

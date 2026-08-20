@@ -38,17 +38,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 window.gtag = window.gtag || gtag;
                 var pageLocation = window.location.origin + window.location.pathname;
                 var pageReferrer = '';
+                var ignoreReferrer = false;
                 try {
                   if (document.referrer) {
                     var referrerUrl = new URL(document.referrer);
-                    pageReferrer = referrerUrl.origin + referrerUrl.pathname;
+                    ignoreReferrer = referrerUrl.hostname.toLowerCase() === 'checkout.stripe.com';
+                    if (!ignoreReferrer) pageReferrer = referrerUrl.origin + referrerUrl.pathname;
                   }
                 } catch (_) {}
                 gtag('js', new Date());
                 gtag('config', '${googleAnalyticsMeasurementId}', {
                   send_page_view: false,
                   page_location: pageLocation,
-                  page_referrer: pageReferrer
+                  page_referrer: pageReferrer,
+                  ignore_referrer: ignoreReferrer
                 });
               `}
             </Script>

@@ -19,7 +19,7 @@ import {
   STORY_THEMES,
 } from "@/lib/story-catalog";
 import { getFathersDayCountdown } from "@/lib/fathers-day";
-import { track } from "@/lib/analytics";
+import { currentGaClientId, track } from "@/lib/analytics";
 import { buildAutoShrinkNotice, shrinkPhotoForUpload } from "@/lib/photo-upload";
 import {
   createSupportingCharacterDraft,
@@ -453,7 +453,7 @@ export function CheckoutForm() {
       setForm((prev) => ({ ...prev, ...queryPrefill }));
     }
 
-    track("start_checkout", {
+    track("begin_checkout", {
       hadSavedProgress: Boolean(saved && (saved.childName || saved.theme)),
       formatFromUrl: nextFormat || null,
       childNameFromUrl: childNameFromUrl ? "yes" : "no",
@@ -932,6 +932,8 @@ export function CheckoutForm() {
       const checkoutTracking = checkoutTrackingFromSearchParams(new URLSearchParams(window.location.search));
       if (checkoutTracking?.cohort) payload.set("cohort", checkoutTracking.cohort);
       if (checkoutTracking?.invite) payload.set("invite", checkoutTracking.invite);
+      const gaClientId = currentGaClientId();
+      if (gaClientId) payload.set("gaClientId", gaClientId);
       if (form.photoFile) {
         payload.set("photo", form.photoFile);
       }

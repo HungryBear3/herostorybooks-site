@@ -18,6 +18,8 @@ test('root layout loads the Google Analytics gtag script with the production mea
   assert.match(layoutSource, /send_page_view: false/);
   assert.match(layoutSource, /page_location: pageLocation/);
   assert.match(layoutSource, /page_referrer: pageReferrer/);
+  assert.match(layoutSource, /ignore_referrer: ignoreReferrer/);
+  assert.match(layoutSource, /referrerUrl\.hostname\.toLowerCase\(\) === 'checkout\.stripe\.com'/);
   assert.match(layoutSource, /<AnalyticsPageView \/>/);
 });
 
@@ -125,5 +127,55 @@ test('runtime payload strips PII and preserves first-touch campaign attribution 
         value: priorDocument,
       });
     }
+  }
+});
+
+test('Stripe Checkout returns preserve the original session attribution', async () => {
+  const calls: unknown[][] = [];
+  const priorWindow = globalThis.window;
+  const priorDocument = globalThis.document;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      location: new URL('https://herostorybooks.com/thank-you'),
+      gtag: (...args: unknown[]) => calls.push(args),
+      sessionStorage: { getItem: () => null, setItem: () => undefined },
+    },
+  });
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { referrer: 'https://checkout.stripe.com/c/pay/cs_live_private' },
+  });
+
+  try {
+    const { isUnwantedReferral, trackPageView } = await import('../src/lib/analytics.ts');
+    assert.equal(isUnwantedReferral('https://checkout.stripe.com/c/pay/private'), true);
+    assert.equal(isUnwantedReferral('https://facebook.com/story'), false);
+    trackPageView('/thank-you');
+    const eventCall = calls.find((call) => call[0] === 'event' && call[1] === 'page_view');
+    assert.ok(eventCall);
+    assert.equal((eventCall[2] as Record<string, unknown>).page_referrer, '');
+    assert.equal((eventCall[2] as Record<string, unknown>).ignore_referrer, true);
+    assert.doesNotMatch(JSON.stringify(calls), /cs_live_private/);
+  } finally {
+    if (priorWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
+    else Object.defineProperty(globalThis, 'window', { configurable: true, value: priorWindow });
+    if (priorDocument === undefined) Reflect.deleteProperty(globalThis, 'document');
+    else Object.defineProperty(globalThis, 'document', { configurable: true, value: priorDocument });
+  }
+});
+
+test('GA cookie parsing returns only the anonymous GA client id', async () => {
+  const priorDocument = globalThis.document;
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { cookie: 'other=x; _ga=GA1.1.123456789.987654321; consent=yes' },
+  });
+  try {
+    const { currentGaClientId } = await import('../src/lib/analytics.ts');
+    assert.equal(currentGaClientId(), '123456789.987654321');
+  } finally {
+    if (priorDocument === undefined) Reflect.deleteProperty(globalThis, 'document');
+    else Object.defineProperty(globalThis, 'document', { configurable: true, value: priorDocument });
   }
 });

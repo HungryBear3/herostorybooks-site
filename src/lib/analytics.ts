@@ -74,13 +74,15 @@ export function trackCheckoutStart(variant: CoverVariant) {
 export type HsbEventName =
   | 'page_view'
   | 'name_preview_submitted'
+  | 'begin_checkout'
   | 'start_checkout'
   | 'format_selected'
   | 'story_selected'
   | 'order_submit_attempt'
   // Aliased name kept for the brief's "purchase_intent" terminology;
   // emitted alongside order_submit_attempt for downstream flexibility.
-  | 'purchase_intent';
+  | 'purchase_intent'
+  | 'proof_approved';
 
 export interface HsbEventRecord {
   event: HsbEventName;
@@ -185,10 +187,34 @@ function sanitizedPageLocation(): string | undefined {
   return `${window.location.origin ?? ''}${window.location.pathname ?? ''}`;
 }
 
+const unwantedReferralHosts = new Set(['checkout.stripe.com']);
+
+export function isUnwantedReferral(referrer: string): boolean {
+  if (!referrer) return false;
+  try {
+    return unwantedReferralHosts.has(new URL(referrer).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+export function currentGaClientId(): string | null {
+  if (typeof document === 'undefined') return null;
+  const gaCookie = document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith('_ga='));
+  if (!gaCookie) return null;
+  const value = decodeURIComponent(gaCookie.slice(4));
+  const match = value.match(/^GA\d+\.\d+\.(\d+\.\d+)$/);
+  return match?.[1] ?? null;
+}
+
 function sanitizedPageReferrer(): string {
   if (typeof document === 'undefined' || !document.referrer) return '';
   try {
     const referrer = new URL(document.referrer);
+    if (isUnwantedReferral(referrer.href)) return '';
     return `${referrer.origin}${referrer.pathname}`;
   } catch {
     return '';
@@ -200,6 +226,9 @@ function googleSafeProps(input: Record<string, unknown>): Record<string, unknown
   const pageLocation = sanitizedPageLocation();
   if (pageLocation) props.page_location = pageLocation;
   props.page_referrer = sanitizedPageReferrer();
+  if (typeof document !== 'undefined' && isUnwantedReferral(document.referrer)) {
+    props.ignore_referrer = true;
+  }
   return props;
 }
 

@@ -64,7 +64,7 @@ test('NamePreview hands checkout prefill through sessionStorage without putting 
 
 test('NamePreview + checkout fire shared analytics events', () => {
   assert.match(namePreviewSource, /track\(["']name_preview_submitted["']/);
-  assert.match(checkoutFormSource, /track\(["']start_checkout["']/);
+  assert.match(checkoutFormSource, /track\(["']begin_checkout["']/);
   assert.match(checkoutFormSource, /track\(["']format_selected["']/);
   assert.match(checkoutFormSource, /track\(["']story_selected["']/);
   assert.match(checkoutFormSource, /track\(["']order_submit_attempt["']/);
