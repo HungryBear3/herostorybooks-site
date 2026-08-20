@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { PageArtifact } from '@/lib/orders';
+import { track } from '@/lib/analytics';
 import { hasUnresolvedChangeRequests } from '@/lib/customer-text-change-request';
 import {
   canOfferCustomerLayoutEditing,
@@ -683,6 +684,7 @@ Confirm you reviewed the full {snapshot.isPrint ? 'proof PDF' : 'PDF'} above to 
                       return;
                     }
                     applyIfCurrent(token, data.snapshot);
+                    track('proof_approved', { bookFormat: snapshot.bookFormat });
                     setShowApprovalConfirm(false);
                     setNotice('Approved — thank you. Our team will complete the final production check before print release.');
                     setTimeout(() => {

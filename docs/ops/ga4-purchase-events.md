@@ -2,7 +2,11 @@
 
 HSB emits GA4's recommended `purchase` event from the signed Stripe webhook,
 after the durable order/payment write. The event uses Stripe's Checkout Session
-ID as `transaction_id`, allowing GA4 to deduplicate webhook replays. Amount,
+ID as `transaction_id`, allowing GA4 to deduplicate webhook replays. The
+anonymous GA client ID is captured at checkout and carried in Stripe metadata
+so the server-verified purchase remains attached to the originating GA session.
+If it is unavailable, a transaction-derived fallback keeps revenue measurable
+without collecting identity data. Amount,
 currency, and product format come from server-side Stripe/order records; names,
 email, addresses, uploaded media, and other customer data are never sent.
 

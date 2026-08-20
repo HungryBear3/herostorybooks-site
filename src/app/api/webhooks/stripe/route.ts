@@ -162,6 +162,7 @@ export async function POST(request: Request) {
           itemId: `print_upgrade_${targetFormat}`,
           itemName: `Print upgrade: ${targetFormat}`,
           paymentStatus: session.payment_status,
+          clientId: session.metadata?.gaClientId,
         }, after);
       } catch (err) {
         console.error(`Stripe webhook: failed to process print upgrade for ${upgradeOrderId}:`, err);
@@ -245,6 +246,7 @@ export async function POST(request: Request) {
             itemId: `book_${existing.bookFormat}`,
             itemName: `HeroStoryBooks ${existing.bookFormat}`,
             paymentStatus: session.payment_status,
+            clientId: session.metadata?.gaClientId,
           }, after);
           scheduleOrderConfirmationEmail(existing, { afterImpl: after });
           if (!existing.fulfillmentStatus || existing.fulfillmentStatus === 'not_started') {
@@ -327,6 +329,7 @@ export async function POST(request: Request) {
         itemId: `book_${updated.bookFormat}`,
         itemName: `HeroStoryBooks ${updated.bookFormat}`,
         paymentStatus: session.payment_status,
+        clientId: session.metadata?.gaClientId,
       }, after);
 
       // Webhook contract:

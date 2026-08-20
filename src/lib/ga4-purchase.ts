@@ -7,6 +7,7 @@ export interface Ga4PurchaseInput {
   itemId: string;
   itemName: string;
   paymentStatus?: string | null;
+  clientId?: string | null;
 }
 
 interface Ga4PurchaseDeps {
@@ -27,6 +28,12 @@ function isVerifiedPayment(status: string | null | undefined): boolean {
   return status === 'paid' || status === 'no_payment_required';
 }
 
+export function sanitizeGaClientId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return /^\d{1,20}\.\d{1,20}$/.test(trimmed) ? trimmed : null;
+}
+
 /**
  * Sends GA4's recommended purchase event from trusted Stripe webhook data.
  * Stripe Checkout Session IDs are stable across webhook replays and GA4
@@ -43,7 +50,8 @@ export async function sendGa4Purchase(
 
   const value = Math.max(0, Math.trunc(input.amountCents)) / 100;
   const currency = (input.currency || 'usd').toUpperCase();
-  const clientId = `hsb.${createHash('sha256').update(input.transactionId).digest('hex').slice(0, 24)}`;
+  const clientId = sanitizeGaClientId(input.clientId)
+    ?? `hsb.${createHash('sha256').update(input.transactionId).digest('hex').slice(0, 24)}`;
   const endpoint = new URL('https://www.google-analytics.com/mp/collect');
   endpoint.searchParams.set('measurement_id', config.measurementId);
   endpoint.searchParams.set('api_secret', config.apiSecret);

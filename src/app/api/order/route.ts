@@ -28,6 +28,7 @@ import {
   missingSupportingCharacterDescriptionLabels,
 } from '@/lib/checkout-photo-policy';
 import { buildCheckoutTracking } from '@/lib/checkout-tracking';
+import { sanitizeGaClientId } from '@/lib/ga4-purchase';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
@@ -145,6 +146,7 @@ export async function POST(request: Request) {
       cohort: form.get('cohort'),
       invite: form.get('invite'),
     });
+    const gaClientId = sanitizeGaClientId(form.get('gaClientId'));
     const childName = String(form.get('childName') || '').trim();
     const email = String(form.get('email') || '').trim();
     const bookFormat = String(form.get('bookFormat') || 'classic').trim();
@@ -654,6 +656,7 @@ export async function POST(request: Request) {
       client_reference_id: order.id,
       metadata: {
         orderId: order.id,
+        ...(gaClientId ? { gaClientId } : {}),
         ...(order.checkoutTracking?.cohort ? { cohort: order.checkoutTracking.cohort } : {}),
         ...(order.checkoutTracking?.invite ? { invite: order.checkoutTracking.invite } : {}),
       },

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { scheduleGa4Purchase, sendGa4Purchase } from '../src/lib/ga4-purchase.ts';
+import { sanitizeGaClientId, scheduleGa4Purchase, sendGa4Purchase } from '../src/lib/ga4-purchase.ts';
 
 const configuredEnv = {
   GA4_MEASUREMENT_ID: 'G-TEST123',
@@ -17,6 +17,7 @@ test('sends a recommended purchase event using trusted cents and no PII', async 
     itemId: 'book_digital',
     itemName: 'HeroStoryBooks digital',
     paymentStatus: 'paid',
+    clientId: '123456789.987654321',
   }, {
     env: configuredEnv,
     fetchImpl: async (input, init) => {
@@ -29,11 +30,19 @@ test('sends a recommended purchase event using trusted cents and no PII', async 
   assert.match(request!.url, /measurement_id=G-TEST123/);
   const payload = JSON.parse(request!.body);
   assert.equal(payload.events[0].name, 'purchase');
+  assert.equal(payload.client_id, '123456789.987654321');
   assert.equal(payload.events[0].params.transaction_id, 'cs_live_stable');
   assert.equal(payload.events[0].params.value, 19.99);
   assert.equal(payload.events[0].params.currency, 'USD');
   assert.equal(payload.events[0].params.items[0].item_id, 'book_digital');
   assert.doesNotMatch(request!.body, /email|child|customer|shipping/i);
+});
+
+test('accepts only GA client-id shape and never forwards arbitrary identifiers', () => {
+  assert.equal(sanitizeGaClientId(' 123.456 '), '123.456');
+  assert.equal(sanitizeGaClientId('GA1.1.123.456'), null);
+  assert.equal(sanitizeGaClientId('parent@example.com'), null);
+  assert.equal(sanitizeGaClientId('123.456.789'), null);
 });
 
 test('unpaid sessions and missing configuration are no-ops', async () => {
