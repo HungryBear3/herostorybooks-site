@@ -14,3 +14,32 @@ export const PROOF_TURNAROUND_WINDOW = '2–3 business days';
 
 /** Common full phrase, e.g. "Digital proof usually ready in 2–3 business days". */
 export const PROOF_TURNAROUND_PHRASE = `usually ready in ${PROOF_TURNAROUND_WINDOW}`;
+
+/**
+ * Honest processing-expectation copy that pairs with the window above.
+ *
+ * These exist so no surface has to invent its own queue/capacity wording. They
+ * deliberately carry NO new numeric SLA: `PROOF_TURNAROUND_WINDOW` is the only
+ * authorized customer-facing number (Alexy decision 2026-07-26) and there is no
+ * project record authorizing a second one. They also never promise instant,
+ * same-day, or guaranteed proof preparation, and never conflate proof readiness
+ * with printing/shipping — printing and shipping language stays on the
+ * per-format delivery strings that already say "after approval".
+ */
+
+/** Manual-QA truth: a person reviews the book before the proof goes out. */
+export const PROOF_REVIEW_ASSURANCE =
+  'Every book is personally reviewed before we send you the proof.';
+
+/**
+ * Volume honesty. This is the customer-facing replacement for any hard intake
+ * cap: instead of refusing an order, we tell the buyer that a busy queue means
+ * a longer wait. No queue position or date is stated because no customer-facing
+ * queue telemetry exists.
+ */
+export const PROOF_VOLUME_NOTE =
+  'When order volume is high, proofs can take longer than usual — we email you as soon as yours is ready.';
+
+/** Support path for an unusually delayed order. Exposes no private order data. */
+export const PROOF_DELAY_SUPPORT_NOTE =
+  'If your proof is taking longer than you expected, reply to any Hero Story Books email or write to support@herostorybooks.com and we will check on it.';

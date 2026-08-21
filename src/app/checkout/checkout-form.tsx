@@ -4,7 +4,11 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from "@/lib/checkout-flow";
-import { PROOF_TURNAROUND_WINDOW } from "@/lib/proof-turnaround";
+import {
+  PROOF_REVIEW_ASSURANCE,
+  PROOF_TURNAROUND_WINDOW,
+  PROOF_VOLUME_NOTE,
+} from "@/lib/proof-turnaround";
 import { checkoutTrackingFromSearchParams } from "@/lib/checkout-tracking";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
 import { GuidedPhotoCapture } from "@/components/checkout/GuidedPhotoCapture";
@@ -2581,7 +2585,8 @@ export function CheckoutForm() {
                     <strong className="block text-[#241914]">
                       We send a digital proof
                     </strong>
-                    Usually in {PROOF_TURNAROUND_WINDOW}, you get a private link to review every page before anything prints.
+                    Usually in {PROOF_TURNAROUND_WINDOW}, you get a private link to review every page before anything prints.{" "}
+                    {PROOF_REVIEW_ASSURANCE} {PROOF_VOLUME_NOTE}
                   </span>
                 </li>
                 <li className="flex gap-3">

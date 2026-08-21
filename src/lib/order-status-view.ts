@@ -1,5 +1,6 @@
 import type { OrderRecord } from './orders.ts';
 import { isPrintFormat } from './orders.ts';
+import { PROOF_DELAY_SUPPORT_NOTE, PROOF_VOLUME_NOTE } from './proof-turnaround.ts';
 
 export type TimelineStepState = 'done' | 'active' | 'pending' | 'failed';
 
@@ -22,6 +23,12 @@ export interface OrderStatusView {
   tracking?: { number?: string; url?: string; shippedAt?: string };
   timeline: TimelineStep[];
   supportBlurb: string;
+  /**
+   * Honest queue expectation, shown only while a paid order is still being
+   * prepared. Carries no queue position or date (we have no customer-facing
+   * queue telemetry) and never contradicts the per-stage subhead above it.
+   */
+  processingNote?: string;
 }
 
 function step(
@@ -74,10 +81,18 @@ export function buildOrderStatusView(order: OrderRecord): OrderStatusView {
     };
   }
 
-  if (isPrint) {
-    return enrichPrint(view, order, fulfillment);
+  const enriched = isPrint
+    ? enrichPrint(view, order, fulfillment)
+    : enrichDigital(view, order, fulfillment);
+
+  // Still working on it: 'neutral' is the in-progress tone. 'success' means the
+  // book/proof already reached the customer and 'action' means it is their turn,
+  // so neither should carry a wait-time note.
+  if (enriched.tone === 'neutral') {
+    enriched.processingNote = `${PROOF_VOLUME_NOTE} ${PROOF_DELAY_SUPPORT_NOTE}`;
   }
-  return enrichDigital(view, order, fulfillment);
+
+  return enriched;
 }
 
 function enrichDigital(

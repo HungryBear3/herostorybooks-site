@@ -25,6 +25,9 @@ export default async function StatusPage({ params }: StatusPageProps) {
             {view.headline}
           </h1>
           <p className="text-base text-gray-600 max-w-lg mx-auto">{view.subhead}</p>
+          {view.processingNote && (
+            <p className="text-sm text-gray-500 max-w-lg mx-auto">{view.processingNote}</p>
+          )}
           <p className="text-xs text-gray-400 pt-1">Order ID · {order.id}</p>
         </header>
 

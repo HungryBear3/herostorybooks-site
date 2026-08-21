@@ -1,7 +1,11 @@
 import Link from 'next/link';
 import { NamePreview } from '@/components/name-preview';
 import { getFathersDayCountdown, type FathersDayCountdown } from '@/lib/fathers-day';
-import { PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
+import {
+  PROOF_REVIEW_ASSURANCE,
+  PROOF_TURNAROUND_WINDOW,
+  PROOF_VOLUME_NOTE,
+} from '@/lib/proof-turnaround';
 
 type TierId = 'digital' | 'softcover' | 'hardcover';
 
@@ -264,7 +268,7 @@ const hardcoverPhotoSample = {
 const faqs: Array<[string, string]> = [
   ['How personalized is the book?', 'Fully customizable. Every book can use your child’s name, age, interests, dedication, photo/character notes, and an optional 30-second voice note so the story can reflect their own ideas and phrases. We make the child the hero of the story instead of dropping their name into a generic template.'],
   ['Do I approve it before printing? Can I request changes?', 'Yes — and always. Physical books are not printed until you approve the digital proof. Reply to the proof email with any changes: story wording, photo placement, dedication, character details, scene tone. Revisions before approval are included, not an upsell.'],
-  ['How long does it take from order to delivery?', `Digital proofs are usually ready in ${PROOF_TURNAROUND_WINDOW}. After you approve, digital PDFs are delivered the same day; printed books ship 5–7 business days after approval, then US delivery is typically 3–5 days. We don’t guarantee specific holiday-delivery dates because carriers can vary.`],
+  ['How long does it take from order to delivery?', `Digital proofs are usually ready in ${PROOF_TURNAROUND_WINDOW}. ${PROOF_REVIEW_ASSURANCE} ${PROOF_VOLUME_NOTE} After you approve, digital PDFs are delivered the same day; printed books ship 5–7 business days after approval, then US delivery is typically 3–5 days. We don’t guarantee specific holiday-delivery dates because carriers can vary.`],
   ['Will it arrive in time for a birthday or gift deadline?', 'Most US printed orders that approve their proof at least 9–12 days before the date arrive in time, but we don’t promise specific dates — shipping carriers vary. If timing is tight, the Digital PDF is a reliable fallback you can print at home or share instantly.'],
   ['Which option is safest for a gift with a deadline?', 'The Digital PDF. Once you approve the proof, it’s delivered the same day with no printing or shipping step, so there’s no carrier timing risk — you can print it at home or share it instantly. A printed softcover or hardcover is an optional upgrade that ships after approval; arrival depends on the order date, proof approval timing, and your carrier.'],
   ['What if my photo isn’t ready yet — can I still order?', 'Yes. Place the order when you are ready; the proof clock starts when we receive your photo. Digital orders have no shipping step — you can approve and download as soon as the proof is ready.'],
@@ -858,7 +862,7 @@ function SeasonalCallout() {
         <div>
           <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">Gift-ready options</div>
           <h2 className="font-serif text-4xl font-medium leading-tight md:text-5xl">A personalized book with no blind print order.</h2>
-          <p className="mt-4 text-base leading-7 text-[#695f54]">We email your digital proof first, usually in {PROOF_TURNAROUND_WINDOW}. Once you approve, the Digital PDF is delivered the same day — no printing or shipping step.</p>
+          <p className="mt-4 text-base leading-7 text-[#695f54]">We email your digital proof first, usually in {PROOF_TURNAROUND_WINDOW}. {PROOF_REVIEW_ASSURANCE} {PROOF_VOLUME_NOTE} Once you approve, the Digital PDF is delivered the same day — no printing or shipping step.</p>
           <p className="mt-3 text-sm leading-6 text-[#695f54]">Want a printed keepsake too? Add a softcover or hardcover as an optional upgrade. Printed books ship after proof approval, and carrier timing can vary.</p>
           <p className="mt-3 text-sm font-medium leading-6 text-[#1f1a16]">Every order includes a full digital proof before anything prints, human story and art review, and no blind hardcover order.</p>
           <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
