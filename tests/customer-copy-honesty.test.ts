@@ -48,6 +48,19 @@ function withoutComments(src: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 }
 
+/**
+ * The private friends-and-family custom-memory beta is a DIFFERENT product with
+ * a real enforced gate: src/app/api/order/route.ts refuses checkout with
+ * `custom_story_manual_review_required` unless the brief's shape is
+ * concierge-allowed. Its human-review copy is therefore accurate, not a blanket
+ * every-order promise. A test below asserts that gate still exists, so if it is
+ * ever removed these files stop being exempt.
+ */
+const CONCIERGE_BETA_WITH_ENFORCED_GATE = new Set([
+  'src/app/create/your-memory/page.tsx',
+  'src/app/create/your-memory/paid-memory-beta-form.tsx',
+]);
+
 /** Every served, non-admin source file — customer-reachable copy lives here. */
 function servedSources(): string[] {
   const out: string[] = [];
@@ -57,7 +70,7 @@ function servedSources(): string[] {
       if (statSync(full).isDirectory()) {
         if (entry === 'admin' || entry === 'node_modules') continue;
         walk(full);
-      } else if (full.endsWith('.ts') || full.endsWith('.tsx')) {
+      } else if ((full.endsWith('.ts') || full.endsWith('.tsx')) && !CONCIERGE_BETA_WITH_ENFORCED_GATE.has(full)) {
         out.push(full);
       }
     }
@@ -67,14 +80,87 @@ function servedSources(): string[] {
 }
 
 /**
- * Claims of a human checking the work before the customer sees it. Written to
- * catch the paraphrase, not just the exact sentence that shipped.
+ * Claims that a human checks the work before the customer sees it.
+ *
+ * Rex's audit of d11cc20 blocked because the first version of this list was
+ * induced from the one sentence that had shipped, so it only recognised VERB
+ * constructions ("every book is personally reviewed before we send the proof")
+ * and missed the two live NOUN-PHRASE claims: the trust-strip bullet
+ * "Human story and art review" and "Every order includes … human story and art
+ * review …". Both are absolute every-order promises with no verb at all.
+ *
+ * The list is now organised by claim shape, and the predicate is exported and
+ * driven by fixtures below so the grammar is tested directly.
  */
+const HUMAN = String.raw`(?:human|person|people|editor|artist|our\s+team|a\s+real\s+person)`;
+const REVIEW = String.raw`(?:review|reviewed|reviews|check|checked|checks|inspect|inspected|proofread|vet|vetted)`;
+const PRODUCT = String.raw`(?:story|art|artwork|page|pages|book|books|proof|proofs|illustration|illustrations|copy|editorial|quality)`;
+
 const HUMAN_REVIEW_CLAIMS: Array<[string, RegExp]> = [
-  ['every book personally/manually reviewed', /\bevery\s+(book|order|page|proof)\b[^.]{0,50}\b(personally|manually|hand)[- ]?(review|check|inspect)/i],
-  ['personally reviewed before the proof', /\b(personally|manually)\s+(review|checked|inspected)[^.]{0,60}\bbefore\b[^.]{0,40}\bproof\b/i],
-  ['a person checks every page', /\b(a\s+)?(person|human|editor|artist|our team)\b[^.]{0,40}\b(check|review|inspect)[a-z]*\b[^.]{0,30}\bevery\s+(page|book|proof)\b/i],
-  ['QA approval before release', /\b(QA|quality)\b[^.]{0,30}\b(approv|sign[- ]?off|pass)[a-z]*\b[^.]{0,40}\bbefore\b[^.]{0,40}\b(proof|release|send|email)/i],
+  ['every book personally/manually reviewed', /\bevery\s+(book|order|page|proof)\b[^.;!?]{0,50}\b(personally|manually|hand)[- ]?(review|check|inspect)/i],
+  ['personally reviewed before the proof', /\b(personally|manually)\s+(review|checked|inspected)[^.;!?]{0,60}\bbefore\b[^.;!?]{0,40}\bproof\b/i],
+  ['a person checks every page', new RegExp(String.raw`\b(?:a\s+)?${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}[a-z]*\b[^.;!?]{0,30}\bevery\s+(page|book|proof|order)\b`, 'i')],
+  ['QA approval before release', /\b(QA|quality)\b[^.;!?]{0,30}\b(approv|sign[- ]?off|pass)[a-z]*\b[^.;!?]{0,40}\bbefore\b[^.;!?]{0,40}\b(proof|release|send|email)/i],
+  // HSB-QA-1a: the bare noun phrase, no verb, no "every" — e.g. the trust-strip
+  // bullet "Human story and art review". Only words naming the PRODUCT (or the
+  // conjunctions joining them) may sit between the two halves, so an unrelated
+  // narrow statement like "Saved with this person for operator review" — which
+  // is about one optional supporting-character photo, not an every-order gate —
+  // does not match.
+  ['human review as a bare feature claim', new RegExp(String.raw`\b${HUMAN}\b(?:\s+(?:${PRODUCT}|and|or|the|your))*\s+${REVIEW}\b`, 'i')],
+  // HSB-QA-1b: "Every order includes … human story and art review".
+  ['every order includes human review', new RegExp(String.raw`\bevery\s+(?:order|book|proof|page)\b[^.;!?]{0,80}\b${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}\b`, 'i')],
+  ['human-reviewed compound', /\b(human|hand)[- ]reviewed\b/i],
+  ['reviewed by our team', new RegExp(String.raw`\b${REVIEW}[a-z]*\s+by\s+(?:a\s+|our\s+)?${HUMAN}\b`, 'i')],
+];
+
+/**
+ * A human step that is explicitly THRESHOLD-SCOPED is escalation, not an
+ * every-order promise, and it is real: page-review.ts crosses
+ * REGEN_MANUAL_REVIEW_THRESHOLD and fires sendRegenManualReviewAlert. The live
+ * sentence it protects is "after 5, the page is flagged for a human quality
+ * check". A test below asserts that threshold behavior still exists, so the
+ * allowance stays earned rather than assumed.
+ */
+const THRESHOLD_SCOPED = /\bafter\s+(?:\d+|three|four|five)\b|\bif\b|\bmay\s+step\s+in\b|\bexceeds?\b/i;
+
+function clausesOf(text: string): string[] {
+  return text.split(/[.;!?\n·]+/g).map((c) => c.trim()).filter(Boolean);
+}
+
+/** Label of the first unsupported human-review claim found, or null. */
+export function bannedHumanReviewClaim(text: string): string | null {
+  for (const clause of clausesOf(text)) {
+    if (THRESHOLD_SCOPED.test(clause)) continue;
+    for (const [label, pattern] of HUMAN_REVIEW_CLAIMS) {
+      if (pattern.test(clause)) return label;
+    }
+  }
+  return null;
+}
+
+/** Constructions that MUST be caught, including both strings Rex found. */
+const BANNED_HUMAN_FIXTURES: Array<[string, string]> = [
+  ['HSB-QA-1a exact', 'Human story and art review'],
+  ['HSB-QA-1b exact', 'Every order includes a full digital proof before anything prints, human story and art review, and no blind hardcover order.'],
+  ['original shipped claim', 'Every book is personally reviewed before we send you the proof.'],
+  ['bare human review', 'Human review'],
+  ['hand-reviewed writing', 'Your child becomes the hero through 24 illustrated story pages, hand-reviewed writing, and keepsake matter'],
+  ['hand-reviewed before print', 'Uploaded photo storybook illustration hand-reviewed before print'],
+  ['reviewed by people', 'the order is still reviewed by people before fulfillment'],
+  ['a person checks every page', 'A person checks every page before it goes out'],
+  ['human proof review', 'human proof review'],
+];
+
+/** Accurate constructions that MUST remain allowed. */
+const ALLOWED_HUMAN_FIXTURES: Array<[string, string]> = [
+  ['fifth-regen escalation', 'After 3 tries on one page, we may step in to help; after 5, the page is flagged for a human quality check so we do not burn your time.'],
+  ['customer reviews the pages', 'You review every page before approving.'],
+  ['proof before print', 'Full digital proof before any printing'],
+  ['revisions included', 'Revisions included before approval'],
+  ['operator photo note', 'Saved with this person for operator review'],
+  ['customer re-reads details', 'Extra details are optional and can be reviewed by going back to Hero details'],
+  ['automated pipeline', 'We write the story, illustrate every page, and build your proof before it reaches you.'],
 ];
 
 /** Outcome/quality guarantees and fixed-time promises. */
@@ -92,11 +178,8 @@ const GUARANTEE_CLAIMS: Array<[string, RegExp]> = [
 
 test('no served customer surface claims a human reviews every book before the proof', () => {
   for (const file of servedSources()) {
-    const src = withoutComments(read(file));
-    for (const [claim, pattern] of HUMAN_REVIEW_CLAIMS) {
-      const hit = src.match(pattern);
-      assert.equal(hit?.[0] ?? null, null, `${file} makes a "${claim}" promise the pipeline does not enforce`);
-    }
+    const claim = bannedHumanReviewClaim(withoutComments(read(file)));
+    assert.equal(claim, null, `${file} makes a "${claim}" promise the pipeline does not enforce`);
   }
 });
 
@@ -123,9 +206,9 @@ test('every customer email body is free of the prohibited claims', () => {
     ];
     for (const email of bodies) {
       for (const channel of [email.html, email.text] as const) {
-        for (const [claim, pattern] of [...HUMAN_REVIEW_CLAIMS, ...GUARANTEE_CLAIMS]) {
-          const hit = channel.match(pattern);
-          assert.equal(hit?.[0] ?? null, null, `${bookFormat} email makes a "${claim}" promise`);
+        assert.equal(bannedHumanReviewClaim(channel), null, `${bookFormat} email makes a human-review promise`);
+        for (const [claim, pattern] of GUARANTEE_CLAIMS) {
+          assert.equal(channel.match(pattern)?.[0] ?? null, null, `${bookFormat} email makes a "${claim}" promise`);
         }
       }
     }
@@ -134,11 +217,38 @@ test('every customer email body is free of the prohibited claims', () => {
 
 // ── 2. The replacement says only what the pipeline actually does ─────────────
 
+test('every banned human-review construction is caught', () => {
+  for (const [label, sentence] of BANNED_HUMAN_FIXTURES) {
+    assert.notEqual(bannedHumanReviewClaim(sentence), null, `MISSED "${label}": ${sentence}`);
+  }
+});
+
+test('every accurate construction is left alone', () => {
+  for (const [label, sentence] of ALLOWED_HUMAN_FIXTURES) {
+    const claim = bannedHumanReviewClaim(sentence);
+    assert.equal(claim, null, `FALSE POSITIVE on "${label}" (matched ${claim}): ${sentence}`);
+  }
+});
+
+test('the threshold allowance is earned — the regen escalation really exists', () => {
+  const src = read('src/lib/page-review.ts');
+  assert.match(src, /REGEN_MANUAL_REVIEW_THRESHOLD/, 'threshold constant must exist');
+  assert.match(src, /sendRegenManualReviewAlert|sendManualReviewAlert/, 'the alert must actually be sent');
+});
+
+test('the concierge-beta exemption still has its enforced gate', () => {
+  const route = read('src/app/api/order/route.ts');
+  assert.match(route, /custom_story_manual_review_required/,
+    'the concierge manual-review refusal must still exist, or its human-review copy stops being accurate');
+  assert.match(route, /conciergeAllowed/, 'checkout must still gate on concierge allowance');
+});
+
 test('the proof assurance describes the automated pipeline, not a human gate', () => {
   assert.match(PROOF_REVIEW_ASSURANCE, /write the story/i, 'must name the generation step');
   assert.match(PROOF_REVIEW_ASSURANCE, /illustrate every page/i, 'must name the illustration step');
   assert.match(PROOF_REVIEW_ASSURANCE, /build your proof/i, 'must name the proof build');
-  for (const [claim, pattern] of [...HUMAN_REVIEW_CLAIMS, ...GUARANTEE_CLAIMS]) {
+  assert.equal(bannedHumanReviewClaim(PROOF_REVIEW_ASSURANCE), null, 'assurance must not imply human review');
+  for (const [claim, pattern] of GUARANTEE_CLAIMS) {
     assert.equal(PROOF_REVIEW_ASSURANCE.match(pattern)?.[0] ?? null, null, `assurance must not imply "${claim}"`);
   }
   // Still no second number, and no invented queue position.

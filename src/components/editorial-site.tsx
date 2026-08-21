@@ -504,7 +504,7 @@ function HeroSection() {
             Your child becomes <em className="font-normal italic text-[#a64c4c]">the hero</em> of the story.
           </h1>
           <p className="mt-7 max-w-xl text-lg leading-8 text-[#695f54] md:text-xl">
-            Create a personalized keepsake storybook from your child&apos;s photo, interests, and family details. AI-assisted illustration and hand-reviewed story edits come together in a full digital proof you approve before anything prints.
+            Create a personalized keepsake storybook from your child&apos;s photo, interests, and family details. AI-assisted illustration and story writing come together in a full digital proof you approve before anything prints.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <PrimaryCta href="/checkout" size="lg">Start your book</PrimaryCta>
@@ -592,7 +592,7 @@ function TrustStrip() {
   const items = [
     'Full digital proof before any printing',
     'Revisions included before approval',
-    'Human story and art review',
+    'You review every page before approving',
     'US shipping included on printed books',
     'Your photos stay private — never used to train AI',
     'Stripe-secured checkout',
@@ -619,7 +619,7 @@ function SectionHeader({ eyebrow, title, sub, centered = false }: { eyebrow: str
 function HowItWorksSection() {
   const steps = [
     ['1', 'Tell us about your child', 'Their name, one photo, and a few details — age, interests, anything special. Voice note optional.'],
-    ['2', 'We craft a 32-page book', 'Your child becomes the hero through 24 illustrated story pages, hand-reviewed writing, and keepsake front and back matter.'],
+    ['2', 'We craft a 32-page book', 'Your child becomes the hero through 24 illustrated story pages, writing personalized to their details, and keepsake front and back matter.'],
     ['3', 'You approve, then we print', 'We email a full digital proof. Nothing prints until you approve. Revisions are free.'],
   ];
   return (
@@ -864,7 +864,7 @@ function SeasonalCallout() {
           <h2 className="font-serif text-4xl font-medium leading-tight md:text-5xl">A personalized book with no blind print order.</h2>
           <p className="mt-4 text-base leading-7 text-[#695f54]">We email your digital proof first, usually in {PROOF_TURNAROUND_WINDOW}. {PROOF_REVIEW_ASSURANCE} {PROOF_VOLUME_NOTE} The full Digital PDF comes with it — no printing or shipping step.</p>
           <p className="mt-3 text-sm leading-6 text-[#695f54]">Want a printed keepsake too? Add a softcover or hardcover as an optional upgrade. Printed books ship after proof approval, and carrier timing can vary.</p>
-          <p className="mt-3 text-sm font-medium leading-6 text-[#1f1a16]">Every order includes a full digital proof before anything prints, human story and art review, and no blind hardcover order.</p>
+          <p className="mt-3 text-sm font-medium leading-6 text-[#1f1a16]">Every order includes a full digital proof before anything prints, your own page-by-page review, and no blind hardcover order.</p>
           <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
             <PrimaryCta href="/checkout?format=digital" size="md">Start the digital book</PrimaryCta>
             <GhostCta href="/pricing">Compare digital &amp; print</GhostCta>
@@ -878,7 +878,7 @@ function SeasonalCallout() {
         <div className="rounded-2xl bg-[#f5ead2] p-6 text-center">
           <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Delivery timing</div>
           <h3 className="font-serif text-3xl">Digital is fastest. Print is optional.</h3>
-          <p className="mt-3 text-sm leading-6 text-[#695f54]">Approve your proof (usually in {PROOF_TURNAROUND_WINDOW}) and the Digital PDF arrives the same day — no shipping. Printed books ship 5–7 business days after approval, so order early for dated gifts.</p>
+          <p className="mt-3 text-sm leading-6 text-[#695f54]">Your proof (usually in {PROOF_TURNAROUND_WINDOW}) arrives with the full Digital PDF — no shipping step at all. Printed books ship 5–7 business days after you approve, so order early for dated gifts.</p>
         </div>
       </div>
     </section>
@@ -1000,7 +1000,7 @@ export function EditorialAboutPage() {
             The core promise is simple: you never blindly send a custom book to print. Every order starts with the child&apos;s name, photo, story details, and optional voice note, then we prepare a digital proof for review before any physical copy is printed.
           </p>
           <p>
-            We use AI-assisted illustration as a production tool, but the order is still reviewed by people before fulfillment. Uploaded child photos and optional voice notes are used only to create and support the requested order; they are not sold, used to train AI models, or used for voice cloning.
+            We use AI-assisted illustration as a production tool, and you see a full proof of every page before anything is printed. Uploaded child photos and optional voice notes are used only to create and support the requested order; they are not sold, used to train AI models, or used for voice cloning.
           </p>
         </div>
         <div className="mt-10 rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-6">

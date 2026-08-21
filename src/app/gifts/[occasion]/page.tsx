@@ -51,7 +51,7 @@ export default async function GiftOccasionPage({ params }: { params: Promise<{ o
             <ol className="mt-5 grid gap-4 text-sm leading-7 text-[#695f54]">
               <li><strong className="text-[#1f1a16]">1. Share the details.</strong> Add the child&apos;s photo, interests, dedication, and optional voice note.</li>
               <li><strong className="text-[#1f1a16]">2. Review the private proof.</strong> Proofs are usually ready in {PROOF_TURNAROUND_WINDOW} after we have the needed photos.</li>
-              <li><strong className="text-[#1f1a16]">3. Approve before fulfillment.</strong> The final digital PDF follows approval. Printed books enter production only after approval; carrier timing can vary.</li>
+              <li><strong className="text-[#1f1a16]">3. Approve before fulfillment.</strong> Digital orders receive the full PDF with the proof email; approving accepts the book. Printed books enter production only after approval; carrier timing can vary.</li>
             </ol>
           </div>
         </div>

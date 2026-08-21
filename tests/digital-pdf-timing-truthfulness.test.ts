@@ -34,7 +34,11 @@ const read = (p: string) => readFileSync(p, 'utf8');
 function withoutComments(src: string): string {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    // A `DEPRECATED_*` declaration holds retired strings for the express purpose
+    // of detecting and replacing them (see renderDeliveryExpectation). Scanning
+    // it would flag the suppression mechanism as the claim it suppresses.
+    .replace(/const\s+DEPRECATED_[A-Z_]+[\s\S]*?\]\);/g, ' ');
 }
 
 /**
@@ -47,28 +51,110 @@ const UNREACHABLE_WITH_STALE_CLAIM: Array<[string, string]> = [
   ['src/components/landing/FAQ.tsx', 'landing/FAQ'],
   ['src/components/landing/Pricing.tsx', 'landing/Pricing'],
   ['src/lib/pricing.ts', 'pricing-section'],
-  ['src/lib/fathers-day.ts', 'FATHERS_DAY_OFFER'],
 ];
 const EXCLUDED = new Set(UNREACHABLE_WITH_STALE_CLAIM.map(([file]) => file));
 
 /**
- * Claims that approval is the first event delivering or unlocking the PDF.
+ * Grammar of the banned claim.
  *
- * Each pattern requires BOTH an approval token and a file/delivery token in the
- * same sentence, so accurate copy like "nothing is printed until you approve"
- * and "approving accepts the book" does not match.
+ * Rex's audit of d11cc20 blocked exactly because the previous patterns were
+ * induced from the strings already found, so they encoded the same blind spot
+ * twice: `PDF follows approval` has no after/upon/once, and
+ * `approve … the Digital PDF arrives the same day` uses `arrives` rather than a
+ * delivery verb the list knew. Both shipped green.
+ *
+ * Two changes fix that class of miss. First the vocabulary is enumerated by
+ * ROLE (file / delivery / approval) instead of by remembered sentence. Second
+ * the predicate is exported and driven by the fixture tables below, so the
+ * grammar is tested directly rather than only against whatever the tree happens
+ * to contain today.
+ */
+const FILE = String.raw`(?:PDFs?|high[- ]res(?:olution)?(?:\s+\w+)?|digital\s+(?:book|file|copy|download))`;
+const DELIVERY = String.raw`(?:follows?|arrives?|comes?|delivered|delivery|deliver|receives?|received|sent|sends?|emailed|emails?|unlocks?|unlocked|released?|available|goes\s+out)`;
+const APPROVAL = String.raw`approv(?:e|es|ed|al|als|ing)`;
+
+/**
+ * Each entry is (label, pattern). A clause matching ANY of them asserts that
+ * approval precedes the customer getting the file, which the digital path
+ * contradicts. Patterns never require the pronoun "you" — HSB-PDF-1 slipped
+ * through partly on that assumption.
  */
 const APPROVAL_FIRST_DELIVERY: Array<[string, RegExp]> = [
-  ['approve → receive/get the PDF', /(once|after|when)\s+you\s+approve[^.]{0,140}\b(PDF|high[- ]res(olution)?\s+(book|file|copy)?|digital (book|file|download))\b/i],
-  // The approval token must be the customer ACT of approving. The adjectival
-  // compound "proof-approved" describes a sample that was already approved —
-  // see the sample caption in editorial-site.tsx ("the same proof-approved book
-  // that digital orders receive as a high-resolution PDF"), which is a true
-  // statement about the sample, not a delivery-timing promise. The lookbehind
-  // excludes it without excluding the file.
-  ['approve then delivered/unlocked', /(?<!-)\b(you\s+approve[a-z]*|approving)\b[^.]{0,90}\b(receive|deliver|unlock|send|email)[a-z]*\b[^.]{0,70}\b(PDF|high[- ]res(olution)?)\b/i],
-  ['PDF arrives after approval', /\b(PDF|high[- ]resolution\s+\w+)\b[^.]{0,90}\b(after|upon|once)\b[^.]{0,40}\bapprov/i],
-  ['same-day delivery after approval', /\bapprov[a-z]*\b[^.]{0,80}\b(delivered|delivery)\b[^.]{0,40}\bsame[- ]day\b/i],
+  // "Once you approve …, you receive the final high-resolution PDF"
+  ['approval-first, then the file', new RegExp(String.raw`(?:once|after|when|upon|following)\s+(?:you\s+|your\s+)?${APPROVAL}[^.;!?]{0,140}${FILE}`, 'i')],
+  // "approve … the Digital PDF arrives the same day"  (HSB-PDF-2)
+  ['approval then file arrives', new RegExp(String.raw`(?<!-)\b${APPROVAL}\b[^.;!?]{0,110}${FILE}[^.;!?]{0,50}\b${DELIVERY}\b`, 'i')],
+  // "Approval unlocks the high-resolution PDF" — approval as the subject.
+  ['approval delivers the file', new RegExp(String.raw`(?<!-)\b${APPROVAL}\b[^.;!?]{0,40}\b${DELIVERY}\b[^.;!?]{0,50}${FILE}`, 'i')],
+  // "The digital file is emailed after approval" — the connector is REQUIRED.
+  // Without it the pattern degrades to mere co-occurrence and flags true copy
+  // like "the full PDF comes with it, and you approve when it is right".
+  ['file delivered after approval', new RegExp(String.raw`${FILE}[^.;!?]{0,70}\b${DELIVERY}\b[^.;!?]{0,40}(?:\b(?:after|upon|once|following|post)\b[^.;!?]{0,20}|\bon\s+)(?:your\s+|the\s+)?${APPROVAL}\b`, 'i')],
+  // "The final digital PDF follows approval" (HSB-PDF-1) — "follows" encodes the
+  // ordering by itself, so it needs no connector.
+  ['file follows approval', new RegExp(String.raw`${FILE}[^.;!?]{0,40}\bfollows?\b[^.;!?]{0,20}(?:your\s+|the\s+)?${APPROVAL}\b`, 'i')],
+  // "PDF is delivered the same day after approval"
+  ['same-day file on approval', new RegExp(String.raw`(?:${APPROVAL}[^.;!?]{0,90}${FILE}|${FILE}[^.;!?]{0,90}${APPROVAL})[^.;!?]{0,40}same[- ]day`, 'i')],
+];
+
+/**
+ * Clause-level scanning. Splitting on sentence and semicolon boundaries is what
+ * keeps a true compound like
+ *   "Digital orders receive the full PDF with the proof email; approving accepts the book."
+ * from reading as one approval-plus-file claim.
+ */
+export function clausesOf(text: string): string[] {
+  // `·` is this codebase's inline list separator ("Proof ready in X · Softcover
+  // ships 5–7 business days after approval · Digital PDF included"). Each bullet
+  // is an independent fact, so treating the whole run as one clause would read
+  // an accurate print-shipping bullet and an accurate PDF bullet as a single
+  // approval-then-PDF claim.
+  return text.split(/[.;!?\n·]+/g).map((c) => c.trim()).filter(Boolean);
+}
+
+/** Returns the label of the first banned construction found, or null. */
+export function bannedTimingClaim(text: string): string | null {
+  for (const clause of clausesOf(text)) {
+    for (const [label, pattern] of APPROVAL_FIRST_DELIVERY) {
+      if (pattern.test(clause)) return label;
+    }
+  }
+  return null;
+}
+
+/** Exact constructions that MUST be caught. Includes every string Rex found. */
+const BANNED_FIXTURES: Array<[string, string]> = [
+  ['HSB-PDF-1 exact', 'The final digital PDF follows approval.'],
+  ['HSB-PDF-1 short', 'PDF follows approval'],
+  ['HSB-PDF-2 exact', 'Approve your proof (usually in 2–3 business days) and the Digital PDF arrives the same day — no shipping.'],
+  ['approve then PDF arrives', 'Approve the proof and the PDF arrives.'],
+  ['approve then digital file arrives', 'Approve the proof and the digital file arrives.'],
+  ['original thank-you claim', 'Once you approve the proof, you receive the final high-resolution PDF for digital orders.'],
+  ['original expectation', 'Digital proof usually ready in 2–3 business days; final PDF delivered after approval.'],
+  ['review-client claim', 'This opens the complete storybook PDF we will send to your inbox once you approve.'],
+  ['no pronoun, upon approval', 'The high-resolution PDF is released upon approval.'],
+  ['no pronoun, after approval', 'The digital file is emailed after approval.'],
+  ['unlock phrasing', 'Approval unlocks the high-resolution PDF.'],
+  ['following approval', 'Following approval, the digital download becomes available.'],
+  ['same-day after approval', 'After approval, digital PDFs are delivered the same day.'],
+  ['sent on approval', 'The PDF is sent on approval.'],
+];
+
+/** Accurate statements that MUST remain allowed. */
+const ALLOWED_FIXTURES: Array<[string, string]> = [
+  ['print gated on approval', 'Printed books enter production only after approval; carrier timing can vary.'],
+  ['nothing prints until approval', 'Physical books are not printed until you approve the digital proof.'],
+  ['print ships after approval', 'Printed books ship 5–7 business days after you approve.'],
+  ['approval accepts the book', 'Approving accepts the book.'],
+  ['corrected gifts copy', 'Digital orders receive the full PDF with the proof email; approving accepts the book.'],
+  ['corrected expectation', 'Digital proof usually ready in 2–3 business days; the full high-resolution PDF comes with it, and you approve when it is right.'],
+  ['corrected thank-you', 'Digital orders get the full high-resolution PDF with that proof email; approving accepts the book.'],
+  ['corrected editorial', 'Your proof arrives with the full Digital PDF — no shipping step at all.'],
+  ['refund boundary', 'Digital orders are fully refundable up until you approve the proof.'],
+  ['refund finality', 'Approving accepts the book, and the digital order is final from that point.'],
+  ['proof-first, no file token', 'You review every page before approving.'],
+  ['print submission after approval', 'After approval, we queue the job with our print partner.'],
+  ['bulleted print card', 'Proof usually ready in 2–3 business days · Softcover ships 5–7 business days after approval · Digital PDF included'],
 ];
 
 function servedSources(): string[] {
@@ -118,10 +204,8 @@ test('the digital delivery email carries the PDF itself, not just a review link'
     assert.ok(channel.includes('https://example.invalid/review'), 'review link must be present');
   }
   // Nothing in this email may condition the download on approving first.
-  for (const [claim, pattern] of APPROVAL_FIRST_DELIVERY) {
-    for (const channel of [email.html, email.text] as const) {
-      assert.equal(channel.match(pattern)?.[0] ?? null, null, `delivery email makes an "${claim}" promise`);
-    }
+  for (const channel of [email.html, email.text] as const) {
+    assert.equal(bannedTimingClaim(channel), null, 'delivery email makes an approval-first promise');
   }
 });
 
@@ -133,15 +217,38 @@ test('approving mints no artifact — it records acceptance', () => {
     'approval must not build or attach a new artifact');
 });
 
+// ── 1b. The grammar itself, tested directly ─────────────────────────────────
+
+test('every banned construction is caught by the predicate', () => {
+  for (const [label, sentence] of BANNED_FIXTURES) {
+    assert.notEqual(bannedTimingClaim(sentence), null, `MISSED "${label}": ${sentence}`);
+  }
+});
+
+test('every accurate construction is left alone by the predicate', () => {
+  for (const [label, sentence] of ALLOWED_FIXTURES) {
+    const claim = bannedTimingClaim(sentence);
+    assert.equal(claim, null, `FALSE POSITIVE on "${label}" (matched ${claim}): ${sentence}`);
+  }
+});
+
+test('clause splitting keeps a true compound from reading as one claim', () => {
+  // The exact shape that would otherwise false-positive: a delivery clause and
+  // an approval clause joined by a semicolon.
+  const compound = 'Digital orders receive the full PDF with the proof email; approving accepts the book.';
+  assert.deepEqual(clausesOf(compound), [
+    'Digital orders receive the full PDF with the proof email',
+    'approving accepts the book',
+  ]);
+  assert.equal(bannedTimingClaim(compound), null);
+});
+
 // ── 2. No served surface claims approval delivers the PDF ───────────────────
 
 test('no served customer surface says the PDF arrives only after approval', () => {
   for (const file of servedSources()) {
-    const src = withoutComments(read(file));
-    for (const [claim, pattern] of APPROVAL_FIRST_DELIVERY) {
-      const hit = src.match(pattern);
-      assert.equal(hit?.[0] ?? null, null, `${file} makes an "${claim}" promise the digital path does not keep`);
-    }
+    const claim = bannedTimingClaim(withoutComments(read(file)));
+    assert.equal(claim, null, `${file} makes an approval-first promise (${claim}) the digital path does not keep`);
   }
 });
 
@@ -153,9 +260,7 @@ test('customer emails do not claim the PDF arrives only after approval', () => {
     );
     const email = buildOrderConfirmationEmail(order, { supportEmail: 'support@herostorybooks.com' });
     for (const channel of [email.html, email.text] as const) {
-      for (const [claim, pattern] of APPROVAL_FIRST_DELIVERY) {
-        assert.equal(channel.match(pattern)?.[0] ?? null, null, `${bookFormat} confirmation email makes an "${claim}" promise`);
-      }
+      assert.equal(bannedTimingClaim(channel), null, `${bookFormat} confirmation email makes an approval-first promise`);
     }
   }
 });

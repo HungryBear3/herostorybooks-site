@@ -152,11 +152,11 @@ export const FATHERS_DAY_OFFER = {
   eyebrow: "Father's Day gift",
   headline: "A Father's Day gift with no shipping risk.",
   digitalLead:
-    `The Digital PDF is the safest Father's Day pick. We email your proof first (usually in ${PROOF_TURNAROUND_WINDOW}); once you approve, the high-resolution book is delivered the same day — no printing or shipping, so no carrier timing risk. Print it at home, read it on any screen, or share it instantly.`,
+    `The Digital PDF is the safest Father's Day pick. We email your proof first (usually in ${PROOF_TURNAROUND_WINDOW}), and the high-resolution book comes with it — no printing or shipping, so no carrier timing risk. Print it at home, read it on any screen, or share it instantly.`,
   printOptional:
     "Want a printed keepsake too? Add a softcover or hardcover as an optional upgrade. Printed books ship after proof approval, and arrival depends on the order-by date and your carrier, so we don't promise a printed book will arrive by Father's Day.",
   proofNote:
-    'Every order includes a full digital proof before anything prints, human story and art review, and no blind hardcover order.',
+    'Every order includes a full digital proof before anything prints, your own page-by-page review, and no blind hardcover order.',
   ctaLabel: 'Start the digital book',
   ctaHref: '/checkout?format=digital',
 } as const;

@@ -920,6 +920,44 @@ export function buildDeliveryExpectation(bookFormat: string): string {
   return `Digital proof ${PROOF_TURNAROUND_PHRASE}. After approval, softcover ships in 5–7 business days — free shipping included.`;
 }
 
+/**
+ * Digital delivery expectations this codebase has persisted onto order records
+ * and no longer tells the truth about. Both are proven from the history of
+ * `buildDeliveryExpectation` in this file:
+ *
+ *   - "…final PDF delivered after approval." — 21 commits. False: the digital
+ *     path emails the PDF once the build completes, before approval.
+ *   - "PDF by email in ~15 minutes" — 15 commits. False: a minutes-scale SLA
+ *     that no longer reflects the queue and was never re-approved.
+ *
+ * `PROOF_TURNAROUND_WINDOW` has only ever been "2–3 business days", so the
+ * templated and literal forms of the first string resolve identically and this
+ * set is exhaustive for the digital branch.
+ */
+const DEPRECATED_DIGITAL_EXPECTATIONS: ReadonlySet<string> = new Set([
+  'Digital proof usually ready in 2–3 business days; final PDF delivered after approval.',
+  'PDF by email in ~15 minutes',
+]);
+
+/**
+ * Read-time normalization for `order.deliveryExpectation`.
+ *
+ * Old records keep their stored bytes — nothing here writes, and there is no
+ * backfill — but a customer-rendered surface must not repeat a promise we now
+ * know is false. Only the exact deprecated digital strings above are replaced;
+ * every current value, every print-format value, and anything unrecognized is
+ * passed through untouched. A missing or non-string value yields '' so a
+ * surface renders nothing rather than inventing an expectation.
+ *
+ * Use this on customer-rendered paths only (status page, customer order route,
+ * confirmation email). Internal diagnostics and audit exports keep raw bytes.
+ */
+export function renderDeliveryExpectation(stored: string | null | undefined): string {
+  if (typeof stored !== 'string') return '';
+  if (DEPRECATED_DIGITAL_EXPECTATIONS.has(stored.trim())) return buildDeliveryExpectation('digital');
+  return stored;
+}
+
 export function createOrderRecord(input: OrderInput, options: CreateOrderOptions = {}): OrderRecord {
   const format = normalizeFormat(input.bookFormat);
   const meta = FORMAT_META[format];

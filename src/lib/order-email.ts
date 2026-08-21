@@ -1,6 +1,7 @@
 import { Resend } from 'resend';
 
 import type { OrderRecord } from './orders';
+import { renderDeliveryExpectation } from './orders.ts';
 import {
   PROOF_DELAY_SUPPORT_NOTE,
   PROOF_REVIEW_ASSURANCE,
@@ -162,7 +163,7 @@ export function buildOrderConfirmationEmail(
   const detailRows = [
     ['Child name', order.childName],
     ['Format', order.formatLabel],
-    ['Delivery', order.deliveryExpectation],
+    ['Delivery', renderDeliveryExpectation(order.deliveryExpectation)],
     ['Order ID', order.id],
   ].filter(([, value]) => Boolean(value));
 
@@ -186,7 +187,7 @@ export function buildOrderConfirmationEmail(
     '',
     `Child name: ${order.childName}`,
     `Format: ${order.formatLabel}`,
-    `Delivery: ${order.deliveryExpectation}`,
+    `Delivery: ${renderDeliveryExpectation(order.deliveryExpectation)}`,
     `Order ID: ${order.id}`,
     '',
     previewNote,

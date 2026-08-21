@@ -2092,7 +2092,7 @@ export function CheckoutForm() {
                   Add one clear photo for the main character
                 </h2>
                 <p className="text-sm leading-6 text-[#695f54]">
-                  Optional, but best for the closest hero likeness. If you skip it, we&apos;ll use the written description above and hand-review the proof before print.
+                  Optional, but best for the closest hero likeness. If you skip it, we&apos;ll build the hero from the written description above, and you review the proof before anything prints.
                 </p>
               </div>
               <div className="inline-flex w-fit rounded-full border border-[#d8c6a2] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54]">
@@ -2130,7 +2130,7 @@ export function CheckoutForm() {
                     </div>
                   </div>
                   <p className="text-xs text-center text-[#8a7b6a]">
-                    Uploaded photo → storybook illustration · hand-reviewed before print
+                    Uploaded photo → storybook illustration · you approve before print
                   </p>
                 </div>
               )}

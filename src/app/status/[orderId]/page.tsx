@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 
-import { getOrder } from '@/lib/orders';
+import { getOrder, renderDeliveryExpectation } from '@/lib/orders';
 import { buildOrderStatusView, type TimelineStep, type TimelineStepState } from '@/lib/order-status-view';
 
 export const dynamic = 'force-dynamic';
@@ -114,7 +114,7 @@ function StatusHeroCard({ view, order }: { view: ReturnType<typeof buildOrderSta
         </div>
         <div className="text-right">
           <p className="text-xs uppercase tracking-wider text-gray-500 mb-1">Delivery</p>
-          <p className="text-sm text-gray-700 max-w-xs">{order.deliveryExpectation}</p>
+          <p className="text-sm text-gray-700 max-w-xs">{renderDeliveryExpectation(order.deliveryExpectation)}</p>
         </div>
       </div>
 
