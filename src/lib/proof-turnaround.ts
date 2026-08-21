@@ -27,9 +27,21 @@ export const PROOF_TURNAROUND_PHRASE = `usually ready in ${PROOF_TURNAROUND_WIND
  * per-format delivery strings that already say "after approval".
  */
 
-/** Manual-QA truth: a person reviews the book before the proof goes out. */
+/**
+ * What actually happens between payment and the proof email.
+ *
+ * This deliberately does NOT claim a person checks every book first. The
+ * fulfillment paths in src/lib/fulfillment.ts persist the proof and call
+ * sendDigitalDeliveryEmail / sendProofReadyEmail with no `qaPassAt`,
+ * `qaStatus`, page-level `reviewedAt`, or operator-release prerequisite —
+ * those fields are ops-dashboard state, not gates — so a manual-review promise
+ * would be false (Rex audit, 2026-08-21). The constant name is historical;
+ * whatever it holds must stay true of the automated pipeline alone. If an
+ * authoritative QA gate is ever enforced before release, this is the one place
+ * to say so.
+ */
 export const PROOF_REVIEW_ASSURANCE =
-  'Every book is personally reviewed before we send you the proof.';
+  'We write the story, illustrate every page, and build your proof before it reaches you.';
 
 /**
  * Volume honesty. This is the customer-facing replacement for any hard intake

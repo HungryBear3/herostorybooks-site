@@ -171,7 +171,9 @@ test('pause kill switch and every unrelated safety gate still precede Stripe con
 // ── 3. One canonical processing expectation, used everywhere ─────────────────
 
 test('canonical processing expectation states review, volume honesty, and a support path', () => {
-  assert.match(PROOF_REVIEW_ASSURANCE, /personally reviewed before we send you the proof/i);
+  // Describes the automated pipeline, NOT a human gate — fulfillment releases
+  // proofs with no QA prerequisite, so a manual-review claim would be false.
+  assert.match(PROOF_REVIEW_ASSURANCE, /write the story, illustrate every page, and build your proof/i);
   assert.match(PROOF_VOLUME_NOTE, /volume is high/i);
   assert.match(PROOF_VOLUME_NOTE, /longer than usual/i);
   assert.match(PROOF_DELAY_SUPPORT_NOTE, /support@herostorybooks\.com/);
