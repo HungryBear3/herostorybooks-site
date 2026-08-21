@@ -100,7 +100,7 @@ const FORMATS = [
     badge: "Most flexible",
     delivery: `Digital proof usually ready in ${PROOF_TURNAROUND_WINDOW}`,
     deliveryDetail:
-      "32-page proof first · Final high-res PDF delivered after approval · No printing or shipping step",
+      "32-page proof first · Full high-res PDF included with the proof email · No printing or shipping step",
   },
   {
     id: "classic",

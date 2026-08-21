@@ -100,7 +100,7 @@ export function InlineProofPreview({ proofUrl, isPrint, illustratedPageCount, te
         <p className="mt-1 text-xs text-gray-600">
           {isPrint
             ? `This is the full assembled book that will be printed — including the cover, intentional title/dedication/end-note pages, and any keepsake pages added if needed to meet the printer\u2019s minimum length. The ${illustratedPageCount ?? ''}${illustratedPageCount ? ' ' : ''}illustrated story pages above are part of this proof, not the whole book.`.replace(/\s+/g, ' ').trim()
-            : 'This is the full assembled PDF you\u2019ll receive by email after approval.'}
+            : 'This is the full assembled PDF that was emailed to you.'}
         </p>
       </div>
 

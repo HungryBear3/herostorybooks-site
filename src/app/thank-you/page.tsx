@@ -103,7 +103,7 @@ function SuccessView({
               <p className="font-semibold text-[var(--forest)]">Confirmation + proof-first delivery</p>
               <p className="text-gray-500">
                 {email ? `A confirmation was sent to ${email}. ` : ''}
-                We email a digital proof first, usually in {PROOF_TURNAROUND_WINDOW}. {PROOF_REVIEW_ASSURANCE} {PROOF_VOLUME_NOTE} Once you approve the proof, you receive the final high-resolution PDF for digital orders, or the printed book ships for softcover/hardcover orders.
+                We email a digital proof first, usually in {PROOF_TURNAROUND_WINDOW}. {PROOF_REVIEW_ASSURANCE} {PROOF_VOLUME_NOTE} Digital orders get the full high-resolution PDF with that proof email; approving accepts the book. For softcover and hardcover, the printed book goes to print only after you approve.
               </p>
             </div>
           </div>

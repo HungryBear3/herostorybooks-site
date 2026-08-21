@@ -295,7 +295,10 @@ test('proof readiness stays distinct from printing and shipping in the persisted
     const expectation = buildDeliveryExpectation(format);
     assert.match(expectation, /proof/i, `${format}: must name the proof step`);
     if (format === 'digital') {
-      assert.match(expectation, /after approval/i, `${format}: final PDF must follow approval`);
+      // The PDF ships WITH the proof email, not after approval — asserting the
+      // opposite is what let the old approval-first claim survive this suite.
+      assert.match(expectation, /comes with it/i, `${format}: PDF must arrive with the proof`);
+      assert.doesNotMatch(expectation, /after approval/i, `${format}: PDF must not be gated on approval`);
       assert.ok(!/ships/i.test(expectation), 'digital must not claim a shipping step');
     } else {
       assert.match(expectation, /After approval,[^.]*ships/i, `${format}: shipping must be gated on approval`);

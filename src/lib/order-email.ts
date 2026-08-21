@@ -155,7 +155,7 @@ export function buildOrderConfirmationEmail(
 ) {
   const supportEmail = options.supportEmail || getSupportEmail();
   const previewNote = order.bookFormat === 'digital'
-    ? `Your digital proof is usually ready in ${PROOF_TURNAROUND_WINDOW}; we send the final PDF after you approve it.`
+    ? `Your digital proof is usually ready in ${PROOF_TURNAROUND_WINDOW}, and the full high-resolution PDF comes with it — read it right away, ask for changes if anything is off, and approve when it is right.`
     : 'Your digital preview will arrive first so you can approve it before it prints.';
 
   const subject = `${order.childName}'s Hero Story Books order is in`;

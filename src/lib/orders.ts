@@ -910,7 +910,7 @@ export function buildDeliveryExpectation(bookFormat: string): string {
   const format = normalizeFormat(bookFormat);
 
   if (format === 'digital') {
-    return `Digital proof ${PROOF_TURNAROUND_PHRASE}; final PDF delivered after approval.`;
+    return `Digital proof ${PROOF_TURNAROUND_PHRASE}; the full high-resolution PDF comes with it, and you approve when it is right.`;
   }
 
   if (format === 'premium') {

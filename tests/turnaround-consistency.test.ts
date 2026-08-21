@@ -34,7 +34,7 @@ test('buildDeliveryExpectation uses 2–3 business days for every format, never 
     assert.doesNotMatch(v, TWO_DAY_PROMISE, `${format} must not tighten to 2 days`);
   }
   // Exact digital contract preserved.
-  assert.equal(buildDeliveryExpectation('digital'), 'Digital proof usually ready in 2–3 business days; final PDF delivered after approval.');
+  assert.equal(buildDeliveryExpectation('digital'), 'Digital proof usually ready in 2–3 business days; the full high-resolution PDF comes with it, and you approve when it is right.');
 });
 
 test('createOrderRecord persists the 2–3 business day expectation', () => {
