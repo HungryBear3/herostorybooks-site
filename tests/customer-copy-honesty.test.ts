@@ -23,9 +23,12 @@ import path from 'node:path';
 
 import { createOrderRecord } from '../src/lib/orders.ts';
 import {
+  buildDigitalDeliveryEmail,
   buildOrderConfirmationEmail,
   buildPreviewReadyEmail,
   buildPrintInProductionEmail,
+  buildProofReadyEmail,
+  buildShippedEmail,
 } from '../src/lib/order-email.ts';
 import {
   PROOF_DELAY_SUPPORT_NOTE,
@@ -60,6 +63,13 @@ const CONCIERGE_BETA_WITH_ENFORCED_GATE = new Set([
   'src/app/create/your-memory/page.tsx',
   'src/app/create/your-memory/paid-memory-beta-form.tsx',
 ]);
+const NON_CUSTOMER_SOURCES = new Set([
+  'src/lib/admin-actions.ts',
+  'src/lib/admin-auth.ts',
+  'src/lib/family-review/admin-auth.ts',
+  'src/lib/order-diagnostics.ts',
+  'src/lib/order-email.ts',
+]);
 
 /** Every served, non-admin source file — customer-reachable copy lives here. */
 function servedSources(): string[] {
@@ -70,7 +80,11 @@ function servedSources(): string[] {
       if (statSync(full).isDirectory()) {
         if (entry === 'admin' || entry === 'node_modules') continue;
         walk(full);
-      } else if ((full.endsWith('.ts') || full.endsWith('.tsx')) && !CONCIERGE_BETA_WITH_ENFORCED_GATE.has(full)) {
+      } else if (
+        (full.endsWith('.ts') || full.endsWith('.tsx'))
+        && !CONCIERGE_BETA_WITH_ENFORCED_GATE.has(full)
+        && !NON_CUSTOMER_SOURCES.has(full)
+      ) {
         out.push(full);
       }
     }
@@ -92,9 +106,9 @@ function servedSources(): string[] {
  * The list is now organised by claim shape, and the predicate is exported and
  * driven by fixtures below so the grammar is tested directly.
  */
-const HUMAN = String.raw`(?:human|person|people|editor|artist|our\s+team|a\s+real\s+person)`;
-const REVIEW = String.raw`(?:review|reviewed|reviews|check|checked|checks|inspect|inspected|proofread|vet|vetted)`;
-const PRODUCT = String.raw`(?:story|art|artwork|page|pages|book|books|proof|proofs|illustration|illustrations|copy|editorial|quality)`;
+const HUMAN = String.raw`(?:human|person|people|staff|team|expert|editor(?:ial)?|artist|manual|our\s+team|a\s+real\s+person)`;
+const REVIEW = String.raw`(?:review|reviewed|reviews|check|checked|checks|inspect|inspected|inspection|proofread|vet|vetted|quality\s+check|quality\s+pass)`;
+const PRODUCT = String.raw`(?:story|art|artwork|page|pages|book|books|proof|proofs|illustration|illustrations|copy|editorial|quality|order|delivery|fulfillment)`;
 
 const HUMAN_REVIEW_CLAIMS: Array<[string, RegExp]> = [
   ['every book personally/manually reviewed', /\bevery\s+(book|order|page|proof)\b[^.;!?]{0,50}\b(personally|manually|hand)[- ]?(review|check|inspect)/i],
@@ -112,6 +126,9 @@ const HUMAN_REVIEW_CLAIMS: Array<[string, RegExp]> = [
   ['every order includes human review', new RegExp(String.raw`\bevery\s+(?:order|book|proof|page)\b[^.;!?]{0,80}\b${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}\b`, 'i')],
   ['human-reviewed compound', /\b(human|hand)[- ]reviewed\b/i],
   ['reviewed by our team', new RegExp(String.raw`\b${REVIEW}[a-z]*\s+by\s+(?:a\s+|our\s+)?${HUMAN}\b`, 'i')],
+  ['staff review before proof or delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}\b[^.;!?]{0,50}\bbefore\b[^.;!?]{0,40}\b(?:proof|delivery|fulfillment|sent|send|emailed|released)\b`, 'i')],
+  ['every item gets expert or editorial review', new RegExp(String.raw`\bevery\s+(?:order|book|proof)\b[^.;!?]{0,30}\b(?:gets|includes|receives)\b[^.;!?]{0,30}\b${HUMAN}\b[^.;!?]{0,20}\b${REVIEW}\b`, 'i')],
+  ['team quality check for every proof', new RegExp(String.raw`\bevery\s+proof\b[^.;!?]{0,40}\b(?:gets|includes|receives)\b[^.;!?]{0,30}\b(?:team|staff|human)\b[^.;!?]{0,20}\b(?:quality\s+check|quality\s+pass|check)\b`, 'i')],
 ];
 
 /**
@@ -150,6 +167,45 @@ const BANNED_HUMAN_FIXTURES: Array<[string, string]> = [
   ['reviewed by people', 'the order is still reviewed by people before fulfillment'],
   ['a person checks every page', 'A person checks every page before it goes out'],
   ['human proof review', 'human proof review'],
+];
+
+const EXACT_HUMAN_FIXTURES: Array<{ label: string; sentence: string; probes: string[] }> = [
+  {
+    label: 'staff checks every order before the proof is sent',
+    sentence: 'Staff checks every order before the proof is sent.',
+    probes: [
+      'The team checks every order before the proof is sent.',
+      'A human checks every order before the proof email goes out.',
+      'Staff inspects every order before delivery.',
+    ],
+  },
+  {
+    label: 'every book gets an expert review before delivery',
+    sentence: 'Every book gets an expert review before delivery.',
+    probes: [
+      'Every book gets a human review before delivery.',
+      'Every book receives an artist review before fulfillment.',
+      'Every order gets an expert check before delivery.',
+    ],
+  },
+  {
+    label: 'every order includes an editorial review before fulfillment',
+    sentence: 'Every order includes an editorial review before fulfillment.',
+    probes: [
+      'Every order includes a manual review before fulfillment.',
+      'Every order includes a human editorial review before delivery.',
+      'Every order includes an editor check before fulfillment.',
+    ],
+  },
+  {
+    label: 'every proof gets a team quality check',
+    sentence: 'Every proof gets a team quality check.',
+    probes: [
+      'Every proof gets a staff quality check.',
+      'Every proof receives a human quality pass.',
+      'Every proof gets an expert check.',
+    ],
+  },
 ];
 
 /** Accurate constructions that MUST remain allowed. */
@@ -215,11 +271,60 @@ test('every customer email body is free of the prohibited claims', () => {
   }
 });
 
+test('all six customer email builders stay free of human-review claims across formats and channels', () => {
+  const digitalOrder = createOrderRecord(
+    { childName: 'Ada', bookFormat: 'digital', email: 'ada@example.com' },
+    { id: 'ord_honesty_builder_digital' },
+  );
+  const printOrder = createOrderRecord(
+    { childName: 'Leo', bookFormat: 'classic', email: 'leo@example.com' },
+    { id: 'ord_honesty_builder_print' },
+  );
+
+  const emails = [
+    ['confirmation:digital', buildOrderConfirmationEmail(digitalOrder, { supportEmail: 'support@herostorybooks.com' })],
+    ['confirmation:print', buildOrderConfirmationEmail(printOrder, { supportEmail: 'support@herostorybooks.com' })],
+    ['preview-ready:digital', buildPreviewReadyEmail({ ...digitalOrder, status: 'preview_ready' }, { supportEmail: 'support@herostorybooks.com' })],
+    ['preview-ready:print', buildPreviewReadyEmail({ ...printOrder, status: 'preview_ready' }, { supportEmail: 'support@herostorybooks.com' })],
+    ['print-in-production', buildPrintInProductionEmail({ ...printOrder, status: 'print_in_production' }, { supportEmail: 'support@herostorybooks.com' })],
+    ['shipped', buildShippedEmail({ ...printOrder, status: 'shipped' }, { supportEmail: 'support@herostorybooks.com' })],
+    ['digital-delivery', buildDigitalDeliveryEmail(digitalOrder, {
+      pdfUrl: 'https://example.invalid/proof.pdf',
+      reviewUrl: 'https://example.invalid/review',
+      supportEmail: 'support@herostorybooks.com',
+    })],
+    ['proof-ready', buildProofReadyEmail(printOrder, {
+      reviewUrl: 'https://example.invalid/review',
+      proofUrl: 'https://example.invalid/proof.pdf',
+      supportEmail: 'support@herostorybooks.com',
+    })],
+  ] as const;
+
+  for (const [label, email] of emails) {
+    for (const channel of [email.html, email.text] as const) {
+      assert.equal(bannedHumanReviewClaim(channel), null, `${label} makes a human-review promise`);
+    }
+  }
+});
+
 // ── 2. The replacement says only what the pipeline actually does ─────────────
 
 test('every banned human-review construction is caught', () => {
   for (const [label, sentence] of BANNED_HUMAN_FIXTURES) {
     assert.notEqual(bannedHumanReviewClaim(sentence), null, `MISSED "${label}": ${sentence}`);
+  }
+});
+
+test('every exact blocked human-review paraphrase and its disposable mutations are caught', () => {
+  for (const fixture of EXACT_HUMAN_FIXTURES) {
+    assert.notEqual(bannedHumanReviewClaim(fixture.sentence), null, `MISSED "${fixture.label}": ${fixture.sentence}`);
+    for (const probe of fixture.probes) {
+      assert.notEqual(
+        bannedHumanReviewClaim(probe),
+        null,
+        `MISSED mutation for "${fixture.label}": ${probe}`,
+      );
+    }
   }
 });
 

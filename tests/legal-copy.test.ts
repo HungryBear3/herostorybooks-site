@@ -10,7 +10,7 @@ test('terms include adult authorization, no-training/no-cloning, deletion, and p
   assert.match(src, /AI model training/);
   assert.match(src, /request deletion of uploaded photos, voice files, or documents/);
   assert.match(src, /Primary hero preview features/);
-  assert.match(src, /manual proof review/);
+  assert.match(src, /concierge intake confirmation/);
 });
 
 test('privacy copy keeps legal-review marker and avoids compliance overclaiming', () => {

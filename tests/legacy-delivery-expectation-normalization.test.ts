@@ -17,11 +17,15 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
+import { GET } from '../src/app/api/order/[orderId]/route.ts';
 import {
   buildDeliveryExpectation,
   createOrderRecord,
+  persistOrder,
   renderDeliveryExpectation,
   type OrderRecord,
 } from '../src/lib/orders.ts';
@@ -32,6 +36,37 @@ const LEGACY_AFTER_APPROVAL = 'Digital proof usually ready in 2–3 business day
 const LEGACY_FIFTEEN_MINUTES = 'PDF by email in ~15 minutes';
 
 const CURRENT_DIGITAL = buildDeliveryExpectation('digital');
+
+function makeTmp() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-legacy-delivery-'));
+  process.env.HSB_ORDER_STORE_DIR = dir;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  delete process.env.HSB_REQUIRE_DURABLE_PERSISTENCE;
+  return dir;
+}
+
+function cleanup(dir?: string) {
+  if (dir) rmSync(dir, { recursive: true, force: true });
+  delete process.env.HSB_ORDER_STORE_DIR;
+  delete process.env.HSB_ORDER_ADMIN_KEY;
+}
+
+async function seed(overrides: Partial<OrderRecord> = {}, id = 'ord_legacy_delivery_api'): Promise<OrderRecord> {
+  const base = createOrderRecord(
+    { childName: 'Nia', bookFormat: 'digital', email: 'nia@example.com' },
+    { id, now: '2026-08-21T12:00:00.000Z' },
+  );
+  const order: OrderRecord = { ...base, ...overrides };
+  await persistOrder(order);
+  return order;
+}
+
+function callGet(orderId: string, headers?: Record<string, string>) {
+  return GET(
+    new Request(`https://hsb.example.com/api/order/${orderId}`, headers ? { headers } : undefined),
+    { params: Promise.resolve({ orderId }) },
+  );
+}
 
 // ── The contract ────────────────────────────────────────────────────────────
 
@@ -115,13 +150,60 @@ test('the status page renders through the normalizer', () => {
   assert.match(src, /renderDeliveryExpectation\(order\.deliveryExpectation\)/);
 });
 
-test('internal admin/diagnostic exports keep the raw stored bytes', () => {
-  // /api/order/[orderId] is gated on x-hsb-order-admin-key: it is evidence, not
-  // customer copy, so it must NOT be silently normalized.
-  const src = readFileSync('src/app/api/order/[orderId]/route.ts', 'utf8');
-  assert.match(src, /x-hsb-order-admin-key/, 'route is admin-gated');
-  assert.match(src, /deliveryExpectation: order\.deliveryExpectation/, 'admin export stays raw');
-  assert.doesNotMatch(src, /renderDeliveryExpectation/, 'admin export must not normalize');
+test('GET /api/order/[orderId]: missing admin configuration fails closed before any order read', async () => {
+  const previousStoreDir = process.env.HSB_ORDER_STORE_DIR;
+  delete process.env.HSB_ORDER_ADMIN_KEY;
+  process.env.HSB_ORDER_STORE_DIR = path.join(os.tmpdir(), 'hsb-missing-store-no-read');
+  try {
+    const res = await callGet('ord_never_read');
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), { error: 'Order admin key is not configured' });
+  } finally {
+    if (previousStoreDir === undefined) delete process.env.HSB_ORDER_STORE_DIR;
+    else process.env.HSB_ORDER_STORE_DIR = previousStoreDir;
+  }
+});
+
+test('GET /api/order/[orderId]: wrong or missing admin key fails closed before any order read', async () => {
+  const previousStoreDir = process.env.HSB_ORDER_STORE_DIR;
+  process.env.HSB_ORDER_ADMIN_KEY = 'secret-key';
+  process.env.HSB_ORDER_STORE_DIR = path.join(os.tmpdir(), 'hsb-missing-store-unauthorized');
+  try {
+    for (const headers of [undefined, { 'x-hsb-order-admin-key': 'wrong-key' }]) {
+      const res = await callGet('ord_never_read', headers);
+      assert.equal(res.status, 401);
+      assert.deepEqual(await res.json(), { error: 'Unauthorized' });
+    }
+  } finally {
+    if (previousStoreDir === undefined) delete process.env.HSB_ORDER_STORE_DIR;
+    else process.env.HSB_ORDER_STORE_DIR = previousStoreDir;
+    delete process.env.HSB_ORDER_ADMIN_KEY;
+  }
+});
+
+test('GET /api/order/[orderId]: correct admin key returns raw stored deliveryExpectation bytes', async () => {
+  const dir = makeTmp();
+  process.env.HSB_ORDER_ADMIN_KEY = 'secret-key';
+  try {
+    const order = await seed({ deliveryExpectation: LEGACY_AFTER_APPROVAL });
+    const res = await callGet(order.id, { 'x-hsb-order-admin-key': 'secret-key' });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), {
+      order: {
+        id: order.id,
+        childName: order.childName,
+        bookFormat: order.bookFormat,
+        formatLabel: order.formatLabel,
+        status: order.status,
+        deliveryExpectation: LEGACY_AFTER_APPROVAL,
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt,
+      },
+    });
+  } finally {
+    cleanup(dir);
+  }
 });
 
 test('nothing in the normalizer path writes to a store', () => {

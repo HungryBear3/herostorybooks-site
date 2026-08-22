@@ -26,7 +26,14 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import { buildDeliveryExpectation, createOrderRecord } from '../src/lib/orders.ts';
-import { buildDigitalDeliveryEmail, buildOrderConfirmationEmail } from '../src/lib/order-email.ts';
+import {
+  buildDigitalDeliveryEmail,
+  buildOrderConfirmationEmail,
+  buildPreviewReadyEmail,
+  buildPrintInProductionEmail,
+  buildProofReadyEmail,
+  buildShippedEmail,
+} from '../src/lib/order-email.ts';
 
 const read = (p: string) => readFileSync(p, 'utf8');
 
@@ -47,12 +54,12 @@ function withoutComments(src: string): string {
  * components is out of scope for a truthfulness repair, and the reachability
  * assertion means wiring one up fails this suite instead of shipping the claim.
  */
-const UNREACHABLE_WITH_STALE_CLAIM: Array<[string, string]> = [
-  ['src/components/landing/FAQ.tsx', 'landing/FAQ'],
-  ['src/components/landing/Pricing.tsx', 'landing/Pricing'],
-  ['src/lib/pricing.ts', 'pricing-section'],
+const UNREACHABLE_WITH_STALE_CLAIM: string[] = [
+  'src/components/landing/FAQ.tsx',
+  'src/components/landing/Pricing.tsx',
+  'src/components/pricing-section.tsx',
 ];
-const EXCLUDED = new Set(UNREACHABLE_WITH_STALE_CLAIM.map(([file]) => file));
+const EXCLUDED = new Set([...UNREACHABLE_WITH_STALE_CLAIM, 'src/lib/pricing.ts']);
 
 /**
  * Grammar of the banned claim.
@@ -69,9 +76,9 @@ const EXCLUDED = new Set(UNREACHABLE_WITH_STALE_CLAIM.map(([file]) => file));
  * grammar is tested directly rather than only against whatever the tree happens
  * to contain today.
  */
-const FILE = String.raw`(?:PDFs?|high[- ]res(?:olution)?(?:\s+\w+)?|digital\s+(?:book|file|copy|download))`;
-const DELIVERY = String.raw`(?:follows?|arrives?|comes?|delivered|delivery|deliver|receives?|received|sent|sends?|emailed|emails?|unlocks?|unlocked|released?|available|goes\s+out)`;
-const APPROVAL = String.raw`approv(?:e|es|ed|al|als|ing)`;
+const FILE = String.raw`(?:the\s+)?(?:final\s+)?(?:high[- ]res(?:olution)?\s+)?(?:PDFs?|digital\s+(?:book|file|copy|download))`;
+const ACCESS = String.raw`(?:access(?:ible)?|available|unlock(?:ed|s)?|release(?:d|s)?|provide(?:d|s)?|(?:send(?:ing|s)?|sent)|email(?:ed|s)?|deliver(?:ed|y|s)?|download|receive(?:d|s)?|grant(?:ed|s)?|arriv(?:e|es|ed)|comes?|becomes?\s+accessible|made?\s+accessible)`;
+const APPROVAL = String.raw`(?:approv(?:e|es|ed|al|als|ing)|accept(?:ed|ance|s|ing)?)`;
 
 /**
  * Each entry is (label, pattern). A clause matching ANY of them asserts that
@@ -83,18 +90,20 @@ const APPROVAL_FIRST_DELIVERY: Array<[string, RegExp]> = [
   // "Once you approve …, you receive the final high-resolution PDF"
   ['approval-first, then the file', new RegExp(String.raw`(?:once|after|when|upon|following)\s+(?:you\s+|your\s+)?${APPROVAL}[^.;!?]{0,140}${FILE}`, 'i')],
   // "approve … the Digital PDF arrives the same day"  (HSB-PDF-2)
-  ['approval then file arrives', new RegExp(String.raw`(?<!-)\b${APPROVAL}\b[^.;!?]{0,110}${FILE}[^.;!?]{0,50}\b${DELIVERY}\b`, 'i')],
+  ['approval then file arrives', new RegExp(String.raw`(?<!-)\b${APPROVAL}\b[^.;!?]{0,110}${FILE}[^.;!?]{0,70}\b${ACCESS}\b`, 'i')],
   // "Approval unlocks the high-resolution PDF" — approval as the subject.
-  ['approval delivers the file', new RegExp(String.raw`(?<!-)\b${APPROVAL}\b[^.;!?]{0,40}\b${DELIVERY}\b[^.;!?]{0,50}${FILE}`, 'i')],
+  ['approval delivers the file', new RegExp(String.raw`(?<!-)\b${APPROVAL}\b[^.;!?]{0,60}\b(?:grants?\s+access\s+to|makes?|unlocks?|releases?|sends?|emails?|delivers?|provides?)\b[^.;!?]{0,60}${FILE}`, 'i')],
   // "The digital file is emailed after approval" — the connector is REQUIRED.
   // Without it the pattern degrades to mere co-occurrence and flags true copy
   // like "the full PDF comes with it, and you approve when it is right".
-  ['file delivered after approval', new RegExp(String.raw`${FILE}[^.;!?]{0,70}\b${DELIVERY}\b[^.;!?]{0,40}(?:\b(?:after|upon|once|following|post)\b[^.;!?]{0,20}|\bon\s+)(?:your\s+|the\s+)?${APPROVAL}\b`, 'i')],
+  ['file delivered after approval', new RegExp(String.raw`${FILE}[^.;!?]{0,90}\b${ACCESS}\b[^.;!?]{0,50}(?:\b(?:after|upon|once|following|post)\b[^.;!?]{0,20}|\bon\s+)(?:your\s+|the\s+)?${APPROVAL}\b`, 'i')],
   // "The final digital PDF follows approval" (HSB-PDF-1) — "follows" encodes the
   // ordering by itself, so it needs no connector.
   ['file follows approval', new RegExp(String.raw`${FILE}[^.;!?]{0,40}\bfollows?\b[^.;!?]{0,20}(?:your\s+|the\s+)?${APPROVAL}\b`, 'i')],
   // "PDF is delivered the same day after approval"
   ['same-day file on approval', new RegExp(String.raw`(?:${APPROVAL}[^.;!?]{0,90}${FILE}|${FILE}[^.;!?]{0,90}${APPROVAL})[^.;!?]{0,40}same[- ]day`, 'i')],
+  ['approval grants access to file', new RegExp(String.raw`\b${APPROVAL}\b[^.;!?]{0,40}\b(?:grants?\s+access\s+to|makes?)\b[^.;!?]{0,30}${FILE}[^.;!?]{0,20}\b(?:accessible|available)?\b`, 'i')],
+  ['file becomes accessible after approval', new RegExp(String.raw`${FILE}[^.;!?]{0,40}\bbecomes?\s+accessible\b[^.;!?]{0,30}(?:after|upon|following)\s+(?:your\s+|the\s+)?${APPROVAL}\b`, 'i')],
 ];
 
 /**
@@ -138,6 +147,45 @@ const BANNED_FIXTURES: Array<[string, string]> = [
   ['following approval', 'Following approval, the digital download becomes available.'],
   ['same-day after approval', 'After approval, digital PDFs are delivered the same day.'],
   ['sent on approval', 'The PDF is sent on approval.'],
+];
+
+const EXACT_TIMING_FIXTURES: Array<{ label: string; sentence: string; probes: string[] }> = [
+  {
+    label: 'approval grants access to the final PDF',
+    sentence: 'Approval grants access to the final PDF.',
+    probes: [
+      'Customer approval grants access to the final PDF.',
+      'Acceptance grants access to the final PDF.',
+      'Approval grants access to the high-resolution PDF download.',
+    ],
+  },
+  {
+    label: 'digital file provided after approval',
+    sentence: 'The digital file is provided after approval.',
+    probes: [
+      'The digital file is provided after acceptance.',
+      'The digital file is delivered after approval.',
+      'The digital download is emailed after approval.',
+    ],
+  },
+  {
+    label: 'PDF becomes accessible after approval',
+    sentence: 'The PDF becomes accessible after approval.',
+    probes: [
+      'The final PDF becomes accessible after acceptance.',
+      'The PDF becomes available after approval.',
+      'The high-resolution PDF becomes accessible following approval.',
+    ],
+  },
+  {
+    label: 'approval makes digital download accessible',
+    sentence: 'Approval makes the digital download accessible.',
+    probes: [
+      'Approval makes the PDF accessible.',
+      'Acceptance makes the digital file accessible.',
+      'Approval unlocks the digital download.',
+    ],
+  },
 ];
 
 /** Accurate statements that MUST remain allowed. */
@@ -225,6 +273,19 @@ test('every banned construction is caught by the predicate', () => {
   }
 });
 
+test('every exact blocked approval-first paraphrase and its disposable mutations are caught', () => {
+  for (const fixture of EXACT_TIMING_FIXTURES) {
+    assert.notEqual(bannedTimingClaim(fixture.sentence), null, `MISSED "${fixture.label}": ${fixture.sentence}`);
+    for (const probe of fixture.probes) {
+      assert.notEqual(
+        bannedTimingClaim(probe),
+        null,
+        `MISSED mutation for "${fixture.label}": ${probe}`,
+      );
+    }
+  }
+});
+
 test('every accurate construction is left alone by the predicate', () => {
   for (const [label, sentence] of ALLOWED_FIXTURES) {
     const claim = bannedTimingClaim(sentence);
@@ -265,6 +326,42 @@ test('customer emails do not claim the PDF arrives only after approval', () => {
   }
 });
 
+test('all six customer email builders stay free of approval-first PDF claims across formats and channels', () => {
+  const digitalOrder = createOrderRecord(
+    { childName: 'Nia', bookFormat: 'digital', email: 'nia@example.com' },
+    { id: 'ord_email_audit_digital' },
+  );
+  const printOrder = createOrderRecord(
+    { childName: 'Leo', bookFormat: 'classic', email: 'leo@example.com' },
+    { id: 'ord_email_audit_print' },
+  );
+
+  const emails = [
+    ['confirmation:digital', buildOrderConfirmationEmail(digitalOrder, { supportEmail: 'support@herostorybooks.com' })],
+    ['confirmation:print', buildOrderConfirmationEmail(printOrder, { supportEmail: 'support@herostorybooks.com' })],
+    ['preview-ready:digital', buildPreviewReadyEmail({ ...digitalOrder, status: 'preview_ready' }, { supportEmail: 'support@herostorybooks.com' })],
+    ['preview-ready:print', buildPreviewReadyEmail({ ...printOrder, status: 'preview_ready' }, { supportEmail: 'support@herostorybooks.com' })],
+    ['print-in-production', buildPrintInProductionEmail({ ...printOrder, status: 'print_in_production' }, { supportEmail: 'support@herostorybooks.com' })],
+    ['shipped', buildShippedEmail({ ...printOrder, status: 'shipped' }, { supportEmail: 'support@herostorybooks.com' })],
+    ['digital-delivery', buildDigitalDeliveryEmail(digitalOrder, {
+      pdfUrl: 'https://example.invalid/proof.pdf',
+      reviewUrl: 'https://example.invalid/review',
+      supportEmail: 'support@herostorybooks.com',
+    })],
+    ['proof-ready', buildProofReadyEmail(printOrder, {
+      reviewUrl: 'https://example.invalid/review',
+      proofUrl: 'https://example.invalid/proof.pdf',
+      supportEmail: 'support@herostorybooks.com',
+    })],
+  ] as const;
+
+  for (const [label, email] of emails) {
+    for (const channel of [email.html, email.text] as const) {
+      assert.equal(bannedTimingClaim(channel), null, `${label} makes an approval-first PDF claim`);
+    }
+  }
+});
+
 test('the persisted digital delivery expectation states the PDF comes with the proof', () => {
   const expectation = buildDeliveryExpectation('digital');
   assert.match(expectation, /comes with it/i, 'must say the PDF arrives with the proof');
@@ -293,7 +390,13 @@ test('the digital refund boundary is unchanged — only its false rationale was 
 
 // ── 4. The excluded files really are unreachable ────────────────────────────
 
-test('files still carrying the stale claim are genuinely unserved', () => {
+function resolveImport(fromFile: string, specifier: string): string | null {
+  if (specifier.startsWith('@/')) return path.join('src', specifier.slice(2));
+  if (!specifier.startsWith('.')) return null;
+  return path.normalize(path.join(path.dirname(fromFile), specifier));
+}
+
+function directImporters(targetFile: string): string[] {
   const all: string[] = [];
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir)) {
@@ -304,12 +407,35 @@ test('files still carrying the stale claim are genuinely unserved', () => {
   };
   walk('src');
 
-  for (const [file, symbol] of UNREACHABLE_WITH_STALE_CLAIM) {
-    const importers = all.filter((f) => f !== file && read(f).includes(symbol));
+  const targetStem = targetFile.replace(/\.[^.]+$/, '');
+  return all.filter((file) => {
+    if (file === targetFile) return false;
+    const imports = [...read(file).matchAll(/from\s+['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)/g)]
+      .map((match) => match[1] ?? match[2])
+      .filter(Boolean) as string[];
+    return imports.some((specifier) => {
+      const resolved = resolveImport(file, specifier);
+      if (!resolved) return false;
+      return resolved === targetFile || resolved === targetStem || resolved === `${targetStem}.ts` || resolved === `${targetStem}.tsx`;
+    });
+  });
+}
+
+test('files still carrying the stale claim are genuinely unserved by direct import proof', () => {
+  for (const file of UNREACHABLE_WITH_STALE_CLAIM) {
+    const importers = directImporters(file);
     assert.deepEqual(
       importers, [],
-      `${file} is now reachable via ${symbol}. Its approval-first PDF copy is stale and must be ` +
+      `${file} is now directly imported. Its approval-first PDF copy is stale and must be ` +
         'corrected before it can be served, or removed from this exclusion list.',
     );
   }
+});
+
+test('the stale pricing module itself remains unreachable from served code', () => {
+  assert.deepEqual(
+    directImporters('src/lib/pricing.ts'),
+    ['src/components/pricing-section.tsx'],
+    'src/lib/pricing.ts must stay confined to the dead pricing section until its legacy copy is remediated',
+  );
 });
