@@ -151,6 +151,19 @@ Post-fix verification:
 - TypeScript: 34 baseline / 34 candidate / 0 introduced / 0 changed-file diagnostics;
 - application code is byte-identical to the build 22/22 and E2E 99/99 passed parent.
 
+## Third post-review linear child
+
+Independent review of `e293b435e2c2a092621f77b8a5d0beaa82c8f8d8` found two unsupported sentence mutations still fell through the generic terminal vocabulary. The next linear child adds `printing` and `print production` to the generic staff/team review pattern and pins both sentences as banned fixtures:
+
+- `Our team will complete the final production check before printing.`
+- `Our team will complete the final production check before print production.`
+
+Post-fix verification:
+
+- human-review hostile/allowed gate: 16/16 passed;
+- exact default `npm test`: 1,481/1,481 passed;
+- application code remains byte-identical to the build/E2E-passed parent.
+
 ## Residual risks
 
 - The authenticated raw GET remains an evidence route; callers must supply the configured admin key.

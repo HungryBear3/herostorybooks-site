@@ -126,7 +126,7 @@ const HUMAN_REVIEW_CLAIMS: Array<[string, RegExp]> = [
   ['every order includes human review', new RegExp(String.raw`\bevery\s+(?:order|book|proof|page)\b[^.;!?]{0,80}\b${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}\b`, 'i')],
   ['human-reviewed compound', /\b(human|hand)[- ]reviewed\b/i],
   ['reviewed by our team', new RegExp(String.raw`\b${REVIEW}\b\s+by\s+(?:a\s+|an\s+|our\s+)?${HUMAN}\b`, 'i')],
-  ['staff review before proof or delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}\b[^.;!?]{0,70}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,40}\b(?:proof|delivery|fulfillment|sent|send|sending|emailed|released|release)\b`, 'i')],
+  ['staff review before proof or delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}\b[^.;!?]{0,70}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,40}\b(?:proof|delivery|fulfillment|sent|send|sending|emailed|released|release|printing|print\s+production)\b`, 'i')],
   ['human reviews each item before delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,35}\b${REVIEW}\b[^.;!?]{0,35}\b(?:each|every)\s+(?:order|book|proof|page)\b[^.;!?]{0,45}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,30}\b(?:delivery|fulfillment|send|sending|emailed|release|printing|print\s+production|print\s+release)\b`, 'i')],
   ['each item reviewed by human before delivery', new RegExp(String.raw`\b(?:each|every)\s+(?:order|book|proof|page)\b[^.;!?]{0,35}\b${REVIEW}\b[^.;!?]{0,20}\bby\s+(?:a\s+|an\s+|our\s+)?${HUMAN}\b[^.;!?]{0,45}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,30}\b(?:delivery|fulfillment|send|sending|emailed|release)\b`, 'i')],
   ['every item gets expert or editorial review', new RegExp(String.raw`\bevery\s+(?:order|book|proof)\b[^.;!?]{0,30}\b(?:gets|includes|receives)\b[^.;!?]{0,30}\b${HUMAN}\b[^.;!?]{0,20}\b${REVIEW}\b`, 'i')],
@@ -182,6 +182,8 @@ const BANNED_HUMAN_FIXTURES: Array<[string, string]> = [
   ['generic human page inspection', 'A human will inspect every page before print production.'],
   ['generic staff order check', 'Our staff will check each order before printing.'],
   ['generic story-art review', 'Our team will review all story art before print release.'],
+  ['production check before printing', 'Our team will complete the final production check before printing.'],
+  ['production check before print production', 'Our team will complete the final production check before print production.'],
 ];
 
 const EXACT_HUMAN_FIXTURES: Array<{ label: string; sentence: string; probes: string[] }> = [
