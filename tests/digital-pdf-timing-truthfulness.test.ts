@@ -77,7 +77,7 @@ const EXCLUDED = new Set([...UNREACHABLE_WITH_STALE_CLAIM, 'src/lib/pricing.ts']
  * to contain today.
  */
 const FILE = String.raw`(?:the\s+)?(?:final\s+)?(?:high[- ]res(?:olution)?\s+)?(?:PDFs?|digital\s+(?:book|file|copy|download))`;
-const ACCESS = String.raw`(?:access(?:ible)?|available|unlock(?:ed|s)?|release(?:d|s)?|provide(?:d|s)?|(?:send(?:ing|s)?|sent)|email(?:ed|s)?|deliver(?:ed|y|s)?|download|receive(?:d|s)?|grant(?:ed|s)?|arriv(?:e|es|ed)|comes?|becomes?\s+accessible|made?\s+accessible)`;
+const ACCESS = String.raw`(?:access(?:ed|ible)?|available|unlock(?:ed|s)?|release(?:d|s)?|provide(?:d|s)?|(?:send(?:ing|s)?|sent)|email(?:ed|s)?|deliver(?:ed|y|s)?|download(?:ed|s|ing)?|receive(?:d|s)?|grant(?:ed|s)?|arriv(?:e|es|ed)|comes?|becomes?\s+accessible|made?\s+accessible)`;
 const APPROVAL = String.raw`(?:approv(?:e|es|ed|al|als|ing)|accept(?:ed|ance|s|ing)?)`;
 
 /**
@@ -96,7 +96,10 @@ const APPROVAL_FIRST_DELIVERY: Array<[string, RegExp]> = [
   // "The digital file is emailed after approval" — the connector is REQUIRED.
   // Without it the pattern degrades to mere co-occurrence and flags true copy
   // like "the full PDF comes with it, and you approve when it is right".
-  ['file delivered after approval', new RegExp(String.raw`${FILE}[^.;!?]{0,90}\b${ACCESS}\b[^.;!?]{0,50}(?:\b(?:after|upon|once|following|post)\b[^.;!?]{0,20}|\bon\s+)(?:your\s+|the\s+)?${APPROVAL}\b`, 'i')],
+  ['file delivered after approval', new RegExp(String.raw`${FILE}[^.;!?]{0,90}\b${ACCESS}\b[^.;!?]{0,50}(?:\bonly\s+)?(?:\b(?:after|upon|once|when|following|post)\b[^.;!?]{0,20}|\bon\s+)(?:you\s+|your\s+|the\s+)?${APPROVAL}\b`, 'i')],
+  // "We provide the final PDF after approval" / "You can download the PDF
+  // after approving" — the delivery verb precedes the file token.
+  ['delivery verb then file then approval', new RegExp(String.raw`\b${ACCESS}\b[^.;!?]{0,60}${FILE}[^.;!?]{0,50}(?:\bonly\s+)?(?:after|upon|once|when|following|post|on)\s+(?:you\s+|your\s+|the\s+)?${APPROVAL}\b`, 'i')],
   // "The final digital PDF follows approval" (HSB-PDF-1) — "follows" encodes the
   // ordering by itself, so it needs no connector.
   ['file follows approval', new RegExp(String.raw`${FILE}[^.;!?]{0,40}\bfollows?\b[^.;!?]{0,20}(?:your\s+|the\s+)?${APPROVAL}\b`, 'i')],
@@ -147,6 +150,11 @@ const BANNED_FIXTURES: Array<[string, string]> = [
   ['following approval', 'Following approval, the digital download becomes available.'],
   ['same-day after approval', 'After approval, digital PDFs are delivered the same day.'],
   ['sent on approval', 'The PDF is sent on approval.'],
+  ['passive access after approval', 'The final PDF can be accessed after approval.'],
+  ['provide before file token', 'We provide the final PDF after approval.'],
+  ['passive provided when approved', 'The final PDF will be provided when you approve.'],
+  ['receive only after approval', 'You receive the final PDF only after approval.'],
+  ['download after approving', 'You can download the PDF after approving.'],
 ];
 
 const EXACT_TIMING_FIXTURES: Array<{ label: string; sentence: string; probes: string[] }> = [

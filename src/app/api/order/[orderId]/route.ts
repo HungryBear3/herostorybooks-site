@@ -1,7 +1,7 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from 'next/server.js';
 
-import { getConfiguredAdminKey, isAdminAuthedFromRequest } from '@/lib/admin-auth';
-import { getOrder } from '@/lib/orders';
+import { getConfiguredAdminKey, isAdminAuthedFromRequest } from '../../../../lib/admin-auth.ts';
+import { getOrder } from '../../../../lib/orders.ts';
 
 export async function GET(
   request: Request,

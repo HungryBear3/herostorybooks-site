@@ -120,6 +120,22 @@ Codex’s sandbox could not bind loopback or write shared Git metadata, but both
 
 Temporary alias/shim files live only under `/tmp` or ignored `node_modules`; none is committed.
 
+## Post-review linear child
+
+Independent review of `ee214546096130327bd36a4c0d117675ba1e41df` found three blockers, all fixed in the next linear child:
+
+1. The real order GET route now uses explicit relative `.ts` imports and `next/server.js`, so the repository’s exact default `npm test` runs cleanly without `NODE_OPTIONS`, an alias loader, or ignored `node_modules` shims.
+2. Timing grammar now catches passive/modal and verb-before-file forms including `can be accessed`, `we provide`, `will be provided when`, `receive only after`, and `can download after approving`.
+3. Human-review grammar now catches `each book reviewed by an expert`, team sign-off, team QA, staff vets each order, and editorial sign-off. The accurate final production check before print release is allowed only through a narrow print-release clause and a test binding it to authenticated `manuallyApproveProof → approvePrintProof` enforcement.
+
+Post-fix verification:
+
+- Clean focused gate: 44/44 passed with no loader/shims
+- Exact default `npm test`: 1,481/1,481 passed
+- Exact default Turbopack build: PASS, 22/22 pages
+- TypeScript: 34 baseline / 34 candidate / 0 introduced / 0 changed-file diagnostics
+- Exact `npm run test:e2e`: 99/99 passed
+
 ## Residual risks
 
 - The authenticated raw GET remains an evidence route; callers must supply the configured admin key.

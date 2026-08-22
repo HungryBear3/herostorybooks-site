@@ -107,7 +107,7 @@ function servedSources(): string[] {
  * driven by fixtures below so the grammar is tested directly.
  */
 const HUMAN = String.raw`(?:human|person|people|staff|team|expert|editor(?:ial)?|artist|manual|our\s+team|a\s+real\s+person)`;
-const REVIEW = String.raw`(?:review|reviewed|reviews|check|checked|checks|inspect|inspected|inspection|proofread|vet|vetted|quality\s+check|quality\s+pass)`;
+const REVIEW = String.raw`(?:review|reviewed|reviews|check|checked|checks|inspect|inspected|inspection|proofread|vet|vets|vetted|QA|quality\s+check|quality\s+pass|sign[- ]?off|signs?\s+off|signed\s+off)`;
 const PRODUCT = String.raw`(?:story|art|artwork|page|pages|book|books|proof|proofs|illustration|illustrations|copy|editorial|quality|order|delivery|fulfillment)`;
 
 const HUMAN_REVIEW_CLAIMS: Array<[string, RegExp]> = [
@@ -125,8 +125,10 @@ const HUMAN_REVIEW_CLAIMS: Array<[string, RegExp]> = [
   // HSB-QA-1b: "Every order includes … human story and art review".
   ['every order includes human review', new RegExp(String.raw`\bevery\s+(?:order|book|proof|page)\b[^.;!?]{0,80}\b${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}\b`, 'i')],
   ['human-reviewed compound', /\b(human|hand)[- ]reviewed\b/i],
-  ['reviewed by our team', new RegExp(String.raw`\b${REVIEW}[a-z]*\s+by\s+(?:a\s+|our\s+)?${HUMAN}\b`, 'i')],
-  ['staff review before proof or delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}\b[^.;!?]{0,50}\bbefore\b[^.;!?]{0,40}\b(?:proof|delivery|fulfillment|sent|send|emailed|released)\b`, 'i')],
+  ['reviewed by our team', new RegExp(String.raw`\b${REVIEW}\b\s+by\s+(?:a\s+|an\s+|our\s+)?${HUMAN}\b`, 'i')],
+  ['staff review before proof or delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}\b[^.;!?]{0,70}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,40}\b(?:proof|delivery|fulfillment|sent|send|sending|emailed|released|release)\b`, 'i')],
+  ['human reviews each item before delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,35}\b${REVIEW}\b[^.;!?]{0,35}\b(?:each|every)\s+(?:order|book|proof|page)\b[^.;!?]{0,45}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,30}\b(?:delivery|fulfillment|send|sending|emailed|release)\b`, 'i')],
+  ['each item reviewed by human before delivery', new RegExp(String.raw`\b(?:each|every)\s+(?:order|book|proof|page)\b[^.;!?]{0,35}\b${REVIEW}\b[^.;!?]{0,20}\bby\s+(?:a\s+|an\s+|our\s+)?${HUMAN}\b[^.;!?]{0,45}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,30}\b(?:delivery|fulfillment|send|sending|emailed|release)\b`, 'i')],
   ['every item gets expert or editorial review', new RegExp(String.raw`\bevery\s+(?:order|book|proof)\b[^.;!?]{0,30}\b(?:gets|includes|receives)\b[^.;!?]{0,30}\b${HUMAN}\b[^.;!?]{0,20}\b${REVIEW}\b`, 'i')],
   ['team quality check for every proof', new RegExp(String.raw`\bevery\s+proof\b[^.;!?]{0,40}\b(?:gets|includes|receives)\b[^.;!?]{0,30}\b(?:team|staff|human)\b[^.;!?]{0,20}\b(?:quality\s+check|quality\s+pass|check)\b`, 'i')],
 ];
@@ -140,6 +142,7 @@ const HUMAN_REVIEW_CLAIMS: Array<[string, RegExp]> = [
  * allowance stays earned rather than assumed.
  */
 const THRESHOLD_SCOPED = /\bafter\s+(?:\d+|three|four|five)\b|\bif\b|\bmay\s+step\s+in\b|\bexceeds?\b/i;
+const PRINT_RELEASE_SCOPED = /\b(?:team|staff|human|person|operator)\b[^.;!?]{0,70}\b(?:check|review|inspect|sign[- ]?off)\b[^.;!?]{0,50}\bbefore\s+(?:print\s+release|printing|print\s+production)\b/i;
 
 function clausesOf(text: string): string[] {
   return text.split(/[.;!?\n·]+/g).map((c) => c.trim()).filter(Boolean);
@@ -148,7 +151,7 @@ function clausesOf(text: string): string[] {
 /** Label of the first unsupported human-review claim found, or null. */
 export function bannedHumanReviewClaim(text: string): string | null {
   for (const clause of clausesOf(text)) {
-    if (THRESHOLD_SCOPED.test(clause)) continue;
+    if (THRESHOLD_SCOPED.test(clause) || PRINT_RELEASE_SCOPED.test(clause)) continue;
     for (const [label, pattern] of HUMAN_REVIEW_CLAIMS) {
       if (pattern.test(clause)) return label;
     }
@@ -167,6 +170,11 @@ const BANNED_HUMAN_FIXTURES: Array<[string, string]> = [
   ['reviewed by people', 'the order is still reviewed by people before fulfillment'],
   ['a person checks every page', 'A person checks every page before it goes out'],
   ['human proof review', 'human proof review'],
+  ['each book expert review', 'Each book is reviewed by an expert before delivery.'],
+  ['team signoff every proof', 'Our team signs off on every proof before sending.'],
+  ['team QA every proof', 'Every proof receives team QA before it is emailed.'],
+  ['staff vets each order', 'Our staff vets each order prior to delivery.'],
+  ['editorial signoff every proof', 'Every proof receives editorial sign-off before release.'],
 ];
 
 const EXACT_HUMAN_FIXTURES: Array<{ label: string; sentence: string; probes: string[] }> = [
@@ -217,6 +225,7 @@ const ALLOWED_HUMAN_FIXTURES: Array<[string, string]> = [
   ['operator photo note', 'Saved with this person for operator review'],
   ['customer re-reads details', 'Extra details are optional and can be reviewed by going back to Hero details'],
   ['automated pipeline', 'We write the story, illustrate every page, and build your proof before it reaches you.'],
+  ['operator print-release gate', 'Our team will complete the final production check before print release.'],
 ];
 
 /** Outcome/quality guarantees and fixed-time promises. */
@@ -346,6 +355,14 @@ test('the concierge-beta exemption still has its enforced gate', () => {
   assert.match(route, /custom_story_manual_review_required/,
     'the concierge manual-review refusal must still exist, or its human-review copy stops being accurate');
   assert.match(route, /conciergeAllowed/, 'checkout must still gate on concierge allowance');
+});
+
+test('the print-release exemption still has its authenticated operator gate', () => {
+  const actions = read('src/lib/admin-actions.ts');
+  const route = read('src/app/api/admin/orders/[orderId]/manual-approve/route.ts');
+  assert.match(actions, /manuallyApproveProof/, 'operator approval action must still exist');
+  assert.match(actions, /approvePrintProof/, 'operator action must still cross the print-release gate');
+  assert.match(route, /isAdminAuthedFromRequest/, 'print-release route must remain admin-authenticated');
 });
 
 test('the proof assurance describes the automated pipeline, not a human gate', () => {
