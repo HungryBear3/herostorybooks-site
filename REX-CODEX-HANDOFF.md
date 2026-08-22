@@ -136,6 +136,21 @@ Post-fix verification:
 - TypeScript: 34 baseline / 34 candidate / 0 introduced / 0 changed-file diagnostics
 - Exact `npm run test:e2e`: 99/99 passed
 
+## Second post-review linear child
+
+Independent review of `323120b0bc8cfce6c388933034edb9d1d7ad63d3` found the print-release exemption too broad: it could allow generic every-book/page/order QA promises. The next linear child changes only the guard test plus this handoff:
+
+- the allowance is now anchored to the exact supported sentence, `Our team will complete the final production check before print release`;
+- four generic review/inspection/check/art probes are explicitly banned;
+- generic terminal vocabulary includes printing, print production, and print release.
+
+Post-fix verification:
+
+- human-review hostile/allowed gate: 16/16 passed;
+- exact default `npm test`: 1,481/1,481 passed;
+- TypeScript: 34 baseline / 34 candidate / 0 introduced / 0 changed-file diagnostics;
+- application code is byte-identical to the build 22/22 and E2E 99/99 passed parent.
+
 ## Residual risks
 
 - The authenticated raw GET remains an evidence route; callers must supply the configured admin key.

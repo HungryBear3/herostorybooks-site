@@ -127,7 +127,7 @@ const HUMAN_REVIEW_CLAIMS: Array<[string, RegExp]> = [
   ['human-reviewed compound', /\b(human|hand)[- ]reviewed\b/i],
   ['reviewed by our team', new RegExp(String.raw`\b${REVIEW}\b\s+by\s+(?:a\s+|an\s+|our\s+)?${HUMAN}\b`, 'i')],
   ['staff review before proof or delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}\b[^.;!?]{0,70}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,40}\b(?:proof|delivery|fulfillment|sent|send|sending|emailed|released|release)\b`, 'i')],
-  ['human reviews each item before delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,35}\b${REVIEW}\b[^.;!?]{0,35}\b(?:each|every)\s+(?:order|book|proof|page)\b[^.;!?]{0,45}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,30}\b(?:delivery|fulfillment|send|sending|emailed|release)\b`, 'i')],
+  ['human reviews each item before delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,35}\b${REVIEW}\b[^.;!?]{0,35}\b(?:each|every)\s+(?:order|book|proof|page)\b[^.;!?]{0,45}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,30}\b(?:delivery|fulfillment|send|sending|emailed|release|printing|print\s+production|print\s+release)\b`, 'i')],
   ['each item reviewed by human before delivery', new RegExp(String.raw`\b(?:each|every)\s+(?:order|book|proof|page)\b[^.;!?]{0,35}\b${REVIEW}\b[^.;!?]{0,20}\bby\s+(?:a\s+|an\s+|our\s+)?${HUMAN}\b[^.;!?]{0,45}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,30}\b(?:delivery|fulfillment|send|sending|emailed|release)\b`, 'i')],
   ['every item gets expert or editorial review', new RegExp(String.raw`\bevery\s+(?:order|book|proof)\b[^.;!?]{0,30}\b(?:gets|includes|receives)\b[^.;!?]{0,30}\b${HUMAN}\b[^.;!?]{0,20}\b${REVIEW}\b`, 'i')],
   ['team quality check for every proof', new RegExp(String.raw`\bevery\s+proof\b[^.;!?]{0,40}\b(?:gets|includes|receives)\b[^.;!?]{0,30}\b(?:team|staff|human)\b[^.;!?]{0,20}\b(?:quality\s+check|quality\s+pass|check)\b`, 'i')],
@@ -142,7 +142,10 @@ const HUMAN_REVIEW_CLAIMS: Array<[string, RegExp]> = [
  * allowance stays earned rather than assumed.
  */
 const THRESHOLD_SCOPED = /\bafter\s+(?:\d+|three|four|five)\b|\bif\b|\bmay\s+step\s+in\b|\bexceeds?\b/i;
-const PRINT_RELEASE_SCOPED = /\b(?:team|staff|human|person|operator)\b[^.;!?]{0,70}\b(?:check|review|inspect|sign[- ]?off)\b[^.;!?]{0,50}\bbefore\s+(?:print\s+release|printing|print\s+production)\b/i;
+// This is deliberately exact. The authenticated operator boundary supports the
+// production-release sentence currently served; it does not support generic
+// promises that every book, page, order, or piece of art receives human QA.
+const PRINT_RELEASE_SCOPED = /^our\s+team\s+will\s+complete\s+the\s+final\s+production\s+check\s+before\s+print\s+release$/i;
 
 function clausesOf(text: string): string[] {
   return text.split(/[.;!?\n·]+/g).map((c) => c.trim()).filter(Boolean);
@@ -175,6 +178,10 @@ const BANNED_HUMAN_FIXTURES: Array<[string, string]> = [
   ['team QA every proof', 'Every proof receives team QA before it is emailed.'],
   ['staff vets each order', 'Our staff vets each order prior to delivery.'],
   ['editorial signoff every proof', 'Every proof receives editorial sign-off before release.'],
+  ['generic team review before printing', 'Our team will review every book before printing.'],
+  ['generic human page inspection', 'A human will inspect every page before print production.'],
+  ['generic staff order check', 'Our staff will check each order before printing.'],
+  ['generic story-art review', 'Our team will review all story art before print release.'],
 ];
 
 const EXACT_HUMAN_FIXTURES: Array<{ label: string; sentence: string; probes: string[] }> = [
