@@ -106,9 +106,19 @@ function servedSources(): string[] {
  * The list is now organised by claim shape, and the predicate is exported and
  * driven by fixtures below so the grammar is tested directly.
  */
-const HUMAN = String.raw`(?:human|person|people|staff|team|expert|editor(?:ial)?|artist|manual|our\s+team|a\s+real\s+person)`;
-const REVIEW = String.raw`(?:review|reviewed|reviews|check|checked|checks|inspect|inspected|inspection|proofread|vet|vets|vetted|QA|quality\s+check|quality\s+pass|sign[- ]?off|signs?\s+off|signed\s+off)`;
+// Plurals matter: Rex's audit of 1eae258 blocked because `editor(?:ial)?` could
+// not match "Our editors look over each story", so the whole claim family went
+// unrecognised on the plural subject alone.
+const HUMAN = String.raw`(?:humans?|persons?|people|staff|teams?|experts?|editorial|editors?|artists?|manual|our\s+team|a\s+real\s+person)`;
+// `quality assurance`/`quality control` and the `look/go over` verbs are the two
+// vocabulary gaps that let ordinary QA paraphrases through. They are added as
+// REVIEW terms — not as bare bans on `quality`, `editorial`, or `assurance` —
+// so they only fire when a HUMAN actor is attached by one of the shapes below.
+const REVIEW = String.raw`(?:review|reviewed|reviews|check|checked|checks|inspect|inspected|inspection|proofread|vet|vets|vetted|QA|quality\s+(?:check|pass|assurance|control)|sign[- ]?off|signs?\s+off|signed\s+off|looks?\s+over|looked\s+over|go(?:es)?\s+over|went\s+over)`;
 const PRODUCT = String.raw`(?:story|art|artwork|page|pages|book|books|proof|proofs|illustration|illustrations|copy|editorial|quality|order|delivery|fulfillment)`;
+/** Universal quantifiers and the items they quantify — "every book", "all orders". */
+const EVERY = String.raw`(?:every|each|all(?:\s+of\s+the)?)`;
+const ITEM = String.raw`(?:orders?|books?|proofs?|pages?|stor(?:y|ies))`;
 
 const HUMAN_REVIEW_CLAIMS: Array<[string, RegExp]> = [
   ['every book personally/manually reviewed', /\bevery\s+(book|order|page|proof)\b[^.;!?]{0,50}\b(personally|manually|hand)[- ]?(review|check|inspect)/i],
@@ -129,7 +139,11 @@ const HUMAN_REVIEW_CLAIMS: Array<[string, RegExp]> = [
   ['staff review before proof or delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,40}\b${REVIEW}\b[^.;!?]{0,70}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,40}\b(?:proof|delivery|fulfillment|sent|send|sending|emailed|released|release|printing|print\s+production)\b`, 'i')],
   ['human reviews each item before delivery', new RegExp(String.raw`\b${HUMAN}\b[^.;!?]{0,35}\b${REVIEW}\b[^.;!?]{0,35}\b(?:each|every)\s+(?:order|book|proof|page)\b[^.;!?]{0,45}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,30}\b(?:delivery|fulfillment|send|sending|emailed|release|printing|print\s+production|print\s+release)\b`, 'i')],
   ['each item reviewed by human before delivery', new RegExp(String.raw`\b(?:each|every)\s+(?:order|book|proof|page)\b[^.;!?]{0,35}\b${REVIEW}\b[^.;!?]{0,20}\bby\s+(?:a\s+|an\s+|our\s+)?${HUMAN}\b[^.;!?]{0,45}(?:\bbefore\b|\bprior\s+to\b)[^.;!?]{0,30}\b(?:delivery|fulfillment|send|sending|emailed|release)\b`, 'i')],
-  ['every item gets expert or editorial review', new RegExp(String.raw`\bevery\s+(?:order|book|proof)\b[^.;!?]{0,30}\b(?:gets|includes|receives)\b[^.;!?]{0,30}\b${HUMAN}\b[^.;!?]{0,20}\b${REVIEW}\b`, 'i')],
+  // HSB-QA-2: "All books receive expert quality assurance before fulfillment."
+  // The quantifier is no longer just `every` and the verb is no longer just
+  // gets/includes/receives — `undergoes` and `goes through` are the ordinary
+  // ways this promise is written.
+  ['every item gets expert or editorial review', new RegExp(String.raw`\b${EVERY}\s+${ITEM}\b[^.;!?]{0,30}\b(?:gets?|includes?|receives?|undergo(?:es)?|go(?:es)?\s+through)\b[^.;!?]{0,30}\b${HUMAN}\b[^.;!?]{0,20}\b${REVIEW}\b`, 'i')],
   ['team quality check for every proof', new RegExp(String.raw`\bevery\s+proof\b[^.;!?]{0,40}\b(?:gets|includes|receives)\b[^.;!?]{0,30}\b(?:team|staff|human)\b[^.;!?]{0,20}\b(?:quality\s+check|quality\s+pass|check)\b`, 'i')],
 ];
 
@@ -223,6 +237,37 @@ const EXACT_HUMAN_FIXTURES: Array<{ label: string; sentence: string; probes: str
       'Every proof gets an expert check.',
     ],
   },
+  // ── Blocked at 1eae258: ordinary QA paraphrases the predicate false-greened ──
+  {
+    label: 'every book undergoes editorial quality assurance before printing',
+    sentence: 'Every book undergoes editorial quality assurance before printing.',
+    probes: [
+      'Each book undergoes editorial quality assurance before printing.',
+      'All books undergo editorial quality assurance before printing.',
+      'Every book goes through editorial quality assurance before print production.',
+      'Every order undergoes an editorial quality check before printing.',
+    ],
+  },
+  {
+    label: 'our editors look over each story before it is sent',
+    sentence: 'Our editors look over each story before it is sent.',
+    probes: [
+      'Our editors look over every story before it is sent.',
+      'Our editors go over each story before it is sent.',
+      'Our artists look over each page before delivery.',
+      'Each story is looked over by an editor before it is sent.',
+    ],
+  },
+  {
+    label: 'all books receive expert quality assurance before fulfillment',
+    sentence: 'All books receive expert quality assurance before fulfillment.',
+    probes: [
+      'All books receive human quality assurance before fulfillment.',
+      'All orders receive expert quality assurance before delivery.',
+      'Every book receives expert quality assurance before fulfillment.',
+      'All books get expert quality control before fulfillment.',
+    ],
+  },
 ];
 
 /** Accurate constructions that MUST remain allowed. */
@@ -235,6 +280,13 @@ const ALLOWED_HUMAN_FIXTURES: Array<[string, string]> = [
   ['customer re-reads details', 'Extra details are optional and can be reviewed by going back to Hero details'],
   ['automated pipeline', 'We write the story, illustrate every page, and build your proof before it reaches you.'],
   ['operator print-release gate', 'Our team will complete the final production check before print release.'],
+  // The tightening above must stay a claim-shape rule, not a wordlist ban:
+  // `editorial`, `quality`, and `assurance` all remain usable on their own.
+  ['editorial voice, not editorial review', 'Our editorial style keeps every page age-appropriate.'],
+  ['print quality, not a QA gate', 'Museum-quality printing on thick matte paper.'],
+  ['automated proof carries the PDF', 'We build your proof and send the full high-resolution PDF with it.'],
+  ['proof includes the review download', 'Your proof email includes the full PDF download so you can read every page.'],
+  ['print waits for the customer', 'Nothing goes to print until you approve the proof.'],
 ];
 
 /** Outcome/quality guarantees and fixed-time promises. */

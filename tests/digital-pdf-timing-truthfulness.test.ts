@@ -76,8 +76,13 @@ const EXCLUDED = new Set([...UNREACHABLE_WITH_STALE_CLAIM, 'src/lib/pricing.ts']
  * grammar is tested directly rather than only against whatever the tree happens
  * to contain today.
  */
-const FILE = String.raw`(?:the\s+)?(?:final\s+)?(?:high[- ]res(?:olution)?\s+)?(?:PDFs?|digital\s+(?:book|file|copy|download))`;
-const ACCESS = String.raw`(?:access(?:ed|ible)?|available|unlock(?:ed|s)?|release(?:d|s)?|provide(?:d|s)?|(?:send(?:ing|s)?|sent)|email(?:ed|s)?|deliver(?:ed|y|s)?|download(?:ed|s|ing)?|receive(?:d|s)?|grant(?:ed|s)?|arriv(?:e|es|ed)|comes?|becomes?\s+accessible|made?\s+accessible)`;
+// `the download` / `your download` is the bare noun customers actually read on
+// a delivery surface ("The download opens only after you approve"), so the file
+// role must recognise it. It is deliberately anchored to a determiner: a bare
+// `download` would collide with the many accurate CTAs ("Download PDF", "open
+// or download the full proof PDF") that carry no approval-ordering claim at all.
+const FILE = String.raw`(?:(?:the|your)\s+downloads?|(?:the\s+)?(?:final\s+)?(?:high[- ]res(?:olution)?\s+)?(?:PDFs?|digital\s+(?:book|file|copy|download)))`;
+const ACCESS = String.raw`(?:access(?:ed|ible)?|available|unlock(?:ed|s)?|release(?:d|s)?|provide(?:d|s)?|(?:send(?:ing|s)?|sent)|email(?:ed|s)?|deliver(?:ed|y|s)?|download(?:ed|s|ing)?|receive(?:d|s)?|grant(?:ed|s)?|arriv(?:e|es|ed)|comes?|opens?|opened|go(?:es)?\s+live|went\s+live|becomes?\s+accessible|made?\s+accessible)`;
 const APPROVAL = String.raw`(?:approv(?:e|es|ed|al|als|ing)|accept(?:ed|ance|s|ing)?)`;
 
 /**
@@ -92,7 +97,14 @@ const APPROVAL_FIRST_DELIVERY: Array<[string, RegExp]> = [
   // "approve … the Digital PDF arrives the same day"  (HSB-PDF-2)
   ['approval then file arrives', new RegExp(String.raw`(?<!-)\b${APPROVAL}\b[^.;!?]{0,110}${FILE}[^.;!?]{0,70}\b${ACCESS}\b`, 'i')],
   // "Approval unlocks the high-resolution PDF" — approval as the subject.
-  ['approval delivers the file', new RegExp(String.raw`(?<!-)\b${APPROVAL}\b[^.;!?]{0,60}\b(?:grants?\s+access\s+to|makes?|unlocks?|releases?|sends?|emails?|delivers?|provides?)\b[^.;!?]{0,60}${FILE}`, 'i')],
+  // `triggers`/`generates`/`produces`/`issues` are the same claim with a
+  // manufacturing verb: "Your approval triggers the final PDF."
+  ['approval delivers the file', new RegExp(String.raw`(?<!-)\b${APPROVAL}\b[^.;!?]{0,60}\b(?:grants?\s+access\s+to|makes?|unlocks?|releases?|sends?|emails?|delivers?|provides?|triggers?|generates?|produces?|issues?)\b[^.;!?]{0,60}${FILE}`, 'i')],
+  // "Approve to get the final PDF" — the purpose clause states approval as the
+  // way to obtain the file, with no after/once/upon connector to key on. The
+  // verb set is local to this pattern rather than folded into ACCESS, because
+  // `get`/`open`/`keep` are far too common to widen the co-occurrence rules.
+  ['approve in order to obtain the file', new RegExp(String.raw`(?<!-)\b${APPROVAL}\b[^.;!?]{0,60}\bto\s+(?:get|obtain|receive|download|access|unlock|open|read|keep|claim)\b[^.;!?]{0,40}${FILE}`, 'i')],
   // "The digital file is emailed after approval" — the connector is REQUIRED.
   // Without it the pattern degrades to mere co-occurrence and flags true copy
   // like "the full PDF comes with it, and you approve when it is right".
@@ -194,6 +206,37 @@ const EXACT_TIMING_FIXTURES: Array<{ label: string; sentence: string; probes: st
       'Approval unlocks the digital download.',
     ],
   },
+  // ── Blocked at 1eae258: ordinary approval-first paraphrases that passed ──
+  {
+    label: 'approval triggers the final PDF',
+    sentence: 'Your approval triggers the final PDF.',
+    probes: [
+      'Approval triggers the final PDF.',
+      'Your approval generates the final PDF.',
+      'Approving triggers the high-resolution PDF download.',
+      'Your acceptance triggers the digital file.',
+    ],
+  },
+  {
+    label: 'approve to get the final PDF',
+    sentence: 'Approve to get the final PDF.',
+    probes: [
+      'Approve to receive the final PDF.',
+      'Approve your proof to download the PDF.',
+      'Approve to unlock the digital download.',
+      'Approve the proof to get your high-resolution PDF.',
+    ],
+  },
+  {
+    label: 'the download opens only after you approve',
+    sentence: 'The download opens only after you approve.',
+    probes: [
+      'The download opens after you approve.',
+      'Your download opens only after approval.',
+      'The download unlocks only after you approve.',
+      'The download goes live once you approve.',
+    ],
+  },
 ];
 
 /** Accurate statements that MUST remain allowed. */
@@ -211,6 +254,18 @@ const ALLOWED_FIXTURES: Array<[string, string]> = [
   ['proof-first, no file token', 'You review every page before approving.'],
   ['print submission after approval', 'After approval, we queue the job with our print partner.'],
   ['bulleted print card', 'Proof usually ready in 2–3 business days · Softcover ships 5–7 business days after approval · Digital PDF included'],
+  // The tightening above must stay a claim-shape rule, not a wordlist ban:
+  // `download`, `PDF`, and `approve` all remain usable on their own, and the two
+  // things that are actually true — the proof carries the file, and print waits
+  // for approval — must keep passing.
+  ['download CTA', 'Download PDF'],
+  ['open or download the proof', 'Use the buttons below to open or download the full proof PDF'],
+  ['approve CTA', 'Approve this proof'],
+  ['proof email carries the download', 'Your proof email includes the full high-resolution PDF download'],
+  ['download link ships with the proof', 'The download link is in the same proof email; approving accepts the book.'],
+  ['file first, approval second', 'You can open the PDF right away, and approve once every page looks right.'],
+  ['print submission waits for approval', 'We send the book to print only after you approve the proof.'],
+  ['print production follows approval', 'Print production starts after your approval; the digital file was already yours.'],
 ];
 
 function servedSources(): string[] {
