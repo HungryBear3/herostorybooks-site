@@ -1,7 +1,13 @@
 import { Resend } from 'resend';
 
 import type { OrderRecord } from './orders';
-import { PROOF_TURNAROUND_WINDOW } from './proof-turnaround.ts';
+import { renderDeliveryExpectation } from './orders.ts';
+import {
+  PROOF_DELAY_SUPPORT_NOTE,
+  PROOF_REVIEW_ASSURANCE,
+  PROOF_TURNAROUND_WINDOW,
+  PROOF_VOLUME_NOTE,
+} from './proof-turnaround.ts';
 
 const DEFAULT_SUPPORT_EMAIL = 'support@herostorybooks.com';
 const DEFAULT_FROM_EMAIL = 'Hero Story Books <onboarding@resend.dev>';
@@ -150,14 +156,14 @@ export function buildOrderConfirmationEmail(
 ) {
   const supportEmail = options.supportEmail || getSupportEmail();
   const previewNote = order.bookFormat === 'digital'
-    ? `Your digital proof is usually ready in ${PROOF_TURNAROUND_WINDOW}; we send the final PDF after you approve it.`
+    ? `Your digital proof is usually ready in ${PROOF_TURNAROUND_WINDOW}, and the full high-resolution PDF comes with it — read it right away, ask for changes if anything is off, and approve when it is right.`
     : 'Your digital preview will arrive first so you can approve it before it prints.';
 
   const subject = `${order.childName}'s Hero Story Books order is in`;
   const detailRows = [
     ['Child name', order.childName],
     ['Format', order.formatLabel],
-    ['Delivery', order.deliveryExpectation],
+    ['Delivery', renderDeliveryExpectation(order.deliveryExpectation)],
     ['Order ID', order.id],
   ].filter(([, value]) => Boolean(value));
 
@@ -169,6 +175,8 @@ export function buildOrderConfirmationEmail(
         ${detailRows.map(([label, value]) => `<p style="margin:0 0 8px;"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</p>`).join('')}
       </div>
       <p style="margin:0 0 12px;">${escapeHtml(previewNote)}</p>
+      <p style="margin:0 0 12px;">${escapeHtml(PROOF_REVIEW_ASSURANCE)} ${escapeHtml(PROOF_VOLUME_NOTE)}</p>
+      <p style="margin:0 0 12px;color:#6b7280;font-size:14px;">${escapeHtml(PROOF_DELAY_SUPPORT_NOTE)}</p>
       <p style="margin:0 0 12px;">If you have questions, just reply to this email or contact <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>.</p>
       <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Proof approval before print · Personalized with care by Hero Story Books</p>
     </div>
@@ -179,10 +187,12 @@ export function buildOrderConfirmationEmail(
     '',
     `Child name: ${order.childName}`,
     `Format: ${order.formatLabel}`,
-    `Delivery: ${order.deliveryExpectation}`,
+    `Delivery: ${renderDeliveryExpectation(order.deliveryExpectation)}`,
     `Order ID: ${order.id}`,
     '',
     previewNote,
+    `${PROOF_REVIEW_ASSURANCE} ${PROOF_VOLUME_NOTE}`,
+    PROOF_DELAY_SUPPORT_NOTE,
     `Track your order: ${(process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'https://herostorybooks.com')}/status/${order.id}`,
     `Questions? ${supportEmail}`,
   ].join('\n');

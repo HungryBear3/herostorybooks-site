@@ -509,7 +509,7 @@ No image yet
               <p className="mt-2 text-xs text-gray-600">
                 {snapshot.isPrint
                   ? `This opens the complete book we plan to print — cover, dedication/title pages, story pages, and any keepsake pages. The ${snapshot.pageArtifacts.length} illustrated story pages above are part of this proof, not the whole book.`
-                  : 'This opens the complete storybook PDF we’ll send to your inbox once you approve.'}
+                  : 'This opens the complete storybook PDF that was emailed to you.'}
               </p>
             </div>
           ) : (

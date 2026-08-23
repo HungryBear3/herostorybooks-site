@@ -4,7 +4,11 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from "@/lib/checkout-flow";
-import { PROOF_TURNAROUND_WINDOW } from "@/lib/proof-turnaround";
+import {
+  PROOF_REVIEW_ASSURANCE,
+  PROOF_TURNAROUND_WINDOW,
+  PROOF_VOLUME_NOTE,
+} from "@/lib/proof-turnaround";
 import { checkoutTrackingFromSearchParams } from "@/lib/checkout-tracking";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
 import { GuidedPhotoCapture } from "@/components/checkout/GuidedPhotoCapture";
@@ -96,7 +100,7 @@ const FORMATS = [
     badge: "Most flexible",
     delivery: `Digital proof usually ready in ${PROOF_TURNAROUND_WINDOW}`,
     deliveryDetail:
-      "32-page proof first · Final high-res PDF delivered after approval · No printing or shipping step",
+      "32-page proof first · Full high-res PDF included with the proof email · No printing or shipping step",
   },
   {
     id: "classic",
@@ -2088,7 +2092,7 @@ export function CheckoutForm() {
                   Add one clear photo for the main character
                 </h2>
                 <p className="text-sm leading-6 text-[#695f54]">
-                  Optional, but best for the closest hero likeness. If you skip it, we&apos;ll use the written description above and hand-review the proof before print.
+                  Optional, but best for the closest hero likeness. If you skip it, we&apos;ll build the hero from the written description above, and you review the proof before anything prints.
                 </p>
               </div>
               <div className="inline-flex w-fit rounded-full border border-[#d8c6a2] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54]">
@@ -2126,7 +2130,7 @@ export function CheckoutForm() {
                     </div>
                   </div>
                   <p className="text-xs text-center text-[#8a7b6a]">
-                    Uploaded photo → storybook illustration · hand-reviewed before print
+                    Uploaded photo → storybook illustration · you approve before print
                   </p>
                 </div>
               )}
@@ -2581,7 +2585,8 @@ export function CheckoutForm() {
                     <strong className="block text-[#241914]">
                       We send a digital proof
                     </strong>
-                    Usually in {PROOF_TURNAROUND_WINDOW}, you get a private link to review every page before anything prints.
+                    Usually in {PROOF_TURNAROUND_WINDOW}, you get a private link to review every page before anything prints.{" "}
+                    {PROOF_REVIEW_ASSURANCE} {PROOF_VOLUME_NOTE}
                   </span>
                 </li>
                 <li className="flex gap-3">

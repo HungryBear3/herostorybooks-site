@@ -1,24 +1,20 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from 'next/server.js';
 
-import { getOrder } from '@/lib/orders';
-
-function getAdminKey() {
-  return process.env.HSB_ORDER_ADMIN_KEY;
-}
-
-function isAuthorized(request: Request) {
-  const adminKey = getAdminKey();
-  if (!adminKey) {
-    return false;
-  }
-
-  return request.headers.get('x-hsb-order-admin-key') === adminKey;
-}
+import { getConfiguredAdminKey, isAdminAuthedFromRequest } from '../../../../lib/admin-auth.ts';
+import { getOrder } from '../../../../lib/orders.ts';
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ orderId: string }> },
 ) {
+  if (!getConfiguredAdminKey()) {
+    return NextResponse.json({ error: 'Order admin key is not configured' }, { status: 503 });
+  }
+
+  if (!isAdminAuthedFromRequest(request)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { orderId } = await context.params;
   const order = await getOrder(orderId);
 
@@ -44,11 +40,11 @@ export async function PATCH(
   request: Request,
   context: { params: Promise<{ orderId: string }> },
 ) {
-  if (!getAdminKey()) {
+  if (!getConfiguredAdminKey()) {
     return NextResponse.json({ error: 'Order admin key is not configured' }, { status: 503 });
   }
 
-  if (!isAuthorized(request)) {
+  if (!isAdminAuthedFromRequest(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

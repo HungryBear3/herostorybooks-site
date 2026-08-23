@@ -33,7 +33,7 @@ test('createOrderRecord builds a lean persisted order model with default status 
 });
 
 test('buildDeliveryExpectation keeps digital-first reassurance for print formats', () => {
-  assert.equal(buildDeliveryExpectation('digital'), 'Digital proof usually ready in 2–3 business days; final PDF delivered after approval.');
+  assert.equal(buildDeliveryExpectation('digital'), 'Digital proof usually ready in 2–3 business days; the full high-resolution PDF comes with it, and you approve when it is right.');
   assert.match(
     buildDeliveryExpectation('classic'),
     /Digital proof usually ready in 2–3 business days.*softcover ships in 5–7 business days/i,

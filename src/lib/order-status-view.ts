@@ -1,5 +1,6 @@
 import type { OrderRecord } from './orders.ts';
 import { isPrintFormat } from './orders.ts';
+import { PROOF_DELAY_SUPPORT_NOTE, PROOF_VOLUME_NOTE } from './proof-turnaround.ts';
 
 export type TimelineStepState = 'done' | 'active' | 'pending' | 'failed';
 
@@ -22,7 +23,39 @@ export interface OrderStatusView {
   tracking?: { number?: string; url?: string; shippedAt?: string };
   timeline: TimelineStep[];
   supportBlurb: string;
+  /**
+   * Honest queue expectation, set only for a paid order whose proof we have not
+   * produced yet — see AWAITING_PROOF_PRODUCTION for the exact states and why
+   * every other one is excluded. Carries no queue position or date (we have no
+   * customer-facing queue telemetry), and the subheads it can appear under are
+   * kept free of short numeric timings so one block never shows two time scales.
+   */
+  processingNote?: string;
 }
+
+/**
+ * The only fulfillment states that earn the wait note: the customer is paid up
+ * and we have not yet produced their proof, so a busy queue genuinely explains
+ * the wait.
+ *
+ * Everything else is excluded ON PURPOSE, and `tone` alone cannot express why:
+ *  - `proof_ready` / `proof_approved` / `submitting_to_print` / `complete` —
+ *    the proof exists. Telling that customer proofs can run long is false.
+ *  - `delivery_email_failed` — artifacts generated and persisted fine and only
+ *    the notification failed (see FulfillmentStatus). Blaming volume misstates
+ *    the cause, and "we email you as soon as yours is ready" names the exact
+ *    mechanism that just broke.
+ *  - `failed_manual_review` — has its own manual-review path; a queue excuse
+ *    would bury it.
+ *  - anything unrecognized — we cannot substantiate a queue claim about a state
+ *    we do not model, so we say nothing rather than guess.
+ */
+const AWAITING_PROOF_PRODUCTION: ReadonlySet<string> = new Set([
+  'not_started',
+  'generating_story',
+  'generating_images',
+  'building_pdf',
+]);
 
 function step(
   id: string,
@@ -74,10 +107,20 @@ export function buildOrderStatusView(order: OrderRecord): OrderStatusView {
     };
   }
 
-  if (isPrint) {
-    return enrichPrint(view, order, fulfillment);
+  const enriched = isPrint
+    ? enrichPrint(view, order, fulfillment)
+    : enrichDigital(view, order, fulfillment);
+
+  // Two conditions, both required. `tone` keeps the note away from views where
+  // the customer has the book ('success') or the ball is in their court
+  // ('action'); the explicit set above keeps it away from states that are
+  // 'neutral' but where the proof already exists — which tone alone cannot
+  // distinguish.
+  if (enriched.tone === 'neutral' && AWAITING_PROOF_PRODUCTION.has(fulfillment)) {
+    enriched.processingNote = `${PROOF_VOLUME_NOTE} ${PROOF_DELAY_SUPPORT_NOTE}`;
   }
-  return enrichDigital(view, order, fulfillment);
+
+  return enriched;
 }
 
 function enrichDigital(
@@ -98,11 +141,11 @@ function enrichDigital(
     };
   } else if (fulfillment === 'building_pdf') {
     view.headline = `Finalizing ${order.childName}'s book`;
-    view.subhead = 'Laying out the pages and binding the PDF. Usually done within a minute.';
+    view.subhead = 'Laying out the pages and binding the PDF.';
     view.tone = 'neutral';
   } else if (fulfillment === 'generating_images') {
     view.headline = `Illustrating ${order.childName}'s adventure`;
-    view.subhead = 'Painting each page — this is the longest step, usually a few minutes.';
+    view.subhead = 'Painting each page — this is the longest step.';
     view.tone = 'neutral';
   } else if (fulfillment === 'generating_story') {
     view.headline = `Writing ${order.childName}'s story`;
