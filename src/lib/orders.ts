@@ -20,7 +20,7 @@ export type { FulfillmentStatus, LayoutVersion, PageTextLayout, VoiceTranscriptM
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
 export type BookFormat = 'digital' | 'classic' | 'premium';
-export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded';
+export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'partially_refunded' | 'refunded';
 export type InternalOrderDisposition =
   | 'abandoned_internal_test'
   | 'superseded_internal_smoke';
@@ -183,6 +183,7 @@ export type ReviewAuditEventType =
   | 'print_upgrade_paid'
   | 'print_upgrade_settlement_conflict'
   | 'payment_settlement_conflict'
+  | 'payment_terminal_state_recorded'
   | 'refund_issued'
   | 'refund_refused'
   | 'internal_disposition_marked'
@@ -322,6 +323,8 @@ export interface OrderRecord extends OrderInput {
   /** Fulfillment routing intent — see FulfillmentMode. Undefined = fail closed. */
   fulfillmentMode?: FulfillmentMode;
   stripeSessionId?: string | null;
+  /** Exact Stripe PaymentIntent accepted with the bound Checkout Session. */
+  stripePaymentIntentId?: string | null;
   shippingAddress?: ShippingAddress | null;
   fulfillmentStatus?: FulfillmentStatus;
   /** Durable kickoff-claim timestamp for fulfillment start dedupe/recovery. */
@@ -440,6 +443,8 @@ export interface OrderRecord extends OrderInput {
    *  through the processor. Null on legacy orders or refunds that fell
    *  back to manual processing. */
   stripeRefundId?: string | null;
+  /** Cumulative amount Stripe reports refunded for partial/full refund events. */
+  stripeRefundedAmountCents?: number | null;
   /** Durable single-flight owner for an operator-triggered customer email. */
   emailResendClaimId?: string | null;
   emailResendClaimKind?: 'digital_delivery' | 'proof_ready' | 'shipped' | 'order_confirmation' | null;
@@ -2844,7 +2849,12 @@ export async function withOrderTransaction<T>(
 export async function updateOrderPayment(
   orderId: string,
   paymentStatus: PaymentStatus,
-  opts: { stripeSessionId?: string; shippingAddress?: ShippingAddress; settledAmountCents?: number } = {},
+  opts: {
+    stripeSessionId?: string;
+    stripePaymentIntentId?: string;
+    shippingAddress?: ShippingAddress;
+    settledAmountCents?: number;
+  } = {},
 ) {
   const now = new Date().toISOString();
   return withOrderTransaction<OrderRecord | null>(
@@ -2854,6 +2864,9 @@ export async function updateOrderPayment(
         if (
           current.paymentStatus === 'paid'
           && (!opts.stripeSessionId || current.stripeSessionId === opts.stripeSessionId)
+          && (!opts.stripePaymentIntentId
+            || !current.stripePaymentIntentId
+            || current.stripePaymentIntentId === opts.stripePaymentIntentId)
           && !current.refundedAt
           && !current.stripeRefundId
           && !current.refundClaimId
@@ -2862,6 +2875,9 @@ export async function updateOrderPayment(
             ...current,
             ...(current.settledAmountCents == null && opts.settledAmountCents != null
               ? { settledAmountCents: opts.settledAmountCents }
+              : {}),
+            ...(current.stripePaymentIntentId == null && opts.stripePaymentIntentId != null
+              ? { stripePaymentIntentId: opts.stripePaymentIntentId }
               : {}),
             updatedAt: now,
           };
@@ -2880,6 +2896,7 @@ export async function updateOrderPayment(
         ...current,
         paymentStatus,
         ...(opts.stripeSessionId != null ? { stripeSessionId: opts.stripeSessionId } : {}),
+        ...(opts.stripePaymentIntentId != null ? { stripePaymentIntentId: opts.stripePaymentIntentId } : {}),
         ...(opts.shippingAddress != null ? { shippingAddress: opts.shippingAddress } : {}),
         ...(paymentStatus === 'paid' && opts.settledAmountCents != null
           ? { settledAmountCents: opts.settledAmountCents }
@@ -2888,6 +2905,132 @@ export async function updateOrderPayment(
         updatedAt: now,
       };
       return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+export type StripeTerminalPaymentEventType =
+  | 'charge.refunded'
+  | 'charge.dispute.created'
+  | 'checkout.session.async_payment_failed';
+
+export interface StripeTerminalPaymentStateInput {
+  stripeEventId: string;
+  eventType: StripeTerminalPaymentEventType;
+  providerObjectId: string;
+  stripeSessionId?: string | null;
+  paymentIntentId?: string | null;
+  identitySource?: 'payment_intent_index' | 'event_metadata' | null;
+  refundKind?: 'full' | 'partial' | null;
+  refundedAmountCents?: number | null;
+  reversalId?: string | null;
+  occurredAt: string;
+}
+
+export type StripeTerminalPaymentStateResult =
+  | { outcome: 'converged'; order: OrderRecord }
+  | { outcome: 'already_terminal'; order: OrderRecord }
+  | { outcome: 'identity_mismatch'; order: OrderRecord };
+
+/** Atomically record a terminal state from an already verified Stripe event. */
+export async function recordStripeTerminalPaymentState(
+  orderId: string,
+  input: StripeTerminalPaymentStateInput,
+): Promise<StripeTerminalPaymentStateResult | null> {
+  const now = new Date().toISOString();
+  return withOrderTransaction<StripeTerminalPaymentStateResult | null>(
+    orderId,
+    (current) => {
+      const priorEvent = (current.auditEvents ?? []).some((event) =>
+        event.type === 'payment_terminal_state_recorded'
+        && event.meta?.stripeEventId === input.stripeEventId,
+      );
+      if (priorEvent) return { abort: { outcome: 'already_terminal', order: current } };
+
+      const isAsyncFailure = input.eventType === 'checkout.session.async_payment_failed';
+      if (isAsyncFailure) {
+        if (!input.stripeSessionId || current.stripeSessionId !== input.stripeSessionId) {
+          return { abort: { outcome: 'identity_mismatch', order: current } };
+        }
+      } else if (!input.paymentIntentId || !current.stripeSessionId) {
+        return { abort: { outcome: 'identity_mismatch', order: current } };
+      } else if (
+        current.stripePaymentIntentId
+        && current.stripePaymentIntentId !== input.paymentIntentId
+      ) {
+        return { abort: { outcome: 'identity_mismatch', order: current } };
+      } else if (!current.stripePaymentIntentId && input.identitySource !== 'event_metadata') {
+        return { abort: { outcome: 'identity_mismatch', order: current } };
+      } else if (input.eventType === 'charge.refunded' && !input.refundKind) {
+        return { abort: { outcome: 'identity_mismatch', order: current } };
+      }
+
+      const auditEvent: ReviewAuditEvent = {
+        at: now,
+        type: 'payment_terminal_state_recorded',
+        reason: input.eventType,
+        meta: {
+          source: 'stripe_webhook',
+          stripeEventId: input.stripeEventId,
+          stripeEventType: input.eventType,
+          providerObjectId: input.providerObjectId,
+          stripeSessionId: input.stripeSessionId ?? null,
+          paymentIntentId: input.paymentIntentId ?? null,
+          identitySource: input.identitySource ?? null,
+          refundKind: input.refundKind ?? null,
+          refundedAmountCents: input.refundedAmountCents ?? null,
+        },
+      };
+
+      if (isAsyncFailure) {
+        // A delayed failure must never downgrade paid/refunded state.
+        if (current.paymentStatus !== 'pending') {
+          return { abort: { outcome: 'already_terminal', order: current } };
+        }
+        const updated: OrderRecord = {
+          ...current,
+          paymentStatus: 'failed',
+          fulfillmentLastError: 'stripe_async_payment_failed',
+          auditEvents: [...(current.auditEvents ?? []), auditEvent],
+          updatedAt: now,
+        };
+        return { commit: updated, result: { outcome: 'converged', order: updated } };
+      }
+
+      const isPartialRefund = input.eventType === 'charge.refunded' && input.refundKind === 'partial';
+      if (isPartialRefund && (current.paymentStatus === 'refunded' || current.refundedAt)) {
+        return { abort: { outcome: 'already_terminal', order: current } };
+      }
+      const targetStatus: PaymentStatus = isPartialRefund ? 'partially_refunded' : 'refunded';
+      const alreadyReversed = current.paymentStatus === targetStatus
+        && (!isPartialRefund || (current.stripeRefundedAmountCents ?? 0) >= (input.refundedAmountCents ?? 0));
+      const reason = input.eventType === 'charge.dispute.created'
+        ? 'stripe_dispute_created'
+        : isPartialRefund ? 'stripe_partial_refund' : 'stripe_charge_refunded';
+      const updated: OrderRecord = {
+        ...current,
+        paymentStatus: targetStatus,
+        stripePaymentIntentId: current.stripePaymentIntentId ?? input.paymentIntentId ?? null,
+        refundedAt: isPartialRefund ? current.refundedAt ?? null : current.refundedAt ?? input.occurredAt,
+        refundReason: isPartialRefund ? current.refundReason ?? reason : reason,
+        stripeRefundId: input.reversalId ?? current.stripeRefundId ?? input.providerObjectId,
+        stripeRefundedAmountCents: Math.max(
+          current.stripeRefundedAmountCents ?? 0,
+          input.refundedAmountCents ?? 0,
+        ),
+        refundClaimId: null,
+        refundClaimAt: null,
+        refundPaymentIntent: null,
+        fulfillmentStatus: 'failed_manual_review',
+        fulfillmentLastError: `${reason}: ${input.providerObjectId}`,
+        auditEvents: [...(current.auditEvents ?? []), auditEvent],
+        updatedAt: now,
+      };
+      return {
+        commit: updated,
+        result: { outcome: alreadyReversed ? 'already_terminal' : 'converged', order: updated },
+      };
     },
     { notFound: () => null },
   );

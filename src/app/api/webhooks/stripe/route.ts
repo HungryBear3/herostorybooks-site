@@ -1,14 +1,18 @@
-import { NextResponse, after } from 'next/server';
+import { NextResponse, after } from 'next/server.js';
 import Stripe from 'stripe';
 
-import { getOrder, isPrintFormat, recordPaymentSettlementConflict, updateOrderPayment, type ShippingAddress } from '@/lib/orders';
-import { recordUnmatchedPaymentSettlement } from '@/lib/payment-recovery';
-import { scheduleFulfillmentKickoff } from '@/lib/fulfillment-kickoff';
-import { scheduleOrderConfirmationEmail } from '@/lib/order-confirmation-kickoff';
-import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '@/lib/stripe-env';
-import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment, recordPrintUpgradeSettlementConflict } from '@/lib/print-upgrades';
-import { isExactSettledCheckoutSession } from '@/lib/checkout-session-confirmation';
-import { scheduleGa4Purchase } from '@/lib/ga4-purchase';
+import { getOrder, isPrintFormat, recordPaymentSettlementConflict, updateOrderPayment, type ShippingAddress } from '../../../../lib/orders.ts';
+import {
+  processStripePaymentTerminalEvent,
+  recordUnmatchedPaymentSettlement,
+  type StripePaymentTerminalEvent,
+} from '../../../../lib/payment-recovery.ts';
+import { scheduleFulfillmentKickoff } from '../../../../lib/fulfillment-kickoff.ts';
+import { scheduleOrderConfirmationEmail } from '../../../../lib/order-confirmation-kickoff.ts';
+import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '../../../../lib/stripe-env.ts';
+import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment, recordPrintUpgradeSettlementConflict } from '../../../../lib/print-upgrades.ts';
+import { isExactSettledCheckoutSession } from '../../../../lib/checkout-session-confirmation.ts';
+import { scheduleGa4Purchase } from '../../../../lib/ga4-purchase.ts';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -25,6 +29,7 @@ interface StripeCheckoutSession {
   currency?: string | null;
   mode?: string | null;
   payment_status?: string | null;
+  payment_intent?: string | { id?: string | null } | null;
   customer_email?: string | null;
   shipping_details?: {
     address?: {
@@ -55,6 +60,12 @@ function extractShipping(session: StripeCheckoutSession): ShippingAddress | unde
   };
 }
 
+function extractPaymentIntentId(session: StripeCheckoutSession): string | undefined {
+  if (typeof session.payment_intent === 'string') return session.payment_intent || undefined;
+  const id = session.payment_intent?.id;
+  return typeof id === 'string' && id ? id : undefined;
+}
+
 export async function POST(request: Request) {
   const stripe = getStripe();
   let webhookSecret: string;
@@ -82,6 +93,23 @@ export async function POST(request: Request) {
       bodyLooksJson: body.trimStart().startsWith('{'),
     });
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
+  }
+
+  if (
+    event.type === 'charge.refunded'
+    || event.type === 'charge.dispute.created'
+    || event.type === 'checkout.session.async_payment_failed'
+  ) {
+    try {
+      const result = await processStripePaymentTerminalEvent(event as unknown as StripePaymentTerminalEvent);
+      return NextResponse.json({ received: true, paymentConvergence: result.outcome });
+    } catch (err) {
+      // Do not acknowledge unless the terminal state or recovery evidence was
+      // durably recorded. A transient local persistence failure should retry;
+      // an unresolved-but-recorded provider event returns 2xx above.
+      console.error(`Stripe webhook: terminal payment convergence failed for ${event.id}:`, err);
+      return NextResponse.json({ error: 'Payment convergence persistence failed' }, { status: 500 });
+    }
   }
 
   if (event.type === 'checkout.session.completed') {
@@ -238,24 +266,51 @@ export async function POST(request: Request) {
       //      transition is allowed.
       if (existing?.stripeSessionId === session.id) {
         if (existing.paymentStatus === 'paid') {
-          console.warn(`Stripe webhook: session ${session.id} already processed — skipping payment update`);
+          const replayPaymentIntentId = extractPaymentIntentId(session);
+          if (
+            replayPaymentIntentId
+            && existing.stripePaymentIntentId
+            && existing.stripePaymentIntentId !== replayPaymentIntentId
+          ) {
+            const conflict = await recordPaymentSettlementConflict(orderId, {
+              stripeSessionId: session.id,
+              amountSubtotalCents: session.amount_subtotal,
+              amountTotalCents: session.amount_total,
+              reason: 'payment_intent_binding_mismatch',
+            });
+            if (!conflict) {
+              return NextResponse.json({ error: 'Payment conflict persistence failed' }, { status: 500 });
+            }
+            return NextResponse.json({ received: true, paymentRecoveryRecorded: true });
+          }
+          const replayOrder = replayPaymentIntentId && !existing.stripePaymentIntentId
+            ? await updateOrderPayment(orderId, 'paid', {
+                stripeSessionId: session.id,
+                stripePaymentIntentId: replayPaymentIntentId,
+                settledAmountCents: session.amount_total ?? undefined,
+              })
+            : existing;
+          if (!replayOrder) {
+            return NextResponse.json({ error: 'PaymentIntent backfill conflict' }, { status: 409 });
+          }
+          console.warn(`Stripe webhook: session ${session.id} already processed — payment state unchanged`);
           scheduleGa4Purchase({
             transactionId: session.id,
             amountCents: session.amount_total ?? 0,
             currency: session.currency,
-            itemId: `book_${existing.bookFormat}`,
-            itemName: `HeroStoryBooks ${existing.bookFormat}`,
+            itemId: `book_${replayOrder.bookFormat}`,
+            itemName: `HeroStoryBooks ${replayOrder.bookFormat}`,
             paymentStatus: session.payment_status,
             clientId: session.metadata?.gaClientId,
           }, after);
-          scheduleOrderConfirmationEmail(existing, { afterImpl: after });
-          if (!existing.fulfillmentStatus || existing.fulfillmentStatus === 'not_started') {
+          scheduleOrderConfirmationEmail(replayOrder, { afterImpl: after });
+          if (!replayOrder.fulfillmentStatus || replayOrder.fulfillmentStatus === 'not_started') {
             // Repair path: a prior webhook/replay marked the order paid but
             // fulfillment never started. Schedule a kickoff via the
             // setImmediate+after-backed helper so a Vercel-style after()
             // failure (Rex 2026-05-08 retest #2) doesn't silently drop it.
             console.warn(
-              `Stripe webhook: paid order ${orderId} still fulfillmentStatus=${existing.fulfillmentStatus ?? 'unset'} — scheduling fulfillment backfill after response`,
+              `Stripe webhook: paid order ${orderId} still fulfillmentStatus=${replayOrder.fulfillmentStatus ?? 'unset'} — scheduling fulfillment backfill after response`,
             );
             scheduleFulfillmentKickoff(orderId, { afterImpl: after });
           } else {
@@ -267,7 +322,7 @@ export async function POST(request: Request) {
             // reason from absence-of-kickoff lines).
             console.warn(
               `Stripe webhook: paid order ${orderId} replay skipped — paymentStatus=paid ` +
-                `fulfillmentStatus=${existing.fulfillmentStatus} (already in-progress or complete); ` +
+                `fulfillmentStatus=${replayOrder.fulfillmentStatus} (already in-progress or complete); ` +
                 `no kickoff retrigger needed`,
             );
           }
@@ -290,6 +345,7 @@ export async function POST(request: Request) {
       const shipping = extractShipping(session);
       const updated = await updateOrderPayment(orderId, 'paid', {
         stripeSessionId: session.id,
+        ...(extractPaymentIntentId(session) ? { stripePaymentIntentId: extractPaymentIntentId(session) } : {}),
         settledAmountCents: session.amount_total!,
         ...(shipping ? { shippingAddress: shipping } : {}),
       });

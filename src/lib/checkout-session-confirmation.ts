@@ -69,7 +69,11 @@ export async function confirmCheckoutPayment(
     return { status: 'paid', order, verifiedViaStripe: false };
   }
 
-  if (order.paymentStatus === 'failed' || order.paymentStatus === 'refunded') {
+  if (
+    order.paymentStatus === 'failed'
+    || order.paymentStatus === 'partially_refunded'
+    || order.paymentStatus === 'refunded'
+  ) {
     return { status: 'failed', order, verifiedViaStripe: false };
   }
 

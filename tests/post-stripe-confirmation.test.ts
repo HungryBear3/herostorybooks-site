@@ -202,8 +202,8 @@ test('fallback refuses unpaid, mismatched-order, wrong-amount, and wrong-currenc
   }
 });
 
-test('fallback never resurrects failed or refunded local payment state', async () => {
-  for (const paymentStatus of ['failed', 'refunded'] as const) {
+test('fallback never resurrects failed, partially refunded, or fully refunded local payment state', async () => {
+  for (const paymentStatus of ['failed', 'partially_refunded', 'refunded'] as const) {
     let retrieveCalls = 0;
     const result = await confirmCheckoutPayment(
       { orderId: 'ord_confirm_1', stripeSessionId: 'cs_test_paid' },

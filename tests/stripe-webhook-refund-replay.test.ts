@@ -62,9 +62,9 @@ test('webhook source: fulfillment is scheduled via setImmediate+after helper (re
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
   // Webhook must import after from next/server (still needed as the
   // serverless backup path passed to the helper).
-  assert.match(src, /import\s*\{[^}]*\bafter\b[^}]*\}\s*from\s*'next\/server'/);
+  assert.match(src, /import\s*\{[^}]*\bafter\b[^}]*\}\s*from\s*'next\/server(?:\.js)?'/);
   // The helper is the actual durable kickoff path.
-  assert.match(src, /import\s*\{\s*scheduleFulfillmentKickoff\s*\}\s*from\s*'@\/lib\/fulfillment-kickoff'/);
+  assert.match(src, /import\s*\{\s*scheduleFulfillmentKickoff\s*\}\s*from\s*'[^']*fulfillment-kickoff(?:\.ts)?'/);
   // Both fulfillment kickoffs (new-paid + replay-backfill) must use the helper.
   const calls = src.match(/scheduleFulfillmentKickoff\(orderId,\s*\{\s*afterImpl:\s*after\s*\}\s*\)/g) ?? [];
   assert.ok(calls.length >= 2, `expected at least 2 scheduleFulfillmentKickoff() call sites, got ${calls.length}`);
