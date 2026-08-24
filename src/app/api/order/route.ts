@@ -660,6 +660,10 @@ export async function POST(request: Request) {
         ...(order.checkoutTracking?.cohort ? { cohort: order.checkoutTracking.cohort } : {}),
         ...(order.checkoutTracking?.invite ? { invite: order.checkoutTracking.invite } : {}),
       },
+      // Reversal events expose the PaymentIntent/Charge rather than the
+      // Checkout Session. Copy the opaque local identity onto the PI so signed
+      // refund/dispute events can converge without a Stripe lookup.
+      payment_intent_data: { metadata: { orderId: order.id } },
       line_items: [
         {
           price_data: {

@@ -257,7 +257,7 @@ test('scheduler-6: webhook source — kickoff is scheduled, never awaited inline
   // would re-introduce the ~10s Stripe-CLI timeout.
   assert.doesNotMatch(src, /^\s*await\s+triggerFulfillment\(/m);
   // Helper must be imported.
-  assert.match(src, /import\s*\{\s*scheduleFulfillmentKickoff\s*\}\s*from\s*'@\/lib\/fulfillment-kickoff'/);
+  assert.match(src, /import\s*\{\s*scheduleFulfillmentKickoff\s*\}\s*from\s*'[^']*fulfillment-kickoff(?:\.ts)?'/);
 });
 
 // ── Source guards for the new helper ────────────────────────────────────────
