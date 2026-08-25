@@ -18,6 +18,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
+  compactAlertState,
+  MAX_ALERT_STATE_ENTRIES,
   runIncidentScan,
   type AlertState,
   type OperatorIncidentAlert,
@@ -232,6 +234,51 @@ test('2c-runtime. malformed durable cooldown state throws instead of becoming an
   ]) {
     assert.throws(() => parseAlertState(malformed), /alert-state invalid/);
   }
+});
+
+test('2c-runtime. cooldown storage is private and cannot fall back to the public Blob token', () => {
+  const runtime = codeOnly(readFileSync(
+    fileURLToPath(new URL('../src/lib/stranded-order-detector-runtime.ts', import.meta.url)),
+    'utf8',
+  ));
+  assert.match(runtime, /HSB_PRIVATE_READ_WRITE_TOKEN/);
+  assert.match(runtime, /access:\s*'private'/);
+  assert.match(runtime, /\bget\(/);
+  assert.doesNotMatch(runtime, /access:\s*'public'/);
+  assert.doesNotMatch(runtime, /\blist\(/);
+  assert.match(runtime, /privateToken\s*===\s*publicToken/);
+});
+
+test('2c-runtime. expired cooldown history is pruned and persisted even on a zero-incident run', async () => {
+  const expired = iso(NOW - 8 * 24 * HOUR);
+  const state = Object.fromEntries(
+    Array.from({ length: MAX_ALERT_STATE_ENTRIES + 25 }, (_, i) => [`old-${i}`, { lastAlertedAt: expired }]),
+  );
+  const compacted = compactAlertState(state, NOW, 24 * HOUR);
+  assert.equal(compacted.overCapacity, false);
+  assert.equal(compacted.changed, true);
+  assert.deepEqual(compacted.state, {});
+
+  const deps = spyDeps([], { state });
+  const result = await runIncidentScan(deps);
+  assert.equal(result.ok, true);
+  assert.equal(deps.writes.length, 1);
+  assert.deepEqual(deps.writes[0], {});
+});
+
+test('2c-runtime. too many active cooldown keys fail closed instead of dropping idempotency', async () => {
+  const state = Object.fromEntries(
+    Array.from({ length: MAX_ALERT_STATE_ENTRIES + 1 }, (_, i) => [
+      `active-${i}`,
+      { lastAlertedAt: iso(NOW - MINUTE) },
+    ]),
+  );
+  const deps = spyDeps([makeOrder({ id: 'ord_capacity' })], { state });
+  const result = await runIncidentScan(deps);
+  assert.equal(result.failed, true);
+  assert.equal(result.reason, 'cooldown_state_over_capacity');
+  assert.equal(deps.alerts.length, 0);
+  assert.equal(deps.writes.length, 0);
 });
 
 test('2d. runtime wiring uses listOrdersAuthoritative and never permissive listOrders', () => {

@@ -55,6 +55,39 @@ import { classifyOrderIncident } from './order-incident.ts';
  */
 export type AlertState = Record<string, { lastAlertedAt: string }>;
 
+export const MAX_ALERT_STATE_ENTRIES = 1_000;
+const MIN_ALERT_STATE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Bound durable cooldown growth without discarding any entry that can still
+ * suppress an alert. Expired history is retained for at least seven days for
+ * operator context, then newest-first up to a hard cap. If more than the cap
+ * is still inside the active cooldown window, fail closed rather than drop an
+ * active idempotency key and risk duplicate alerts.
+ */
+export function compactAlertState(
+  state: AlertState,
+  nowMs: number,
+  cooldownMs: number,
+): { state: AlertState; overCapacity: boolean; changed: boolean } {
+  const retentionMs = Math.max(MIN_ALERT_STATE_RETENTION_MS, cooldownMs * 2);
+  const retained = Object.entries(state)
+    .map(([key, value]) => ({ key, value, ms: Date.parse(value.lastAlertedAt) }))
+    .filter(({ ms }) => nowMs - ms <= retentionMs)
+    .sort((a, b) => b.ms - a.ms);
+  const activeCount = retained.filter(({ ms }) => nowMs - ms < cooldownMs).length;
+  if (activeCount > MAX_ALERT_STATE_ENTRIES) {
+    return { state, overCapacity: true, changed: false };
+  }
+  const bounded = retained.slice(0, MAX_ALERT_STATE_ENTRIES);
+  const next = Object.fromEntries(bounded.map(({ key, value }) => [key, value]));
+  return {
+    state: next,
+    overCapacity: false,
+    changed: bounded.length !== Object.keys(state).length,
+  };
+}
+
 /**
  * The minimum, redacted payload emitted to the internal alert channel.
  *
@@ -210,13 +243,19 @@ export async function runIncidentScan(deps: ScanDeps): Promise<ScanResult> {
     return { ...empty, reason: 'cooldown_state_invalid' };
   }
 
+  const compacted = compactAlertState(state, nowMs, deps.cooldownMs);
+  if (compacted.overCapacity) {
+    deps.log('[incident-scan] scan_failure reason=cooldown_state_over_capacity');
+    return { ...empty, scanned: orders.length, reason: 'cooldown_state_over_capacity' };
+  }
+
   let incidents = 0;
   let alertsSent = 0;
   let alertsSuppressed = 0;
   let alertFailures = 0;
   let dataQuality = 0;
-  const nextState: AlertState = { ...state };
-  let stateChanged = false;
+  const nextState: AlertState = { ...compacted.state };
+  let stateChanged = compacted.changed;
 
   for (const order of orders) {
     if (deps.excludeOrderIds.has(order.id)) {

@@ -3,8 +3,8 @@
  *
  * This is the ONLY place the scan touches durable storage, and it touches
  * exactly two things: the fail-closed authoritative order enumeration (read
- * only) and the scan's own cooldown record at
- * `withBlobNamespace('ops/stranded-alert-state.json')`. It never writes an
+ * only) and the scan's own bounded cooldown record in the separate private
+ * Blob store at `withBlobNamespace('ops/stranded-alert-state.json')`. It never writes an
  * order record, and it imports nothing from fulfillment, order-email, Stripe,
  * or any order-write helper.
  *
@@ -20,7 +20,7 @@
  * explicitly approval-gated changes and are deliberately absent here.
  */
 
-import { list, put } from '@vercel/blob';
+import { BlobNotFoundError, get, put } from '@vercel/blob';
 
 import { listOrdersAuthoritative, withBlobNamespace } from './orders.ts';
 import { DEFAULT_INCIDENT_THRESHOLDS, type IncidentThresholds } from './order-incident.ts';
@@ -91,39 +91,42 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Detecto
   };
 }
 
-function getBlobToken(): string | undefined {
-  return process.env.BLOB_READ_WRITE_TOKEN;
+function getPrivateBlobToken(): string {
+  const privateToken = process.env.HSB_PRIVATE_READ_WRITE_TOKEN?.trim();
+  const publicToken = process.env.BLOB_READ_WRITE_TOKEN?.trim();
+  if (!privateToken) {
+    throw new Error('HSB_PRIVATE_READ_WRITE_TOKEN missing — refusing to use public cooldown storage');
+  }
+  if (publicToken && privateToken === publicToken) {
+    throw new Error('HSB_PRIVATE_READ_WRITE_TOKEN must differ from BLOB_READ_WRITE_TOKEN');
+  }
+  return privateToken;
 }
 
 /**
- * Read the scan's own cooldown record. Fails CLOSED: with no blob token in a
+ * Read the scan's own cooldown record. Fails CLOSED: with no private Blob token in a
  * production-like env we throw so `runIncidentScan` aborts before alerting
  * against an unknown cooldown state. A genuinely-absent record (cold start) is
  * NOT a failure — it returns empty state.
  */
 async function readAlertState(): Promise<AlertState> {
-  const token = getBlobToken();
-  if (!token) {
-    throw new Error('BLOB_READ_WRITE_TOKEN missing — refusing to scan without cooldown storage');
-  }
+  const token = getPrivateBlobToken();
   const key = withBlobNamespace(ALERT_STATE_KEY);
-  // Mirror the codebase read pattern: list to locate the blob, then fetch its
-  // url. A genuinely-absent record (cold start) → empty state.
-  const { blobs } = await list({ prefix: key, token });
-  const blob = blobs.find((b) => b.pathname === key);
-  if (!blob?.url) return {};
-  const res = await fetch(`${blob.url}?t=${Date.now()}`, { cache: 'no-store' });
-  if (res.status === 404) return {};
-  if (!res.ok) throw new Error(`alert-state read failed: ${res.status}`);
-  const parsed = (await res.json()) as unknown;
-  return parseAlertState(parsed);
+  try {
+    const result = await get(key, { access: 'private', token, useCache: false });
+    if (!result?.stream) return {};
+    return parseAlertState(JSON.parse(await new Response(result.stream).text()) as unknown);
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    if (error instanceof BlobNotFoundError || status === 404) return {};
+    throw error;
+  }
 }
 
 async function writeAlertState(state: AlertState): Promise<void> {
-  const token = getBlobToken();
-  if (!token) throw new Error('BLOB_READ_WRITE_TOKEN missing — cannot persist cooldown state');
+  const token = getPrivateBlobToken();
   await put(withBlobNamespace(ALERT_STATE_KEY), JSON.stringify(state), {
-    access: 'public',
+    access: 'private',
     contentType: 'application/json',
     addRandomSuffix: false,
     allowOverwrite: true,
