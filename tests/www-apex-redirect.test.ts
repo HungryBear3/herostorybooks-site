@@ -17,19 +17,33 @@ const config = JSON.parse(
   readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'),
 ) as VercelConfig;
 
-test('Vercel permanently redirects only the www host to the apex host while preserving the path', () => {
-  const redirect = config.redirects?.find((candidate) =>
-    candidate.has?.some(
-      (condition) =>
-        condition.type === 'host' && condition.value === 'www.herostorybooks.com',
-    ),
+const wwwHostCondition = [
+  { type: 'host', value: 'www.herostorybooks.com' },
+];
+
+test('Vercel permanently redirects the www root and deep paths to the apex host', () => {
+  const redirects = config.redirects ?? [];
+  const rootRedirect = redirects.find(
+    (candidate) =>
+      candidate.source === '/' &&
+      JSON.stringify(candidate.has) === JSON.stringify(wwwHostCondition),
+  );
+  const pathRedirect = redirects.find(
+    (candidate) =>
+      candidate.source === '/:path*' &&
+      JSON.stringify(candidate.has) === JSON.stringify(wwwHostCondition),
   );
 
-  assert.ok(redirect, 'expected a www.herostorybooks.com host redirect');
-  assert.equal(redirect.source, '/:path*');
-  assert.equal(redirect.destination, 'https://herostorybooks.com/:path*');
-  assert.equal(redirect.permanent, true);
-  assert.deepEqual(redirect.has, [
-    { type: 'host', value: 'www.herostorybooks.com' },
-  ]);
+  assert.ok(rootRedirect, 'expected an explicit www root redirect');
+  assert.equal(rootRedirect.destination, 'https://herostorybooks.com/');
+  assert.equal(rootRedirect.permanent, true);
+
+  assert.ok(pathRedirect, 'expected a www wildcard path redirect');
+  assert.equal(pathRedirect.destination, 'https://herostorybooks.com/:path*');
+  assert.equal(pathRedirect.permanent, true);
+
+  assert.ok(
+    redirects.indexOf(rootRedirect) < redirects.indexOf(pathRedirect),
+    'the exact root redirect must be evaluated before the wildcard redirect',
+  );
 });

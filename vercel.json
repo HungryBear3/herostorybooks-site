@@ -1,6 +1,17 @@
 {
   "redirects": [
     {
+      "source": "/",
+      "has": [
+        {
+          "type": "host",
+          "value": "www.herostorybooks.com"
+        }
+      ],
+      "destination": "https://herostorybooks.com/",
+      "permanent": true
+    },
+    {
       "source": "/:path*",
       "has": [
         {
