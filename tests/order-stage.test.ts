@@ -174,3 +174,69 @@ test('deriveOrderStage: active print provider status wins over submitted marker'
 
   assert.equal(deriveOrderStage(o), 'in_print_production');
 });
+
+// ── Ambiguous print submission must reach the admin attention queue ───────────
+// An ambiguous provider response is the highest-severity operator incident:
+// a physical book may already exist. It must never be hidden by a released
+// story/proof artifact, by a missing shipping address, or by a refund.
+
+test('deriveOrderAttention: ambiguous print submission is blocked print_ops even with a proof artifact', () => {
+  const o = order({
+    paymentStatus: 'paid',
+    bookFormat: 'classic',
+    fulfillmentStatus: 'submitting_to_print',
+    storyArtifactUrl: 'https://example.com/proof.pdf',
+    printInteriorArtifactUrl: 'https://example.com/interior.pdf',
+    printSubmissionAttemptedAt: '2026-07-02T11:00:00.000Z',
+    fulfillmentLastError: 'print_submission_ambiguous: upstream timeout',
+    proofApprovedAt: '2026-07-02T10:00:00.000Z',
+    shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
+    updatedAt: '2026-07-02T11:00:00.000Z',
+  });
+  assert.deepEqual(deriveOrderAttention(o, { now: '2026-07-02T12:00:00.000Z' }), {
+    severity: 'blocked',
+    reason: 'print_submission_ambiguous',
+    queue: 'print_ops',
+    nextActionOwner: 'print_ops',
+  });
+});
+
+test('deriveOrderAttention: ambiguous print outranks the missing-shipping blocker', () => {
+  const o = order({
+    paymentStatus: 'paid',
+    bookFormat: 'classic',
+    fulfillmentStatus: 'submitting_to_print',
+    printSubmissionAttemptedAt: '2026-07-02T11:00:00.000Z',
+    fulfillmentLastError: 'print_submission_ambiguous: upstream timeout',
+    shippingAddress: null,
+    updatedAt: '2026-07-02T11:00:00.000Z',
+  });
+  assert.equal(deriveOrderAttention(o, { now: '2026-07-02T12:00:00.000Z' }).reason, 'print_submission_ambiguous');
+});
+
+test('deriveOrderAttention: a refund does not hide an unreconciled print submission', () => {
+  const o = order({
+    paymentStatus: 'refunded',
+    refundedAt: '2026-07-02T11:30:00.000Z',
+    bookFormat: 'classic',
+    fulfillmentStatus: 'submitting_to_print',
+    printSubmissionAttemptedAt: '2026-07-02T11:00:00.000Z',
+    fulfillmentLastError: 'print_submission_ambiguous: upstream timeout',
+    updatedAt: '2026-07-02T11:30:00.000Z',
+  });
+  assert.equal(deriveOrderAttention(o, { now: '2026-07-02T12:00:00.000Z' }).reason, 'print_submission_ambiguous');
+});
+
+test('deriveOrderAttention: a reconciled print job id restores ordinary terminal quiet', () => {
+  const o = order({
+    paymentStatus: 'paid',
+    bookFormat: 'classic',
+    fulfillmentStatus: 'submitting_to_print',
+    printJobId: 'PJ-123',
+    printSubmissionAttemptedAt: '2026-07-02T11:00:00.000Z',
+    fulfillmentLastError: 'print_submission_ambiguous: upstream timeout',
+    shippingAddress: { line1: '1 Main', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
+    updatedAt: '2026-07-02T11:00:00.000Z',
+  });
+  assert.equal(deriveOrderAttention(o, { now: '2026-07-02T12:00:00.000Z' }).reason, 'none');
+});

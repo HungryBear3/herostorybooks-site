@@ -5,6 +5,7 @@
 
 import type { OrderRecord, ReviewAuditEvent } from './orders.ts';
 import { isPrintFormat } from './orders.ts';
+import { isPrintSubmissionAmbiguous } from './order-incident.ts';
 
 export type DiagnosticSeverity = 'ok' | 'info' | 'warn' | 'fail';
 
@@ -16,6 +17,10 @@ export interface DiagnosticCheck {
 }
 
 export type PaidOrderOpsIssueKind =
+  /** Irreversible print submission with no provider job identity. Reported even
+   *  when a story/proof artifact exists — that is precisely the case the
+   *  artifact early-return used to hide. */
+  | 'paid_print_submission_ambiguous'
   | 'paid_no_artifact_not_started'
   | 'paid_no_artifact_failed'
   | 'paid_no_artifact_stale_in_progress'
@@ -132,6 +137,26 @@ export interface OrderDiagnostics {
 
 export const PAID_ARTIFACT_STALE_AFTER_MS = 15 * 60 * 1000;
 
+/** The subset of issue kinds that really do mean "no customer artifact exists".
+ *  `paid_print_submission_ambiguous` is deliberately excluded: those orders
+ *  normally DO have an artifact, and the summary flags must stay truthful. */
+const MISSING_ARTIFACT_ISSUE_KINDS: ReadonlySet<PaidOrderOpsIssueKind> = new Set([
+  'paid_no_artifact_not_started',
+  'paid_no_artifact_failed',
+  'paid_no_artifact_stale_in_progress',
+  'paid_no_artifact_terminal',
+  'paid_no_artifact_waiting',
+]);
+
+/** Preserve the historical `opsIssue=paid_artifact` query contract. Ambiguous
+ * print is a high-severity ops issue, but it normally has an artifact and must
+ * be surfaced through attention/diagnostics rather than this named filter. */
+export function isPaidArtifactOpsIssue(issue: PaidOrderOpsIssue | null): boolean {
+  return Boolean(
+    issue && issue.severity !== 'info' && MISSING_ARTIFACT_ISSUE_KINDS.has(issue.kind),
+  );
+}
+
 const IN_PROGRESS_FULFILLMENT_STATUSES = new Set([
   'generating_story',
   'generating_images',
@@ -148,7 +173,7 @@ export function classifyPaidOrderOpsIssue(
   order: OrderRecord,
   now: Date = new Date(),
 ): PaidOrderOpsIssue | null {
-  if (order.paymentStatus !== 'paid' || order.storyArtifactUrl) return null;
+  if (order.paymentStatus !== 'paid') return null;
 
   const fulfillment = order.fulfillmentStatus ?? 'not_started';
   const updatedAt = Date.parse(order.updatedAt ?? order.createdAt ?? '');
@@ -156,6 +181,22 @@ export function classifyPaidOrderOpsIssue(
     ? Math.max(0, Math.floor((now.getTime() - updatedAt) / 60_000))
     : null;
   const ageMs = minutesSinceUpdate == null ? Number.POSITIVE_INFINITY : minutesSinceUpdate * 60_000;
+
+  // Checked BEFORE the artifact early-return. An ambiguous print submission is
+  // the one paid-order emergency that normally coexists with a finished proof,
+  // so gating on a missing artifact hid it from ops entirely. Shared with the
+  // incident scan and the admin attention queue. See src/lib/order-incident.ts.
+  if (isPrintSubmissionAmbiguous(order)) {
+    return {
+      kind: 'paid_print_submission_ambiguous',
+      severity: 'fail',
+      label: 'Print submission unreconciled — a physical job may exist',
+      detail: 'The irreversible print submission was attempted and no provider job id came back. Do NOT retry: a retry can create a second physical book. Reconcile against the print provider, then record the outcome on the order.',
+      minutesSinceUpdate,
+    };
+  }
+
+  if (order.storyArtifactUrl) return null;
 
   if (fulfillment === 'not_started') {
     return {
@@ -320,8 +361,12 @@ export function buildOrderDiagnostics(order: OrderRecord): OrderDiagnostics {
       approved,
       sentToPrint,
       shipped,
-      paidWithoutArtifact: Boolean(paidOrderOpsIssue),
-      paidArtifactNeedsAttention: Boolean(paidOrderOpsIssue && paidOrderOpsIssue.severity !== 'info'),
+      paidWithoutArtifact: Boolean(paidOrderOpsIssue && MISSING_ARTIFACT_ISSUE_KINDS.has(paidOrderOpsIssue.kind)),
+      paidArtifactNeedsAttention: Boolean(
+        paidOrderOpsIssue
+        && MISSING_ARTIFACT_ISSUE_KINDS.has(paidOrderOpsIssue.kind)
+        && paidOrderOpsIssue.severity !== 'info',
+      ),
     },
     paidOrderOpsIssue,
     checks: [],
@@ -410,7 +455,11 @@ function buildChecks(order: OrderRecord, d: OrderDiagnostics): DiagnosticCheck[]
   // Proof presence
   if (d.paidOrderOpsIssue) {
     checks.push({
-      id: 'paid-artifact',
+      // The ambiguous-print issue is not an artifact-presence problem, so it
+      // gets its own check id rather than masquerading as one.
+      id: d.paidOrderOpsIssue.kind === 'paid_print_submission_ambiguous'
+        ? 'print-submission-ambiguous'
+        : 'paid-artifact',
       label: d.paidOrderOpsIssue.label,
       severity: d.paidOrderOpsIssue.severity,
       detail: d.paidOrderOpsIssue.detail,

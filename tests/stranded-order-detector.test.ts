@@ -1,12 +1,16 @@
 /**
- * Tests for the alert-only stranded paid-order detector.
+ * Tests for the incident-classification scan that replaced the false-green
+ * stranded detector.
  *
- * Discriminator model: a candidate MUST be explicitly `fulfillmentMode==='auto'`
- * with a valid authoritative `paidAt`; everything else (manual_hold, legacy/
- * undefined mode, missing/invalid/future paidAt, unpaid, refunded, started/
- * terminal, internal disposition, allowlisted, below-threshold) fails closed.
- * Age is computed from `paidAt` ONLY. The detector remains alert-only with zero
- * reachability to fulfillment/email/Stripe/provider/order writes.
+ * The old detector could only ever nominate `fulfillmentMode==='auto'` +
+ * `not_started` orders, and no production workflow sets that mode — so it
+ * reported a clean scan while covering nothing. The scan now delegates every
+ * verdict to the shared pure classifier in `src/lib/order-incident.ts`, and it
+ * fails/degrades loudly instead of returning a clean 200 when its own
+ * enumeration, alert sink, or cooldown persistence is unreliable.
+ *
+ * The module remains alert-only with zero reachability to fulfillment, email,
+ * Stripe, print providers or order writes.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,22 +18,46 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
-  evaluateEligibility,
-  runStrandedScan,
+  compactAlertState,
+  MAX_ALERT_STATE_ENTRIES,
+  runIncidentScan,
   type AlertState,
+  type OperatorIncidentAlert,
   type ScanDeps,
-  type StrandedAlert,
 } from '../src/lib/stranded-order-detector.ts';
+import { DEFAULT_INCIDENT_THRESHOLDS } from '../src/lib/order-incident.ts';
+import { parseAlertState } from '../src/lib/stranded-order-detector-runtime.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 
-const HOUR = 60 * 60 * 1000;
-const NOW = Date.parse('2026-07-24T12:00:00Z');
-const FOUNDER_ORDER_ID = 'ord_2ecc3480df0044ba'; // July 13 $9.50 fixture reference ONLY
+/** Strip comments so source-level invariants assert on CODE, not on prose that
+ *  legitimately names the thing being forbidden (e.g. a comment explaining why
+ *  the permissive list helper or an external channel must not be used). */
+function codeOnly(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((l) => {
+      const t = l.trim();
+      return !t.startsWith('//') && !t.startsWith('*');
+    })
+    .join('\n');
+}
 
-/** Default fixture: auto + paid + not_started + paidAt 24h ago (i.e. a candidate). */
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
+const NOW = Date.parse('2026-08-24T12:00:00.000Z');
+const iso = (ms: number) => new Date(ms).toISOString();
+const T = DEFAULT_INCIDENT_THRESHOLDS;
+// Synthetic id only. A production-shaped `ord_<16+ hex>` literal is banned in
+// any committable file by REQ16 in tests/review-snapshot-and-guards.test.ts.
+const EXCLUDED_INTERNAL_ORDER_ID = 'ord_internal_test_fixture';
+
+/** Default fixture: paid `auto` order stuck at not_started well past threshold. */
 function makeOrder(partial: Partial<OrderRecord> & { id: string }): OrderRecord {
   return {
     id: partial.id,
+    childName: 'Luna',
+    email: 'parent@example.com',
     bookFormat: 'digital',
     formatLabel: 'Digital',
     priceCents: 950,
@@ -37,285 +65,484 @@ function makeOrder(partial: Partial<OrderRecord> & { id: string }): OrderRecord 
     paymentStatus: 'paid',
     fulfillmentMode: 'auto',
     fulfillmentStatus: 'not_started',
-    paidAt: new Date(NOW - 24 * HOUR).toISOString(),
+    paidAt: iso(NOW - T.autoNotStartedMs - HOUR),
     deliveryExpectation: 'digital',
-    createdAt: new Date(NOW - 48 * HOUR).toISOString(),
-    updatedAt: new Date(NOW - 24 * HOUR).toISOString(),
+    createdAt: iso(NOW - 72 * HOUR),
+    updatedAt: iso(NOW - T.autoNotStartedMs - HOUR),
     ...partial,
   } as unknown as OrderRecord;
 }
 
 interface SpyDeps extends ScanDeps {
-  alerts: StrandedAlert[];
+  alerts: OperatorIncidentAlert[];
   writes: AlertState[];
+  logs: string[];
 }
 
 function spyDeps(orders: OrderRecord[], overrides: Partial<ScanDeps> & { state?: AlertState } = {}): SpyDeps {
-  const alerts: StrandedAlert[] = [];
+  const alerts: OperatorIncidentAlert[] = [];
   const writes: AlertState[] = [];
+  const logs: string[] = [];
   let state: AlertState = overrides.state ?? {};
-  const deps: SpyDeps = {
-    listOrders: overrides.listOrders ?? (async () => orders),
+  return {
+    listOrdersAuthoritative: overrides.listOrdersAuthoritative ?? (async () => orders),
     readAlertState: overrides.readAlertState ?? (async () => state),
     writeAlertState: overrides.writeAlertState ?? (async (s) => { writes.push(structuredClone(s)); state = s; }),
     alert: overrides.alert ?? (async (p) => { alerts.push(p); }),
-    log: overrides.log ?? (() => {}),
+    log: overrides.log ?? ((line) => { logs.push(line); }),
     now: overrides.now ?? (() => NOW),
-    thresholdMs: overrides.thresholdMs ?? 12 * HOUR,
     cooldownMs: overrides.cooldownMs ?? 24 * HOUR,
+    thresholds: overrides.thresholds ?? T,
     excludeOrderIds: overrides.excludeOrderIds ?? new Set<string>(),
     alerts,
     writes,
+    logs,
   };
-  return deps;
 }
 
-const cfg = (over: Partial<{ thresholdMs: number; excludeOrderIds: Set<string>; nowMs: number }> = {}) => ({
-  thresholdMs: over.thresholdMs ?? 12 * HOUR,
-  excludeOrderIds: over.excludeOrderIds ?? new Set<string>(),
-  nowMs: over.nowMs ?? NOW,
-});
+// ── 1. the scan actually covers the taxonomy (no more false green) ────────────
 
-// ── 1. auto + valid paidAt + old enough alerts ─────────────────────────────────
-
-test('1. auto + valid paidAt older than threshold alerts', async () => {
-  const deps = spyDeps([makeOrder({ id: 'ord_a', paidAt: new Date(NOW - 13 * HOUR).toISOString() })]);
-  const r = await runStrandedScan(deps);
-  assert.equal(r.ok, true);
-  assert.equal(r.candidates, 1);
-  assert.equal(r.alertsSent, 1);
-  assert.equal(deps.alerts[0]!.orderId, 'ord_a');
-  assert.equal(deps.alerts[0]!.paymentStatus, 'paid');
-});
-
-test('alert payload carries no PII (opaque orderId + non-PII fields only)', async () => {
-  const deps = spyDeps([makeOrder({ id: 'ord_a', paidAt: new Date(NOW - 13 * HOUR).toISOString() })]);
-  await runStrandedScan(deps);
-  assert.deepEqual(Object.keys(deps.alerts[0]!).sort(),
-    ['ageHours', 'bookFormat', 'fulfillmentStatus', 'kind', 'orderId', 'paymentStatus', 'thresholdHours']);
-});
-
-// ── 2. below-threshold does not alert ──────────────────────────────────────────
-
-test('2. below-threshold (recent paidAt) does not alert', async () => {
-  const deps = spyDeps([makeOrder({ id: 'ord_new', paidAt: new Date(NOW - 2 * HOUR).toISOString() })]);
-  const r = await runStrandedScan(deps);
-  assert.equal(r.candidates, 0);
-  assert.equal(deps.alerts.length, 0);
-});
-
-// ── exact threshold boundary (from paidAt) ─────────────────────────────────────
-
-test('exact threshold boundary: paidAt == now-threshold alerts; +1ms newer does not', () => {
-  const at = makeOrder({ id: 'x', paidAt: new Date(NOW - 12 * HOUR).toISOString() });
-  const under = makeOrder({ id: 'y', paidAt: new Date(NOW - 12 * HOUR + 1).toISOString() });
-  assert.equal(evaluateEligibility(at, cfg()).eligible, true);
-  assert.equal(evaluateEligibility(under, cfg()).eligible, false);
-  assert.equal(evaluateEligibility(under, cfg()).reason, 'below_threshold');
-});
-
-// ── age is from paidAt ONLY, never updatedAt (req #6) ──────────────────────────
-
-test('age uses paidAt only — stale updatedAt does not suppress an old paidAt', () => {
-  const o = makeOrder({ id: 'z', paidAt: new Date(NOW - 20 * HOUR).toISOString(), updatedAt: new Date(NOW - 1 * HOUR).toISOString() });
-  const v = evaluateEligibility(o, cfg());
-  assert.equal(v.eligible, true); // recent updatedAt is irrelevant
-});
-
-test('age uses paidAt only — recent paidAt is below threshold despite old updatedAt', () => {
-  const o = makeOrder({ id: 'z2', paidAt: new Date(NOW - 1 * HOUR).toISOString(), updatedAt: new Date(NOW - 40 * HOUR).toISOString() });
-  const v = evaluateEligibility(o, cfg());
-  assert.equal(v.eligible, false);
-  assert.equal(v.reason, 'below_threshold');
-});
-
-// ── 3. unpaid/refunded/completed/started never alert ───────────────────────────
-
-test('3. unpaid, refunded, completed, or already-started never alert', async () => {
-  const paidAt = new Date(NOW - 30 * HOUR).toISOString();
+test('1. the scan nominates each incident class, not just auto/not_started', async () => {
   const orders = [
-    makeOrder({ id: 'unpaid', paymentStatus: 'pending', paidAt: null }),
-    makeOrder({ id: 'failed_pay', paymentStatus: 'failed' }),
-    makeOrder({ id: 'refunded_status', paymentStatus: 'refunded' }),
-    makeOrder({ id: 'refunded_at', refundedAt: new Date(NOW - 20 * HOUR).toISOString(), paidAt }),
-    makeOrder({ id: 'completed', fulfillmentStatus: 'complete', paidAt }),
-    makeOrder({ id: 'in_progress', fulfillmentStatus: 'generating_images', paidAt }),
-    makeOrder({ id: 'failed_review', fulfillmentStatus: 'failed_manual_review', paidAt }),
-    makeOrder({ id: 'email_failed', fulfillmentStatus: 'delivery_email_failed', paidAt }),
-    makeOrder({ id: 'proof_ready', fulfillmentStatus: 'proof_ready', paidAt }),
+    makeOrder({ id: 'ord_auto' }),
+    makeOrder({
+      id: 'ord_hold',
+      fulfillmentMode: 'manual_hold',
+      paidAt: iso(NOW - T.manualHoldMs - HOUR),
+      updatedAt: iso(NOW - T.manualHoldMs - HOUR),
+    }),
+    makeOrder({
+      id: 'ord_stale',
+      fulfillmentStatus: 'building_pdf',
+      fulfillmentKickoffId: null,
+      fulfillmentKickoffAt: null,
+      updatedAt: iso(NOW - T.staleInProgressMs - MINUTE),
+    }),
+    makeOrder({ id: 'ord_failed', fulfillmentStatus: 'failed_manual_review', updatedAt: iso(NOW - 3 * HOUR) }),
+    makeOrder({ id: 'ord_email', fulfillmentStatus: 'delivery_email_failed', updatedAt: iso(NOW - 3 * HOUR) }),
+    makeOrder({
+      id: 'ord_print',
+      bookFormat: 'classic',
+      fulfillmentStatus: 'submitting_to_print',
+      storyArtifactUrl: 'https://example.com/proof.pdf',
+      printSubmissionAttemptedAt: iso(NOW - HOUR),
+      fulfillmentLastError: 'print_submission_ambiguous: upstream timeout',
+      updatedAt: iso(NOW - HOUR),
+    }),
   ];
   const deps = spyDeps(orders);
-  const r = await runStrandedScan(deps);
-  assert.equal(r.candidates, 0);
-  assert.equal(deps.alerts.length, 0);
+  const r = await runIncidentScan(deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.failed, false);
+  assert.equal(r.scanned, 6);
+  assert.equal(r.incidents, 6);
+  assert.equal(r.alertsSent, 6);
+  assert.deepEqual(
+    deps.alerts.map((a) => a.incidentClass).sort(),
+    [
+      'auto_not_started', 'delivery_email_failed', 'failed_manual_review',
+      'manual_hold_sla', 'print_submission_ambiguous', 'stale_in_progress_no_lease',
+    ],
+  );
 });
 
-// ── discriminator: manual_hold / legacy-undefined never alert ───────────────────
-
-test('manual_hold never alerts', async () => {
-  const deps = spyDeps([makeOrder({ id: 'held', fulfillmentMode: 'manual_hold', paidAt: new Date(NOW - 300 * HOUR).toISOString() })]);
-  const r = await runStrandedScan(deps);
-  assert.equal(r.candidates, 0);
-  assert.equal(deps.alerts.length, 0);
-  assert.equal(evaluateEligibility(makeOrder({ id: 'held', fulfillmentMode: 'manual_hold' }), cfg()).reason, 'manual_hold');
-});
-
-test('legacy undefined fulfillmentMode never alerts (fail closed)', async () => {
-  // Legacy order: no fulfillmentMode field at all, very old paidAt.
-  const legacy = makeOrder({ id: 'legacy', paidAt: new Date(NOW - 300 * HOUR).toISOString() });
-  delete (legacy as { fulfillmentMode?: unknown }).fulfillmentMode;
-  const deps = spyDeps([legacy]);
-  const r = await runStrandedScan(deps);
-  assert.equal(r.candidates, 0);
-  assert.equal(deps.alerts.length, 0);
-  assert.equal(evaluateEligibility(legacy, cfg()).reason, 'legacy_mode_unset');
-});
-
-// ── paidAt: missing / malformed / future never alert ───────────────────────────
-
-test('missing paidAt never alerts', async () => {
-  const o = makeOrder({ id: 'nopaidat', paidAt: null });
-  const deps = spyDeps([o]);
-  const r = await runStrandedScan(deps);
-  assert.equal(r.candidates, 0);
-  assert.equal(deps.alerts.length, 0);
-  assert.equal(evaluateEligibility(o, cfg()).reason, 'missing_paidat');
-});
-
-test('malformed paidAt never alerts and is counted as a data-quality skip', async () => {
-  const o = makeOrder({ id: 'badpaidat', paidAt: 'not-a-date' });
-  const deps = spyDeps([o]);
-  const r = await runStrandedScan(deps);
-  assert.equal(r.candidates, 0);
-  assert.equal(r.skipped, 1);
-  assert.equal(deps.alerts.length, 0);
-  assert.equal(evaluateEligibility(o, cfg()).reason, 'invalid_paidat');
-});
-
-test('future paidAt never alerts and is a data-quality skip', async () => {
-  const o = makeOrder({ id: 'futurepaidat', paidAt: new Date(NOW + 5 * HOUR).toISOString() });
-  const deps = spyDeps([o]);
-  const r = await runStrandedScan(deps);
-  assert.equal(r.candidates, 0);
-  assert.equal(r.skipped, 1);
-  assert.equal(deps.alerts.length, 0);
-  assert.equal(evaluateEligibility(o, cfg()).reason, 'future_paidat');
-});
-
-// ── reason-code precision ──────────────────────────────────────────────────────
-
-test('eligibility reason codes are precise per exclusion', () => {
-  const c = cfg({ excludeOrderIds: new Set([FOUNDER_ORDER_ID]) });
-  const old = new Date(NOW - 30 * HOUR).toISOString();
-  const cases: Array<[OrderRecord, string]> = [
-    [makeOrder({ id: 'p', paymentStatus: 'pending' }), 'not_paid'],
-    [makeOrder({ id: 'r', refundedAt: old }), 'refunded'],
-    [makeOrder({ id: 'c', fulfillmentStatus: 'complete' }), 'fulfillment_started_or_terminal'],
-    [makeOrder({ id: 'd', internalDisposition: 'abandoned_internal_test' }), 'internal_disposition'],
-    [makeOrder({ id: FOUNDER_ORDER_ID }), 'excluded_by_allowlist'],
-    [makeOrder({ id: 'h', fulfillmentMode: 'manual_hold' }), 'manual_hold'],
-    [makeOrder({ id: 'mp', paidAt: null }), 'missing_paidat'],
-    [makeOrder({ id: 'ip', paidAt: 'xx' }), 'invalid_paidat'],
-    [makeOrder({ id: 'fp', paidAt: new Date(NOW + HOUR).toISOString() }), 'future_paidat'],
-    [makeOrder({ id: 'b', paidAt: new Date(NOW - 1 * HOUR).toISOString() }), 'below_threshold'],
+test('1b. a healthy order set produces a genuinely clean scan', async () => {
+  const orders = [
+    makeOrder({ id: 'ord_fresh', paidAt: iso(NOW - MINUTE), updatedAt: iso(NOW - MINUTE) }),
+    makeOrder({ id: 'ord_done', fulfillmentStatus: 'complete', storyArtifactUrl: 'https://example.com/s.pdf' }),
   ];
-  for (const [order, reason] of cases) {
-    const v = evaluateEligibility(order, c);
-    assert.equal(v.eligible, false, `${order.id} should be ineligible`);
-    assert.equal(v.reason, reason, `${order.id}`);
+  const deps = spyDeps(orders);
+  const r = await runIncidentScan(deps);
+  assert.deepEqual(
+    { ok: r.ok, failed: r.failed, degraded: r.degraded, incidents: r.incidents, alertsSent: r.alertsSent },
+    { ok: true, failed: false, degraded: false, incidents: 0, alertsSent: 0 },
+  );
+});
+
+test('1c. refund finalization is never mistaken for a fulfillment incident', async () => {
+  const deps = spyDeps([
+    makeOrder({
+      id: 'ord_refunded',
+      paymentStatus: 'refunded',
+      refundedAt: iso(NOW - HOUR),
+      stripeRefundId: 're_abc',
+      fulfillmentStatus: 'failed_manual_review',
+      fulfillmentLastError: 'stripe_charge_refunded: ch_abc',
+      updatedAt: iso(NOW - HOUR),
+    }),
+    makeOrder({
+      id: 'ord_partial',
+      paymentStatus: 'partially_refunded',
+      stripeRefundId: 're_def',
+      fulfillmentStatus: 'failed_manual_review',
+      fulfillmentLastError: 'stripe_partial_refund: ch_def',
+      updatedAt: iso(NOW - HOUR),
+    }),
+  ]);
+  const r = await runIncidentScan(deps);
+  assert.equal(r.incidents, 0);
+  assert.equal(deps.alerts.length, 0);
+});
+
+// ── 2. authoritative enumeration only ────────────────────────────────────────
+
+test('2a. enumeration throw fails the scan closed with no alerts or writes', async () => {
+  const deps = spyDeps([], {
+    listOrdersAuthoritative: async () => { throw new Error('BLOB_READ_WRITE_TOKEN missing in production'); },
+  });
+  const r = await runIncidentScan(deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.failed, true);
+  assert.equal(r.reason, 'enumeration_unavailable');
+  assert.equal(r.scanned, 0);
+  assert.equal(deps.alerts.length, 0);
+  assert.equal(deps.writes.length, 0);
+});
+
+test('2b. partial-enumeration ambiguity from the blob cursor fails closed', async () => {
+  const deps = spyDeps([], {
+    listOrdersAuthoritative: async () => { throw new Error('Blob listing reported hasMore without a cursor'); },
+  });
+  const r = await runIncidentScan(deps);
+  assert.equal(r.failed, true);
+  assert.equal(r.reason, 'enumeration_unavailable');
+  assert.equal(deps.alerts.length, 0);
+});
+
+test('2c. readAlertState failure fails closed — never alert against unknown cooldown', async () => {
+  const deps = spyDeps([makeOrder({ id: 'ord_a' })], {
+    readAlertState: async () => { throw new Error('no token'); },
+  });
+  const r = await runIncidentScan(deps);
+  assert.equal(r.failed, true);
+  assert.equal(deps.alerts.length, 0);
+  assert.equal(deps.writes.length, 0);
+});
+
+test('2c-runtime. malformed durable cooldown state throws instead of becoming an empty cold start', () => {
+  assert.deepEqual(parseAlertState({}), {});
+  assert.deepEqual(
+    parseAlertState({ synthetic: { lastAlertedAt: iso(NOW - HOUR) } }),
+    { synthetic: { lastAlertedAt: iso(NOW - HOUR) } },
+  );
+  for (const malformed of [
+    { synthetic: { lastAlertedAt: 123 } },
+    { synthetic: {} },
+    { synthetic: null },
+    [],
+    null,
+  ]) {
+    assert.throws(() => parseAlertState(malformed), /alert-state invalid/);
   }
 });
 
-// ── 4. cooldown / dedup ────────────────────────────────────────────────────────
-
-test('4. duplicate scans respect cooldown', async () => {
-  const deps = spyDeps([makeOrder({ id: 'ord_a', paidAt: new Date(NOW - 13 * HOUR).toISOString() })]);
-  const first = await runStrandedScan(deps);
-  assert.equal(first.alertsSent, 1);
-  deps.now = () => NOW + 1 * HOUR;
-  const second = await runStrandedScan(deps);
-  assert.equal(second.candidates, 1);
-  assert.equal(second.alertsSent, 0);
-  assert.equal(second.alertsSuppressed, 1);
-  assert.equal(deps.alerts.length, 1);
+test('2c-runtime. cooldown storage is private and cannot fall back to the public Blob token', () => {
+  const runtime = codeOnly(readFileSync(
+    fileURLToPath(new URL('../src/lib/stranded-order-detector-runtime.ts', import.meta.url)),
+    'utf8',
+  ));
+  assert.match(runtime, /HSB_PRIVATE_READ_WRITE_TOKEN/);
+  assert.match(runtime, /access:\s*'private'/);
+  assert.match(runtime, /\bget\(/);
+  assert.doesNotMatch(runtime, /access:\s*'public'/);
+  assert.doesNotMatch(runtime, /\blist\(/);
+  assert.match(runtime, /privateToken\s*===\s*publicToken/);
 });
 
-test('cooldown expiry re-alerts', async () => {
-  const deps = spyDeps([makeOrder({ id: 'ord_a', paidAt: new Date(NOW - 13 * HOUR).toISOString() })]);
-  await runStrandedScan(deps);
-  deps.now = () => NOW + 25 * HOUR;
-  const r = await runStrandedScan(deps);
-  assert.equal(r.alertsSent, 1);
-  assert.equal(deps.alerts.length, 2);
+test('2c-runtime. expired cooldown history is pruned and persisted even on a zero-incident run', async () => {
+  const expired = iso(NOW - 8 * 24 * HOUR);
+  const state = Object.fromEntries(
+    Array.from({ length: MAX_ALERT_STATE_ENTRIES + 25 }, (_, i) => [`old-${i}`, { lastAlertedAt: expired }]),
+  );
+  const compacted = compactAlertState(state, NOW, 24 * HOUR);
+  assert.equal(compacted.overCapacity, false);
+  assert.equal(compacted.changed, true);
+  assert.deepEqual(compacted.state, {});
+
+  const deps = spyDeps([], { state });
+  const result = await runIncidentScan(deps);
+  assert.equal(result.ok, true);
+  assert.equal(deps.writes.length, 1);
+  assert.deepEqual(deps.writes[0], {});
 });
 
-// ── 5. multiple qualifying orders ──────────────────────────────────────────────
-
-test('5. multiple qualifying orders are each alerted once', async () => {
-  const orders = [
-    makeOrder({ id: 'ord_a', paidAt: new Date(NOW - 13 * HOUR).toISOString() }),
-    makeOrder({ id: 'ord_b', paidAt: new Date(NOW - 40 * HOUR).toISOString() }),
-    makeOrder({ id: 'ord_new', paidAt: new Date(NOW - 1 * HOUR).toISOString() }),      // below threshold
-    makeOrder({ id: 'ord_hold', fulfillmentMode: 'manual_hold', paidAt: new Date(NOW - 40 * HOUR).toISOString() }), // held
-  ];
-  const deps = spyDeps(orders);
-  const r = await runStrandedScan(deps);
-  assert.equal(r.candidates, 2);
-  assert.equal(r.alertsSent, 2);
-  assert.deepEqual(deps.alerts.map((a) => a.orderId).sort(), ['ord_a', 'ord_b']);
-});
-
-// ── 6. storage/config failures fail closed ─────────────────────────────────────
-
-test('6a. listOrders failure fails closed with no alerts/writes', async () => {
-  const deps = spyDeps([], { listOrders: async () => { throw new Error('blob down'); } });
-  const r = await runStrandedScan(deps);
-  assert.equal(r.ok, false);
-  assert.equal(r.failed, true);
-  assert.equal(r.reason, 'storage_unavailable');
+test('2c-runtime. too many active cooldown keys fail closed instead of dropping idempotency', async () => {
+  const state = Object.fromEntries(
+    Array.from({ length: MAX_ALERT_STATE_ENTRIES + 1 }, (_, i) => [
+      `active-${i}`,
+      { lastAlertedAt: iso(NOW - MINUTE) },
+    ]),
+  );
+  const deps = spyDeps([makeOrder({ id: 'ord_capacity' })], { state });
+  const result = await runIncidentScan(deps);
+  assert.equal(result.failed, true);
+  assert.equal(result.reason, 'cooldown_state_over_capacity');
   assert.equal(deps.alerts.length, 0);
   assert.equal(deps.writes.length, 0);
 });
 
-test('6b. readAlertState failure fails closed', async () => {
-  const deps = spyDeps([makeOrder({ id: 'ord_a', paidAt: new Date(NOW - 13 * HOUR).toISOString() })], {
-    readAlertState: async () => { throw new Error('no token'); },
-  });
-  const r = await runStrandedScan(deps);
-  assert.equal(r.failed, true);
-  assert.equal(deps.alerts.length, 0);
-  assert.equal(deps.writes.length, 0);
+test('2d. runtime wiring uses listOrdersAuthoritative and never permissive listOrders', () => {
+  const runtime = readFileSync(
+    fileURLToPath(new URL('../src/lib/stranded-order-detector-runtime.ts', import.meta.url)),
+    'utf8',
+  );
+  assert.ok(runtime.includes('listOrdersAuthoritative'), 'runtime must wire listOrdersAuthoritative');
+  assert.equal(
+    /listOrders(?!Authoritative)/.test(codeOnly(runtime)),
+    false,
+    'runtime must not reference the permissive listOrders',
+  );
+  const core = readFileSync(
+    fileURLToPath(new URL('../src/lib/stranded-order-detector.ts', import.meta.url)),
+    'utf8',
+  );
+  assert.equal(
+    /listOrders(?!Authoritative)/.test(codeOnly(core)),
+    false,
+    'core must not name permissive listOrders',
+  );
 });
 
-test('6c. invalid config fails closed', async () => {
-  const deps = spyDeps([makeOrder({ id: 'ord_a' })], { thresholdMs: -1 });
-  const r = await runStrandedScan(deps);
+test('2e. invalid config fails closed', async () => {
+  const deps = spyDeps([makeOrder({ id: 'ord_a' })], { cooldownMs: -1 });
+  const r = await runIncidentScan(deps);
   assert.equal(r.failed, true);
   assert.equal(r.reason, 'invalid_config');
   assert.equal(deps.alerts.length, 0);
 });
 
-// ── 7. internal disposition + allowlist (founder July-13) ──────────────────────
+// ── 3. alert-sink failure must fail the scan and NOT advance cooldown ─────────
 
-test('7. founder/internal-test July 13 order excluded (disposition or allowlist)', async () => {
-  const stale = new Date(NOW - 300 * HOUR).toISOString();
-  const viaDisposition = spyDeps([makeOrder({ id: FOUNDER_ORDER_ID, internalDisposition: 'abandoned_internal_test', paidAt: stale })]);
-  assert.equal((await runStrandedScan(viaDisposition)).candidates, 0);
+test('3a. alert failure returns a failed scan and never advances cooldown', async () => {
+  const deps = spyDeps([makeOrder({ id: 'ord_a' })], {
+    alert: async () => { throw new Error('sink down'); },
+  });
+  const r = await runIncidentScan(deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.failed, true);
+  assert.equal(r.reason, 'alert_sink_failed');
+  assert.equal(r.alertFailures, 1);
+  assert.equal(r.alertsSent, 0);
+  // No cooldown advanced → the next scan retries this incident.
+  assert.equal(deps.writes.length, 0);
+});
+
+test('3b. a partially failing sink still fails the scan but keeps successful cooldowns', async () => {
+  const orders = [makeOrder({ id: 'ord_ok' }), makeOrder({ id: 'ord_bad' })];
+  const deps = spyDeps(orders, {
+    alert: async (p) => { if (p.orderId === 'ord_bad') throw new Error('sink down'); },
+  });
+  const r = await runIncidentScan(deps);
+  assert.equal(r.failed, true);
+  assert.equal(r.alertsSent, 1);
+  assert.equal(r.alertFailures, 1);
+  assert.equal(deps.writes.length, 1);
+  const persisted = deps.writes[0];
+  assert.equal(Object.keys(persisted).some((k) => k.startsWith('ord_ok::')), true);
+  assert.equal(Object.keys(persisted).some((k) => k.startsWith('ord_bad::')), false);
+});
+
+test('3c. cooldown write failure returns a failed scan', async () => {
+  const deps = spyDeps([makeOrder({ id: 'ord_a' })], {
+    writeAlertState: async () => { throw new Error('blob write down'); },
+  });
+  const r = await runIncidentScan(deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.failed, true);
+  assert.equal(r.reason, 'cooldown_persist_failed');
+});
+
+test('3d. HTTP never reports a clean 200 for a sink or cooldown failure', () => {
+  const route = readFileSync(
+    fileURLToPath(new URL('../src/app/api/internal/stranded-scan/route.ts', import.meta.url)),
+    'utf8',
+  );
+  assert.match(route, /result\.failed \|\| result\.degraded \? 500 : 200/);
+  assert.ok(route.includes('degraded'), 'route body must carry the degraded signal');
+});
+
+// ── 4. incident identity + cooldown are per incident, not per order ───────────
+
+test('4a. cooldown suppresses a repeat of the same incident identity', async () => {
+  const orders = [makeOrder({ id: 'ord_a' })];
+  const first = spyDeps(orders);
+  const r1 = await runIncidentScan(first);
+  assert.equal(r1.alertsSent, 1);
+  const carried = first.writes[0];
+
+  const second = spyDeps(orders, { state: carried, now: () => NOW + HOUR });
+  const r2 = await runIncidentScan(second);
+  assert.equal(r2.alertsSent, 0);
+  assert.equal(r2.alertsSuppressed, 1);
+  assert.equal(second.alerts.length, 0);
+});
+
+test('4b. a new attempt fingerprint defeats the cooldown even inside the window', async () => {
+  const before = makeOrder({
+    id: 'ord_a', fulfillmentStatus: 'failed_manual_review',
+    fulfillmentAttempts: 1, updatedAt: iso(NOW - 3 * HOUR),
+  });
+  const first = spyDeps([before]);
+  await runIncidentScan(first);
+  const carried = first.writes[0];
+
+  const after = makeOrder({
+    id: 'ord_a', fulfillmentStatus: 'failed_manual_review',
+    fulfillmentAttempts: 2, updatedAt: iso(NOW - 3 * HOUR),
+  });
+  const second = spyDeps([after], { state: carried, now: () => NOW + HOUR });
+  const r2 = await runIncidentScan(second);
+  assert.equal(r2.alertsSent, 1, 'a fresh attempt is a new incident identity');
+  assert.equal(r2.alertsSuppressed, 0);
+});
+
+test('4c. cooldown state is keyed by dedup key, never by order id alone', async () => {
+  const deps = spyDeps([makeOrder({ id: 'ord_a' })]);
+  await runIncidentScan(deps);
+  const keys = Object.keys(deps.writes[0]);
+  assert.equal(keys.length, 1);
+  assert.notEqual(keys[0], 'ord_a');
+  assert.ok(keys[0].startsWith('ord_a::auto_not_started::'));
+});
+
+test('4d. cooldown expiry re-alerts the same identity', async () => {
+  const orders = [makeOrder({ id: 'ord_a' })];
+  const first = spyDeps(orders);
+  await runIncidentScan(first);
+  const second = spyDeps(orders, { state: first.writes[0], now: () => NOW + 25 * HOUR });
+  assert.equal((await runIncidentScan(second)).alertsSent, 1);
+});
+
+test('4e. future cooldown timestamps fail closed before any alert', async () => {
+  const deps = spyDeps([makeOrder({ id: 'ord_future_cooldown' })], {
+    state: {
+      'ord_future_cooldown::auto_not_started::synthetic': {
+        lastAlertedAt: iso(NOW + HOUR),
+      },
+    },
+  });
+  const result = await runIncidentScan(deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.failed, true);
+  assert.equal(result.reason, 'cooldown_state_invalid');
+  assert.equal(deps.alerts.length, 0);
+  assert.equal(deps.writes.length, 0);
+});
+
+// ── 5. data-quality uncertainty degrades the scan ────────────────────────────
+
+test('5a. timestamp/data-quality uncertainty marks the scan degraded', async () => {
+  const deps = spyDeps([makeOrder({ id: 'ord_dq', paidAt: 'not-a-date' })]);
+  const r = await runIncidentScan(deps);
+  assert.equal(r.degraded, true);
+  assert.equal(r.ok, false);
+  assert.equal(r.dataQuality, 1);
+  assert.equal(r.failed, false);
+  assert.equal(deps.alerts[0]?.incidentClass, 'data_quality_uncertain');
+});
+
+test('5b. a clean scan is not degraded', async () => {
+  const deps = spyDeps([makeOrder({ id: 'ord_a' })]);
+  assert.equal((await runIncidentScan(deps)).degraded, false);
+});
+
+// ── 6. operator exclusions ───────────────────────────────────────────────────
+
+test('6. founder/internal-test July 13 order excluded (disposition or allowlist)', async () => {
+  const stale = iso(NOW - 300 * HOUR);
+  const viaDisposition = spyDeps([
+    makeOrder({ id: EXCLUDED_INTERNAL_ORDER_ID, internalDisposition: 'abandoned_internal_test', paidAt: stale, updatedAt: stale }),
+  ]);
+  assert.equal((await runIncidentScan(viaDisposition)).incidents, 0);
   assert.equal(viaDisposition.alerts.length, 0);
-  const viaAllow = spyDeps([makeOrder({ id: FOUNDER_ORDER_ID, paidAt: stale })], { excludeOrderIds: new Set([FOUNDER_ORDER_ID]) });
-  assert.equal((await runStrandedScan(viaAllow)).candidates, 0);
+
+  const viaAllow = spyDeps([makeOrder({ id: EXCLUDED_INTERNAL_ORDER_ID, paidAt: stale, updatedAt: stale })], {
+    excludeOrderIds: new Set([EXCLUDED_INTERNAL_ORDER_ID]),
+  });
+  assert.equal((await runIncidentScan(viaAllow)).incidents, 0);
   assert.equal(viaAllow.alerts.length, 0);
 });
 
-// ── 8. Zero reachability ───────────────────────────────────────────────────────
+// ── 7. PII absence in payload AND logs ───────────────────────────────────────
+
+test('7. neither the alert payload nor any log line carries PII', async () => {
+  const orders = [
+    makeOrder({
+      id: 'ord_pii',
+      childName: 'Persephone',
+      email: 'secret.parent@example.com',
+      bookFormat: 'classic',
+      fulfillmentStatus: 'failed_manual_review',
+      fulfillmentLastError: 'stripe_charge_refunded_lookalike: ch_LEAKY_ID for secret.parent@example.com',
+      storyArtifactUrl: 'https://blob.example.com/private/story-Persephone.pdf',
+      proofApprovalToken: 'tok_SUPER_SECRET',
+      shippingAddress: { line1: '9 Leak Lane', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' },
+      updatedAt: iso(NOW - 3 * HOUR),
+    }),
+    makeOrder({
+      id: 'ord_pii_print',
+      childName: 'Persephone',
+      email: 'secret.parent@example.com',
+      bookFormat: 'classic',
+      fulfillmentStatus: 'submitting_to_print',
+      printSubmissionAttemptedAt: iso(NOW - HOUR),
+      fulfillmentLastError: 'print_submission_ambiguous: lulu 502 for ch_LEAKY_ID',
+      storyArtifactUrl: 'https://blob.example.com/private/story-Persephone.pdf',
+      proofApprovalToken: 'tok_SUPER_SECRET',
+      updatedAt: iso(NOW - HOUR),
+    }),
+  ];
+  const deps = spyDeps(orders);
+  const r = await runIncidentScan(deps);
+  assert.equal(r.alertsSent, 2);
+
+  const forbidden = [
+    'Persephone', 'secret.parent@example.com', '@example.com', 'tok_SUPER_SECRET',
+    'ch_LEAKY_ID', '9 Leak Lane', '60601', 'blob.example.com', 'https://', 'lulu',
+  ];
+  const surface = JSON.stringify(deps.alerts) + '\n' + deps.logs.join('\n');
+  for (const needle of forbidden) {
+    assert.equal(surface.includes(needle), false, `alert/log surface leaked ${needle}`);
+  }
+  assert.ok(surface.includes('ord_pii'), 'the opaque order id is the intended identifier');
+});
+
+test('7b. sink and enumeration errors are sanitized before they reach a log line', async () => {
+  const deps = spyDeps([], {
+    listOrdersAuthoritative: async () => {
+      throw new Error('blob 500 for secret.parent@example.com token vercel_blob_rw_ABCDEFGH12345678');
+    },
+  });
+  await runIncidentScan(deps);
+  const surface = deps.logs.join('\n');
+  assert.equal(surface.includes('secret.parent@example.com'), false);
+  assert.equal(surface.includes('vercel_blob_rw_ABCDEFGH12345678'), false);
+});
+
+// ── 8. zero reachability ─────────────────────────────────────────────────────
 
 const CORE = fileURLToPath(new URL('../src/lib/stranded-order-detector.ts', import.meta.url));
 
-test('8a. detector core imports nothing runtime (only `import type`)', () => {
+test('8a. the ONLY runtime import the core may have is the pure classifier', () => {
+  // The invariant is reachability, not import syntax: the core must be unable
+  // to reach fulfillment, storage, email, Stripe or a provider. A type-only
+  // import can reach nothing; the shared classifier is itself proven pure by
+  // tests/order-incident-classification.test.ts. Nothing else is permitted.
   const src = readFileSync(CORE, 'utf8');
   const importLines = src.split('\n').filter((l) => /^\s*import\b/.test(l));
   assert.ok(importLines.length > 0);
-  for (const line of importLines) assert.match(line, /^\s*import\s+type\b/, `non-type import: ${line.trim()}`);
+  for (const line of importLines) {
+    const isTypeOnly = /^\s*import\s+type\b/.test(line);
+    const isPureClassifier = /^\s*import\s+\{[^}]*\}\s+from\s+'\.\/order-incident\.ts';\s*$/.test(line);
+    assert.ok(isTypeOnly || isPureClassifier, `disallowed runtime import: ${line.trim()}`);
+  }
+  const classifier = readFileSync(
+    fileURLToPath(new URL('../src/lib/order-incident.ts', import.meta.url)),
+    'utf8',
+  );
+  for (const line of classifier.split('\n').filter((l) => /^\s*import\b/.test(l))) {
+    assert.match(line, /^\s*import\s+type\b/, `shared classifier must stay type-only: ${line.trim()}`);
+  }
 });
 
 test('8b. detector core references no fulfillment/email/stripe/order-write symbol', () => {
@@ -330,20 +557,23 @@ test('8b. detector core references no fulfillment/email/stripe/order-write symbo
 
 test('8c. scan invokes ONLY injected deps — no mutating capability exists', async () => {
   const touched: string[] = [];
-  const orders = [makeOrder({ id: 'ord_a', paidAt: new Date(NOW - 13 * HOUR).toISOString() })];
+  const orders = [makeOrder({ id: 'ord_a' })];
   const deps: ScanDeps = {
-    listOrders: async () => { touched.push('listOrders'); return orders; },
+    listOrdersAuthoritative: async () => { touched.push('listOrdersAuthoritative'); return orders; },
     readAlertState: async () => { touched.push('readAlertState'); return {}; },
     writeAlertState: async () => { touched.push('writeAlertState'); },
     alert: async () => { touched.push('alert'); },
     log: () => { touched.push('log'); },
     now: () => NOW,
-    thresholdMs: 12 * HOUR,
     cooldownMs: 24 * HOUR,
+    thresholds: T,
     excludeOrderIds: new Set<string>(),
   };
-  await runStrandedScan(deps);
-  assert.deepEqual([...new Set(touched)].sort(), ['alert', 'listOrders', 'log', 'readAlertState', 'writeAlertState']);
+  await runIncidentScan(deps);
+  assert.deepEqual(
+    [...new Set(touched)].sort(),
+    ['alert', 'listOrdersAuthoritative', 'log', 'readAlertState', 'writeAlertState'],
+  );
 });
 
 test('8d. endpoint + runtime modules import no fulfillment/email/stripe symbol', () => {
@@ -354,7 +584,16 @@ test('8d. endpoint + runtime modules import no fulfillment/email/stripe symbol',
       assert.equal(src.includes(token), false, `must not reference ${token}`);
 });
 
-// ── 9. endpoint auth + data minimization ───────────────────────────────────────
+test('8e. no external alert channel and no cron schedule are wired by this lane', () => {
+  const runtime = readFileSync(fileURLToPath(new URL('../src/lib/stranded-order-detector-runtime.ts', import.meta.url)), 'utf8');
+  const runtimeCode = codeOnly(runtime).toLowerCase();
+  for (const token of ['resend', 'discord', 'slack', 'telegram', 'webhook', 'sendOperatorFailureAlert'])
+    assert.equal(runtimeCode.includes(token.toLowerCase()), false, `sink must stay local: ${token}`);
+  const vercelJson = readFileSync(fileURLToPath(new URL('../vercel.json', import.meta.url)), 'utf8');
+  assert.equal(vercelJson.includes('stranded-scan'), false, 'no cron activation in this lane');
+});
+
+// ── 9. endpoint auth + data minimization ─────────────────────────────────────
 
 test('9a. cron auth fails closed and authorizes only the exact bearer', async () => {
   const { evaluateCronAuth } = await import('../src/lib/cron-auth.ts');
@@ -368,7 +607,8 @@ test('9a. cron auth fails closed and authorizes only the exact bearer', async ()
 
 test('9b. endpoint responds with counts only — never order data/PII', () => {
   const src = readFileSync(fileURLToPath(new URL('../src/app/api/internal/stranded-scan/route.ts', import.meta.url)), 'utf8');
-  for (const k of ['ok', 'scanned', 'candidates', 'alertsSent', 'alertsSuppressed', 'skipped']) assert.ok(src.includes(`${k}:`));
-  for (const forbidden of ['orderId', 'customerName', 'customerAddress', 'shippingAddress', '.email', 'result.orders'])
+  for (const k of ['ok', 'degraded', 'scanned', 'incidents', 'alertsSent', 'alertsSuppressed', 'alertFailures', 'dataQuality'])
+    assert.ok(src.includes(`${k}:`), `route body must report ${k}`);
+  for (const forbidden of ['orderId', 'customerName', 'customerAddress', 'shippingAddress', '.email', 'result.orders', 'incidentClass'])
     assert.equal(src.includes(forbidden), false, `route must not expose ${forbidden}`);
 });

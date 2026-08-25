@@ -5,12 +5,15 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { createOrderRecord, type OrderRecord, type PageArtifact } from '../src/lib/orders.ts';
 import {
   buildOrderDiagnostics,
   classifyPaidOrderOpsIssue,
   formatDiagnosticsSummary,
+  isPaidArtifactOpsIssue,
 } from '../src/lib/order-diagnostics.ts';
 
 function pageFixture(i: number, overrides: Partial<PageArtifact> = {}): PageArtifact {
@@ -191,4 +194,95 @@ test('formatDiagnosticsSummary: produces multi-line escalation block including i
   assert.match(text, /Order ord_diag_1/);
   assert.match(text, /Payment: paid/);
   assert.match(text, /Fulfillment: proof_ready/);
+});
+
+// ── Ambiguous print submission must reach paid-order diagnostics ──────────────
+// `classifyPaidOrderOpsIssue` historically returned null the moment a story
+// artifact existed. An unreconciled print submission is exactly the case where
+// the artifact exists AND the order is in trouble, so it must survive that gate.
+
+const ambiguousPrintOrder = (overrides: Partial<OrderRecord> = {}) => makeOrder({
+  paymentStatus: 'paid',
+  bookFormat: 'classic',
+  fulfillmentStatus: 'submitting_to_print',
+  storyArtifactUrl: 'https://example.com/proof.pdf',
+  printInteriorArtifactUrl: 'https://example.com/interior.pdf',
+  printSubmissionAttemptedAt: '2026-04-27T11:00:00Z',
+  fulfillmentLastError: 'print_submission_ambiguous: upstream timeout',
+  proofApprovedAt: '2026-04-27T10:30:00Z',
+  reviewStatus: 'approved',
+  proofReviewedAt: '2026-04-27T10:20:00Z',
+  updatedAt: '2026-04-27T11:00:00Z',
+  ...overrides,
+});
+
+test('classifyPaidOrderOpsIssue: ambiguous print survives the existing-artifact early return', () => {
+  const issue = classifyPaidOrderOpsIssue(ambiguousPrintOrder(), new Date('2026-04-27T11:30:00Z'));
+  assert.equal(issue?.kind, 'paid_print_submission_ambiguous');
+  assert.equal(issue?.severity, 'fail');
+});
+
+test('paid_artifact filter semantics exclude ambiguous print orders that already have artifacts', () => {
+  const ambiguous = classifyPaidOrderOpsIssue(
+    ambiguousPrintOrder(),
+    new Date('2026-04-27T11:30:00Z'),
+  );
+  const missing = classifyPaidOrderOpsIssue(makeOrder({
+    paymentStatus: 'paid',
+    fulfillmentStatus: 'not_started',
+    storyArtifactUrl: null,
+  }));
+  assert.equal(isPaidArtifactOpsIssue(ambiguous), false);
+  assert.equal(isPaidArtifactOpsIssue(missing), true);
+
+  const route = readFileSync(
+    fileURLToPath(new URL('../src/app/api/admin/orders/route.ts', import.meta.url)),
+    'utf8',
+  );
+  assert.match(route, /isPaidArtifactOpsIssue\(issue\)/);
+});
+
+test('classifyPaidOrderOpsIssue: the durable pre-POST fence alone is enough', () => {
+  const issue = classifyPaidOrderOpsIssue(
+    ambiguousPrintOrder({ fulfillmentLastError: null }),
+    new Date('2026-04-27T11:30:00Z'),
+  );
+  assert.equal(issue?.kind, 'paid_print_submission_ambiguous');
+});
+
+test('classifyPaidOrderOpsIssue: a reconciled print job id clears the ambiguity', () => {
+  const issue = classifyPaidOrderOpsIssue(
+    ambiguousPrintOrder({ printJobId: 'PJ-123' }),
+    new Date('2026-04-27T11:30:00Z'),
+  );
+  assert.equal(issue, null);
+});
+
+test('diagnostics: ambiguous print raises its own check and does not claim a missing artifact', () => {
+  const d = buildOrderDiagnostics(ambiguousPrintOrder());
+  assert.equal(d.paidOrderOpsIssue?.kind, 'paid_print_submission_ambiguous');
+  // The artifact exists — the flags must stay honest about that.
+  assert.equal(d.flags.paidWithoutArtifact, false);
+  const check = d.checks.find((c) => c.id === 'print-submission-ambiguous');
+  assert.equal(check?.severity, 'fail');
+  assert.equal(d.checks.some((c) => c.id === 'paid-artifact'), false);
+});
+
+test('diagnostics: an ambiguous-print issue never echoes the raw provider error', () => {
+  const d = buildOrderDiagnostics(ambiguousPrintOrder({
+    fulfillmentLastError: 'print_submission_ambiguous: lulu 502 for ch_LEAKY_ID',
+  }));
+  const check = d.checks.find((c) => c.id === 'print-submission-ambiguous');
+  assert.equal((check?.detail ?? '').includes('ch_LEAKY_ID'), false);
+});
+
+test('diagnostics: existing paid-no-artifact flags are unchanged for ordinary orders', () => {
+  const d = buildOrderDiagnostics(makeOrder({
+    paymentStatus: 'paid',
+    fulfillmentStatus: 'not_started',
+    storyArtifactUrl: null,
+  }));
+  assert.equal(d.flags.paidWithoutArtifact, true);
+  assert.equal(d.flags.paidArtifactNeedsAttention, true);
+  assert.equal(d.paidOrderOpsIssue?.kind, 'paid_no_artifact_not_started');
 });

@@ -1,4 +1,5 @@
 import type { OrderRecord } from './orders.ts';
+import { isPrintSubmissionAmbiguous } from './order-incident.ts';
 
 function isPrintFormatForStage(bookFormat: string): boolean {
   return bookFormat === 'classic' || bookFormat === 'premium';
@@ -92,6 +93,22 @@ export function deriveOrderStage(order: OrderRecord): DerivedOrderStage {
 }
 
 export function deriveOrderAttention(order: OrderRecord, options: DeriveOrderStageOptions = {}): DerivedOrderAttention {
+  // Highest-severity operator incident, checked FIRST and deliberately ahead of
+  // the refund/disposition and missing-shipping branches. An ambiguous print
+  // submission means the irreversible provider call may already have produced a
+  // physical book, so it must not be masked by a released proof artifact, by a
+  // missing shipping address, or by a refund. Shared with the incident scan and
+  // paid-order diagnostics via `isPrintSubmissionAmbiguous` so the three
+  // surfaces cannot drift. See src/lib/order-incident.ts.
+  if (isPrintSubmissionAmbiguous(order)) {
+    return {
+      severity: 'blocked',
+      reason: 'print_submission_ambiguous',
+      queue: 'print_ops',
+      nextActionOwner: 'print_ops',
+    };
+  }
+
   if (order.refundedAt || order.paymentStatus === 'refunded' || order.internalDisposition) {
     return { severity: 'none', reason: 'none', queue: 'none', nextActionOwner: 'none' };
   }
