@@ -626,6 +626,20 @@ test('upload route returns the raw token exactly once, at creation', () => {
 
 /* ── 9. No original-filename capture regression ────────────────────── */
 
+test('store logging never interpolates sensitive blob pathnames', () => {
+  const src = readFileSync(
+    resolve(process.cwd(), 'src/lib/family-review/store.ts'),
+    'utf8',
+  );
+  assert.doesNotMatch(
+    src,
+    /console\.(?:warn|error)\([^\n]*\$\{pathname\}/,
+    'a legacy raw-token pathname must never reach logs',
+  );
+  assert.match(src, /blob JSON read failed/);
+  assert.match(src, /blob delete failed/);
+});
+
 test('sanitizer preserves the photo asset shape and captures no filename', () => {
   const legacy = legacyShapedRecord();
   const sanitized = sanitizeSubmissionForPersistence(legacy);

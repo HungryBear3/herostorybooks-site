@@ -410,7 +410,7 @@ async function getJsonAtPath<T>(pathname: string): Promise<T | null> {
     const text = await new Response(result.stream).text();
     return JSON.parse(text) as T;
   } catch (err) {
-    console.warn(`[family-review/store] failed to read blob path ${pathname}:`, err);
+    console.warn('[family-review/store] blob JSON read failed:', err);
     return null;
   }
 }
@@ -593,6 +593,6 @@ export async function deleteBlob(pathname: string): Promise<void> {
   try {
     await del(pathname);
   } catch (err) {
-    console.warn(`[family-review/store] delete ${pathname} failed:`, err);
+    console.warn('[family-review/store] blob delete failed:', err);
   }
 }
