@@ -1,7 +1,7 @@
 # CC-FINAL-HANDOFF — HSB Lane A incident observability
 
 Task: `CC-HSB-LANE-A-OBSERVABILITY-20260824`
-Status: **IMPLEMENTED LOCALLY — HELD FOR EXACT-SHA REVIEW. NOTHING ACTIVATED.**
+Status: **CONTROLLER-CORRECTED LOCALLY — HELD FOR FRESH EXACT-SHA REVIEW. NOTHING ACTIVATED.**
 
 ## 1. Exact base and workspace
 
@@ -282,3 +282,45 @@ Stated plainly rather than left for a reviewer to find:
 Work stopped at the local commit, as instructed. No push, no PR, no merge, no deploy, no schedule,
 no external action. The branch `cc/hsb-incident-observability-20260824` awaits independent
 exact-SHA review.
+
+## 11. Controller correction after first independent BLOCK
+
+The first independent review bound to `97441186adccb0e7a26074cb10dcb921791fc5ed`
+returned BLOCK with five findings. That target is superseded.
+
+Final cumulative code target:
+
+- commit: `41903733b2d50df2ab9558f0259a555bded1e474`
+- tree: `a66debd2e00a9e241de2c1dd167ddfd5107730e0`
+- parent: `97441186adccb0e7a26074cb10dcb921791fc5ed`
+
+Correction behavior:
+
+1. Unset `fulfillmentMode` is data-quality uncertainty immediately after
+   payment; it no longer waits 24 hours while appearing clean.
+2. Degraded scans now set `ok:false`, and the route returns HTTP 500 for either
+   `failed` or `degraded`.
+3. `safeErrorCode` uses a strict internal allowlist; provider IDs, secret-key
+   shapes, capability tokens and arbitrary bare identifiers map to
+   `unclassified`.
+4. Failure dedup identity uses fulfillment/email attempt-specific timestamps
+   and counters, never broad `updatedAt`. An unrelated order edit no longer
+   bypasses cooldown; a new attempt or email resend claim still does.
+5. `opsIssue=paid_artifact` retains its historical missing-artifact meaning.
+   Ambiguous print remains visible in attention and diagnostics but does not
+   silently enter that named filter.
+6. Future or malformed cooldown timestamps fail the scan before any alert.
+
+The controller extended scope by exactly one production route,
+`src/app/api/admin/orders/route.ts`, to preserve its existing query contract.
+No React admin page was changed.
+
+RED: the new blocker suite failed in each of the five required areas before
+production edits. GREEN: focused 96/96, full 1547/1547, build PASS, E2E 99/99,
+TypeScript remains the same pre-existing test-only diagnostic set,
+`git diff --check` is clean, and the added-line secret/debug/external-call scan
+found zero matches.
+
+Still closed: no cron, no external channel, no live order census, no approved
+thresholds/cadence, and cooldown storage is still public/unbounded. Nothing in
+this correction activates the route or performs an external action.
