@@ -49,7 +49,7 @@ async function handle(request: Request): Promise<NextResponse> {
     alertFailures: result.alertFailures,
     dataQuality: result.dataQuality,
   };
-  return NextResponse.json(body, { status: result.failed ? 500 : 200 });
+  return NextResponse.json(body, { status: result.failed || result.degraded ? 500 : 200 });
 }
 
 export async function GET(request: Request): Promise<NextResponse> {

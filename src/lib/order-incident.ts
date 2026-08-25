@@ -220,7 +220,20 @@ function isTerminalOrExcluded(order: OrderRecord): boolean {
 export function safeErrorCode(raw: string | null | undefined): string {
   if (!raw) return 'none';
   const head = raw.split(':', 1)[0].trim();
-  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(head) ? head : 'unclassified';
+  const allowed = new Set([
+    'print_submission_ambiguous',
+    'image_generation_incomplete',
+    'image_generation_failed',
+    'story_generation_failed',
+    'pdf_generation_failed',
+    'openai_rate_limited',
+    'provider_timeout',
+    'provider_unavailable',
+    'delivery_email_failed',
+    'proof_email_failed',
+    'confirmation_email_failed',
+  ]);
+  return allowed.has(head) ? head : 'unclassified';
 }
 
 /**
@@ -261,6 +274,8 @@ function buildFingerprint(
     order.fulfillmentKickoffId ?? '',
     order.printSubmissionAttemptedAt ?? '',
     order.printSubmissionProofVersion ?? '',
+    order.emailResendClaimAt ?? '',
+    order.emailResendClaimKind ?? '',
     order.proofVersion ?? '',
     safeErrorCode(order.fulfillmentLastError),
   ].join(' '));
@@ -347,8 +362,14 @@ export function classifyOrderIncident(order: OrderRecord, ctx: ClassifyContext):
   // 1. Highest severity, checked first and exempt from the terminal filter.
   if (isPrintSubmissionAmbiguous(order)) {
     const attempted = readTimestamp(order.printSubmissionAttemptedAt, nowMs);
-    const entryIso = attempted.kind === 'ok' ? attempted.iso : (order.updatedAt ?? null);
-    const entryMs = attempted.kind === 'ok' ? attempted.ms : Date.parse(order.updatedAt ?? '');
+    const fallbackEntry = order.fulfillmentKickoffAt ?? order.paidAt ?? order.createdAt;
+    const fallback = readTimestamp(fallbackEntry, nowMs);
+    const entryIso = attempted.kind === 'ok'
+      ? attempted.iso
+      : fallback.kind === 'ok' ? fallback.iso : null;
+    const entryMs = attempted.kind === 'ok'
+      ? attempted.ms
+      : fallback.kind === 'ok' ? fallback.ms : Number.NaN;
     const errorCode = safeErrorCode(order.fulfillmentLastError);
     return buildIncident({
       order,
@@ -371,7 +392,11 @@ export function classifyOrderIncident(order: OrderRecord, ctx: ClassifyContext):
 
   // 4. Artifacts are fine; only the notification failed.
   if (fulfillment === 'delivery_email_failed') {
-    const entry = readTimestamp(order.updatedAt, nowMs);
+    const entry = readTimestamp(
+      order.emailResendClaimAt ?? order.fulfillmentKickoffAt ??
+        order.customerProofReleasedAt ?? order.paidAt ?? order.createdAt,
+      nowMs,
+    );
     return buildIncident({
       order,
       incidentClass: 'delivery_email_failed',
@@ -379,13 +404,16 @@ export function classifyOrderIncident(order: OrderRecord, ctx: ClassifyContext):
       thresholdMs: 0,
       retryable: true,
       detailCode: 'customer_delivery_email_failed',
-      stateEntryAt: order.updatedAt ?? null,
+      stateEntryAt: entry.kind === 'ok' ? entry.iso : null,
     });
   }
 
   // 5. A real failure. Refund finalization was already excluded at step 2.
   if (fulfillment === 'failed_manual_review') {
-    const entry = readTimestamp(order.updatedAt, nowMs);
+    const entry = readTimestamp(
+      order.fulfillmentKickoffAt ?? order.paidAt ?? order.createdAt,
+      nowMs,
+    );
     return buildIncident({
       order,
       incidentClass: 'failed_manual_review',
@@ -393,7 +421,7 @@ export function classifyOrderIncident(order: OrderRecord, ctx: ClassifyContext):
       thresholdMs: 0,
       retryable: true,
       detailCode: safeErrorCode(order.fulfillmentLastError),
-      stateEntryAt: order.updatedAt ?? null,
+      stateEntryAt: entry.kind === 'ok' ? entry.iso : null,
     });
   }
 
@@ -480,14 +508,14 @@ export function classifyOrderIncident(order: OrderRecord, ctx: ClassifyContext):
   }
 
   // Legacy/undefined routing intent. We genuinely do not know whether this
-  // order was meant to auto-run or wait for an operator, so say so rather than
-  // failing closed into silence.
-  if (ageMs < t.manualHoldMs) return null;
+  // order was meant to auto-run or wait for an operator. That uncertainty is
+  // present immediately after payment; an age threshold must not turn it into
+  // a temporarily false-clean order.
   return buildIncident({
     order,
     incidentClass: 'data_quality_uncertain',
     ageMs,
-    thresholdMs: t.manualHoldMs,
+    thresholdMs: 0,
     retryable: false,
     detailCode: 'fulfillment_mode_unset',
     stateEntryAt: paid.iso,

@@ -148,6 +148,15 @@ const MISSING_ARTIFACT_ISSUE_KINDS: ReadonlySet<PaidOrderOpsIssueKind> = new Set
   'paid_no_artifact_waiting',
 ]);
 
+/** Preserve the historical `opsIssue=paid_artifact` query contract. Ambiguous
+ * print is a high-severity ops issue, but it normally has an artifact and must
+ * be surfaced through attention/diagnostics rather than this named filter. */
+export function isPaidArtifactOpsIssue(issue: PaidOrderOpsIssue | null): boolean {
+  return Boolean(
+    issue && issue.severity !== 'info' && MISSING_ARTIFACT_ISSUE_KINDS.has(issue.kind),
+  );
+}
+
 const IN_PROGRESS_FULFILLMENT_STATUSES = new Set([
   'generating_story',
   'generating_images',

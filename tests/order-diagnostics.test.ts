@@ -5,12 +5,15 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { createOrderRecord, type OrderRecord, type PageArtifact } from '../src/lib/orders.ts';
 import {
   buildOrderDiagnostics,
   classifyPaidOrderOpsIssue,
   formatDiagnosticsSummary,
+  isPaidArtifactOpsIssue,
 } from '../src/lib/order-diagnostics.ts';
 
 function pageFixture(i: number, overrides: Partial<PageArtifact> = {}): PageArtifact {
@@ -217,6 +220,26 @@ test('classifyPaidOrderOpsIssue: ambiguous print survives the existing-artifact 
   const issue = classifyPaidOrderOpsIssue(ambiguousPrintOrder(), new Date('2026-04-27T11:30:00Z'));
   assert.equal(issue?.kind, 'paid_print_submission_ambiguous');
   assert.equal(issue?.severity, 'fail');
+});
+
+test('paid_artifact filter semantics exclude ambiguous print orders that already have artifacts', () => {
+  const ambiguous = classifyPaidOrderOpsIssue(
+    ambiguousPrintOrder(),
+    new Date('2026-04-27T11:30:00Z'),
+  );
+  const missing = classifyPaidOrderOpsIssue(makeOrder({
+    paymentStatus: 'paid',
+    fulfillmentStatus: 'not_started',
+    storyArtifactUrl: null,
+  }));
+  assert.equal(isPaidArtifactOpsIssue(ambiguous), false);
+  assert.equal(isPaidArtifactOpsIssue(missing), true);
+
+  const route = readFileSync(
+    fileURLToPath(new URL('../src/app/api/admin/orders/route.ts', import.meta.url)),
+    'utf8',
+  );
+  assert.match(route, /isPaidArtifactOpsIssue\(issue\)/);
 });
 
 test('classifyPaidOrderOpsIssue: the durable pre-POST fence alone is enough', () => {

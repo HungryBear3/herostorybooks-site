@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { isAdminAuthedFromRequest } from '@/lib/admin-auth';
-import { classifyPaidOrderOpsIssue } from '@/lib/order-diagnostics';
+import { classifyPaidOrderOpsIssue, isPaidArtifactOpsIssue } from '@/lib/order-diagnostics';
 import { listOrders } from '@/lib/orders';
 
 export const dynamic = 'force-dynamic';
@@ -16,7 +16,7 @@ export async function GET(request: Request) {
   if (url.searchParams.get('opsIssue') === 'paid_artifact') {
     orders = orders.filter((order) => {
       const issue = classifyPaidOrderOpsIssue(order);
-      return Boolean(issue && issue.severity !== 'info');
+      return isPaidArtifactOpsIssue(issue);
     });
   }
   // Newest first

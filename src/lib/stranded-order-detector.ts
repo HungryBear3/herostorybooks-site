@@ -201,6 +201,15 @@ export async function runIncidentScan(deps: ScanDeps): Promise<ScanResult> {
     return { ...empty, reason: 'enumeration_unavailable' };
   }
 
+  const cooldownStateInvalid = Object.values(state).some(({ lastAlertedAt }) => {
+    const ms = Date.parse(lastAlertedAt);
+    return !Number.isFinite(ms) || ms > nowMs;
+  });
+  if (cooldownStateInvalid) {
+    deps.log('[incident-scan] scan_failure reason=cooldown_state_invalid');
+    return { ...empty, reason: 'cooldown_state_invalid' };
+  }
+
   let incidents = 0;
   let alertsSent = 0;
   let alertsSuppressed = 0;
@@ -282,7 +291,7 @@ export async function runIncidentScan(deps: ScanDeps): Promise<ScanResult> {
   );
   return {
     ...tally,
-    ok: true,
+    ok: !degraded,
     failed: false,
     degraded,
     ...(degraded ? { reason: 'data_quality_uncertain' } : {}),

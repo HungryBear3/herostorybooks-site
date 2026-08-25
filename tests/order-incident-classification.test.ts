@@ -28,6 +28,7 @@ import {
   classifyOrderIncident,
   hasActiveFulfillmentLease,
   isPrintSubmissionAmbiguous,
+  safeErrorCode,
   type IncidentThresholds,
 } from '../src/lib/order-incident.ts';
 
@@ -140,6 +141,18 @@ test('unset fulfillmentMode is honest data-quality uncertainty, not a silent pas
   const incident = classify(o);
   assert.equal(incident?.incidentClass, 'data_quality_uncertain');
   assert.equal(incident?.detailCode, 'fulfillment_mode_unset');
+});
+
+test('fresh paid order with unset fulfillmentMode is degraded immediately, not false-clean', () => {
+  const incident = classify(makeOrder({
+    id: 'ord_mode_unset_fresh',
+    fulfillmentStatus: 'not_started',
+    fulfillmentMode: undefined,
+    paidAt: iso(NOW - MINUTE),
+  }));
+  assert.equal(incident?.incidentClass, 'data_quality_uncertain');
+  assert.equal(incident?.detailCode, 'fulfillment_mode_unset');
+  assert.equal(incident?.thresholdMs, 0);
 });
 
 // ── 3. refund exclusions for failed_manual_review ─────────────────────────────
@@ -426,11 +439,33 @@ test('a new attempt changes the dedup key', () => {
   assert.notEqual(first?.dedupKey, second?.dedupKey);
 });
 
-test('a new state entry changes the dedup key', () => {
-  const base = { id: 'ord_reentry', fulfillmentStatus: 'failed_manual_review', fulfillmentAttempts: 1 } as const;
-  const first = classify(makeOrder({ ...base, updatedAt: iso(NOW - 3 * HOUR) }));
-  const second = classify(makeOrder({ ...base, updatedAt: iso(NOW - 2 * HOUR) }));
-  assert.notEqual(first?.dedupKey, second?.dedupKey);
+test('unrelated updatedAt changes do not bypass cooldown identity for failure states', () => {
+  for (const fulfillmentStatus of ['failed_manual_review', 'delivery_email_failed'] as const) {
+    const base = {
+      id: `ord_stable_${fulfillmentStatus}`,
+      fulfillmentStatus,
+      fulfillmentAttempts: 1,
+      fulfillmentKickoffAt: iso(NOW - 4 * HOUR),
+      fulfillmentKickoffId: 'synthetic-kickoff-id',
+      paidAt: iso(NOW - 6 * HOUR),
+    } as const;
+    const first = classify(makeOrder({ ...base, updatedAt: iso(NOW - 3 * HOUR) }));
+    const second = classify(makeOrder({ ...base, updatedAt: iso(NOW - 2 * HOUR) }));
+    assert.equal(first?.dedupKey, second?.dedupKey, fulfillmentStatus);
+  }
+});
+
+test('email resend claim or fulfillment attempt changes failure identity', () => {
+  const emailBase = makeOrder({
+    id: 'ord_email_reentry',
+    fulfillmentStatus: 'delivery_email_failed',
+    fulfillmentAttempts: 1,
+    fulfillmentKickoffAt: iso(NOW - 4 * HOUR),
+  });
+  assert.notEqual(
+    classify(emailBase)?.dedupKey,
+    classify({ ...emailBase, emailResendClaimAt: iso(NOW - HOUR) })?.dedupKey,
+  );
 });
 
 test('a new print submission attempt changes the ambiguous-print dedup key', () => {
@@ -487,6 +522,17 @@ test('no classified incident carries PII or provider identifiers', () => {
     // Only the opaque order id and an admin path built from it are identifying.
     assert.equal(incident.orderId, order.id);
     assert.equal(incident.adminPath, `/admin/orders/${order.id}`);
+  }
+});
+
+test('safeErrorCode emits only mapped internal categories, never provider/capability-shaped tokens', () => {
+  assert.equal(safeErrorCode('print_submission_ambiguous: timeout'), 'print_submission_ambiguous');
+  assert.equal(safeErrorCode('image_generation_incomplete: missing pages'), 'image_generation_incomplete');
+  for (const raw of [
+    'sk_live_SUPERSECRET', 'pi_123456789', 'ch_123456789',
+    'tok_SUPER_SECRET', 'capabilityToken123456789', 'customerSlug-abc123',
+  ]) {
+    assert.equal(safeErrorCode(raw), 'unclassified', raw);
   }
 });
 

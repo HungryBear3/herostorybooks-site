@@ -292,7 +292,7 @@ test('3d. HTTP never reports a clean 200 for a sink or cooldown failure', () => 
     fileURLToPath(new URL('../src/app/api/internal/stranded-scan/route.ts', import.meta.url)),
     'utf8',
   );
-  assert.match(route, /result\.failed \? 500 : 200/);
+  assert.match(route, /result\.failed \|\| result\.degraded \? 500 : 200/);
   assert.ok(route.includes('degraded'), 'route body must carry the degraded signal');
 });
 
@@ -348,12 +348,29 @@ test('4d. cooldown expiry re-alerts the same identity', async () => {
   assert.equal((await runIncidentScan(second)).alertsSent, 1);
 });
 
+test('4e. future cooldown timestamps fail closed before any alert', async () => {
+  const deps = spyDeps([makeOrder({ id: 'ord_future_cooldown' })], {
+    state: {
+      'ord_future_cooldown::auto_not_started::synthetic': {
+        lastAlertedAt: iso(NOW + HOUR),
+      },
+    },
+  });
+  const result = await runIncidentScan(deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.failed, true);
+  assert.equal(result.reason, 'cooldown_state_invalid');
+  assert.equal(deps.alerts.length, 0);
+  assert.equal(deps.writes.length, 0);
+});
+
 // ── 5. data-quality uncertainty degrades the scan ────────────────────────────
 
 test('5a. timestamp/data-quality uncertainty marks the scan degraded', async () => {
   const deps = spyDeps([makeOrder({ id: 'ord_dq', paidAt: 'not-a-date' })]);
   const r = await runIncidentScan(deps);
   assert.equal(r.degraded, true);
+  assert.equal(r.ok, false);
   assert.equal(r.dataQuality, 1);
   assert.equal(r.failed, false);
   assert.equal(deps.alerts[0]?.incidentClass, 'data_quality_uncertain');
