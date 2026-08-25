@@ -78,6 +78,9 @@ export default defineConfig({
       // relaxes WHERE orders are stored, never any authorization, lifecycle,
       // freshness, isolation, or bounds rule.
       HSB_REQUIRE_DURABLE_PERSISTENCE: 'false',
+      // Synthetic local-only reviewer key for runtime auth-boundary tests.
+      // It is not a provider credential and never leaves the loopback server.
+      FAMILY_REVIEW_ADMIN_KEY: 'e2e-family-review-admin-key',
     },
   },
 });

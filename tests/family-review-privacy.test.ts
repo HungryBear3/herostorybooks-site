@@ -459,6 +459,31 @@ test('family-review admin auth fails closed when the admin key is absent', () =>
   assert.match(login, /maxAge:\s*0/);
 });
 
+test('malformed admin login input cannot preserve a stale session or bypass missing config', () => {
+  const login = read(SOURCES.adminLoginApi);
+  const expectedIndex = login.indexOf('const expected = expectedAdminKey()');
+  const parseIndex = login.indexOf('await req.json()');
+
+  assert.ok(expectedIndex >= 0, 'login route must resolve configured auth state');
+  assert.ok(parseIndex >= 0, 'login route must parse the request body');
+  assert.ok(
+    expectedIndex < parseIndex,
+    'missing auth configuration must fail closed before JSON parsing',
+  );
+  assert.match(login, /function\s+clearAdminSession/);
+  assert.match(login, /function\s+isBody/);
+  assert.match(login, /typeof\s+value\s*===\s*['"]object['"]/);
+  assert.match(login, /value\s*!==\s*null/);
+  assert.match(login, /!Array\.isArray\(value\)/);
+  assert.match(login, /if\s*\(!isBody\(body\)\)/);
+  assert.match(login, /invalid_body/);
+
+  const malformedBranch = login.match(/catch\s*\{([\s\S]*?)\n\s*\}/)?.[1] ?? '';
+  assert.match(malformedBranch, /invalid_json/);
+  assert.match(malformedBranch, /clearAdminSession/);
+  assert.match(login, /['"]Cache-Control['"]:\s*['"]no-store['"]/);
+});
+
 test('admin API routes authenticate via cookie helper, not query string or header', () => {
   for (const rel of [
     SOURCES.adminProxy,
