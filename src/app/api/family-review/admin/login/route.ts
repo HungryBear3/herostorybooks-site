@@ -30,36 +30,63 @@ interface Body {
   key?: unknown;
 }
 
+function isBody(value: unknown): value is Body {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function clearAdminSession(response: NextResponse): NextResponse {
+  response.cookies.set({
+    name: ADMIN_COOKIE_NAME,
+    value: '',
+    ...adminCookieOptions(),
+    maxAge: 0,
+  });
+  return response;
+}
+
 export async function POST(req: Request) {
-  let body: Body;
+  const expected = expectedAdminKey();
+
+  if (!expected) {
+    return clearAdminSession(
+      NextResponse.json(
+        { ok: false, error: 'admin_unavailable' },
+        {
+          status: 503,
+          headers: { 'Cache-Control': 'no-store' },
+        },
+      ),
+    );
+  }
+
+  let body: unknown;
   try {
-    body = (await req.json()) as Body;
+    body = await req.json();
   } catch {
-    return NextResponse.json(
-      { ok: false, error: 'invalid_json' },
-      { status: 400 },
+    return clearAdminSession(
+      NextResponse.json(
+        { ok: false, error: 'invalid_json' },
+        {
+          status: 400,
+          headers: { 'Cache-Control': 'no-store' },
+        },
+      ),
+    );
+  }
+
+  if (!isBody(body)) {
+    return clearAdminSession(
+      NextResponse.json(
+        { ok: false, error: 'invalid_body' },
+        {
+          status: 400,
+          headers: { 'Cache-Control': 'no-store' },
+        },
+      ),
     );
   }
 
   const provided = typeof body.key === 'string' ? body.key.trim() : '';
-  const expected = expectedAdminKey();
-
-  if (!expected) {
-    const unavailable = NextResponse.json(
-      { ok: false, error: 'admin_unavailable' },
-      {
-        status: 503,
-        headers: { 'Cache-Control': 'no-store' },
-      },
-    );
-    unavailable.cookies.set({
-      name: ADMIN_COOKIE_NAME,
-      value: '',
-      ...adminCookieOptions(),
-      maxAge: 0,
-    });
-    return unavailable;
-  }
 
   if (
     !provided ||
@@ -68,17 +95,15 @@ export async function POST(req: Request) {
   ) {
     // Clear any stale cookie even on a failed attempt so we never
     // leave the browser holding an invalid session.
-    const fail = NextResponse.json(
-      { ok: false, error: 'forbidden' },
-      { status: 401 },
+    return clearAdminSession(
+      NextResponse.json(
+        { ok: false, error: 'forbidden' },
+        {
+          status: 401,
+          headers: { 'Cache-Control': 'no-store' },
+        },
+      ),
     );
-    fail.cookies.set({
-      name: ADMIN_COOKIE_NAME,
-      value: '',
-      ...adminCookieOptions(),
-      maxAge: 0,
-    });
-    return fail;
   }
 
   const res = NextResponse.json({ ok: true }, { status: 200 });
