@@ -434,8 +434,21 @@ test('the persisted digital delivery expectation states the PDF comes with the p
 
 // ── 3. Accurate approval statements are still allowed ───────────────────────
 
+/**
+ * The homepage's rendered copy, wherever it lives.
+ *
+ * The FAQ answers moved out of editorial-site.tsx into src/lib/public-faqs.ts
+ * so the rendered accordion and the FAQPage JSON-LD read the same array (see
+ * tests/public-structured-data.test.ts). The assertions below are unchanged in
+ * substance — the same strings must still be part of what the homepage shows —
+ * so they read both files rather than only the component.
+ */
+function homepageCopy(): string {
+  return `${read('src/components/editorial-site.tsx')}\n${read('src/lib/public-faqs.ts')}`;
+}
+
 test('approval still gates printing, and that language is preserved', () => {
-  const editorial = read('src/components/editorial-site.tsx');
+  const editorial = homepageCopy();
   assert.match(editorial, /not printed until you approve/i, 'print-gating claim must survive');
   assert.match(read('src/app/checkout/checkout-form.tsx'), /Nothing prints until/i);
   // Print formats legitimately describe shipping as following approval.
@@ -445,7 +458,7 @@ test('approval still gates printing, and that language is preserved', () => {
 });
 
 test('the digital refund boundary is unchanged — only its false rationale was removed', () => {
-  const editorial = read('src/components/editorial-site.tsx');
+  const editorial = homepageCopy();
   assert.match(editorial, /Digital orders are fully refundable up until you approve the proof/i,
     'the refund rule itself must not be weakened');
   assert.match(editorial, /Printed books are refundable up until you approve the proof for print/i);

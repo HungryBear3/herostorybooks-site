@@ -1,4 +1,5 @@
 import { EditorialHomePage } from '@/components/editorial-site';
+import { PublicStructuredData } from '@/components/public-structured-data';
 import type { Metadata } from 'next';
 
 export const dynamic = 'force-dynamic';
@@ -32,5 +33,10 @@ export const metadata: Metadata = {
 };
 
 export default function HomePage() {
-  return <EditorialHomePage />;
+  return (
+    <>
+      <PublicStructuredData />
+      <EditorialHomePage />
+    </>
+  );
 }
