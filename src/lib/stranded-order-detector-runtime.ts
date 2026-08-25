@@ -116,7 +116,7 @@ async function readAlertState(): Promise<AlertState> {
   if (res.status === 404) return {};
   if (!res.ok) throw new Error(`alert-state read failed: ${res.status}`);
   const parsed = (await res.json()) as unknown;
-  return isAlertState(parsed) ? parsed : {};
+  return parseAlertState(parsed);
 }
 
 async function writeAlertState(state: AlertState): Promise<void> {
@@ -131,8 +131,13 @@ async function writeAlertState(state: AlertState): Promise<void> {
   });
 }
 
+export function parseAlertState(v: unknown): AlertState {
+  if (!isAlertState(v)) throw new Error('alert-state invalid');
+  return v;
+}
+
 function isAlertState(v: unknown): v is AlertState {
-  if (typeof v !== 'object' || v === null) return false;
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
   return Object.values(v as Record<string, unknown>).every(
     (e) => typeof e === 'object' && e !== null && typeof (e as { lastAlertedAt?: unknown }).lastAlertedAt === 'string',
   );

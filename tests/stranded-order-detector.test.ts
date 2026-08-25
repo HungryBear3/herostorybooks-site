@@ -24,6 +24,7 @@ import {
   type ScanDeps,
 } from '../src/lib/stranded-order-detector.ts';
 import { DEFAULT_INCIDENT_THRESHOLDS } from '../src/lib/order-incident.ts';
+import { parseAlertState } from '../src/lib/stranded-order-detector-runtime.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 
 /** Strip comments so source-level invariants assert on CODE, not on prose that
@@ -214,6 +215,23 @@ test('2c. readAlertState failure fails closed — never alert against unknown co
   assert.equal(r.failed, true);
   assert.equal(deps.alerts.length, 0);
   assert.equal(deps.writes.length, 0);
+});
+
+test('2c-runtime. malformed durable cooldown state throws instead of becoming an empty cold start', () => {
+  assert.deepEqual(parseAlertState({}), {});
+  assert.deepEqual(
+    parseAlertState({ synthetic: { lastAlertedAt: iso(NOW - HOUR) } }),
+    { synthetic: { lastAlertedAt: iso(NOW - HOUR) } },
+  );
+  for (const malformed of [
+    { synthetic: { lastAlertedAt: 123 } },
+    { synthetic: {} },
+    { synthetic: null },
+    [],
+    null,
+  ]) {
+    assert.throws(() => parseAlertState(malformed), /alert-state invalid/);
+  }
 });
 
 test('2d. runtime wiring uses listOrdersAuthoritative and never permissive listOrders', () => {
