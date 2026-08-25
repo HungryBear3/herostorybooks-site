@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
+import { PUBLIC_CATALOG_ENDPOINT_PATH } from '@/lib/public-catalog';
+import { shouldIndexSite } from '@/lib/site-url';
 import {
   COVER_VARIANT_COOKIE,
   COVER_VARIANT_COOKIE_MAX_AGE,
@@ -15,7 +17,15 @@ import {
  *  1. Existing: sticky cover-variant cookie + x-cover-variant header on
  *     public pages, so server-rendered covers don't flash.
  *
- *  2. New (privacy): every response under /family-review/* and
+ *  2. The public catalog endpoint is carved out of both. It is the one API
+ *     path that exists to be fetched by machines, so it must not receive the
+ *     blanket `/api` noindex header on production and must not be handed a
+ *     cover-variant cookie it has no use for (a read-only public contract that
+ *     sets a cookie is neither cacheable-clean nor honest about being
+ *     stateless). Non-production deployments keep the noindex header, so a
+ *     preview catalog still cannot be indexed.
+ *
+ *  3. New (privacy): every response under /family-review/* and
  *     /api/family-review/* gets a tight headers set so the parent's
  *     private review URL, the parent's reference-photo URLs, and the
  *     admin key never leak through referrer/index/script-injection
@@ -86,6 +96,14 @@ export function middleware(request: NextRequest) {
     const response = NextResponse.next();
     applyFamilyReviewPrivacyHeaders(response);
     return response;
+  }
+
+  // The public catalog: no cookie, and indexable on production only. Returning
+  // early is what keeps the cover-variant assignment below from touching it.
+  if (pathname === PUBLIC_CATALOG_ENDPOINT_PATH) {
+    const catalogResponse = NextResponse.next();
+    if (!shouldIndexSite()) applyNoIndexHeaders(catalogResponse);
+    return catalogResponse;
   }
 
   const response = NextResponse.next();
