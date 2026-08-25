@@ -33,7 +33,12 @@ import {
   type Direction,
   type Pronoun,
 } from '@/lib/family-review/store';
-import { newAssetId, newReviewToken, newSubmissionId } from '@/lib/family-review/tokens';
+import {
+  hashReviewToken,
+  newAssetId,
+  newReviewToken,
+  newSubmissionId,
+} from '@/lib/family-review/tokens';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -267,9 +272,12 @@ export async function POST(req: Request) {
 
   // 7. Persist record
   const now = new Date();
+  // The raw reviewToken is NEVER persisted. Storage addresses the
+  // parent's capability only through its sha256 digest; the raw value
+  // leaves this process exactly once, in the success response below.
   const record: FamilyReviewSubmission = {
     id: submissionId,
-    reviewToken,
+    reviewTokenHash: hashReviewToken(reviewToken),
     receivedAt: now.toISOString(),
     updatedAt: now.toISOString(),
     parent: { name: parentName, email: parentEmailRaw.toLowerCase() },
@@ -310,6 +318,9 @@ export async function POST(req: Request) {
     );
   }
 
+  // First and only issuance of the raw token. There is no later
+  // server-side path that can reproduce this link — see
+  // CC-FINAL-HANDOFF.md.
   return NextResponse.json(
     {
       ok: true,

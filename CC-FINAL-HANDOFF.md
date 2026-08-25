@@ -1,326 +1,287 @@
-# CC-FINAL-HANDOFF — HSB Lane A incident observability
+# CC-HSB-LANE-B-FAMILY-PRIVACY-20260824 — final handoff
 
-Task: `CC-HSB-LANE-A-OBSERVABILITY-20260824`
-Status: **CONTROLLER-CORRECTED LOCALLY — HELD FOR FRESH EXACT-SHA REVIEW. NOTHING ACTIVATED.**
+## Exact identity
 
-## 1. Exact base and workspace
-
-| Item | Value |
-| --- | --- |
+| | |
+|---|---|
 | Repository | `/Users/abigailclaw/herostorybooks-site` |
 | Required base | `ba3533bfaefc6c13cec4b55861b178db12605d1d` |
-| `origin/main` at start of work | `ba3533bfaefc6c13cec4b55861b178db12605d1d` |
-| Base drift | **NONE** — verified before any edit |
-| Worktree | `/Users/abigailclaw/cc-worktrees/hsb-incident-observability-20260824` (new, isolated) |
-| Branch | `cc/hsb-incident-observability-20260824` (new, cut from the exact base) |
-| Commit parent | `ba3533bfaefc6c13cec4b55861b178db12605d1d` |
+| `origin/main` at start | `ba3533bfaefc6c13cec4b55861b178db12605d1d` — **matched, no BASE_DRIFT** |
+| Worktree | `/Users/abigailclaw/cc-worktrees/hsb-family-review-privacy-20260824` |
+| Branch | `cc/hsb-family-review-privacy-20260824` |
+| Initial code commit | `96a010f6adbf1abed3f010a276ae90a9bc33ac09` |
+| Initial code tree | `3ead614bfe07478b44aeb6070dde26665d0ff05a` |
+| Controller correction commit | `54fd9dd1fd5bb094c89d1f089c2e0acb9148cab4` |
+| Final cumulative code tree | `affba6f3a7d5adf359e55cf2e6f1b5902a9e04a2` |
+| Review target | `54fd9dd1fd5bb094c89d1f089c2e0acb9148cab4` (includes the initial code and the two-file admin-link correction) |
+| Commits on top of base before this final docs update | 3 — initial code, initial handoff docs, bounded controller correction. |
+| Pushed / PR'd / merged / deployed | **No.** Local commits only. |
 
-`ba3533b` is `fix(hsb): converge terminal Stripe payment events (#146)` — the merged payment
-convergence candidate the reconciliation named as the Lane A prerequisite. That prerequisite is
-therefore satisfied by the base itself, not deferred.
+The final cumulative code review target is
+`54fd9dd1fd5bb094c89d1f089c2e0acb9148cab4` (tree
+`affba6f3a7d5adf359e55cf2e6f1b5902a9e04a2`). The earlier `96a010f` target is
+superseded.
 
-**HEAD / tree of this commit:** read them from git as the authoritative source —
+## Changed paths
 
-```
-git -C /Users/abigailclaw/cc-worktrees/hsb-incident-observability-20260824 rev-parse HEAD
-git -C /Users/abigailclaw/cc-worktrees/hsb-incident-observability-20260824 rev-parse HEAD^{tree}
-```
-
-They are deliberately not transcribed into this file: this file is part of the committed tree, so
-any value written here could not be the hash of the object containing it.
-
-### Source-snapshot fidelity
-
-Every file in the handoff `source-snapshot/` was SHA-256 compared against the worktree at the base
-before any edit. All 12 compared paths matched exactly (detector, runtime, route, order-stage,
-order-diagnostics, orders, cron-auth, fulfillment-types, vercel.json, and the three test files).
-
-## 2. What was wrong, and what changed
-
-The audited defect: the stranded detector was **structurally incapable of firing**. It required
-`fulfillmentMode === 'auto'`, which no order-creation path sets, so a scheduled run would have
-reported `scanned: N, candidates: 0, HTTP 200` over a completely uncovered surface. It also wired
-the permissive `listOrders` (whose storage fallback turns an outage into `scanned: 0` + HTTP 200)
-and swallowed alert-sink exceptions while still returning success.
-
-| Prompt requirement | Where it landed |
-| --- | --- |
-| 1. Use fail-closed `listOrdersAuthoritative`, never permissive `listOrders` | `stranded-order-detector-runtime.ts` wires `listOrdersAuthoritative`; the `ScanDeps` field is *named* `listOrdersAuthoritative` so the contract is enforced at the type level. Test `2d` asserts (on comment-stripped source) that neither the core nor the runtime names the permissive helper. |
-| 2. Pure incident classification for all eight cases | New `src/lib/order-incident.ts` — `classifyOrderIncident`. |
-| 3. Classifier shared by detector, `deriveOrderAttention`, `classifyPaidOrderOpsIssue`, no cycle | All three import `order-incident.ts`; it imports none of them and only `import type { OrderRecord }`. Dependency direction is strictly one-way. |
-| 4. Identity = `orderId + incidentClass + state-entry/attempt fingerprint` | `OrderIncident.dedupKey` = `` `${orderId}::${incidentClass}::${fingerprint}` ``. Cooldown state is keyed by that, never by order id. |
-| 5. Local structured logging only, PII-free | `defaultIncidentSink` in the runtime is a single `console.error` line. No email/name/address/token/Stripe id/artifact URL/story text/feedback anywhere in the payload or the log lines. |
-| 6. Sink + cooldown failure must fail/degrade; no clean HTTP 200 | `runIncidentScan` returns `failed: true` with `reason: 'alert_sink_failed'` / `'cooldown_persist_failed'`; the route returns 500 on `failed`. Data-quality uncertainty sets `degraded: true`. |
-| 7. Refunds must never alert merely because refund finalization uses `failed_manual_review` | `isTerminalOrExcluded` checks `refundedAt`, `paymentStatus in {refunded, partially_refunded}`, `stripeRefundId`, and `refundClaimId` — the exact field set `updateOrderPaymentReversal` writes — *before* the `failed_manual_review` branch. |
-| 8. Ambiguous print visible in admin attention AND paid-order diagnostics even with an artifact | `deriveOrderAttention` checks it first; `classifyPaidOrderOpsIssue` checks it before the `storyArtifactUrl` early-return that used to hide it. |
-| 9. No order state or fulfillment behavior change | Zero writes added. `deriveOrderStage` untouched. `orders.ts`, `fulfillment.ts`, `order-email.ts` untouched. |
-
-### The taxonomy
-
-| Class | Severity | Retryable | Trigger |
-| --- | --- | --- | --- |
-| `print_submission_ambiguous` | critical (rank 100) | **never** | `submitting_to_print`, no `printJobId`/`printJobStatus`, and either the `print_submission_ambiguous` error prefix or a crossed `printSubmissionAttemptedAt` fence |
-| `failed_manual_review` | high | yes | genuine failure, after every refund/terminal exclusion |
-| `stale_in_progress_no_lease` | high | yes, except `submitting_to_print` | in-progress state with no live kickoff lease, past threshold |
-| `auto_not_started` | high | yes | explicit `auto` intent, `not_started`, past threshold |
-| `delivery_email_failed` | high | yes | artifacts fine, notification failed |
-| `data_quality_uncertain` | medium | no | missing/invalid/future `paidAt` or state-entry stamp; unset `fulfillmentMode` |
-| `manual_hold_sla` | medium | no | explicit `manual_hold` past its operator SLA |
-| `customer_review_wait_overdue` | medium | yes | `proof_ready`/`proof_approved` past its own (much longer) SLA |
-
-Default thresholds (design/testing values, all env-overridable, none activated): manual-hold SLA
-24 h; auto-not-started 12 h; stale-in-progress 60 min; lease TTL 6 min (mirrors
-`FULFILLMENT_KICKOFF_TTL_MS`); customer wait 14 d; alert cooldown 24 h.
-
-## 3. Changed files — inside the allowlist, nothing outside
-
-Production (5 allowed + the 1 permitted new pure helper):
+All within the allowlist. `git diff --stat ba3533b..HEAD`:
 
 ```
-src/app/api/internal/stranded-scan/route.ts
-src/lib/order-diagnostics.ts
-src/lib/order-stage.ts
-src/lib/stranded-order-detector-runtime.ts
-src/lib/stranded-order-detector.ts
-src/lib/order-incident.ts                      (NEW — the one permitted pure helper)
+ src/app/api/family-review/admin/submissions/[submissionId]/route.ts |   9 +-
+ src/app/api/family-review/upload/route.ts                           |  15 +-
+ src/lib/family-review/store.ts                                      | 290 +++++++++++--
+ src/lib/family-review/tokens.ts                                     |  74 ++--
+ tests/family-review-token-privacy.test.ts                           | 641 +++++++++++++++++++++++++++
 ```
 
-Tests (3 allowed + 1 new narrowly named):
+Two route files were touched, and both **demonstrably required** it:
+
+- `upload/route.ts` — the persisted record literal can no longer carry
+  `reviewToken`; it now carries `reviewTokenHash`.
+- `admin/submissions/[submissionId]/route.ts` — it built the index path from
+  `submission.reviewToken`, which no longer exists on a normalized record. It
+  now calls `deleteReviewTokenIndexes()`.
+
+Nothing else was modified. `src/lib/orders.ts`, order/proof review capability
+code, Blob access mode, private-store token selection, checkout, Stripe,
+fulfillment, Lulu, print, email, analytics, social, book generation, public
+marketing code and `vercel.json` are all untouched.
+
+One incidental change inside an allowlisted file: `store.ts` now imports
+`'../orders.ts'` instead of `'../orders'`. That is the established convention
+everywhere else in `src/lib` and is what makes the module importable by the
+`node --experimental-strip-types --test` runner.
+
+## What changed, and why
+
+Objects in the family-review store are **public**, so the pathname *is* the
+capability. Two things made that capability weak:
+
+1. Submission ids were `fr-{base36-ms}-{8 hex}` — a timestamp plus only
+   **32 random bits**. That leaks submission time and ordering, and is a
+   guessable authority over a public path.
+2. The parent's raw review token was persisted verbatim in the public
+   submission JSON *and* used verbatim as the token-index pathname.
+
+### 1. Opaque 128-bit submission ids
+
+`newSubmissionId()` → `fr-{22 base64url chars}` = 16 crypto-random bytes.
+No timestamp, no counter, no ordering signal. `isWellFormedSubmissionId()`
+accepts both the new shape and the legacy shape, so legacy records stay
+routable for admin and parent access.
+
+Consequence handled: `listRecentSubmissions()` used to rely on the timestamp
+prefix for "most recent" ordering. It now pages the prefix and ranks by the
+Blob object's own `uploadedAt`, bounded to `MAX_LIST_PAGES × LIST_PAGE_SIZE`
+(4 × 250) so an admin page load can never become an unbounded scan.
+
+### 2. Hashed token indexes
+
+- `reviewTokenIndexPath(sha256(token))` — the only address ever written.
+- `legacyRawReviewTokenPath(token)` — read/delete only, bounded compat.
+- `reviewTokenLookupPaths(token)` — digest first, legacy second.
+
+The token carries ~192 bits, so the digest is not brute-forceable back to it.
+
+### 3. Raw token never persisted
+
+The record carries `reviewTokenHash` only. The raw token leaves the process
+exactly once: in the `/api/family-review/upload` success response, which is
+how the parent receives their link.
+
+### 4. One normalizer in, one serializer out
+
+- `normalizeSubmissionRecord()` runs on **every** read (`fetchSubmissionAt`,
+  `fetchSubmissionByPath` → `findById`, `findByReviewToken`,
+  `listRecentSubmissions`). Legacy plaintext is converted to its digest and
+  then dropped, so no generic application record ever carries a stored token.
+- `sanitizeSubmissionForPersistence()` runs on **every** write, and strips
+  `reviewToken` / `rawReviewToken` / `review_token` defensively — including
+  when handed a raw legacy-shaped object straight out of Blob. This is what
+  stops the status / sample / feedback / deletion-request read-modify-write
+  paths from resurrecting plaintext.
+- `buildPersistPlan()` exposes exactly what `persistSubmission` is about to
+  write, so the privacy guarantees are assertable in-process with no network.
+
+### 5. The capability echo (read this before reviewing)
+
+`findByReviewToken(token)` re-attaches **the caller's own token** to the
+in-memory result:
+
+```ts
+return { ...submission, reviewToken: token };
+```
+
+This is deliberate and load-bearing. The parent's page
+(`src/app/family-review/review/[reviewToken]/page.tsx` → `review-portal.tsx`)
+reads `submission.reviewToken` to build its feedback, deletion-request and
+sample-proxy URLs. Those files are **outside the allowlist**, so without the
+echo the entire parent review flow would break.
+
+Nothing stored is revealed: the record holds only the digest, the echoed value
+is the credential the caller already presented in their own URL, and
+`sanitizeSubmissionForPersistence` strips it again before any write. The
+generic path (`findById`, `listRecentSubmissions`) does **not** echo — it
+returns records with no plaintext at all.
+
+## Compatibility contract
+
+| Case | Behavior |
+|---|---|
+| New submission, parent link | Resolves via digest index. |
+| Legacy submission, parent link issued before this change | Still resolves, via the legacy raw-token index. **Not broken.** |
+| Legacy record read by admin or any generic path | Returned with plaintext stripped and digest derived. |
+| Legacy record written by any generic update | Persisted without plaintext; also gains a digest index. The pre-existing raw-token index object is left exactly as it is — not deleted, not rewritten. Both addresses then resolve. |
+| Admin delete | Deletes the digest index and, for a legacy record, the raw-token index too (address recovered from the stored bytes inside `store.ts`; the plaintext never leaves the module). |
+| Record with neither digest nor legacy plaintext | `persistSubmission` refuses with `reason: 'no_token_hash'` rather than writing a record unreachable by its own link. |
+
+## RED → GREEN evidence
+
+**RED, before implementation** — probe against base `tokens.ts`
+(`scratchpad/red/red-probe.txt`):
 
 ```
-tests/order-diagnostics.test.ts
-tests/order-stage.test.ts
-tests/stranded-order-detector.test.ts
-tests/order-incident-classification.test.ts    (NEW)
+sample ids: fr-mt7wb2uj-b231e025  fr-mt7wb2uk-fde4558a  fr-mt7wb2uk-6898a554
+random part: mt7wb2uj-b231e025   entropy bits: 32
+current ms base36 prefix: mt7wb2
+ids leaking ms prefix: 8/8
+hashReviewToken exported: undefined
+isWellFormedReviewTokenHash exported: undefined
 ```
 
-Plus this handoff, `CC-FINAL-HANDOFF.md`.
+**RED, the new suite** — written and run before any production change:
 
-**Confirmed untouched:** `vercel.json` (no cron added — still only the pre-existing
-`/api/cron/fulfillment-sweep` line), `src/lib/orders.ts`, `src/lib/fulfillment.ts`,
-`src/lib/order-email.ts`, every admin React page, checkout, payment/webhook code, Blob storage
-mode, book-generation code, and all other tests.
+```
+SyntaxError: The requested module '../src/lib/family-review/store.ts'
+does not provide an export named 'buildPersistPlan'
+✖ tests 1  pass 0  fail 1
+```
 
-## 4. RED → GREEN evidence
+Two assertions in my own first draft were sloppy — one compared *import*
+positions rather than call sites, one forbade the `reviewToken` shorthand
+anywhere in the upload route rather than inside the persisted record literal
+(the one-time creation response legitimately uses it). Both were tightened to
+test the actual property, not a proxy for it.
 
-Every suite was written and run RED before the implementation existed.
+**GREEN**, at HEAD `96a010f`:
 
-| Suite | RED result | GREEN result |
-| --- | --- | --- |
-| `tests/order-incident-classification.test.ts` (new, 31 tests) | `ERR_MODULE_NOT_FOUND: src/lib/order-incident.ts` — 0 pass / 1 fail | 31 pass / 0 fail |
-| `tests/stranded-order-detector.test.ts` (26 → 28 tests) | import error — `runIncidentScan` did not exist — 0 pass / 1 fail | 28 pass / 0 fail |
-| `tests/order-stage.test.ts` (10 → 14 tests) | 11 pass / **3 fail** (ambiguous print returned `none`) | 14 pass / 0 fail |
-| `tests/order-diagnostics.test.ts` (12 → 18 tests) | 15 pass / **3 fail** (`classifyPaidOrderOpsIssue` returned `null`) | 18 pass / 0 fail |
+| Gate | Result |
+|---|---|
+| `tests/family-review-token-privacy.test.ts` | 24 / 24 pass |
+| all `tests/family-review-*.test.ts` | 64 / 64 pass |
+| `npm test` | **1523 / 1523 pass, 0 fail** |
+| `npm run build` | exit 0 |
+| `npm run test:e2e` | **99 / 99 passed** (hermetic config: credentials blanked, loopback, throwaway store) |
+| `npx tsc --noEmit` | 54 errors, **byte-identical to the same command at base `ba3533b`** — all pre-existing, all in `tests/`. Diff of sorted outputs is empty. |
+| `git diff --check` | clean |
 
-RED coverage for each item the prompt named: manual hold below/at/above SLA; auto not-started
-below/at/above threshold; refunded and partially-refunded `failed_manual_review` exclusions (plus
-in-flight refund claim, internal, shipped, delivered, complete); active lease exclusion vs stale
-no-lease incident (plus future-lease clock fail-closed); ambiguous print with an existing artifact
-is highest severity (plus fence-only, reconciled-job-id clears, survives refund); customer review
-wait exclusion and its own-SLA incident; authoritative enumeration throw and partial-cursor
-ambiguity; alert failure fails the scan and does not advance cooldown (plus partial-failure keeps
-successful cooldowns); cooldown write failure fails the scan; stable dedup key that changes on a
-new attempt, a new state entry, and a new print attempt; PII absence from payload **and** log
-lines (plus error sanitization); invalid auth and missing `CRON_SECRET` fail closed.
+**Leak scan** (`scratchpad/leakscan.mjs`, `scratchpad/leakscan-output.txt`) —
+1500 serialized fixtures, 500 tokens × 3 record shapes (new-shaped,
+legacy-shaped, echo-contaminated):
 
-## 5. Commands and exit codes
+```
+PASS  store.ts: the only raw-token pathname is the single documented legacy read/delete helper
+PASS  store.ts: the old raw-token write path helper is gone
+PASS  1500 serialized fixtures scanned (500 tokens x 3 record shapes)
+PASS  normalized legacy record: reviewToken absent
+PASS  normalized legacy record: raw token absent from every field
+PASS  normalized legacy record: digest derived, record stays addressable
 
-All run in the isolated worktree at the exact base.
+LEAK SCAN: CLEAN
+```
 
-| Command | Exit | Result |
-| --- | --- | --- |
-| `npm ci` | 0 | 247 packages |
-| `node --experimental-strip-types --test tests/order-incident-classification.test.ts` | 0 | 31/31 |
-| `node --experimental-strip-types --test tests/stranded-order-detector.test.ts` | 0 | 28/28 |
-| `node --experimental-strip-types --test tests/order-stage.test.ts` | 0 | 14/14 |
-| `node --experimental-strip-types --test tests/order-diagnostics.test.ts` | 0 | 18/18 |
-| `npm test` | 0 | **1542 / 1542 pass, 0 fail** |
-| `npm run build` | 0 | compiled clean |
-| `npx tsc --noEmit` | 2 | 54 errors — see attribution below |
-| `npm run test:e2e` | 0 | **99 / 99 passed** |
-| `git diff --check` | 0 | clean |
-| `npm run lint` | 127 | `eslint: command not found` — see below |
+Each fixture is checked for: raw token in the submission pathname, the index
+pathname, the index bytes, or the serialized record bytes; parent name, parent
+email or child name in any pathname; a `reviewToken` key surviving into the
+persisted body; the index landing anywhere but the digest path; and the index
+resolving to the wrong submission.
 
-Baseline for comparison, measured on the untouched base before any edit: `npm test` **1499/1499**,
-`npm run build` exit 0, `npx tsc --noEmit` exit 2 with 54 errors.
+## Open items requiring a ruling
 
-Test delta: **+43** (1499 → 1542) = 31 new + 4 + 6 + 2.
+### 1. RESOLVED BY CONTROLLER CORRECTION — tokenless admin records no longer fabricate a link
 
-### Baseline-attributed diagnostics
+This is the direct, spec-mandated consequence of requirement 4 ("preserve the
+raw token only in the immediate successful creation response"). Because the
+token is not stored, **nothing server-side can reproduce a parent's review URL
+after creation.**
 
-`npx tsc --noEmit` reports **54 errors before and 54 after**. The two sorted error sets are
-**byte-identical** — `diff` produces no output, i.e. **0 new and 0 resolved**. All 54 live in
-`tests/` (pre-existing fixture/target-level issues in `image-prompt-text-safe`,
-`order-route-required-fields`, `order-stage`, `post-stripe-confirmation`, `recovery-sweep`,
-`review-private-flow`, `seo-indexing-surfaces`). **`src/` has 0 TypeScript errors, before and
-after.** An earlier reading of exit 1 came from a stale `incremental` build cache; re-measured with
-the cache cleared, both base and candidate exit 2.
+`src/app/family-review/admin/admin-board.tsx:1349-1350` does:
 
-`npm run lint` fails identically at the base: `eslint` is referenced by the `lint` script but is
-not in `devDependencies` and is not installed. **Not a regression introduced here**, and not
-something this lane's allowlist permits fixing.
+```ts
+const reviewUrl = `${window.location.origin}/family-review/review/${submission.reviewToken}`;
+```
 
-`graphify update .` was **not run**: this repository has no `graphify-out/`, and the task manifest
-itself lists `graphify-out/GRAPH_REPORT.md` under `missing_optional_paths`. Graphify is not
-configured for `herostorybooks-site`, so there is no graph to update and no graph output in the
-commit.
+For a NEW submission that now renders **`/family-review/review/undefined`**,
+and that broken URL is also interpolated into `buildParentSampleEmail(...)` —
+the email body a reviewer copies and sends to a parent.
 
-### Added-line credential / PII / debug scan
+The controller extended the allowlist by exactly `admin-board.tsx` plus the
+existing focused token-privacy test. Correction `54fd9dd` now:
 
-All 1,877 added lines scanned. Zero findings for: Stripe live/test keys, publishable keys, webhook
-secrets, AWS keys, PEM blocks, real bearer tokens, real email addresses, production-shaped order
-ids (`ord_<16+ hex>`), Stripe/provider object ids (`ch_`/`re_`/`pi_`/`cs_`…), `debugger`,
-`console.debug/dir/trace`, `.only(`/`.skip(`, `FIXME`/`XXX`/`TODO`, the repo's REQ16 banned
-identifiers, and any collision-boundary path.
+- proves a raw token exists before constructing a review URL;
+- renders no `/undefined` URL;
+- hides link/copy/open-parent affordances for tokenless generic admin records;
+- disables and suppresses the parent-email draft when no link is recoverable;
+- states truthfully that the link was issued once and is not stored.
 
-Two matches are intentional and inert: a synthetic string `vercel_blob_rw_ABCDEFGH12345678` and
-`secret.parent@example.com`, both fixtures inside the redaction test that asserts they are stripped
-from log output. All other addresses are `@example.com` test fixtures.
+RED: the new test failed 24-pass/1-fail on the old board. GREEN: focused 62/62,
+full 1524/1524, build PASS, E2E 99/99, `git diff --check` clean, and the
+added-line secret/debug/external-call scan found zero matches. No escrow,
+storage, provider, customer or external action was added. A sealed escrow, if
+ever wanted, remains a separately designed Lane C decision.
 
-**One real guard fired and was fixed rather than suppressed.** `REQ16` in
-`tests/review-snapshot-and-guards.test.ts` bans a production-shaped `ord_<16+ hex>` literal in any
-committable file. The base `tests/stranded-order-detector.test.ts` carried exactly such a literal
-(the July 13 founder fixture reference), and escaped the guard only because that file was outside
-the guard's changed-file scan set. Touching the file brought it into scope, and the guard failed. The fixture
-was replaced with a synthetic `ord_internal_test_fixture`; the guard test itself was **not**
-modified (it is outside this lane's allowlist, and weakening it would have been the wrong fix).
+### 2. PII still lives in the public submission record
 
-## 6. Side-effect attestation
+Requirement 5 of the reconciliation doc asks for data minimization. The record
+still contains `parent.name`, `parent.email` and `child.firstName`, because
+admin reviewers need all three to do the work. The mitigation in this lane is
+high-entropy path authority (128-bit ids), not removal. **This exposure is
+real and is closed only by the Lane C private flip.**
 
-Nothing outside the isolated worktree was created, modified, read, or invoked.
+### 3. Legacy raw-token index objects still exist and still contain the token in their pathname
 
-- **No** push, PR, merge, deploy, alias, cron, or schedule. The commit is local and unpushed.
-- **No** `vercel.json` cron line. **No** Resend/email/Discord/Slack/Telegram/webhook alert code —
-  test `8e` asserts the runtime's code contains none of those tokens and that `vercel.json` never
-  names `stranded-scan`.
-- **No** Production route invocation. **No** order, customer, Stripe, Blob, Lulu, or provider
-  access of any kind. Every test uses injected in-memory fakes.
-- **No** environment reads beyond reading source files in the worktree. New env var *names* were
-  added to the config loader as code; no `.env` was read and no live environment was inspected.
-- **No** order-creation path was set to `auto`; no fulfillment mode was changed anywhere.
-- **Collision boundary respected in full.** Every path the task brief fenced off — the shared
-  book-generation run directory and media directory under `~/.openclaw/workspace/`, story art, page
-  images, manuscripts, proof PDFs, print files, Waterfall/Pasta/Mark artifacts, and customer
-  Blob/Production order data — was never read, written, renamed, hashed, rendered, or inspected.
-  Abigail's regeneration runs were not touched.
-- Existing HSB worktrees were left alone; a new one was created for this lane.
-- `npm ci` installed into this worktree's own `node_modules` (gitignored, not committed).
+Untouched by design. They are only removed when their submission is deleted
+through the admin route, or by Lane C's separately-approved migration.
 
-## 7. Judgment calls a reviewer should rule on
+### 4. Admin routes leak id-shape validity before auth
 
-These are deliberate decisions, not oversights. Each is tested and reversible.
+`status/route.ts` and `sample/route.ts` shape-check `submissionId` and return
+`400 invalid_submission_id` **before** `isAdminRequestAuthed`, so an
+unauthenticated caller can distinguish a malformed id from a well-formed one.
+It discloses shape validity, not record existence. The parent-facing capability
+paths — the actual enumeration surface — are already uniformly 404 for
+malformed, unknown and miss, and a test now locks that in. I left the admin
+ordering alone: reordering it is not a compatibility change and so is outside
+the allowlist. Worth a follow-up.
 
-1. **Ambiguous print is exempt from the refund/internal-disposition filter.** The reconciliation
-   scopes refund exclusion to "stranded/manual-review incidents", and requirement 7 says refunds
-   must not alert *merely because* refund finalization uses `failed_manual_review`. Refunding a
-   customer does not un-submit a physical book, so an unreconciled provider submission still needs
-   an operator. If you want ambiguous print silenced on refunded orders, move the
-   `isPrintSubmissionAmbiguous` check below `isTerminalOrExcluded` in `classifyOrderIncident` and
-   below the refund early-return in `deriveOrderAttention`.
-2. **`submitting_to_print` is inside the stale-in-progress set**, not only the ambiguous path. The
-   prompt says "stale generating/building states"; a non-ambiguous order parked at
-   `submitting_to_print` is the same false-green hole. It is force-marked `retryable: false`.
-3. **Unset `fulfillmentMode` on an old paid `not_started` order is `data_quality_uncertain`**, not
-   `manual_hold_sla`. We genuinely cannot tell the routing intent, and inventing one would be a
-   guess. Consequence: legacy orders past 24 h will classify as data-quality and mark scans
-   degraded. That is the honest reading of the audit finding, but it is also the noisiest default
-   in this change.
-4. **`customer_review_wait_overdue` is a class the prompt implies rather than names.** Requirement
-   2 says customer waits are non-incidents "before their own threshold"; this is the after side.
-5. **`classifyPaidOrderOpsIssue` now returns a non-artifact issue kind.** The unmodified
-   `/api/admin/orders?opsIssue=paid_artifact` filter therefore now also surfaces ambiguous-print
-   orders. That is requirement 8 working, but the query-parameter name is now slightly narrower
-   than what it returns. Renaming it would require touching a file outside the allowlist.
-6. **`flags.paidWithoutArtifact` / `paidArtifactNeedsAttention` were re-derived from the issue
-   *kind*** rather than from "an issue exists", so an ambiguous-print order that *has* an artifact
-   does not get flagged as missing one. Existing semantics for all five original kinds are
-   unchanged and regression-tested.
-7. **Test `8a` was relaxed from "type-only imports" to "type-only, plus the pure classifier".**
-   The underlying invariant is reachability, and the classifier's own purity is separately asserted
-   in both files. Requirement 3 (a shared classifier) cannot coexist with a literal type-only rule.
-8. **Two source-level assertions now strip comments before matching.** Explaining *why* the
-   permissive list helper and external channels are forbidden requires naming them in prose; the
-   assertions must therefore test code, not documentation.
+### 5. `newSubmissionId()` lost its `now` parameter
 
-## 8. Residual activation gates — all still closed
+It took `now: Date = new Date()` for the timestamp prefix. With no timestamp
+there is nothing to inject. No caller passed it.
 
-Nothing in this change is live. Before any of it produces an operator alert:
+## Zero-side-effect attestation
 
-- **No cron exists.** Adding a `vercel.json` entry for `/api/internal/stranded-scan` remains the
-  final step, and per the reconciliation it comes only after a deterministic zero-send run proves
-  complete enumeration, taxonomy, deduplication and failure signaling.
-- **No external channel exists.** Recipient and cadence are activation-time operator configuration
-  awaiting Alexy's approval of the exact channel and cadence. The sink is `console.error` only.
-- **Route auth still requires `CRON_SECRET`**, which is unset by default → 503 fail-closed.
-- **Thresholds are unvalidated against real data.** They are conservative design defaults chosen
-  here, not operator-approved SLAs. New optional env overrides:
-  `HSB_INCIDENT_MANUAL_HOLD_SLA_HOURS`, `HSB_INCIDENT_STALE_IN_PROGRESS_MINUTES`,
-  `HSB_INCIDENT_LEASE_TTL_MINUTES`, `HSB_INCIDENT_CUSTOMER_WAIT_HOURS`. The pre-existing
-  `HSB_STRANDED_THRESHOLD_HOURS` and `HSB_STRANDED_ALERT_COOLDOWN_HOURS` keep their meanings.
-- **Order creation still does not set `auto`.** Per reconciliation decision 1, that was
-  deliberately not changed; `auto_not_started` will therefore match nothing until a workflow is
-  separately approved to designate `auto`. Unlike before, this is now one class out of eight rather
-  than the detector's entire coverage.
+For the duration of this task I did **not**:
 
-## 9. Known gaps this lane did not close
+- read, list, migrate, rewrite, delete or re-permission any existing Production
+  Blob object, or inspect any Production Blob record;
+- change Blob access mode, the private store, its env, or token selection;
+- touch any book-generation run, art, manuscript, proof, print PDF, page image,
+  customer order artifact or provider submission — nothing in Abby's HSB
+  regeneration work was accessed;
+- contact any customer or issue any review link;
+- call any upload or provider API (Stripe, Lulu, OpenAI/Gemini/fal, Resend);
+- push, open a PR, merge, deploy, alias, or take any external action.
 
-Stated plainly rather than left for a reviewer to find:
+Everything ran in the isolated worktree. `npm ci` installed dependencies there
+from the base lockfile; the main repo's working tree and `node_modules` were
+not modified — `git status` in `/Users/abigailclaw/herostorybooks-site` is
+clean and it remains on `fix/copy-chicago-not-california`.
 
-- **The cooldown blob is still `access: 'public'`** and still grows without pruning. Entries are
-  order ids and timestamps only, but the public default is a finding from the Slice 4a audit and
-  the unbounded growth is new pressure from per-incident (rather than per-order) keying. Both were
-  out of this lane's stated goal; neither is fixed here.
-- **`sendOperatorFailureAlert` in `src/lib/fulfillment.ts` is unchanged** and still contains
-  customer email and child name. This lane built the new redacted sink alongside it as instructed
-  and did not touch `fulfillment.ts`; retiring the old alert is separate work.
-- **No production data was used to validate the taxonomy.** Every case is synthetic. The audit's
-  claim that the taxonomy matches real stuck-order shapes has not been checked against live orders,
-  and doing so was outside the collision boundary.
+The e2e run boots a local `next start` on loopback with
+`BLOB_READ_WRITE_TOKEN`, `STRIPE_SECRET_KEY`, `RESEND_API_KEY`, `OPENAI_API_KEY`,
+`FAL_KEY`, `GEMINI_API_KEY`, `LULU_CLIENT_*` and `HSB_STRIPE_SECRET_KEY` all
+blanked by `playwright.config.ts`, against a throwaway `.e2e-store`. The new
+test suite stubs `globalThis.fetch` to throw and asserts it was never called.
 
-## 10. Stop point
-
-Work stopped at the local commit, as instructed. No push, no PR, no merge, no deploy, no schedule,
-no external action. The branch `cc/hsb-incident-observability-20260824` awaits independent
-exact-SHA review.
-
-## 11. Controller correction after first independent BLOCK
-
-The first independent review bound to `97441186adccb0e7a26074cb10dcb921791fc5ed`
-returned BLOCK with five findings. That target is superseded.
-
-Final cumulative code target:
-
-- commit: `41903733b2d50df2ab9558f0259a555bded1e474`
-- tree: `a66debd2e00a9e241de2c1dd167ddfd5107730e0`
-- parent: `97441186adccb0e7a26074cb10dcb921791fc5ed`
-
-Correction behavior:
-
-1. Unset `fulfillmentMode` is data-quality uncertainty immediately after
-   payment; it no longer waits 24 hours while appearing clean.
-2. Degraded scans now set `ok:false`, and the route returns HTTP 500 for either
-   `failed` or `degraded`.
-3. `safeErrorCode` uses a strict internal allowlist; provider IDs, secret-key
-   shapes, capability tokens and arbitrary bare identifiers map to
-   `unclassified`.
-4. Failure dedup identity uses fulfillment/email attempt-specific timestamps
-   and counters, never broad `updatedAt`. An unrelated order edit no longer
-   bypasses cooldown; a new attempt or email resend claim still does.
-5. `opsIssue=paid_artifact` retains its historical missing-artifact meaning.
-   Ambiguous print remains visible in attention and diagnostics but does not
-   silently enter that named filter.
-6. Future or malformed cooldown timestamps fail the scan before any alert.
-
-The controller extended scope by exactly one production route,
-`src/app/api/admin/orders/route.ts`, to preserve its existing query contract.
-No React admin page was changed.
-
-RED: the new blocker suite failed in each of the five required areas before
-production edits. GREEN: focused 96/96, full 1547/1547, build PASS, E2E 99/99,
-TypeScript remains the same pre-existing test-only diagnostic set,
-`git diff --check` is clean, and the added-line secret/debug/external-call scan
-found zero matches.
-
-Still closed: no cron, no external channel, no live order census, no approved
-thresholds/cadence, and cooldown storage is still public/unbounded. Nothing in
-this correction activates the route or performs an external action.
+**Stopped after the local commit, as instructed.**

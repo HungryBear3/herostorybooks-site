@@ -442,6 +442,23 @@ test('admin-auth helper enforces HttpOnly + SameSite=Strict in cookie options', 
   );
 });
 
+test('family-review admin auth fails closed when the admin key is absent', () => {
+  const auth = read(SOURCES.adminAuth);
+  const login = read(SOURCES.adminLoginApi);
+
+  assert.doesNotMatch(
+    auth,
+    /reviewer-preview/,
+    'admin auth must not contain a predictable fallback credential',
+  );
+  assert.match(auth, /expectedAdminKey\(\):\s*string\s*\|\s*null/);
+  assert.match(auth, /if\s*\(!expected\)\s*return false/);
+  assert.match(login, /if\s*\(!expected\)/);
+  assert.match(login, /admin_unavailable/);
+  assert.match(login, /status:\s*503/);
+  assert.match(login, /maxAge:\s*0/);
+});
+
 test('admin API routes authenticate via cookie helper, not query string or header', () => {
   for (const rel of [
     SOURCES.adminProxy,

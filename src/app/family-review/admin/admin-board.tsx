@@ -1344,10 +1344,13 @@ function RealWorkflow({
     pronoun: submission.child.pronoun,
     direction: submission.direction,
   });
-  const reviewUrl =
-    typeof window !== 'undefined'
+  const hasReviewToken =
+    typeof submission.reviewToken === 'string' && submission.reviewToken.length > 0;
+  const reviewUrl = hasReviewToken
+    ? typeof window !== 'undefined'
       ? `${window.location.origin}/family-review/review/${submission.reviewToken}`
-      : `/family-review/review/${submission.reviewToken}`;
+      : `/family-review/review/${submission.reviewToken}`
+    : null;
 
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [copyEmailState, setCopyEmailState] = useState<'idle' | 'copied'>('idle');
@@ -1357,7 +1360,9 @@ function RealWorkflow({
     (fb) => fb.submittedAt !== submission.feedback?.submittedAt,
   );
   const timeline = submissionTimeline(submission);
-  const sampleEmail = buildParentSampleEmail(submission, reviewUrl);
+  const sampleEmail = reviewUrl
+    ? buildParentSampleEmail(submission, reviewUrl)
+    : null;
   const readyToEmail = samplesReadyForParent(submission);
   // Admin auth rides on the fr_admin_session HttpOnly cookie. The
   // reviewer key is never read from the URL or stored in component
@@ -1366,6 +1371,7 @@ function RealWorkflow({
   // strip the cookie.
 
   const onCopy = async () => {
+    if (!reviewUrl) return;
     try {
       await navigator.clipboard.writeText(reviewUrl);
       setCopyState('copied');
@@ -1377,6 +1383,7 @@ function RealWorkflow({
   };
 
   const onCopyEmail = async () => {
+    if (!sampleEmail) return;
     try {
       await navigator.clipboard.writeText(
         `Subject: ${sampleEmail.subject}\n\n${sampleEmail.body}`,
@@ -1425,52 +1432,61 @@ function RealWorkflow({
         <div className="eyebrow forest" style={{ marginBottom: 8 }}>
           Parent review link
         </div>
-        <p className="help" style={{ marginBottom: 8 }}>
-          The parent&apos;s ONLY way to see their samples. Share by email
-          only. Anyone with this link sees the submission.
-        </p>
-        <code
-          className="mono"
-          onClick={(e) => {
-            const el = e.currentTarget;
-            const range = document.createRange();
-            range.selectNodeContents(el);
-            const sel = window.getSelection();
-            sel?.removeAllRanges();
-            sel?.addRange(range);
-          }}
-          style={{
-            display: 'block',
-            padding: 10,
-            background: 'var(--paper)',
-            border: '1px solid var(--line)',
-            borderRadius: 6,
-            fontSize: 11.5,
-            wordBreak: 'break-all',
-            cursor: 'text',
-            color: 'var(--ink-2)',
-          }}
-        >
-          {reviewUrl}
-        </code>
-        <div className="fr-row" style={{ gap: 8, marginTop: 10 }}>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={onCopy}
-          >
-            {copyState === 'copied' ? 'Copied' : 'Copy link'}
-          </button>
-          <a
-            href={reviewUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="btn btn-ghost btn-sm"
-            style={{ textDecoration: 'none', borderBottom: 'none' }}
-          >
-            Open as parent
-          </a>
-        </div>
+        {reviewUrl ? (
+          <>
+            <p className="help" style={{ marginBottom: 8 }}>
+              The parent&apos;s ONLY way to see their samples. Share by email
+              only. Anyone with this link sees the submission.
+            </p>
+            <code
+              className="mono"
+              onClick={(e) => {
+                const el = e.currentTarget;
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                const sel = window.getSelection();
+                sel?.removeAllRanges();
+                sel?.addRange(range);
+              }}
+              style={{
+                display: 'block',
+                padding: 10,
+                background: 'var(--paper)',
+                border: '1px solid var(--line)',
+                borderRadius: 6,
+                fontSize: 11.5,
+                wordBreak: 'break-all',
+                cursor: 'text',
+                color: 'var(--ink-2)',
+              }}
+            >
+              {reviewUrl}
+            </code>
+            <div className="fr-row" style={{ gap: 8, marginTop: 10 }}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={onCopy}
+              >
+                {copyState === 'copied' ? 'Copied' : 'Copy link'}
+              </button>
+              <a
+                href={reviewUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn-ghost btn-sm"
+                style={{ textDecoration: 'none', borderBottom: 'none' }}
+              >
+                Open as parent
+              </a>
+            </div>
+          </>
+        ) : (
+          <p className="help" style={{ marginBottom: 8, color: 'var(--ochre)' }}>
+            Review link was issued once at submission and is not recoverable from stored data.
+            Do not send a parent link from this board.
+          </p>
+        )}
         <div
           style={{
             marginTop: 12,
@@ -1493,9 +1509,11 @@ function RealWorkflow({
                   color: readyToEmail ? 'var(--forest)' : 'var(--ink-2)',
                 }}
               >
-                {readyToEmail
-                  ? 'Ready to send sample email'
-                  : 'Sample email draft waiting on uploads'}
+                {!sampleEmail
+                  ? 'Parent review link unavailable'
+                  : readyToEmail
+                    ? 'Ready to send sample email'
+                    : 'Sample email draft waiting on uploads'}
               </span>
               <span className="help">
                 {submission.samples.length}/3 samples uploaded · subject avoids
@@ -1506,9 +1524,11 @@ function RealWorkflow({
               type="button"
               className="btn btn-ghost btn-sm"
               onClick={onCopyEmail}
-              disabled={!readyToEmail}
+              disabled={!readyToEmail || !sampleEmail}
               title={
-                readyToEmail
+                !sampleEmail
+                  ? 'The parent link was issued once and is not stored'
+                  : readyToEmail
                   ? 'Copy subject and body for a manual parent email'
                   : 'Upload all three samples and mark samples ready first'
               }
@@ -1516,7 +1536,7 @@ function RealWorkflow({
               {copyEmailState === 'copied' ? 'Copied draft' : 'Copy email draft'}
             </button>
           </div>
-          {readyToEmail && (
+          {readyToEmail && sampleEmail && (
             <div
               className="mono"
               style={{
