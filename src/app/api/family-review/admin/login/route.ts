@@ -44,6 +44,23 @@ export async function POST(req: Request) {
   const provided = typeof body.key === 'string' ? body.key.trim() : '';
   const expected = expectedAdminKey();
 
+  if (!expected) {
+    const unavailable = NextResponse.json(
+      { ok: false, error: 'admin_unavailable' },
+      {
+        status: 503,
+        headers: { 'Cache-Control': 'no-store' },
+      },
+    );
+    unavailable.cookies.set({
+      name: ADMIN_COOKIE_NAME,
+      value: '',
+      ...adminCookieOptions(),
+      maxAge: 0,
+    });
+    return unavailable;
+  }
+
   if (
     !provided ||
     provided.length !== expected.length ||
