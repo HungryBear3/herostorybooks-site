@@ -32,16 +32,16 @@ import { cookies } from 'next/headers';
 export const ADMIN_COOKIE_NAME = 'fr_admin_session';
 export const ADMIN_COOKIE_MAX_AGE = 8 * 60 * 60; // 8 hours
 
-const DEFAULT_ADMIN_KEY = 'reviewer-preview';
-
-export function expectedAdminKey(): string {
-  return process.env.FAMILY_REVIEW_ADMIN_KEY || DEFAULT_ADMIN_KEY;
+export function expectedAdminKey(): string | null {
+  const configured = process.env.FAMILY_REVIEW_ADMIN_KEY;
+  return configured?.trim() || null;
 }
 
 /** True iff the env-defined key matches what the cookie carries. */
 function keysMatch(provided: string | undefined): boolean {
   if (!provided) return false;
   const expected = expectedAdminKey();
+  if (!expected) return false;
   // Constant-ish length compare; both sides are short server-only
   // strings so timing leakage isn't meaningful, but compare lengths
   // first so an early-exit on length mismatch is the only fast path.
