@@ -1,10 +1,11 @@
 /**
  * Chromium smoke for the machine-readable public surface: the catalog endpoint,
- * llms.txt, robots, and the sitemap.
+ * llms.txt, robots, the sitemap, and the homepage JSON-LD.
  *
  * The unit suites already prove the contract's contents. What only a real
- * server can prove is that these files are actually served, with the right
- * status, content type, and cache headers.
+ * server can prove is that these files are actually served — with the right
+ * status, content type, and cache headers — and that the JSON-LD survives
+ * server rendering into the delivered HTML.
  *
  * Hermetic: playwright.config.ts blanks every provider credential and points the
  * order store at a throwaway .e2e-store/, so nothing here can reach Stripe,
@@ -82,5 +83,35 @@ test('the sitemap lists only canonical production pages', async ({ request }) =>
     expect(loc, 'sitemap must not list a private route').not.toMatch(
       /\/(?:api|admin|checkout|order|review|status|thank-you|family-review)(?:\/|$)/,
     );
+  }
+});
+
+test('the homepage delivers parseable JSON-LD that matches the catalog', async ({ page }) => {
+  await page.goto('/');
+  const raw = await page.locator('script[type="application/ld+json"]').first().textContent();
+  expect(raw, 'homepage must render JSON-LD').toBeTruthy();
+
+  const graph = JSON.parse(raw!);
+  expect(graph['@context']).toBe('https://schema.org');
+
+  const offers = graph['@graph']
+    .filter((node: { '@type': string }) => node['@type'] === 'Product')
+    .map((node: { offers: { price: string; priceCurrency: string } }) => [
+      node.offers.price,
+      node.offers.priceCurrency,
+    ]);
+  expect(offers).toEqual(
+    PUBLIC_CATALOG.products.map((product) => [
+      (product.priceMinorUnits / 100).toFixed(2),
+      product.currency,
+    ]),
+  );
+});
+
+test('the visible homepage price equals the contract price', async ({ page }) => {
+  await page.goto('/');
+  const body = await page.locator('body').innerText();
+  for (const product of PUBLIC_CATALOG.products) {
+    expect(body, `${product.id} price missing from the page`).toContain(product.priceDisplay);
   }
 });
