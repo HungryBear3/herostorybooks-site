@@ -640,3 +640,38 @@ test('sanitizer preserves the photo asset shape and captures no filename', () =>
     'no filename-shaped field may be introduced',
   );
 });
+
+/* ── 10. Admin board never fabricates an unrecoverable parent URL ─────────── */
+
+test('admin board hides link and email affordances when no raw token is recoverable', () => {
+  const src = readFileSync(
+    resolve(process.cwd(), 'src/app/family-review/admin/admin-board.tsx'),
+    'utf8',
+  );
+
+  assert.match(
+    src,
+    /const hasReviewToken =\s*typeof submission\.reviewToken === 'string'\s*&&\s*submission\.reviewToken\.length > 0/,
+    'the board must distinguish one-time token echoes from generic tokenless admin records',
+  );
+  assert.match(
+    src,
+    /const reviewUrl = hasReviewToken[\s\S]*?: null;/,
+    'a missing token must produce no URL rather than /undefined',
+  );
+  assert.match(
+    src,
+    /Review link was issued once at submission and is not recoverable from stored data\./,
+    'the board must explain the intentional one-time issuance contract',
+  );
+  assert.match(
+    src,
+    /disabled=\{!readyToEmail \|\| !sampleEmail\}/,
+    'the parent-email affordance must stay disabled without a recoverable link',
+  );
+  assert.doesNotMatch(
+    src,
+    /const reviewUrl =\s*typeof window/,
+    'the board must never construct a review URL before proving a token exists',
+  );
+});
