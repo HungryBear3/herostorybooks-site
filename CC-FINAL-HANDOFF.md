@@ -9,15 +9,18 @@
 | `origin/main` at start | `ba3533bfaefc6c13cec4b55861b178db12605d1d` — **matched, no BASE_DRIFT** |
 | Worktree | `/Users/abigailclaw/cc-worktrees/hsb-family-review-privacy-20260824` |
 | Branch | `cc/hsb-family-review-privacy-20260824` |
-| Code commit (the one narrow commit) | `96a010f6adbf1abed3f010a276ae90a9bc33ac09` |
-| Code commit tree | `3ead614bfe07478b44aeb6070dde26665d0ff05a` |
-| HEAD | this file's own docs-only commit, sitting directly on top of `96a010f` |
-| Commits on top of base | 2 — one code commit, one docs-only commit adding this file. `git diff ba3533b..HEAD` outside `CC-FINAL-HANDOFF.md` is exactly the code commit. |
+| Initial code commit | `96a010f6adbf1abed3f010a276ae90a9bc33ac09` |
+| Initial code tree | `3ead614bfe07478b44aeb6070dde26665d0ff05a` |
+| Controller correction commit | `54fd9dd1fd5bb094c89d1f089c2e0acb9148cab4` |
+| Final cumulative code tree | `affba6f3a7d5adf359e55cf2e6f1b5902a9e04a2` |
+| Review target | `54fd9dd1fd5bb094c89d1f089c2e0acb9148cab4` (includes the initial code and the two-file admin-link correction) |
+| Commits on top of base before this final docs update | 3 — initial code, initial handoff docs, bounded controller correction. |
 | Pushed / PR'd / merged / deployed | **No.** Local commits only. |
 
-Review target is `96a010f6adbf1abed3f010a276ae90a9bc33ac09` (tree
-`3ead614bfe07478b44aeb6070dde26665d0ff05a`). The commit on top of it adds this
-file and nothing else.
+The final cumulative code review target is
+`54fd9dd1fd5bb094c89d1f089c2e0acb9148cab4` (tree
+`affba6f3a7d5adf359e55cf2e6f1b5902a9e04a2`). The earlier `96a010f` target is
+superseded.
 
 ## Changed paths
 
@@ -195,7 +198,7 @@ resolving to the wrong submission.
 
 ## Open items requiring a ruling
 
-### 1. BLOCKING — the admin board can no longer reproduce a parent's link
+### 1. RESOLVED BY CONTROLLER CORRECTION — tokenless admin records no longer fabricate a link
 
 This is the direct, spec-mandated consequence of requirement 4 ("preserve the
 raw token only in the immediate successful creation response"). Because the
@@ -212,18 +215,20 @@ For a NEW submission that now renders **`/family-review/review/undefined`**,
 and that broken URL is also interpolated into `buildParentSampleEmail(...)` —
 the email body a reviewer copies and sends to a parent.
 
-I did not fix it: `admin-board.tsx` is a component, not an API route, and is
-outside the stated allowlist. There is also no in-allowlist fix available — no
-stored value can produce the token. Options, in order of my preference:
+The controller extended the allowlist by exactly `admin-board.tsx` plus the
+existing focused token-privacy test. Correction `54fd9dd` now:
 
-1. Extend the allowlist by one file and have the board hide the copy-link and
-   sample-email affordances when `reviewToken` is absent, showing "link was
-   issued once at submission" instead. Small, honest, no capability restored.
-2. Lane C: a sealed token escrow (admin-decryptable) to restore the affordance.
-   Needs a key/env decision, which is a hard stop here.
+- proves a raw token exists before constructing a review URL;
+- renders no `/undefined` URL;
+- hides link/copy/open-parent affordances for tokenless generic admin records;
+- disables and suppresses the parent-email draft when no link is recoverable;
+- states truthfully that the link was issued once and is not stored.
 
-Until one of those lands, **the admin board should not be used to send links
-for submissions created after this change.**
+RED: the new test failed 24-pass/1-fail on the old board. GREEN: focused 62/62,
+full 1524/1524, build PASS, E2E 99/99, `git diff --check` clean, and the
+added-line secret/debug/external-call scan found zero matches. No escrow,
+storage, provider, customer or external action was added. A sealed escrow, if
+ever wanted, remains a separately designed Lane C decision.
 
 ### 2. PII still lives in the public submission record
 
