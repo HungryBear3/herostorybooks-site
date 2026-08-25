@@ -12,8 +12,8 @@ import { NextResponse } from 'next/server';
 import { isAdminRequestAuthed } from '@/lib/family-review/admin-auth';
 import {
   deleteBlob,
+  deleteReviewTokenIndexes,
   findById,
-  reviewTokenPath,
   submissionPath,
 } from '@/lib/family-review/store';
 import { isWellFormedSubmissionId } from '@/lib/family-review/tokens';
@@ -48,10 +48,15 @@ export async function DELETE(
     );
   }
 
+  // Token indexes first, and through the store helper: the record we
+  // hold has been normalized, so it no longer carries a plaintext token
+  // to build a legacy index path from. The helper recovers that address
+  // from the stored bytes, which must still exist at this point.
+  await deleteReviewTokenIndexes(submission);
+
   const paths = [
     ...submission.photos.assets.map((asset) => asset.blobPathname),
     ...submission.samples.map((asset) => asset.blobPathname),
-    reviewTokenPath(submission.reviewToken),
     submissionPath(submission.id),
   ];
 
