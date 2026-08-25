@@ -1,4 +1,28 @@
 {
+  "redirects": [
+    {
+      "source": "/",
+      "has": [
+        {
+          "type": "host",
+          "value": "www.herostorybooks.com"
+        }
+      ],
+      "destination": "https://herostorybooks.com/",
+      "permanent": true
+    },
+    {
+      "source": "/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "www.herostorybooks.com"
+        }
+      ],
+      "destination": "https://herostorybooks.com/:path*",
+      "permanent": true
+    }
+  ],
   "crons": [
     {
       "path": "/api/cron/fulfillment-sweep",
