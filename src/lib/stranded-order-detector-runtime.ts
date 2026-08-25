@@ -1,40 +1,51 @@
 /**
- * Default runtime wiring for the stranded-order detector.
+ * Default runtime wiring for the operator incident scan.
  *
- * This is the ONLY place the detector touches durable storage, and it touches
- * exactly one thing: the detector's own cooldown record at
- * `withBlobNamespace('ops/stranded-alert-state.json')`. It NEVER reads or writes
- * an order record here (order reads go through the read-only `listOrders`), and
- * it imports nothing from fulfillment, order-email, Stripe, or any order-write
- * helper. The default alert sink is the structured logging path; wiring an
- * external channel (email/Discord/etc.) is a separate, approval-gated change.
+ * This is the ONLY place the scan touches durable storage, and it touches
+ * exactly two things: the fail-closed authoritative order enumeration (read
+ * only) and the scan's own cooldown record at
+ * `withBlobNamespace('ops/stranded-alert-state.json')`. It never writes an
+ * order record, and it imports nothing from fulfillment, order-email, Stripe,
+ * or any order-write helper.
+ *
+ * ENUMERATION. Wired to `listOrdersAuthoritative`, never the permissive list
+ * helper. The permissive helper falls back to ephemeral filesystem storage when
+ * blob access fails, which turns a storage outage into `scanned: 0` and a clean
+ * HTTP 200 — the exact false-green this lane exists to remove. The authoritative
+ * helper paginates to exhaustion, re-reads each order through the version-bound
+ * path, and throws on cursor ambiguity so the scan fails closed.
+ *
+ * ALERT SINK. Local structured logging ONLY. Wiring an external channel (email,
+ * Discord, Slack, Telegram, webhook) and adding a cron schedule are separate,
+ * explicitly approval-gated changes and are deliberately absent here.
  */
 
 import { list, put } from '@vercel/blob';
 
-import { listOrders, withBlobNamespace } from './orders.ts';
-import type { AlertState, ScanDeps, StrandedAlert } from './stranded-order-detector.ts';
+import { listOrdersAuthoritative, withBlobNamespace } from './orders.ts';
+import { DEFAULT_INCIDENT_THRESHOLDS, type IncidentThresholds } from './order-incident.ts';
+import type { AlertState, OperatorIncidentAlert, ScanDeps } from './stranded-order-detector.ts';
 
 const ALERT_STATE_KEY = 'ops/stranded-alert-state.json';
 
 // Conservative defaults. Intentionally long so a normally-progressing order or a
 // transient serverless kickoff-retry window has elapsed before we alert. All are
 // env-overridable; none are activated by this change.
-const DEFAULT_THRESHOLD_HOURS = 12;
 const DEFAULT_COOLDOWN_HOURS = 24;
 const HOUR_MS = 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
 
 export interface DetectorConfig {
-  thresholdMs: number;
   cooldownMs: number;
+  thresholds: IncidentThresholds;
   excludeOrderIds: ReadonlySet<string>;
 }
 
-function parsePositiveHours(raw: string | undefined, fallbackHours: number): number {
-  if (!raw) return fallbackHours * HOUR_MS;
+function parseDurationMs(raw: string | undefined, fallbackMs: number, unitMs: number): number {
+  if (!raw) return fallbackMs;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return fallbackHours * HOUR_MS;
-  return n * HOUR_MS;
+  if (!Number.isFinite(n) || n < 0) return fallbackMs;
+  return n * unitMs;
 }
 
 export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DetectorConfig {
@@ -46,8 +57,36 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Detecto
       .filter(Boolean),
   );
   return {
-    thresholdMs: parsePositiveHours(env.HSB_STRANDED_THRESHOLD_HOURS, DEFAULT_THRESHOLD_HOURS),
-    cooldownMs: parsePositiveHours(env.HSB_STRANDED_ALERT_COOLDOWN_HOURS, DEFAULT_COOLDOWN_HOURS),
+    cooldownMs: parseDurationMs(env.HSB_STRANDED_ALERT_COOLDOWN_HOURS, DEFAULT_COOLDOWN_HOURS * HOUR_MS, HOUR_MS),
+    thresholds: {
+      // `HSB_STRANDED_THRESHOLD_HOURS` kept its original meaning: how long an
+      // explicit `auto` order may sit unstarted.
+      autoNotStartedMs: parseDurationMs(
+        env.HSB_STRANDED_THRESHOLD_HOURS,
+        DEFAULT_INCIDENT_THRESHOLDS.autoNotStartedMs,
+        HOUR_MS,
+      ),
+      manualHoldMs: parseDurationMs(
+        env.HSB_INCIDENT_MANUAL_HOLD_SLA_HOURS,
+        DEFAULT_INCIDENT_THRESHOLDS.manualHoldMs,
+        HOUR_MS,
+      ),
+      staleInProgressMs: parseDurationMs(
+        env.HSB_INCIDENT_STALE_IN_PROGRESS_MINUTES,
+        DEFAULT_INCIDENT_THRESHOLDS.staleInProgressMs,
+        MINUTE_MS,
+      ),
+      leaseTtlMs: parseDurationMs(
+        env.HSB_INCIDENT_LEASE_TTL_MINUTES,
+        DEFAULT_INCIDENT_THRESHOLDS.leaseTtlMs,
+        MINUTE_MS,
+      ),
+      customerWaitMs: parseDurationMs(
+        env.HSB_INCIDENT_CUSTOMER_WAIT_HOURS,
+        DEFAULT_INCIDENT_THRESHOLDS.customerWaitMs,
+        HOUR_MS,
+      ),
+    },
     excludeOrderIds,
   };
 }
@@ -57,8 +96,8 @@ function getBlobToken(): string | undefined {
 }
 
 /**
- * Read the detector's own cooldown record. Fails CLOSED: with no blob token in a
- * production-like env we throw so `runStrandedScan` aborts before alerting
+ * Read the scan's own cooldown record. Fails CLOSED: with no blob token in a
+ * production-like env we throw so `runIncidentScan` aborts before alerting
  * against an unknown cooldown state. A genuinely-absent record (cold start) is
  * NOT a failure — it returns empty state.
  */
@@ -68,8 +107,8 @@ async function readAlertState(): Promise<AlertState> {
     throw new Error('BLOB_READ_WRITE_TOKEN missing — refusing to scan without cooldown storage');
   }
   const key = withBlobNamespace(ALERT_STATE_KEY);
-  // Mirror the codebase read pattern (orders.ts): list to locate the blob,
-  // then fetch its url. A genuinely-absent record (cold start) → empty state.
+  // Mirror the codebase read pattern: list to locate the blob, then fetch its
+  // url. A genuinely-absent record (cold start) → empty state.
   const { blobs } = await list({ prefix: key, token });
   const blob = blobs.find((b) => b.pathname === key);
   if (!blob?.url) return {};
@@ -100,25 +139,33 @@ function isAlertState(v: unknown): v is AlertState {
 }
 
 /**
- * Default internal alert sink: the structured LOGGING path. Emits a single
- * redacted, greppable line an ops log drain can pick up. No external send.
+ * The redacted operator incident sink: local structured LOGGING only.
+ *
+ * Emits a single greppable line an ops log drain can pick up. There is no
+ * external send here by design — the previous `sendOperatorFailureAlert` in the
+ * fulfillment module embeds customer email and child name, asserts the wrong
+ * state, and carries no incident idempotency key, so it is deliberately NOT
+ * reused. Recipient and cadence remain activation-time operator configuration.
+ *
+ * The payload is already vetted by the shared classifier; this function adds
+ * nothing to it.
  */
-function defaultAlertSink(payload: StrandedAlert): Promise<void> {
+function defaultIncidentSink(payload: OperatorIncidentAlert): Promise<void> {
   // eslint-disable-next-line no-console
-  console.error(`[stranded-scan][ALERT] ${JSON.stringify(payload)}`);
+  console.error(`[incident-scan][ALERT] ${JSON.stringify(payload)}`);
   return Promise.resolve();
 }
 
 export function buildDefaultDeps(config: DetectorConfig = loadConfigFromEnv()): ScanDeps {
   return {
-    listOrders,
+    listOrdersAuthoritative: () => listOrdersAuthoritative(),
     readAlertState,
     writeAlertState,
-    alert: defaultAlertSink,
+    alert: defaultIncidentSink,
     log: (line: string) => console.log(line),
     now: () => Date.now(),
-    thresholdMs: config.thresholdMs,
     cooldownMs: config.cooldownMs,
+    thresholds: config.thresholds,
     excludeOrderIds: config.excludeOrderIds,
   };
 }
