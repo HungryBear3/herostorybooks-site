@@ -33,8 +33,12 @@ export const ALLOWED_IMAGE_MIME: Record<string, string> = {
  *   image/jpg  → image/jpeg   (two spellings of one format)
  *   image/heif → image/heic   (one ISOBMFF container; the sniffer
  *                              reports every ftyp brand as image/heic)
+ *
+ * Exported because the asset migration compares a record's RECORDED mime
+ * against the type sniffed from the source bytes, and must apply exactly
+ * the same equivalence the upload path does.
  */
-function canonicalMime(mime: string): string {
+export function canonicalImageMime(mime: string): string {
   if (mime === 'image/jpg') return 'image/jpeg';
   if (mime === 'image/heif') return 'image/heic';
   return mime;
@@ -98,7 +102,7 @@ export async function resolveUploadImageType(
     // No usable declaration — trust the bytes.
     return sniffed;
   }
-  if (canonicalMime(file.type) !== sniffed.mime) {
+  if (canonicalImageMime(file.type) !== sniffed.mime) {
     // Declared type contradicts the bytes: content-type spoof.
     return null;
   }

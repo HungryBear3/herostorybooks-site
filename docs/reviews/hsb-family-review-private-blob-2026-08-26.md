@@ -219,6 +219,53 @@ in the source store. The `blobUrl` recorded on a legacy asset is treated as
 **untrusted** and is never fetched: it is drift- or tamper-influenced data that
 could point at another store entirely. The script contains no raw `fetch()`.
 
+### 6.3a Streaming, not buffering
+
+The 25 MB ceiling is enforced **while bytes move**, not after they land.
+
+`meterAndSniff()` peeks just enough leading bytes to identify the format, then
+hands back a stream that hashes and counts each chunk as it is consumed and
+`controller.error()`s — cancelling the upstream reader — the moment the ceiling
+is passed. The destination `put()` receives that stream directly, so an
+oversized or hostile object is cut off mid-flight instead of being read whole
+into memory and rejected afterwards. `multipart: true` plus
+`maximumSizeInBytes` gives the SDK a second, independent ceiling behind the
+metering transform.
+
+The verification read-back uses `digestStream()`, which hashes and counts as
+chunks arrive and retains only the leading sniff bytes. **No code path
+materialises a whole asset** — asserted by a test that forbids `arrayBuffer()`,
+`.text()`, and `Buffer.from` anywhere in the copy path.
+
+This matters beyond memory pressure: the previous revision read the entire
+object and *then* compared its length, so the ceiling protected nothing that
+had not already been paid for.
+
+### 6.3b Content type is sniffed, not echoed
+
+The previous revision wrote `contentType: asset.mime` and then "verified" the
+copy by checking that the destination reported that same mime back. That
+confirms only that the SDK echoes the header it was handed — it is bookkeeping,
+not verification, and it would happily propagate a record whose declared type
+had nothing to do with its bytes.
+
+Now:
+
+1. the type is **sniffed from the source bytes** via the same magic-byte
+   detector both upload routes use;
+2. the record's declared mime must **agree** with those bytes, applying the same
+   `image/jpg -> image/jpeg` and `image/heif -> image/heic` equivalences, or the
+   asset fails `content_type_mismatch`;
+3. bytes matching no supported format fail `source_type_unrecognized`, whatever
+   the record claims;
+4. the **sniffed** type is what gets written to the destination;
+5. after the copy, the destination object's **own leading bytes are re-sniffed**
+   and must agree — a content check, not a header check.
+
+The streamed length is also compared against the record's declared `size`, so a
+source object that changed under the migration fails `size_mismatch` rather than
+being silently copied.
+
 ### 6.4 Order of operations, per submission
 
 1. **source read** — bytes by pathname, source token
@@ -245,31 +292,108 @@ Source reclamation stays a separate, separately-authorized operation. Any
 `--delete` / `--purge` / `--remove` / `--drop` flag exits non-zero, and the
 Blob delete API is neither called nor imported.
 
-## 7. Idempotency and resumability
+### 6.6 A truncated enumeration is a hard failure
+
+Paging over the submissions prefix is bounded (40 pages x 250). If that budget
+is exhausted while the store still reports `hasMore` with a cursor, the run
+**aborts with exit code 5** instead of returning a short list.
+
+A silently-truncated enumeration is the most dangerous possible outcome here: it
+looks exactly like a completed migration — zero failures, a clean tally — while
+leaving records behind that an operator would then believe were migrated. The
+error names the pages scanned and objects seen, and tells the operator to raise
+the budget or narrow the run with `--submission=<id>`.
+
+## 7. Idempotency, resumability, and checkpoint binding
 
 Cutover state lives in the **destination** store at
 `{ns}/family-review/cutover/{submissionId}.json`:
 
 ```jsonc
-{ "submissionId": "fr-…", "assetsVerified": ["a-…"], "recordWritten": true,
-  "completedAt": "…" }
+{
+  "version": 1,
+  "submissionId": "fr-...",
+  "recordFingerprint": "<sha256 of the record's asset shape>",
+  "assetsVerified": [
+    { "kind": "photo", "assetId": "a-...", "pathname": "...",
+      "size": 1234, "mime": "image/jpeg", "sourceSha256": "<64 hex>" }
+  ],
+  "recordWritten": true,
+  "completedAt": "..."
+}
 ```
 
-- **Per-asset checkpoint.** State is written immediately after each asset is
-  verified, so an interruption on asset N never recopies assets 1…N-1.
-- **Completed submissions are skipped** wholesale on a later run.
-- **The readiness gate is set-based**, not a count: the record is withheld
-  unless every asset id on the record appears in `assetsVerified`. Unrelated or
-  stale ids cannot satisfy it.
-- **A crash between copy and record-write** leaves assets verified and the
-  record unwritten; the next run writes only the record. A crash before
-  verification simply recopies that one asset — the destination write is an
-  overwrite of the same pathname, so a retry is safe.
-- State is never written to the source store, and never read from it.
+### 7.1 What a checkpoint is bound to
 
-Vercel Blob's `list`/`head` do not expose an object's access mode, so the record
-and the cutover state — not the object listing — are the source of truth for
-what has migrated. That is a deliberate design point.
+A checkpoint is never a bare "this id is done". Every entry carries the asset's
+**full identity** — `{kind, assetId, pathname, size, mime, sourceSha256}` — and
+the state as a whole is bound to the submission id and a deterministic
+**record fingerprint**.
+
+The fingerprint is a sha256 over the submission id plus the sorted identity of
+every asset, so anything added, removed, repointed, resized, or retyped changes
+it. It deliberately **excludes** volatile fields (`updatedAt`, `status`,
+`feedback`): those change constantly through normal admin work and must not
+throw away a half-finished copy.
+
+The identity key is `kind:assetId`, **not** `assetId`. A photo and a sample may
+legitimately share an asset id while living at different pathnames; keying on
+the id alone would let one copy mark both verified and quietly skip a real
+object.
+
+### 7.2 What is rejected, and what happens then
+
+`validateCutoverState()` revalidates the binding on every run and discards
+anything it cannot stand behind:
+
+| Condition | Reason code | Effect |
+|---|---|---|
+| Not an object / missing fields | `state_malformed` | whole state discarded |
+| `version` is not 1 | `state_version_unknown` | whole state discarded |
+| `submissionId` names another submission | `state_foreign_submission` | whole state discarded |
+| Fingerprint does not match the record | `record_changed` | whole state discarded |
+| `assetsVerified` is not an array | `state_malformed` | whole state discarded |
+| Entry is not identity-shaped, or its hash is not 64 hex | `entry_malformed` | that entry dropped |
+| Entry repeats a key already seen | `entry_duplicate` | the repeat dropped |
+| Entry names an asset not on the record | `entry_not_on_record` | that entry dropped |
+| Entry's identity differs from the record's | `entry_identity_mismatch` | that entry dropped |
+| `completedAt` present without full revalidated coverage | `completion_revoked` | completion dropped |
+
+Discarding is safe: a dropped entry simply means that asset is copied again, and
+a destination write is an overwrite of the same pathname. Reason codes are
+logged; state **contents** never are.
+
+A record carrying a genuinely duplicated identity (the same `kind:assetId`
+twice) is refused outright, before state is even read — there is no single
+object a checkpoint could describe.
+
+### 7.3 completedAt is never taken at face value
+
+`completedAt` survives a run only when the state validates, `recordWritten` is
+true, **and** every asset identity on the current record has a matching verified
+entry. A record with no assets can never be marked complete. The migration reads
+`completedAt` only from the validated result, never from the raw file.
+
+### 7.4 Crash behaviour
+
+- **Crash mid-asset** — that asset has no checkpoint; it is recopied. Assets
+  before it are skipped.
+- **Crash between copy and record write** — all assets verified, record
+  unwritten; the next run writes only the record.
+- **Record changed between runs** — fingerprint mismatch; everything is recopied
+  and the stale completion is revoked.
+- **State file tampered or truncated** — the untrustworthy parts are dropped and
+  recopied.
+
+### 7.5 Known limit
+
+A source object whose **bytes** change while its declared `size` and `mime` stay
+identical is not detected on resume for an already-verified asset: the record is
+the only cheap witness, and re-reading every source object on every run would
+defeat resumability. The copy path *does* catch it at the moment of copying (the
+streamed length is compared to the record, and the destination is verified
+against the streamed hash), and `sourceSha256` is retained in state so a future
+re-verify pass can catch it retroactively. Stated here rather than implied.
 
 ## 8. Deletion and rollback
 
@@ -350,6 +474,15 @@ already forbids interpolating `${pathname}` into logs and that guard stands.
 - Migration with a missing, malformed, or **aliased** store credential → exit
   non-zero before reading anything, in dry run as well as apply (§6.2). There
   is no ambient-token fallback.
+- Asset exceeding 25 MB → the stream errors mid-flight and the asset fails
+  `too_large`; it is never buffered whole first (§6.3a).
+- Source bytes matching no supported image type, or contradicting the record's
+  declared mime → `source_type_unrecognized` / `content_type_mismatch`. Never
+  relabelled, never copied (§6.3b).
+- Source enumeration exhausting its page budget with more results pending →
+  exit code 5. A partial scan is never reported as a completed run (§6.6).
+- Cutover state that does not revalidate against its binding → discarded, and
+  the affected assets are recopied (§7.2).
 - **Default on merge is `public`** — i.e. exactly today's behavior — because
   of §1.4. Merging this PR changes no runtime behavior until an operator
   provisions a private store and flips the flag.
@@ -371,14 +504,15 @@ $ node --experimental-strip-types --test tests/family-review-image-type.test.ts
   tests 6 | pass 6 | fail 0
 
 $ node --experimental-strip-types --test tests/family-review-asset-migration.test.ts
-  tests 39 | pass 39 | fail 0
+  tests 72 | pass 72 | fail 0
 
 $ node --experimental-strip-types --test tests/family-review-asset-access-control.test.ts
   tests 17 | pass 17 | fail 0
 ```
 
-The migration suite grew from 15 to 39 with the cross-store rewrite. What the
-new cases prove:
+The migration suite is now 72 cases (15 -> 39 with the cross-store rewrite,
+39 -> 72 with checkpoint binding, streaming, sniffing, and enumeration). What
+they prove:
 
 | Guarantee | How it is proven |
 |---|---|
@@ -390,6 +524,14 @@ new cases prove:
 | Verification is not self-confirming | The read-back inside `copyAndVerify` must use `destToken`, and compares content type, size, and sha256. |
 | Credentials never surface | `redactTokens` is exercised on real token-shaped strings; no `console.*` line may interpolate `sourceToken`/`destToken`; the report block may not contain either, nor any URL, pathname, or PII field. |
 | Source is never deleted | Seven deletion-shaped flags refused; `del` neither called nor imported. |
+| The ceiling is enforced **while streaming** | A counting source offers 10 000 bytes against a 1 000-byte ceiling; the test asserts the stream errors, `settled` rejects, and **the source produced fewer than 200 of 1 000 chunks** — proving early cancellation rather than buffer-then-reject. Same for the read-back via `digestStream`. A separate test forbids `arrayBuffer()`, `.text()`, and `Buffer.from` anywhere in the copy path. |
+| Content type comes from bytes | PNG bytes recorded as `image/jpeg` fail `content_type_mismatch`; HTML bytes fail `source_type_unrecognized` under every claimed type; agreeing records pass, and `image/jpg` is not treated as a spoof. Source asserts the write uses `sniffed.mime`, never `identity.mime`, and that the destination's own bytes are re-sniffed. |
+| A truncated enumeration fails loudly | A pager that always reports `hasMore` throws `EnumerationTruncatedError` carrying pages scanned and objects seen; an in-budget scan returns everything; `hasMore` with no cursor ends cleanly rather than throwing; source asserts exit code 5. |
+| Checkpoints are bound, not bare ids | Foreign submission, unknown version, malformed state, non-array `assetsVerified`, bad/short/uppercase hashes, non-object entries, entries not on the record, and drifted identities are each rejected with their own reason code. |
+| A changed record invalidates the checkpoint | A replaced sample and a resized photo each flip the fingerprint, discard the whole checkpoint, and force a full recopy. |
+| Reused ids across kinds are distinct assets | The same `assetId` on a photo and a sample yields two identity keys; verifying the photo leaves the sample pending and the readiness gate closed. A genuinely duplicated identity on one record is detected and the record refused before state is read. |
+| `completedAt` is re-derived | Completion is revoked when coverage is partial, when `recordWritten` is false, and for an empty record; source asserts it is read only from validated state. |
+| The fingerprint is stable under normal work | Deterministic, order-independent, changes on any identity change, and unchanged by `updatedAt` / `status` / `feedback`. |
 
 ### Tests changed, and why that is not weakening
 
@@ -403,8 +545,8 @@ Each now asserts the same guarantee against the new mechanism, and two gained an
 | `parent sample proxy 404s wrong token or wrong asset id` | `match(/fetch\(sample\.blobUrl/)` | `match(/await openAsset\(sample\)/)` **plus** a new `doesNotMatch(/fetch\(sample\.blobUrl/)`. |
 | `family-review photo picker … mobile image mime variants` | asserted `resolveImageType`, `image/jpg`, and the no-filename comment in the upload route | asserts the route calls `resolveUploadImageType`, and asserts `image/jpg` tolerance, the no-filename guarantee, **and** a new `doesNotMatch(/file\.name/)` in the shared module that now owns them. |
 
-`tests/family-review-asset-migration.test.ts` was rewritten wholesale for the
-cross-store model (15 → 39 cases). Nothing it previously asserted was dropped:
+`tests/family-review-asset-migration.test.ts` was rewritten again for the bound
+checkpoint model (39 → 72 cases). Nothing it previously asserted was dropped:
 the dry-run default, the three-part confirmation, every partial path to
 production, deletion refusal, bounded scoped enumeration, verification content,
 and redacted reporting all survive, with the source/destination, aliasing,
@@ -416,7 +558,7 @@ No privacy or auth control was relaxed to make anything pass.
 
 ```
 $ npm test
-  tests 1701 | pass 1701 | fail 0
+  tests 1734 | pass 1734 | fail 0
 ```
 
 ### Build
@@ -450,16 +592,25 @@ $ npx playwright test --project=desktop-chromium \
 Neither store was contacted. No `FAMILY_REVIEW_SOURCE_BLOB_TOKEN`,
 `FAMILY_REVIEW_DEST_BLOB_TOKEN`, or `BLOB_READ_WRITE_TOKEN` was used, and the
 private read/write path has still **never been exercised against a live Vercel
-Blob store**. Every private-path and cross-store test asserts fail-closed
-behavior, credential wiring, and call ordering — not that `access:'private'`
-succeeds, and not that a real two-store copy round-trips. Per §1.4 the
-Production store could not serve it today regardless. First real exercise must
-be a Preview deployment against a genuinely separate private store. See §14.
+Blob store**.
+
+The streaming, hashing, sniffing, truncation, and checkpoint-binding logic is
+tested against real in-process streams and real state objects, so that logic is
+genuinely exercised. What is *not* exercised is the SDK boundary: that
+`access:'private'` succeeds, that `put()` accepts a `ReadableStream` body with
+`multipart: true` against a real store, that `get()` returns a stream whose
+`contentType` matches what was written, and that a real two-store copy
+round-trips. Per §1.4 the Production store could not serve any of it today
+regardless. First real exercise must be a Preview deployment against a genuinely
+separate private store. See §14.
 
 ## 14. Residual risk
 
-1. **Unproven against live stores.** No two-store copy has ever run. Phase 3–4
-   is the first real exercise, and it must be Preview-only.
+1. **Unproven at the SDK boundary.** No two-store copy has ever run. In
+   particular the streamed `put()` (`ReadableStream` body + `multipart: true` +
+   `maximumSizeInBytes`) is untested against a real store; if the SDK buffers a
+   stream internally, the in-process ceiling still fires but the memory benefit
+   may not materialise. Phase 3-4 is the first real exercise, Preview only.
 2. **The Production store cannot serve private objects today** (§1.4);
    provisioning the private destination store is an operator action.
 3. **Legacy public objects are not reclaimed.** The cutover only adds to the
@@ -469,14 +620,23 @@ be a Preview deployment against a genuinely separate private store. See §14.
    already handed out.
 4. **Edge-cached copies of legacy photos** may persist ~1 year (F-1)
    independent of any origin deletion. No cache purge is implemented.
-5. **Token format assumption.** Aliasing detection parses
+5. **A silent byte change to an already-verified source object** is not detected
+   on resume when the record's declared size and mime are unchanged (§7.5). It
+   *is* caught at copy time; `sourceSha256` is retained so a future re-verify
+   pass can catch it retroactively.
+6. **Token format assumption.** Aliasing detection parses
    `vercel_blob_rw_<storeId>_<secret>`. If Vercel changes that format, tokens
    stop parsing and the utility **refuses to run** — it fails closed, not open —
-   but the format should be re-confirmed before a Production cutover.
-6. **A partially-migrated submission is readable from neither store as a whole**
-   until its record is written: assets exist in the destination while the record
-   still lives in the source. During cutover the app must keep pointing at the
-   source store; only flip it after the migration reports zero failures.
-7. **F-7 (legacy raw-token index pathnames) is untouched** — out of scope, still
+   but re-confirm before a Production cutover.
+7. **A partially-migrated submission spans both stores** (assets in the
+   destination, record still in the source) until its record is written. Keep
+   the app pointed at the source during cutover; flip only after the migration
+   reports zero failures.
+8. **Legacy assets whose bytes are not a supported image** will fail
+   `source_type_unrecognized` and block their record from completing. That is
+   deliberate — such an object should be looked at, not copied — but it means an
+   operator may need to triage individual records rather than expecting a clean
+   sweep.
+9. **F-7 (legacy raw-token index pathnames) is untouched** — out of scope, still
    on its bounded-compatibility path.
-8. **No linter ran** (§13).
+10. **No linter ran** (§13).
