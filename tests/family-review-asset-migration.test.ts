@@ -38,6 +38,8 @@ import {
   parseArgs,
   recordIsReady,
   redactTokens,
+  sourceGetOptions,
+  destGetOptions,
   pathnameMatchesIdentity,
   revalidateCheckpointedAsset,
   revalidateCheckpoints,
@@ -258,12 +260,26 @@ test('every SDK call names the store it talks to - none rides an ambient token',
     const calls = callArgs(src, fn);
     assert.ok(calls.length > 0, `${fn}() must be called at least once`);
     for (const args of calls) {
+      // Either an inline `token: creds.x`, or one of the side-specific
+      // option builders, which carry the token themselves.
       assert.match(
         args,
-        /token:\s*creds\.(sourceToken|destToken)/,
-        `every ${fn}() must pass an explicit store token. Offending: ${args.slice(0, 160)}`,
+        /token:\s*creds\.(sourceToken|destToken)|(?:source|dest)GetOptions\(creds\.(?:source|dest)Token\)/,
+        `every ${fn}() must name its store. Offending: ${args.slice(0, 160)}`,
       );
     }
+  }
+});
+
+test('an option builder is never handed the other side\'s token', () => {
+  const src = stripComments(migrationSource());
+  assert.doesNotMatch(src, /sourceGetOptions\(\s*creds\.destToken/);
+  assert.doesNotMatch(src, /destGetOptions\(\s*creds\.sourceToken/);
+  // And every builder call site uses the matching credential.
+  const uses = [...src.matchAll(/(source|dest)GetOptions\(creds\.(source|dest)Token\)/g)];
+  assert.ok(uses.length >= 6, `expected every read to use a builder, found ${uses.length}`);
+  for (const m of uses) {
+    assert.equal(m[1], m[2], `mismatched builder/token pairing: ${m[0]}`);
   }
 });
 
@@ -1369,12 +1385,10 @@ test('revalidation reads each side through its own credential', () => {
     src.indexOf('function destReader('),
     src.indexOf('/* -- Copy + verify -- */'),
   );
-  assert.match(sourceFn, /access: 'public'/);
-  assert.match(sourceFn, /token: creds\.sourceToken/);
-  assert.doesNotMatch(sourceFn, /destToken/);
-  assert.match(destFn, /access: 'private'/);
-  assert.match(destFn, /token: creds\.destToken/);
-  assert.doesNotMatch(destFn, /sourceToken/);
+  assert.match(sourceFn, /sourceGetOptions\(creds\.sourceToken\)/);
+  assert.doesNotMatch(sourceFn, /destToken|destGetOptions/);
+  assert.match(destFn, /destGetOptions\(creds\.destToken\)/);
+  assert.doesNotMatch(destFn, /sourceToken|sourceGetOptions/);
 });
 
 /* == 19. The source stream is released when MIME validation fails ======== */
@@ -1416,5 +1430,130 @@ test('the copy path cancels the metered body on a MIME failure before put', () =
     copyBody.slice(verdictIdx, putIdx),
     /await metered\.body\.cancel\(\)/,
     'the source stream must be released before returning',
+  );
+});
+
+/* == 20. SDK compatibility: useCache is private-only ===================== */
+
+/**
+ * Preview soak, 2026-08-26: a PUBLIC `get()` carrying `useCache: false`
+ * returned HTTP 400; the same object returned 200 once the field was
+ * dropped. The SDK documents `useCache` as effective only for private
+ * blobs and ignored for public ones, so on the public side it bought
+ * nothing and cost the entire read.
+ */
+
+test('public-source read options carry NO useCache at all', () => {
+  const opts = sourceGetOptions('vercel_blob_rw_SourceStore01_secretsecret');
+  assert.equal(opts.access, 'public');
+  assert.equal(opts.token, 'vercel_blob_rw_SourceStore01_secretsecret');
+  assert.ok(
+    !('useCache' in opts),
+    'useCache on a public read is rejected by Vercel Blob with HTTP 400',
+  );
+  assert.deepEqual(
+    Object.keys(opts).sort(),
+    ['access', 'token'],
+    'exact shape pin: a new field here would be a new 400 risk',
+  );
+});
+
+test('private-destination read options RETAIN useCache: false', () => {
+  const opts = destGetOptions('vercel_blob_rw_DestStore99_secretsecret');
+  assert.equal(opts.access, 'private');
+  assert.equal(opts.token, 'vercel_blob_rw_DestStore99_secretsecret');
+  assert.equal(
+    opts.useCache,
+    false,
+    'a private read must bypass the CDN, or a verification read-back could be answered from a stale copy',
+  );
+  assert.deepEqual(Object.keys(opts).sort(), ['access', 'token', 'useCache']);
+});
+
+test('the two builders can never be confused for one another', () => {
+  const a = sourceGetOptions('t1');
+  const b = destGetOptions('t2');
+  assert.notEqual(a.access, b.access, 'access modes must be disjoint');
+  assert.equal(a.access, 'public');
+  assert.equal(b.access, 'private');
+  // The builder fixes the access mode; the CALL SITE supplies the token,
+  // so pairing is asserted structurally in the companion test above.
+  assert.equal(sourceGetOptions('anything').access, 'public');
+  assert.equal(destGetOptions('anything').access, 'private');
+});
+
+test('no public read anywhere in the migration passes useCache', () => {
+  const src = stripComments(migrationSource());
+  for (const args of callArgs(src, 'get')) {
+    if (/access:\s*'public'|sourceGetOptions/.test(args)) {
+      assert.doesNotMatch(
+        args,
+        /useCache/,
+        `a public read must not carry useCache. Offending: ${args.slice(0, 160)}`,
+      );
+    }
+  }
+  // And the builder itself never grows one.
+  const builder = src.slice(
+    src.indexOf('export function sourceGetOptions'),
+    src.indexOf('export function destGetOptions'),
+  );
+  assert.doesNotMatch(builder, /useCache/);
+});
+
+test('every private read still passes useCache: false', () => {
+  const src = stripComments(migrationSource());
+  const builder = src.slice(
+    src.indexOf('export function destGetOptions'),
+    src.indexOf('/* -- Args -- */'),
+  );
+  assert.match(builder, /useCache: false/);
+  // No private read may bypass the builder and lose the setting.
+  for (const args of callArgs(src, 'get')) {
+    if (/access:\s*'private'/.test(args)) {
+      assert.match(
+        args,
+        /useCache:\s*false/,
+        `an inline private read must keep useCache:false. Offending: ${args.slice(0, 160)}`,
+      );
+    }
+  }
+});
+
+test('every migration read goes through a builder, none inline', () => {
+  const src = stripComments(migrationSource());
+  const calls = callArgs(src, 'get');
+  assert.ok(calls.length >= 6, `expected at least 6 reads, found ${calls.length}`);
+  for (const args of calls) {
+    assert.match(
+      args,
+      /(source|dest)GetOptions\(/,
+      `inline read options bypass the one place the useCache rule lives: ${args.slice(0, 160)}`,
+    );
+  }
+});
+
+test('the app record read only sends useCache on the private attempt', () => {
+  // store.ts reads the record JSON with whichever access mode is
+  // configured. Passing useCache on the public attempt was a regression
+  // introduced earlier in this branch, and it is exactly the 400 the
+  // Preview soak hit - in the lane's DEFAULT (public) mode.
+  const store = readFileSync(
+    resolve(process.cwd(), 'src/lib/family-review/store.ts'),
+    'utf8',
+  );
+  const fn = store.slice(
+    store.indexOf('async function getJsonAtPath'),
+    store.indexOf('async function fetchSubmissionByPath'),
+  );
+  assert.match(
+    fn,
+    /\.\.\.\(access === 'private' \? \{ useCache: false \} : \{\}\)/,
+    'useCache must be conditional on a private read',
+  );
+  assert.doesNotMatch(
+    fn,
+    /get\(pathname, \{ access, useCache: false \}\)/,
+    'the unconditional form is the regression',
   );
 });

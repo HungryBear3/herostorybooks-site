@@ -237,6 +237,43 @@ function errorCode(err: unknown): string {
   return redactTokens(err instanceof Error ? err.name : 'unknown');
 }
 
+/* -- Read options, one builder per side -- */
+
+/**
+ * Options for a read from the legacy PUBLIC source store.
+ *
+ * Deliberately carries NO `useCache`. Vercel Blob rejects a public
+ * `get()` that supplies it with HTTP 400 -- observed in the Preview soak
+ * on 2026-08-26, where the same object returned 200 once the field was
+ * removed. The SDK documents `useCache` as effective only for private
+ * blobs and ignored for public ones, so its presence bought nothing and
+ * cost the whole read.
+ *
+ * Both sides go through a builder so the rule lives in one place instead
+ * of being repeated at each call site.
+ */
+export function sourceGetOptions(token: string): {
+  access: 'public';
+  token: string;
+} {
+  return { access: 'public', token };
+}
+
+/**
+ * Options for a read from the PRIVATE destination store.
+ *
+ * Keeps `useCache: false`: for a private object it is honoured, and it
+ * is what stops a CDN copy from answering a verification read-back with
+ * stale bytes.
+ */
+export function destGetOptions(token: string): {
+  access: 'private';
+  token: string;
+  useCache: false;
+} {
+  return { access: 'private', token, useCache: false };
+}
+
 /* -- Args -- */
 
 export function destructiveFlag(argv: string[]): string | null {
@@ -964,11 +1001,10 @@ async function readRawCutoverState(
   submissionId: string,
 ): Promise<unknown> {
   try {
-    const result = await get(cutoverStatePath(submissionId), {
-      access: 'private',
-      token: creds.destToken,
-      useCache: false,
-    });
+    const result = await get(
+      cutoverStatePath(submissionId),
+      destGetOptions(creds.destToken),
+    );
     if (!result || result.statusCode !== 200 || !result.stream) return null;
     return JSON.parse(await new Response(result.stream).text());
   } catch {
@@ -1056,11 +1092,7 @@ async function readSourceRecord(
   pathname: string,
 ): Promise<FamilyReviewSubmission | null> {
   try {
-    const result = await get(pathname, {
-      access: 'public',
-      token: creds.sourceToken,
-      useCache: false,
-    });
+    const result = await get(pathname, sourceGetOptions(creds.sourceToken));
     if (!result || result.statusCode !== 200 || !result.stream) return null;
     return normalizeSubmissionRecord(JSON.parse(await new Response(result.stream).text()));
   } catch {
@@ -1073,11 +1105,7 @@ async function readSourceRecord(
 /** Streams an object out of the SOURCE (public) store. */
 function sourceReader(creds: Credentials): ObjectReader {
   return async (pathname) => {
-    const result = await get(pathname, {
-      access: 'public',
-      token: creds.sourceToken,
-      useCache: false,
-    });
+    const result = await get(pathname, sourceGetOptions(creds.sourceToken));
     if (!result || result.statusCode !== 200 || !result.stream) return null;
     return result.stream;
   };
@@ -1086,11 +1114,7 @@ function sourceReader(creds: Credentials): ObjectReader {
 /** Streams an object out of the DESTINATION (private) store. */
 function destReader(creds: Credentials): ObjectReader {
   return async (pathname) => {
-    const result = await get(pathname, {
-      access: 'private',
-      token: creds.destToken,
-      useCache: false,
-    });
+    const result = await get(pathname, destGetOptions(creds.destToken));
     if (!result || result.statusCode !== 200 || !result.stream) return null;
     return result.stream;
   };
@@ -1117,11 +1141,7 @@ async function copyAssetStreaming(
 ): Promise<CopyResult> {
   let source: Awaited<ReturnType<typeof get>>;
   try {
-    source = await get(identity.pathname, {
-      access: 'public',
-      token: creds.sourceToken,
-      useCache: false,
-    });
+    source = await get(identity.pathname, sourceGetOptions(creds.sourceToken));
   } catch (err) {
     return { ok: false, result: 'source_read_failed', detail: errorCode(err) };
   }
@@ -1190,11 +1210,7 @@ async function copyAssetStreaming(
   // Verify by reading BACK from the destination -- streamed, not buffered.
   let readBack: Awaited<ReturnType<typeof get>>;
   try {
-    readBack = await get(identity.pathname, {
-      access: 'private',
-      token: creds.destToken,
-      useCache: false,
-    });
+    readBack = await get(identity.pathname, destGetOptions(creds.destToken));
   } catch (err) {
     return { ok: false, result: 'verify_failed', detail: errorCode(err) };
   }

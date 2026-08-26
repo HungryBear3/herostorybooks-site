@@ -451,7 +451,15 @@ async function getJsonAtPath<T>(pathname: string): Promise<T | null> {
       : ['public'];
   for (const access of attempts) {
     try {
-      const result = await get(pathname, { access, useCache: false });
+      // useCache is only meaningful for a PRIVATE read (it bypasses the
+      // CDN); on a PUBLIC read Vercel Blob rejects it with HTTP 400 --
+      // observed in the Preview soak, 2026-08-26. Passing it on the
+      // public attempt was a regression introduced earlier in this
+      // branch; the baseline never sent it.
+      const result = await get(pathname, {
+        access,
+        ...(access === 'private' ? { useCache: false } : {}),
+      });
       if (!result || result.statusCode !== 200 || !result.stream) continue;
       const text = await new Response(result.stream).text();
       return JSON.parse(text) as T;

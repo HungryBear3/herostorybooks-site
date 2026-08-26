@@ -271,6 +271,43 @@ Nothing downstream will consume it at that point, and cancelling propagates to
 the upstream reader, releasing the source connection instead of leaving it open
 until garbage collection.
 
+### 6.3c SDK finding: `useCache` is private-only (Preview soak, 2026-08-26)
+
+A Preview soak against a real, separately-provisioned private store found that
+**`@vercel/blob`'s `get()` returns HTTP 400 for a PUBLIC read that supplies
+`useCache`**. The same public object returned HTTP 200 as soon as the field was
+removed. The SDK's own documentation says `useCache` is "only effective for
+private blobs (ignored for public blobs)" — in practice it is not ignored on the
+public path, it is rejected, and it took the whole read with it.
+
+Every read that touched the legacy public source store carried
+`useCache: false`, so **source enumeration and every source byte read would have
+failed outright** against a real store. This was invisible to every test written
+before the soak, because none of them crossed the SDK boundary.
+
+The rule now lives in one place per side rather than at each call site:
+
+```ts
+sourceGetOptions(token)  // { access: 'public',  token }                 no useCache
+destGetOptions(token)    // { access: 'private', token, useCache: false }
+```
+
+All six reads in the migration go through these builders. `useCache: false` is
+retained on the private side, where it is honoured and is what stops a CDN copy
+from answering a verification read-back with stale bytes.
+
+The same regression existed in the app: `getJsonAtPath` in
+`src/lib/family-review/store.ts` was changed earlier in this branch to pass
+`useCache: false` unconditionally, including on the **public** attempt — which is
+the lane's *default* mode. It now sends the field only for a private read. The
+baseline never sent it, so this restores baseline behaviour on the public path.
+
+**Not fixed here (pre-existing, out of scope):** `src/lib/orders.ts` passes
+`useCache: false` on a public `get()` in `readBlobText`'s authenticated-fallback
+path (and two similar sites). Those predate this branch and belong to the order
+pipeline, not Family Review. They are subject to the same 400 and should be
+looked at separately — flagged, not touched.
+
 ### 6.4 Order of operations, per submission
 
 1. **source read** — bytes by pathname, source token
@@ -559,15 +596,15 @@ $ node --experimental-strip-types --test tests/family-review-image-type.test.ts
   tests 6 | pass 6 | fail 0
 
 $ node --experimental-strip-types --test tests/family-review-asset-migration.test.ts
-  tests 95 | pass 95 | fail 0
+  tests 103 | pass 103 | fail 0
 
 $ node --experimental-strip-types --test tests/family-review-asset-access-control.test.ts
   tests 17 | pass 17 | fail 0
 ```
 
-The migration suite is now 95 cases (15 -> 39 cross-store, 39 -> 72 checkpoint
-binding + streaming + sniffing + enumeration, 72 -> 95 byte revalidation). What
-they prove:
+The migration suite is now 103 cases (15 -> 39 cross-store, 39 -> 72 checkpoint
+binding + streaming + sniffing + enumeration, 72 -> 95 byte revalidation,
+95 -> 103 the useCache SDK fix). What they prove:
 
 | Guarantee | How it is proven |
 |---|---|
@@ -591,6 +628,9 @@ they prove:
 | One revoked asset withdraws the whole record's completion | `reviseStateAfterRevalidation` drops `completedAt` and `recordWritten` when any entry fails, so the record is rewritten after recopy. |
 | Both sides are read through their OWN credential | `sourceReader` is `access:'public'` + `sourceToken` and contains no `destToken`; `destReader` is `access:'private'` + `destToken` and contains no `sourceToken`. Identity failure short-circuits **before any read**. |
 | A failed MIME check releases the source | Behavioural: a stream whose `cancel()` sets a flag is confirmed cancelled; source asserts `metered.body.cancel()` sits between the MIME gate and `put`. |
+| `useCache` never reaches a public read | Behavioural: `sourceGetOptions()` is shape-pinned to exactly `{access, token}` with no `useCache`; `destGetOptions()` is pinned to `{access, token, useCache:false}`. Structural: no `get()` whose options are public carries `useCache`, the source builder itself never grows one, every private read keeps `useCache:false`, and **all six reads go through a builder** so the rule cannot be bypassed inline. |
+| Source and destination options cannot be confused | The builders fix disjoint access modes; no call site passes `sourceGetOptions(creds.destToken)` or the reverse, and every builder/token pairing is asserted to match. |
+| The app's public record read is fixed too | `getJsonAtPath` must spread `useCache` only when `access === 'private'`; the unconditional form is asserted absent. |
 | The fingerprint is stable under normal work | Deterministic, order-independent, changes on any identity change, and unchanged by `updatedAt` / `status` / `feedback`. |
 
 ### Tests changed, and why that is not weakening
@@ -619,7 +659,7 @@ No privacy or auth control was relaxed to make anything pass.
 
 ```
 $ npm test
-  tests 1757 | pass 1757 | fail 0
+  tests 1765 | pass 1765 | fail 0
 ```
 
 ### Build
@@ -648,31 +688,47 @@ $ npx playwright test --project=desktop-chromium \
   10 passed (11.2s)
 ```
 
-### What was NOT verified
+### Preview soak, 2026-08-26 — what was actually provisioned and run
 
-Neither store was contacted. No `FAMILY_REVIEW_SOURCE_BLOB_TOKEN`,
-`FAMILY_REVIEW_DEST_BLOB_TOKEN`, or `BLOB_READ_WRITE_TOKEN` was used, and the
-private read/write path has still **never been exercised against a live Vercel
-Blob store**.
+A real soak was performed. Recorded here in full because it is the first time
+any of this touched a live store:
 
-The streaming, hashing, sniffing, truncation, checkpoint-binding, and byte-
-revalidation logic is tested against real in-process streams and real state
-objects — including the source- and destination-replacement cases, which run
-through injected readers serving genuinely chunked streams. That logic is
-exercised for real.
+- a **separate private Preview Blob store** was provisioned as the destination;
+- **one synthetic public-source submission** was created in the legacy store as
+  migration input — synthetic test data, no customer record;
+- the run was **stopped before any destination write**.
 
-What is *not* exercised is the SDK boundary: that `access:'private'` succeeds,
-that `put()` accepts a `ReadableStream` body with `multipart: true` against a
-real store, that `get()` returns a stream whose `contentType` matches what was
-written, and that a real two-store copy round-trips. The injected readers stand
-in for `sourceReader`/`destReader`; that those two functions are wired to the
-right credential and access mode is asserted structurally, not executed. Per §1.4 the Production store could not serve any of it today
-regardless. First real exercise must be a Preview deployment against a genuinely
-separate private store. See §14.
+What it found is §6.3c: a public `get()` carrying `useCache` returns HTTP 400,
+and the same object returns 200 without it. That defect would have failed source
+enumeration and every source byte read on the first real run.
+
+**No customer or Production data was read, copied, or modified. No merge, no
+source deletion, no Production configuration change, no Production deploy, and
+no customer-facing action occurred.**
+
+### What is still NOT verified
+
+The soak stopped before the destination write, so the following remain
+unexercised against a live store:
+
+- that `put()` accepts a `ReadableStream` body with `multipart: true` and
+  `maximumSizeInBytes` against a real private store;
+- that a private `get()` read-back returns a stream whose `contentType` matches
+  what was written;
+- that a full two-store copy round-trips, and that byte revalidation passes
+  against genuinely stored objects;
+- that the streaming ceiling behaves as expected when the SDK, rather than a
+  test fixture, is producing the stream.
+
+The in-process logic behind all of those is tested against real streams and
+state objects; what is untested is the boundary. The soak should be resumed
+through a destination write once the fix in this commit is deployed to Preview.
 
 ## 14. Residual risk
 
-1. **Unproven at the SDK boundary.** No two-store copy has ever run. In
+1. **Still unproven past the source side.** The Preview soak reached the source
+   store and stopped before any destination write, so no two-store copy has run
+   end to end. In
    particular the streamed `put()` (`ReadableStream` body + `multipart: true` +
    `maximumSizeInBytes`) is untested against a real store; if the SDK buffers a
    stream internally, the in-process ceiling still fires but the memory benefit
@@ -692,19 +748,24 @@ separate private store. See §14.
    a resumed run with `--submission=<id>` / `--limit=N` where that matters. The
    previous revision's silent-byte-change gap is closed by this, not worked
    around.
-6. **Token format assumption.** Aliasing detection parses
+6. **Other `useCache`-on-public sites remain, outside this lane.**
+   `src/lib/orders.ts` passes `useCache: false` on a public `get()` in
+   `readBlobText`'s authenticated-fallback path and two similar sites. They
+   predate this branch and were deliberately not touched, but they are subject
+   to the same HTTP 400 and should be triaged separately.
+7. **Token format assumption.** Aliasing detection parses
    `vercel_blob_rw_<storeId>_<secret>`. If Vercel changes that format, tokens
    stop parsing and the utility **refuses to run** — it fails closed, not open —
    but re-confirm before a Production cutover.
-7. **A partially-migrated submission spans both stores** (assets in the
+8. **A partially-migrated submission spans both stores** (assets in the
    destination, record still in the source) until its record is written. Keep
    the app pointed at the source during cutover; flip only after the migration
    reports zero failures.
-8. **Legacy assets whose bytes are not a supported image** will fail
+9. **Legacy assets whose bytes are not a supported image** will fail
    `source_type_unrecognized` and block their record from completing. That is
    deliberate — such an object should be looked at, not copied — but it means an
    operator may need to triage individual records rather than expecting a clean
    sweep.
-9. **F-7 (legacy raw-token index pathnames) is untouched** — out of scope, still
+10. **F-7 (legacy raw-token index pathnames) is untouched** — out of scope, still
    on its bounded-compatibility path.
-10. **No linter ran** (§13).
+11. **No linter ran** (§13).
