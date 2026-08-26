@@ -254,6 +254,37 @@ const frenchFryCitySample = {
 
 const digitalStorySamples = [kindDragonSample, frenchFryCitySample] as const;
 
+const showcaseBooks = [
+  {
+    id: 'dog-city',
+    eyebrow: 'Recent watercolor proof',
+    title: 'Lukas Was a Dog in Dog City',
+    summary:
+      'A playful city adventure where fire trucks, storms, dinosaurs, and one friendly idea bring two worlds together.',
+    leadPage: '17',
+    pages: [
+      { page: '5', title: 'The Dog Fire Truck', note: 'Action scene', image: '/assets/showcase/dog-city/page-05.jpg' },
+      { page: '8', title: 'The Sky Changes', note: 'Atmospheric scene', image: '/assets/showcase/dog-city/page-08.jpg' },
+      { page: '17', title: 'The First Friendly Idea', note: 'Child-led story moment', image: '/assets/showcase/dog-city/page-17.jpg' },
+      { page: '23', title: 'The Connected City', note: 'Finale scene', image: '/assets/showcase/dog-city/page-23.jpg' },
+    ],
+  },
+  {
+    id: 'pasta-planet',
+    eyebrow: 'Recent watercolor proof',
+    title: 'Lukas and the Pasta Planet',
+    summary:
+      'A bright space-food adventure with cinematic landscapes, surprising scale, and a warm trip home.',
+    leadPage: '19',
+    pages: [
+      { page: '6', title: 'Lift-Off', note: 'Opening spectacle', image: '/assets/showcase/pasta-planet/page-06.jpg' },
+      { page: '10', title: 'Planet Discovery', note: 'Imaginative world', image: '/assets/showcase/pasta-planet/page-10.jpg' },
+      { page: '19', title: 'Cinematic Adventure', note: 'Hero composition', image: '/assets/showcase/pasta-planet/page-19.jpg' },
+      { page: '24', title: 'Home Again', note: 'Warm closing scene', image: '/assets/showcase/pasta-planet/page-24.jpg' },
+    ],
+  },
+] as const;
+
 const hardcoverPhotoSample = {
   source: 'Recent printed hardcover sample',
   framing: 'Real printed book photos',
@@ -644,24 +675,91 @@ function SamplePreviewSection() {
   return (
     <section className="bg-[#fff8ec]/45 pt-4 pb-20 md:pt-6 md:pb-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
-        <SectionHeader eyebrow="Website samples" title="Two full sample books." sub="These samples show the level of story, art, and proof review parents can expect. Each new paid book still gets its own proof and approval pass." />
-        <div className="space-y-6">
-          {digitalStorySamples.map((sample) => (
-            <DigitalStoryFeature key={sample.id} sample={sample} compact />
+        <SectionHeader eyebrow="Website samples" title="Two imaginative worlds, made personal." sub="These recent watercolor proofs show the level of story, art, and proof review parents can expect. Each new paid book still gets its own proof and approval pass." />
+        <div className="space-y-10">
+          {showcaseBooks.map((book, index) => (
+            <ShowcaseBookFeature key={book.id} book={book} reverse={index % 2 === 1} />
           ))}
-        </div>
-        <div className="mt-12">
-          <HardcoverPhotoSection compact />
-        </div>
-        <div className="mt-12">
-          <SectionHeader eyebrow="More sample art" title="A dinosaur book example." sub="Additional artwork from a printed sample shows another theme direction and how interior story pages can look in a finished book." />
-        </div>
-        <div className="grid gap-5 md:grid-cols-3">
-          {sampleBooks.map((book) => <SampleCard key={book.title} {...book} />)}
         </div>
         <div className="mt-9"><GhostCta href="/samples">Read the sample pages</GhostCta></div>
       </div>
     </section>
+  );
+}
+
+function ShowcaseBookFeature({
+  book,
+  reverse = false,
+}: {
+  book: (typeof showcaseBooks)[number];
+  reverse?: boolean;
+}) {
+  const lead = book.pages.find((page) => page.page === book.leadPage) ?? book.pages[0];
+  const supporting = book.pages.filter((page) => page.page !== book.leadPage).slice(0, 2);
+  const gallery = (
+    <div className="grid grid-cols-[1.18fr_0.82fr] grid-rows-2 gap-3">
+      <figure className="relative row-span-2 overflow-hidden rounded-3xl border border-[#d8c6a2] bg-[#f5ead2] shadow-[0_24px_70px_-52px_rgba(31,26,22,0.4)]">
+        <img src={lead.image} alt={`${book.title}, page ${lead.page}: ${lead.title}`} className="h-full min-h-[420px] w-full object-cover" loading="lazy" />
+        <figcaption className="absolute bottom-3 left-3 rounded-full bg-[#1f1a16]/90 px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#fff8ec]">Page {lead.page}</figcaption>
+      </figure>
+      {supporting.map((page) => (
+        <figure key={page.page} className="relative overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#f5ead2]">
+          <img src={page.image} alt={`${book.title}, page ${page.page}: ${page.title}`} className="h-full min-h-[200px] w-full object-cover" loading="lazy" />
+          <figcaption className="absolute bottom-2 left-2 rounded-full bg-[#1f1a16]/90 px-3 py-1.5 text-[9px] font-bold uppercase tracking-[0.14em] text-[#fff8ec]">Page {page.page}</figcaption>
+        </figure>
+      ))}
+    </div>
+  );
+
+  const copy = (
+    <div className="self-center">
+      <div className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">{book.eyebrow}</div>
+      <h3 className="mt-3 font-serif text-4xl font-medium leading-tight text-[#1f1a16] md:text-5xl">{book.title}</h3>
+      <p className="mt-4 text-base leading-7 text-[#695f54]">{book.summary}</p>
+      <div className="mt-6 flex flex-wrap gap-2">
+        {book.pages.map((page) => (
+          <span key={page.page} className="rounded-full border border-[#d8c6a2] bg-[#fff8ec] px-3 py-2 text-xs font-semibold text-[#695f54]">Page {page.page} · {page.note}</span>
+        ))}
+      </div>
+      <div className="mt-7"><GhostCta href={`/samples#${book.id}`}>See sample pages</GhostCta></div>
+    </div>
+  );
+
+  return (
+    <article className="grid gap-8 rounded-[2rem] border border-[#d8c6a2] bg-[#fff8ec] p-5 shadow-[0_26px_70px_-55px_rgba(31,26,22,0.45)] md:p-8 lg:grid-cols-[1.08fr_0.92fr] lg:gap-12">
+      {reverse ? <>{copy}{gallery}</> : <>{gallery}{copy}</>}
+    </article>
+  );
+}
+
+function ShowcaseGallery() {
+  return (
+    <div className="space-y-10">
+      {showcaseBooks.map((book) => (
+        <section id={book.id} key={book.id} className="scroll-mt-24 rounded-[2rem] border border-[#d8c6a2] bg-[#fff8ec] p-5 shadow-[0_26px_70px_-55px_rgba(31,26,22,0.45)] md:p-8">
+          <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+            <div>
+              <div className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">{book.eyebrow}</div>
+              <h2 className="mt-2 font-serif text-3xl font-medium leading-tight text-[#1f1a16] md:text-4xl">{book.title}</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-[#695f54]">{book.summary}</p>
+            </div>
+            <span className="w-fit rounded-full border border-[#d8c6a2] bg-[#f5ead2] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">Digital sample · illustrative only</span>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {book.pages.map((page) => (
+              <article key={page.page} className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#f8f0dd]">
+                <img src={page.image} alt={`${book.title}, page ${page.page}: ${page.title}`} className="aspect-square w-full object-cover" loading="lazy" />
+                <div className="p-4">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#a64c4c]">Page {page.page}</div>
+                  <h3 className="mt-1 font-serif text-xl font-semibold leading-tight text-[#1f1a16]">{page.title}</h3>
+                  <p className="mt-2 text-sm leading-6 text-[#695f54]">{page.note}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
   );
 }
 
@@ -1020,12 +1118,8 @@ export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Samples" title="Peek inside two personalized sample books." sub="These story samples show completed books as examples of story depth, art direction, and page design. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
-        <div className="space-y-8">
-          {digitalStorySamples.map((sample) => (
-            <DigitalStoryFeature key={sample.id} sample={sample} />
-          ))}
-        </div>
+        <SectionHeader eyebrow="Samples" title="A closer look inside two personalized adventures." sub="Eight selected watercolor illustrations show the story depth, art direction, and page design parents can expect. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
+        <ShowcaseGallery />
         <div className="mt-14">
           <HardcoverPhotoSection />
         </div>
