@@ -24,6 +24,10 @@ import {
 } from "@/lib/story-catalog";
 import { getFathersDayCountdown } from "@/lib/fathers-day";
 import { currentGaClientId, track } from "@/lib/analytics";
+import {
+  attributionMetadata,
+  currentAttribution,
+} from "@/lib/marketing/attribution-session";
 import { buildAutoShrinkNotice, shrinkPhotoForUpload } from "@/lib/photo-upload";
 import {
   createSupportingCharacterDraft,
@@ -938,6 +942,14 @@ export function CheckoutForm() {
       if (checkoutTracking?.invite) payload.set("invite", checkoutTracking.invite);
       const gaClientId = currentGaClientId();
       if (gaClientId) payload.set("gaClientId", gaClientId);
+      // Governed campaign attribution captured at the landing boundary and
+      // preserved across client navigation. Only the four allowlisted fields
+      // are sent; the server re-validates every one of them.
+      for (const [key, value] of Object.entries(
+        attributionMetadata(currentAttribution()),
+      )) {
+        payload.set(key, value);
+      }
       if (form.photoFile) {
         payload.set("photo", form.photoFile);
       }

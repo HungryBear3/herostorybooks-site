@@ -10,6 +10,7 @@ import {
 } from '@vercel/blob';
 
 import type { CheckoutTracking } from './checkout-tracking.ts';
+import type { GovernedUtmTuple } from './marketing/utm-contract.ts';
 import type { CustomerQueueStatus } from './order-queue.ts';
 import type { FulfillmentStatus, LayoutVersion, PageTextLayout, ProofCardOverride, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
@@ -110,6 +111,12 @@ export interface OrderInput {
   customStoryValidation?: ValidationResult | null;
   /** Sanitized private tester/source tracking from normal checkout URL params. */
   checkoutTracking?: CheckoutTracking | null;
+  /**
+   * Governed campaign attribution, validated against
+   * src/lib/marketing/utm-contract.ts before it ever reaches here. Four
+   * allowlisted campaign labels, never a raw URL, referrer, or query string.
+   */
+  campaignAttribution?: GovernedUtmTuple | null;
 }
 
 export type ReviewStatus =
@@ -424,6 +431,8 @@ export interface OrderRecord extends OrderInput {
   pageArtifacts?: PageArtifact[];
   /** Private F&F/pilot checkout tracking captured from ?cohort= and ?invite=. */
   checkoutTracking?: CheckoutTracking | null;
+  /** Governed campaign attribution. See the input type above. */
+  campaignAttribution?: GovernedUtmTuple | null;
   /** Internal manual-queue + customer-status tracking for F&F/concierge orders.
    *  All additive + optional; legacy AND new orders default to null. Populated by
    *  ops tooling only — never by automated fulfillment. See lib/order-queue.ts. */
@@ -1021,6 +1030,7 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     customStoryBrief: input.customStoryBrief ?? null,
     customStoryValidation: input.customStoryValidation ?? null,
     checkoutTracking: input.checkoutTracking ?? null,
+    campaignAttribution: input.campaignAttribution ?? null,
     // Internal queue/status tracking starts empty; ops tooling populates it later.
     manualQueueEnteredAt: null,
     customerQueueStatus: null,

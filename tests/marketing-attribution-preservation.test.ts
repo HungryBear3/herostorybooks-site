@@ -3,12 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { sendGa4Purchase } from '../src/lib/ga4-purchase.ts';
-import {
-  META_CAPI_ACCESS_TOKEN_ENV,
-  META_CAPI_DATASET_ID_ENV,
-  META_CAPI_FLAG_ENV,
-  sendMetaCapiPurchase,
-} from '../src/lib/marketing/meta-capi.ts';
+import { metaCapiStatus } from '../src/lib/marketing/meta-capi.ts';
 
 const webhookSource = readFileSync(
   new URL('../src/app/api/webhooks/stripe/route.ts', import.meta.url), 'utf8',
@@ -55,40 +50,31 @@ test('the bridge receives only the event name, never the event record', () => {
 
 // ── Webhook wiring: same sites, same order, nothing extra ───────────────────
 
-test('Meta CAPI is wired at exactly the sites GA4 already occupies, and nowhere else', () => {
+test('the three GA4 purchase call sites are intact and Meta is wired at none of them', () => {
   const ga4Calls = webhookSource.match(/scheduleGa4Purchase\(\{/g) ?? [];
-  const metaCalls = webhookSource.match(/scheduleMetaCapiPurchase\(/g) ?? [];
   assert.equal(ga4Calls.length, 3, 'the three GA4 purchase call sites changed');
-  assert.equal(metaCalls.length, 3, 'Meta is not wired one-for-one with GA4');
+  // CAPI is deferred: the webhook must not reference Meta at all any more.
+  assert.equal(webhookSource.includes('scheduleMetaCapiPurchase'), false);
+  assert.equal(webhookSource.includes('metaCapiPurchaseFrom'), false);
+  assert.equal(/\bmeta-capi\b/.test(webhookSource), false, 'the webhook still imports the CAPI module');
 });
 
-test('every Meta CAPI call sits immediately after its GA4 call, i.e. after the durable write', () => {
-  const segments = webhookSource.split('scheduleMetaCapiPurchase(');
-  assert.equal(segments.length, 4);
-  for (const before of segments.slice(0, 3)) {
-    const window = before.slice(-500);
-    assert.ok(
-      window.includes('scheduleGa4Purchase({'),
-      'a Meta CAPI call is not preceded by the GA4 call that marks the trusted, post-write point',
-    );
-  }
-});
-
-test('the webhook hands Meta four facts and no customer, order, or shipping data', () => {
+test('every GA4 purchase carries the governed campaign recovered from the signed session', () => {
+  const ga4Calls = webhookSource.match(/campaign: campaignFromSession\(session\),/g) ?? [];
+  assert.equal(ga4Calls.length, 3, 'a GA4 purchase call site is missing its campaign');
+  // Recovered from Stripe metadata, and re-validated rather than trusted.
   const helper = webhookSource.slice(
-    webhookSource.indexOf('function metaCapiPurchaseFrom'),
+    webhookSource.indexOf('function campaignFromSession'),
     webhookSource.indexOf('function getStripe'),
   );
-  assert.ok(helper.length > 0);
+  assert.match(helper, /validateUtmTuple\(/);
+  assert.match(helper, /result\.ok && result\.tuple \? result\.tuple : null/);
   for (const banned of [
     'customer_email', 'shipping', 'orderId', 'client_reference_id',
-    'payment_intent', 'metadata?.invite', 'metadata?.cohort', 'gaClientId',
+    'payment_intent', 'gaClientId',
   ]) {
-    assert.equal(helper.includes(banned), false, `metaCapiPurchaseFrom passes ${banned}`);
+    assert.equal(helper.includes(banned), false, `campaignFromSession touches ${banned}`);
   }
-  assert.match(helper, /stripeSessionId: session\.id/);
-  assert.match(helper, /amountCents: session\.amount_total \?\? 0/);
-  assert.match(helper, /paymentStatus: session\.payment_status/);
 });
 
 test('the refund and terminal-state guards are untouched by this candidate', () => {
@@ -99,58 +85,57 @@ test('the refund and terminal-state guards are untouched by this candidate', () 
     webhookSource.indexOf("if (existing.paymentStatus === 'refunded'"),
     webhookSource.indexOf('refundedSkipped: true'),
   );
-  assert.equal(refundBranch.includes('scheduleMetaCapiPurchase'), false);
   assert.equal(refundBranch.includes('scheduleGa4Purchase'), false);
 });
 
 // ── No duplicate purchase across GA4, Stripe, and Meta, including replay ────
 
-test('a webhook replay produces one GA4 transaction_id and one Meta event_id', async () => {
-  const ga4TransactionIds: string[] = [];
-  const metaEventIds: string[] = [];
-
+test('a webhook replay produces exactly one GA4 transaction_id, campaign included', async () => {
+  const bodies: Record<string, unknown>[] = [];
   const ga4Deps = {
     env: { GA4_MEASUREMENT_ID: 'G-TEST123', GA4_API_SECRET: 'secret' } as unknown as NodeJS.ProcessEnv,
     fetchImpl: (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      ga4TransactionIds.push(JSON.parse(String(init?.body)).events[0].params.transaction_id);
+      bodies.push(JSON.parse(String(init?.body)));
       return new Response(null, { status: 204 });
-    }) as unknown as typeof fetch,
-  };
-  const metaDeps = {
-    env: {
-      [META_CAPI_FLAG_ENV]: 'true',
-      [META_CAPI_DATASET_ID_ENV]: '987654321098765',
-      [META_CAPI_ACCESS_TOKEN_ENV]: 'test-token',
-    } as unknown as NodeJS.ProcessEnv,
-    fetchImpl: (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      metaEventIds.push(JSON.parse(String(init?.body)).data[0].event_id);
-      return new Response(null, { status: 200 });
     }) as unknown as typeof fetch,
   };
 
   const purchase = {
     transactionId: 'cs_live_replay_case', amountCents: 6400, currency: 'usd',
     itemId: 'book_premium', itemName: 'HeroStoryBooks premium', paymentStatus: 'paid',
-  };
-  const metaPurchase = {
-    stripeSessionId: 'cs_live_replay_case', amountCents: 6400, currency: 'usd',
-    contentId: 'book_premium', paymentStatus: 'paid', eventTimeSeconds: 1_790_000_000,
+    campaign: {
+      utm_source: 'brightwood_pta',
+      utm_medium: 'partner',
+      utm_campaign: 'autumn_pilot',
+    },
   };
 
   // Three independent deliveries of the same Stripe session, each in a fresh
-  // runtime (separate sentEventIds), which is the worst case: the in-process
-  // guard cannot help and only the stable identifiers can.
-  for (let i = 0; i < 3; i += 1) {
-    await sendGa4Purchase(purchase, ga4Deps);
-    await sendMetaCapiPurchase(metaPurchase, { ...metaDeps, sentEventIds: new Set() });
-  }
+  // runtime, which is the worst case: only the stable identifier can help.
+  for (let i = 0; i < 3; i += 1) await sendGa4Purchase(purchase, ga4Deps);
 
-  assert.equal(new Set(ga4TransactionIds).size, 1, 'GA4 cannot deduplicate these deliveries');
-  assert.equal(new Set(metaEventIds).size, 1, 'Meta cannot deduplicate these deliveries');
-  assert.equal(ga4TransactionIds[0], 'cs_live_replay_case');
-  assert.match(metaEventIds[0], /^hsb_[0-9a-f]{32}$/);
-  // The two platforms dedupe on different values, and Meta never learns GA4's.
-  assert.notEqual(ga4TransactionIds[0], metaEventIds[0]);
+  const transactionIds = bodies.map((b) => (b as any).events[0].params.transaction_id);
+  assert.equal(new Set(transactionIds).size, 1, 'GA4 cannot deduplicate these deliveries');
+  assert.equal(transactionIds[0], 'cs_live_replay_case');
+
+  // The campaign rides on every delivery and is identical each time, so a
+  // replay cannot reattribute the same purchase to a different campaign.
+  const campaigns = bodies.map((b) => JSON.stringify({
+    s: (b as any).events[0].params.campaign_source,
+    m: (b as any).events[0].params.campaign_medium,
+    n: (b as any).events[0].params.campaign_name,
+  }));
+  assert.equal(new Set(campaigns).size, 1);
+  assert.equal((bodies[0] as any).events[0].params.campaign_source, 'brightwood_pta');
+  assert.equal((bodies[0] as any).events[0].params.campaign_medium, 'partner');
+  assert.equal((bodies[0] as any).events[0].params.campaign_name, 'autumn_pilot');
+});
+
+test('CAPI is deferred, so there is no second purchase destination to deduplicate against', () => {
+  const status = metaCapiStatus();
+  assert.equal(status.status, 'deferred');
+  assert.equal(status.reason, 'no_matching_contract');
+  assert.ok(status.blockers.length >= 3);
 });
 
 test('no browser-emitting surface names Purchase at all', () => {
@@ -203,7 +188,13 @@ test('with no Meta environment, tracking a funnel event creates no controller an
   try {
     const { track } = await import('../src/lib/analytics.ts');
     const bridge = await import('../src/lib/marketing/meta-bridge.ts');
+    const consentStore = await import('../src/lib/marketing/consent-store.ts');
     bridge.__resetMetaBridgeForTests();
+    // Optional browser measurement is consent-gated now. Grant it, so this
+    // test still asks its original question: does the Meta candidate change
+    // anything about GA4? (It must not.) The no-consent case is covered by
+    // tests/marketing-consent-store.test.ts.
+    consentStore.setConsent('granted');
 
     track('begin_checkout', { theme: 'space' });
     track('page_view');
@@ -217,6 +208,8 @@ test('with no Meta environment, tracking a funnel event creates no controller an
     // No Meta runtime was created anywhere on the fake global.
     assert.equal((globalThis as Record<string, unknown>).fbq, undefined);
   } finally {
+    const consentStore = await import('../src/lib/marketing/consent-store.ts');
+    consentStore.__resetConsentStoreForTests();
     if (priorWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
     else Object.defineProperty(globalThis, 'window', { configurable: true, value: priorWindow });
     if (priorDocument === undefined) Reflect.deleteProperty(globalThis, 'document');

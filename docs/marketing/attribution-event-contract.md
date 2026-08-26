@@ -203,3 +203,176 @@ minted itself, and the token rule plus the PII rejection is what makes step 3 sa
 **Not implemented in this candidate.** It changes the checkout submit path and the
 order route, which is a launch-safety surface, and it deserves its own review rather
 than riding along with an ad-platform candidate.
+
+---
+
+# Follow-up: the three independent-review gaps, closed
+
+Reviewed head: `50ee5cd`. This section records what changed to close the three
+gaps that review identified, and the decisions taken along the way.
+
+## 1. Governed campaign attribution, end to end
+
+`src/lib/marketing/utm-contract.ts` was already the contract. What was missing
+was anything that used it on the path a real visitor takes. The chain is now:
+
+| Hop | What happens | Where |
+|---|---|---|
+| Landing | `?utm_*` read; **only** the four governed keys are even looked at | `components/marketing/attribution-capture.tsx` |
+| Validate | `validateUtmTuple` — allowlisted medium, token shape, 40-char bound, PII rejection | `utm-contract.ts` |
+| Persist | one bounded first-party record: the tuple plus a first-touch timestamp | `attribution-session.ts` |
+| Navigate | preserved across client navigation; nothing re-read from the URL | `attribution-session.ts` |
+| Checkout POST | only the governed four are sent | `checkout/checkout-form.tsx` |
+| Re-validate | the server does not trust the client; same contract, again | `api/order/route.ts` |
+| Bind | `order.campaignAttribution` on the server-authoritative record | `lib/orders.ts` |
+| Stripe | `metadata` only — never a product name, description, or any customer-visible field | `api/order/route.ts` |
+| Webhook | recovered from the **signed** session, re-validated a third time | `api/webhooks/stripe/route.ts` |
+| Purchase | GA4 reserved `campaign_*` parameters on the trusted purchase | `lib/ga4-purchase.ts` |
+
+**Precedence: first touch wins, for 30 days.** A later valid tuple does not
+displace a live first touch; credit belongs to the campaign that introduced the
+visitor. Once the stored tuple passes 30 days, the next valid tuple becomes the
+new first touch. An invalid, empty, or partial tuple never overwrites, never
+extends the window, and never clears storage. Expiry is inclusive at exactly the
+boundary. All of it is asserted in `tests/marketing-attribution-session.test.ts`.
+
+**Failure is closed and whole.** A tuple is valid or it is nothing. A partial
+tuple is not stored in pieces, an unapproved medium contributes no fields at
+all, and an ungoverned key alongside the governed four rejects the *whole*
+tuple rather than being silently dropped — so a caller cannot smuggle a
+passenger field and keep its campaign.
+
+**Never persisted:** raw URLs, referrers, fragments, `utm_term`, `ref`,
+`gclid`, or any other query parameter. Asserted by both a payload test and a
+source-level test that the session module never reads `document.referrer`,
+`location.href`, `location.pathname`, or `location.hash`.
+
+**Deduplication is unchanged.** Stripe's Checkout Session id remains
+`transaction_id`; GA4 deduplicates on it, and three replayed deliveries produce
+one transaction id and one identical campaign, so a replay cannot reattribute a
+purchase. Browser `Purchase` remains prohibited.
+
+### Known remaining ungoverned surface (deliberate, needs an owner decision)
+
+`src/lib/analytics.ts` has a pre-existing browser campaign path that forwards
+`utm_term` and `ref` and 160-character raw values to GA4 and Vercel Analytics.
+It is **not** governed by the contract, and it was left in place: tightening it
+changes live attribution semantics for any link already in circulation using a
+non-allowlisted medium (`utm_medium=social`, for instance, which the closed
+vocabulary does not contain). That is an owner call, not a side effect of this
+follow-up. It is now the only ungoverned campaign surface left, and it feeds
+GA4 exploration only — never the trusted purchase, which uses the governed
+tuple exclusively.
+
+## 2. One reactive consent surface
+
+`consent.ts` previously read a global that nothing ever set, which meant Meta
+could never fire — correct, but a placeholder. The real surface is
+`src/lib/marketing/consent-store.ts` plus
+`src/components/marketing/consent-surface.tsx`.
+
+- **Default is not consent.** No stored choice means `unknown`, and `unknown`
+  enables nothing. **Nothing at all is stored until the visitor chooses**, so a
+  visitor who never answers leaves no storage behind.
+- **Google Consent Mode v2 defaults to denied** (`ad_storage`, `ad_user_data`,
+  `ad_personalization`, `analytics_storage`), emitted *before* `gtag('config')`.
+  On a grant the surface issues `gtag('consent','update')`.
+- **One source of truth.** GA4, Vercel Analytics, and the Meta bridge are all
+  gated behind a single `optionalAnalyticsAllowed()` check in `analytics.ts`,
+  and a test asserts each destination is unreachable before that gate.
+- **Reactive in the current tab.** Subscribers are notified synchronously; a
+  grant initialises the adapters with no reload, and the Meta mount re-offers
+  the current route. Because the controller latches a route only after it has
+  passed every gate, a route skipped for consent emits exactly one PageView on a
+  grant, and a route that already emitted one is refused as a duplicate.
+- **Revisit and change.** A persistent "Cookie choices" control re-opens the
+  banner. Re-opening **withdraws** the stored choice first, so optional
+  measurement is off while the decision is being reconsidered.
+- **No dark patterns.** Accept and decline share one style object, so neither
+  can be made quieter than the other without changing both. No pre-checked
+  consent, no fingerprinting, no advanced matching, no cross-site identifier.
+- **Essential behaviour is never gated.** Asserted: `api/order/route.ts`,
+  `api/webhooks/stripe/route.ts`, and `lib/ga4-purchase.ts` contain no reference
+  to the consent store at all.
+
+The stored record is `{"v":1,"c":"granted"|"denied","at":<epoch>}` — the choice
+and the date, with nothing that could distinguish one visitor from another.
+
+## 3. Meta CAPI: DEFERRED
+
+**The finding.** The candidate payload sent no `user_data`. Meta's Conversions
+API requires `user_data` on every server event, carrying at least one customer
+matching parameter. An event without it is not weakly matched; it is rejected or
+unattributable. `event_id` exists to deduplicate a server event against a
+browser event of the same name, and `event_source_url` describes a page. Neither
+identifies a person. **The path could not have worked**, and configuring
+credentials would not have changed that.
+
+**The decision.** Defer. The minimum viable matching contract would be a
+normalised, hashed purchaser email, optionally with `fbp`/`fbc`. HSB cannot
+satisfy that safely today:
+
+1. **No server-side consent evidence.** The consent surface is a browser
+   mechanism; the Stripe webhook holds no consent record for the purchaser.
+   Hashing is not consent — a hashed email is still personal data disclosed to
+   a third party.
+2. **No privacy approval** exists for customer matching to an ad platform, and
+   the purchaser is a parent buying a product about their child.
+3. **`fbp`/`fbc` do not exist here.** They are written by the Pixel, which is
+   inert on every deployment and, when it runs at all, only after a grant.
+
+**What was removed:** the entire send path — `fetch`, endpoint, Graph API
+version, timeout, payload builder, scheduler, and all three webhook call sites.
+The webhook no longer references Meta at all.
+
+**What was retained:** the environment-variable *names*, a `metaCapiStatus()`
+that always returns `deferred` with its blockers and **reads no environment at
+all**, a type-only `FutureMetaCapiPurchaseContract` naming `user_data` as the
+required block, and the explicit never-send list. Tests assert the module
+contains no network primitive, that no endpoint/timeout/send symbol is
+*declared*, and that setting all three credentials plus the flag cannot change
+the status.
+
+**Purchase ownership and `event_id`.** Unchanged and unambiguous: the
+signature-verified Stripe webhook is the sole purchase authority, GA4's
+Measurement Protocol is its only destination, and browser `Purchase` remains
+prohibited. Nothing owns `event_id` today because nothing sends; the seam
+records that a future implementation must own it server-side and derive it as a
+pseudonym of the Stripe session, never the session id itself.
+
+## Environment variables (names only)
+
+| Name | Scope | Effect today |
+|---|---|---|
+| `NEXT_PUBLIC_META_PIXEL_ID` | browser | absent -> pixel inert |
+| `NEXT_PUBLIC_META_PIXEL_ENABLED` | browser | not `'true'` -> pixel inert |
+| `META_CAPI_DATASET_ID` | server | **no effect** — CAPI is deferred |
+| `META_CAPI_ACCESS_TOKEN` | server | **no effect** — CAPI is deferred |
+| `META_CAPI_ENABLED` | server | **no effect** — CAPI is deferred |
+| `GA4_MEASUREMENT_ID` / `GA4_API_SECRET` | server | existing trusted purchase |
+| `NEXT_PUBLIC_HSB_ANALYTICS_DEBUG` | browser | existing debug logging |
+
+No credential is configured by this work, and none may be given a
+`NEXT_PUBLIC_` prefix beyond the two already public by design.
+
+## Rollout and rollback
+
+**Rollout.** Merging changes no ad-platform behaviour: Meta stays inert (no
+pixel id, no flag), and CAPI has no path to enable. What *does* change on merge
+is browser-visible and intended: the consent banner appears, Consent Mode
+defaults to denied, and GA4 events stop until a visitor accepts. **Expect
+reported GA4 event volume to fall**, by however many visitors decline or ignore
+the banner. That is the point, not a regression — but it should be announced
+before it is observed, or it will read as an outage.
+
+**Rollback.** Two independent levers, neither requiring a data migration:
+
+1. *Consent gating* — revert `optionalAnalyticsAllowed()` in `analytics.ts` and
+   the `gtag('consent','default')` block in `layout.tsx`. GA4 returns to its
+   previous unconditional posture. The stored choices are inert, not harmful.
+2. *Attribution* — revert the `campaign` field on `Ga4PurchaseInput` and the
+   `campaignFromSession` call sites. Purchases continue exactly as before; the
+   stored tuples and the `order.campaignAttribution` field are additive and
+   optional, so no record becomes unreadable.
+
+Neither lever touches payment, fulfilment, or order state.

@@ -158,3 +158,47 @@ No live surface proves a product view. See the event contract §2.
 **B5 — Campaign attribution does not reach the trusted purchase.**
 Designed in the event contract §9, not implemented. It touches the checkout submit
 path and the order route, and deserves its own review.
+
+---
+
+# UPDATE 2026-08-26 — CAPI is DEFERRED, and the send path is gone
+
+This document previously described a Conversions API candidate that was
+"disabled by default". That framing was wrong in a way worth stating plainly:
+the payload it would have sent **could not have worked at all**, in any
+configuration.
+
+It sent no `user_data`. Meta requires `user_data` on every server event with at
+least one customer matching parameter. `event_id` deduplicates a server event
+against a browser event; `event_source_url` describes a page. Neither is a
+matching signal. The candidate satisfied a schema, not a purpose — so
+"disabled by default" implied a working path behind a flag, and there was none.
+
+**Decision: defer, and remove the path** rather than leave a misleading one.
+See `docs/marketing/attribution-event-contract.md` for the full reasoning. In
+short, the minimum safe matching contract needs a hashed purchaser email, and
+HSB has no server-side consent evidence, no privacy approval for customer
+matching to an ad platform, and no `fbp`/`fbc` (the Pixel is inert).
+
+What remains in `src/lib/marketing/meta-capi.ts`: environment-variable names, a
+`metaCapiStatus()` that always returns `deferred` and reads no environment, a
+type-only future contract naming `user_data` as the required block, and the
+never-send list. No `fetch`, no endpoint, no scheduler, no call site. The Stripe
+webhook no longer references Meta at all.
+
+**The Pixel is unchanged and still inert** — no public pixel id, no flag, and
+now also a real consent gate rather than a placeholder global.
+
+**Blockers that must clear before CAPI is reconsidered**, in order:
+
+1. A privacy/legal decision authorising customer matching to an ad platform,
+   for an audience of parents buying a product about their child.
+2. Server-side consent evidence available at the Stripe webhook — the current
+   consent surface is browser-only.
+3. A documented minimum field set, hashed and normalised, that never includes
+   child data, order identifiers, or raw PII.
+4. Only then: credentials, and a Preview test-event validation.
+
+Configuring `META_CAPI_ENABLED`, `META_CAPI_DATASET_ID`, and
+`META_CAPI_ACCESS_TOKEN` does **not** shorten this list and does not change what
+the code does. That is asserted by test.

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { metaHandleRoute } from "@/lib/marketing/meta-bridge";
+import { getConsent, subscribeConsent } from "@/lib/marketing/consent-store";
 
 /**
  * Mount point for the Meta Pixel candidate.
@@ -22,12 +23,23 @@ import { metaHandleRoute } from "@/lib/marketing/meta-bridge";
 export function MetaPixelMount() {
   const pathname = usePathname();
   const lastPathnameRef = useRef<string | null>(null);
+  const [consent, setConsentState] = useState(() => getConsent());
+
+  // Consent is the shared source of truth, and it can change after this route
+  // was already offered. Re-offering the SAME pathname is safe: the controller
+  // latches a route only once it has passed every gate, so a route that was
+  // skipped for consent has not been latched and will emit exactly one
+  // PageView on a grant -- while a route that already emitted one is refused
+  // as a duplicate. A decline needs no undo here; the controller's own consent
+  // gate stops the next event.
+  useEffect(() => subscribeConsent(setConsentState), []);
 
   useEffect(() => {
-    if (!pathname || lastPathnameRef.current === pathname) return;
+    if (!pathname) return;
+    if (lastPathnameRef.current === pathname && consent !== "granted") return;
     lastPathnameRef.current = pathname;
     metaHandleRoute(pathname);
-  }, [pathname]);
+  }, [pathname, consent]);
 
   return null;
 }

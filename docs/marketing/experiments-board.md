@@ -115,3 +115,52 @@ row, and it is not part of this candidate.
 4. To move a row to `live`: record the `public_posting` approval **in the JSON**
    with an approver, a date, and an evidence reference. The validator refuses a
    public status without it, which is the point.
+
+---
+
+# Reconciliation with the final attribution and consent contract (2026-08-26)
+
+The board's rows are unchanged: still six, still all `proposed`, still no
+approval granted and **no result reported**. Nothing below reports, estimates,
+or implies a campaign outcome; no campaign has run.
+
+What the follow-up changes is what the board can *expect to measure*.
+
+**1. Every row's UTM tuple is now enforced end to end, not just at planning
+time.** The board validator already rejected malformed or colliding tuples
+before a link could be printed. The same contract now governs the live path:
+capture, checkout, Stripe metadata, and the trusted purchase. A row whose tuple
+passes the validator will attribute; a link that deviates from it in the field
+will produce **no** campaign attribution rather than partial or invented
+attribution.
+
+**2. `utm_medium` is a closed vocabulary, in production as well as on paper.**
+`partner`, `flyer`, `email`, `organic_social`, `paid_social`, `referral`. A
+flyer printed with any other medium attributes to nothing. This is worth saying
+to whoever prints the flyers.
+
+**3. First-touch, 30-day.** Attribution credits the campaign that introduced
+the visitor, held for 30 days. A visitor who arrives via a partner link and
+returns later through a different campaign still attributes to the partner. The
+30-day window matches the board's cycle length, so a row's purchases and its
+cycle line up rather than straddling.
+
+**4. Purchase counts come from Stripe, not the browser.** Each row's purchase
+figure will be the GA4 `purchase` event sent from the signature-verified webhook,
+deduplicated on the Stripe Checkout Session id. Browser `Purchase` remains
+prohibited, so a row cannot be inflated by client-side events or by webhook
+replay.
+
+**5. Consent affects funnel volume, and therefore rates — not purchase counts.**
+Optional browser analytics is now off until a visitor accepts. Page views and
+funnel steps will be undercounted by however many visitors decline or never
+answer. **Purchase counts are unaffected** — they come from the server. Any
+conversion *rate* computed as purchases ÷ browser sessions will therefore read
+high, and must not be compared against pre-consent baselines. Rows should track
+absolute purchases per campaign, which are trustworthy, rather than a rate that
+mixes a server numerator with a consent-suppressed denominator.
+
+**6. Meta rows remain unmeasurable.** The Pixel is inert and CAPI is deferred
+with its send path removed. Both paid rows still carry a `null` target and
+still lack the spend and account approvals they require. Nothing here makes a
+Meta row runnable.

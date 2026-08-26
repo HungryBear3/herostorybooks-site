@@ -1,247 +1,157 @@
 /**
- * Privacy-safe Meta Conversions API candidate — server side.
+ * Meta Conversions API — DEFERRED. There is no send path in this file.
  *
- * WHAT THIS IS ALLOWED TO SEND. One event, `Purchase`, and only from the
- * existing trusted path: the signature-verified Stripe webhook, after payment
- * convergence and after the durable payment write — the same gate
- * `src/lib/ga4-purchase.ts` already sits behind. There is no other caller and
- * no other event.
+ * ── THE DECISION ─────────────────────────────────────────────────────────────
  *
- * WHAT IT NEVER SENDS. No `user_data`, no Advanced Matching, no hashed or
- * unhashed email/phone/name, no `external_id`, no `client_ip_address`, no
- * `client_user_agent`, no order id, no Stripe session or PaymentIntent id, no
- * customer email, no child or family data, no asset URL, and no dynamic URL.
- * `assertNoBlockedFields` (see ./event-contract.ts) walks the built payload and
- * throws rather than trimming, so a bad caller fails loudly instead of quietly
- * shipping less than it meant to.
+ * The previous candidate built a Purchase payload containing exactly four
+ * facts: `event_name`, `event_time`, `event_id` (a SHA-256 pseudonym of the
+ * Stripe session id), `action_source`, `event_source_url` (a constant origin),
+ * and `custom_data` (currency, value, content id). It deliberately sent no
+ * `user_data` at all.
  *
- * DEDUPLICATION. `event_id` is a SHA-256 digest of the Stripe Checkout Session
- * id, prefixed and truncated. It is stable across webhook replays — the same
- * session always produces the same event_id — so Meta collapses replays, and it
- * is not the session id, so Meta never receives HSB's transaction identity. An
- * in-process guard additionally refuses a second send for the same event_id
- * within one runtime, which covers the webhook's own replay branch calling this
- * twice inside one invocation.
+ * That payload cannot work, and the reason is structural rather than a
+ * configuration gap. Meta's Conversions API requires `user_data` on every
+ * server event, and requires it to carry at least one customer-information
+ * parameter for the event to be attributable. An event with no `user_data` is
+ * not a weakly-matched event; it is a rejected or unattributable one.
+ * `event_source_url` and `event_id` are not matching signals: `event_id` exists
+ * to DEDUPLICATE a server event against a browser event of the same name, and
+ * `event_source_url` describes the page, not the person. Sending them alone
+ * satisfies a schema, not a purpose.
  *
- * FAILURE POSTURE. Bounded timeout, no retry, every error swallowed by
- * `scheduleMetaCapiPurchase`, scheduled through `after()` so it runs past the
- * webhook response. Analytics cannot delay, fail, or mutate a payment,
- * confirmation, or fulfillment.
+ * So the honest options were: send real matching data, or do not send.
  *
- * DISABLED BY DEFAULT. Absent any of the three environment variables below, or
- * with the flag not exactly 'true', every entry point returns 'skipped' and no
- * network call is constructed.
+ * ── WHY NOT SEND MATCHING DATA ───────────────────────────────────────────────
+ *
+ * The minimum viable matching contract would be a normalised, SHA-256 hashed
+ * purchaser email (`em`), optionally with `fbp` / `fbc` from Meta's own
+ * first-party cookies. HSB cannot currently satisfy that safely:
+ *
+ *  1. NO SERVER-SIDE CONSENT EVIDENCE. The consent surface added in this branch
+ *     is a browser mechanism. The Stripe webhook has no consent record for the
+ *     purchaser, so a server send could not prove the purchaser agreed to
+ *     ad-platform sharing. Hashing is not consent; a hashed email is still
+ *     personal data being disclosed to a third party.
+ *  2. NO PRIVACY APPROVAL. No owner decision exists authorising customer
+ *     matching to an ad platform, and the purchaser is a parent buying a
+ *     product about their child. That is the last dataset to treat casually.
+ *  3. `fbp` / `fbc` DO NOT EXIST HERE. Those cookies are written by the Meta
+ *     Pixel, which is inert on every deployment and, when it does run, only
+ *     after a granted consent. There is nothing to read.
+ *
+ * The brief's preferred outcome and this module's outcome are therefore the
+ * same: DEFER. No misleading send path is retained.
+ *
+ * ── WHAT IS RETAINED ─────────────────────────────────────────────────────────
+ *
+ * The interface seam and the environment-variable names, so the later decision
+ * has somewhere to land and so tests can prove the deferral is real. What is
+ * NOT retained: any `fetch`, any endpoint, any payload builder, any scheduler,
+ * and any call site. `grep -r scheduleMetaCapiPurchase src/` returns nothing
+ * but this file's own documentation, and the Stripe webhook no longer
+ * references Meta at all.
+ *
+ * ── PURCHASE OWNERSHIP, UNCHANGED ────────────────────────────────────────────
+ *
+ * A browser Purchase remains prohibited by contract. The signature-verified
+ * Stripe webhook remains the sole authority for purchase, and GA4's
+ * Measurement Protocol remains its only destination. `event_id` ownership is
+ * defined for a future implementation below, but nothing owns it today because
+ * nothing sends.
  */
-
-import { createHash } from 'node:crypto';
-
-import {
-  assertNoBlockedFields,
-  isAllowlistedServerEvent,
-  type MetaServerEvent,
-} from './event-contract.ts';
 
 /** Server-only. None of these may ever be given a NEXT_PUBLIC_ prefix. */
 export const META_CAPI_DATASET_ID_ENV = 'META_CAPI_DATASET_ID';
 export const META_CAPI_ACCESS_TOKEN_ENV = 'META_CAPI_ACCESS_TOKEN';
 export const META_CAPI_FLAG_ENV = 'META_CAPI_ENABLED';
 
-/** Pinned so a Graph API default version change cannot silently alter behaviour. */
-export const META_GRAPH_API_VERSION = 'v21.0';
+/** The one status this module can report. There is no other branch. */
+export type MetaCapiStatus = 'deferred';
 
-/** Bounded and short. A slow ad platform must not hold a serverless instance. */
-export const META_CAPI_TIMEOUT_MS = 2_500;
-
-/**
- * The only URL Meta is told about. A constant public origin — never the request
- * URL, never a path, never a query string.
- */
-export const META_EVENT_SOURCE_URL = 'https://herostorybooks.com/';
-
-export interface MetaCapiConfig {
-  datasetId: string;
-  accessToken: string;
-  endpoint: string;
-}
-
-export interface MetaCapiPurchaseInput {
+export interface MetaCapiDeferral {
+  status: MetaCapiStatus;
+  /** Machine-readable reason, for tests and for operator tooling. */
+  reason: 'no_matching_contract';
   /**
-   * Stripe Checkout Session id. Used ONLY to derive the hashed event_id; it is
-   * never placed in the payload and is asserted absent before sending.
+   * The unmet preconditions, in the order they would have to be satisfied.
+   * Configuring credentials does NOT shorten this list.
    */
-  stripeSessionId: string;
-  amountCents: number;
-  currency?: string | null;
-  /** Stable product identifier, e.g. `book_premium`. Not an order id. */
-  contentId: string;
-  paymentStatus?: string | null;
-  /** Unix seconds. Injected rather than read from the clock, so it is testable. */
-  eventTimeSeconds: number;
+  blockers: readonly string[];
 }
 
-export interface MetaCapiDeps {
-  fetchImpl?: typeof fetch;
-  env?: NodeJS.ProcessEnv;
-  log?: Pick<Console, 'warn'>;
-  timeoutMs?: number;
-  /** Test seam for the in-process idempotency guard. */
-  sentEventIds?: Set<string>;
-}
-
-export type AfterImpl = (callback: () => void | Promise<void>) => void;
-
-export type MetaCapiResult = 'sent' | 'skipped' | 'duplicate';
-
-/** Only these Stripe payment states are a purchase. Mirrors ga4-purchase.ts. */
-function isVerifiedPayment(status: string | null | undefined): boolean {
-  return status === 'paid' || status === 'no_payment_required';
-}
-
-const DATASET_ID_RE = /^\d{8,20}$/;
-
-/** Resolve config, or null when the candidate must stay dark. */
-export function resolveMetaCapiConfig(env: NodeJS.ProcessEnv = process.env): MetaCapiConfig | null {
-  if (env[META_CAPI_FLAG_ENV] !== 'true') return null;
-  const datasetId = (env[META_CAPI_DATASET_ID_ENV] ?? '').trim();
-  const accessToken = (env[META_CAPI_ACCESS_TOKEN_ENV] ?? '').trim();
-  if (!DATASET_ID_RE.test(datasetId) || accessToken.length === 0) return null;
-  return {
-    datasetId,
-    accessToken,
-    endpoint: `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${datasetId}/events`,
-  };
-}
+const BLOCKERS = Object.freeze([
+  'meta_requires_user_data_with_at_least_one_matching_parameter',
+  'no_server_side_consent_evidence_for_the_purchaser',
+  'no_owner_privacy_approval_for_customer_matching',
+  'no_fbp_or_fbc_available_because_the_pixel_is_inert',
+] as const);
 
 /**
- * Stable, non-reversible dedupe identity.
+ * The current CAPI posture. Always deferred.
  *
- * Not an HMAC: there is no key to hold, and adding a secret would make the id
- * environment-dependent, which would break dedupe across a key rotation — the
- * one property this value exists to provide. It is a pseudonym, not a secret,
- * and it is the only thing derived from the session id that ever leaves HSB.
+ * Deliberately takes no arguments and reads no environment: the deferral is a
+ * product and privacy decision, not a configuration state, so setting
+ * META_CAPI_ENABLED cannot change what this returns.
  */
-export function deriveMetaEventId(stripeSessionId: string): string {
-  const digest = createHash('sha256').update(`hsb:meta:purchase:${stripeSessionId}`).digest('hex');
-  return `hsb_${digest.slice(0, 32)}`;
-}
-
-export interface MetaCapiEventPayload {
-  data: [{
-    event_name: MetaServerEvent;
-    event_time: number;
-    event_id: string;
-    action_source: 'website';
-    event_source_url: string;
-    custom_data: { currency: string; value: number; content_ids: string[]; content_type: 'product' };
-  }];
-}
-
-/**
- * Build the payload. Throws on anything the contract forbids, including a
- * non-allowlisted event name and any identifier-shaped value that slipped into
- * `contentId`.
- */
-export function buildMetaCapiPurchaseEvent(input: MetaCapiPurchaseInput): MetaCapiEventPayload {
-  const eventName: MetaServerEvent = 'Purchase';
-  if (!isAllowlistedServerEvent(eventName)) throw new Error(`Meta server event not allowlisted: ${eventName}`);
-
-  const payload: MetaCapiEventPayload = {
-    data: [{
-      event_name: eventName,
-      event_time: Math.trunc(input.eventTimeSeconds),
-      event_id: deriveMetaEventId(input.stripeSessionId),
-      action_source: 'website',
-      event_source_url: META_EVENT_SOURCE_URL,
-      custom_data: {
-        currency: (input.currency || 'usd').toUpperCase(),
-        value: Math.max(0, Math.trunc(input.amountCents)) / 100,
-        content_ids: [input.contentId],
-        content_type: 'product',
-      },
-    }],
+export function metaCapiStatus(): MetaCapiDeferral {
+  return {
+    status: 'deferred',
+    reason: 'no_matching_contract',
+    blockers: BLOCKERS,
   };
-
-  // The guard bans `transaction_id` and `session_id` as field names and rejects
-  // Stripe-shaped values anywhere, so this cannot pass if the session id leaked
-  // into the payload through any path.
-  assertNoBlockedFields(payload);
-  return payload;
-}
-
-/** Process-lifetime dedupe guard. Backstop, not the primary mechanism. */
-const processSentEventIds = new Set<string>();
-
-/**
- * Send one Purchase. Returns 'skipped' when unconfigured or unpaid, 'duplicate'
- * when this runtime already sent the same event_id, 'sent' otherwise.
- */
-export async function sendMetaCapiPurchase(
-  input: MetaCapiPurchaseInput,
-  deps: MetaCapiDeps = {},
-): Promise<MetaCapiResult> {
-  if (!isVerifiedPayment(input.paymentStatus)) return 'skipped';
-
-  const config = resolveMetaCapiConfig(deps.env ?? process.env);
-  if (!config) return 'skipped';
-
-  const payload = buildMetaCapiPurchaseEvent(input);
-  const eventId = payload.data[0].event_id;
-  const seen = deps.sentEventIds ?? processSentEventIds;
-  if (seen.has(eventId)) return 'duplicate';
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), deps.timeoutMs ?? META_CAPI_TIMEOUT_MS);
-  try {
-    const response = await (deps.fetchImpl ?? fetch)(config.endpoint, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        // Header, never query string: a token in a URL ends up in access logs.
-        authorization: `Bearer ${config.accessToken}`,
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`Meta Conversions API returned ${response.status}`);
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  // Marked only after a successful send. A timeout or 5xx therefore does not
-  // burn the id — but there is deliberately no retry here either, because a
-  // retry without a durable idempotency store is how one purchase becomes two.
-  seen.add(eventId);
-  return 'sent';
 }
 
 /**
- * Fire-and-forget wrapper for the Stripe webhook. Mirrors
- * `scheduleGa4Purchase`: deferred past the response, every failure swallowed
- * and logged, never able to change payment, email, or fulfillment state.
+ * The shape a future implementation would need, recorded so the decision has a
+ * concrete target rather than a vague intention.
+ *
+ * This is a TYPE ONLY. Nothing constructs it, and adding a builder for it is
+ * not sufficient to make CAPI live — the blockers above are.
  */
-export function scheduleMetaCapiPurchase(
-  input: MetaCapiPurchaseInput,
-  afterImpl: AfterImpl,
-  deps: MetaCapiDeps = {},
-): void {
-  const warn = (error: unknown) => (deps.log ?? console).warn(
-    '[analytics] Meta Conversions API purchase failed; payment flow unaffected',
-    { message: error instanceof Error ? error.message : String(error) },
-  );
-  try {
-    afterImpl(async () => {
-      try {
-        await sendMetaCapiPurchase(input, deps);
-      } catch (error) {
-        warn(error);
-      }
-    });
-  } catch (error) {
-    warn(error);
-  }
+export interface FutureMetaCapiPurchaseContract {
+  /**
+   * Deduplication key, owned by the SERVER. If a browser Purchase were ever
+   * permitted (it is not), both sides would have to send the same value. It
+   * must remain a pseudonym derived from the Stripe session, never the session
+   * id itself.
+   */
+  event_id: string;
+  /**
+   * The matching block. REQUIRED by Meta, and the reason this is deferred.
+   * Every member would be normalised then SHA-256 hashed before it left the
+   * process, and none of it may ever describe a child.
+   */
+  user_data: {
+    /** Lowercased, trimmed, hashed purchaser email. Adult purchaser only. */
+    em?: string;
+    /** Meta's own first-party browser cookies, if a consented pixel set them. */
+    fbp?: string;
+    fbc?: string;
+  };
+  custom_data: {
+    currency: string;
+    value: number;
+    content_ids: readonly string[];
+    content_type: 'product';
+  };
 }
 
-/** Test-only reset of the process-lifetime guard. */
-export function __resetMetaCapiProcessGuardForTests(): void {
-  processSentEventIds.clear();
-}
+/**
+ * Explicitly enumerated so a reviewer can check the negative claim rather than
+ * take it on trust. Asserted in tests/marketing-meta-capi.test.ts.
+ */
+export const META_CAPI_NEVER_SENDS = Object.freeze([
+  'child_name',
+  'child_photo',
+  'family_data',
+  'story_input',
+  'order_id',
+  'submission_id',
+  'stripe_session_id',
+  'payment_intent_id',
+  'customer_email',
+  'shipping_address',
+  'proof_token',
+  'review_token',
+  'asset_url',
+] as const);

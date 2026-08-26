@@ -4,6 +4,8 @@ import Script from 'next/script';
 import { SafeVercelAnalytics } from '@/components/safe-vercel-analytics';
 import { AnalyticsPageView } from '@/components/analytics-page-view';
 import { MetaPixelMount } from '@/components/marketing/meta-pixel-mount';
+import { ConsentSurface } from '@/components/marketing/consent-surface';
+import { AttributionCapture } from '@/components/marketing/attribution-capture';
 
 const googleAnalyticsMeasurementId = 'G-68FKEDZEG3';
 const googleAnalyticsEnabled = process.env.VERCEL_ENV === 'production';
@@ -47,6 +49,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     if (!ignoreReferrer) pageReferrer = referrerUrl.origin + referrerUrl.pathname;
                   }
                 } catch (_) {}
+                // Google Consent Mode v2, DENIED BY DEFAULT. This runs before
+                // config, so no storage-backed measurement happens until the
+                // visitor makes an explicit choice. The consent surface calls
+                // gtag('consent','update',...) on a grant; declining leaves
+                // these defaults in place. Essential site behaviour and the
+                // trusted server-side Stripe purchase path do not consult this.
+                gtag('consent', 'default', {
+                  ad_storage: 'denied',
+                  ad_user_data: 'denied',
+                  ad_personalization: 'denied',
+                  analytics_storage: 'denied',
+                  functionality_storage: 'granted',
+                  security_storage: 'granted'
+                });
                 gtag('js', new Date());
                 gtag('config', '${googleAnalyticsMeasurementId}', {
                   send_page_view: false,
@@ -61,9 +77,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body className="bg-cream text-gray-900">
         <SafeVercelAnalytics />
+        <AttributionCapture />
         <AnalyticsPageView />
         <MetaPixelMount />
         {children}
+        <ConsentSurface />
       </body>
     </html>
   );

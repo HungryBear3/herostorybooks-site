@@ -68,6 +68,11 @@ test('runtime payload strips PII and preserves first-touch campaign attribution 
 
   try {
     const { track, trackPageView } = await import('../src/lib/analytics.ts');
+    // Optional browser measurement is consent-gated. Grant it so this test
+    // keeps asking its original question. The declined case is covered in
+    // tests/marketing-consent-store.test.ts.
+    const consentStore = await import('../src/lib/marketing/consent-store.ts');
+    consentStore.setConsent('granted');
     trackPageView('/checkout');
     mockWindow.location = new URL('https://herostorybooks.com/thank-you');
     track('purchase_intent', { bookFormat: 'digital' });
@@ -114,6 +119,7 @@ test('runtime payload strips PII and preserves first-touch campaign attribution 
     assert.match(serialized, /utm_source/);
     assert.doesNotMatch(serialized, /PrivateName|PriorName|childName/);
   } finally {
+    (await import('../src/lib/marketing/consent-store.ts')).__resetConsentStoreForTests();
     if (priorWindow === undefined) {
       Reflect.deleteProperty(globalThis, 'window');
     } else {
@@ -149,6 +155,11 @@ test('Stripe Checkout returns preserve the original session attribution', async 
 
   try {
     const { isUnwantedReferral, trackPageView } = await import('../src/lib/analytics.ts');
+    // Optional browser measurement is consent-gated. Grant it so this test
+    // keeps asking its original question. The declined case is covered in
+    // tests/marketing-consent-store.test.ts.
+    const consentStore = await import('../src/lib/marketing/consent-store.ts');
+    consentStore.setConsent('granted');
     assert.equal(isUnwantedReferral('https://checkout.stripe.com/c/pay/private'), true);
     assert.equal(isUnwantedReferral('https://facebook.com/story'), false);
     trackPageView('/thank-you');
@@ -158,6 +169,7 @@ test('Stripe Checkout returns preserve the original session attribution', async 
     assert.equal((eventCall[2] as Record<string, unknown>).ignore_referrer, true);
     assert.doesNotMatch(JSON.stringify(calls), /cs_live_private/);
   } finally {
+    (await import('../src/lib/marketing/consent-store.ts')).__resetConsentStoreForTests();
     if (priorWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
     else Object.defineProperty(globalThis, 'window', { configurable: true, value: priorWindow });
     if (priorDocument === undefined) Reflect.deleteProperty(globalThis, 'document');

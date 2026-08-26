@@ -4,6 +4,29 @@
 import type { CoverVariant } from './cover-variant';
 import { track as trackVercelEvent } from '@vercel/analytics';
 import { metaHandleHsbEvent } from './marketing/meta-bridge.ts';
+import { getConsent } from './marketing/consent-store.ts';
+import { isMarketingConsentGranted } from './marketing/consent.ts';
+
+/**
+ * Optional browser measurement is off until the visitor explicitly grants it.
+ *
+ * This governs the THREE outbound browser destinations -- GA4 (gtag), Vercel
+ * Analytics, and the Meta candidate -- from one source of truth, so they cannot
+ * drift apart. The in-memory `window.hsbEvents` buffer is deliberately still
+ * populated: it never leaves the tab, it carries no identifier, and it is what
+ * makes the funnel inspectable in DevTools and assertable in Playwright without
+ * turning on any transmission.
+ *
+ * Essential behaviour and the trusted server-side Stripe purchase path do not
+ * consult this.
+ */
+function optionalAnalyticsAllowed(): boolean {
+  try {
+    return isMarketingConsentGranted(getConsent());
+  } catch {
+    return false;
+  }
+}
 
 type GtagFn = {
   (command: 'config' | 'event', target: string, params?: Record<string, unknown>): void;
@@ -25,6 +48,7 @@ export type CoverEventName =
 
 export function trackCoverEvent(name: CoverEventName, params: Record<string, unknown>): void {
   if (typeof window === 'undefined') return;
+  if (!optionalAnalyticsAllowed()) return;
   try {
     const campaignParams = currentCampaignParams();
     const eventParams = { ...campaignParams, ...params };
@@ -265,6 +289,15 @@ export function track(
   try {
     window.hsbEvents = window.hsbEvents ?? [];
     window.hsbEvents.push(record);
+    // Everything below this line leaves the browser. Nothing does without an
+    // explicit grant.
+    if (!optionalAnalyticsAllowed()) {
+      if (hsbAnalyticsIsDev()) {
+        // eslint-disable-next-line no-console
+        console.info(`[hsb-analytics] ${event} (buffered only: no consent)`);
+      }
+      return record;
+    }
     if (typeof window.gtag === 'function') {
       const googleCampaign = googleCampaignFields(campaignParams);
       if (Object.keys(googleCampaign).length) window.gtag('set', googleCampaign);
