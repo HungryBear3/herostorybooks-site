@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import Script from 'next/script';
 import { SafeVercelAnalytics } from '@/components/safe-vercel-analytics';
 import { AnalyticsPageView } from '@/components/analytics-page-view';
+import { MetaPixelMount } from '@/components/marketing/meta-pixel-mount';
 
 const googleAnalyticsMeasurementId = 'G-68FKEDZEG3';
 const googleAnalyticsEnabled = process.env.VERCEL_ENV === 'production';
@@ -61,6 +62,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="bg-cream text-gray-900">
         <SafeVercelAnalytics />
         <AnalyticsPageView />
+        <MetaPixelMount />
         {children}
       </body>
     </html>

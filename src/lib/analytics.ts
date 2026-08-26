@@ -3,6 +3,7 @@
 // when GA isn't wired yet.
 import type { CoverVariant } from './cover-variant';
 import { track as trackVercelEvent } from '@vercel/analytics';
+import { metaHandleHsbEvent } from './marketing/meta-bridge.ts';
 
 type GtagFn = {
   (command: 'config' | 'event', target: string, params?: Record<string, unknown>): void;
@@ -272,6 +273,11 @@ export function track(
     if (event !== 'page_view') {
       trackVercelEvent(event, vercelSafeProps(record));
     }
+    // Meta candidate. Only the event NAME crosses this line: the bridge
+    // supplies its own fixed, allowlisted parameters and never reads `record`,
+    // which carries theme, photo/voice flags, and URL-prefill hints. Returns a
+    // skip reason and does nothing at all unless the pixel is fully enabled.
+    metaHandleHsbEvent(event);
   } catch {
     /* never throw from analytics */
   }

@@ -13,6 +13,7 @@ import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '../.
 import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment, recordPrintUpgradeSettlementConflict } from '../../../../lib/print-upgrades.ts';
 import { isExactSettledCheckoutSession } from '../../../../lib/checkout-session-confirmation.ts';
 import { scheduleGa4Purchase } from '../../../../lib/ga4-purchase.ts';
+import { scheduleMetaCapiPurchase } from '../../../../lib/marketing/meta-capi.ts';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -41,6 +42,29 @@ interface StripeCheckoutSession {
       country?: string | null;
     } | null;
   } | null;
+}
+
+/**
+ * Build the Meta Conversions API purchase input from an already-verified,
+ * already-converged Stripe session.
+ *
+ * Only four facts cross this boundary: the session id (used solely to derive a
+ * hashed, non-reversible event_id — it is never placed in the payload), the
+ * settled amount, the currency, and a stable product content id. No order id,
+ * no customer email, no shipping address, no PaymentIntent.
+ *
+ * The candidate is disabled by default: with META_CAPI_ENABLED unset,
+ * scheduleMetaCapiPurchase constructs no request at all.
+ */
+function metaCapiPurchaseFrom(session: StripeCheckoutSession, contentId: string) {
+  return {
+    stripeSessionId: session.id,
+    amountCents: session.amount_total ?? 0,
+    currency: session.currency,
+    contentId,
+    paymentStatus: session.payment_status,
+    eventTimeSeconds: Math.floor(Date.now() / 1000),
+  };
 }
 
 function getStripe() {
@@ -192,6 +216,10 @@ export async function POST(request: Request) {
           paymentStatus: session.payment_status,
           clientId: session.metadata?.gaClientId,
         }, after);
+        scheduleMetaCapiPurchase(
+          metaCapiPurchaseFrom(session, `print_upgrade_${targetFormat}`),
+          after,
+        );
       } catch (err) {
         console.error(`Stripe webhook: failed to process print upgrade for ${upgradeOrderId}:`, err);
         return NextResponse.json({ error: 'Processing failed' }, { status: 500 });
@@ -303,6 +331,10 @@ export async function POST(request: Request) {
             paymentStatus: session.payment_status,
             clientId: session.metadata?.gaClientId,
           }, after);
+          scheduleMetaCapiPurchase(
+            metaCapiPurchaseFrom(session, `book_${replayOrder.bookFormat}`),
+            after,
+          );
           scheduleOrderConfirmationEmail(replayOrder, { afterImpl: after });
           if (!replayOrder.fulfillmentStatus || replayOrder.fulfillmentStatus === 'not_started') {
             // Repair path: a prior webhook/replay marked the order paid but
@@ -387,6 +419,10 @@ export async function POST(request: Request) {
         paymentStatus: session.payment_status,
         clientId: session.metadata?.gaClientId,
       }, after);
+      scheduleMetaCapiPurchase(
+        metaCapiPurchaseFrom(session, `book_${updated.bookFormat}`),
+        after,
+      );
 
       // Webhook contract:
       //   - The payment write (above) is awaited so the order is durably
