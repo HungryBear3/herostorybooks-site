@@ -14,6 +14,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -37,7 +38,12 @@ import {
   parseArgs,
   recordIsReady,
   redactTokens,
+  pathnameMatchesIdentity,
+  revalidateCheckpointedAsset,
+  revalidateCheckpoints,
+  reviseStateAfterRevalidation,
   validateCutoverState,
+  verifySourceType,
   CUTOVER_STATE_VERSION,
 } from '../scripts/family-review-migrate-assets.ts';
 
@@ -383,9 +389,6 @@ test('no code path buffers a whole asset into memory', () => {
 /* == 5. Content type is sniffed from the source, not echoed ============== */
 
 test('a record whose recorded mime contradicts its bytes is refused', async () => {
-  const { verifySourceType } = await import(
-    '../scripts/family-review-migrate-assets.ts'
-  );
   const png = bytesOf(PNG_HEAD, 16);
   const verdict = verifySourceType(png, 'image/jpeg');
   assert.equal(verdict.ok, false);
@@ -397,9 +400,6 @@ test('a record whose recorded mime contradicts its bytes is refused', async () =
 });
 
 test('bytes that are not a supported image are refused, whatever the record says', async () => {
-  const { verifySourceType } = await import(
-    '../scripts/family-review-migrate-assets.ts'
-  );
   const html = new TextEncoder().encode('<!DOCTYPE html><scr');
   for (const claimed of ['image/png', 'image/jpeg', 'image/webp']) {
     const verdict = verifySourceType(html.slice(0, 16), claimed);
@@ -409,9 +409,6 @@ test('bytes that are not a supported image are refused, whatever the record says
 });
 
 test('an agreeing record passes, and equivalent spellings are not spoofs', async () => {
-  const { verifySourceType } = await import(
-    '../scripts/family-review-migrate-assets.ts'
-  );
   assert.equal(verifySourceType(bytesOf(PNG_HEAD, 16), 'image/png').ok, true);
   assert.equal(verifySourceType(bytesOf(JPEG_HEAD, 16), 'image/jpeg').ok, true);
   // image/jpg is the same format as image/jpeg.
@@ -1038,5 +1035,386 @@ test('the record written to the destination goes through the shared sanitizer', 
     migrationSource(),
     /const plan = buildPersistPlan\(record\);/,
     'reuse the sanitizer so no plaintext review token can reach the destination',
+  );
+});
+
+/* == 17. Byte-level checkpoint revalidation on resume ==================== */
+
+/** A PNG-headed payload of a given length whose tail encodes `fill`. */
+function pngBytes(len: number, fill: number): Uint8Array {
+  const out = new Uint8Array(len);
+  out.set(PNG_HEAD, 0);
+  for (let i = PNG_HEAD.length; i < len; i += 1) out[i] = fill;
+  return out;
+}
+
+function jpegBytes(len: number, fill: number): Uint8Array {
+  const out = new Uint8Array(len);
+  out.set(JPEG_HEAD, 0);
+  for (let i = JPEG_HEAD.length; i < len; i += 1) out[i] = fill;
+  return out;
+}
+
+function sha256Of(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** A reader that serves fixed bytes, recording every pathname asked for. */
+function readerOf(
+  bytes: Uint8Array | null,
+  seen: string[] = [],
+): (p: string) => Promise<ReadableStream<Uint8Array> | null> {
+  return async (pathname: string) => {
+    seen.push(pathname);
+    if (bytes === null) return null;
+    // Chunked, so the consumer really is streaming.
+    let offset = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset >= bytes.byteLength) {
+          controller.close();
+          return;
+        }
+        const end = Math.min(offset + 7, bytes.byteLength);
+        controller.enqueue(bytes.slice(offset, end));
+        offset = end;
+      },
+    });
+  };
+}
+
+/** A sample asset whose bytes are `payload`, with a truthful checkpoint. */
+function boundCase(payload: Uint8Array) {
+  const identity = {
+    kind: 'photo' as const,
+    assetId: 'a-p1',
+    pathname: 'family-review/photos/fr-x/a-p1.jpg',
+    size: payload.byteLength,
+    mime: 'image/png',
+  };
+  const entry = { ...identity, sourceSha256: sha256Of(payload) };
+  return { identity, entry };
+}
+
+const PAYLOAD = pngBytes(64, 0x11);
+const REPLACEMENT = pngBytes(64, 0x22); // same path, same size, same MIME
+
+async function revalidate(
+  over: {
+    sourceBytes?: Uint8Array | null;
+    destBytes?: Uint8Array | null;
+    identity?: Record<string, unknown>;
+    entry?: Record<string, unknown>;
+    submissionId?: string;
+  } = {},
+) {
+  const base = boundCase(PAYLOAD);
+  return revalidateCheckpointedAsset({
+    submissionId: over.submissionId ?? 'fr-x',
+    identity: { ...base.identity, ...(over.identity ?? {}) } as never,
+    entry: { ...base.entry, ...(over.entry ?? {}) } as never,
+    readSource: readerOf(
+      over.sourceBytes === undefined ? PAYLOAD : over.sourceBytes,
+    ),
+    readDest: readerOf(over.destBytes === undefined ? PAYLOAD : over.destBytes),
+    maxBytes: 1000,
+  });
+}
+
+test('an honest checkpoint with matching bytes on both sides survives', async () => {
+  assert.deepEqual(await revalidate(), { ok: true });
+});
+
+test('SOURCE-BYTE REPLACEMENT at the same path, size and MIME is caught', async () => {
+  // The case shape validation provably cannot see: identical pathname,
+  // identical length, identical sniffed type, different content.
+  assert.equal(REPLACEMENT.byteLength, PAYLOAD.byteLength);
+  assert.notEqual(sha256Of(REPLACEMENT), sha256Of(PAYLOAD));
+  const verdict = await revalidate({ sourceBytes: REPLACEMENT, destBytes: REPLACEMENT });
+  assert.deepEqual(verdict, { ok: false, reason: 'source_hash_changed' });
+});
+
+test('arbitrary valid-looking hash tampering is caught', async () => {
+  // 64 hex characters, passes every shape check, describes nothing.
+  const invented = 'd'.repeat(64);
+  assert.match(invented, /^[0-9a-f]{64}$/);
+  const verdict = await revalidate({ entry: { sourceSha256: invented } });
+  assert.deepEqual(verdict, { ok: false, reason: 'source_hash_changed' });
+});
+
+test('a missing destination object revokes the checkpoint', async () => {
+  assert.deepEqual(await revalidate({ destBytes: null }), {
+    ok: false,
+    reason: 'dest_missing',
+  });
+});
+
+test('DESTINATION-BYTE REPLACEMENT is caught', async () => {
+  const verdict = await revalidate({ destBytes: REPLACEMENT });
+  assert.deepEqual(verdict, { ok: false, reason: 'dest_hash_mismatch' });
+});
+
+test('a destination truncated to a different length is caught', async () => {
+  const short = pngBytes(32, 0x11);
+  const verdict = await revalidate({ destBytes: short });
+  assert.deepEqual(verdict, { ok: false, reason: 'dest_size_mismatch' });
+});
+
+test('a destination object of a different image type is caught', async () => {
+  const jpeg = jpegBytes(64, 0x11);
+  const verdict = await revalidate({ destBytes: jpeg });
+  assert.deepEqual(verdict, { ok: false, reason: 'dest_type_mismatch' });
+});
+
+test('a missing source object revokes the checkpoint', async () => {
+  assert.deepEqual(await revalidate({ sourceBytes: null }), {
+    ok: false,
+    reason: 'source_missing',
+  });
+});
+
+test('a source that changed type is caught even when its length is unchanged', async () => {
+  const jpeg = jpegBytes(64, 0x11);
+  const verdict = await revalidate({ sourceBytes: jpeg, destBytes: jpeg });
+  assert.deepEqual(verdict, { ok: false, reason: 'source_type_changed' });
+});
+
+test('a source whose length no longer matches the record is caught', async () => {
+  const longer = pngBytes(96, 0x11);
+  const verdict = await revalidate({ sourceBytes: longer, destBytes: longer });
+  assert.deepEqual(verdict, { ok: false, reason: 'source_size_changed' });
+});
+
+test('revalidation enforces the ceiling on BOTH sides while streaming', async () => {
+  const big = pngBytes(4000, 0x11);
+  const { identity, entry } = boundCase(big);
+  const source = await revalidateCheckpointedAsset({
+    submissionId: 'fr-x',
+    identity: identity as never,
+    entry: entry as never,
+    readSource: readerOf(big),
+    readDest: readerOf(big),
+    maxBytes: 1000,
+  });
+  assert.deepEqual(source, { ok: false, reason: 'source_too_large' });
+});
+
+test('an entry whose pathname belongs to another submission is rejected', async () => {
+  // Top-level submissionId edited to match; the entry was spliced in.
+  const verdict = await revalidate({
+    identity: { pathname: 'family-review/photos/fr-someone-else/a-p1.jpg' },
+    entry: { pathname: 'family-review/photos/fr-someone-else/a-p1.jpg' },
+  });
+  assert.deepEqual(verdict, { ok: false, reason: 'submission_binding_mismatch' });
+});
+
+test('a photo pathname under the samples folder is rejected', () => {
+  assert.equal(
+    pathnameMatchesIdentity('family-review/samples/fr-x/a-1.jpg', 'fr-x', 'photo'),
+    false,
+  );
+  assert.equal(
+    pathnameMatchesIdentity('family-review/photos/fr-x/a-1.jpg', 'fr-x', 'photo'),
+    true,
+  );
+  assert.equal(
+    pathnameMatchesIdentity('preview/family-review/samples/fr-x/a-1.png', 'fr-x', 'sample'),
+    true,
+  );
+});
+
+test('an entry whose identity drifted from the record is rejected before any read', async () => {
+  const seen: string[] = [];
+  const verdict = await revalidateCheckpointedAsset({
+    submissionId: 'fr-x',
+    identity: boundCase(PAYLOAD).identity as never,
+    entry: { ...boundCase(PAYLOAD).entry, size: 999 } as never,
+    readSource: readerOf(PAYLOAD, seen),
+    readDest: readerOf(PAYLOAD, seen),
+    maxBytes: 1000,
+  });
+  assert.deepEqual(verdict, { ok: false, reason: 'identity_mismatch' });
+  assert.deepEqual(seen, [], 'no object may be read once identity fails');
+});
+
+test('both sides are read through their OWN reader, by pathname', async () => {
+  const sourceSeen: string[] = [];
+  const destSeen: string[] = [];
+  const { identity, entry } = boundCase(PAYLOAD);
+  await revalidateCheckpointedAsset({
+    submissionId: 'fr-x',
+    identity: identity as never,
+    entry: entry as never,
+    readSource: readerOf(PAYLOAD, sourceSeen),
+    readDest: readerOf(PAYLOAD, destSeen),
+    maxBytes: 1000,
+  });
+  assert.deepEqual(sourceSeen, ['family-review/photos/fr-x/a-p1.jpg']);
+  assert.deepEqual(destSeen, ['family-review/photos/fr-x/a-p1.jpg']);
+});
+
+/* == 18. COMPLETED state with stale bytes ================================ */
+
+function completedRecordCase(sourceBytes: Uint8Array, destBytes: Uint8Array | null) {
+  const rec = {
+    id: 'fr-x',
+    photos: {
+      assets: [
+        {
+          assetId: 'a-p1',
+          blobPathname: 'family-review/photos/fr-x/a-p1.jpg',
+          storage: 'public',
+          mime: 'image/png',
+          size: PAYLOAD.byteLength,
+          uploadedAt: 'now',
+        },
+      ],
+    },
+    samples: [],
+  } as never as { id: string; photos: { assets: never[] }; samples: never[] };
+
+  const state = {
+    version: CUTOVER_STATE_VERSION,
+    submissionId: 'fr-x',
+    recordFingerprint: computeRecordFingerprint(rec),
+    assetsVerified: [
+      { ...assetIdentitiesOf(rec)[0], sourceSha256: sha256Of(PAYLOAD) },
+    ],
+    recordWritten: true,
+    completedAt: '2026-08-26T00:00:00.000Z',
+  };
+
+  return {
+    rec,
+    state,
+    run: () =>
+      revalidateCheckpoints({
+        record: rec,
+        state: state as never,
+        readSource: readerOf(sourceBytes),
+        readDest: readerOf(destBytes),
+        maxBytes: 1000,
+      }),
+  };
+}
+
+test('a COMPLETED state passes shape validation but is revoked by stale source bytes', async () => {
+  const c = completedRecordCase(REPLACEMENT, REPLACEMENT);
+
+  // Shape validation alone is perfectly happy with this state.
+  const shape = validateCutoverState(c.state, c.rec);
+  assert.deepEqual(shape.reasons, []);
+  assert.equal(shape.state.completedAt, '2026-08-26T00:00:00.000Z');
+
+  // Byte revalidation is not.
+  const { state, reasons } = await c.run();
+  assert.deepEqual(reasons, ['source_hash_changed']);
+  assert.equal(state.completedAt, undefined, 'completion must be revoked');
+  assert.equal(state.recordWritten, false, 'the record must be rewritten');
+  assert.deepEqual(state.assetsVerified, []);
+  assert.equal(
+    assetsNeedingCopy(assetIdentitiesOf(c.rec), state).length,
+    1,
+    'the asset must be recopied',
+  );
+});
+
+test('a COMPLETED state is revoked when the destination object is gone', async () => {
+  const { state, reasons } = await completedRecordCase(PAYLOAD, null).run();
+  assert.deepEqual(reasons, ['dest_missing']);
+  assert.equal(state.completedAt, undefined);
+  assert.equal(state.recordWritten, false);
+});
+
+test('a COMPLETED state survives when both sides still match', async () => {
+  const { state, reasons } = await completedRecordCase(PAYLOAD, PAYLOAD).run();
+  assert.deepEqual(reasons, []);
+  assert.equal(state.completedAt, '2026-08-26T00:00:00.000Z');
+  assert.equal(state.recordWritten, true);
+  assert.equal(state.assetsVerified.length, 1);
+});
+
+test('revoking one asset of several withdraws completion for the whole record', () => {
+  const rec = record();
+  const identities = assetIdentitiesOf(rec);
+  const full = goodState(rec);
+  const revised = reviseStateAfterRevalidation(
+    full as never,
+    identities,
+    full.assetsVerified.slice(0, 2) as never,
+  );
+  assert.equal(revised.completedAt, undefined);
+  assert.equal(revised.recordWritten, false);
+  assert.equal(recordIsReady(identities, revised), false);
+});
+
+test('resume revalidates bytes before honouring completedAt', () => {
+  const src = migrationSource();
+  const body = src.slice(src.indexOf('async function migrateSubmission'));
+  const shapeIdx = body.indexOf('validateCutoverState(raw, record)');
+  const revalIdx = body.indexOf('await revalidateCheckpoints(');
+  const honourIdx = body.indexOf('if (state.completedAt)');
+  assert.ok(shapeIdx > 0 && revalIdx > shapeIdx, 'shape validation precedes byte revalidation');
+  assert.ok(honourIdx > revalIdx, 'completedAt may only be read after byte revalidation');
+  assert.match(body, /const state = revalidated\.state;/);
+});
+
+test('revalidation reads each side through its own credential', () => {
+  const src = migrationSource();
+  const sourceFn = src.slice(
+    src.indexOf('function sourceReader('),
+    src.indexOf('function destReader('),
+  );
+  const destFn = src.slice(
+    src.indexOf('function destReader('),
+    src.indexOf('/* -- Copy + verify -- */'),
+  );
+  assert.match(sourceFn, /access: 'public'/);
+  assert.match(sourceFn, /token: creds\.sourceToken/);
+  assert.doesNotMatch(sourceFn, /destToken/);
+  assert.match(destFn, /access: 'private'/);
+  assert.match(destFn, /token: creds\.destToken/);
+  assert.doesNotMatch(destFn, /sourceToken/);
+});
+
+/* == 19. The source stream is released when MIME validation fails ======== */
+
+test('a failed MIME check cancels the source stream instead of leaking it', async () => {
+  let cancelled = false;
+  let produced = 0;
+  const src = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      produced += 1;
+      const chunk = new Uint8Array(8);
+      if (produced === 1) chunk.set(PNG_HEAD, 0);
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  const metered = await meterAndSniff(src, 1000);
+  // Record claims JPEG; the bytes are PNG. copyAssetStreaming cancels here.
+  const verdict = verifySourceType(metered.head, 'image/jpeg');
+  assert.equal(verdict.ok, false);
+
+  await metered.body.cancel();
+  assert.equal(cancelled, true, 'the upstream source must be cancelled');
+});
+
+test('the copy path cancels the metered body on a MIME failure before put', () => {
+  const src = stripComments(migrationSource());
+  const copyBody = src.slice(
+    src.indexOf('async function copyAssetStreaming'),
+    src.indexOf('async function writeDestinationRecord'),
+  );
+  const verdictIdx = copyBody.indexOf('if (verdict.ok === false)');
+  const putIdx = copyBody.indexOf('await put(');
+  assert.ok(verdictIdx > 0 && putIdx > verdictIdx, 'the MIME gate precedes put');
+  assert.match(
+    copyBody.slice(verdictIdx, putIdx),
+    /await metered\.body\.cancel\(\)/,
+    'the source stream must be released before returning',
   );
 });

@@ -729,6 +729,230 @@ export function verifySourceType(
   return { ok: true, mime: sniffed.mime };
 }
 
+/* -- Checkpoint revalidation (byte-level) -- */
+
+/**
+ * A stream source for one object, or null when it is absent.
+ *
+ * Injected so revalidation is testable without a store, and so the
+ * caller is forced to decide WHICH credential each side uses.
+ */
+export type ObjectReader = (
+  pathname: string,
+) => Promise<ReadableStream<Uint8Array> | null>;
+
+export type RevalidationReason =
+  | 'identity_mismatch'
+  | 'submission_binding_mismatch'
+  | 'source_missing'
+  | 'source_too_large'
+  | 'source_type_changed'
+  | 'source_size_changed'
+  | 'source_hash_changed'
+  | 'dest_missing'
+  | 'dest_too_large'
+  | 'dest_type_mismatch'
+  | 'dest_size_mismatch'
+  | 'dest_hash_mismatch';
+
+export type RevalidationVerdict =
+  | { ok: true }
+  | { ok: false; reason: RevalidationReason };
+
+/**
+ * An asset pathname must live under its own submission's folder.
+ *
+ * Catches a state file whose top-level submissionId was edited to match
+ * while its entries were spliced in from another submission.
+ */
+export function pathnameMatchesIdentity(
+  pathname: string,
+  submissionId: string,
+  kind: AssetKind,
+): boolean {
+  const folder = kind === 'photo' ? 'photos' : 'samples';
+  return pathname.includes(`family-review/${folder}/${submissionId}/`);
+}
+
+/**
+ * Re-prove one checkpointed asset against the CURRENT bytes on both
+ * sides.
+ *
+ * Shape validation alone cannot detect a source object replaced in place
+ * with same-length, same-type bytes, a destination object deleted or
+ * overwritten, or a syntactically valid hash that was simply invented.
+ * Every one of those leaves a checkpoint that looks perfect. So on
+ * resume the bytes are read again, through the two explicit credentials,
+ * and the checkpoint is retained ONLY if all of these agree:
+ *
+ *   - the entry's full identity matches the record's
+ *   - the pathname belongs to this submission
+ *   - the live source still sniffs to the recorded mime
+ *   - the live source's length matches the record
+ *   - the live source's hash matches the RECORDED sourceSha256
+ *   - the destination object exists, is within the ceiling, sniffs to
+ *     the same mime, and matches the source's size and hash
+ *
+ * Both reads stream and are ceiling-enforced; neither side is buffered.
+ */
+export async function revalidateCheckpointedAsset(args: {
+  submissionId: string;
+  identity: AssetIdentity;
+  entry: VerifiedAsset;
+  readSource: ObjectReader;
+  readDest: ObjectReader;
+  maxBytes: number;
+}): Promise<RevalidationVerdict> {
+  const { submissionId, identity, entry, readSource, readDest, maxBytes } = args;
+
+  if (!identitiesEqual(identity, entry)) {
+    return { ok: false, reason: 'identity_mismatch' };
+  }
+  if (!pathnameMatchesIdentity(identity.pathname, submissionId, identity.kind)) {
+    return { ok: false, reason: 'submission_binding_mismatch' };
+  }
+
+  // --- source side -------------------------------------------------
+  let sourceStream: ReadableStream<Uint8Array> | null;
+  try {
+    sourceStream = await readSource(identity.pathname);
+  } catch {
+    return { ok: false, reason: 'source_missing' };
+  }
+  if (!sourceStream) return { ok: false, reason: 'source_missing' };
+
+  let sourceStats: { size: number; sha256: string; head: Uint8Array };
+  try {
+    sourceStats = await digestStream(sourceStream, maxBytes);
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AssetTooLarge') {
+      return { ok: false, reason: 'source_too_large' };
+    }
+    return { ok: false, reason: 'source_missing' };
+  }
+
+  const sourceType = verifySourceType(sourceStats.head, identity.mime);
+  if (sourceType.ok === false) {
+    return { ok: false, reason: 'source_type_changed' };
+  }
+  if (sourceStats.size !== identity.size) {
+    return { ok: false, reason: 'source_size_changed' };
+  }
+  // The recorded proof must still describe the bytes that are there now.
+  // This is what catches a same-path, same-size, same-type replacement,
+  // and an invented-but-well-formed sourceSha256.
+  if (sourceStats.sha256 !== entry.sourceSha256) {
+    return { ok: false, reason: 'source_hash_changed' };
+  }
+
+  // --- destination side --------------------------------------------
+  let destStream: ReadableStream<Uint8Array> | null;
+  try {
+    destStream = await readDest(identity.pathname);
+  } catch {
+    return { ok: false, reason: 'dest_missing' };
+  }
+  if (!destStream) return { ok: false, reason: 'dest_missing' };
+
+  let destStats: { size: number; sha256: string; head: Uint8Array };
+  try {
+    destStats = await digestStream(destStream, maxBytes);
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AssetTooLarge') {
+      return { ok: false, reason: 'dest_too_large' };
+    }
+    return { ok: false, reason: 'dest_missing' };
+  }
+
+  const destSniffed = sniffImageType(destStats.head);
+  if (!destSniffed || destSniffed.mime !== sourceType.mime) {
+    return { ok: false, reason: 'dest_type_mismatch' };
+  }
+  if (destStats.size !== sourceStats.size) {
+    return { ok: false, reason: 'dest_size_mismatch' };
+  }
+  if (destStats.sha256 !== sourceStats.sha256) {
+    return { ok: false, reason: 'dest_hash_mismatch' };
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Rebuild state from the entries that survived byte revalidation.
+ *
+ * Completion is RE-DERIVED from what is still proven, so a single
+ * revoked entry withdraws completedAt and recordWritten: the record must
+ * be rewritten after the affected assets are recopied.
+ */
+export function reviseStateAfterRevalidation(
+  state: CutoverState,
+  identities: AssetIdentity[],
+  kept: VerifiedAsset[],
+): CutoverState {
+  const complete = recordIsReady(identities, { assetsVerified: kept });
+  const recordWritten = complete && state.recordWritten;
+  // Built field by field rather than spread: spreading `state` would
+  // carry completedAt straight through, so a conditional that only ever
+  // RE-ADDS it can never actually revoke it.
+  return {
+    version: state.version,
+    submissionId: state.submissionId,
+    recordFingerprint: state.recordFingerprint,
+    assetsVerified: kept,
+    recordWritten,
+    ...(recordWritten && state.completedAt
+      ? { completedAt: state.completedAt }
+      : {}),
+  };
+}
+
+/**
+ * Byte-revalidate every checkpointed asset for one record.
+ *
+ * Returns the surviving state plus a reason code per revoked asset.
+ * Revoked assets are simply recopied, which is safe: a destination write
+ * is an overwrite of the same pathname.
+ */
+export async function revalidateCheckpoints(args: {
+  record: { id: string; photos: { assets: PhotoAsset[] }; samples: SampleAsset[] };
+  state: CutoverState;
+  readSource: ObjectReader;
+  readDest: ObjectReader;
+  maxBytes: number;
+}): Promise<{ state: CutoverState; reasons: string[] }> {
+  const identities = assetIdentitiesOf(args.record);
+  const byKey = new Map(identities.map((i) => [assetIdentityKey(i), i]));
+  const kept: VerifiedAsset[] = [];
+  const reasons: string[] = [];
+
+  for (const entry of args.state.assetsVerified) {
+    const identity = byKey.get(assetIdentityKey(entry));
+    if (!identity) {
+      reasons.push('entry_not_on_record');
+      continue;
+    }
+    const verdict = await revalidateCheckpointedAsset({
+      submissionId: args.record.id,
+      identity,
+      entry,
+      readSource: args.readSource,
+      readDest: args.readDest,
+      maxBytes: args.maxBytes,
+    });
+    if (verdict.ok === false) {
+      reasons.push(verdict.reason);
+      continue;
+    }
+    kept.push(entry);
+  }
+
+  return {
+    state: reviseStateAfterRevalidation(args.state, identities, kept),
+    reasons,
+  };
+}
+
 /* -- Cutover state (destination store only) -- */
 
 export function cutoverStatePath(submissionId: string): string {
@@ -844,6 +1068,34 @@ async function readSourceRecord(
   }
 }
 
+/* -- Object readers, one per credential -- */
+
+/** Streams an object out of the SOURCE (public) store. */
+function sourceReader(creds: Credentials): ObjectReader {
+  return async (pathname) => {
+    const result = await get(pathname, {
+      access: 'public',
+      token: creds.sourceToken,
+      useCache: false,
+    });
+    if (!result || result.statusCode !== 200 || !result.stream) return null;
+    return result.stream;
+  };
+}
+
+/** Streams an object out of the DESTINATION (private) store. */
+function destReader(creds: Credentials): ObjectReader {
+  return async (pathname) => {
+    const result = await get(pathname, {
+      access: 'private',
+      token: creds.destToken,
+      useCache: false,
+    });
+    if (!result || result.statusCode !== 200 || !result.stream) return null;
+    return result.stream;
+  };
+}
+
 /* -- Copy + verify -- */
 
 type CopyResult =
@@ -887,6 +1139,10 @@ async function copyAssetStreaming(
   // The BYTES decide the content type.
   const verdict = verifySourceType(metered.head, identity.mime);
   if (verdict.ok === false) {
+    // Nothing will consume the metered body now, so cancel it: that
+    // propagates to the upstream reader and releases the source
+    // connection instead of leaving it open until GC.
+    await metered.body.cancel().catch(() => {});
     return { ok: false, result: verdict.result, detail: verdict.detail };
   }
   const sniffed = { mime: verdict.mime };
@@ -1051,16 +1307,37 @@ async function migrateSubmission(
   }
 
   const raw = await readRawCutoverState(creds, record.id);
-  const { state, reasons } = validateCutoverState(raw, record);
-  if (reasons.length > 0) {
+  const shape = validateCutoverState(raw, record);
+  if (shape.reasons.length > 0) {
     // Counts and reason codes only -- never the state contents.
     console.warn(
-      `[migrate] cutover state for ${record.id} partially discarded: ${reasons.join(', ')}`,
+      `[migrate] cutover state for ${record.id} failed shape validation: ${shape.reasons.join(', ')}`,
     );
   }
 
-  // completedAt is honoured ONLY because validateCutoverState just
-  // re-derived the binding and confirmed full coverage.
+  // Shape validation cannot see bytes. A source replaced in place with
+  // same-length same-type content, a destination deleted or overwritten,
+  // or an invented-but-well-formed hash all leave a checkpoint that
+  // looks perfect. Re-prove every surviving entry against the CURRENT
+  // bytes on both sides, through their own credentials, before any of it
+  // is allowed to skip work.
+  const revalidated = await revalidateCheckpoints({
+    record,
+    state: shape.state,
+    readSource: sourceReader(creds),
+    readDest: destReader(creds),
+    maxBytes: MAX_ASSET_BYTES,
+  });
+  if (revalidated.reasons.length > 0) {
+    console.warn(
+      `[migrate] cutover state for ${record.id} revoked by byte revalidation: ${revalidated.reasons.join(', ')}`,
+    );
+  }
+  const state = revalidated.state;
+
+  // completedAt is honoured ONLY because BOTH gates just passed: shape
+  // validation re-derived the binding, and byte revalidation re-proved
+  // every asset against the current source and destination objects.
   if (state.completedAt) {
     for (const id of identities) {
       outcomes.push({

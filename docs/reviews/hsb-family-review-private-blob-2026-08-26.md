@@ -266,6 +266,11 @@ The streamed length is also compared against the record's declared `size`, so a
 source object that changed under the migration fails `size_mismatch` rather than
 being silently copied.
 
+When the mime check fails the metered body is **cancelled** before returning.
+Nothing downstream will consume it at that point, and cancelling propagates to
+the upstream reader, releasing the source connection instead of leaving it open
+until garbage collection.
+
 ### 6.4 Order of operations, per submission
 
 1. **source read** — bytes by pathname, source token
@@ -341,7 +346,7 @@ legitimately share an asset id while living at different pathnames; keying on
 the id alone would let one copy mark both verified and quietly skip a real
 object.
 
-### 7.2 What is rejected, and what happens then
+### 7.2 Gate one: shape validation
 
 `validateCutoverState()` revalidates the binding on every run and discards
 anything it cannot stand behind:
@@ -359,41 +364,88 @@ anything it cannot stand behind:
 | Entry's identity differs from the record's | `entry_identity_mismatch` | that entry dropped |
 | `completedAt` present without full revalidated coverage | `completion_revoked` | completion dropped |
 
-Discarding is safe: a dropped entry simply means that asset is copied again, and
-a destination write is an overwrite of the same pathname. Reason codes are
-logged; state **contents** never are.
-
 A record carrying a genuinely duplicated identity (the same `kind:assetId`
-twice) is refused outright, before state is even read — there is no single
-object a checkpoint could describe.
+twice) is refused outright, before state is even read.
 
-### 7.3 completedAt is never taken at face value
+### 7.3 Gate two: byte revalidation
 
-`completedAt` survives a run only when the state validates, `recordWritten` is
-true, **and** every asset identity on the current record has a matching verified
-entry. A record with no assets can never be marked complete. The migration reads
-`completedAt` only from the validated result, never from the raw file.
+**Shape validation cannot see bytes.** A checkpoint can be perfectly well-formed
+and still describe nothing that is true:
 
-### 7.4 Crash behaviour
+- the source object replaced in place with **same-path, same-length,
+  same-sniffed-type** content;
+- a `sourceSha256` that is 64 valid hex characters and simply invented;
+- the destination object deleted, truncated, or overwritten since the copy.
 
-- **Crash mid-asset** — that asset has no checkpoint; it is recopied. Assets
-  before it are skipped.
-- **Crash between copy and record write** — all assets verified, record
-  unwritten; the next run writes only the record.
-- **Record changed between runs** — fingerprint mismatch; everything is recopied
-  and the stale completion is revoked.
-- **State file tampered or truncated** — the untrustworthy parts are dropped and
-  recopied.
+So passing gate one is not enough to skip work. On resume, **every surviving
+checkpoint is re-proved against the current bytes on both sides**, each read
+through its own explicit credential — source via `sourceReader` (public access,
+source token), destination via `destReader` (private access, dest token).
 
-### 7.5 Known limit
+Both reads stream through `digestStream()` and are ceiling-enforced; neither
+side is buffered. A checkpoint is retained only if **all** of these hold:
 
-A source object whose **bytes** change while its declared `size` and `mime` stay
-identical is not detected on resume for an already-verified asset: the record is
-the only cheap witness, and re-reading every source object on every run would
-defeat resumability. The copy path *does* catch it at the moment of copying (the
-streamed length is compared to the record, and the destination is verified
-against the streamed hash), and `sourceSha256` is retained in state so a future
-re-verify pass can catch it retroactively. Stated here rather than implied.
+1. the entry's full identity equals the record's;
+2. the pathname lives under `family-review/{photos|samples}/{submissionId}/`
+   — catching entries spliced in from another submission under an edited
+   top-level `submissionId`;
+3. the live source still sniffs to the recorded mime;
+4. the live source's length equals the record's declared size;
+5. the live source's hash equals the **recorded** `sourceSha256`;
+6. the destination object exists, is within the ceiling, sniffs to the same
+   mime, and matches the source's size and hash.
+
+| Reason code | What it means |
+|---|---|
+| `identity_mismatch` | entry no longer describes the record's asset (checked before any read) |
+| `submission_binding_mismatch` | pathname belongs to a different submission |
+| `source_missing` / `dest_missing` | object absent or unreadable |
+| `source_too_large` / `dest_too_large` | exceeded the ceiling mid-stream |
+| `source_type_changed` / `dest_type_mismatch` | bytes no longer sniff to the expected type |
+| `source_size_changed` / `dest_size_mismatch` | length no longer agrees |
+| `source_hash_changed` | **the source bytes were replaced** |
+| `dest_hash_mismatch` | **the destination bytes were replaced** |
+
+Any revoked entry is dropped and its asset recopied. Because completion is
+re-derived from what is still proven, **one revoked asset withdraws
+`completedAt` and `recordWritten` for the whole record**, so the record is
+rewritten after the recopy.
+
+### 7.4 completedAt is never taken at face value
+
+`completedAt` survives a run only after **both** gates: the state validates,
+byte revalidation re-proves every entry, `recordWritten` is true, and every
+asset identity on the current record has a surviving verified entry. A record
+with no assets can never be marked complete. The migration reads `completedAt`
+only from the twice-validated result, never from the raw file.
+
+### 7.5 Crash behaviour
+
+- **Crash mid-asset** — that asset has no checkpoint; it is recopied.
+- **Crash between copy and record write** — all assets revalidate; the next run
+  writes only the record.
+- **Record changed between runs** — fingerprint mismatch at gate one; everything
+  is recopied and the stale completion revoked.
+- **Source or destination bytes changed between runs** — caught at gate two;
+  those assets are recopied and completion is withdrawn.
+- **State file tampered** — untrustworthy parts are dropped at whichever gate
+  sees them first.
+
+### 7.6 The cost of gate two
+
+Byte revalidation re-reads **both** copies of every checkpointed asset on every
+resume. A resumed run is therefore not cheap: a submission that is already
+complete still costs a full streaming read of its source and destination objects
+before it can be skipped.
+
+That is a deliberate trade. The alternative — trusting a checkpoint because it
+is well-formed — is exactly the class of self-confirming check this whole
+design has been correcting: it would report `already_verified` for an asset
+whose bytes had been swapped underneath it. Correctness over speed, and the
+reads are streamed and bounded so the cost is bandwidth and time, not memory.
+
+`--submission=<id>` and `--limit=N` exist to keep a resumed run's scope
+proportionate.
 
 ## 8. Deletion and rollback
 
@@ -483,6 +535,9 @@ already forbids interpolating `${pathname}` into logs and that guard stands.
   exit code 5. A partial scan is never reported as a completed run (§6.6).
 - Cutover state that does not revalidate against its binding → discarded, and
   the affected assets are recopied (§7.2).
+- A checkpoint whose current source or destination bytes no longer match the
+  recorded proof → revoked, completion withdrawn, asset recopied (§7.3). A
+  well-formed checkpoint is never trusted on shape alone.
 - **Default on merge is `public`** — i.e. exactly today's behavior — because
   of §1.4. Merging this PR changes no runtime behavior until an operator
   provisions a private store and flips the flag.
@@ -504,14 +559,14 @@ $ node --experimental-strip-types --test tests/family-review-image-type.test.ts
   tests 6 | pass 6 | fail 0
 
 $ node --experimental-strip-types --test tests/family-review-asset-migration.test.ts
-  tests 72 | pass 72 | fail 0
+  tests 95 | pass 95 | fail 0
 
 $ node --experimental-strip-types --test tests/family-review-asset-access-control.test.ts
   tests 17 | pass 17 | fail 0
 ```
 
-The migration suite is now 72 cases (15 -> 39 with the cross-store rewrite,
-39 -> 72 with checkpoint binding, streaming, sniffing, and enumeration). What
+The migration suite is now 95 cases (15 -> 39 cross-store, 39 -> 72 checkpoint
+binding + streaming + sniffing + enumeration, 72 -> 95 byte revalidation). What
 they prove:
 
 | Guarantee | How it is proven |
@@ -531,6 +586,11 @@ they prove:
 | A changed record invalidates the checkpoint | A replaced sample and a resized photo each flip the fingerprint, discard the whole checkpoint, and force a full recopy. |
 | Reused ids across kinds are distinct assets | The same `assetId` on a photo and a sample yields two identity keys; verifying the photo leaves the sample pending and the readiness gate closed. A genuinely duplicated identity on one record is detected and the record refused before state is read. |
 | `completedAt` is re-derived | Completion is revoked when coverage is partial, when `recordWritten` is false, and for an empty record; source asserts it is read only from validated state. |
+| A checkpoint is never trusted on shape alone | Behavioural: with injected readers serving real chunked streams, a **same-path/same-size/same-MIME source replacement** yields `source_hash_changed`; an **invented 64-hex hash** yields `source_hash_changed`; a **missing destination** yields `dest_missing`; a **destination byte replacement** yields `dest_hash_mismatch`; truncation and type changes yield their own codes. |
+| A COMPLETED state with stale bytes is revoked | The same state passes shape validation cleanly (`reasons: []`, `completedAt` intact) and is then revoked by byte revalidation — `completedAt` cleared, `recordWritten` false, the asset queued for recopy. |
+| One revoked asset withdraws the whole record's completion | `reviseStateAfterRevalidation` drops `completedAt` and `recordWritten` when any entry fails, so the record is rewritten after recopy. |
+| Both sides are read through their OWN credential | `sourceReader` is `access:'public'` + `sourceToken` and contains no `destToken`; `destReader` is `access:'private'` + `destToken` and contains no `sourceToken`. Identity failure short-circuits **before any read**. |
+| A failed MIME check releases the source | Behavioural: a stream whose `cancel()` sets a flag is confirmed cancelled; source asserts `metered.body.cancel()` sits between the MIME gate and `put`. |
 | The fingerprint is stable under normal work | Deterministic, order-independent, changes on any identity change, and unchanged by `updatedAt` / `status` / `feedback`. |
 
 ### Tests changed, and why that is not weakening
@@ -546,7 +606,8 @@ Each now asserts the same guarantee against the new mechanism, and two gained an
 | `family-review photo picker … mobile image mime variants` | asserted `resolveImageType`, `image/jpg`, and the no-filename comment in the upload route | asserts the route calls `resolveUploadImageType`, and asserts `image/jpg` tolerance, the no-filename guarantee, **and** a new `doesNotMatch(/file\.name/)` in the shared module that now owns them. |
 
 `tests/family-review-asset-migration.test.ts` was rewritten again for the bound
-checkpoint model (39 → 72 cases). Nothing it previously asserted was dropped:
+checkpoint model, then extended for byte revalidation (39 → 72 → 95 cases).
+Nothing it previously asserted was dropped:
 the dry-run default, the three-part confirmation, every partial path to
 production, deletion refusal, bounded scoped enumeration, verification content,
 and redacted reporting all survive, with the source/destination, aliasing,
@@ -558,7 +619,7 @@ No privacy or auth control was relaxed to make anything pass.
 
 ```
 $ npm test
-  tests 1734 | pass 1734 | fail 0
+  tests 1757 | pass 1757 | fail 0
 ```
 
 ### Build
@@ -594,13 +655,18 @@ Neither store was contacted. No `FAMILY_REVIEW_SOURCE_BLOB_TOKEN`,
 private read/write path has still **never been exercised against a live Vercel
 Blob store**.
 
-The streaming, hashing, sniffing, truncation, and checkpoint-binding logic is
-tested against real in-process streams and real state objects, so that logic is
-genuinely exercised. What is *not* exercised is the SDK boundary: that
-`access:'private'` succeeds, that `put()` accepts a `ReadableStream` body with
-`multipart: true` against a real store, that `get()` returns a stream whose
-`contentType` matches what was written, and that a real two-store copy
-round-trips. Per §1.4 the Production store could not serve any of it today
+The streaming, hashing, sniffing, truncation, checkpoint-binding, and byte-
+revalidation logic is tested against real in-process streams and real state
+objects — including the source- and destination-replacement cases, which run
+through injected readers serving genuinely chunked streams. That logic is
+exercised for real.
+
+What is *not* exercised is the SDK boundary: that `access:'private'` succeeds,
+that `put()` accepts a `ReadableStream` body with `multipart: true` against a
+real store, that `get()` returns a stream whose `contentType` matches what was
+written, and that a real two-store copy round-trips. The injected readers stand
+in for `sourceReader`/`destReader`; that those two functions are wired to the
+right credential and access mode is asserted structurally, not executed. Per §1.4 the Production store could not serve any of it today
 regardless. First real exercise must be a Preview deployment against a genuinely
 separate private store. See §14.
 
@@ -620,10 +686,12 @@ separate private store. See §14.
    already handed out.
 4. **Edge-cached copies of legacy photos** may persist ~1 year (F-1)
    independent of any origin deletion. No cache purge is implemented.
-5. **A silent byte change to an already-verified source object** is not detected
-   on resume when the record's declared size and mime are unchanged (§7.5). It
-   *is* caught at copy time; `sourceSha256` is retained so a future re-verify
-   pass can catch it retroactively.
+5. **Resume is no longer cheap.** Byte revalidation re-reads both copies of
+   every checkpointed asset before it may be skipped (§7.6). A large already-
+   complete namespace costs a full streaming read of both stores per run. Scope
+   a resumed run with `--submission=<id>` / `--limit=N` where that matters. The
+   previous revision's silent-byte-change gap is closed by this, not worked
+   around.
 6. **Token format assumption.** Aliasing detection parses
    `vercel_blob_rw_<storeId>_<secret>`. If Vercel changes that format, tokens
    stop parsing and the utility **refuses to run** — it fails closed, not open —
