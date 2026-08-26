@@ -22,6 +22,12 @@
 import { NextResponse } from 'next/server';
 
 import { isAdminRequestAuthed } from '@/lib/family-review/admin-auth';
+import {
+  AssetStorageError,
+  openAsset,
+  safeDownloadFilename,
+  serveableContentType,
+} from '@/lib/family-review/private-assets';
 import { findById } from '@/lib/family-review/store';
 import {
   isWellFormedAssetId,
@@ -57,24 +63,37 @@ export async function GET(
   if (!asset) {
     return new NextResponse('Not found', { status: 404 });
   }
-  let upstream: Response;
+  // Storage is opened only after BOTH checks above have passed: the
+  // admin cookie, and the asset belonging to this submission.
+  let opened;
   try {
-    upstream = await fetch(asset.blobUrl, { cache: 'no-store' });
-  } catch {
+    opened = await openAsset(asset);
+  } catch (err) {
+    if (err instanceof AssetStorageError && err.code === 'not_found') {
+      return new NextResponse('Not found', { status: 404 });
+    }
+    console.error(
+      `[family-review/admin/asset] read failed (submission=${submissionId}, asset=${assetId}):`,
+      err instanceof AssetStorageError ? err.code : 'unknown',
+    );
     return new NextResponse('Upstream fetch failed', { status: 502 });
   }
-  if (!upstream.ok || !upstream.body) {
-    return new NextResponse('Upstream fetch failed', {
-      status: upstream.status || 502,
-    });
-  }
-  return new NextResponse(upstream.body, {
+
+  // Content-Type comes from the mime recorded at upload time and is
+  // allowlisted here — never from the upstream response — so a tampered
+  // object cannot choose how the browser interprets it.
+  return new NextResponse(opened.stream, {
     status: 200,
     headers: {
-      'Content-Type': asset.mime || 'application/octet-stream',
+      'Content-Type': serveableContentType(asset.mime),
+      'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'private, no-store, max-age=0',
+      'Referrer-Policy': 'no-referrer',
       'X-Robots-Tag': 'noindex, nofollow',
-      'Content-Disposition': 'inline',
+      'Content-Disposition': `inline; filename="${safeDownloadFilename(
+        `hsb-${assetId}`,
+        asset.mime,
+      )}"`,
     },
   });
 }

@@ -33,6 +33,7 @@ import {
   type Direction,
   type Pronoun,
 } from '@/lib/family-review/store';
+import { resolveUploadImageType } from '@/lib/family-review/image-type';
 import {
   hashReviewToken,
   newAssetId,
@@ -45,14 +46,6 @@ export const dynamic = 'force-dynamic';
 
 const DEFAULT_INVITE_CODES = ['hazel-meadow', 'family-test'];
 
-const ALLOWED_MIME: Record<string, string> = {
-  'image/jpeg': 'jpg',
-  'image/jpg': 'jpg',
-  'image/png': 'png',
-  'image/webp': 'webp',
-  'image/heic': 'heic',
-  'image/heif': 'heif',
-};
 const MAX_BYTES_PER_FILE = 10 * 1024 * 1024;
 const MAX_FILES = 5;
 
@@ -84,43 +77,6 @@ function extractInviteCodeFromText(value: string): string {
   const embeddedCode = normalized.match(/\b[a-z0-9]+(?:-[a-z0-9]+){2,}\b/);
   if (embeddedCode) return embeddedCode[0];
   return normalized;
-}
-
-async function resolveImageType(file: File): Promise<{ mime: string; ext: string } | null> {
-  const declaredExt = ALLOWED_MIME[file.type];
-  if (declaredExt) return { mime: file.type, ext: declaredExt };
-
-  // Some mobile browsers/cameras send HEIC/JPG with a blank or
-  // nonstandard MIME. Sniff only magic bytes; never read File.name.
-  const header = new Uint8Array(await file.slice(0, 16).arrayBuffer());
-  if (header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) {
-    return { mime: 'image/jpeg', ext: 'jpg' };
-  }
-  if (
-    header[0] === 0x89 &&
-    header[1] === 0x50 &&
-    header[2] === 0x4e &&
-    header[3] === 0x47
-  ) {
-    return { mime: 'image/png', ext: 'png' };
-  }
-  if (
-    header[0] === 0x52 &&
-    header[1] === 0x49 &&
-    header[2] === 0x46 &&
-    header[3] === 0x46 &&
-    header[8] === 0x57 &&
-    header[9] === 0x45 &&
-    header[10] === 0x42 &&
-    header[11] === 0x50
-  ) {
-    return { mime: 'image/webp', ext: 'webp' };
-  }
-  const brand = String.fromCharCode(...header.slice(4, 12));
-  if (/ftyp(heic|heix|hevc|heif|mif1)/i.test(brand)) {
-    return { mime: 'image/heic', ext: 'heic' };
-  }
-  return null;
 }
 
 function emailLooksValid(email: string): boolean {
@@ -222,7 +178,7 @@ export async function POST(req: Request) {
         { status: 413 },
       );
     }
-    const resolved = await resolveImageType(file);
+    const resolved = await resolveUploadImageType(file);
     if (!resolved) {
       return NextResponse.json(
         {
