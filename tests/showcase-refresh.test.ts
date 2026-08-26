@@ -30,6 +30,17 @@ test('Dog City page 17 and Pasta Planet page 19 remain the homepage leads', () =
   assert.match(source, /id: 'pasta-planet'[\s\S]*?leadPage: '19'/);
 });
 
+test('Pasta Planet crops keep Lukas in frame', () => {
+  for (const page of ['6', '10', '19', '24']) {
+    assert.match(
+      source,
+      new RegExp(`page: '${page}'[^\\n]+pasta-planet[^\\n]+focalPoint: '(?:20|22)% 50%'`),
+      `Pasta Planet page ${page} needs its Lukas-focused crop`,
+    );
+  }
+  assert.equal((source.match(/style=\{\{ objectPosition: focalPoint\((?:lead|page)\) \}\}/g) ?? []).length, 3);
+});
+
 test('sample framing stays illustrative and proof-first', () => {
   assert.match(source, /Digital sample · illustrative only/);
   assert.match(source, /Each new paid book still gets its own proof and approval pass/);

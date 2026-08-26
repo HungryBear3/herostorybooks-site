@@ -277,10 +277,10 @@ const showcaseBooks = [
       'A bright space-food adventure with cinematic landscapes, surprising scale, and a warm trip home.',
     leadPage: '19',
     pages: [
-      { page: '6', title: 'Lift-Off', note: 'Opening spectacle', image: '/assets/showcase/pasta-planet/page-06.jpg' },
-      { page: '10', title: 'Planet Discovery', note: 'Imaginative world', image: '/assets/showcase/pasta-planet/page-10.jpg' },
-      { page: '19', title: 'Cinematic Adventure', note: 'Hero composition', image: '/assets/showcase/pasta-planet/page-19.jpg' },
-      { page: '24', title: 'Home Again', note: 'Warm closing scene', image: '/assets/showcase/pasta-planet/page-24.jpg' },
+      { page: '6', title: 'Lift-Off', note: 'Opening spectacle', image: '/assets/showcase/pasta-planet/page-06.jpg', focalPoint: '22% 50%' },
+      { page: '10', title: 'Planet Discovery', note: 'Imaginative world', image: '/assets/showcase/pasta-planet/page-10.jpg', focalPoint: '20% 50%' },
+      { page: '19', title: 'Cinematic Adventure', note: 'Hero composition', image: '/assets/showcase/pasta-planet/page-19.jpg', focalPoint: '20% 50%' },
+      { page: '24', title: 'Home Again', note: 'Warm closing scene', image: '/assets/showcase/pasta-planet/page-24.jpg', focalPoint: '22% 50%' },
     ],
   },
 ] as const;
@@ -696,15 +696,17 @@ function ShowcaseBookFeature({
 }) {
   const lead = book.pages.find((page) => page.page === book.leadPage) ?? book.pages[0];
   const supporting = book.pages.filter((page) => page.page !== book.leadPage).slice(0, 2);
+  const focalPoint = (page: (typeof showcaseBooks)[number]['pages'][number]) =>
+    'focalPoint' in page ? page.focalPoint : '50% 50%';
   const gallery = (
     <div className="grid grid-cols-[1.18fr_0.82fr] grid-rows-2 gap-3">
       <figure className="relative row-span-2 overflow-hidden rounded-3xl border border-[#d8c6a2] bg-[#f5ead2] shadow-[0_24px_70px_-52px_rgba(31,26,22,0.4)]">
-        <img src={lead.image} alt={`${book.title}, page ${lead.page}: ${lead.title}`} className="h-full min-h-[420px] w-full object-cover" loading="lazy" />
+        <img src={lead.image} alt={`${book.title}, page ${lead.page}: ${lead.title}`} className="h-full min-h-[420px] w-full object-cover" style={{ objectPosition: focalPoint(lead) }} loading="lazy" />
         <figcaption className="absolute bottom-3 left-3 rounded-full bg-[#1f1a16]/90 px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#fff8ec]">Page {lead.page}</figcaption>
       </figure>
       {supporting.map((page) => (
         <figure key={page.page} className="relative overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#f5ead2]">
-          <img src={page.image} alt={`${book.title}, page ${page.page}: ${page.title}`} className="h-full min-h-[200px] w-full object-cover" loading="lazy" />
+          <img src={page.image} alt={`${book.title}, page ${page.page}: ${page.title}`} className="h-full min-h-[200px] w-full object-cover" style={{ objectPosition: focalPoint(page) }} loading="lazy" />
           <figcaption className="absolute bottom-2 left-2 rounded-full bg-[#1f1a16]/90 px-3 py-1.5 text-[9px] font-bold uppercase tracking-[0.14em] text-[#fff8ec]">Page {page.page}</figcaption>
         </figure>
       ))}
@@ -733,6 +735,9 @@ function ShowcaseBookFeature({
 }
 
 function ShowcaseGallery() {
+  const focalPoint = (page: (typeof showcaseBooks)[number]['pages'][number]) =>
+    'focalPoint' in page ? page.focalPoint : '50% 50%';
+
   return (
     <div className="space-y-10">
       {showcaseBooks.map((book) => (
@@ -748,7 +753,7 @@ function ShowcaseGallery() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {book.pages.map((page) => (
               <article key={page.page} className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#f8f0dd]">
-                <img src={page.image} alt={`${book.title}, page ${page.page}: ${page.title}`} className="aspect-square w-full object-cover" loading="lazy" />
+                <img src={page.image} alt={`${book.title}, page ${page.page}: ${page.title}`} className="aspect-square w-full object-cover" style={{ objectPosition: focalPoint(page) }} loading="lazy" />
                 <div className="p-4">
                   <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#a64c4c]">Page {page.page}</div>
                   <h3 className="mt-1 font-serif text-xl font-semibold leading-tight text-[#1f1a16]">{page.title}</h3>
