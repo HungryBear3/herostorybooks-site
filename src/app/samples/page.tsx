@@ -7,7 +7,7 @@ const siteOrigin = getSiteOrigin();
 export const metadata: Metadata = {
   title: 'Sample Personalized Story Books | HeroStoryBooks',
   description:
-    'Peek inside two digital sample story proofs with real watercolor pages, proof-first review, and digital or printed keepsake options.',
+    'Explore Dog City and Pasta Planet through eight selected watercolor storybook illustrations, with proof-first review before delivery or print.',
   alternates: { canonical: '/samples' },
   openGraph: {
     title: 'HeroStoryBooks digital sample story proofs',
@@ -16,10 +16,10 @@ export const metadata: Metadata = {
     url: `${siteOrigin}/samples`,
     images: [
       {
-        url: '/assets/kind-dragon-v5/cover.jpg',
+        url: '/assets/showcase/dog-city/page-17.jpg',
         width: 1536,
         height: 1536,
-        alt: 'Lukas and the Kind Dragon digital sample cover',
+        alt: 'Watercolor sample from Lukas Was a Dog in Dog City',
       },
     ],
   },
@@ -28,7 +28,7 @@ export const metadata: Metadata = {
     title: 'HeroStoryBooks digital sample story proofs',
     description:
       'See illustrated sample pages from proof-first personalized children’s books before starting your own.',
-    images: ['/assets/kind-dragon-v5/cover.jpg'],
+    images: ['/assets/showcase/dog-city/page-17.jpg'],
   },
 };
 
