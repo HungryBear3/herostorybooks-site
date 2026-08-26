@@ -115,7 +115,11 @@ test('PhotoAsset shape carries blob refs only — no filename, no original name'
   );
   assert.deepEqual(
     propLines.sort(),
-    ['assetId', 'blobPathname', 'blobUrl', 'mime', 'size', 'uploadedAt'].sort(),
+    // blobUrl is now OPTIONAL and legacy-only: a privately stored asset
+    // has no URL at all, only a pathname that is useless without the
+    // store token. `storage` records which of the two an asset is.
+    // Still an exact pin, and still the filename guard.
+    ['assetId', 'blobPathname', 'blobUrl', 'storage', 'mime', 'size', 'uploadedAt'].sort(),
     `PhotoAsset schema regression. Got: ${propLines.join(', ')}`,
   );
 });

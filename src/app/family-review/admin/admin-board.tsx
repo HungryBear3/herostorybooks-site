@@ -1784,7 +1784,9 @@ function SampleSlot({
   briefPrompt: string;
   briefConstraints: string[];
   briefReviewChecklist: string[];
-  existing?: { assetId: string; blobUrl: string; mime: string; uploadedAt: string; note?: string };
+  // No blobUrl: the board renders samples through the cookie-gated
+  // proxy, so a raw storage URL must never reach the client bundle.
+  existing?: { assetId: string; mime: string; uploadedAt: string; note?: string };
   onUploaded: (next: FamilyReviewSubmission) => void;
 }) {
   const [busy, setBusy] = useState(false);

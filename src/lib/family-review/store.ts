@@ -9,8 +9,15 @@
  *   sample bytes →  {namespace}/family-review/samples/{submissionId}/{assetId}.{ext}
  *   token index  →  {namespace}/family-review/review-tokens/{sha256(token)}.json
  *
- * TOKEN PRIVACY (Lane B). Objects in this store are PUBLIC, so the
- * pathname is the capability. Two rules follow and are enforced by
+ * STORAGE ACCESS. Asset bytes and the record JSON are written with the
+ * mode chosen by FAMILY_REVIEW_BLOB_ACCESS (see ./private-assets.ts).
+ * The default is still 'public' — the production store is provisioned
+ * as a public store and rejects private writes — so the pathname-as-
+ * capability reasoning below remains in force until an operator
+ * provisions a private store and flips the flag.
+ *
+ * TOKEN PRIVACY (Lane B). While objects are public the pathname IS the
+ * capability. Two rules follow and are enforced by
  * tests/family-review-token-privacy.test.ts:
  *
  *   1. The parent's raw reviewToken is NEVER persisted and NEVER appears
@@ -46,9 +53,16 @@
  * tests/family-review-no-filename-capture.test.ts.
  */
 
-import { del, get, list, put } from '@vercel/blob';
+import { get, list, put } from '@vercel/blob';
 
 import { withBlobNamespace } from '../orders.ts';
+import {
+  deleteAsset,
+  familyReviewAssetStorageMode,
+  legacyPublicAssetReadsAllowed,
+  putAsset,
+  type AssetStorage,
+} from './private-assets.ts';
 import { hashReviewToken, isWellFormedReviewTokenHash } from './tokens.ts';
 
 export type AgeRange = '2-3' | '3-4' | '5-6' | '7-8' | '9-10';
@@ -67,7 +81,14 @@ export type SubmissionStatus =
 export interface PhotoAsset {
   assetId: string;
   blobPathname: string;
-  blobUrl: string;
+  /**
+   * LEGACY ONLY. Present on assets written while the lane stored bytes
+   * publicly. A private asset has NO url — blobPathname is the whole
+   * reference, and it is useless without the store token.
+   */
+  blobUrl?: string;
+  /** How the bytes are addressed. Absent on pre-migration records = public. */
+  storage?: AssetStorage;
   mime: string;
   size: number;
   uploadedAt: string;
@@ -77,7 +98,10 @@ export interface SampleAsset {
   assetId: string;
   briefId: BriefId;
   blobPathname: string;
-  blobUrl: string;
+  /** LEGACY ONLY — see PhotoAsset.blobUrl. */
+  blobUrl?: string;
+  /** How the bytes are addressed. Absent on pre-migration records = public. */
+  storage?: AssetStorage;
   mime: string;
   size: number;
   uploadedAt: string;
@@ -358,16 +382,21 @@ export async function persistSubmission(
     );
     return { persisted: false, id: record.id, reason: 'no_token_hash' };
   }
+  // The submission record carries the parent's email, the child's first
+  // name, and free-text feedback — the highest-PII object in the lane.
+  // It is written with the SAME access mode as the asset bytes, so a
+  // private lane leaves no world-readable copy of it.
+  const access = familyReviewAssetStorageMode();
   try {
     await put(plan.submissionPathname, plan.submissionBody, {
-      access: 'public',
+      access,
       addRandomSuffix: false,
       contentType: 'application/json',
       cacheControlMaxAge: 0,
       allowOverwrite: true,
     });
     await put(plan.indexPathname, plan.indexBody, {
-      access: 'public',
+      access,
       addRandomSuffix: false,
       contentType: 'application/json',
       cacheControlMaxAge: 0,
@@ -403,16 +432,42 @@ async function fetchSubmissionAt(url: string): Promise<FamilyReviewSubmission | 
   }
 }
 
+/**
+ * Read one JSON object, honoring the configured access mode.
+ *
+ * A private-mode deployment still has to read records written before the
+ * migration, so a private miss falls back ONCE to a public read — the
+ * same bounded-compatibility shape the legacy token index uses, and
+ * gated by the same switch. This applies only to the record JSON. Asset
+ * BYTES never fall back (see private-assets.openAsset).
+ */
 async function getJsonAtPath<T>(pathname: string): Promise<T | null> {
-  try {
-    const result = await get(pathname, { access: 'public' });
-    if (!result || result.statusCode !== 200 || !result.stream) return null;
-    const text = await new Response(result.stream).text();
-    return JSON.parse(text) as T;
-  } catch (err) {
-    console.warn('[family-review/store] blob JSON read failed:', err);
-    return null;
+  const mode = familyReviewAssetStorageMode();
+  const attempts: ('private' | 'public')[] =
+    mode === 'private'
+      ? legacyPublicAssetReadsAllowed()
+        ? ['private', 'public']
+        : ['private']
+      : ['public'];
+  for (const access of attempts) {
+    try {
+      // useCache is only meaningful for a PRIVATE read (it bypasses the
+      // CDN); on a PUBLIC read Vercel Blob rejects it with HTTP 400 --
+      // observed in the Preview soak, 2026-08-26. Passing it on the
+      // public attempt was a regression introduced earlier in this
+      // branch; the baseline never sent it.
+      const result = await get(pathname, {
+        access,
+        ...(access === 'private' ? { useCache: false } : {}),
+      });
+      if (!result || result.statusCode !== 200 || !result.stream) continue;
+      const text = await new Response(result.stream).text();
+      return JSON.parse(text) as T;
+    } catch (err) {
+      console.warn('[family-review/store] blob JSON read failed:', err);
+    }
   }
+  return null;
 }
 
 async function fetchSubmissionByPath(
@@ -431,12 +486,16 @@ export async function listRecentSubmissions(
     // by the Blob object's own uploadedAt instead. Bounded so a large
     // namespace can never turn an admin page load into an unbounded scan.
     const prefix = submissionListPrefix();
-    const collected: { url: string; uploadedAt: Date }[] = [];
+    const collected: { url: string; pathname: string; uploadedAt: Date }[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
       const res = await list({ prefix, limit: LIST_PAGE_SIZE, cursor });
       for (const blob of res.blobs) {
-        collected.push({ url: blob.url, uploadedAt: blob.uploadedAt });
+        collected.push({
+          url: blob.url,
+          pathname: blob.pathname,
+          uploadedAt: blob.uploadedAt,
+        });
       }
       if (!res.hasMore || !res.cursor) break;
       cursor = res.cursor;
@@ -445,9 +504,16 @@ export async function listRecentSubmissions(
       (a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime(),
     );
     const top = sorted.slice(0, limit);
+    // In private mode the listed url is not readable without the token,
+    // so read by pathname. Public mode keeps the existing cache-busted
+    // URL read: admin does repeated read-modify-write on these records
+    // and the CDN can otherwise serve a stale copy.
+    const privateMode = familyReviewAssetStorageMode() === 'private';
     const parsed: FamilyReviewSubmission[] = [];
     for (const blob of top) {
-      const sub = await fetchSubmissionAt(blob.url);
+      const sub = privateMode
+        ? await fetchSubmissionByPath(blob.pathname)
+        : await fetchSubmissionAt(blob.url);
       if (sub) parsed.push(sub);
     }
     return parsed;
@@ -500,6 +566,35 @@ export async function findByReviewToken(
   return null;
 }
 
+/**
+ * Strip storage URLs from a record before it leaves the server.
+ *
+ * The admin board renders every asset through the cookie-gated proxy,
+ * so the client has no use for a raw storage URL — but the admin list
+ * and sample-upload responses used to ship one anyway. For a legacy
+ * public asset that URL is a permanent, unauthenticated bearer link to
+ * a child's photo, landing in browser history, devtools, extensions and
+ * screen shares. Nothing outside this module needs it.
+ *
+ * blobPathname is retained: it is useless without the store token.
+ */
+export function redactAssetUrls(
+  submission: FamilyReviewSubmission,
+): FamilyReviewSubmission {
+  const stripUrl = <T extends { blobUrl?: string }>(asset: T): T => {
+    const { blobUrl: _blobUrl, ...rest } = asset;
+    return rest as T;
+  };
+  return {
+    ...submission,
+    photos: {
+      ...submission.photos,
+      assets: submission.photos.assets.map(stripUrl),
+    },
+    samples: submission.samples.map(stripUrl),
+  };
+}
+
 /** Cheap status flag used by routes + the admin UI. */
 export function storeStatus(): { enabled: boolean; reason?: 'no_token' } {
   if (!hasBlobToken()) return { enabled: false, reason: 'no_token' };
@@ -519,16 +614,17 @@ export async function uploadPhotoBytes(args: {
   ext: string;
 }): Promise<PhotoAsset> {
   const pathname = photoPath(args.submissionId, args.assetId, args.ext);
-  const result = await put(pathname, args.bytes as Buffer, {
-    access: 'public',
-    addRandomSuffix: false,
-    contentType: args.mime,
-    cacheControlMaxAge: 31536000,
+  const stored = await putAsset({
+    pathname,
+    bytes: args.bytes,
+    mime: args.mime,
   });
   return {
     assetId: args.assetId,
-    blobPathname: pathname,
-    blobUrl: result.url,
+    blobPathname: stored.blobPathname,
+    // Only a legacy public write yields a url; a private write has none.
+    ...(stored.blobUrl ? { blobUrl: stored.blobUrl } : {}),
+    storage: stored.storage,
     mime: args.mime,
     size: args.bytes.byteLength,
     uploadedAt: new Date().toISOString(),
@@ -545,17 +641,17 @@ export async function uploadSampleBytes(args: {
   note?: string;
 }): Promise<SampleAsset> {
   const pathname = samplePath(args.submissionId, args.assetId, args.ext);
-  const result = await put(pathname, args.bytes as Buffer, {
-    access: 'public',
-    addRandomSuffix: false,
-    contentType: args.mime,
-    cacheControlMaxAge: 31536000,
+  const stored = await putAsset({
+    pathname,
+    bytes: args.bytes,
+    mime: args.mime,
   });
   return {
     assetId: args.assetId,
     briefId: args.briefId,
-    blobPathname: pathname,
-    blobUrl: result.url,
+    blobPathname: stored.blobPathname,
+    ...(stored.blobUrl ? { blobUrl: stored.blobUrl } : {}),
+    storage: stored.storage,
     mime: args.mime,
     size: args.bytes.byteLength,
     uploadedAt: new Date().toISOString(),
@@ -587,12 +683,20 @@ export async function deleteReviewTokenIndexes(
   }
 }
 
-/** Best-effort sample delete used when admin replaces a sample for a brief. */
-export async function deleteBlob(pathname: string): Promise<void> {
-  if (!hasBlobToken()) return;
-  try {
-    await del(pathname);
-  } catch (err) {
-    console.warn('[family-review/store] blob delete failed:', err);
+/**
+ * Delete one stored object, REPORTING the outcome.
+ *
+ * This used to swallow every error and return void, so an admin delete
+ * could report success while the bytes survived. Callers that care
+ * (admin DELETE) now surface a partial failure instead.
+ */
+export async function deleteBlob(
+  pathname: string,
+): Promise<{ deleted: boolean; reason?: string }> {
+  if (!hasBlobToken()) return { deleted: false, reason: 'no_token' };
+  const result = await deleteAsset(pathname);
+  if (!result.deleted) {
+    console.warn('[family-review/store] blob delete failed:', result.reason);
   }
+  return result;
 }

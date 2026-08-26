@@ -11,15 +11,21 @@
  *     returns 404, never 403, so the endpoint can't be used to
  *     enumerate samples or tokens.
  *
- * Vercel Blob v2 only supports `access: 'public'` (private mode is
- * not GA at the time of this commit), so the underlying object is
- * still URL-addressable if a reviewer leaks the raw URL. The proxy
- * is a defense-in-depth layer, not a replacement for keeping the
- * raw URL secret.
+ * Bytes are opened through the Family Review storage abstraction, so
+ * a sample stored privately is read with the store token and has no
+ * URL at all. Legacy samples written while the lane stored bytes
+ * publicly still read through their recorded URL — see
+ * private-assets.openAsset.
  */
 
 import { NextResponse } from 'next/server';
 
+import {
+  AssetStorageError,
+  openAsset,
+  safeDownloadFilename,
+  serveableContentType,
+} from '@/lib/family-review/private-assets';
 import { findByReviewToken } from '@/lib/family-review/store';
 import {
   isWellFormedAssetId,
@@ -47,23 +53,35 @@ export async function GET(
   if (!sample) {
     return new NextResponse('Not found', { status: 404 });
   }
-  let upstream: Response;
+  // Storage is opened only after the token resolved to a submission AND
+  // the asset was found among THAT submission's samples.
+  let opened;
   try {
-    upstream = await fetch(sample.blobUrl, { cache: 'no-store' });
-  } catch {
+    opened = await openAsset(sample);
+  } catch (err) {
+    if (err instanceof AssetStorageError && err.code === 'not_found') {
+      return new NextResponse('Not found', { status: 404 });
+    }
+    console.error(
+      `[family-review/sample] read failed (asset=${assetId}):`,
+      err instanceof AssetStorageError ? err.code : 'unknown',
+    );
     return new NextResponse('Upstream fetch failed', { status: 502 });
   }
-  if (!upstream.ok || !upstream.body) {
-    return new NextResponse('Upstream fetch failed', {
-      status: upstream.status || 502,
-    });
-  }
-  const suggestedName = `herostorybooks-${sample.briefId}.png`;
-  return new NextResponse(upstream.body, {
+
+  // Extension follows the STORED mime rather than a hardcoded .png, and
+  // Content-Type is allowlisted rather than echoed from upstream.
+  const suggestedName = safeDownloadFilename(
+    `herostorybooks-${sample.briefId}`,
+    sample.mime,
+  );
+  return new NextResponse(opened.stream, {
     status: 200,
     headers: {
-      'Content-Type': sample.mime || 'application/octet-stream',
+      'Content-Type': serveableContentType(sample.mime),
+      'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'private, no-store, max-age=0',
+      'Referrer-Policy': 'no-referrer',
       'X-Robots-Tag': 'noindex, nofollow',
       'Content-Disposition': `inline; filename="${suggestedName}"`,
     },

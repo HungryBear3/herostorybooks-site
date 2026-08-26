@@ -33,6 +33,7 @@ import {
  *
  *      - X-Robots-Tag: noindex, nofollow  → search engines won't index
  *      - Referrer-Policy: no-referrer     → nothing leaks to other sites
+ *      - X-Content-Type-Options: nosniff  → no MIME second-guessing
  *      - Content-Security-Policy: self-only sources, no frame ancestors
  *      - Permissions-Policy: deny mic/camera/geo for these pages
  *      - X-Frame-Options: DENY            → no iframing
@@ -63,6 +64,10 @@ const FAMILY_REVIEW_CSP = [
 function applyFamilyReviewPrivacyHeaders(response: NextResponse): void {
   response.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet');
   response.headers.set('Referrer-Policy', 'no-referrer');
+  // Never let a browser second-guess the declared type of a family
+  // asset. The proxies set this too; here it also covers the portal
+  // documents themselves.
+  response.headers.set('X-Content-Type-Options', 'nosniff');
   response.headers.set('X-Frame-Options', 'DENY');
   response.headers.set(
     'Permissions-Policy',
@@ -83,6 +88,7 @@ function applyNoIndexHeaders(response: NextResponse): void {
 function applyCustomerReviewPrivacyHeaders(response: NextResponse): void {
   applyNoIndexHeaders(response);
   response.headers.set('Referrer-Policy', 'no-referrer');
+  response.headers.set('X-Content-Type-Options', 'nosniff');
   if (!response.headers.has('Cache-Control')) {
     response.headers.set('Cache-Control', 'private, no-store, max-age=0');
   }

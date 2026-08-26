@@ -13,11 +13,13 @@
 import { NextResponse } from 'next/server';
 
 import { isAdminRequestAuthed } from '@/lib/family-review/admin-auth';
+import { resolveUploadImageType } from '@/lib/family-review/image-type';
 import {
   deleteBlob,
   findById,
   hasBlobToken,
   persistSubmission,
+  redactAssetUrls,
   uploadSampleBytes,
   type BriefId,
 } from '@/lib/family-review/store';
@@ -103,7 +105,13 @@ export async function POST(
       { status: 413 },
     );
   }
-  if (!ALLOWED_MIME[fileEntry.type]) {
+  // The BYTES decide the type. Previously this route trusted the
+  // client-declared file.type alone, which made the admin upload the
+  // weaker of the two upload paths — the parent route has always
+  // sniffed. A declared type that contradicts the bytes is rejected,
+  // not silently relabeled.
+  const resolvedType = await resolveUploadImageType(fileEntry);
+  if (!resolvedType || !ALLOWED_MIME[resolvedType.mime]) {
     return NextResponse.json(
       { ok: false, error: 'unsupported_mime' },
       { status: 415 },
@@ -119,7 +127,7 @@ export async function POST(
   }
 
   const assetId = newAssetId();
-  const ext = ALLOWED_MIME[fileEntry.type];
+  const ext = ALLOWED_MIME[resolvedType.mime];
   const buf = Buffer.from(await fileEntry.arrayBuffer());
 
   let asset;
@@ -129,7 +137,7 @@ export async function POST(
       assetId,
       briefId,
       bytes: buf,
-      mime: fileEntry.type,
+      mime: resolvedType.mime,
       ext,
       ...(note ? { note } : {}),
     });
@@ -195,8 +203,16 @@ export async function POST(
     );
   }
 
+  // Never echo a storage URL back to the browser — the board renders
+  // through the cookie-gated proxy.
+  const safe = redactAssetUrls(next);
   return NextResponse.json(
-    { ok: true, asset, status: next.status, samples: nextSamples },
-    { status: 200 },
+    {
+      ok: true,
+      asset: safe.samples.find((s) => s.assetId === assetId) ?? null,
+      status: safe.status,
+      samples: safe.samples,
+    },
+    { status: 200, headers: { 'Cache-Control': 'no-store' } },
   );
 }
