@@ -29,7 +29,18 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   const client = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
   assert.match(client, /sessionStorage\.getItem\(attemptStorageKey\)/);
   assert.match(client, /payload\.set\("checkoutAttemptId", checkoutAttemptId\)/);
-  assert.match(client, /window\.location\.href = result\.redirectTo;\s*sessionStorage\.removeItem\(attemptStorageKey\)/);
+  // The hand-off itself moved out of an inline `setTimeout` and into
+  // performStripeHandoff (src/lib/checkout-handoff.ts). The attempt-identity
+  // contract asserted here is unchanged, only relocated: the attempt id is
+  // cleared as part of the redirect, strictly AFTER the navigation, and is
+  // left in place when the navigation was refused so a retry resumes the same
+  // order and Stripe Session instead of creating a second one.
+  assert.match(client, /performStripeHandoff\(result\.redirectTo/);
+  assert.match(client, /clearAttemptId:\s*\(\)\s*=>\s*sessionStorage\.removeItem\(attemptStorageKey\)/);
+  const handoff = readFileSync('src/lib/checkout-handoff.ts', 'utf8');
+  const navigateAt = handoff.indexOf('deps.navigate(url)');
+  const clearAttemptAt = handoff.indexOf('deps.clearAttemptId?.()');
+  assert.ok(navigateAt >= 0 && clearAttemptAt > navigateAt);
   assert.match(route, /createHash\('sha256'\)\.update\(checkoutAttemptId\)/);
   assert.match(route, /persistOrResumeCheckoutOrder\(draftOrder\)/);
   assert.match(route, /checkoutFingerprint\(form\)/);
