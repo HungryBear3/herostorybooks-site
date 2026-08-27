@@ -134,11 +134,18 @@ be deleted through Meta's own console — an operator action, listed as unverifi
 
 ## 7. Open blockers
 
-**B1 — No consent surface exists. The pixel cannot fire.**
-There is no banner, no consent cookie, no consent state, and no Consent Mode call
-anywhere in `src/`. `resolveConsent()` therefore always returns `unknown`, and
-`unknown` fails closed. With `NEXT_PUBLIC_META_PIXEL_ID` and
-`NEXT_PUBLIC_META_PIXEL_ENABLED=true` both set, the pixel still loads nothing.
+**B1 — ✅ CLOSED. A shared consent surface now exists.**
+This blocker said there was no banner, no consent state, and no way for
+`resolveConsent()` to return anything but `unknown`. That is resolved: one
+reactive consent surface governs browser GA4, Vercel Analytics, and Meta
+together, default `unknown` fails closed, and none of the three loads or emits
+before an explicit grant. Google Consent Mode denied is deliberately **not** the
+mechanism — the scripts simply are not rendered. See
+`attribution-event-contract.md` §0.1.
+
+The pixel still fires nothing on every deployment, now for the remaining
+configuration reason only: no `NEXT_PUBLIC_META_PIXEL_ID` and no
+`NEXT_PUBLIC_META_PIXEL_ENABLED` are set anywhere.
 
 This is deliberate and it is stated here so nobody discovers it during a Preview
 validation. It also creates a visible inconsistency worth an owner decision: **GA4

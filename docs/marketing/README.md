@@ -19,11 +19,13 @@ posted, or spent.**
 1. **Stripe is authoritative for purchase.** `src/lib/ga4-purchase.ts` emits GA4
    `purchase` from the signed webhook after the durable payment write. No browser
    surface may compete, and none does.
-2. **The Meta pixel cannot fire today.** There is no consent surface in this
-   repository, `resolveConsent()` therefore returns `unknown`, and `unknown` fails
-   closed — even with the pixel id and the flag set. See
-   `meta-measurement-candidate.md` blocker B1, which also covers the resulting
-   inconsistency with GA4's unconditional production loading.
+2. **The Meta pixel cannot fire today** — because no public pixel id and no
+   feature flag are configured on any deployment. The consent gate is now a real
+   one: a shared reactive consent surface governs browser GA4, Vercel Analytics,
+   and Meta together, and none of them loads or emits before an explicit grant.
+   The old inconsistency (GA4 loading unconditionally while Meta was blocked by a
+   consent surface that did not exist) is resolved: see
+   `attribution-event-contract.md` **§0 CURRENT TRUTH**.
 3. **No measured contribution per order exists at live prices.** The 2026-05
    unit-economics doc models prices HSB no longer charges. Both paid experiment rows
    carry a `null` target rather than an invented one.

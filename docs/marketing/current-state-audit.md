@@ -6,6 +6,27 @@ an older note; every claim names the file it was read from.
 
 ---
 
+> ## ⚠️ READ THIS FIRST — this audit is HISTORY, dated to `d6c5602`
+>
+> Every finding below was true of commit `d6c5602`. **Several are no longer
+> true at the branch head.** The authoritative current description of consent,
+> attribution, purchase ownership, and the Meta posture is
+> `attribution-event-contract.md` **§0 CURRENT TRUTH**.
+>
+> What changed since this audit was written:
+>
+> | This audit says | Current truth |
+> |---|---|
+> | "There is no consent mechanism of any kind" | One shared reactive consent surface governs browser GA4, Vercel Analytics, and Meta. Nothing loads or emits before a grant, and nothing is stored until the visitor chooses. |
+> | GA4 loads unconditionally in production | GA4's scripts are not rendered until consent is granted. Consent Mode denied is **not** the mechanism and is not used. |
+> | Unvalidated UTM values forwarded to two destinations | The ungoverned browser campaign reader was **removed**. `utm_term`, `ref`, the `hsb:first-touch-campaign:v1` record, and the 160-character raw values are gone. |
+> | No campaign attribution on the trusted purchase | Governed attribution is **implemented** through checkout, Stripe metadata, and the signed session onto the webhook purchase. |
+> | Meta CAPI is a wired candidate | CAPI is **deferred with no send path**; the webhook does not reference Meta at all. |
+>
+> Still true and unchanged: Stripe is the sole purchase authority, there is no
+> site-wide CSP, and no Reddit / Google Ads / feed code exists.
+
+
 ## 1. What exists today
 
 ### 1.1 Google Analytics 4 — browser

@@ -46,8 +46,11 @@ Stable across webhook replays, not reversible to an order, and distinct from the
 ## 3. Consent
 
 Identical gate to Meta: `resolveConsent()` must return `granted`. Absent or unknown
-fails closed. Blocker B1 in `meta-measurement-candidate.md` applies here too — with
-no consent surface, a Reddit pixel could not fire either.
+fails closed. A real shared consent surface now exists (see
+`attribution-event-contract.md` §0.1), so this gate is live rather than
+theoretical — a Reddit pixel would be governed by the same single source of
+truth as GA4, Vercel Analytics, and Meta, and would load nothing before a
+grant.
 
 ## 4. CSP
 

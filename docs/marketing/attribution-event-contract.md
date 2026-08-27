@@ -10,6 +10,165 @@
 This document and that code are the same contract. Where they disagree, the code is
 wrong and must be fixed — the tests assert the code against the statements here.
 
+
+---
+
+# 0. CURRENT TRUTH (authoritative)
+
+**This section describes the code at the branch head. Where anything later in
+this document disagrees, this section wins.** Sections 1–5 and 8 remain accurate.
+Sections 6, 7, and 9 are marked superseded in place. The three dated
+"correction pass" appendices at the foot are history, retained so the reversals
+are legible, not instructions.
+
+## 0.1 Consent
+
+One shared, reactive consent surface governs **browser GA4, Vercel Analytics,
+and Meta together** — `src/lib/marketing/consent-store.ts` plus
+`consent-surface.tsx`. There is no second mechanism.
+
+- Default is `unknown`; `unknown` enables nothing. **Nothing is stored at all
+  until the visitor chooses**, so a visitor who never answers leaves no record.
+- **None of the three loads or emits before a grant.** GA4's script tags and
+  Vercel's `<Analytics />` are not *rendered* until consent is granted; the Meta
+  pixel neither loads nor initialises.
+- **Google Consent Mode denied-before-config is NOT the mechanism.** It was
+  tried and rejected: a denied Consent Mode still loads Google's library and
+  still sends cookieless pings. There is no `gtag('consent','default')` call in
+  this codebase.
+- Accept and decline share one style object, so neither can be made quieter than
+  the other. No pre-checked consent, no fingerprinting, no cross-site identifier.
+- "Cookie choices" re-opens the banner and **withdraws** the stored choice
+  first, so measurement is off while the decision is reconsidered.
+- Essential behaviour is never gated: the order route, the Stripe webhook, and
+  `ga4-purchase.ts` contain no reference to the consent store.
+
+## 0.2 GA readiness coordination
+
+Consent grant and `window.gtag` becoming callable are two different moments.
+`src/lib/marketing/analytics-coordinator.ts` closes the gap with an explicit
+readiness contract — no sleeps, no polling:
+
+| Transition | Behaviour |
+|---|---|
+| Grant before script ready | queues **only the current sanitized route**; no GA call |
+| Readiness (`markGtagReady`, from the GA4 inline script's own `onReady`) | delivers that route **exactly once** |
+| Route changed before readiness | delivers **only the latest** route; never a backlog |
+| Repeat readiness / remount / StrictMode / repeat consent notification | no duplicate initialisation, no duplicate PageView |
+| Decline or withdrawal before readiness | pending delivery **cancelled** |
+| Withdrawal after grant | no further calls to GA4, Vercel, or Meta |
+| Re-grant later | **exactly one** current-route PageView |
+
+The emitter is the authority on whether delivery is possible, because only it
+can see `gtag`; `markReady` is the retry trigger, not the permission. The
+delivered-route latch moves **only** on a truthful success — a route is never
+marked delivered because an unavailable adapter was called.
+
+Meta and Vercel keep their own single lifecycle and are deliberately not routed
+through the coordinator: Meta's controller already orders config → consent →
+route latch, and Vercel's `<Analytics />` performs its own page view.
+
+## 0.3 Governed attribution — IMPLEMENTED, not designed
+
+Built end to end and covered by tests:
+
+landing capture → validate → bounded first-party record (first-touch, 30-day
+expiry) → client navigation → checkout POST → **server re-validation** →
+`order.campaignAttribution` → **Stripe metadata only**, never a customer-visible
+field → recovered from the **signature-verified** session → validated a third
+time → GA4 reserved `campaign_*` parameters on the trusted purchase.
+
+**Whole-tuple rejection** applies — the tuple is discarded entirely, never
+stripped and partially accepted:
+
+| Condition | Reason code |
+|---|---|
+| any `utm_*` outside the governed four (incl. `utm_term`) | `ungoverned_utm_key` |
+| `ref` / `referrer` | `legacy_companion_key` |
+| a repeated governed key | `duplicate_key` |
+| malformed percent-encoding | `malformed_encoding` |
+| invalid value (medium not allowlisted, over 40 chars, bad token shape, PII-shaped) | per-field reason from `validateUtmTuple` |
+| partial tuple (missing source, medium, or campaign) | per-field reason |
+
+Approved platform click identifiers (`fbclid`, `gclid`, `msclkid`, `ttclid`,
+`twclid`) **may coexist** with a governed tuple without rejecting it — platforms
+append them automatically — and are **never read, stored, or forwarded**.
+
+The same check runs at landing capture and at the checkout POST through one
+shared helper, so the two boundaries cannot drift.
+
+## 0.4 Purchase ownership
+
+**Purchase is owned only by the signature-verified, post-convergence Stripe
+webhook**, sent to GA4 via the Measurement Protocol and deduplicated on the
+Stripe **Checkout Session id**. A browser `Purchase` is **prohibited by
+contract**. There is no second purchase path.
+
+## 0.5 Meta CAPI — DEFERRED, no send path
+
+There is **no send path**: no `fetch`, no endpoint, no payload builder, no
+scheduler, and no call site. The Stripe webhook does not reference Meta at all.
+Setting `META_CAPI_ENABLED`, `META_CAPI_DATASET_ID`, and
+`META_CAPI_ACCESS_TOKEN` changes nothing, and `metaCapiStatus()` reads no
+environment.
+
+The reason is structural, not configuration: Meta requires `user_data` with at
+least one matching parameter on every server event, and **no approved
+privacy-safe matching contract exists** — there is no server-side consent
+evidence at the webhook, no privacy approval for customer matching, and no
+`fbp`/`fbc` because the pixel is inert.
+
+## 0.6 Preview analytics validation — fail-closed
+
+GA4 and Vercel are production-only, so ordinary Preview cannot exercise the real
+lifecycle. `resolveAnalyticsMode` adds a fail-closed switch requiring **both**
+documented Preview-only variables (names only; nothing configured):
+
+```
+NEXT_PUBLIC_HSB_ANALYTICS_PREVIEW_VALIDATION
+NEXT_PUBLIC_HSB_PREVIEW_GA_MEASUREMENT_ID
+```
+
+It cannot override consent, cannot operate outside `VERCEL_ENV=preview`, and
+cannot use the Production property — a missing, malformed, or
+Production-colliding preview id **disables** the mode rather than falling back.
+
+## 0.8 Interaction with the Family Review private-Blob work (PR #157)
+
+Merged from `origin/main` and inspected. **No file, route, environment
+variable, or test is touched by both.** #158 changes nothing under
+`/family-review` or in Blob storage; #157 changes nothing in analytics, consent,
+or attribution. Env namespaces are disjoint (`FAMILY_REVIEW_*` / `BLOB_*` versus
+`META_*` / `NEXT_PUBLIC_HSB_*`).
+
+Two deliberate interactions, both verified:
+
+1. **The consent surface renders on family-review pages too.** It is inline-styled
+   React with no external resource, so it satisfies that lane's
+   `default-src 'self'` CSP, and it reserves its own height so it cannot cover
+   page content.
+2. **GA4 is not route-gated the way the Meta pixel is.** On a granted consent the
+   GA4 script tag is rendered site-wide, including under `/family-review/*`,
+   where #157's middleware CSP is self-only and therefore **blocks the request**.
+   That is fail-closed and is asserted by the `family-review CSP still forbids
+   third-party scripts` Chromium spec.
+
+   This is not a regression introduced by #158 — before this branch GA4 loaded
+   *unconditionally* in production on every page including that lane, with no
+   consent required at all. #158 strictly narrows it. **Recommended follow-up,
+   not done here:** give GA4 the same route allowlist the Meta pixel already has,
+   so a private family page attempts no third-party request even for a visitor
+   who granted consent elsewhere. Out of scope for a docs/base-sync pass.
+
+## 0.7 Reporting caveat
+
+Consent enforcement **reduces reported GA4 browser volume** by however many
+visitors decline or never answer. **Purchases are unaffected** — they come from
+the server. A conversion rate computed as purchases ÷ browser sessions therefore
+mixes a server numerator with a consent-suppressed denominator and reads high.
+Use **absolute trusted purchases per campaign**, and do not compare rates against
+pre-consent baselines.
+
 ---
 
 ## 1. Governed UTM fields
@@ -146,7 +305,12 @@ third party on a route we are not permitted to measure — which is what keeps M
 `/thank-you` is excluded on purpose: it is purchase-adjacent, purchase is server-only,
 and its query string carries an email, a child's name, and a Stripe session id.
 
-## 6. Event ID lifecycle and dedupe rules
+## 6. Event ID lifecycle and dedupe rules — ⚠️ SUPERSEDED (see §0.4, §0.5)
+
+> **The Meta CAPI row below is no longer true.** CAPI is deferred and has no
+> send path, so no `event_id` is derived, sent, or deduplicated — nothing owns
+> that lifecycle today. The GA4 row remains exactly correct. Retained for the
+> future contract's sake only.
 
 | Platform | Dedupe value | Lifetime |
 |---|---|---|
@@ -162,16 +326,19 @@ A second guard refuses a repeated send of the same `event_id` inside one runtime
 which covers the webhook's own replay branch. A **failed** send does not burn the id,
 so a later delivery can still report the purchase.
 
-## 7. Consent behaviour
+## 7. Consent behaviour — partially superseded (see §0.1)
 
 `resolveConsent()` returns `granted`, `denied`, or `unknown`, and only `granted`
 enables an ad platform. Absent, malformed, or throwing signals all resolve to
 `unknown`.
 
-There is no consent surface in this repository. See
-`meta-measurement-candidate.md` §Blockers: today this means the Meta pixel **cannot
-fire**, even with the pixel id and the flag both set. GA4's existing posture is
-unchanged by this contract — altering it is an owner decision, not a side effect.
+> ⚠️ **SUPERSEDED — see §0.1.** The paragraph that stood here said "there is no
+> consent surface in this repository" and that GA4's existing posture was
+> unchanged. **Both statements are now false.** There is one shared reactive
+> consent surface governing browser GA4, Vercel Analytics, and Meta together,
+> and none of them loads or emits before a grant. The `resolveConsent()` rule
+> above is unchanged and still correct; its source of truth is now
+> `consent-store.ts`.
 
 ## 8. Retention
 
@@ -181,7 +348,15 @@ directory, which contains no customer data. Retention at GA4, Vercel Analytics, 
 operator-console facts and are listed as unverified in
 `search-reconciliation-checklist.md`.
 
-## 9. Carrying campaign attribution through checkout — designed, not built
+## 9. Carrying campaign attribution through checkout — ⚠️ SUPERSEDED: BUILT
+
+> **This section described an unimplemented design and ends with "Not
+> implemented in this candidate." That is no longer true — it is implemented.**
+> See §0.3 for the shipped contract. Two details differ from the sketch below:
+> the first-touch record is a bounded `localStorage` entry (not the old
+> `sessionStorage` key, which was removed with the ungoverned path), and the
+> tuple is rejected as a whole rather than validated field by field. Retained so
+> the design intent and its review are legible.
 
 Today (see `current-state-audit.md` C5) Stripe metadata carries `gaClientId`,
 `cohort`, and `invite`, but no campaign fields, so the trusted purchase has no

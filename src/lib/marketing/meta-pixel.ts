@@ -6,8 +6,9 @@
  *
  *   1. NEXT_PUBLIC_META_PIXEL_ID is present and numeric-shaped,
  *   2. NEXT_PUBLIC_META_PIXEL_ENABLED === 'true',
- *   3. resolveConsent() === 'granted'  (see ./consent.ts — no consent surface
- *      exists in this repo yet, so today this is always false),
+ *   3. resolveConsent() === 'granted'  (see ./consent-store.ts, the shared
+ *      surface that governs GA4, Vercel Analytics, and Meta together; default
+ *      is 'unknown', which fails closed),
  *   4. the current route sanitises to one of META_TRACKABLE_ROUTES.
  *
  * Condition 4 gates the SCRIPT, not just the event. That is deliberate: the
