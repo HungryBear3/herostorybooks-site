@@ -5,6 +5,11 @@ import type { CoverVariant } from './cover-variant';
 import { track as trackVercelEvent } from '@vercel/analytics';
 import { metaHandleHsbEvent } from './marketing/meta-bridge.ts';
 import { getConsent } from './marketing/consent-store.ts';
+import {
+  attributionMetadata,
+  currentAttribution,
+} from './marketing/attribution-session.ts';
+import { sanitizeRoute } from './marketing/route-sanitizer.ts';
 import { isMarketingConsentGranted } from './marketing/consent.ts';
 
 /**
@@ -109,6 +114,13 @@ export type HsbEventName =
   | 'purchase_intent'
   | 'proof_approved';
 
+declare global {
+  interface Window {
+    /** In-memory funnel buffer. Never transmitted; inspectable in DevTools. */
+    hsbEvents?: HsbEventRecord[];
+  }
+}
+
 export interface HsbEventRecord {
   event: HsbEventName;
   timestamp: number;
@@ -117,71 +129,31 @@ export interface HsbEventRecord {
   [k: string]: string | number | boolean | null | undefined;
 }
 
-const campaignParamKeys = [
-  'utm_source',
-  'utm_medium',
-  'utm_campaign',
-  'utm_term',
-  'utm_content',
-  'ref',
-] as const;
-
-declare global {
-  interface Window {
-    hsbEvents?: HsbEventRecord[];
-  }
+/**
+ * Campaign attribution comes from ONE place: the governed record in
+ * ./marketing/attribution-session.ts, validated by ./marketing/utm-contract.ts.
+ *
+ * The previous implementation read utm_term, ref, and any utm_* value up to
+ * 160 raw characters straight off the URL, mirrored them into sessionStorage,
+ * and forwarded them to GA4 and Vercel. That was the last ungoverned campaign
+ * surface in the browser: it accepted media outside the closed vocabulary,
+ * values past the 40-character bound, and anything PII-shaped. It is gone. A
+ * link using a non-allowlisted medium, or a legacy utm_term / ref link, now
+ * contributes NO campaign attribution rather than bypassing governance.
+ */
+function currentCampaignParams(): Record<string, string> {
+  return attributionMetadata(currentAttribution());
 }
 
-type CampaignParams = Partial<Record<(typeof campaignParamKeys)[number], string>>;
-const campaignSessionKey = 'hsb:first-touch-campaign:v1';
-
-function campaignParamsFromUrl(): CampaignParams {
-  if (typeof window === 'undefined' || typeof window.location === 'undefined') return {};
-  const params = new URLSearchParams(window.location.search);
-  const campaignParams: CampaignParams = {};
-  for (const key of campaignParamKeys) {
-    const value = params.get(key);
-    if (value) campaignParams[key] = value.slice(0, 160);
-  }
-  return campaignParams;
-}
-
-function parseStoredCampaign(value: string | null): CampaignParams {
-  if (!value) return {};
-  try {
-    const candidate = JSON.parse(value) as Record<string, unknown>;
-    const campaignParams: CampaignParams = {};
-    for (const key of campaignParamKeys) {
-      const field = candidate[key];
-      if (typeof field === 'string' && field) campaignParams[key] = field.slice(0, 160);
-    }
-    return campaignParams;
-  } catch {
-    return {};
-  }
-}
-
-function currentCampaignParams(): CampaignParams {
-  const fromUrl = campaignParamsFromUrl();
-  if (typeof window === 'undefined') return fromUrl;
-  try {
-    const stored = parseStoredCampaign(window.sessionStorage?.getItem(campaignSessionKey) ?? null);
-    if (Object.keys(stored).length) return stored;
-    if (Object.keys(fromUrl).length) {
-      window.sessionStorage?.setItem(campaignSessionKey, JSON.stringify(fromUrl));
-    }
-  } catch {
-    /* storage can be unavailable in privacy modes; current URL still works */
-  }
-  return fromUrl;
-}
-
-function googleCampaignFields(campaign: CampaignParams): Record<string, string> {
+/**
+ * GA4's reserved campaign fields, built only from a governed tuple. There is
+ * no governed equivalent of utm_term, so nothing maps to campaign_term.
+ */
+function googleCampaignFields(campaign: Record<string, string>): Record<string, string> {
   const fields: Record<string, string> = {};
   if (campaign.utm_source) fields.campaign_source = campaign.utm_source;
   if (campaign.utm_medium) fields.campaign_medium = campaign.utm_medium;
   if (campaign.utm_campaign) fields.campaign_name = campaign.utm_campaign;
-  if (campaign.utm_term) fields.campaign_term = campaign.utm_term;
   if (campaign.utm_content) fields.campaign_content = campaign.utm_content;
   return fields;
 }
@@ -321,6 +293,12 @@ export function track(
   return record;
 }
 
+/**
+ * One sanitized page view. The route is templated by `sanitizeRoute`, so
+ * /review/<id> is reported as /review/[orderId] and an order id, review token,
+ * or asset id can never itself become the route. Query strings and fragments
+ * were already excluded by the caller and are stripped again here.
+ */
 export function trackPageView(pathname?: string): void {
-  track('page_view', pathname ? { pathname } : {});
+  track('page_view', pathname ? { pathname: sanitizeRoute(pathname) } : {});
 }

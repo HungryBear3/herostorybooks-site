@@ -1,23 +1,30 @@
-# Meta Pixel + Conversions API candidate — privacy model, rollout, blockers
+# Meta Pixel candidate + Conversions API deferral — privacy model, rollout, blockers
 
-**Status:** candidate, under review. Nothing is enabled. **Date:** 2026-08-26.
+**Status:** pixel is a candidate under review and enabled nowhere. **Conversions
+API is DEFERRED and has no send path.** **Date:** 2026-08-26 (revised).
+
+> The section headed "UPDATE 2026-08-26" at the foot of this document is the
+> current truth for CAPI. The body below describes the pixel, which still
+> exists, plus history that is retained deliberately.
 
 ---
 
 ## 1. The short version
 
-Two adapters were built, both disabled by default, both fully covered by tests that
-use injected mocks and never touch the network.
+- **Browser pixel** — mounted in the root layout; inert without a public pixel
+  id, a feature flag, **granted consent**, and a public funnel route. Emits
+  `PageView` and `InitiateCheckout` only. A browser `Purchase` is prohibited by
+  contract.
+- **Conversions API** — **deferred**. Not "disabled by default": there is no
+  `fetch`, no endpoint, no payload builder, and no call site, and the Stripe
+  webhook no longer references Meta at all. Setting the three environment
+  variables changes nothing, which is asserted by test. See §UPDATE for why the
+  original payload could never have worked.
 
-- **Browser pixel** — mounted in the root layout, inert without a public pixel id,
-  a feature flag, granted consent, and a public funnel route. Emits `PageView` and
-  `InitiateCheckout` only.
-- **Conversions API** — wired into the Stripe webhook beside the existing GA4
-  purchase call, inert without three server-only environment variables. Emits
-  `Purchase` only, from the signed and payment-converged path.
-
-**Neither can send anything on any deployment today.** The pixel is blocked by the
-absent consent surface; CAPI is blocked by absent account configuration.
+**Nothing Meta-related can send anything on any deployment today.** The pixel is
+blocked by the absent pixel id and flag — and now also by a real consent gate
+rather than a placeholder global. CAPI is blocked by the absence of a matching
+contract, which no amount of configuration supplies.
 
 ## 2. Environment variables — names only
 

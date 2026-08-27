@@ -89,6 +89,22 @@ export const test = base.extend<EditorFixtures>({
 
   gotoReview: async ({}, use) => {
     await use(async (order, page) => {
+      // Arrive as a visitor who has already answered the consent banner.
+      // Without this the banner is fixed to the foot of the viewport and can
+      // sit over the layout editor's resize handle, so a pointer drag lands on
+      // the banner instead of the handle. Declining is the conservative choice:
+      // it keeps every optional analytics destination off for these tests, and
+      // it is the state a privacy-minded customer would be in.
+      await page.addInitScript(() => {
+        try {
+          window.localStorage.setItem(
+            'hsb:consent:v1',
+            JSON.stringify({ v: 1, c: 'denied', at: 1_700_000_000_000 }),
+          );
+        } catch {
+          /* storage unavailable: the banner shows, which the specs tolerate */
+        }
+      });
       await page.goto(`/review/${order.orderId}?token=${order.token}`);
       await expect(page.getByTestId('review-scope-banner')).toBeVisible();
     });

@@ -72,7 +72,15 @@ test('NamePreview + checkout fire shared analytics events', () => {
 });
 
 test('HSB mounts privacy-sanitized Vercel Analytics and forwards campaign params', () => {
-  assert.match(layoutSource, /<SafeVercelAnalytics \/>/);
+  // Vercel Analytics now mounts from the consent gate, not from the layout, so
+  // it is not present for a visitor who has not granted consent.
+  const browserAnalyticsSource = readFileSync(
+    new URL('../src/components/marketing/browser-analytics.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(layoutSource, /<SafeVercelAnalytics \/>/);
+  assert.match(browserAnalyticsSource, /<SafeVercelAnalytics \/>/);
+  assert.match(browserAnalyticsSource, /if \(consent !== "granted"\) return null;/);
   assert.match(safeVercelAnalyticsSource, /from ["']@vercel\/analytics\/next["']/);
   assert.match(safeVercelAnalyticsSource, /beforeSend=/);
   assert.match(safeVercelAnalyticsSource, /`\$\{url\.origin\}\$\{url\.pathname\}`/);

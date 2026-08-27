@@ -376,3 +376,81 @@ before it is observed, or it will read as an outage.
    optional, so no record becomes unreadable.
 
 Neither lever touches payment, fulfilment, or order state.
+
+---
+
+# Correction, 2026-08-26 (second pass)
+
+Independent review rejected two judgement calls from the first pass. Both are
+now corrected, and the reasoning is recorded so the reversal is legible.
+
+## Consent Mode was not sufficient
+
+The first pass loaded gtag unconditionally and set Google Consent Mode to
+denied. That is not the same as "no optional analytics": a denied Consent Mode
+**still loads Google's script and still sends cookieless pings**, so a visitor
+who had not chosen — or who had declined — had already had a third-party
+request made on their behalf.
+
+Now: GA4's script and Vercel Analytics are **not rendered at all** until consent
+is granted, from `src/components/marketing/browser-analytics.tsx`. The
+`gtag('consent','default')` block is gone, because relying on it would imply the
+script were loaded. Because the decision is made in the browser, the scripts are
+`afterInteractive` rather than `beforeInteractive`; the inline stub still runs
+before the remote library, so queued `gtag()` calls survive exactly as before.
+
+One honest limit: a script cannot be un-run. If a visitor grants and then
+withdraws, Google's library may remain resident for the rest of that page's
+life. `analytics.ts` refuses to call it, and a reload yields a page with no
+Google script present at all.
+
+## The route latch swallowed the grant
+
+The page-view emitter latched the pathname unconditionally, so a route seen
+*before* consent was consumed: granting while standing on that page produced no
+page view at all. The latch is now written only after a page view is actually
+emitted. The Meta controller already had the correct ordering (consent gate
+before latch) and is unchanged.
+
+Behaviour now, asserted with injected adapters and no network:
+
+| Transition | GA4 / Vercel / Meta |
+|---|---|
+| Land, no choice | nothing loaded, nothing latched, nothing emitted |
+| Decline | nothing |
+| Grant, same tab, same page | initialise once, **exactly one** PageView for the current route |
+| Navigate while granted | **exactly one** PageView per route transition, no re-init |
+| Withdraw | nothing further |
+| Re-grant later | **exactly one** PageView for the CURRENT route — no backlog of routes visited while declined |
+
+Routes are templated before they leave: `/review/<id>` is reported as
+`/review/[orderId]`, and query strings and fragments are stripped, so an order
+id, review token, or asset id can never itself be the route.
+
+## The legacy campaign path is gone, not tolerated
+
+The first pass left the ungoverned reader in `analytics.ts` in place, arguing
+that governing it would stop attributing links already in circulation that use a
+non-allowlisted medium. Review overruled that, correctly: tolerating an
+ungoverned path is not a smaller risk than losing attribution on a
+badly-formed link.
+
+Removed entirely: `campaignParamKeys`, `campaignSessionKey`,
+`campaignParamsFromUrl`, `parseStoredCampaign`, the `hsb:first-touch-campaign:v1`
+sessionStorage record, `utm_term`, and `ref`. `analytics.ts` now reads no query
+parameter of its own at all. Campaign fields come only from the governed record.
+
+**Consequence, stated plainly:** a live link using `utm_medium=social`, or
+carrying `utm_term`/`ref`, now contributes **no** campaign attribution. That is
+the intended behaviour — governance is the point — but anyone holding printed or
+scheduled links should re-check them against the closed vocabulary
+(`partner`, `flyer`, `email`, `organic_social`, `paid_social`, `referral`)
+before a campaign starts.
+
+## Consent banner and page layout
+
+The banner is fixed to the foot of the viewport, which means it overlaps
+whatever is there. That was not only cosmetic: the complete Chromium suite
+caught it making the customer text editor's resize handle unreachable. The
+banner now reserves its own height at the foot of the document while visible,
+and releases it on dismissal.

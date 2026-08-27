@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   attachCrossTabConsentSync,
   getConsent,
@@ -50,6 +50,7 @@ export function ConsentSurface() {
   const [state, setState] = useState<ConsentState>("unknown");
   const [ready, setReady] = useState(false);
   const [reopened, setReopened] = useState(false);
+  const bannerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     // Read once on mount. Until this runs the state is 'unknown', which is the
@@ -69,6 +70,27 @@ export function ConsentSurface() {
       detach();
     };
   }, []);
+
+  // A fixed banner at the bottom of the viewport OVERLAPS whatever is there.
+  // That is not only cosmetic: it made the customer text editor's resize handle
+  // unreachable, which the Chromium suite caught. Reserve the banner's own
+  // height at the foot of the document while it is visible, and give it back on
+  // dismissal, so nothing interactive is ever underneath it.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const body = document.body;
+    if (!body) return;
+    const node = bannerRef.current;
+    if (!node) {
+      body.style.paddingBottom = "";
+      return;
+    }
+    const previous = body.style.paddingBottom;
+    body.style.paddingBottom = `${node.offsetHeight}px`;
+    return () => {
+      body.style.paddingBottom = previous;
+    };
+  });
 
   const accept = useCallback(() => {
     setConsent("granted");
@@ -124,6 +146,7 @@ export function ConsentSurface() {
       aria-labelledby="hsb-consent-title"
       aria-describedby="hsb-consent-body"
       data-testid="consent-banner"
+      ref={bannerRef}
       style={{
         position: "fixed",
         insetInline: 0,

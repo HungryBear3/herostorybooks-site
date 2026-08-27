@@ -146,3 +146,39 @@ cover-variant helper still used (`src/components/CoverPreview.tsx`).
 
 Left in place deliberately. Removing them is a cleanup with its own review, and
 mixing it into a measurement change would make both harder to read.
+
+
+---
+
+# Reconciliation, 2026-08-26 — what this branch changed
+
+This audit was written against `d6c5602` and remains an accurate record of that
+commit. Two of its findings no longer describe the branch head, and one of its
+statements is now the opposite of the truth. Recorded here rather than edited
+in place, so the original audit stays readable as history.
+
+**"There is no consent mechanism of any kind" — no longer true.** There is one
+consent surface governing GA4, Vercel Analytics, and Meta together. Default is
+`unknown`, `unknown` enables nothing, and **nothing is stored until the visitor
+chooses**. GA4's script and Vercel Analytics are not rendered at all before a
+grant — this is deliberately not a denied Consent Mode, which would still load
+Google's library and still send cookieless pings.
+
+**"Unvalidated UTM values forwarded to two destinations" — closed.** The
+ungoverned browser campaign path in `src/lib/analytics.ts` (which read
+`utm_term`, `ref`, and 160-character raw values into sessionStorage and
+forwarded them to GA4 and Vercel) has been **removed**, not merely bounded.
+Campaign attribution now comes only from the governed record, validated by
+`utm-contract.ts`. A link using a non-allowlisted medium, or a legacy
+`utm_term`/`ref` link, contributes **no** campaign attribution rather than
+bypassing governance.
+
+**"No campaign attribution on the trusted purchase" — closed.** The governed
+tuple is bound to the order record, carried in Stripe metadata only, recovered
+from the signed session, and re-validated before it reaches GA4's reserved
+`campaign_*` parameters on the webhook purchase.
+
+**Still true, and unchanged:** Stripe remains the sole purchase authority, there
+is no site-wide CSP, and no Reddit/Google Ads/feed code exists. Meta remains
+inert, and the Conversions API is now explicitly **deferred** with its send path
+removed — see `meta-measurement-candidate.md`.

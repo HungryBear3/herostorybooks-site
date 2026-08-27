@@ -242,14 +242,38 @@ test('the Meta mount subscribes to the same store and re-offers the route on cha
 
 /* ── 6. Google Consent Mode defaults, and no dark patterns ──────────────── */
 
-test('Consent Mode v2 defaults to denied, before config', () => {
-  assert.match(layoutSource, /gtag\('consent', 'default', \{/);
-  for (const key of ['ad_storage', 'ad_user_data', 'ad_personalization', 'analytics_storage']) {
-    assert.match(layoutSource, new RegExp(`${key}: 'denied'`));
+test('GA4 is not LOADED at all before a grant, not merely set to denied', () => {
+  const browserAnalytics = readFileSync(
+    new URL('../src/components/marketing/browser-analytics.tsx', import.meta.url),
+    'utf8',
+  );
+  // A denied Consent Mode still loads Google's script and still sends
+  // cookieless pings. The requirement is no optional network behaviour at all
+  // before a grant, so the script is not rendered.
+  assert.doesNotMatch(layoutSource, /googletagmanager\.com/);
+  assert.doesNotMatch(layoutSource, /gtag\(/);
+  assert.doesNotMatch(layoutSource, /SafeVercelAnalytics/);
+
+  // The gate returns null before the scripts are reachable in the JSX.
+  const gateIdx = browserAnalytics.indexOf('if (consent !== "granted") return null;');
+  assert.ok(gateIdx > 0, 'no consent gate in the analytics mount');
+  for (const destination of ['googletagmanager.com', '<Script', '<SafeVercelAnalytics']) {
+    assert.ok(
+      browserAnalytics.indexOf(destination) > gateIdx,
+      `${destination} is reachable before the consent gate`,
+    );
   }
-  const defaultIdx = layoutSource.indexOf("gtag('consent', 'default'");
-  const configIdx = layoutSource.indexOf("gtag('config'");
-  assert.ok(defaultIdx > 0 && defaultIdx < configIdx, 'consent default must precede config');
+});
+
+test('no consent-mode fallback is relied on anywhere', () => {
+  const browserAnalytics = readFileSync(
+    new URL('../src/components/marketing/browser-analytics.tsx', import.meta.url),
+    'utf8',
+  );
+  // gtag('consent', ...) would only matter if the script were loaded; it is
+  // not, and leaving one behind would suggest otherwise.
+  assert.doesNotMatch(layoutSource, /'consent', 'default'/);
+  assert.doesNotMatch(browserAnalytics, /'consent', 'default'/);
 });
 
 test('the surface offers accept and decline with identical affordance', () => {

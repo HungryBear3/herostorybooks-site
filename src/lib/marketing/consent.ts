@@ -1,24 +1,21 @@
 /**
  * Consent resolution for ad-platform measurement. Fails closed.
  *
- * SOURCE TRUTH, STATED PLAINLY. This repository has no consent mechanism. There
- * is no cookie banner, no consent cookie, no consent state, and no Google
- * Consent Mode call anywhere in src/. GA4 today loads unconditionally whenever
- * `process.env.VERCEL_ENV === 'production'` (src/app/layout.tsx), and
- * `src/lib/ga4-purchase.ts` sends server purchases with no consent check.
+ * THE SOURCE OF TRUTH IS ./consent-store.ts. That module owns the stored
+ * choice, notifies subscribers, and mirrors the current state onto the global
+ * this file reads. `resolveConsent` remains the read-only accessor that
+ * pre-existing consumers (notably the Meta pixel controller) already call, so
+ * they did not need to change.
  *
- * That is a description of what exists, not an endorsement. This module does
- * not change GA4's behaviour — touching the live GA4 consent posture is an
- * owner decision, not a side effect of adding a Meta candidate.
+ * HISTORY, BECAUSE THE PREVIOUS COMMENT HERE IS NOW WRONG. When this module was
+ * written the repository genuinely had no consent mechanism: GA4 loaded
+ * unconditionally in production and nothing ever set the global, which meant
+ * the Meta pixel could never fire. That is no longer true. There is now a real
+ * consent surface, GA4 and Vercel Analytics do not load at all before a grant,
+ * and every browser destination is gated on this one state.
  *
- * What it does do is refuse to let a NEW ad-platform surface inherit that
- * posture. `resolveConsent` returns 'unknown' unless a consent decision is
- * explicitly published, and only 'granted' enables Meta. The practical
- * consequence, stated so nobody discovers it in production: **with no consent
- * surface in the repo, the Meta pixel cannot fire, even with the pixel id and
- * the feature flag both set.** Shipping the consent surface is a prerequisite
- * for any Meta test-event validation, and it is tracked as an open blocker in
- * docs/marketing/meta-measurement-candidate.md.
+ * The rule this module enforces is unchanged and still the important one:
+ * 'unknown' is not consent. Only an explicit 'granted' enables anything.
  *
  * Pure and isomorphic apart from one optional read of a documented global.
  */

@@ -58,9 +58,27 @@ test('no Meta runtime is installed on the page', async ({ page }) => {
   expect(globals).toEqual({ fbq: 'undefined', _fbq: 'undefined', script: false });
 });
 
-test('the existing HSB analytics layer still records sanitized page views', async ({ page }) => {
+test('before consent the analytics layer emits nothing to any destination', async ({ page }) => {
   await blockExternal(page);
   await page.goto('/checkout?childName=PrivateName', { waitUntil: 'domcontentloaded' });
+  // The consent banner is showing and no choice has been made.
+  await expect(page.getByTestId('consent-banner')).toBeVisible();
+  const before = await page.evaluate(() => ({
+    // Google's library is not even present.
+    gtagScript: document.querySelector('script[src*="googletagmanager.com"]') !== null,
+    gtag: typeof (window as unknown as { gtag?: unknown }).gtag,
+    fbq: typeof (window as unknown as { fbq?: unknown }).fbq,
+  }));
+  expect(before).toEqual({ gtagScript: false, gtag: 'undefined', fbq: 'undefined' });
+});
+
+test('after granting consent the analytics layer records sanitized page views', async ({ page }) => {
+  await blockExternal(page);
+  await page.goto('/checkout?childName=PrivateName', { waitUntil: 'domcontentloaded' });
+  // Optional analytics is off until the visitor accepts, so accept first. This
+  // is the same click a real visitor makes; nothing external is contacted
+  // because blockExternal() is still in force.
+  await page.getByTestId('consent-accept').click();
   await expect
     .poll(async () => page.evaluate(() => (window as unknown as { hsbEvents?: unknown[] }).hsbEvents?.length ?? 0))
     .toBeGreaterThan(0);

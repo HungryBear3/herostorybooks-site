@@ -349,9 +349,16 @@ test('the root layout mounts the pixel component and still gates GA4 on producti
   const layout = readFileSync(new URL('../src/app/layout.tsx', import.meta.url), 'utf8');
   assert.match(layout, /<MetaPixelMount \/>/);
   assert.match(layout, /process\.env\.VERCEL_ENV === 'production'/);
-  // The GA4 block is untouched.
-  assert.match(layout, /googletagmanager\.com\/gtag\/js\?id=\$\{googleAnalyticsMeasurementId\}/);
-  assert.match(layout, /send_page_view: false/);
+  // GA4 moved behind the consent gate; the production guard and every GA4
+  // property moved with it, unchanged.
+  const browserAnalytics = readFileSync(
+    new URL('../src/components/marketing/browser-analytics.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(layout, /googletagmanager\.com/);
+  assert.match(layout, /productionEnabled=\{googleAnalyticsEnabled\}/);
+  assert.match(browserAnalytics, /googletagmanager\.com\/gtag\/js\?id=\$\{measurementId\}/);
+  assert.match(browserAnalytics, /send_page_view: false/);
 });
 
 test('the mount reads pathname only, never search params or href', () => {
