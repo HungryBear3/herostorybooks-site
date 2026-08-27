@@ -252,17 +252,15 @@ source-level test that the session module never reads `document.referrer`,
 one transaction id and one identical campaign, so a replay cannot reattribute a
 purchase. Browser `Purchase` remains prohibited.
 
-### Known remaining ungoverned surface (deliberate, needs an owner decision)
+### ~~Known remaining ungoverned surface~~ — SUPERSEDED, the path was removed
 
-`src/lib/analytics.ts` has a pre-existing browser campaign path that forwards
-`utm_term` and `ref` and 160-character raw values to GA4 and Vercel Analytics.
-It is **not** governed by the contract, and it was left in place: tightening it
-changes live attribution semantics for any link already in circulation using a
-non-allowlisted medium (`utm_medium=social`, for instance, which the closed
-vocabulary does not contain). That is an owner call, not a side effect of this
-follow-up. It is now the only ungoverned campaign surface left, and it feeds
-GA4 exploration only — never the trusted purchase, which uses the governed
-tuple exclusively.
+> This section described leaving the ungoverned browser campaign reader in
+> `src/lib/analytics.ts` in place. **Independent review overruled that, and the
+> path was removed entirely** in the second correction pass. `utm_term`, `ref`,
+> the `hsb:first-touch-campaign:v1` sessionStorage record, and the 160-character
+> raw values are gone; `analytics.ts` reads no query parameter of its own. See
+> "Correction, 2026-08-26 (second pass)" and "Final correction (third pass)"
+> below. Retained here only so the reversal is legible.
 
 ## 2. One reactive consent surface
 
@@ -454,3 +452,126 @@ whatever is there. That was not only cosmetic: the complete Chromium suite
 caught it making the customer text editor's resize handle unreachable. The
 banner now reserves its own height at the foot of the document while visible,
 and releases it on dismissal.
+
+---
+
+# Final correction, 2026-08-26 (third pass)
+
+Three review blockers, closed. This section is the current truth; where it
+disagrees with anything above, it wins.
+
+## 1. GA4 readiness is coordinated, not assumed
+
+**The bug.** Consent grant and gtag becoming callable are two different moments.
+GA4's scripts mount only on a grant and load asynchronously, so the emitter
+frequently ran while `window.gtag` did not yet exist — and `analytics.ts` checks
+for it before calling. The visitor consented and their first page was never
+counted.
+
+**The fix.** An explicit readiness contract, no sleeps:
+
+- `markGtagReady()` is called from the GA4 inline script's own `onReady`, which
+  is exactly when `window.gtag` becomes callable.
+- `analytics-coordinator.ts` holds **one** pending route — never a queue.
+- The **emitter is the authority** on whether delivery is possible, because it
+  is the only thing that can see `window.gtag`. The coordinator always asks it;
+  asking is safe before readiness because `deliverGa4PageView` performs no GA
+  call when GA is absent. `markReady` is the *retry trigger*, not the
+  permission.
+- The delivered-route latch moves **only** on a truthful `true`. An emitter that
+  found no adapter, or threw, leaves the route pending.
+
+| Transition | Result |
+|---|---|
+| Grant before readiness | queued; **no GA call** |
+| Readiness arrives | the pending route delivered **exactly once** |
+| Route changed before readiness | **only the latest** route delivered — no backlog |
+| Repeated readiness / remount / StrictMode / repeated consent | no duplicate init, no duplicate PageView |
+| Decline or withdraw before readiness | pending emission **cancelled** |
+| Withdraw after grant | nothing further |
+| Re-grant later | **exactly one** current-route PageView |
+
+**Meta and Vercel are deliberately not routed through the coordinator.** Meta's
+controller already orders config → consent → route latch correctly and emits one
+PageView per route; Vercel's `<Analytics />` does its own page view and mounts
+only on a grant, and `page_view` is excluded from the custom-event forwarder.
+Adding a second source would be the opposite of the point. Asserted by test.
+
+**Local observability.** Where GA4 never mounts (local, CI, Preview without the
+switch), the route is still recorded in the in-memory `window.hsbEvents` buffer
+and the emitter reports `false`. The buffer never leaves the tab, carries no
+identifier, and is not a measurement destination — writing to it is not
+"emitting analytics".
+
+## 2. Whole-tuple rejection, at every boundary
+
+Governed keys are exactly `utm_source`, `utm_medium`, `utm_campaign`,
+`utm_content`. The tuple is rejected **entirely** — not stripped and accepted —
+when the query carries:
+
+| Condition | Reason code |
+|---|---|
+| any `utm_*` outside the four (incl. `utm_term`) | `ungoverned_utm_key` |
+| a legacy companion (`ref`, `referrer`) | `legacy_companion_key` |
+| a repeated governed key | `duplicate_key` |
+| malformed percent-encoding | `malformed_encoding` |
+
+Plus the pre-existing value rules: closed medium vocabulary, 40-character bound,
+token shape, PII rejection, and `validateUtmTuple`'s own rejection of smuggled
+object keys. The same check runs at landing capture **and** at the checkout POST
+(`ungovernedCampaignKey` is shared, so the two cannot drift). First-touch and
+expiry apply only to a fully valid tuple; a rejected query never displaces a
+live or an expired first touch.
+
+### Documented exception: platform click ids
+
+`fbclid`, `gclid`, `msclkid`, `ttclid`, and `twclid` are **not** treated as
+campaign companions. They are appended automatically by the platform, not typed
+by the link author, so rejecting them would mean a correctly governed partner
+link attributes from an email and attributes to **nothing** from a Facebook
+share. They are never read, stored, or forwarded. This is a deliberate,
+documented assumption; if the owner prefers them rejected, add them to
+`REJECTED_COMPANION_KEYS` and one test flips.
+
+## 3. Preview validation switch
+
+GA4 and Vercel are production-only, so ordinary Preview cannot exercise the real
+lifecycle. `resolveAnalyticsMode` adds the smallest fail-closed switch:
+
+```
+NEXT_PUBLIC_HSB_ANALYTICS_PREVIEW_VALIDATION   'true' to arm; absent = inert
+NEXT_PUBLIC_HSB_PREVIEW_GA_MEASUREMENT_ID      throwaway GA4 property id
+```
+
+Both are public by construction — a measurement id is not a credential, and
+neither is a token. Nothing here touches `GA4_API_SECRET`, which is server-only
+and belongs to the trusted purchase path. **Neither is configured by this
+change.**
+
+It **cannot**: override consent (the consent gate runs after the mode gate, and
+no preview-specific conditional exists in the component); operate outside
+`VERCEL_ENV=preview`; or use the Production property — a missing, malformed, or
+Production-colliding preview id disables the mode rather than falling back.
+Production behaviour is byte-identical to before.
+
+**Safe setup:** set both variables on the Preview environment only; deploy;
+open a Preview URL; confirm no `googletagmanager.com` script before choosing;
+accept; confirm exactly one `page_view` to the throwaway property; navigate and
+confirm one per route; withdraw via "Cookie choices" and confirm nothing
+further. **Teardown:** remove both variables; Preview returns to inert.
+
+## Reporting caveat, restated
+
+Consent enforcement **reduces reported GA4 volume** by however many visitors
+decline or never answer. Purchases are unaffected — they come from the
+signature-verified Stripe webhook via the Measurement Protocol, deduplicated on
+the Checkout Session id. Any conversion rate computed as purchases ÷ browser
+sessions therefore mixes a server numerator with a consent-suppressed
+denominator and will read high. **Use absolute trusted purchases per campaign**,
+and do not compare rates against pre-consent baselines.
+
+## Unchanged
+
+Stripe webhook remains the sole purchase authority. Browser `Purchase` remains
+prohibited. Meta CAPI remains deferred with no send path, no environment reads,
+and no call site.

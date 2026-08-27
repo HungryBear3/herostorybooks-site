@@ -356,7 +356,7 @@ test('the root layout mounts the pixel component and still gates GA4 on producti
     'utf8',
   );
   assert.doesNotMatch(layout, /googletagmanager\.com/);
-  assert.match(layout, /productionEnabled=\{googleAnalyticsEnabled\}/);
+  assert.match(layout, /mode=\{analyticsMode\.mode\}/);
   assert.match(browserAnalytics, /googletagmanager\.com\/gtag\/js\?id=\$\{measurementId\}/);
   assert.match(browserAnalytics, /send_page_view: false/);
 });

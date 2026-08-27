@@ -214,14 +214,16 @@ test('a private route produces no Meta behaviour at all', () => {
 
 /* ── 5. Mount-level gating for GA4, Vercel, and the page-view emitter ───── */
 
-test('the page-view emitter latches only what it actually emitted', () => {
-  // The old bug: an unconditional latch consumed the pre-consent route, so a
-  // grant on that page produced no page view at all.
-  assert.match(pageViewSource, /if \(consent !== "granted"\) return;/);
-  const gateIdx = pageViewSource.indexOf('if (consent !== "granted") return;');
-  const latchIdx = pageViewSource.indexOf('lastEmittedRef.current = pathname;');
-  assert.ok(gateIdx > 0 && latchIdx > gateIdx, 'the latch is written before the consent gate');
+test('the page-view emitter delegates delivery, and cancels on withdrawal', () => {
+  // The latch now lives in the coordinator, which writes it only after a
+  // truthful emission -- see tests/marketing-analytics-readiness.test.ts. The
+  // component's own job is narrower: report the route, and cancel anything
+  // pending the moment consent stops being granted.
+  assert.match(pageViewSource, /if \(consent !== "granted"\) \{[\s\S]*?coordinator\.cancelPending\(\);/);
+  assert.match(pageViewSource, /coordinator\.requestPageView\(pathname\)/);
   assert.match(pageViewSource, /\}, \[pathname, consent\]\);/);
+  // No local latch may shadow the coordinator's.
+  assert.doesNotMatch(pageViewSource, /lastEmittedRef/);
 });
 
 test('GA4 and Vercel Analytics mount only on a grant', () => {
@@ -233,9 +235,10 @@ test('GA4 and Vercel Analytics mount only on a grant', () => {
       `${destination} renders before the consent gate`,
     );
   }
-  // And the production guard is still first.
-  const prodIdx = browserAnalyticsSource.indexOf('if (!productionEnabled) return null;');
-  assert.ok(prodIdx > 0 && prodIdx < gateIdx);
+  // And the environment guard is still first: with no property to measure
+  // into, consent is irrelevant and nothing mounts.
+  const envIdx = browserAnalyticsSource.indexOf('if (mode === "disabled" || !measurementId) return null;');
+  assert.ok(envIdx > 0 && envIdx < gateIdx);
 });
 
 test('all three mounts subscribe to the one store', () => {

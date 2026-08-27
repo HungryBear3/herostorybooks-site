@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import Script from "next/script";
 import { SafeVercelAnalytics } from "@/components/safe-vercel-analytics";
 import { getConsent, subscribeConsent } from "@/lib/marketing/consent-store";
+import { markGtagReady } from "@/lib/marketing/analytics-coordinator";
 import type { ConsentState } from "@/lib/marketing/consent";
+import type { AnalyticsMode } from "@/lib/marketing/preview-validation";
 
 /**
  * Every optional browser analytics destination, mounted ONLY on a grant.
@@ -32,15 +34,19 @@ import type { ConsentState } from "@/lib/marketing/consent";
  * `analytics.ts` refuses to call it. A full reload restores a page with no
  * Google script present at all.
  *
- * The production-only guard (`VERCEL_ENV === 'production'`) is unchanged and is
- * evaluated before consent even matters.
+ * ENVIRONMENT GUARD. `mode` is resolved on the server by
+ * `resolveAnalyticsMode`. 'production' behaves exactly as before. 'disabled'
+ * mounts nothing. 'preview_validation' mounts the same real adapters against a
+ * throwaway GA4 property so the consent/readiness lifecycle can be observed
+ * before Production -- it never relaxes the consent gate.
  */
 export function BrowserAnalytics({
   measurementId,
-  productionEnabled,
+  mode,
 }: {
-  measurementId: string;
-  productionEnabled: boolean;
+  /** Null when no property may be measured into. */
+  measurementId: string | null;
+  mode: AnalyticsMode;
 }) {
   const [consent, setConsentState] = useState<ConsentState>("unknown");
 
@@ -49,7 +55,12 @@ export function BrowserAnalytics({
     return subscribeConsent(setConsentState);
   }, []);
 
-  if (!productionEnabled) return null;
+  // Environment first: 'disabled' means there is no property to measure into,
+  // in which case consent is irrelevant and nothing mounts. Preview validation
+  // mounts the same real adapters against a throwaway property -- it does NOT
+  // relax the consent gate below, which is the whole reason it is worth
+  // running.
+  if (mode === "disabled" || !measurementId) return null;
   if (consent !== "granted") return null;
 
   return (
@@ -59,7 +70,15 @@ export function BrowserAnalytics({
         src={`https://www.googletagmanager.com/gtag/js?id=${measurementId}`}
         strategy="afterInteractive"
       />
-      <Script id="google-analytics-gtag" strategy="afterInteractive">
+      <Script
+        id="google-analytics-gtag"
+        strategy="afterInteractive"
+        // The moment this inline stub has executed, window.gtag is callable.
+        // That -- not the consent grant -- is when a page view can actually be
+        // delivered, so it is the signal the coordinator waits on. Safe to fire
+        // more than once; markGtagReady is idempotent.
+        onReady={markGtagReady}
+      >
         {`
           window.dataLayer = window.dataLayer || [];
           function gtag(){dataLayer.push(arguments);}

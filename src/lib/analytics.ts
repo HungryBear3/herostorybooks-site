@@ -294,6 +294,64 @@ export function track(
 }
 
 /**
+ * Append to the in-memory funnel buffer and nothing else.
+ *
+ * `window.hsbEvents` is a local debugging and test-observation aid: it never
+ * leaves the tab, carries no identifier, and is not a measurement destination.
+ * Writing to it is therefore not "emitting analytics".
+ */
+function bufferHsbEvent(
+  event: HsbEventName,
+  props: Record<string, string | number | boolean | null | undefined> = {},
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const pathname =
+      typeof window.location !== 'undefined' ? window.location.pathname : undefined;
+    window.hsbEvents = window.hsbEvents ?? [];
+    window.hsbEvents.push({
+      event,
+      timestamp: Date.now(),
+      href:
+        typeof window.location !== 'undefined'
+          ? `${window.location.origin ?? ''}${pathname ?? ''}`
+          : undefined,
+      pathname,
+      ...props,
+    });
+  } catch {
+    /* never throw from analytics */
+  }
+}
+
+/**
+ * Deliver one sanitized page view to GA4, reporting TRUTHFULLY whether it went.
+ *
+ * The coordinator latches a route only on a `true` from here, so every
+ * precondition the emission actually depends on is checked explicitly rather
+ * than assumed: a browser, a granted consent, and a callable `gtag`. Returning
+ * false leaves the route pending instead of pretending it was counted.
+ */
+export function deliverGa4PageView(pathname: string): boolean {
+  if (typeof window === 'undefined') return false;
+  if (!optionalAnalyticsAllowed()) return false;
+  const route = sanitizeRoute(pathname);
+
+  if (typeof window.gtag !== 'function') {
+    // GA4 has not mounted -- either it is still loading, or this environment
+    // never mounts it (local, CI, Preview without the validation switch). Record
+    // the route in the in-memory buffer so the funnel stays inspectable, and
+    // report FALSE so the coordinator keeps the route pending rather than
+    // marking it delivered. The buffer never leaves the tab.
+    bufferHsbEvent('page_view', { pathname: route });
+    return false;
+  }
+
+  track('page_view', { pathname: route });
+  return true;
+}
+
+/**
  * One sanitized page view. The route is templated by `sanitizeRoute`, so
  * /review/<id> is reported as /review/[orderId] and an order id, review token,
  * or asset id can never itself become the route. Query strings and fragments

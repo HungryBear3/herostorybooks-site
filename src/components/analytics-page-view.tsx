@@ -2,35 +2,35 @@
 
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { trackPageView } from "@/lib/analytics";
+import { deliverGa4PageView } from "@/lib/analytics";
 import { getConsent, subscribeConsent } from "@/lib/marketing/consent-store";
+import { getAnalyticsCoordinator } from "@/lib/marketing/analytics-coordinator";
 import type { ConsentState } from "@/lib/marketing/consent";
 
 /**
- * Fires exactly one sanitized `page_view` per route transition, and only while
- * consent is granted.
+ * Asks the coordinator to deliver exactly one sanitized page view per route.
  *
- * THE LATCH RULE. The previous version latched the pathname unconditionally,
- * which meant a route seen before consent was consumed: granting consent while
- * standing on that page produced no page view at all, because the latch already
- * held it. The latch is now only written after a page view is actually emitted,
- * so:
+ * All of the hard parts -- the readiness race, the single-slot pending route,
+ * the delivered-route latch, cancellation on withdrawal -- live in
+ * `analytics-coordinator.ts`, which is testable without a browser. This
+ * component only reports two facts: which route is current, and what consent
+ * says.
  *
- *   - before a grant, nothing is latched and nothing is emitted;
- *   - on a grant, the CURRENT route emits exactly one page view;
- *   - each later navigation emits exactly one;
- *   - on withdrawal, nothing more is emitted;
- *   - on a later re-grant, the CURRENT route emits one page view — not a
- *     backlog of the routes visited while denied, which were never queued.
- *
- * Query strings and fragments are dropped and dynamic segments are templated
- * by `trackPageView`, so an order id or a review token can never be the route.
- * The latch also absorbs React StrictMode's double effect.
+ * The coordinator is a per-tab singleton, so a remount or a React StrictMode
+ * double effect re-reports the same route and is absorbed rather than
+ * duplicated.
  */
 export function AnalyticsPageView() {
   const pathname = usePathname();
-  const lastEmittedRef = useRef<string | null>(null);
   const [consent, setConsentState] = useState<ConsentState>("unknown");
+  const coordinatorRef = useRef<ReturnType<typeof getAnalyticsCoordinator> | null>(null);
+
+  if (coordinatorRef.current === null) {
+    coordinatorRef.current = getAnalyticsCoordinator({
+      emit: (route) => deliverGa4PageView(route),
+      consent: () => getConsent(),
+    });
+  }
 
   useEffect(() => {
     setConsentState(getConsent());
@@ -38,11 +38,14 @@ export function AnalyticsPageView() {
   }, []);
 
   useEffect(() => {
-    if (!pathname) return;
-    if (consent !== "granted") return;
-    if (lastEmittedRef.current === pathname) return;
-    lastEmittedRef.current = pathname;
-    trackPageView(pathname);
+    const coordinator = coordinatorRef.current;
+    if (!coordinator || !pathname) return;
+    if (consent !== "granted") {
+      // Withdrawal or decline cancels anything waiting on readiness.
+      coordinator.cancelPending();
+      return;
+    }
+    coordinator.requestPageView(pathname);
   }, [pathname, consent]);
 
   return null;

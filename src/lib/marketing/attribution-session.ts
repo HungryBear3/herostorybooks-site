@@ -159,23 +159,128 @@ export function decideAttribution(args: {
 }
 
 /**
- * Read the governed tuple out of a query string. Only the four governed keys
- * are even looked at; everything else in the URL is ignored, not stored.
+ * Legacy campaign companions. Present for ANY reason, they reject the whole
+ * tuple rather than being quietly dropped.
+ *
+ * These are author-controlled: someone typed them into a link. A link whose
+ * author still believes `utm_term` or `ref` is being recorded is a link whose
+ * attribution nobody should trust, so it attributes to nothing and the author
+ * finds out.
  */
-export function attributionFromSearch(search: string): Partial<Record<string, string>> {
-  const out: Record<string, string> = {};
+export const REJECTED_COMPANION_KEYS: readonly string[] = ['ref', 'referrer'];
+
+/**
+ * DELIBERATELY NOT REJECTED: `fbclid`, `gclid`, `msclkid`, and the other
+ * platform click ids.
+ *
+ * They are appended automatically by Facebook, Google, and Bing to any link
+ * anyone shares — the author never typed them and cannot remove them. Treating
+ * them as "campaign-like companions" would mean that a partner's perfectly
+ * governed link attributes correctly when opened from an email and attributes
+ * to NOTHING when opened from a Facebook share, which is worse than useless as
+ * a measurement rule. They are never read, never stored, and never forwarded;
+ * they are simply not evidence of a badly-authored link. Documented here so the
+ * exclusion is a decision rather than an oversight.
+ */
+export const IGNORED_CLICK_ID_KEYS: readonly string[] = [
+  'fbclid',
+  'gclid',
+  'msclkid',
+  'ttclid',
+  'twclid',
+];
+
+export type CampaignSearchRejection =
+  | 'malformed_encoding'
+  | 'ungoverned_utm_key'
+  | 'legacy_companion_key'
+  | 'duplicate_key';
+
+export interface CampaignSearchResult {
+  /** The four governed keys, ready for validateUtmTuple. Absent when rejected. */
+  utms?: Record<string, string>;
+  /** Set when the query itself disqualified the tuple. */
+  rejected?: CampaignSearchRejection;
+}
+
+/**
+ * True when a set of keys contains anything campaign-governed that is not one
+ * of the four. Shared by the landing capture and the checkout POST so the two
+ * boundaries cannot drift apart.
+ */
+export function ungovernedCampaignKey(keys: Iterable<string>): string | null {
+  for (const raw of keys) {
+    const key = raw.toLowerCase();
+    if (IGNORED_CLICK_ID_KEYS.includes(key)) continue;
+    if (REJECTED_COMPANION_KEYS.includes(key)) return key;
+    if (key.startsWith('utm_') && !(GOVERNED_UTM_FIELDS as readonly string[]).includes(key)) {
+      return key;
+    }
+  }
+  return null;
+}
+
+/**
+ * Read the governed tuple out of a query string, rejecting the WHOLE tuple
+ * rather than stripping what it does not recognise.
+ *
+ * Stripping first and validating the remainder would mean
+ * `?utm_source=x&utm_medium=partner&utm_campaign=y&utm_term=secret` quietly
+ * attributes as if `utm_term` had never been written — the author keeps
+ * believing a field is recorded, and governance is theatre. So any ungoverned
+ * `utm_*` key, any legacy companion, any duplicated governed key, and any
+ * malformed percent-encoding disqualifies the tuple entirely.
+ */
+export function governedCampaignFromSearch(search: string): CampaignSearchResult {
+  const raw = typeof search === 'string' ? search : '';
+
+  // Malformed percent-encoding: URLSearchParams substitutes replacement
+  // characters rather than throwing, so decode explicitly to detect it.
+  const query = raw.startsWith('?') ? raw.slice(1) : raw;
+  if (query) {
+    try {
+      decodeURIComponent(query.replace(/\+/g, ' '));
+    } catch {
+      return { rejected: 'malformed_encoding' };
+    }
+  }
+
   let params: URLSearchParams;
   try {
-    params = new URLSearchParams(search ?? '');
+    params = new URLSearchParams(query);
   } catch {
-    return out;
+    return { rejected: 'malformed_encoding' };
   }
+
+  const offending = ungovernedCampaignKey([...params.keys()]);
+  if (offending) {
+    return {
+      rejected: offending.startsWith('utm_') ? 'ungoverned_utm_key' : 'legacy_companion_key',
+    };
+  }
+
+  const seen = new Set<string>();
+  for (const key of params.keys()) {
+    const lower = key.toLowerCase();
+    if (!(GOVERNED_UTM_FIELDS as readonly string[]).includes(lower)) continue;
+    // A repeated governed key is ambiguous: URLSearchParams.get() would take
+    // the first and silently discard the second.
+    if (seen.has(lower)) return { rejected: 'duplicate_key' };
+    seen.add(lower);
+  }
+
+  const utms: Record<string, string> = {};
   for (const field of GOVERNED_UTM_FIELDS) {
     const value = params.get(field);
     // Bound before validation so a megabyte query value is never carried.
-    if (typeof value === 'string' && value.length <= 200) out[field] = value;
+    if (typeof value === 'string' && value.length <= 200) utms[field] = value;
   }
-  return out;
+  return { utms };
+}
+
+/** Back-compat shim for callers that only want the governed four. */
+export function attributionFromSearch(search: string): Partial<Record<string, string>> {
+  return governedCampaignFromSearch(search).utms ?? {};
 }
 
 /**
@@ -198,9 +303,12 @@ export function captureAttribution(args: {
     stored = null;
   }
 
+  // A rejected query yields NO incoming tuple at all, so a live first touch is
+  // kept and an expired one is not replaced by something disqualified.
+  const parsed = governedCampaignFromSearch(args.search);
   const decision = decideAttribution({
     stored,
-    incoming: attributionFromSearch(args.search),
+    incoming: parsed.rejected ? null : parsed.utms,
     now: args.now,
     ttlMs: args.ttlMs,
   });

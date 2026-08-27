@@ -29,7 +29,10 @@ import {
 } from '@/lib/checkout-photo-policy';
 import { buildCheckoutTracking } from '@/lib/checkout-tracking';
 import { validateUtmTuple } from '@/lib/marketing/utm-contract';
-import { attributionMetadata } from '@/lib/marketing/attribution-session';
+import {
+  attributionMetadata,
+  ungovernedCampaignKey,
+} from '@/lib/marketing/attribution-session';
 import { sanitizeGaClientId } from '@/lib/ga4-purchase';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
@@ -154,12 +157,19 @@ export async function POST(request: Request) {
     // used, so a hand-crafted POST cannot persist an unapproved medium, an
     // oversized label, or anything PII-shaped. An invalid tuple becomes null
     // rather than a partial record.
-    const campaignAttributionResult = validateUtmTuple({
-      utm_source: form.get('utm_source'),
-      utm_medium: form.get('utm_medium'),
-      utm_campaign: form.get('utm_campaign'),
-      utm_content: form.get('utm_content'),
-    });
+    // Whole-tuple rejection applies here too. If the POST carries any
+    // campaign-governed field outside the four -- utm_term, ref, an arbitrary
+    // utm_* -- the tuple is disqualified rather than having the stray field
+    // dropped and the remainder accepted.
+    const smuggledCampaignKey = ungovernedCampaignKey([...form.keys()]);
+    const campaignAttributionResult = smuggledCampaignKey
+      ? { ok: false as const, tuple: undefined }
+      : validateUtmTuple({
+          utm_source: form.get('utm_source'),
+          utm_medium: form.get('utm_medium'),
+          utm_campaign: form.get('utm_campaign'),
+          utm_content: form.get('utm_content'),
+        });
     const campaignAttribution =
       campaignAttributionResult.ok && campaignAttributionResult.tuple
         ? campaignAttributionResult.tuple

@@ -16,16 +16,21 @@ test('GA4 loads only from the consent-gated component, never from the layout', (
   assert.doesNotMatch(layoutSource, /gtag\(/);
   assert.doesNotMatch(layoutSource, /SafeVercelAnalytics/);
   assert.match(layoutSource, /<BrowserAnalytics/);
-  assert.match(layoutSource, /productionEnabled=\{googleAnalyticsEnabled\}/);
+  assert.match(layoutSource, /mode=\{analyticsMode\.mode\}/);
+  assert.match(layoutSource, /measurementId=\{analyticsMode\.measurementId\}/);
   assert.match(layoutSource, /process\.env\.VERCEL_ENV === 'production'/);
+  // The property to measure into is resolved on the server, fail-closed.
+  assert.match(layoutSource, /resolveAnalyticsMode\(\{/);
   assert.match(layoutSource, /G-68FKEDZEG3/);
 
   // The component keeps every previously-released GA4 property, and adds the
   // consent gate above them.
   assert.match(analyticsMount, /if \(consent !== "granted"\) return null;/);
-  assert.match(analyticsMount, /if \(!productionEnabled\) return null;/);
+  assert.match(analyticsMount, /if \(mode === "disabled" \|\| !measurementId\) return null;/);
   assert.match(analyticsMount, /googletagmanager\.com\/gtag\/js\?id=\$\{measurementId\}/);
-  assert.match(analyticsMount, /<Script id="google-analytics-gtag"/);
+  assert.match(analyticsMount, /<Script\s*\n\s*id="google-analytics-gtag"/);
+  // Readiness is signalled from the script that makes window.gtag callable.
+  assert.match(analyticsMount, /onReady=\{markGtagReady\}/);
   assert.match(analyticsMount, /gtag\('js', new Date\(\)\)/);
   assert.match(analyticsMount, /var pageLocation = window\.location\.origin \+ window\.location\.pathname/);
   assert.match(analyticsMount, /pageReferrer = referrerUrl\.origin \+ referrerUrl\.pathname/);
@@ -49,7 +54,8 @@ test('shared analytics layer forwards HSB funnel events to gtag once when availa
 
 test('global page views track pathname changes without query strings', () => {
   assert.match(pageViewSource, /usePathname\(\)/);
-  assert.match(pageViewSource, /trackPageView\(pathname\)/);
+  assert.match(pageViewSource, /coordinator\.requestPageView\(pathname\)/);
+  assert.match(pageViewSource, /deliverGa4PageView/);
   assert.doesNotMatch(pageViewSource, /useSearchParams|window\.location\.search/);
   assert.doesNotMatch(analyticsSource, /window\.location\.href/);
   assert.match(analyticsSource, /window\.location\.origin/);
