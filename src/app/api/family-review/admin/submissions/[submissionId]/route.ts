@@ -60,10 +60,38 @@ export async function DELETE(
     submissionPath(submission.id),
   ];
 
-  await Promise.all(paths.map((pathname) => deleteBlob(pathname)));
+  // Deletion is now VERIFIED. This previously reported ok:true
+  // unconditionally because the delete helper swallowed every error, so
+  // a reviewer could be told a family's photos were gone while the bytes
+  // survived. A partial failure is reported as such, with counts only —
+  // never a pathname.
+  const results = await Promise.all(
+    paths.map((pathname) => deleteBlob(pathname)),
+  );
+  const failed = results.filter((r) => !r.deleted).length;
+  if (failed > 0) {
+    console.error(
+      `[family-review/admin/delete] partial delete (submission=${submission.id}): ${failed}/${results.length} objects not deleted`,
+    );
+    return NextResponse.json(
+      {
+        ok: false,
+        error: 'partial_delete',
+        submissionId: submission.id,
+        objectsTotal: results.length,
+        objectsDeleted: results.length - failed,
+      },
+      { status: 500, headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
 
   return NextResponse.json(
-    { ok: true, deleted: true, submissionId: submission.id },
+    {
+      ok: true,
+      deleted: true,
+      submissionId: submission.id,
+      objectsDeleted: results.length,
+    },
     { status: 200, headers: { 'Cache-Control': 'no-store' } },
   );
 }

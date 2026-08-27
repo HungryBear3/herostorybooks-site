@@ -18,6 +18,7 @@ import { NextResponse } from 'next/server';
 import { isAdminRequestAuthed } from '@/lib/family-review/admin-auth';
 import {
   listRecentSubmissions,
+  redactAssetUrls,
   storeStatus,
   type FamilyReviewSubmission,
 } from '@/lib/family-review/store';
@@ -56,7 +57,9 @@ export async function GET(req: Request) {
     );
   }
 
-  const submissions = await listRecentSubmissions(limit);
+  // Raw storage URLs are stripped before the record leaves the server —
+  // the board renders every asset through the cookie-gated proxy.
+  const submissions = (await listRecentSubmissions(limit)).map(redactAssetUrls);
 
   return NextResponse.json(
     { ok: true, storeEnabled: true, submissions },

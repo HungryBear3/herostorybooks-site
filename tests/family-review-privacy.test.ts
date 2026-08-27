@@ -264,9 +264,16 @@ test('parent sample proxy 404s wrong token or wrong asset id', () => {
   assert.match(src, /isWellFormedAssetId/);
   // 404 on any miss path
   assert.match(src, /status:\s*404/);
-  // No raw href/src to vercel-storage in the proxy itself (it fetches
-  // it server-side to relay).
-  assert.match(src, /fetch\(sample\.blobUrl/);
+  // The proxy relays bytes server-side rather than handing a storage
+  // URL to the client. Bytes now go through the storage abstraction, so
+  // a privately stored sample is read with the store token and a legacy
+  // one through its recorded URL — neither reaches the browser.
+  assert.match(src, /await openAsset\(sample\)/);
+  assert.doesNotMatch(
+    src,
+    /fetch\(sample\.blobUrl/,
+    'the proxy must not fetch a raw storage URL directly any more',
+  );
 });
 
 test('admin asset proxy 403s without correct admin auth, 404s on miss', () => {
@@ -346,10 +353,31 @@ test('family-review photo picker supports drag/drop and mobile image mime varian
   assert.match(src, /image\/jpg/, 'photo picker should accept nonstandard image/jpg MIME');
   assert.match(src, /\.heic/, 'photo picker should accept HEIC extension fallback');
 
+  // Image-type resolution moved into a shared module so BOTH upload
+  // paths use it — the admin sample upload previously trusted the
+  // client-declared type with no byte check. The guarantees are
+  // asserted where they now live.
   const uploadRoute = read(SOURCES.uploadApi);
-  assert.match(uploadRoute, /resolveImageType/, 'upload route should resolve image type robustly');
-  assert.match(uploadRoute, /image\/jpg/, 'upload route should accept nonstandard image/jpg MIME');
-  assert.match(uploadRoute, /never read File\.name/i, 'upload route should sniff bytes without reading filenames');
+  assert.match(
+    uploadRoute,
+    /resolveUploadImageType/,
+    'upload route should resolve image type robustly',
+  );
+  const imageType = readFileSync(
+    resolve(process.cwd(), 'src/lib/family-review/image-type.ts'),
+    'utf8',
+  );
+  assert.match(imageType, /image\/jpg/, 'type resolution should accept nonstandard image/jpg MIME');
+  assert.match(
+    imageType,
+    /never reads File\.name|without reading filenames/i,
+    'type resolution should sniff bytes without reading filenames',
+  );
+  assert.doesNotMatch(
+    imageType,
+    /file\.name/,
+    'the sniffer must never read File.name',
+  );
 });
 
 /* ── 8. Admin auth: NO ?key= URL anywhere. Cookie-only transport. ─── */
