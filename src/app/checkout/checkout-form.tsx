@@ -32,6 +32,11 @@ import {
   getCheckoutProgress,
   supportingCharacterDraftMissingFields,
 } from "@/lib/checkout-progressive";
+import {
+  createSubmitLock,
+  performStripeHandoff,
+  type SubmitLock,
+} from "@/lib/checkout-handoff";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -400,6 +405,13 @@ export function CheckoutForm() {
   const [fieldErrors, setFieldErrors] = useState<Record<string, boolean>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
+  // The validated Stripe Checkout URL for THIS submission. Held so the
+  // interstitial can offer it as a manual link: if the browser silently drops
+  // the programmatic navigation (backgrounded tab, discarded page, an
+  // extension), the customer still has a one-click way to reach the payment
+  // page that was already created for them — no second order or session.
+  const [checkoutHandoffUrl, setCheckoutHandoffUrl] = useState<string | null>(null);
+  const [handoffNavigationFailed, setHandoffNavigationFailed] = useState(false);
   // Specific, inline submit error. We use an in-page banner rather than
   // window.alert so the exact server reason is visible/scrollable (alerts get
   // dismissed instantly on mobile) and so we can reassure the customer that no
@@ -416,6 +428,12 @@ export function CheckoutForm() {
   const [guidedConsent, setGuidedConsent] = useState(false);
   const [showGuidedPhotos, setShowGuidedPhotos] = useState(false);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Ref-backed one-shot submit guard. `isSubmitting` alone cannot prevent a
+  // double submit: it is React state, so two clicks in the same batch both
+  // read `false`. Lazily built so the lock survives re-renders and is not
+  // reallocated on every one.
+  const submitLockRef = useRef<SubmitLock | null>(null);
+  if (!submitLockRef.current) submitLockRef.current = createSubmitLock();
 
   // Restore saved progress on mount + honor checkout entry context.
   // NamePreview carries typed names through sessionStorage so a child's name
@@ -824,6 +842,11 @@ export function CheckoutForm() {
       setStepError("Finish the checkout steps before continuing to payment.");
       return;
     }
+    // Claim the submit lock BEFORE any state update or network call. This is
+    // what makes "one click, one order" true for a rapid double click, a
+    // touch+click pair, or a re-render re-entering this handler — the disabled
+    // attribute below only takes effect after React re-renders.
+    if (!submitLockRef.current?.acquire()) return;
     setIsSubmitting(true);
     setSubmitError(null);
     // Fire BOTH the brief's "purchase_intent" alias and the more literal
@@ -982,14 +1005,49 @@ export function CheckoutForm() {
           "We couldn't reach secure payment. You have not been charged. Please try again.",
         );
       }
+      // Hand off to Stripe IMMEDIATELY.
+      //
+      // This used to be the success state + an unguarded
+      // `localStorage.removeItem` + a 1200 ms `setTimeout` around the
+      // navigation. Every part of that was a way to strand a customer whose
+      // order and Stripe Session had ALREADY been created server-side:
+      //   • the 1.2 s window let a backgrounded/discarded tab (throttled
+      //     timers on mobile) swallow the navigation entirely;
+      //   • `localStorage.removeItem` is not guaranteed to succeed (private
+      //     mode, disabled storage) and, throwing between the success state
+      //     and the timer, skipped scheduling the navigation altogether —
+      //     leaving the "Redirecting to Stripe…" screen up forever.
+      // Nothing may run between the validated URL and the navigation now, and
+      // the interstitial always carries a manual link to the same URL.
+      const handoff = performStripeHandoff(result.redirectTo, {
+        // replace() rather than href: the customer's Back button should return
+        // to the page BEFORE checkout, not to an already-submitted form whose
+        // resubmission would be rejected as an in-flight attempt.
+        navigate: (url) => window.location.replace(url),
+        clearSavedDraft: () => localStorage.removeItem(STORAGE_KEY),
+        clearAttemptId: () => sessionStorage.removeItem(attemptStorageKey),
+      });
+
+      if (handoff.reason === "invalid_url") {
+        // Fail closed: an unexpected redirect target is a failed hand-off, not
+        // something to navigate to.
+        throw new Error(
+          "We couldn't reach secure payment. You have not been charged. Please try again.",
+        );
+      }
+
+      // Navigation is already under way (or was refused). Only presentational
+      // state past this point — it cannot affect the hand-off.
+      setCheckoutHandoffUrl(handoff.url);
+      setHandoffNavigationFailed(!handoff.ok);
       setSuccess(true);
-      localStorage.removeItem(STORAGE_KEY);
-      setTimeout(() => {
-        window.location.href = result.redirectTo;
-        sessionStorage.removeItem(attemptStorageKey);
-      }, 1200);
     } catch (error) {
       console.error(error);
+      // Release the lock so the customer can retry. The attempt id in
+      // sessionStorage is deliberately left in place: the server resumes the
+      // same order and returns the same open Stripe Session for a repeated
+      // checkoutAttemptId, so a retry cannot create a second order or charge.
+      submitLockRef.current?.release();
       // Inline banner instead of window.alert — see submitError declaration.
       setSubmitError(
         error instanceof Error
@@ -1022,8 +1080,33 @@ export function CheckoutForm() {
             is complete.
           </p>
           <p className="text-sm text-[#695f54]">
-            Redirecting to Stripe… please don&apos;t close this tab.
+            {handoffNavigationFailed
+              ? "Your secure payment page is ready — open it with the button below."
+              : "Redirecting to Stripe… please don't close this tab."}
           </p>
+          {/* Manual hand-off fallback. The programmatic navigation above is
+              immediate, but a browser can still drop it (backgrounded tab,
+              discarded page, an extension). Without this link a customer whose
+              order and Stripe Session were already created had no way forward
+              and no way to tell that anything had gone wrong. The link is the
+              SAME validated URL — following it resumes the existing session and
+              cannot create a second order or charge. */}
+          {checkoutHandoffUrl && (
+            <>
+              <a
+                href={checkoutHandoffUrl}
+                data-testid="stripe-handoff-fallback"
+                rel="nofollow"
+                className="mt-5 inline-block w-full rounded-2xl bg-deep-gold px-5 py-3 text-base font-bold text-navy shadow-md transition hover:bg-deep-gold/90"
+              >
+                Continue to secure payment
+              </a>
+              <p className="mt-2 text-xs leading-5 text-[#8a7b6a]">
+                Not moving after a few seconds? Use this button — it opens the
+                same secure payment page and does not create a second order.
+              </p>
+            </>
+          )}
         </motion.div>
       </main>
     );
