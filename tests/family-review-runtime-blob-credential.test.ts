@@ -28,7 +28,6 @@ import {
   blobStoreIdFromToken,
   familyReviewPrivateToken,
   familyReviewPrivateTokenAvailable,
-  familyReviewPrivateTokenOption,
   familyReviewPrivateTokenProblem,
 } from '../src/lib/family-review/blob-credentials.ts';
 import { hasBlobToken } from '../src/lib/family-review/store.ts';
@@ -144,7 +143,6 @@ test('the resolver returns null rather than falling back to the ambient token', 
     () => {
       assert.equal(familyReviewPrivateToken(), null);
       assert.equal(familyReviewPrivateTokenAvailable(), false);
-      assert.deepEqual(familyReviewPrivateTokenOption(), {});
     },
   );
   withEnv(
@@ -158,7 +156,6 @@ test('the resolver returns null rather than falling back to the ambient token', 
 test('a usable credential is returned trimmed', () => {
   withEnv({ FAMILY_REVIEW_DEST_BLOB_TOKEN: `  ${VALID}  ` }, () => {
     assert.equal(familyReviewPrivateToken(), VALID);
-    assert.deepEqual(familyReviewPrivateTokenOption(), { token: VALID });
   });
 });
 

@@ -55,8 +55,8 @@ Everything else keeps using the ambient token, untouched.
   it. One parser, so the runtime cannot accept a credential the migration
   refuses (or the reverse), and a Vercel format change fails both closed
   together.
-- `familyReviewPrivateTokenProblem` / `familyReviewPrivateToken` /
-  `familyReviewPrivateTokenOption` — fail-closed resolution. A problem message
+- `familyReviewPrivateTokenProblem` / `familyReviewPrivateToken` — fail-closed
+  resolution. A problem message
   names the variable and the fault and **never** the value.
 
 ### Every runtime call site

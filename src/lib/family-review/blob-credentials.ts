@@ -100,17 +100,3 @@ export function familyReviewPrivateToken(): string | null {
   if (familyReviewPrivateTokenProblem(raw) !== null) return null;
   return (raw as string).trim();
 }
-
-/**
- * SDK options carrying the private lane's token, for spreading into a
- * `put` / `get` / `list` / `head` / `del` call.
- *
- * Returns `{}` when the credential is unusable, so a caller that forgot
- * to check would hit the ambient store rather than a private one. That
- * is why every caller checks FIRST and refuses — this helper is the
- * convenience, not the guard.
- */
-export function familyReviewPrivateTokenOption(): { token?: string } {
-  const token = familyReviewPrivateToken();
-  return token ? { token } : {};
-}
