@@ -57,6 +57,10 @@ import { get, list, put } from '@vercel/blob';
 
 import { withBlobNamespace } from '../orders.ts';
 import {
+  familyReviewPrivateToken,
+  familyReviewPrivateTokenProblem,
+} from './blob-credentials.ts';
+import {
   deleteAsset,
   familyReviewAssetStorageMode,
   legacyPublicAssetReadsAllowed,
@@ -201,7 +205,7 @@ export interface PersistResult {
   id: string;
   /** Digest the token index was written under; never the raw token. */
   reviewTokenHash?: string;
-  reason?: 'no_token' | 'put_failed' | 'no_token_hash';
+  reason?: 'no_token' | 'put_failed' | 'no_token_hash' | 'no_private_token';
 }
 
 /**
@@ -219,8 +223,46 @@ export interface PersistPlan {
   indexBody: string | null;
 }
 
+/**
+ * Whether this lane has a usable store credential for its CONFIGURED
+ * mode. The routes' 503 `storage_disabled` gate.
+ *
+ * Public mode: the ambient app-wide token, exactly as before.
+ *
+ * Private mode: the lane's OWN token (see ./blob-credentials.ts). The
+ * ambient one is not consulted and is not a fallback — it names the
+ * order lane's store, and serving Family Review out of it while the
+ * configuration says 'private' is the failure this gate exists to
+ * prevent. A private deployment with no usable dedicated credential
+ * therefore refuses at the door, before any SDK or network call, with
+ * the same honest `storage_disabled` response an unconfigured
+ * deployment already returns.
+ */
 export function hasBlobToken(): boolean {
+  if (familyReviewAssetStorageMode() === 'private') {
+    const problem = familyReviewPrivateTokenProblem();
+    if (problem) {
+      // Names the variable and the fault. Never the value.
+      console.error(`[family-review/store] private mode is not usable: ${problem}`);
+      return false;
+    }
+    return true;
+  }
   return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+}
+
+/**
+ * SDK options for a store operation in the CONFIGURED mode: `{}` in
+ * public mode, `{ token }` in private mode.
+ *
+ * `null` means private mode with no usable credential; the caller must
+ * refuse rather than issue the call, because an empty option object
+ * would address the ambient (order-lane) store.
+ */
+function storeTokenOptionsOrNull(): { token?: string } | null {
+  if (familyReviewAssetStorageMode() !== 'private') return {};
+  const token = familyReviewPrivateToken();
+  return token ? { token } : null;
 }
 
 export function submissionPath(id: string): string {
@@ -387,9 +429,18 @@ export async function persistSubmission(
   // It is written with the SAME access mode as the asset bytes, so a
   // private lane leaves no world-readable copy of it.
   const access = familyReviewAssetStorageMode();
+  // The record and its token index go to the SAME store as the asset
+  // bytes. In private mode that is the lane's own store, addressed by
+  // its own token; a missing credential refuses here rather than
+  // writing the highest-PII object in the lane into the order store.
+  const tokenOptions = storeTokenOptionsOrNull();
+  if (tokenOptions === null) {
+    return { persisted: false, id: record.id, reason: 'no_private_token' };
+  }
   try {
     await put(plan.submissionPathname, plan.submissionBody, {
       access,
+      ...tokenOptions,
       addRandomSuffix: false,
       contentType: 'application/json',
       cacheControlMaxAge: 0,
@@ -397,6 +448,7 @@ export async function persistSubmission(
     });
     await put(plan.indexPathname, plan.indexBody, {
       access,
+      ...tokenOptions,
       addRandomSuffix: false,
       contentType: 'application/json',
       cacheControlMaxAge: 0,
@@ -443,6 +495,12 @@ async function fetchSubmissionAt(url: string): Promise<FamilyReviewSubmission | 
  */
 async function getJsonAtPath<T>(pathname: string): Promise<T | null> {
   const mode = familyReviewAssetStorageMode();
+  // No usable dedicated credential in private mode is a STOP, not a
+  // reason to try the public attempt: a private lane must never quietly
+  // satisfy a read out of the ambient public store. Returning here also
+  // means no SDK call is made at all.
+  const privateToken = mode === 'private' ? familyReviewPrivateToken() : null;
+  if (mode === 'private' && !privateToken) return null;
   const attempts: ('private' | 'public')[] =
     mode === 'private'
       ? legacyPublicAssetReadsAllowed()
@@ -456,9 +514,15 @@ async function getJsonAtPath<T>(pathname: string): Promise<T | null> {
       // observed in the Preview soak, 2026-08-26. Passing it on the
       // public attempt was a regression introduced earlier in this
       // branch; the baseline never sent it.
+      //
+      // The token rides ONLY on the private attempt. The bounded public
+      // attempt below is the pre-migration legacy-record path (§9 of the
+      // rollout doc); it reads the ambient public store and must never
+      // carry the private lane's credential.
       const result = await get(pathname, {
         access,
         ...(access === 'private' ? { useCache: false } : {}),
+        ...(access === 'private' ? { token: privateToken as string } : {}),
       });
       if (!result || result.statusCode !== 200 || !result.stream) continue;
       const text = await new Response(result.stream).text();
@@ -486,10 +550,16 @@ export async function listRecentSubmissions(
     // by the Blob object's own uploadedAt instead. Bounded so a large
     // namespace can never turn an admin page load into an unbounded scan.
     const prefix = submissionListPrefix();
+    // Enumeration follows the configured mode's store too. Without this
+    // a private deployment would list the ambient store and then read
+    // by pathname from the private one — reporting the wrong namespace
+    // as empty, or worse, as full.
+    const tokenOptions = storeTokenOptionsOrNull();
+    if (tokenOptions === null) return [];
     const collected: { url: string; pathname: string; uploadedAt: Date }[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-      const res = await list({ prefix, limit: LIST_PAGE_SIZE, cursor });
+      const res = await list({ prefix, limit: LIST_PAGE_SIZE, cursor, ...tokenOptions });
       for (const blob of res.blobs) {
         collected.push({
           url: blob.url,

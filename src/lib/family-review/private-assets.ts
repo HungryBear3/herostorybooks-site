@@ -38,6 +38,12 @@
 
 import { del, get, head, put } from '@vercel/blob';
 
+import {
+  FAMILY_REVIEW_PRIVATE_TOKEN_ENV,
+  familyReviewPrivateToken,
+  familyReviewPrivateTokenProblem,
+} from './blob-credentials.ts';
+
 /** How a single stored asset is addressed. */
 export type AssetStorage = 'public' | 'private';
 
@@ -101,6 +107,43 @@ export function legacyPublicAssetReadsAllowed(): boolean {
 /** The storage mode of a stored asset; absent field means legacy public. */
 export function assetStorageOf(asset: { storage?: AssetStorage }): AssetStorage {
   return asset.storage === 'private' ? 'private' : 'public';
+}
+
+/**
+ * The private lane's own store token, or a hard stop.
+ *
+ * Called on every private-mode path that reaches the SDK. It throws
+ * BEFORE the call rather than letting the SDK fall back to the ambient
+ * `BLOB_READ_WRITE_TOKEN`, which names the ORDER lane's store — see
+ * src/lib/family-review/blob-credentials.ts. The thrown message names
+ * the variable and the fault; it never contains the value.
+ */
+function requirePrivateToken(): string {
+  const token = familyReviewPrivateToken();
+  if (!token) {
+    throw new AssetStorageError(
+      'credential_unavailable',
+      familyReviewPrivateTokenProblem() ??
+        `${FAMILY_REVIEW_PRIVATE_TOKEN_ENV} is unusable`,
+    );
+  }
+  return token;
+}
+
+/**
+ * SDK options for an operation that must follow the CONFIGURED mode:
+ * `{}` in public mode (ambient token, today's behavior), `{ token }` in
+ * private mode.
+ *
+ * `null` means private mode with no usable credential — the caller must
+ * refuse. It is deliberately not `{}`: an empty option object would send
+ * the operation to the ambient store, which is the exact confusion this
+ * whole boundary exists to prevent.
+ */
+function privateTokenOptionsOrNull(): { token?: string } | null {
+  if (familyReviewAssetStorageMode() !== 'private') return {};
+  const token = familyReviewPrivateToken();
+  return token ? { token } : null;
 }
 
 /** True iff this mime may be stored/served by the Family Review lane. */
@@ -172,10 +215,16 @@ export async function putAsset(args: {
   }
 
   if (storage === 'private') {
+    // The lane's OWN store credential, never the ambient app-wide one.
+    // Missing or malformed is a hard stop here, before the SDK is
+    // touched: writing without it would land the object in the order
+    // lane's store while every operator signal said 'private'.
+    const token = requirePrivateToken();
     // Fail closed: a private write that throws propagates. There is no
     // public retry here, by design.
     const result = await put(args.pathname, args.bytes as Buffer, {
       access: 'private',
+      token,
       addRandomSuffix: false,
       contentType: args.mime,
       // No long-lived edge cache for private bytes.
@@ -206,10 +255,12 @@ export async function openAsset(asset: AssetRef): Promise<OpenedAsset> {
   const storage = assetStorageOf(asset);
 
   if (storage === 'private') {
+    const token = requirePrivateToken();
     let result: Awaited<ReturnType<typeof get>>;
     try {
       result = await get(asset.blobPathname, {
         access: 'private',
+        token,
         useCache: false,
       });
     } catch (err) {
@@ -266,8 +317,18 @@ export async function openAsset(asset: AssetRef): Promise<OpenedAsset> {
 export async function deleteAsset(
   pathname: string,
 ): Promise<{ deleted: boolean; reason?: string }> {
+  // Deletes are addressed to the same store the mode writes to. In
+  // private mode with no usable credential this REPORTS a failure
+  // rather than throwing (that is this function's contract) and, more
+  // importantly, rather than falling through to `del` on the ambient
+  // store — which would delete nothing here and could delete something
+  // there.
+  const options = privateTokenOptionsOrNull();
+  if (options === null) {
+    return { deleted: false, reason: 'credential_unavailable' };
+  }
   try {
-    await del(pathname);
+    await del(pathname, options);
     return { deleted: true };
   } catch (err) {
     return {
@@ -281,8 +342,10 @@ export async function deleteAsset(
 export async function statAsset(
   pathname: string,
 ): Promise<{ size: number; contentType: string } | null> {
+  const options = privateTokenOptionsOrNull();
+  if (options === null) return null;
   try {
-    const result = await head(pathname);
+    const result = await head(pathname, options);
     if (!result) return null;
     return { size: result.size, contentType: result.contentType };
   } catch {

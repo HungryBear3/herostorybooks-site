@@ -106,9 +106,18 @@ becomes the only module in the Family Review lane that talks to
   emits a Blob URL to the client.
 
 Because a Blob store is created public or private and cannot be flipped, the
-private lane is a **separate store**. The app talks to exactly one store at a
-time (`BLOB_READ_WRITE_TOKEN`); only the migration spans both, and it does so
-with two explicit credentials — see §6.
+private lane is a **separate store**.
+
+> **Superseded 2026-08-27.** This section originally read "the app talks to
+> exactly one store at a time (`BLOB_READ_WRITE_TOKEN`); only the migration
+> spans both". That was true of this commit and it is what blocked the
+> cutover: `BLOB_READ_WRITE_TOKEN` is the **whole application's** credential,
+> so moving the Family Review lane by repointing it would also have moved
+> `orders/*`, `payment-recovery/*`, and `recovery/*` — none of which the
+> migration copies. The Family Review runtime now takes an explicit
+> credential of its own (`FAMILY_REVIEW_DEST_BLOB_TOKEN`) and the app spans
+> both stores by design, one lane per store. See
+> `docs/reviews/hsb-family-review-runtime-blob-credential-20260827.md`.
 
 SDK support was verified against the installed version rather than assumed:
 `@vercel/blob@2.3.3` types `BlobAccessType = 'public' | 'private'` and
@@ -497,9 +506,15 @@ proportionate.
 never touches the first, rollback is a configuration change with no data
 recovery step:
 
-1. Point the deployment's `BLOB_READ_WRITE_TOKEN` back at the **source** store.
-2. Set `FAMILY_REVIEW_BLOB_ACCESS=public`.
-3. Leave `FAMILY_REVIEW_ALLOW_LEGACY_PUBLIC_ASSET_READS` on.
+1. Set `FAMILY_REVIEW_BLOB_ACCESS=public`. That alone returns the lane to the
+   ambient store; `FAMILY_REVIEW_DEST_BLOB_TOKEN` is consulted only in private
+   mode, so it may be left in place.
+2. Leave `FAMILY_REVIEW_ALLOW_LEGACY_PUBLIC_ASSET_READS` on.
+
+> **Superseded 2026-08-27.** Step 1 originally read "point the deployment's
+> `BLOB_READ_WRITE_TOKEN` back at the **source** store". Rollback must NOT
+> touch that variable: it is the order lane's credential, and moving it was
+> the defect. Rolling the Family Review lane back is now a single flag.
 
 Every legacy record and object is still present and unmodified in the source
 store, so the lane returns to exactly its pre-cutover behavior. The destination
@@ -535,13 +550,20 @@ scope here and remain on their existing bounded-compatibility path.
   | `FAMILY_REVIEW_BLOB_ACCESS` | app | `public` (default) \| `private` |
   | `FAMILY_REVIEW_ALLOW_LEGACY_PUBLIC_ASSET_READS` | app | default on; off makes the lane private-only |
   | `FAMILY_REVIEW_SOURCE_BLOB_TOKEN` | migration | legacy public store, read only |
-  | `FAMILY_REVIEW_DEST_BLOB_TOKEN` | migration | private destination store |
+  | `FAMILY_REVIEW_DEST_BLOB_TOKEN` | **app (private mode)** + migration | the private destination store |
   | `FAMILY_REVIEW_MIGRATION_CONFIRM` | migration | third confirmation |
 
-  The two migration tokens are **server-only operator credentials**. They are
-  never read by the app, never logged, and never appear in output — reporting
-  shows the parsed **store id** only. They must name two different stores
-  (§6.2).
+  `FAMILY_REVIEW_SOURCE_BLOB_TOKEN` and `FAMILY_REVIEW_MIGRATION_CONFIRM` are
+  server-only operator credentials, never read by the app. They are never
+  logged and never appear in output — reporting shows the parsed **store id**
+  only. Source and destination must name two different stores (§6.2).
+
+> **Superseded 2026-08-27.** `FAMILY_REVIEW_DEST_BLOB_TOKEN` is no longer
+> migration-only. It is now also the Family Review **runtime's** credential in
+> private mode, deliberately the same variable so the runtime and the
+> migration cannot disagree about which store the private lane is. It is
+> still never logged and never echoed. See
+> `docs/reviews/hsb-family-review-runtime-blob-credential-20260827.md`.
 
 ## 11. Observability without PII
 
@@ -552,7 +574,12 @@ already forbids interpolating `${pathname}` into logs and that guard stands.
 
 ## 12. Explicit fail-closed behavior
 
-- No `BLOB_READ_WRITE_TOKEN` → routes `503`, as today. No pretend success.
+- Public mode with no `BLOB_READ_WRITE_TOKEN` → routes `503`, as today. No
+  pretend success.
+- Private mode with a missing, blank, or malformed
+  `FAMILY_REVIEW_DEST_BLOB_TOKEN` → routes `503` **before any SDK call**, with
+  the same `storage_disabled` response. It does **not** fall back to
+  `BLOB_READ_WRITE_TOKEN` (added 2026-08-27).
 - `FAMILY_REVIEW_BLOB_ACCESS=private` and the private write throws → the
   upload fails with `502`. It does **not** silently fall back to a public
   write.
@@ -758,9 +785,11 @@ through a destination write once the fix in this commit is deployed to Preview.
    stop parsing and the utility **refuses to run** — it fails closed, not open —
    but re-confirm before a Production cutover.
 8. **A partially-migrated submission spans both stores** (assets in the
-   destination, record still in the source) until its record is written. Keep
-   the app pointed at the source during cutover; flip only after the migration
-   reports zero failures.
+   destination, record still in the source) until its record is written. Leave
+   `FAMILY_REVIEW_BLOB_ACCESS` at `public` during migration; flip it only after
+   the migration reports zero failures. (Originally worded as "keep the app
+   pointed at the source" — the app's store binding is no longer what moves;
+   see the §8 note.)
 9. **Legacy assets whose bytes are not a supported image** will fail
    `source_type_unrecognized` and block their record from completing. That is
    deliberate — such an object should be looked at, not copied — but it means an
