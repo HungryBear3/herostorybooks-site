@@ -34,6 +34,7 @@ import { hasBlobToken } from '../src/lib/family-review/store.ts';
 
 const VALID = 'vercel_blob_rw_storeDEST01_secretvalue01';
 const AMBIENT = 'vercel_blob_rw_storeAMBIENT1_secretvalue02';
+const ALIAS = 'vercel_blob_rw_storeAMBIENT1_differentsecretvalue';
 
 function withEnv<T>(
   env: Record<string, string | undefined>,
@@ -154,9 +155,43 @@ test('the resolver returns null rather than falling back to the ambient token', 
 });
 
 test('a usable credential is returned trimmed', () => {
-  withEnv({ FAMILY_REVIEW_DEST_BLOB_TOKEN: `  ${VALID}  ` }, () => {
+  withEnv({ BLOB_READ_WRITE_TOKEN: AMBIENT, FAMILY_REVIEW_DEST_BLOB_TOKEN: `  ${VALID}  ` }, () => {
     assert.equal(familyReviewPrivateToken(), VALID);
   });
+});
+
+test('a different token for the ambient store is rejected without exposing either credential', () => {
+  withEnv(
+    {
+      FAMILY_REVIEW_BLOB_ACCESS: 'private',
+      BLOB_READ_WRITE_TOKEN: AMBIENT,
+      FAMILY_REVIEW_DEST_BLOB_TOKEN: ALIAS,
+    },
+    () => {
+      const problem = familyReviewPrivateTokenProblem();
+      assert.equal(
+        problem,
+        'FAMILY_REVIEW_DEST_BLOB_TOKEN must name a different Blob store than BLOB_READ_WRITE_TOKEN',
+      );
+      assert.equal(familyReviewPrivateTokenAvailable(), false);
+      assert.equal(familyReviewPrivateToken(), null);
+      assert.equal(hasBlobToken(), false);
+      assert.ok(!problem?.includes(AMBIENT));
+      assert.ok(!problem?.includes(ALIAS));
+      assert.ok(!problem?.includes('vercel_blob_rw_'));
+    },
+  );
+});
+
+test('distinct well-formed ambient and destination stores are accepted', () => {
+  withEnv(
+    { BLOB_READ_WRITE_TOKEN: AMBIENT, FAMILY_REVIEW_DEST_BLOB_TOKEN: VALID },
+    () => {
+      assert.equal(familyReviewPrivateTokenProblem(), null);
+      assert.equal(familyReviewPrivateTokenAvailable(), true);
+      assert.equal(familyReviewPrivateToken(), VALID);
+    },
+  );
 });
 
 /* ── 4. The storage gate the routes read ────────────────────────────── */
@@ -217,11 +252,24 @@ test('private mode requires the dedicated token and refuses at the door without 
         'the private lane stands on its own credential; the ambient one is not its dependency',
       ),
   );
+  withEnv(
+    {
+      FAMILY_REVIEW_BLOB_ACCESS: 'private',
+      BLOB_READ_WRITE_TOKEN: AMBIENT,
+      FAMILY_REVIEW_DEST_BLOB_TOKEN: ALIAS,
+    },
+    () =>
+      assert.equal(
+        hasBlobToken(),
+        false,
+        'private mode must reject different token strings that resolve to the ambient store',
+      ),
+  );
 });
 
 /* ── 5. Source invariants: the boundary cannot be re-opened quietly ─── */
 
-test('no Family Review module reads the ambient token except the public-mode gate', () => {
+test('Family Review reads the ambient token only for the public gate and private-store alias guard', () => {
   const assets = read('src/lib/family-review/private-assets.ts');
   const store = read('src/lib/family-review/store.ts');
   const credentials = read('src/lib/family-review/blob-credentials.ts');
@@ -231,9 +279,12 @@ test('no Family Review module reads the ambient token except the public-mode gat
     /process\.env\.BLOB_READ_WRITE_TOKEN/,
     'the asset boundary must never consult the order lane’s credential',
   );
-  assert.doesNotMatch(
-    credentials.replace(/^\s*(\/\/|\*|\/\*).*$/gm, ''),
-    /process\.env\.BLOB_READ_WRITE_TOKEN/,
+  const credentialUses =
+    credentials.replace(/^\s*(\/\/|\*|\/\*).*$/gm, '').split('process.env.BLOB_READ_WRITE_TOKEN').length - 1;
+  assert.equal(
+    credentialUses,
+    1,
+    'the credential helper may read the ambient token exactly once to compare parsed store ids',
   );
 
   const gate = store.slice(
@@ -241,7 +292,7 @@ test('no Family Review module reads the ambient token except the public-mode gat
     store.indexOf('function storeTokenOptionsOrNull'),
   );
   const uses = store.split('process.env.BLOB_READ_WRITE_TOKEN').length - 1;
-  assert.equal(uses, 1, 'the ambient token may be read in exactly one place');
+  assert.equal(uses, 1, 'the record store may read the ambient token in exactly one place');
   assert.match(gate, /process\.env\.BLOB_READ_WRITE_TOKEN/, 'and that place is the public-mode gate');
 });
 

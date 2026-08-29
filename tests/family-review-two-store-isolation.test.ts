@@ -39,6 +39,7 @@ const DEST_STORE = 'privDEST0000';
 /** Credential values the scenario runner uses. Never real. */
 const FAKE_TOKENS = [
   'vercel_blob_rw_pubAMBIENT0000_ambientsecret',
+  'vercel_blob_rw_pubAMBIENT0000_differentsecret',
   'vercel_blob_rw_privDEST0000_destsecret',
 ];
 
@@ -150,7 +151,12 @@ test('neither store ends up holding the other lane’s objects', () => {
 
 /* ── 2. Fail closed, before any SDK call ────────────────────────────── */
 
-for (const scenario of ['private-missing-token', 'private-blank-token', 'private-malformed-token']) {
+for (const scenario of [
+  'private-missing-token',
+  'private-blank-token',
+  'private-malformed-token',
+  'private-alias-token',
+]) {
   test(`${scenario}: private mode makes NO Family Review store call at all`, () => {
     const r = runScenario(scenario);
     assert.deepEqual(
@@ -270,6 +276,7 @@ test('no token value appears in any journal entry, log line, error, or payload',
     'private-ok',
     'private-missing-token',
     'private-malformed-token',
+    'private-alias-token',
     'public-mode',
     'private-read-miss-legacy-off',
   ]) {

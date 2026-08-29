@@ -73,12 +73,18 @@ export function blobStoreIdFromToken(token: string | undefined | null): string |
  */
 export function familyReviewPrivateTokenProblem(
   raw: string | undefined = process.env[FAMILY_REVIEW_PRIVATE_TOKEN_ENV],
+  ambientRaw: string | undefined = process.env.BLOB_READ_WRITE_TOKEN,
 ): string | null {
   if (typeof raw !== 'string' || !raw.trim()) {
     return `${FAMILY_REVIEW_PRIVATE_TOKEN_ENV} is not set`;
   }
-  if (!blobStoreIdFromToken(raw)) {
+  const privateStoreId = blobStoreIdFromToken(raw);
+  if (!privateStoreId) {
     return `${FAMILY_REVIEW_PRIVATE_TOKEN_ENV} is not a well-formed Blob token`;
+  }
+  const ambientStoreId = blobStoreIdFromToken(ambientRaw);
+  if (ambientStoreId && ambientStoreId === privateStoreId) {
+    return `${FAMILY_REVIEW_PRIVATE_TOKEN_ENV} must name a different Blob store than BLOB_READ_WRITE_TOKEN`;
   }
   return null;
 }
