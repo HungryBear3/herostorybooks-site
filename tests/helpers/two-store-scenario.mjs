@@ -20,6 +20,7 @@
 /** Fake credentials. Parseable, obviously fake, and never real. */
 const AMBIENT_TOKEN = 'vercel_blob_rw_pubAMBIENT0000_ambientsecret';
 const DEST_TOKEN = 'vercel_blob_rw_privDEST0000_destsecret';
+const ALIAS_TOKEN = 'vercel_blob_rw_pubAMBIENT0000_differentsecret';
 export const AMBIENT_STORE = 'pubAMBIENT0000';
 export const DEST_STORE = 'privDEST0000';
 
@@ -46,6 +47,10 @@ switch (scenario) {
   case 'private-malformed-token':
     env.FAMILY_REVIEW_BLOB_ACCESS = 'private';
     env.FAMILY_REVIEW_DEST_BLOB_TOKEN = 'not-a-blob-token';
+    break;
+  case 'private-alias-token':
+    env.FAMILY_REVIEW_BLOB_ACCESS = 'private';
+    env.FAMILY_REVIEW_DEST_BLOB_TOKEN = ALIAS_TOKEN;
     break;
   case 'public-mode':
     break;
