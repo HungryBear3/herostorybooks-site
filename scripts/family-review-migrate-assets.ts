@@ -70,6 +70,7 @@ import { createHash } from 'node:crypto';
 import { get, list, put } from '@vercel/blob';
 
 import { getBlobNamespace, withBlobNamespace } from '../src/lib/orders.ts';
+import { blobStoreIdFromToken } from '../src/lib/family-review/blob-credentials.ts';
 import {
   canonicalImageMime,
   sniffImageType,
@@ -149,12 +150,13 @@ export interface CutoverState {
  * Vercel Blob tokens are `vercel_blob_rw_<storeId>_<secret>`. The store
  * id is what makes two tokens the same store, so it -- never the token
  * -- is what gets compared and what may appear in output.
+ *
+ * Defined in src/lib/family-review/blob-credentials.ts and re-exported
+ * here: the runtime now validates the SAME dedicated credential this
+ * script writes to, and two copies of this parser could drift into
+ * accepting a token the other refuses.
  */
-export function blobStoreIdFromToken(token: string | undefined | null): string | null {
-  if (typeof token !== 'string') return null;
-  const match = token.trim().match(/^vercel_blob_rw_([A-Za-z0-9]+)_[A-Za-z0-9]+$/);
-  return match ? match[1] : null;
-}
+export { blobStoreIdFromToken };
 
 /**
  * Fail-closed credential validation. Pure and exhaustive: it reports
