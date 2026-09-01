@@ -25,22 +25,38 @@ import {
   assetsNeedingCopy,
   blobStoreIdFromToken,
   collectPathnames,
+  checkpointStateRequiresRefusal,
   computeRecordFingerprint,
   credentialProblems,
   cutoverStatePath,
   destructiveFlag,
   digestStream,
   duplicateIdentityKeys,
+  destinationRecordMatchesSource,
   EnumerationTruncatedError,
   flipAssetToPrivate,
   MAX_ASSET_BYTES,
+  MAX_ASSETS_PER_RECORD,
+  MAX_CUTOVER_JSON_BYTES,
+  MAX_STATE_REASONS,
   meterAndSniff,
+  parseBoundedJsonStream,
+  inspectSubmissionForMigration,
   parseArgs,
+  persistCutoverStateOrFailure,
+  persistDestinationRecordOrFailure,
+  recordFailureOutcome,
   recordIsReady,
+  requestedRecordMissingOutcome,
+  safeAssetIdForOperatorOutput,
   redactTokens,
   sourceGetOptions,
   destGetOptions,
+  bindPathnameToSubmission,
+  familyReviewAssetPrefix,
   pathnameMatchesIdentity,
+  recordPathnameBindingFailures,
+  validateSubmissionAddress,
   revalidateCheckpointedAsset,
   revalidateCheckpoints,
   reviseStateAfterRevalidation,
@@ -105,7 +121,7 @@ function callArgs(rawSrc: string, name: string): string[] {
 function photo(assetId: string, over: Record<string, unknown> = {}) {
   return {
     assetId,
-    blobPathname: `family-review/photos/fr-x/${assetId}.jpg`,
+    blobPathname: `family-review/photos/fr-x-1234/${assetId}.jpg`,
     blobUrl: `https://example.public.blob.vercel-storage.com/${assetId}.jpg`,
     storage: 'public',
     mime: 'image/jpeg',
@@ -119,7 +135,7 @@ function sample(assetId: string, over: Record<string, unknown> = {}) {
   return {
     assetId,
     briefId: 'cover-hero',
-    blobPathname: `family-review/samples/fr-x/${assetId}.png`,
+    blobPathname: `family-review/samples/fr-x-1234/${assetId}.png`,
     blobUrl: `https://example.public.blob.vercel-storage.com/${assetId}.png`,
     storage: 'public',
     mime: 'image/png',
@@ -131,9 +147,9 @@ function sample(assetId: string, over: Record<string, unknown> = {}) {
 
 function record(over: Record<string, unknown> = {}) {
   return {
-    id: 'fr-x',
-    photos: { assets: [photo('a-p1'), photo('a-p2')] },
-    samples: [sample('a-s1')],
+    id: 'fr-x-1234',
+    photos: { assets: [photo('a-photo00000001'), photo('a-photo00000002')] },
+    samples: [sample('a-sample00000001')],
     ...over,
   } as never as {
     id: string;
@@ -150,6 +166,7 @@ function goodState(rec: ReturnType<typeof record>, over: Record<string, unknown>
     recordFingerprint: computeRecordFingerprint(rec),
     assetsVerified: assetIdentitiesOf(rec).map((i) => ({ ...i, sourceSha256: SHA })),
     recordWritten: true,
+    recordUpdatedAt: '2026-08-25T23:59:59.000Z',
     completedAt: '2026-08-26T00:00:00.000Z',
     ...over,
   };
@@ -404,14 +421,36 @@ test('no code path buffers a whole asset into memory', () => {
 
 /* == 5. Content type is sniffed from the source, not echoed ============== */
 
-test('a record whose recorded mime contradicts its bytes is refused', async () => {
+test('a record whose recorded mime contradicts its bytes is refused with a bounded detail', async () => {
   const png = bytesOf(PNG_HEAD, 16);
   const verdict = verifySourceType(png, 'image/jpeg');
   assert.equal(verdict.ok, false);
   assert.equal(verdict.ok === false && verdict.result, 'content_type_mismatch');
-  assert.match(
+  assert.equal(
     verdict.ok === false ? verdict.detail : '',
-    /record says image\/jpeg, bytes are image\/png/,
+    'recorded_mime_mismatch',
+  );
+});
+
+test('hostile recorded mime text never reaches a mismatch detail', () => {
+  const png = bytesOf(PNG_HEAD, 16);
+  const verdict = verifySourceType(
+    png,
+    'image/jpeg\nfamily@example.com',
+  );
+  assert.deepEqual(verdict, {
+    ok: false,
+    result: 'content_type_mismatch',
+    detail: 'recorded_mime_mismatch',
+  });
+});
+
+test('record-controlled size text never reaches operator failure detail', () => {
+  const src = migrationSource();
+  assert.doesNotMatch(src, /detail:\s*`record says \$\{identity\.size\}/);
+  assert.match(
+    src,
+    /result:\s*'size_mismatch',[\s\S]*?detail:\s*'recorded_size_mismatch'/,
   );
 });
 
@@ -487,13 +526,21 @@ test('an enumeration that finishes inside the budget returns everything', async 
   assert.deepEqual(await collectPathnames(pager, 40), ['p-1', 'p-2', 'p-3']);
 });
 
-test('hasMore with no cursor ends the scan rather than looping or throwing', async () => {
+test('hasMore with no cursor is refused as a truncated enumeration', async () => {
   const pager = async () => ({
     blobs: [{ pathname: 'only' }],
     hasMore: true,
     cursor: undefined,
   });
-  assert.deepEqual(await collectPathnames(pager, 40), ['only']);
+  await assert.rejects(
+    () => collectPathnames(pager, 40),
+    (err: unknown) => {
+      assert.ok(err instanceof EnumerationTruncatedError);
+      assert.equal((err as EnumerationTruncatedError).pagesScanned, 1);
+      assert.equal((err as EnumerationTruncatedError).objectsSeen, 1);
+      return true;
+    },
+  );
 });
 
 test('the truncation error aborts the run with its own exit code', () => {
@@ -512,7 +559,7 @@ test('a fresh run with no state copies every asset', () => {
   assert.deepEqual(state.assetsVerified, []);
   assert.deepEqual(
     assetsNeedingCopy(assetIdentitiesOf(rec), state).map((i) => assetIdentityKey(i)),
-    ['photo:a-p1', 'photo:a-p2', 'sample:a-s1'],
+    ['photo:a-photo00000001', 'photo:a-photo00000002', 'sample:a-sample00000001'],
   );
 });
 
@@ -591,13 +638,13 @@ test('a source object that changed size is recopied, not skipped', () => {
   const before = record();
   const stateBefore = goodState(before);
   // Same assetId and pathname, different bytes -> different declared size.
-  const after = record({ photos: { assets: [photo('a-p1', { size: 9999 }), photo('a-p2')] } });
+  const after = record({ photos: { assets: [photo('a-photo00000001', { size: 9999 }), photo('a-photo00000002')] } });
   const { state, reasons } = validateCutoverState(stateBefore, after);
   // The fingerprint covers size, so the whole checkpoint is invalidated.
   assert.deepEqual(reasons, ['record_changed']);
   assert.ok(
     assetsNeedingCopy(assetIdentitiesOf(after), state).some(
-      (i) => i.assetId === 'a-p1',
+      (i) => i.assetId === 'a-photo00000001',
     ),
     'the changed object must be recopied',
   );
@@ -610,12 +657,12 @@ test('an entry whose identity drifted from the record is dropped', () => {
   const tampered = {
     ...goodState(rec),
     assetsVerified: goodState(rec).assetsVerified.map((v, i) =>
-      i === 0 ? { ...v, pathname: 'family-review/photos/fr-x/somewhere-else.jpg' } : v,
+      i === 0 ? { ...v, pathname: 'family-review/photos/fr-x-1234/somewhere-else.jpg' } : v,
     ),
   };
   const { state, reasons } = validateCutoverState(tampered, rec);
-  assert.ok(reasons.includes('entry_identity_mismatch'));
-  assert.equal(state.assetsVerified.length, 2, 'the drifted entry is dropped');
+  assert.ok(reasons.includes('entry_malformed'));
+  assert.equal(state.assetsVerified.length, 2, 'the malformed entry is dropped');
   assert.equal(state.completedAt, undefined, 'coverage is no longer complete');
   assert.equal(recordIsReady(assetIdentitiesOf(rec), state), false);
 });
@@ -633,7 +680,7 @@ test('an interrupted run resumes at the first unverified asset', () => {
   assert.deepEqual(reasons, []);
   assert.deepEqual(
     assetsNeedingCopy(assetIdentitiesOf(rec), state).map((i) => assetIdentityKey(i)),
-    ['photo:a-p2', 'sample:a-s1'],
+    ['photo:a-photo00000002', 'sample:a-sample00000001'],
   );
 });
 
@@ -647,13 +694,13 @@ test('re-running a completed submission copies nothing', () => {
 
 test('the same assetId on a photo and a sample are two distinct assets', () => {
   const rec = record({
-    photos: { assets: [photo('a-dup')] },
-    samples: [sample('a-dup')],
+    photos: { assets: [photo('a-shared00000001')] },
+    samples: [sample('a-shared00000001')],
   });
   const identities = assetIdentitiesOf(rec);
   assert.deepEqual(
     identities.map((i) => assetIdentityKey(i)),
-    ['photo:a-dup', 'sample:a-dup'],
+    ['photo:a-shared00000001', 'sample:a-shared00000001'],
     'kind must be part of the identity key',
   );
   assert.deepEqual(duplicateIdentityKeys(identities), [], 'this is legal, not a duplicate');
@@ -669,15 +716,15 @@ test('the same assetId on a photo and a sample are two distinct assets', () => {
   const { state } = validateCutoverState(partial, rec);
   assert.deepEqual(
     assetsNeedingCopy(identities, state).map((i) => assetIdentityKey(i)),
-    ['sample:a-dup'],
+    ['sample:a-shared00000001'],
     'a shared id must never let one copy satisfy two assets',
   );
   assert.equal(recordIsReady(identities, state), false);
 });
 
 test('a genuinely duplicated identity on one record is detected', () => {
-  const rec = record({ photos: { assets: [photo('a-p1'), photo('a-p1')] }, samples: [] });
-  assert.deepEqual(duplicateIdentityKeys(assetIdentitiesOf(rec)), ['photo:a-p1']);
+  const rec = record({ photos: { assets: [photo('a-photo00000001'), photo('a-photo00000001')] }, samples: [] });
+  assert.deepEqual(duplicateIdentityKeys(assetIdentitiesOf(rec)), ['photo:a-photo00000001']);
 });
 
 test('a record with a duplicated identity is refused outright', () => {
@@ -685,7 +732,7 @@ test('a record with a duplicated identity is refused outright', () => {
   assert.match(src, /const dupes = duplicateIdentityKeys\(identities\);/);
   assert.match(src, /duplicate_asset_identity/);
   const refuseIdx = src.indexOf('refusing ${record.id}: duplicate asset identity');
-  const stateIdx = src.indexOf('const raw = await readRawCutoverState');
+  const stateIdx = src.indexOf('raw = await readRawCutoverState');
   assert.ok(refuseIdx > 0 && refuseIdx < stateIdx, 'refuse before touching state');
 });
 
@@ -721,7 +768,7 @@ test('non-object and structurally wrong entries are dropped', () => {
   const rec = record();
   const tampered = {
     ...goodState(rec),
-    assetsVerified: ['a-p1', null, 42, { assetId: 'a-p1' }, { kind: 'photo' }],
+    assetsVerified: ['a-photo00000001', null, 42, { assetId: 'a-photo00000001' }, { kind: 'photo' }],
   };
   const { state, reasons } = validateCutoverState(tampered, rec);
   assert.ok(reasons.includes('entry_malformed'));
@@ -736,8 +783,8 @@ test('entries naming assets that are not on the record are dropped', () => {
       ...goodState(rec).assetsVerified,
       {
         kind: 'photo',
-        assetId: 'a-ghost',
-        pathname: 'family-review/photos/fr-x/a-ghost.jpg',
+        assetId: 'a-ghost00000001',
+        pathname: 'family-review/photos/fr-x-1234/a-ghost00000001.jpg',
         size: 1,
         mime: 'image/jpeg',
         sourceSha256: SHA2,
@@ -809,7 +856,7 @@ test('completedAt is re-derived, never trusted as written', () => {
 
 test('the fingerprint is deterministic and order-independent', () => {
   const a = record();
-  const b = record({ photos: { assets: [photo('a-p2'), photo('a-p1')] } });
+  const b = record({ photos: { assets: [photo('a-photo00000002'), photo('a-photo00000001')] } });
   assert.equal(computeRecordFingerprint(a), computeRecordFingerprint(a));
   assert.equal(
     computeRecordFingerprint(a),
@@ -822,11 +869,11 @@ test('the fingerprint changes on any identity change', () => {
   const base = computeRecordFingerprint(record());
   const variants = [
     record({ id: 'fr-other' }),
-    record({ photos: { assets: [photo('a-p1'), photo('a-p3')] } }),
-    record({ photos: { assets: [photo('a-p1', { size: 5 }), photo('a-p2')] } }),
-    record({ photos: { assets: [photo('a-p1', { mime: 'image/png' }), photo('a-p2')] } }),
+    record({ photos: { assets: [photo('a-photo00000001'), photo('a-photo00000003')] } }),
+    record({ photos: { assets: [photo('a-photo00000001', { size: 5 }), photo('a-photo00000002')] } }),
+    record({ photos: { assets: [photo('a-photo00000001', { mime: 'image/png' }), photo('a-photo00000002')] } }),
     record({
-      photos: { assets: [photo('a-p1', { blobPathname: 'elsewhere.jpg' }), photo('a-p2')] },
+      photos: { assets: [photo('a-photo00000001', { blobPathname: 'elsewhere.jpg' }), photo('a-photo00000002')] },
     }),
     record({ samples: [] }),
   ];
@@ -878,10 +925,10 @@ test('unrelated verified ids cannot satisfy the gate', () => {
 });
 
 test('the metadata flip points at private storage and drops the public URL', () => {
-  const flipped = flipAssetToPrivate(photo('a-p1')) as unknown as Record<string, unknown>;
+  const flipped = flipAssetToPrivate(photo('a-photo00000001')) as unknown as Record<string, unknown>;
   assert.equal(flipped.storage, 'private');
   assert.ok(!('blobUrl' in flipped), 'the legacy public URL must not survive');
-  assert.equal(flipped.blobPathname, 'family-review/photos/fr-x/a-p1.jpg');
+  assert.equal(flipped.blobPathname, 'family-review/photos/fr-x-1234/a-photo00000001.jpg');
 });
 
 test('ordering in source: copy, checkpoint, gate, record, complete', () => {
@@ -889,7 +936,9 @@ test('ordering in source: copy, checkpoint, gate, record, complete', () => {
   const copy = src.indexOf('const copied = await copyAssetStreaming');
   const checkpoint = src.indexOf('state.assetsVerified = [');
   const gate = src.indexOf('if (!recordIsReady(');
-  const rec = src.indexOf('const written = await writeDestinationRecord');
+  const rec = src.indexOf(
+    'const writeFailure = await persistDestinationRecordOrFailure',
+  );
   const complete = src.indexOf('state.completedAt = new Date().toISOString();');
   assert.ok(
     copy > 0 && checkpoint > copy && gate > checkpoint && rec > gate && complete > rec,
@@ -897,8 +946,8 @@ test('ordering in source: copy, checkpoint, gate, record, complete', () => {
   );
   assert.match(
     src.slice(checkpoint, gate),
-    /await writeCutoverState\(creds, state\);/,
-    'each verified asset must be checkpointed immediately',
+    /await persistCutoverStateOrFailure\([\s\S]*?writeCutoverState\(creds, state\)/,
+    'each verified asset must be checkpointed immediately through the bounded failure wrapper',
   );
 });
 
@@ -929,8 +978,13 @@ test('any deletion-shaped flag is refused', () => {
     '--drop-legacy',
     '--DELETE-SOURCE',
   ]) {
-    assert.equal(destructiveFlag([flag]), flag, `${flag} must be refused`);
+    assert.equal(
+      destructiveFlag([flag]),
+      'destructive_flag',
+      `${flag} must be refused without echoing it`,
+    );
   }
+  assert.equal(destructiveFlag(['--delete\nPRIVATE_CHILD_DATA']), 'destructive_flag');
   assert.equal(destructiveFlag(['--apply', '--limit=3']), null);
 });
 
@@ -953,10 +1007,14 @@ test('token-shaped strings are redacted from operator-visible text', () => {
   assert.match(safe, /\[redacted/);
 });
 
-test('errors reaching the console go through redaction', () => {
+test('provider and fatal errors collapse to fixed operator-visible codes', () => {
   const src = migrationSource();
-  assert.match(src, /function errorCode\(err: unknown\): string \{\s*return redactTokens\(/);
-  assert.match(src, /console\.error\(\s*'\[migrate\] fatal:',\s*redactTokens\(/);
+  assert.match(
+    src,
+    /function errorCode\(err: unknown\): string \{\s*void err;\s*return 'provider_error';/,
+  );
+  assert.match(src, /console\.error\('\[migrate\] fatal: internal_error'\)/);
+  assert.doesNotMatch(src, /err instanceof Error \? err\.(?:name|message)/);
 });
 
 test('reporting carries opaque ids and store ids only - no tokens, URLs, or PII', () => {
@@ -994,7 +1052,23 @@ test('no console output interpolates a token or state contents', () => {
 
 test('dry run is the default', () => {
   assert.equal(parseArgs([]).apply, false);
-  assert.equal(parseArgs(['--limit=5', '--submission=fr-abc']).apply, false);
+  assert.equal(parseArgs(['--limit=5', '--submission=fr-abc-1234']).apply, false);
+});
+
+test('malformed or unknown scope arguments fail closed instead of widening a run', () => {
+  for (const argv of [
+    ['--limit=0'],
+    ['--limit=bogus'],
+    ['--limit=1.5'],
+    ['--limt=1'],
+    ['--unknown'],
+    ['--target=preview\nPRIVATE_CHILD_DATA'],
+    ['--target=../production'],
+    ['--limit=1', '--limit=2'],
+    ['--submission=fr-a', '--submission=fr-b'],
+  ]) {
+    assert.throws(() => parseArgs(argv), /argument_(?:invalid|unknown|duplicate)/);
+  }
 });
 
 test('every partial confirmation is refused, including every path to production', () => {
@@ -1103,8 +1177,8 @@ function readerOf(
 function boundCase(payload: Uint8Array) {
   const identity = {
     kind: 'photo' as const,
-    assetId: 'a-p1',
-    pathname: 'family-review/photos/fr-x/a-p1.jpg',
+    assetId: 'a-photo00000001',
+    pathname: 'family-review/photos/fr-x-1234/a-photo00000001.jpg',
     size: payload.byteLength,
     mime: 'image/png',
   };
@@ -1126,7 +1200,7 @@ async function revalidate(
 ) {
   const base = boundCase(PAYLOAD);
   return revalidateCheckpointedAsset({
-    submissionId: over.submissionId ?? 'fr-x',
+    submissionId: over.submissionId ?? 'fr-x-1234',
     identity: { ...base.identity, ...(over.identity ?? {}) } as never,
     entry: { ...base.entry, ...(over.entry ?? {}) } as never,
     readSource: readerOf(
@@ -1205,7 +1279,7 @@ test('revalidation enforces the ceiling on BOTH sides while streaming', async ()
   const big = pngBytes(4000, 0x11);
   const { identity, entry } = boundCase(big);
   const source = await revalidateCheckpointedAsset({
-    submissionId: 'fr-x',
+    submissionId: 'fr-x-1234',
     identity: identity as never,
     entry: entry as never,
     readSource: readerOf(big),
@@ -1218,31 +1292,62 @@ test('revalidation enforces the ceiling on BOTH sides while streaming', async ()
 test('an entry whose pathname belongs to another submission is rejected', async () => {
   // Top-level submissionId edited to match; the entry was spliced in.
   const verdict = await revalidate({
-    identity: { pathname: 'family-review/photos/fr-someone-else/a-p1.jpg' },
-    entry: { pathname: 'family-review/photos/fr-someone-else/a-p1.jpg' },
+    identity: { pathname: 'family-review/photos/fr-someone-else/a-photo00000001.jpg' },
+    entry: { pathname: 'family-review/photos/fr-someone-else/a-photo00000001.jpg' },
   });
   assert.deepEqual(verdict, { ok: false, reason: 'submission_binding_mismatch' });
 });
 
 test('a photo pathname under the samples folder is rejected', () => {
   assert.equal(
-    pathnameMatchesIdentity('family-review/samples/fr-x/a-1.jpg', 'fr-x', 'photo'),
+    pathnameMatchesIdentity(
+      'family-review/samples/fr-x-1234/a-asset00000001.jpg',
+      'fr-x-1234',
+      'photo',
+      'a-asset00000001',
+    ),
     false,
   );
   assert.equal(
-    pathnameMatchesIdentity('family-review/photos/fr-x/a-1.jpg', 'fr-x', 'photo'),
+    pathnameMatchesIdentity(
+      'family-review/photos/fr-x-1234/a-asset00000001.jpg',
+      'fr-x-1234',
+      'photo',
+      'a-asset00000001',
+    ),
+    true,
+  );
+  // A namespaced deployment is bound to its OWN namespace segment: the
+  // expected prefix is COMPOSED with withBlobNamespace rather than
+  // matched loosely anywhere in the string, so the namespace a run
+  // addresses is part of the proof. (Previously this asserted that a
+  // `preview/` address satisfied a production run; it must not.)
+  assert.equal(
+    pathnameMatchesIdentity(
+      'preview/family-review/samples/fr-x-1234/a-asset00000001.png',
+      'fr-x-1234',
+      'sample',
+      'a-asset00000001',
+      'preview/family-review/samples/fr-x-1234/',
+    ),
     true,
   );
   assert.equal(
-    pathnameMatchesIdentity('preview/family-review/samples/fr-x/a-1.png', 'fr-x', 'sample'),
-    true,
+    pathnameMatchesIdentity(
+      'preview/family-review/samples/fr-x-1234/a-asset00000001.png',
+      'fr-x-1234',
+      'sample',
+      'a-asset00000001',
+      'family-review/samples/fr-x-1234/',
+    ),
+    false,
   );
 });
 
 test('an entry whose identity drifted from the record is rejected before any read', async () => {
   const seen: string[] = [];
   const verdict = await revalidateCheckpointedAsset({
-    submissionId: 'fr-x',
+    submissionId: 'fr-x-1234',
     identity: boundCase(PAYLOAD).identity as never,
     entry: { ...boundCase(PAYLOAD).entry, size: 999 } as never,
     readSource: readerOf(PAYLOAD, seen),
@@ -1258,27 +1363,27 @@ test('both sides are read through their OWN reader, by pathname', async () => {
   const destSeen: string[] = [];
   const { identity, entry } = boundCase(PAYLOAD);
   await revalidateCheckpointedAsset({
-    submissionId: 'fr-x',
+    submissionId: 'fr-x-1234',
     identity: identity as never,
     entry: entry as never,
     readSource: readerOf(PAYLOAD, sourceSeen),
     readDest: readerOf(PAYLOAD, destSeen),
     maxBytes: 1000,
   });
-  assert.deepEqual(sourceSeen, ['family-review/photos/fr-x/a-p1.jpg']);
-  assert.deepEqual(destSeen, ['family-review/photos/fr-x/a-p1.jpg']);
+  assert.deepEqual(sourceSeen, ['family-review/photos/fr-x-1234/a-photo00000001.jpg']);
+  assert.deepEqual(destSeen, ['family-review/photos/fr-x-1234/a-photo00000001.jpg']);
 });
 
 /* == 18. COMPLETED state with stale bytes ================================ */
 
 function completedRecordCase(sourceBytes: Uint8Array, destBytes: Uint8Array | null) {
   const rec = {
-    id: 'fr-x',
+    id: 'fr-x-1234',
     photos: {
       assets: [
         {
-          assetId: 'a-p1',
-          blobPathname: 'family-review/photos/fr-x/a-p1.jpg',
+          assetId: 'a-photo00000001',
+          blobPathname: 'family-review/photos/fr-x-1234/a-photo00000001.jpg',
           storage: 'public',
           mime: 'image/png',
           size: PAYLOAD.byteLength,
@@ -1291,12 +1396,13 @@ function completedRecordCase(sourceBytes: Uint8Array, destBytes: Uint8Array | nu
 
   const state = {
     version: CUTOVER_STATE_VERSION,
-    submissionId: 'fr-x',
+    submissionId: 'fr-x-1234',
     recordFingerprint: computeRecordFingerprint(rec),
     assetsVerified: [
       { ...assetIdentitiesOf(rec)[0], sourceSha256: sha256Of(PAYLOAD) },
     ],
     recordWritten: true,
+    recordUpdatedAt: '2026-08-25T23:59:59.000Z',
     completedAt: '2026-08-26T00:00:00.000Z',
   };
 
@@ -1556,4 +1662,1058 @@ test('the app record read only sends useCache on the private attempt', () => {
     /get\(pathname, \{ access, useCache: false \}\)/,
     'the unconditional form is the regression',
   );
+});
+
+/* == 21. First-copy pathname binding ===================================== */
+
+/**
+ * The gap these close: exact main proved an asset pathname belonged to
+ * its submission only when REVALIDATING an existing checkpoint. A
+ * newly-encountered asset -- the first copy, and every asset of every
+ * record on a first run -- was copied on the record's say-so, and the
+ * dry run reported `would_migrate` without checking an address at all.
+ *
+ * The binder is now the same function on all three paths (first copy,
+ * write site, resume), so a record cannot name an object outside its own
+ * submission and asset class and have it read or written.
+ */
+
+const PHOTO_PREFIX = 'family-review/photos/fr-x-1234/';
+const SAMPLE_PREFIX = 'family-review/samples/fr-x-1234/';
+
+test('these fixtures address the un-namespaced production shape', () => {
+  // Every fixture below (and in section 17) is a production address.
+  // Assert the assumption once, so a namespaced test environment fails
+  // here with a usable message instead of cascading through the suite.
+  assert.equal(
+    familyReviewAssetPrefix('fr-x-1234', 'photo'),
+    PHOTO_PREFIX,
+    'run the focused suite with HSB_BLOB_NAMESPACE unset',
+  );
+  assert.equal(familyReviewAssetPrefix('fr-x-1234', 'sample'), SAMPLE_PREFIX);
+});
+
+/* -- positive controls -- */
+
+test('safe-text but noncanonical Family Review identifiers fail closed', async () => {
+  const submissionId = 'fr-x-1234';
+  assert.throws(
+    () => parseArgs(['--submission=child-private-record']),
+    /submission_id_unsafe/,
+  );
+  assert.deepEqual(
+    validateSubmissionAddress(
+      'family-review/submissions/child-private-record.json',
+      'child-private-record',
+    ),
+    {
+      ok: false,
+      operatorSubmissionId: 'invalid_submission_id',
+      reason: 'submission_id_unsafe',
+    },
+  );
+  assert.equal(
+    safeAssetIdForOperatorOutput('child-private-photo'),
+    'invalid_asset_id',
+  );
+  assert.deepEqual(
+    bindPathnameToSubmission(
+      `family-review/photos/${submissionId}/child-private-photo.jpg`,
+      submissionId,
+      'photo',
+      'child-private-photo',
+    ),
+    { ok: false, reason: 'asset_id_unsafe' },
+  );
+
+  const invalidAssetRecord = {
+    id: submissionId,
+    photos: {
+      assets: [
+        {
+          assetId: 'child-private-photo',
+          blobPathname: `family-review/photos/${submissionId}/child-private-photo.jpg`,
+          blobUrl: 'https://example.public.blob.vercel-storage.com/private.jpg',
+          storage: 'public',
+          mime: 'image/jpeg',
+          size: 1000,
+          uploadedAt: 'now',
+        },
+      ],
+    },
+    samples: [],
+  } as never;
+  assert.deepEqual(
+    await inspectSubmissionForMigration(
+      invalidAssetRecord,
+      `family-review/submissions/${submissionId}.json`,
+    ),
+    [
+      {
+        submissionId,
+        assetId: 'invalid_asset_id',
+        kind: 'photo',
+        result: 'pathname_binding_rejected',
+        detail: 'asset_id_unsafe',
+      },
+    ],
+  );
+});
+
+test('an exact photo address and an exact sample address bind', () => {
+  assert.deepEqual(
+    bindPathnameToSubmission(`${PHOTO_PREFIX}a-photo00000001.jpg`, 'fr-x-1234', 'photo', 'a-photo00000001'),
+    { ok: true },
+  );
+  assert.deepEqual(
+    bindPathnameToSubmission(`${SAMPLE_PREFIX}a-sample00000001.png`, 'fr-x-1234', 'sample', 'a-sample00000001'),
+    { ok: true },
+  );
+});
+
+test('a safe sibling leaf cannot impersonate another asset id', async () => {
+  assert.deepEqual(
+    bindPathnameToSubmission(
+      `${PHOTO_PREFIX}not-a-photo00000001.jpg`,
+      'fr-x-1234',
+      'photo',
+      'a-photo00000001',
+    ),
+    { ok: false, reason: 'pathname_leaf_mismatch' },
+  );
+  const mismatched = record({
+    photos: { assets: [photo('a-photo00000001', { blobPathname: `${PHOTO_PREFIX}not-a-photo00000001.jpg` })] },
+    samples: [],
+  });
+  assert.deepEqual(recordPathnameBindingFailures(mismatched as never), [
+    { kind: 'photo', assetId: 'a-photo00000001', reason: 'pathname_leaf_mismatch' },
+  ]);
+  assert.deepEqual(
+    await inspectSubmissionForMigration(
+      mismatched as never,
+      'family-review/submissions/fr-x-1234.json',
+    ),
+    [
+      {
+        submissionId: 'fr-x-1234',
+        assetId: 'a-photo00000001',
+        kind: 'photo',
+        result: 'pathname_binding_rejected',
+        detail: 'pathname_leaf_mismatch',
+      },
+    ],
+  );
+});
+
+test('a namespaced run binds against its own namespace segment', () => {
+  assert.deepEqual(
+    bindPathnameToSubmission(
+      'preview/family-review/photos/fr-x-1234/a-photo00000001.jpg',
+      'fr-x-1234',
+      'photo',
+      'a-photo00000001',
+      'preview/family-review/photos/fr-x-1234/',
+    ),
+    { ok: true },
+  );
+  // The same object is refused for a run addressing production.
+  assert.deepEqual(
+    bindPathnameToSubmission(
+      'preview/family-review/photos/fr-x-1234/a-photo00000001.jpg',
+      'fr-x-1234',
+      'photo',
+      'a-photo00000001',
+      PHOTO_PREFIX,
+    ),
+    { ok: false, reason: 'pathname_prefix_mismatch' },
+  );
+});
+
+test('a well-formed record has no binding failures', () => {
+  assert.deepEqual(recordPathnameBindingFailures(record()), []);
+});
+
+/* -- another submission -- */
+
+test("another valid submission's asset is refused", () => {
+  assert.deepEqual(
+    bindPathnameToSubmission(
+      'family-review/photos/fr-someone-else/a-photo00000001.jpg',
+      'fr-x-1234',
+      'photo',
+    ),
+    { ok: false, reason: 'pathname_prefix_mismatch' },
+  );
+});
+
+/* -- prefix and suffix confusion -- */
+
+test('the submission id used only as a PREFIX is refused', () => {
+  for (const other of ['fr-x-1234y', 'fr-x-12342', 'fr-x-1234-old', 'fr-x-1234x']) {
+    assert.deepEqual(
+      bindPathnameToSubmission(
+        `family-review/photos/${other}/a-photo00000001.jpg`,
+        'fr-x-1234',
+        'photo',
+      ),
+      { ok: false, reason: 'pathname_prefix_mismatch' },
+      other,
+    );
+  }
+});
+
+test('the submission id used only as a SUFFIX is refused', () => {
+  for (const other of ['yfr-x-1234', '0fr-x-1234', 'not-fr-x-1234']) {
+    assert.deepEqual(
+      bindPathnameToSubmission(
+        `family-review/photos/${other}/a-photo00000001.jpg`,
+        'fr-x-1234',
+        'photo',
+      ),
+      { ok: false, reason: 'pathname_prefix_mismatch' },
+      other,
+    );
+  }
+});
+
+/* -- sibling and nested path confusion -- */
+
+test('an address parked under an unrelated top-level folder is refused', () => {
+  for (const hostile of [
+    `orders/${PHOTO_PREFIX}a-photo00000001.jpg`,
+    `backups/${PHOTO_PREFIX}a-photo00000001.jpg`,
+    `family-review/photos/fr-y/${PHOTO_PREFIX}a-photo00000001.jpg`,
+  ]) {
+    assert.deepEqual(
+      bindPathnameToSubmission(hostile, 'fr-x-1234', 'photo'),
+      { ok: false, reason: 'pathname_prefix_mismatch' },
+      hostile,
+    );
+  }
+});
+
+test('a sibling folder that merely starts the same way is refused', () => {
+  for (const hostile of [
+    'family-review/photos-archive/fr-x-1234/a-photo00000001.jpg',
+    'family-reviewX/photos/fr-x-1234/a-photo00000001.jpg',
+    'family-review/photo/fr-x-1234/a-photo00000001.jpg',
+  ]) {
+    assert.deepEqual(
+      bindPathnameToSubmission(hostile, 'fr-x-1234', 'photo'),
+      { ok: false, reason: 'pathname_prefix_mismatch' },
+      hostile,
+    );
+  }
+});
+
+test('an object nested BELOW the submission folder is refused', () => {
+  assert.deepEqual(
+    bindPathnameToSubmission(`${PHOTO_PREFIX}deeper/a-photo00000001.jpg`, 'fr-x-1234', 'photo'),
+    { ok: false, reason: 'pathname_extra_nesting' },
+  );
+  assert.deepEqual(bindPathnameToSubmission(PHOTO_PREFIX, 'fr-x-1234', 'photo'), {
+    ok: false,
+    reason: 'pathname_not_normalized',
+  });
+});
+
+/* -- asset class confusion -- */
+
+test('a photo address presented as a sample, and the reverse, are refused', () => {
+  assert.deepEqual(
+    bindPathnameToSubmission(`${PHOTO_PREFIX}a-photo00000001.jpg`, 'fr-x-1234', 'sample'),
+    { ok: false, reason: 'pathname_prefix_mismatch' },
+  );
+  assert.deepEqual(
+    bindPathnameToSubmission(`${SAMPLE_PREFIX}a-sample00000001.png`, 'fr-x-1234', 'photo'),
+    { ok: false, reason: 'pathname_prefix_mismatch' },
+  );
+});
+
+/* -- encoded and normalized separator forms -- */
+
+test('percent-encoded separators and traversal are refused', () => {
+  for (const hostile of [
+    'family-review%2Fphotos%2Ffr-x-1234%2Fa-photo00000001.jpg',
+    `${PHOTO_PREFIX}%2e%2e%2f%2e%2e%2forders%2fx.jpg`,
+    `${PHOTO_PREFIX}..%2Fa-photo00000001.jpg`,
+    `${PHOTO_PREFIX}%252e%252e/a-photo00000001.jpg`,
+  ]) {
+    assert.deepEqual(
+      bindPathnameToSubmission(hostile, 'fr-x-1234', 'photo'),
+      { ok: false, reason: 'pathname_unsafe_characters' },
+      hostile,
+    );
+  }
+});
+
+test('backslash, whitespace, query and non-ASCII separator forms are refused', () => {
+  const cases: [string, string][] = [
+    ['family-review\\photos\\fr-x-1234\\a-photo00000001.jpg', 'pathname_unsafe_characters'],
+    [`${PHOTO_PREFIX}a-photo00000001 .jpg`, 'pathname_unsafe_characters'],
+    [`${PHOTO_PREFIX}a-photo00000001.jpg?token=x`, 'pathname_unsafe_characters'],
+    [`${PHOTO_PREFIX}a-photo00000001\u0000.jpg`, 'pathname_unsafe_characters'],
+    // U+FF0F FULLWIDTH SOLIDUS folds to '/' under NFKC. Hostile
+    // characters are written as escapes so this file stays pure
+    // ASCII and no editor or transport can re-fold them away.
+    [
+      'family-review\uFF0Fphotos\uFF0Ffr-x-1234\uFF0Fa-photo00000001.jpg',
+      'pathname_not_normalized',
+    ],
+    // U+2024 ONE DOT LEADER folds to '.' under NFKC.
+    [`${PHOTO_PREFIX}\u2024\u2024/a-photo00000001.jpg`, 'pathname_not_normalized'],
+  ];
+  for (const [hostile, reason] of cases) {
+    assert.deepEqual(
+      bindPathnameToSubmission(hostile, 'fr-x-1234', 'photo'),
+      { ok: false, reason },
+      JSON.stringify(hostile),
+    );
+  }
+});
+
+test('dot segments and empty segments are refused', () => {
+  for (const hostile of [
+    `${PHOTO_PREFIX}../../orders/x.jpg`,
+    'family-review/photos/fr-x-1234/./a-photo00000001.jpg',
+    'family-review/./photos/fr-x-1234/a-photo00000001.jpg',
+    `/${PHOTO_PREFIX}a-photo00000001.jpg`,
+    'family-review//photos/fr-x-1234/a-photo00000001.jpg',
+    `${PHOTO_PREFIX}a-photo00000001.jpg/`,
+  ]) {
+    assert.deepEqual(
+      bindPathnameToSubmission(hostile, 'fr-x-1234', 'photo'),
+      { ok: false, reason: 'pathname_not_normalized' },
+      hostile,
+    );
+  }
+});
+
+/* -- malformed input -- */
+
+test('a malformed pathname is refused rather than coerced', () => {
+  for (const bad of [undefined, null, '', 0, 42, {}, [], true]) {
+    assert.deepEqual(
+      bindPathnameToSubmission(bad as never, 'fr-x-1234', 'photo'),
+      { ok: false, reason: 'pathname_missing' },
+      JSON.stringify(bad ?? null),
+    );
+  }
+  assert.deepEqual(
+    bindPathnameToSubmission(
+      `${PHOTO_PREFIX}${'a'.repeat(1100)}.jpg`,
+      'fr-x-1234',
+      'photo',
+    ),
+    { ok: false, reason: 'pathname_too_long' },
+  );
+});
+
+test('a full URL is not a pathname', () => {
+  assert.deepEqual(
+    bindPathnameToSubmission(
+      `https://example.public.blob.vercel-storage.com/${PHOTO_PREFIX}a-photo00000001.jpg`,
+      'fr-x-1234',
+      'photo',
+    ),
+    { ok: false, reason: 'pathname_unsafe_characters' },
+  );
+});
+
+test('a malformed submission id refuses every address', () => {
+  for (const id of [
+    '',
+    '..',
+    '.',
+    '../fr-y',
+    'fr x',
+    'fr/x',
+    'fr%2Fx',
+    'a'.repeat(300),
+  ]) {
+    assert.deepEqual(
+      bindPathnameToSubmission(`${PHOTO_PREFIX}a-photo00000001.jpg`, id, 'photo'),
+      { ok: false, reason: 'submission_id_unsafe' },
+      JSON.stringify(id),
+    );
+  }
+  // The id is checked BEFORE it is composed into an expected prefix, so
+  // a traversal id can never build a prefix that then matches.
+  assert.deepEqual(
+    bindPathnameToSubmission(
+      'family-review/photos/../../orders/x.jpg',
+      '../../orders',
+      'photo',
+    ),
+    { ok: false, reason: 'submission_id_unsafe' },
+  );
+});
+
+test('record-address validation redacts malformed ids before operator output', () => {
+  for (const hostile of [
+    'fr-x-1234\nINJECTED',
+    'fr-x-1234\rINJECTED',
+    'fr-x-1234\u0000secret',
+    'family@example.com',
+    '../orders/ord-1',
+    '\uFF0Ffamily-review',
+  ]) {
+    const verdict = validateSubmissionAddress(
+      'family-review/submissions/fr-safe.json',
+      hostile,
+    );
+    assert.deepEqual(verdict, {
+      ok: false,
+      operatorSubmissionId: 'invalid_submission_id',
+      reason: 'submission_id_unsafe',
+    });
+    assert.equal(JSON.stringify(verdict).includes(hostile), false);
+  }
+});
+
+test('record-address validation derives the address only after id validation', () => {
+  assert.deepEqual(
+    validateSubmissionAddress(
+      'family-review/submissions/fr-x-1234.json',
+      'fr-x-1234',
+    ),
+    { ok: true, operatorSubmissionId: 'fr-x-1234' },
+  );
+  assert.deepEqual(
+    validateSubmissionAddress(
+      'family-review/submissions/fr-y.json',
+      'fr-x-1234',
+    ),
+    {
+      ok: false,
+      operatorSubmissionId: 'fr-x-1234',
+      reason: 'record_address_mismatch',
+    },
+  );
+});
+
+test('hostile asset ids collapse to a fixed operator-safe label', () => {
+  for (const hostile of [
+    'asset\nINJECTED',
+    'asset\rINJECTED',
+    'asset\u0000secret',
+    'family@example.com',
+    '../orders/proof.jpg',
+    'https://example.com/private.jpg',
+    '\uFF0Fasset',
+  ]) {
+    assert.equal(safeAssetIdForOperatorOutput(hostile), 'invalid_asset_id');
+  }
+  assert.equal(safeAssetIdForOperatorOutput('a-photo00000001'), 'a-photo00000001');
+});
+
+test('record failure outcomes contain only bounded operator-safe identifiers', () => {
+  assert.deepEqual(
+    recordFailureOutcome(
+      'fr-x-1234\nINJECTED',
+      'record_unreadable',
+      'source_record_unreadable',
+    ),
+    {
+      submissionId: 'invalid_submission_id',
+      assetId: 'record',
+      kind: 'record',
+      result: 'record_unreadable',
+      detail: 'source_record_unreadable',
+    },
+  );
+});
+
+test('the real migration boundary refuses an empty record before I/O', async () => {
+  const empty = record({ photos: { assets: [] }, samples: [] });
+  const outcomes = await inspectSubmissionForMigration(
+    empty as never,
+    'family-review/submissions/fr-x-1234.json',
+  );
+  assert.deepEqual(outcomes, [
+    {
+      submissionId: 'fr-x-1234',
+      assetId: 'record',
+      kind: 'record',
+      result: 'empty_record_rejected',
+      detail: 'empty_record_rejected',
+    },
+  ]);
+});
+
+test('a destination record/index failure becomes a bounded failure outcome', async () => {
+  let calls = 0;
+  const outcome = await persistDestinationRecordOrFailure(record() as never, async () => {
+    calls += 1;
+    return { ok: false, detail: 'token=should-not-leak' };
+  });
+  assert.equal(calls, 1);
+  assert.deepEqual(outcome, {
+    submissionId: 'fr-x-1234',
+    assetId: 'record',
+    kind: 'record',
+    result: 'record_write_failed',
+    detail: 'destination_record_write_failed',
+  });
+});
+
+test('a throwing destination writer becomes the same bounded failure outcome', async () => {
+  const outcome = await persistDestinationRecordOrFailure(record() as never, async () => {
+    throw new Error('token=should-not-leak');
+  });
+  assert.deepEqual(outcome, {
+    submissionId: 'fr-x-1234',
+    assetId: 'record',
+    kind: 'record',
+    result: 'record_write_failed',
+    detail: 'destination_record_write_failed',
+  });
+});
+
+test('empty records are never ready for destination persistence', () => {
+  assert.equal(recordIsReady([], { assetsVerified: [] }), false);
+});
+
+test('unsafe narrowed-run submission ids are rejected before path composition', () => {
+  for (const hostile of ['../orders', 'fr-x-1234\nINJECTED', 'fr/x', 'fr%2Fx']) {
+    assert.throws(
+      () => parseArgs([`--submission=${hostile}`]),
+      /submission_id_unsafe/,
+    );
+  }
+  assert.equal(parseArgs(['--submission=fr-x-1234']).submissionId, 'fr-x-1234');
+});
+
+test('a structurally malformed readable record becomes a bounded refusal', async () => {
+  const malformed = record({ photos: null }) as unknown as Parameters<
+    typeof inspectSubmissionForMigration
+  >[0];
+  const outcomes = await inspectSubmissionForMigration(
+    malformed,
+    'family-review/submissions/fr-x-1234.json',
+  );
+  assert.deepEqual(outcomes, [
+    {
+      submissionId: 'fr-x-1234',
+      assetId: 'record',
+      kind: 'record',
+      result: 'record_unreadable',
+      detail: 'source_record_malformed',
+    },
+  ]);
+});
+
+test('checkpoint writers return only bounded failure outcomes', async () => {
+  const returned = await persistCutoverStateOrFailure('fr-x-1234', 'a-photo00000001', 'photo', async () => false);
+  assert.deepEqual(returned, {
+    submissionId: 'fr-x-1234',
+    assetId: 'a-photo00000001',
+    kind: 'photo',
+    result: 'checkpoint_write_failed',
+    detail: 'cutover_state_write_failed',
+  });
+
+  const thrown = await persistCutoverStateOrFailure('fr-x-1234', 'record', 'record', async () => {
+    const err = new Error('https://private.example/family-review/photos/fr-x-1234/a-photo00000001.png');
+    err.name = 'Injected\nPRIVATE_CHILD_DATA';
+    throw err;
+  });
+  assert.deepEqual(thrown, {
+    submissionId: 'fr-x-1234',
+    assetId: 'record',
+    kind: 'record',
+    result: 'checkpoint_write_failed',
+    detail: 'cutover_state_write_failed',
+  });
+});
+
+test('fatal reporting uses a fixed code rather than provider-controlled messages', () => {
+  const src = migrationSource();
+  assert.match(src, /\[migrate\] fatal: internal_error/);
+  assert.doesNotMatch(src, /redactTokens\(err instanceof Error \? err\.message/);
+});
+
+test('a narrowed run with no canonical source record fails closed', () => {
+  assert.deepEqual(requestedRecordMissingOutcome('fr-x-1234', 0), {
+    submissionId: 'fr-x-1234',
+    assetId: 'record',
+    kind: 'record',
+    result: 'record_unreadable',
+    detail: 'requested_record_not_found',
+  });
+  assert.equal(requestedRecordMissingOutcome('fr-x-1234', 1), null);
+  assert.equal(requestedRecordMissingOutcome(null, 0), null);
+});
+
+test('narrowed runs filter by canonical source pathname, never embedded record id', () => {
+  const src = stripComments(migrationSource());
+  const loop = src.slice(
+    src.indexOf('for (const pathname of pathnames)'),
+    src.indexOf('// Aggregate, redacted reporting'),
+  );
+  assert.match(loop, /pathname\s*!==\s*submissionPath\(args\.submissionId\)/);
+  assert.doesNotMatch(loop, /record\.id\s*!==\s*args\.submissionId/);
+  assert.match(
+    loop,
+    /requestedRecordMissingOutcome\(\s*args\.submissionId,\s*recordsSeen,?\s*\)/,
+  );
+  assert.ok(
+    loop.indexOf('pathname !== submissionPath(args.submissionId)') <
+      loop.indexOf('readSourceRecord(creds, pathname)'),
+  );
+});
+
+test('record-level failures become explicit non-success outcomes', () => {
+  const src = stripComments(migrationSource());
+  assert.match(src, /'record_unreadable'/);
+  assert.match(src, /'record_write_failed'/);
+  assert.match(src, /'empty_record_rejected'/);
+  const success = src.slice(
+    src.indexOf('const failures = outcomes.filter'),
+    src.indexOf('if (failures.length > 0)'),
+  );
+  assert.doesNotMatch(success, /record_unreadable|record_write_failed|empty_record_rejected/);
+});
+
+/* -- the record-level gate (first copy, no checkpoint) -- */
+
+test('the record gate names the offending asset and its bounded reason', () => {
+  const hostile = record({
+    photos: {
+      assets: [
+        photo('a-photo00000001'),
+        photo('a-photo00000002', {
+          blobPathname: 'family-review/photos/fr-someone-else/a-photo00000002.jpg',
+        }),
+      ],
+    },
+  });
+  assert.deepEqual(recordPathnameBindingFailures(hostile), [
+    { kind: 'photo', assetId: 'a-photo00000002', reason: 'pathname_prefix_mismatch' },
+  ]);
+});
+
+test('the record gate covers samples, not just photos', () => {
+  const hostile = record({
+    samples: [sample('a-sample00000001', { blobPathname: `${PHOTO_PREFIX}a-sample00000001.png` })],
+  });
+  assert.deepEqual(recordPathnameBindingFailures(hostile), [
+    { kind: 'sample', assetId: 'a-sample00000001', reason: 'pathname_prefix_mismatch' },
+  ]);
+});
+
+test('a record pointing at a non-Family-Review object is refused', () => {
+  const hostile = record({
+    photos: {
+      assets: [photo('a-photo00000001', { blobPathname: 'orders/ord-1/proof.jpg' })],
+    },
+    samples: [],
+  });
+  assert.deepEqual(recordPathnameBindingFailures(hostile), [
+    { kind: 'photo', assetId: 'a-photo00000001', reason: 'pathname_prefix_mismatch' },
+  ]);
+});
+
+test('binding failures redact hostile asset identifiers', () => {
+  const hostile = record({
+    photos: {
+      assets: [
+        photo('asset\nINJECTED', {
+          blobPathname: `${PHOTO_PREFIX}safe.jpg`,
+        }),
+      ],
+    },
+    samples: [],
+  });
+  assert.deepEqual(recordPathnameBindingFailures(hostile), [
+    { kind: 'photo', assetId: 'invalid_asset_id', reason: 'asset_id_unsafe' },
+  ]);
+});
+
+test('binding failures carry no pathname, filename or URL', () => {
+  const hostile = record({
+    photos: {
+      assets: [
+        photo('a-photo00000001', {
+          blobPathname: 'orders/ord-secret/child-name-photo.jpg',
+        }),
+      ],
+    },
+    samples: [],
+  });
+  const serialized = JSON.stringify(recordPathnameBindingFailures(hostile));
+  for (const leak of ['orders', 'ord-secret', 'child-name', '.jpg', 'http']) {
+    assert.ok(!serialized.includes(leak), `${leak} must not surface`);
+  }
+});
+
+/* -- the resume path uses the same binder -- */
+
+/** Revalidate a checkpoint whose live pathname is `pathname`. */
+async function revalidateAtPathname(pathname: string) {
+  const seen: string[] = [];
+  const base = boundCase(PAYLOAD);
+  const verdict = await revalidateCheckpointedAsset({
+    submissionId: 'fr-x-1234',
+    identity: { ...base.identity, pathname } as never,
+    entry: { ...base.entry, pathname } as never,
+    readSource: readerOf(PAYLOAD, seen),
+    readDest: readerOf(PAYLOAD, seen),
+    maxBytes: 1000,
+  });
+  return { verdict, seen };
+}
+
+test('a checkpoint with a hostile asset id is refused before any read', async () => {
+  const seen: string[] = [];
+  const base = boundCase(PAYLOAD);
+  const identity = { ...base.identity, assetId: 'asset\nINJECTED' } as never;
+  const entry = { ...base.entry, assetId: 'asset\nINJECTED' } as never;
+  const verdict = await revalidateCheckpointedAsset({
+    submissionId: 'fr-x-1234',
+    identity,
+    entry,
+    readSource: readerOf(PAYLOAD, seen),
+    readDest: readerOf(PAYLOAD, seen),
+    maxBytes: 1000,
+  });
+  assert.deepEqual(verdict, {
+    ok: false,
+    reason: 'submission_binding_mismatch',
+  });
+  assert.deepEqual(seen, []);
+});
+
+test('a checkpoint whose live source address left the submission is refused before any read', async () => {
+  const { verdict, seen } = await revalidateAtPathname(
+    'family-review/photos/fr-x-1234-old/a-photo00000001.jpg',
+  );
+  assert.deepEqual(verdict, {
+    ok: false,
+    reason: 'submission_binding_mismatch',
+  });
+  assert.deepEqual(seen, [], 'no object may be read once the binding fails');
+});
+
+test('a checkpoint whose live source address changed asset class is refused', async () => {
+  const { verdict, seen } = await revalidateAtPathname(
+    `${SAMPLE_PREFIX}a-photo00000001.jpg`,
+  );
+  assert.deepEqual(verdict, {
+    ok: false,
+    reason: 'submission_binding_mismatch',
+  });
+  assert.deepEqual(seen, []);
+});
+
+test('a checkpoint whose live source address is encoded is refused', async () => {
+  const { verdict, seen } = await revalidateAtPathname(
+    `${PHOTO_PREFIX}..%2F..%2Forders%2Fx.jpg`,
+  );
+  assert.deepEqual(verdict, {
+    ok: false,
+    reason: 'submission_binding_mismatch',
+  });
+  assert.deepEqual(seen, []);
+});
+
+test('a checkpoint nested below the submission folder is refused', async () => {
+  const { verdict, seen } = await revalidateAtPathname(
+    `${PHOTO_PREFIX}deeper/a-photo00000001.jpg`,
+  );
+  assert.deepEqual(verdict, {
+    ok: false,
+    reason: 'submission_binding_mismatch',
+  });
+  assert.deepEqual(seen, []);
+});
+
+/* -- wiring: the gate cannot be routed around -- */
+
+test('the module exports no apply-capable migration boundary', async () => {
+  const mod = await import('../scripts/family-review-migrate-assets.ts');
+  assert.equal('migrateSubmission' in mod, false);
+  assert.equal(typeof mod.inspectSubmissionForMigration, 'function');
+  const src = stripComments(migrationSource());
+  assert.doesNotMatch(src, /export\s+async\s+function\s+migrateSubmission/);
+  assert.match(
+    src,
+    /export async function inspectSubmissionForMigration[\s\S]*?migrateSubmission\([\s\S]*?false,/,
+  );
+});
+
+test('the binding gate runs before the dry-run branch and before any copy', () => {
+  const src = stripComments(migrationSource());
+  const start = src.indexOf('async function migrateSubmission(');
+  assert.ok(start > 0);
+  const fn = src.slice(start);
+  const address = fn.indexOf(
+    'validateSubmissionAddress(sourcePathname, record.id)',
+  );
+  const empty = fn.indexOf('if (identities.length === 0)');
+  const gate = fn.indexOf('recordPathnameBindingFailures(record)');
+  const dry = fn.indexOf('if (!apply)');
+  const state = fn.indexOf('readRawCutoverState(');
+  const copy = fn.indexOf('copyAssetStreaming(');
+
+  assert.ok(address > 0, 'the record id/address validator must run first');
+  assert.ok(empty > address && gate > empty, 'empty records fail before asset binding');
+  assert.ok(gate > 0 && dry > gate, 'a dry run must run the SAME binding gate');
+  assert.ok(state > gate, 'no checkpoint is read for an unbound record');
+  assert.ok(copy > gate, 'no asset is copied for an unbound record');
+});
+
+test('no source byte is read and no destination object written before the binding check', () => {
+  const src = stripComments(migrationSource());
+  const start = src.indexOf('async function copyAssetStreaming(');
+  const end = src.indexOf('async function writeDestinationRecord(');
+  assert.ok(start > 0 && end > start);
+  const fn = src.slice(start, end);
+
+  const bind = fn.indexOf('bindPathnameToSubmission(');
+  const read = fn.indexOf('await get(');
+  const write = fn.indexOf('await put(');
+  assert.ok(bind > 0, 'the copy path must bind the pathname itself');
+  assert.ok(read > bind, 'the binding check precedes the source read');
+  assert.ok(write > bind, 'the binding check precedes the destination put');
+});
+
+test('the copy path is called with the record id it must bind against', () => {
+  // The declaration's own parameter list is skipped; only call sites.
+  const calls = callArgs(migrationSource(), 'copyAssetStreaming').filter(
+    (a) => !a.includes('Credentials'),
+  );
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /creds,\s*record\.id,\s*identity/);
+});
+
+test('a rejected binding is not a success class', () => {
+  const src = stripComments(migrationSource());
+  const idx = src.indexOf(
+    "['would_migrate', 'migrated', 'already_verified']",
+  );
+  assert.ok(idx > 0, 'the success allow-list must still be an allow-list');
+  assert.match(src, /'pathname_binding_rejected'/);
+  assert.ok(
+    !src
+      .slice(idx, idx + 60)
+      .includes('pathname_binding_rejected'),
+    'a binding rejection must make the run exit non-zero',
+  );
+});
+
+/* -- bounded state, input, output, and completed-resume controls -- */
+
+test('checkpoint JSON stream is rejected before buffering beyond the byte ceiling', async () => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(MAX_CUTOVER_JSON_BYTES));
+      controller.enqueue(new Uint8Array([0x20]));
+    },
+  });
+  await assert.rejects(
+    parseBoundedJsonStream(stream, MAX_CUTOVER_JSON_BYTES),
+    /json_too_large/,
+  );
+});
+
+test('checkpoint completion marker must be one canonical ISO instant', () => {
+  const rec = record();
+  for (const completedAt of ['not-a-date', 'line\nbreak', 'x'.repeat(10_000)]) {
+    const verdict = validateCutoverState(goodState(rec, { completedAt }), rec);
+    assert.equal(verdict.state.completedAt, undefined);
+  }
+  assert.equal(
+    validateCutoverState(goodState(rec), rec).state.completedAt,
+    '2026-08-26T00:00:00.000Z',
+  );
+});
+
+test('checkpoint identity and reason collections have hard ceilings', () => {
+  const rec = record();
+  const oversized = goodState(rec, {
+    assetsVerified: Array.from({ length: MAX_ASSETS_PER_RECORD + 1 }, () => ({
+      ...assetIdentitiesOf(rec)[0],
+      sourceSha256: SHA,
+    })),
+  });
+  const verdict = validateCutoverState(oversized, rec);
+  assert.deepEqual(verdict.reasons, ['state_too_large']);
+  assert.ok(verdict.reasons.length <= MAX_STATE_REASONS);
+  assert.equal(verdict.state.assetsVerified.length, 0);
+});
+
+test('record-controlled asset cardinality is refused as one bounded outcome', async () => {
+  const oversizedRecord = record({
+    photos: {
+      assets: Array.from({ length: MAX_ASSETS_PER_RECORD + 1 }, (_, index) =>
+        photo(`a-overflow${String(index).padStart(12, '0')}`),
+      ),
+    },
+    samples: [],
+  });
+  const outcomes = await inspectSubmissionForMigration(
+    oversizedRecord as never,
+    `family-review/submissions/${oversizedRecord.id}.json`,
+  );
+  assert.equal(outcomes.length, 1);
+  assert.equal(outcomes[0].result, 'record_unreadable');
+  assert.equal(outcomes[0].detail, 'source_record_malformed');
+});
+
+test('completed resume record proof requires the exact canonical persisted record', () => {
+  const source = record({
+    reviewTokenHash: 'a'.repeat(64),
+    status: 'pending_review',
+    updatedAt: '2026-08-20T00:00:00.000Z',
+    parent: { name: 'Parent', email: 'owner@example.test' },
+    child: { firstName: 'Hero' },
+  });
+  const destination = record({
+    reviewTokenHash: 'a'.repeat(64),
+    status: 'pending_review',
+    updatedAt: '2026-08-25T23:59:59.000Z',
+    parent: { name: 'Parent', email: 'owner@example.test' },
+    child: { firstName: 'Hero' },
+    photos: {
+      assets: source.photos.assets.map((asset) => flipAssetToPrivate(asset)),
+    },
+    samples: source.samples.map((asset) => flipAssetToPrivate(asset)),
+  });
+  assert.equal(
+    destinationRecordMatchesSource(
+      destination as never,
+      source as never,
+      '2026-08-25T23:59:59.000Z',
+    ),
+    true,
+  );
+
+  for (const contradictory of [
+    { ...destination, status: 'approved' },
+    { ...destination, parent: { name: 'Parent', email: 'wrong@example.test' } },
+    { ...destination, reviewTokenHash: 'b'.repeat(64) },
+    (() => {
+      const { child: _missing, ...rest } = destination as typeof destination & {
+        child?: unknown;
+      };
+      return rest;
+    })(),
+    {
+      ...destination,
+      photos: {
+        assets: destination.photos.assets.map((asset, index) =>
+          index === 0
+            ? { ...(asset as Record<string, unknown>), blobUrl: 'https://public.invalid/x' }
+            : asset,
+        ),
+      },
+    },
+  ]) {
+    assert.equal(
+      destinationRecordMatchesSource(
+        contradictory as never,
+        source as never,
+        '2026-08-25T23:59:59.000Z',
+      ),
+      false,
+    );
+  }
+});
+
+test('unknown or malformed checkpoint schemas require apply refusal', () => {
+  const rec = record();
+  for (const raw of [
+    'not-an-object',
+    { ...goodState(rec), version: 999 },
+    { ...goodState(rec), submissionId: 'fr-other-1234' },
+    { ...goodState(rec), recordFingerprint: 123 },
+    { ...goodState(rec), assetsVerified: [{ bad: true }] },
+    {
+      ...goodState(rec),
+      assetsVerified: goodState(rec).assetsVerified.map((entry, index) =>
+        index === 0 ? { ...entry, unexpected: true } : entry,
+      ),
+    },
+    { ...goodState(rec), completedAt: 'not-a-date' },
+    { ...goodState(rec), completedAt: '' },
+    { ...goodState(rec), completedAt: false },
+    { ...goodState(rec), recordUpdatedAt: 'not-a-date' },
+    (() => {
+      const { completedAt: _completed, ...partial } = goodState(rec);
+      return {
+        ...partial,
+        recordWritten: false,
+        recordUpdatedAt: '2026-08-25T23:59:59.000Z',
+      };
+    })(),
+    (() => {
+      const { recordWritten: _missing, ...rest } = goodState(rec);
+      return rest;
+    })(),
+    { ...goodState(rec), recordWritten: 'true' },
+    { ...goodState(rec), unexpected: true },
+    { ...goodState(rec), assetsVerified: Array(MAX_ASSETS_PER_RECORD + 1).fill({}) },
+  ]) {
+    const verdict = validateCutoverState(raw, rec);
+    assert.equal(checkpointStateRequiresRefusal(verdict.reasons), true);
+  }
+  assert.equal(
+    checkpointStateRequiresRefusal(validateCutoverState(null, rec).reasons),
+    false,
+  );
+  const changedFingerprint = 'f'.repeat(64);
+  for (const raw of [
+    { ...goodState(rec), recordFingerprint: changedFingerprint, completedAt: false },
+    { ...goodState(rec), recordFingerprint: changedFingerprint, assetsVerified: [null] },
+    { ...goodState(rec), recordFingerprint: changedFingerprint, assetsVerified: false },
+    { ...goodState(rec), recordFingerprint: changedFingerprint, recordUpdatedAt: false },
+    {
+      ...goodState(rec),
+      recordFingerprint: changedFingerprint,
+      assetsVerified: goodState(rec).assetsVerified.map((entry, index) =>
+        index === 0 ? { ...entry, mime: 'text/plain' } : entry,
+      ),
+    },
+    {
+      ...goodState(rec),
+      recordFingerprint: changedFingerprint,
+      assetsVerified: goodState(rec).assetsVerified.map((entry, index) =>
+        index === 0 ? { ...entry, unexpected: true } : entry,
+      ),
+    },
+  ]) {
+    const verdict = validateCutoverState(raw, rec);
+    assert.equal(checkpointStateRequiresRefusal(verdict.reasons), true);
+  }
+
+  const changed = record({
+    photos: { assets: [photo('a-photo00000001')] },
+    samples: [],
+  });
+  assert.deepEqual(validateCutoverState(goodState(rec), changed).reasons, [
+    'record_changed',
+  ]);
+  assert.equal(
+    checkpointStateRequiresRefusal(
+      validateCutoverState(goodState(rec), changed).reasons,
+    ),
+    false,
+  );
+});
+
+test('apply path distinguishes checkpoint read failure and verifies completed persistence', () => {
+  const src = stripComments(migrationSource());
+  const start = src.indexOf('async function migrateSubmission(');
+  const fn = src.slice(start);
+  const read = fn.indexOf('readRawCutoverState(');
+  const checkpointFailure = fn.indexOf("'checkpoint_read_failed'");
+  const stateRefusal = fn.indexOf('checkpointStateRequiresRefusal(shape.reasons)');
+  const completed = fn.indexOf('if (state.completedAt)');
+  const verify = fn.indexOf('verifyDestinationPersistence(');
+  const alreadyVerified = fn.indexOf("result: 'already_verified'");
+  assert.ok(read > 0 && checkpointFailure > read);
+  assert.ok(stateRefusal > checkpointFailure && completed > stateRefusal);
+  assert.ok(verify > completed);
+  assert.ok(alreadyVerified > verify);
 });
