@@ -72,12 +72,18 @@ import { get, list, put } from '@vercel/blob';
 import { getBlobNamespace, withBlobNamespace } from '../src/lib/orders.ts';
 import { blobStoreIdFromToken } from '../src/lib/family-review/blob-credentials.ts';
 import {
+  isWellFormedAssetId,
+  isWellFormedSubmissionId,
+} from '../src/lib/family-review/tokens.ts';
+import {
+  ALLOWED_IMAGE_MIME,
   canonicalImageMime,
   sniffImageType,
 } from '../src/lib/family-review/image-type.ts';
 import {
   buildPersistPlan,
   normalizeSubmissionRecord,
+  submissionPath,
   type FamilyReviewSubmission,
   type PhotoAsset,
   type SampleAsset,
@@ -89,10 +95,17 @@ const DEST_TOKEN_ENV = 'FAMILY_REVIEW_DEST_BLOB_TOKEN';
 const LIST_PAGE_SIZE = 250;
 const MAX_LIST_PAGES = 40;
 export const MAX_ASSET_BYTES = 25 * 1024 * 1024;
+export const MAX_RECORD_JSON_BYTES = 1024 * 1024;
+export const MAX_CUTOVER_JSON_BYTES = 1024 * 1024;
+export const MAX_ASSETS_PER_RECORD = 256;
+export const MAX_STATE_REASONS = 32;
+export const MAX_FAILURE_LINES = 100;
+const MAX_STORE_ID_LENGTH = 64;
+const MAX_CREDENTIAL_LENGTH = 4096;
 /** Enough leading bytes to identify every format the lane accepts. */
 const SNIFF_BYTES = 16;
 /** Cutover state schema version; a different version is not trusted. */
-export const CUTOVER_STATE_VERSION = 1;
+export const CUTOVER_STATE_VERSION = 2;
 
 type AnyAsset = PhotoAsset | SampleAsset;
 export type AssetKind = 'photo' | 'sample';
@@ -101,6 +114,14 @@ type AssetResult =
   | 'would_migrate'
   | 'migrated'
   | 'already_verified'
+  | 'pathname_binding_rejected'
+  | 'empty_record_rejected'
+  | 'record_unreadable'
+  | 'record_write_failed'
+  | 'checkpoint_read_failed'
+  | 'checkpoint_state_invalid'
+  | 'destination_record_verify_failed'
+  | 'checkpoint_write_failed'
   | 'source_read_failed'
   | 'too_large'
   | 'source_type_unrecognized'
@@ -109,10 +130,10 @@ type AssetResult =
   | 'dest_write_failed'
   | 'verify_failed';
 
-interface AssetOutcome {
+export interface AssetOutcome {
   submissionId: string;
   assetId: string;
-  kind: AssetKind;
+  kind: AssetKind | 'record';
   result: AssetResult;
   detail?: string;
 }
@@ -139,6 +160,8 @@ export interface CutoverState {
   recordFingerprint: string;
   assetsVerified: VerifiedAsset[];
   recordWritten: boolean;
+  /** Exact timestamp persisted in the destination record for resume proof. */
+  recordUpdatedAt?: string;
   completedAt?: string;
 }
 
@@ -168,8 +191,20 @@ export function credentialProblems(
   dest: string | undefined,
 ): string[] {
   const problems: string[] = [];
-  const sourceId = blobStoreIdFromToken(source);
-  const destId = blobStoreIdFromToken(dest);
+  const sourceWithinBounds =
+    typeof source === 'string' && source.length <= MAX_CREDENTIAL_LENGTH;
+  const destWithinBounds =
+    typeof dest === 'string' && dest.length <= MAX_CREDENTIAL_LENGTH;
+  const parsedSourceId = sourceWithinBounds ? blobStoreIdFromToken(source) : null;
+  const parsedDestId = destWithinBounds ? blobStoreIdFromToken(dest) : null;
+  const sourceId =
+    parsedSourceId && parsedSourceId.length <= MAX_STORE_ID_LENGTH
+      ? parsedSourceId
+      : null;
+  const destId =
+    parsedDestId && parsedDestId.length <= MAX_STORE_ID_LENGTH
+      ? parsedDestId
+      : null;
 
   if (!source || !source.trim()) {
     problems.push(`${SOURCE_TOKEN_ENV} is not set`);
@@ -236,7 +271,8 @@ export function redactTokens(message: string): string {
 }
 
 function errorCode(err: unknown): string {
-  return redactTokens(err instanceof Error ? err.name : 'unknown');
+  void err;
+  return 'provider_error';
 }
 
 /* -- Read options, one builder per side -- */
@@ -279,7 +315,9 @@ export function destGetOptions(token: string): {
 /* -- Args -- */
 
 export function destructiveFlag(argv: string[]): string | null {
-  return argv.find((arg) => /^--(delete|purge|remove|drop)/i.test(arg)) ?? null;
+  return argv.some((arg) => /^--(delete|purge|remove|drop)/i.test(arg))
+    ? 'destructive_flag'
+    : null;
 }
 
 export function parseArgs(argv: string[]): {
@@ -292,16 +330,31 @@ export function parseArgs(argv: string[]): {
   let target: string | null = null;
   let submissionId: string | null = null;
   let limit: number | null = null;
+  const seen = new Set<string>();
 
   for (const arg of argv) {
+    const key =
+      arg === '--apply' ? 'apply' : arg.startsWith('--') ? arg.slice(2).split('=', 1)[0] : '';
+    if (!['apply', 'target', 'submission', 'limit'].includes(key)) {
+      throw new Error('argument_unknown');
+    }
+    if (seen.has(key)) throw new Error('argument_duplicate');
+    seen.add(key);
+
     if (arg === '--apply') apply = true;
-    else if (arg.startsWith('--target=')) target = arg.slice('--target='.length);
-    else if (arg.startsWith('--submission=')) {
+    else if (arg.startsWith('--target=')) {
+      target = arg.slice('--target='.length);
+      if (!isSafeNamespace(target)) throw new Error('argument_invalid');
+    } else if (arg.startsWith('--submission=')) {
       submissionId = arg.slice('--submission='.length);
     } else if (arg.startsWith('--limit=')) {
       const n = Number(arg.slice('--limit='.length));
-      if (Number.isFinite(n) && n > 0) limit = Math.floor(n);
-    }
+      if (!Number.isSafeInteger(n) || n <= 0) throw new Error('argument_invalid');
+      limit = n;
+    } else throw new Error('argument_invalid');
+  }
+  if (submissionId !== null && !isSafeSubmissionId(submissionId)) {
+    throw new Error('submission_id_unsafe');
   }
   return { apply, target, submissionId, limit };
 }
@@ -316,15 +369,9 @@ export function applyAuthorizationProblems(
 
   if (!args.apply) problems.push('missing --apply');
   if (args.target === null) problems.push('missing --target=<namespace>');
-  else if (args.target !== target) {
-    problems.push(
-      `--target=${args.target} does not match the resolved store '${target}'`,
-    );
-  }
+  else if (args.target !== target) problems.push('target_namespace_mismatch');
   if ((confirm ?? '') !== expected) {
-    problems.push(
-      `FAMILY_REVIEW_MIGRATION_CONFIRM must be exactly '${expected}'`,
-    );
+    problems.push('migration_confirmation_mismatch');
   }
   return problems;
 }
@@ -379,6 +426,33 @@ export function assetIdentitiesOf(record: {
   ];
 }
 
+function isMigrationRecordShaped(value: unknown): value is FamilyReviewSubmission {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== 'string') return false;
+  if (!record.photos || typeof record.photos !== 'object') return false;
+  const photos = record.photos as Record<string, unknown>;
+  if (!Array.isArray(photos.assets) || !Array.isArray(record.samples)) return false;
+  if (
+    photos.assets.length + record.samples.length > MAX_ASSETS_PER_RECORD
+  ) {
+    return false;
+  }
+  const assetIsShaped = (asset: unknown): boolean => {
+    if (!asset || typeof asset !== 'object') return false;
+    const item = asset as Record<string, unknown>;
+    return (
+      typeof item.assetId === 'string' &&
+      typeof item.blobPathname === 'string' &&
+      typeof item.mime === 'string' &&
+      typeof item.size === 'number' &&
+      Number.isFinite(item.size) &&
+      item.size >= 0
+    );
+  };
+  return photos.assets.every(assetIsShaped) && record.samples.every(assetIsShaped);
+}
+
 /**
  * Identity keys that appear more than once on one record.
  *
@@ -431,32 +505,65 @@ function identitiesEqual(a: AssetIdentity, b: AssetIdentity): boolean {
 function isVerifiedAssetShaped(value: unknown): value is VerifiedAsset {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    'kind',
+    'assetId',
+    'pathname',
+    'size',
+    'mime',
+    'sourceSha256',
+  ]);
   return (
+    Object.keys(v).length === allowedKeys.size &&
+    Object.keys(v).every((key) => allowedKeys.has(key)) &&
     (v.kind === 'photo' || v.kind === 'sample') &&
     typeof v.assetId === 'string' &&
-    v.assetId.length > 0 &&
+    isSafeAssetId(v.assetId) &&
     typeof v.pathname === 'string' &&
     v.pathname.length > 0 &&
+    v.pathname.length <= MAX_PATHNAME_LENGTH &&
     typeof v.size === 'number' &&
-    Number.isFinite(v.size) &&
+    Number.isSafeInteger(v.size) &&
     v.size >= 0 &&
+    v.size <= MAX_ASSET_BYTES &&
     typeof v.mime === 'string' &&
+    Object.hasOwn(ALLOWED_IMAGE_MIME, v.mime) &&
     v.mime.length > 0 &&
+    v.mime.length <= 128 &&
+    !/[\x00-\x1F\x7F]/.test(v.mime) &&
     typeof v.sourceSha256 === 'string' &&
     /^[0-9a-f]{64}$/.test(v.sourceSha256)
   );
+}
+
+function pushBoundedReason(reasons: string[], reason: string): void {
+  if (reasons.length >= MAX_STATE_REASONS) return;
+  reasons.push(reason);
+}
+
+export function checkpointStateRequiresRefusal(reasons: string[]): boolean {
+  // A source-record fingerprint change is the sole safe reset: every other
+  // validation reason means the existing non-null checkpoint is malformed,
+  // foreign, internally inconsistent, or from an unsupported schema.
+  return reasons.some((reason) => reason !== 'record_changed');
+}
+
+function isCanonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length !== 24) return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
 }
 
 /**
  * Validate persisted cutover state against the record it claims to
  * describe, and return only the parts that are still trustworthy.
  *
- * Anything malformed, foreign, stale, duplicated, or bound to a
- * different record shape is DISCARDED -- the affected assets are simply
- * recopied, which is safe because a destination write is an overwrite of
- * the same pathname. completedAt is never carried over on its own: it
- * survives only if the binding revalidates AND every asset on the record
- * is covered.
+ * Existing non-null state is parsed into a bounded diagnostic projection.
+ * The real apply boundary refuses every validation reason except an exact
+ * source-record fingerprint change, which is the only state transition that
+ * may safely reset and recopy. completedAt survives only when the exact v2
+ * schema, full asset coverage, record timestamp, and recordWritten gate all
+ * validate.
  */
 export function validateCutoverState(
   raw: unknown,
@@ -476,6 +583,30 @@ export function validateCutoverState(
   if (typeof raw !== 'object') return { state: fresh, reasons: ['state_malformed'] };
 
   const s = raw as Record<string, unknown>;
+  const own = (key: string): boolean =>
+    Object.prototype.hasOwnProperty.call(s, key);
+  const allowedKeys = new Set([
+    'version',
+    'submissionId',
+    'recordFingerprint',
+    'assetsVerified',
+    'recordWritten',
+    'recordUpdatedAt',
+    'completedAt',
+  ]);
+  if (Object.keys(s).some((key) => !allowedKeys.has(key))) {
+    return { state: fresh, reasons: ['state_fields_unknown'] };
+  }
+  if (
+    !own('version') ||
+    !own('submissionId') ||
+    !own('recordFingerprint') ||
+    !own('assetsVerified') ||
+    !own('recordWritten') ||
+    typeof s.recordWritten !== 'boolean'
+  ) {
+    return { state: fresh, reasons: ['state_malformed'] };
+  }
 
   if (s.version !== CUTOVER_STATE_VERSION) {
     return { state: fresh, reasons: ['state_version_unknown'] };
@@ -484,59 +615,103 @@ export function validateCutoverState(
     // State belonging to another submission must never be honoured.
     return { state: fresh, reasons: ['state_foreign_submission'] };
   }
-  if (
-    typeof s.recordFingerprint !== 'string' ||
-    s.recordFingerprint !== fingerprint
-  ) {
-    // The record's asset shape changed since the checkpoint was written.
-    return { state: fresh, reasons: ['record_changed'] };
+  if (typeof s.recordFingerprint !== 'string') {
+    return { state: fresh, reasons: ['state_malformed'] };
   }
+  const recordChanged = s.recordFingerprint !== fingerprint;
   if (!Array.isArray(s.assetsVerified)) {
     return { state: fresh, reasons: ['state_malformed'] };
+  }
+  if (s.assetsVerified.length > MAX_ASSETS_PER_RECORD) {
+    return { state: fresh, reasons: ['state_too_large'] };
+  }
+
+  const hasRecordUpdatedAt = own('recordUpdatedAt');
+  const recordUpdatedAt = isCanonicalIsoTimestamp(s.recordUpdatedAt)
+    ? s.recordUpdatedAt
+    : undefined;
+  if (
+    (s.recordWritten === true && !recordUpdatedAt) ||
+    (hasRecordUpdatedAt &&
+      (s.recordWritten !== true || !recordUpdatedAt))
+  ) {
+    pushBoundedReason(reasons, 'record_timestamp_malformed');
+  }
+  const hasCompletedAt = own('completedAt');
+  const structurallyValidCompletedAt = isCanonicalIsoTimestamp(s.completedAt)
+    ? s.completedAt
+    : undefined;
+  if (
+    hasCompletedAt &&
+    (!structurallyValidCompletedAt || s.recordWritten !== true)
+  ) {
+    pushBoundedReason(reasons, 'completion_revoked');
   }
 
   const identities = assetIdentitiesOf(record);
   const byKey = new Map(identities.map((i) => [assetIdentityKey(i), i]));
 
   const kept: VerifiedAsset[] = [];
+  const encounteredKeys = new Set<string>();
   const seenKeys = new Set<string>();
   for (const entry of s.assetsVerified) {
     if (!isVerifiedAssetShaped(entry)) {
-      reasons.push('entry_malformed');
+      pushBoundedReason(reasons, 'entry_malformed');
+      continue;
+    }
+    const pathnameBinding = bindPathnameToSubmission(
+      entry.pathname,
+      record.id,
+      entry.kind,
+      entry.assetId,
+    );
+    if (!pathnameBinding.ok) {
+      pushBoundedReason(reasons, 'entry_malformed');
       continue;
     }
     const key = assetIdentityKey(entry);
-    if (seenKeys.has(key)) {
+    if (encounteredKeys.has(key)) {
       // A duplicated checkpoint entry is evidence of tampering or of a
       // merge gone wrong; drop it rather than count it twice.
-      reasons.push('entry_duplicate');
+      pushBoundedReason(reasons, 'entry_duplicate');
       continue;
     }
+    encounteredKeys.add(key);
+    if (recordChanged) continue;
     const current = byKey.get(key);
     if (!current) {
-      reasons.push('entry_not_on_record');
+      pushBoundedReason(reasons, 'entry_not_on_record');
       continue;
     }
     if (!identitiesEqual(current, entry)) {
       // Same id, different object -- the source moved, resized, or
       // changed type. The old proof does not describe it.
-      reasons.push('entry_identity_mismatch');
+      pushBoundedReason(reasons, 'entry_identity_mismatch');
       continue;
     }
     seenKeys.add(key);
     kept.push(entry);
   }
 
+  if (recordChanged) {
+    const changedReasons = reasons.slice(0, MAX_STATE_REASONS - 1);
+    changedReasons.push('record_changed');
+    return { state: fresh, reasons: changedReasons };
+  }
+
   const complete =
     identities.length > 0 &&
     identities.every((i) => seenKeys.has(assetIdentityKey(i)));
-  const recordWritten = s.recordWritten === true && complete;
+  const recordWritten =
+    s.recordWritten === true && complete && Boolean(recordUpdatedAt);
   const completedAt =
-    typeof s.completedAt === 'string' && complete && recordWritten
-      ? s.completedAt
+    structurallyValidCompletedAt && complete && recordWritten
+      ? structurallyValidCompletedAt
       : undefined;
 
-  if (s.completedAt && !completedAt) reasons.push('completion_revoked');
+  if (hasCompletedAt && !completedAt && !reasons.includes('completion_revoked')) {
+    pushBoundedReason(reasons, 'completion_revoked');
+  }
 
   return {
     state: {
@@ -545,6 +720,7 @@ export function validateCutoverState(
       recordFingerprint: fingerprint,
       assetsVerified: kept,
       recordWritten,
+      ...(recordWritten && recordUpdatedAt ? { recordUpdatedAt } : {}),
       ...(completedAt ? { completedAt } : {}),
     },
     reasons,
@@ -581,7 +757,9 @@ export function recordIsReady(
   identities: AssetIdentity[],
   state: Pick<CutoverState, 'assetsVerified'>,
 ): boolean {
-  return assetsNeedingCopy(identities, state).length === 0;
+  return (
+    identities.length > 0 && assetsNeedingCopy(identities, state).length === 0
+  );
 }
 
 /**
@@ -762,10 +940,310 @@ export function verifySourceType(
     return {
       ok: false,
       result: 'content_type_mismatch',
-      detail: `record says ${recordedMime}, bytes are ${sniffed.mime}`,
+      detail: 'recorded_mime_mismatch',
     };
   }
   return { ok: true, mime: sniffed.mime };
+}
+
+/* -- Pathname binding -- */
+
+/**
+ * Why an address was refused.
+ *
+ * Bounded classes only: these strings reach operator output, so none of
+ * them may carry a pathname, a filename, a URL, or anything derived
+ * from family content.
+ */
+export type PathnameBindingReason =
+  | 'pathname_missing'
+  | 'pathname_too_long'
+  | 'pathname_not_normalized'
+  | 'pathname_unsafe_characters'
+  | 'submission_id_unsafe'
+  | 'asset_id_unsafe'
+  | 'pathname_prefix_mismatch'
+  | 'pathname_extra_nesting'
+  | 'pathname_leaf_mismatch';
+
+export type PathnameBindingVerdict =
+  | { ok: true }
+  | { ok: false; reason: PathnameBindingReason };
+
+/**
+ * The only characters a Family Review object address may contain.
+ *
+ * An allowlist, not a blocklist: `%2F`, `%2e%2e`, a backslash, a
+ * control byte, a fullwidth solidus, and anything else a URL builder or
+ * a storage backend might later fold into a separator are refused by
+ * construction rather than one at a time.
+ */
+const SAFE_PATHNAME_CHARS = /^[A-Za-z0-9._~/-]+$/;
+const SAFE_ID_CHARS = /^[A-Za-z0-9._~-]+$/;
+const MAX_PATHNAME_LENGTH = 1024;
+const MAX_NAMESPACE_LENGTH = 256;
+
+function isSafeNamespace(namespace: unknown): namespace is string {
+  return (
+    typeof namespace === 'string' &&
+    namespace.length > 0 &&
+    namespace.length <= MAX_NAMESPACE_LENGTH &&
+    namespace !== '.' &&
+    namespace !== '..' &&
+    SAFE_ID_CHARS.test(namespace)
+  );
+}
+
+function isSafeSubmissionId(submissionId: unknown): submissionId is string {
+  return (
+    typeof submissionId === 'string' &&
+    isWellFormedSubmissionId(submissionId)
+  );
+}
+
+function isSafeAssetId(assetId: unknown): assetId is string {
+  return typeof assetId === 'string' && isWellFormedAssetId(assetId);
+}
+
+export function safeAssetIdForOperatorOutput(assetId: unknown): string {
+  return isSafeAssetId(assetId) ? assetId : 'invalid_asset_id';
+}
+
+function safeSubmissionIdForOperatorOutput(submissionId: unknown): string {
+  return isSafeSubmissionId(submissionId)
+    ? submissionId
+    : 'invalid_submission_id';
+}
+
+export function recordFailureOutcome(
+  submissionId: unknown,
+  result: Extract<
+    AssetResult,
+    | 'pathname_binding_rejected'
+    | 'empty_record_rejected'
+    | 'record_unreadable'
+    | 'record_write_failed'
+    | 'checkpoint_read_failed'
+    | 'checkpoint_state_invalid'
+    | 'destination_record_verify_failed'
+  >,
+  detail: string,
+): AssetOutcome {
+  return {
+    submissionId: safeSubmissionIdForOperatorOutput(submissionId),
+    assetId: 'record',
+    kind: 'record',
+    result,
+    detail,
+  };
+}
+
+/** Make a targeted run fail closed when its canonical source record is absent. */
+export function requestedRecordMissingOutcome(
+  submissionId: string | null,
+  recordsSeen: number,
+): AssetOutcome | null {
+  if (submissionId === null || recordsSeen > 0) return null;
+  return recordFailureOutcome(
+    submissionId,
+    'record_unreadable',
+    'requested_record_not_found',
+  );
+}
+
+export type SubmissionAddressVerdict =
+  | { ok: true; operatorSubmissionId: string }
+  | {
+      ok: false;
+      operatorSubmissionId: string;
+      reason: 'submission_id_unsafe' | 'record_address_mismatch';
+    };
+
+/**
+ * Validate a record-controlled id before composing it into a pathname or
+ * returning it to operator output. Malformed ids collapse to one fixed label,
+ * so control characters or family content can never reach a log or outcome.
+ */
+export function validateSubmissionAddress(
+  sourcePathname: unknown,
+  submissionId: unknown,
+): SubmissionAddressVerdict {
+  if (!isSafeSubmissionId(submissionId)) {
+    return {
+      ok: false,
+      operatorSubmissionId: 'invalid_submission_id',
+      reason: 'submission_id_unsafe',
+    };
+  }
+  if (
+    typeof sourcePathname !== 'string' ||
+    sourcePathname !== submissionPath(submissionId)
+  ) {
+    return {
+      ok: false,
+      operatorSubmissionId: submissionId,
+      reason: 'record_address_mismatch',
+    };
+  }
+  return { ok: true, operatorSubmissionId: submissionId };
+}
+
+function assetFolder(kind: AssetKind): 'photos' | 'samples' {
+  return kind === 'photo' ? 'photos' : 'samples';
+}
+
+/**
+ * The one folder a submission's assets of a given class may live in, in
+ * the namespace this run actually addresses.
+ *
+ * Composed with the SAME withBlobNamespace the runtime writer uses, so
+ * the binding covers the namespace segment too: an object outside the
+ * Family Review lane cannot be reached by prepending a folder to a
+ * pathname that otherwise looks right.
+ */
+export function familyReviewAssetPrefix(
+  submissionId: string,
+  kind: AssetKind,
+): string {
+  return withBlobNamespace(
+    `family-review/${assetFolder(kind)}/${submissionId}/`,
+  );
+}
+
+/**
+ * Prove an address is THIS submission's asset of THIS class, before it
+ * is used to read or to write anything.
+ *
+ * The exact-prefix comparison is what makes prefix, suffix, sibling and
+ * nesting confusion impossible: `fr-x` does not match `fr-xy`, `yfr-x`,
+ * a `samples/` object presented as a photo, or an object parked under
+ * an unrelated top-level folder. The leaf must be a single segment,
+ * which is the only shape photoPath()/samplePath() can produce.
+ *
+ * `expectedPrefix` is injectable so a namespaced deployment's shape can
+ * be exercised without reaching for process state.
+ */
+export function bindPathnameToSubmission(
+  pathname: unknown,
+  submissionId: string,
+  kind: AssetKind,
+  assetId?: unknown,
+  expectedPrefix?: string,
+): PathnameBindingVerdict {
+  if (!isSafeSubmissionId(submissionId)) {
+    return { ok: false, reason: 'submission_id_unsafe' };
+  }
+
+  if (typeof pathname !== 'string' || pathname.length === 0) {
+    return { ok: false, reason: 'pathname_missing' };
+  }
+  if (pathname.length > MAX_PATHNAME_LENGTH) {
+    return { ok: false, reason: 'pathname_too_long' };
+  }
+  // Compare against the compatibility-composed form, so a decorated
+  // separator cannot pass as "not a slash" here and become one later.
+  if (pathname.normalize('NFKC') !== pathname) {
+    return { ok: false, reason: 'pathname_not_normalized' };
+  }
+  if (!SAFE_PATHNAME_CHARS.test(pathname)) {
+    return { ok: false, reason: 'pathname_unsafe_characters' };
+  }
+
+  for (const segment of pathname.split('/')) {
+    if (segment === '' || segment === '.' || segment === '..') {
+      return { ok: false, reason: 'pathname_not_normalized' };
+    }
+  }
+
+  const prefix = expectedPrefix ?? familyReviewAssetPrefix(submissionId, kind);
+  if (!pathname.startsWith(prefix)) {
+    return { ok: false, reason: 'pathname_prefix_mismatch' };
+  }
+  const leaf = pathname.slice(prefix.length);
+  if (leaf.length === 0) {
+    return { ok: false, reason: 'pathname_prefix_mismatch' };
+  }
+  if (leaf.includes('/')) {
+    return { ok: false, reason: 'pathname_extra_nesting' };
+  }
+  if (!isSafeAssetId(assetId)) {
+    return { ok: false, reason: 'asset_id_unsafe' };
+  }
+  const extensionDot = leaf.lastIndexOf('.');
+  if (
+    extensionDot <= 0 ||
+    extensionDot === leaf.length - 1 ||
+    leaf.slice(0, extensionDot) !== assetId
+  ) {
+    return { ok: false, reason: 'pathname_leaf_mismatch' };
+  }
+  return { ok: true };
+}
+
+/**
+ * An asset pathname must live under its own submission's folder.
+ *
+ * The boolean face of bindPathnameToSubmission, kept so callers that
+ * only need a yes/no read straightforwardly.
+ */
+export function pathnameMatchesIdentity(
+  pathname: string,
+  submissionId: string,
+  kind: AssetKind,
+  assetId: string,
+  expectedPrefix?: string,
+): boolean {
+  return bindPathnameToSubmission(
+    pathname,
+    submissionId,
+    kind,
+    assetId,
+    expectedPrefix,
+  ).ok;
+}
+
+export interface PathnameBindingFailure {
+  kind: AssetKind;
+  assetId: string;
+  reason: PathnameBindingReason;
+}
+
+/**
+ * Every asset on a record whose address is not bound to that record.
+ *
+ * Pure, so the gate that runs BEFORE the first copy -- in dry run as
+ * well as in apply -- is the same function the tests exercise directly.
+ */
+export function recordPathnameBindingFailures(record: {
+  id: string;
+  photos: { assets: PhotoAsset[] };
+  samples: SampleAsset[];
+}): PathnameBindingFailure[] {
+  const failures: PathnameBindingFailure[] = [];
+  for (const identity of assetIdentitiesOf(record)) {
+    if (!isSafeAssetId(identity.assetId)) {
+      failures.push({
+        kind: identity.kind,
+        assetId: 'invalid_asset_id',
+        reason: 'asset_id_unsafe',
+      });
+      continue;
+    }
+    const verdict = bindPathnameToSubmission(
+      identity.pathname,
+      record.id,
+      identity.kind,
+      identity.assetId,
+    );
+    if (verdict.ok === false) {
+      failures.push({
+        kind: identity.kind,
+        assetId: identity.assetId,
+        reason: verdict.reason,
+      });
+    }
+  }
+  return failures;
 }
 
 /* -- Checkpoint revalidation (byte-level) -- */
@@ -797,21 +1275,6 @@ export type RevalidationReason =
 export type RevalidationVerdict =
   | { ok: true }
   | { ok: false; reason: RevalidationReason };
-
-/**
- * An asset pathname must live under its own submission's folder.
- *
- * Catches a state file whose top-level submissionId was edited to match
- * while its entries were spliced in from another submission.
- */
-export function pathnameMatchesIdentity(
-  pathname: string,
-  submissionId: string,
-  kind: AssetKind,
-): boolean {
-  const folder = kind === 'photo' ? 'photos' : 'samples';
-  return pathname.includes(`family-review/${folder}/${submissionId}/`);
-}
 
 /**
  * Re-prove one checkpointed asset against the CURRENT bytes on both
@@ -847,7 +1310,16 @@ export async function revalidateCheckpointedAsset(args: {
   if (!identitiesEqual(identity, entry)) {
     return { ok: false, reason: 'identity_mismatch' };
   }
-  if (!pathnameMatchesIdentity(identity.pathname, submissionId, identity.kind)) {
+  if (!isSafeAssetId(identity.assetId)) {
+    return { ok: false, reason: 'submission_binding_mismatch' };
+  }
+  const binding = bindPathnameToSubmission(
+    identity.pathname,
+    submissionId,
+    identity.kind,
+    identity.assetId,
+  );
+  if (binding.ok === false) {
     return { ok: false, reason: 'submission_binding_mismatch' };
   }
 
@@ -940,6 +1412,9 @@ export function reviseStateAfterRevalidation(
     recordFingerprint: state.recordFingerprint,
     assetsVerified: kept,
     recordWritten,
+    ...(recordWritten && state.recordUpdatedAt
+      ? { recordUpdatedAt: state.recordUpdatedAt }
+      : {}),
     ...(recordWritten && state.completedAt
       ? { completedAt: state.completedAt }
       : {}),
@@ -968,7 +1443,7 @@ export async function revalidateCheckpoints(args: {
   for (const entry of args.state.assetsVerified) {
     const identity = byKey.get(assetIdentityKey(entry));
     if (!identity) {
-      reasons.push('entry_not_on_record');
+      pushBoundedReason(reasons, 'entry_not_on_record');
       continue;
     }
     const verdict = await revalidateCheckpointedAsset({
@@ -980,7 +1455,7 @@ export async function revalidateCheckpoints(args: {
       maxBytes: args.maxBytes,
     });
     if (verdict.ok === false) {
-      reasons.push(verdict.reason);
+      pushBoundedReason(reasons, verdict.reason);
       continue;
     }
     kept.push(entry);
@@ -998,20 +1473,52 @@ export function cutoverStatePath(submissionId: string): string {
   return withBlobNamespace(`family-review/cutover/${submissionId}.json`);
 }
 
+export async function readBoundedTextStream(
+  stream: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) {
+        await reader.cancel('input_too_large');
+        throw new Error('json_too_large');
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return text;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export async function parseBoundedJsonStream(
+  stream: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<unknown> {
+  return JSON.parse(await readBoundedTextStream(stream, maxBytes));
+}
+
 async function readRawCutoverState(
   creds: Credentials,
   submissionId: string,
 ): Promise<unknown> {
-  try {
-    const result = await get(
-      cutoverStatePath(submissionId),
-      destGetOptions(creds.destToken),
-    );
-    if (!result || result.statusCode !== 200 || !result.stream) return null;
-    return JSON.parse(await new Response(result.stream).text());
-  } catch {
-    return null;
+  const result = await get(
+    cutoverStatePath(submissionId),
+    destGetOptions(creds.destToken),
+  );
+  if (result === null) return null;
+  if (result.statusCode !== 200 || !result.stream) {
+    throw new Error('checkpoint_read_failed');
   }
+  return parseBoundedJsonStream(result.stream, MAX_CUTOVER_JSON_BYTES);
 }
 
 async function writeCutoverState(
@@ -1026,6 +1533,27 @@ async function writeCutoverState(
     cacheControlMaxAge: 0,
     allowOverwrite: true,
   });
+}
+
+export async function persistCutoverStateOrFailure(
+  submissionId: unknown,
+  assetId: unknown,
+  kind: AssetKind | 'record',
+  writer: () => Promise<unknown>,
+): Promise<AssetOutcome | null> {
+  try {
+    const result = await writer();
+    if (result !== false) return null;
+  } catch {
+    // Provider details are deliberately collapsed to a fixed code.
+  }
+  return {
+    submissionId: safeSubmissionIdForOperatorOutput(submissionId),
+    assetId: kind === 'record' ? 'record' : safeAssetIdForOperatorOutput(assetId),
+    kind,
+    result: 'checkpoint_write_failed',
+    detail: 'cutover_state_write_failed',
+  };
 }
 
 /* -- Enumeration: SOURCE store only -- */
@@ -1073,8 +1601,24 @@ export async function collectPathnames(
   let cursor: string | undefined;
   for (let page = 0; page < maxPages; page += 1) {
     const res = await fetchPage(cursor);
+    if (
+      !res ||
+      !Array.isArray(res.blobs) ||
+      typeof res.hasMore !== 'boolean' ||
+      res.blobs.length > LIST_PAGE_SIZE ||
+      res.blobs.some(
+        (blob) =>
+          !blob ||
+          typeof blob.pathname !== 'string' ||
+          blob.pathname.length === 0 ||
+          blob.pathname.length > MAX_PATHNAME_LENGTH,
+      )
+    ) {
+      throw new EnumerationTruncatedError(page + 1, pathnames.length);
+    }
     for (const blob of res.blobs) pathnames.push(blob.pathname);
-    if (!res.hasMore || !res.cursor) return pathnames;
+    if (!res.hasMore) return pathnames;
+    if (!res.cursor) throw new EnumerationTruncatedError(page + 1, pathnames.length);
     cursor = res.cursor;
   }
   throw new EnumerationTruncatedError(maxPages, pathnames.length);
@@ -1096,7 +1640,9 @@ async function readSourceRecord(
   try {
     const result = await get(pathname, sourceGetOptions(creds.sourceToken));
     if (!result || result.statusCode !== 200 || !result.stream) return null;
-    return normalizeSubmissionRecord(JSON.parse(await new Response(result.stream).text()));
+    return normalizeSubmissionRecord(
+      await parseBoundedJsonStream(result.stream, MAX_RECORD_JSON_BYTES),
+    );
   } catch {
     return null;
   }
@@ -1139,8 +1685,31 @@ type CopyResult =
  */
 async function copyAssetStreaming(
   creds: Credentials,
+  submissionId: string,
   identity: AssetIdentity,
 ): Promise<CopyResult> {
+  // Re-prove the binding at the write site itself. migrateSubmission
+  // already gates the whole record on it, but this is the FIRST
+  // statement in the only function that reads a source object and
+  // issues a destination put -- so no future caller, and no reordering
+  // of the caller, can route a read or a write around the check.
+  if (!isSafeAssetId(identity.assetId)) {
+    return {
+      ok: false,
+      result: 'pathname_binding_rejected',
+      detail: 'asset_id_unsafe',
+    };
+  }
+  const binding = bindPathnameToSubmission(
+    identity.pathname,
+    submissionId,
+    identity.kind,
+    identity.assetId,
+  );
+  if (binding.ok === false) {
+    return { ok: false, result: 'pathname_binding_rejected', detail: binding.reason };
+  }
+
   let source: Awaited<ReturnType<typeof get>>;
   try {
     source = await get(identity.pathname, sourceGetOptions(creds.sourceToken));
@@ -1205,7 +1774,7 @@ async function copyAssetStreaming(
     return {
       ok: false,
       result: 'size_mismatch',
-      detail: `record says ${identity.size}, source streamed ${sourceStats.size}`,
+      detail: 'recorded_size_mismatch',
     };
   }
 
@@ -1283,15 +1852,204 @@ async function writeDestinationRecord(
   }
 }
 
+function expectedDestinationRecord(
+  source: FamilyReviewSubmission,
+  recordUpdatedAt: string,
+): FamilyReviewSubmission {
+  return {
+    ...source,
+    photos: {
+      ...source.photos,
+      assets: source.photos.assets.map((asset) => flipAssetToPrivate(asset)),
+    },
+    samples: source.samples.map((asset) => flipAssetToPrivate(asset)),
+    updatedAt: recordUpdatedAt,
+  };
+}
+
+export function destinationRecordMatchesSource(
+  destination: unknown,
+  source: FamilyReviewSubmission,
+  recordUpdatedAt: string = source.updatedAt,
+): boolean {
+  try {
+    return (
+      JSON.stringify(destination, null, 2) ===
+      buildPersistPlan(
+        expectedDestinationRecord(source, recordUpdatedAt),
+      ).submissionBody
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function verifyDestinationPersistence(
+  creds: Credentials,
+  source: FamilyReviewSubmission,
+  recordUpdatedAt: string,
+): Promise<boolean> {
+  const plan = buildPersistPlan(
+    expectedDestinationRecord(source, recordUpdatedAt),
+  );
+  if (!plan.indexPathname || !plan.indexBody) return false;
+  const recordResult = await get(
+    plan.submissionPathname,
+    destGetOptions(creds.destToken),
+  );
+  const indexResult = await get(
+    plan.indexPathname,
+    destGetOptions(creds.destToken),
+  );
+  if (
+    !recordResult ||
+    recordResult.statusCode !== 200 ||
+    !recordResult.stream ||
+    !indexResult ||
+    indexResult.statusCode !== 200 ||
+    !indexResult.stream
+  ) {
+    return false;
+  }
+  const [storedRecordBody, storedIndexBody] = await Promise.all([
+    readBoundedTextStream(recordResult.stream, MAX_RECORD_JSON_BYTES),
+    readBoundedTextStream(indexResult.stream, MAX_RECORD_JSON_BYTES),
+  ]);
+  return (
+    storedRecordBody === plan.submissionBody &&
+    storedIndexBody === plan.indexBody
+  );
+}
+
+/**
+ * Convert every destination record/index persistence failure into one bounded
+ * non-success outcome. The writer's error text is never returned or logged.
+ */
+export async function persistDestinationRecordOrFailure(
+  record: FamilyReviewSubmission,
+  writeRecord: () => Promise<{ ok: boolean; detail?: string }>,
+): Promise<AssetOutcome | null> {
+  try {
+    const written = await writeRecord();
+    if (written.ok) return null;
+  } catch {
+    // Collapse thrown adapter errors to the same bounded outcome.
+  }
+  return recordFailureOutcome(
+    record.id,
+    'record_write_failed',
+    'destination_record_write_failed',
+  );
+}
+
 /* -- Per-submission cutover -- */
+
+/** Refuse a whole record, including a record-level outcome when it has no assets. */
+function refuseRecord(
+  submissionId: unknown,
+  identities: AssetIdentity[],
+  result: AssetResult,
+  detailFor: (identity: AssetIdentity | null) => string,
+): AssetOutcome[] {
+  const safeSubmissionId = safeSubmissionIdForOperatorOutput(submissionId);
+  if (identities.length === 0) {
+    return [
+      {
+        submissionId: safeSubmissionId,
+        assetId: 'record',
+        kind: 'record',
+        result,
+        detail: detailFor(null),
+      },
+    ];
+  }
+  return identities.map((identity) => ({
+    submissionId: safeSubmissionId,
+    assetId: safeAssetIdForOperatorOutput(identity.assetId),
+    kind: identity.kind,
+    result,
+    detail: detailFor(identity),
+  }));
+}
 
 async function migrateSubmission(
   creds: Credentials,
   record: FamilyReviewSubmission,
   apply: boolean,
+  sourcePathname: string,
 ): Promise<AssetOutcome[]> {
   const outcomes: AssetOutcome[] = [];
+  if (!isMigrationRecordShaped(record)) {
+    return [
+      recordFailureOutcome(
+        (record as unknown as { id?: unknown })?.id,
+        'record_unreadable',
+        'source_record_malformed',
+      ),
+    ];
+  }
   const identities = assetIdentitiesOf(record);
+
+  // BEFORE ANYTHING ELSE, and in dry run exactly as in apply.
+  //
+  // Validate the record-controlled id before composing it into a pathname or
+  // returning it to operator output. Then prove the source record sits at the
+  // address that safe id derives. A planted record therefore cannot choose an
+  // arbitrary id, inject output, or bind another submission's assets.
+  const recordAddress = validateSubmissionAddress(sourcePathname, record.id);
+  if (recordAddress.ok === false) {
+    console.error(
+      `[migrate] refusing ${recordAddress.operatorSubmissionId}: ${recordAddress.reason}`,
+    );
+    return refuseRecord(
+      recordAddress.operatorSubmissionId,
+      identities,
+      'pathname_binding_rejected',
+      () => recordAddress.reason,
+    );
+  }
+
+  if (identities.length === 0) {
+    console.error(
+      `[migrate] refusing ${recordAddress.operatorSubmissionId}: empty_record_rejected`,
+    );
+    return [
+      recordFailureOutcome(
+        recordAddress.operatorSubmissionId,
+        'empty_record_rejected',
+        'empty_record_rejected',
+      ),
+    ];
+  }
+
+  // Every asset address must be proven to belong to THIS submission and
+  // THIS asset class before a single source byte is read or a single
+  // destination object is written. A dry run runs the same gate, so
+  // `would_migrate` never asserts path safety it did not check.
+  const bindingFailures = recordPathnameBindingFailures(record);
+  if (bindingFailures.length > 0) {
+    const reasonByKey = new Map(
+      bindingFailures.map((f) => [assetIdentityKey(f), f.reason] as const),
+    );
+    const classes = [...new Set(bindingFailures.map((f) => f.reason))].sort();
+    console.error(
+      `[migrate] refusing ${record.id}: asset pathname binding failed (${classes.join(', ')})`,
+    );
+    return refuseRecord(
+      record.id,
+      identities,
+      'pathname_binding_rejected',
+      (identity) =>
+        identity === null
+          ? 'record_refused'
+          : (reasonByKey.get(
+              assetIdentityKey({
+                kind: identity.kind,
+                assetId: safeAssetIdForOperatorOutput(identity.assetId),
+              }),
+            ) ?? 'record_refused'),
+    );
+  }
 
   // An ambiguous record is refused outright: with a duplicated identity
   // key there is no single object a checkpoint could describe.
@@ -1324,8 +2082,28 @@ async function migrateSubmission(
     return outcomes;
   }
 
-  const raw = await readRawCutoverState(creds, record.id);
+  let raw: unknown;
+  try {
+    raw = await readRawCutoverState(creds, record.id);
+  } catch {
+    return [
+      recordFailureOutcome(
+        record.id,
+        'checkpoint_read_failed',
+        'cutover_state_read_failed',
+      ),
+    ];
+  }
   const shape = validateCutoverState(raw, record);
+  if (checkpointStateRequiresRefusal(shape.reasons)) {
+    return [
+      recordFailureOutcome(
+        record.id,
+        'checkpoint_state_invalid',
+        'checkpoint_state_invalid',
+      ),
+    ];
+  }
   if (shape.reasons.length > 0) {
     // Counts and reason codes only -- never the state contents.
     console.warn(
@@ -1353,10 +2131,38 @@ async function migrateSubmission(
   }
   const state = revalidated.state;
 
-  // completedAt is honoured ONLY because BOTH gates just passed: shape
-  // validation re-derived the binding, and byte revalidation re-proved
-  // every asset against the current source and destination objects.
+  // Completion requires current destination record and token-index proof in
+  // addition to byte-valid assets. Missing, malformed, mismatched, or unreadable
+  // persistence cannot be treated as a successful resume.
   if (state.completedAt) {
+    if (!state.recordUpdatedAt) {
+      return [
+        recordFailureOutcome(
+          record.id,
+          'checkpoint_state_invalid',
+          'checkpoint_state_invalid',
+        ),
+      ];
+    }
+    let destinationVerified = false;
+    try {
+      destinationVerified = await verifyDestinationPersistence(
+        creds,
+        record,
+        state.recordUpdatedAt,
+      );
+    } catch {
+      destinationVerified = false;
+    }
+    if (!destinationVerified) {
+      return [
+        recordFailureOutcome(
+          record.id,
+          'destination_record_verify_failed',
+          'destination_record_or_index_unverified',
+        ),
+      ];
+    }
     for (const id of identities) {
       outcomes.push({
         submissionId: record.id,
@@ -1384,7 +2190,7 @@ async function migrateSubmission(
       continue;
     }
 
-    const copied = await copyAssetStreaming(creds, identity);
+    const copied = await copyAssetStreaming(creds, record.id, identity);
     if (copied.ok === false) {
       outcomes.push({
         submissionId: record.id,
@@ -1403,7 +2209,16 @@ async function migrateSubmission(
       ...state.assetsVerified.filter((v) => assetIdentityKey(v) !== key),
       { ...identity, sourceSha256: copied.sourceSha256 },
     ];
-    await writeCutoverState(creds, state);
+    const checkpointFailure = await persistCutoverStateOrFailure(
+      record.id,
+      identity.assetId,
+      identity.kind,
+      () => writeCutoverState(creds, state),
+    );
+    if (checkpointFailure) {
+      outcomes.push(checkpointFailure);
+      return outcomes;
+    }
 
     outcomes.push({
       submissionId: record.id,
@@ -1417,6 +2232,7 @@ async function migrateSubmission(
   // storage:'private' -- ONLY when every asset is verified there.
   if (!recordIsReady(identities, state)) return outcomes;
 
+  const recordUpdatedAt = new Date().toISOString();
   const next: FamilyReviewSubmission = {
     ...record,
     photos: {
@@ -1424,23 +2240,50 @@ async function migrateSubmission(
       assets: record.photos.assets.map(flipAssetToPrivate),
     },
     samples: record.samples.map(flipAssetToPrivate),
-    updatedAt: new Date().toISOString(),
+    updatedAt: recordUpdatedAt,
   };
 
-  const written = await writeDestinationRecord(creds, next);
-  if (!written.ok) {
+  const writeFailure = await persistDestinationRecordOrFailure(next, () =>
+    writeDestinationRecord(creds, next),
+  );
+  if (writeFailure) {
     console.error(
       `[migrate] destination record write FAILED for ${record.id} ` +
-        `(${written.detail ?? 'unknown'}). Assets are verified in the destination; ` +
+        'Assets are verified in the destination; ' +
         're-run to finish. No source object was touched.',
     );
+    outcomes.push(writeFailure);
     return outcomes;
   }
 
   state.recordWritten = true;
+  state.recordUpdatedAt = recordUpdatedAt;
   state.completedAt = new Date().toISOString();
-  await writeCutoverState(creds, state);
+  const completionFailure = await persistCutoverStateOrFailure(
+    record.id,
+    'record',
+    'record',
+    () => writeCutoverState(creds, state),
+  );
+  if (completionFailure) outcomes.push(completionFailure);
   return outcomes;
+}
+
+/**
+ * Read-only inspection boundary for tests and tooling. It exposes no
+ * credentials and hard-codes dry-run mode, so importing this module cannot
+ * bypass main()'s distinct-store and three-part apply authorization gates.
+ */
+export async function inspectSubmissionForMigration(
+  record: FamilyReviewSubmission,
+  sourcePathname: string,
+): Promise<AssetOutcome[]> {
+  return migrateSubmission(
+    { sourceToken: '', destToken: '', sourceStoreId: '', destStoreId: '' },
+    record,
+    false,
+    sourcePathname,
+  );
 }
 
 /* -- Main -- */
@@ -1450,7 +2293,7 @@ async function main(): Promise<void> {
   const destructive = destructiveFlag(argv);
   if (destructive) {
     console.error(
-      `REFUSED: ${destructive}\n` +
+      'REFUSED: destructive operation flag\n' +
         'Source deletion is NOT implemented in this utility and is a ' +
         'separate operation requiring its own authorization. This script ' +
         'only ever copies and verifies; it never deletes.',
@@ -1460,6 +2303,7 @@ async function main(): Promise<void> {
 
   const args = parseArgs(argv);
   const target = getBlobNamespace() || 'production';
+  if (!isSafeNamespace(target)) throw new Error('target_namespace_unsafe');
 
   // Credentials are validated BEFORE anything else, including in dry
   // run: a dry run that silently used one store for both sides would
@@ -1499,16 +2343,36 @@ async function main(): Promise<void> {
   let recordsUnreadable = 0;
 
   for (const pathname of pathnames) {
+    if (
+      args.submissionId !== null &&
+      pathname !== submissionPath(args.submissionId)
+    ) {
+      continue;
+    }
     if (args.limit !== null && recordsSeen >= args.limit) break;
+    recordsSeen += 1;
     const record = await readSourceRecord(creds, pathname);
     if (!record) {
       recordsUnreadable += 1;
+      outcomes.push(
+        recordFailureOutcome(
+          'unreadable_submission',
+          'record_unreadable',
+          'source_record_unreadable',
+        ),
+      );
       continue;
     }
-    if (args.submissionId && record.id !== args.submissionId) continue;
-    recordsSeen += 1;
-    outcomes.push(...(await migrateSubmission(creds, record, args.apply)));
+    outcomes.push(
+      ...(await migrateSubmission(creds, record, args.apply, pathname)),
+    );
   }
+
+  const missingRequestedRecord = requestedRecordMissingOutcome(
+    args.submissionId,
+    recordsSeen,
+  );
+  if (missingRequestedRecord) outcomes.push(missingRequestedRecord);
 
   // Aggregate, redacted reporting: opaque ids, store ids, and counts
   // only. Never a token, a URL, a pathname, or any parent/child PII.
@@ -1527,10 +2391,13 @@ async function main(): Promise<void> {
   );
   if (failures.length > 0) {
     console.log('\nfailed assets (opaque ids only):');
-    for (const f of failures) {
+    for (const f of failures.slice(0, MAX_FAILURE_LINES)) {
       console.log(
         `  ${f.submissionId} ${f.assetId} ${f.kind} ${f.result}${f.detail ? ` (${f.detail})` : ''}`,
       );
+    }
+    if (failures.length > MAX_FAILURE_LINES) {
+      console.log(`  ... ${failures.length - MAX_FAILURE_LINES} additional failures omitted`);
     }
     console.log('\nRe-run to resume. Nothing was deleted.');
     process.exit(1);
@@ -1543,10 +2410,8 @@ async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith('family-review-migrate-assets.ts')) {
   main().catch((err) => {
-    console.error(
-      '[migrate] fatal:',
-      redactTokens(err instanceof Error ? err.message : String(err)),
-    );
+    void err;
+    console.error('[migrate] fatal: internal_error');
     process.exit(1);
   });
 }
