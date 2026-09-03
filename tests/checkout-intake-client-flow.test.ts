@@ -497,6 +497,48 @@ test('a direct document upload uses document consent and the document slot, neve
   assert.equal(r.uploads, 1);
 });
 
+test('a direct empty-MIME document derives canonical MIME and stays in the document slot', async () => {
+  const r = rig();
+  const document = new File([new Uint8Array(23)], 'notes.docx', { type: '' });
+  const result = await prepareDirectIntakeSubmission({
+    enabled: true,
+    transport: r.transport,
+    heroPhoto: null,
+    familyPhotos: [],
+    guidedStills: [],
+    voice: null,
+    document: { file: document, consent: true, mimeType: document.type },
+  });
+
+  assert.ok(result);
+  const record = r.store.records.get(result.session.intakeId)!.record;
+  assert.equal(record.slots.document_inspiration!.active!.mimeType,
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  assert.equal(record.slots.voice_inspiration, undefined);
+});
+
+test('a contradictory direct document MIME and extension fails before reserve or upload', async () => {
+  const r = rig();
+  await assert.rejects(
+    prepareDirectIntakeSubmission({
+      enabled: true,
+      transport: r.transport,
+      heroPhoto: null,
+      familyPhotos: [],
+      guidedStills: [],
+      voice: null,
+      document: {
+        file: new File(['bad'], 'memory.mp3', { type: 'application/pdf' }),
+        consent: true,
+        mimeType: 'application/pdf',
+      },
+    }),
+    /document_type_invalid/,
+  );
+  assert.equal(r.reserves, 0);
+  assert.equal(r.uploads, 0);
+});
+
 test('one failed direct upload aborts preparation while leaving the caller file available for retry', async () => {
   const r = rig();
   const localFile = jpeg(33);

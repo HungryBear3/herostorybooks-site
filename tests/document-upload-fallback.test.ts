@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { buildUserPrompt } from '../src/lib/story-generator.ts';
+import { planStorybook } from '../src/lib/story-planner.ts';
+import {
+  buildPageProseUserPrompt,
+  buildUserPrompt,
+  generateStoryWithMeta,
+  getLockedPageProse,
+} from '../src/lib/story-generator.ts';
 import {
   createOrderRecord,
   documentExtensionForFile,
@@ -22,12 +28,20 @@ test('legacy checkout sends audio as voice and non-audio as document', () => {
 
 test('legacy order route parses and validates document independently from voice', () => {
   assert.match(route, /const explicitDocumentRaw = form\.get\('document'\)/);
-  assert.match(route, /const legacyDocumentInVoice = [\s\S]*?isDocumentInspirationFile\(attachmentRaw\)/);
-  assert.match(route, /const documentRaw = explicitDocumentRaw[\s\S]*?legacyDocumentInVoice/);
+  assert.match(route, /const attachmentClassification = [\s\S]*?classifyStoryAttachment\(attachmentRaw\)/);
+  assert.match(route, /const legacyDocumentInVoice = attachmentClassification\?\.kind === 'document'/);
+  assert.match(route, /const documentRaw = explicitDocumentClassification[\s\S]*?legacyDocumentInVoice/);
   assert.match(route, /document_consent_required/);
   assert.match(route, /document_invalid_type/);
   assert.match(route, /document_too_large/);
   assert.match(route, /MAX_DOCUMENT_BYTES/);
+});
+
+test('legacy route rejects contradictory or duplicate attachment lanes and null voice persistence', () => {
+  assert.match(route, /classifyStoryAttachment\(attachmentRaw\)/);
+  assert.match(route, /attachment_type_conflict/);
+  assert.match(route, /duplicate_document_attachment/);
+  assert.match(route, /if \(!uploadedVoice\) \{[\s\S]*?voice_persist_failed/);
 });
 
 test('legacy order route persists dedicated document metadata before Stripe', () => {
@@ -100,6 +114,37 @@ test('typed story crosses checkout, API, order storage, and admin as its own ful
   assert.equal(order.customStoryText, fullText);
   assert.equal(order.characterNotes, '');
   assert.match(buildUserPrompt(order), /Typed story source: x{1200}/);
+  const firstBeat = planStorybook(order, 24).pages[0]!;
+  assert.match(
+    buildPageProseUserPrompt(order, firstBeat, 24, null),
+    /CUSTOM STORY SOURCE: x{1200}/,
+  );
+  const lastBeat = planStorybook({ ...order, theme: 'brave-explorer' }, 24).pages[23]!;
+  assert.equal(getLockedPageProse({ ...order, theme: 'brave-explorer' }, lastBeat, 24), null);
+});
+
+test('typed Custom Story refuses generic template fallback when no model path is available', async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousFlag = process.env.HSB_ENABLE_OPENAI_STORY;
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.HSB_ENABLE_OPENAI_STORY;
+  try {
+    const order = createOrderRecord({
+      childName: 'Preview Hero',
+      bookFormat: 'digital',
+      email: 'preview@example.test',
+      customStoryText: 'A unique typed family memory.',
+    });
+    await assert.rejects(
+      () => generateStoryWithMeta(order),
+      /template fallback is disabled for typed custom stories/,
+    );
+  } finally {
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+    if (previousFlag === undefined) delete process.env.HSB_ENABLE_OPENAI_STORY;
+    else process.env.HSB_ENABLE_OPENAI_STORY = previousFlag;
+  }
 });
 
 test('custom story intake presents distinct honest source copy', () => {

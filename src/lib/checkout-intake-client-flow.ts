@@ -34,6 +34,7 @@ import {
   slotTicketIsCurrent,
   type IntakeClientState,
 } from './checkout-intake-client.ts';
+import { classifyStoryAttachment } from './story-attachment.ts';
 
 export type DirectIntakeCategory =
   | 'primary_hero_photo'
@@ -512,6 +513,18 @@ export async function prepareDirectIntakeSubmission(
   if (params.document && !params.document.consent) {
     throw new DirectIntakePreparationError('document_consent_required');
   }
+  const voiceClassification = params.voice
+    ? classifyStoryAttachment(params.voice.file as Blob & { name?: string })
+    : null;
+  if (voiceClassification && voiceClassification.kind !== 'audio') {
+    throw new DirectIntakePreparationError('voice_type_invalid');
+  }
+  const documentClassification = params.document
+    ? classifyStoryAttachment(params.document.file as Blob & { name?: string })
+    : null;
+  if (documentClassification && documentClassification.kind !== 'document') {
+    throw new DirectIntakePreparationError('document_type_invalid');
+  }
 
   const familyCharacterIds = [...(params.familyCharacterIds
     ?? params.familyPhotos.map((entry) => entry.familyCharacterId))];
@@ -573,7 +586,9 @@ export async function prepareDirectIntakeSubmission(
       { category: 'document_inspiration' },
       params.document.file,
       'story document',
-      params.document.mimeType,
+      documentClassification?.kind === 'document'
+        ? documentClassification.mimeType
+        : params.document.mimeType,
     );
   }
 

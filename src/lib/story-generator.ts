@@ -229,6 +229,9 @@ function customStoryGenerationGate(order: OrderRecord): void {
 }
 
 function assertTemplateFallbackAllowed(order: OrderRecord): void {
+  if (sanitizeInput(order.customStoryText, 1200)) {
+    throw new Error('template fallback is disabled for typed custom stories; route to manual_queue');
+  }
   if (hasCustomStoryBrief(order)) {
     throw new Error('template fallback is disabled for custom-story briefs; route to manual_queue');
   }
@@ -586,6 +589,12 @@ export function voiceInspirationBlock(order: OrderRecord): string {
   );
 }
 
+export function customStorySourceBlock(order: OrderRecord): string {
+  const source = sanitizeInput(order.customStoryText, 1200);
+  if (!source) return '';
+  return `CUSTOM STORY SOURCE: ${source}\nUse this source to shape the actual events, relationships, emotional arc, and details on this page. Do not replace it with a generic theme story, and do not invent facts that contradict it.`;
+}
+
 export function familyCharactersBlock(order: OrderRecord): string {
   const characters = Array.isArray(order.familyCharacters)
     ? order.familyCharacters
@@ -714,6 +723,7 @@ function buildPageSpecificInstruction(beat: StoryPlanPage, pageCount: number): s
 }
 
 export function getLockedPageProse(order: OrderRecord, beat: StoryPlanPage, pageCount: number): string | null {
+  if (sanitizeInput(order.customStoryText, 1200)) return null;
   // The locked prose is a child-specific sample ("Lukas ... his family"). Never
   // emit it for a non-child hero — an adult hero would be misframed as a child.
   if (isNonChildPrimaryHero(order)) return null;
@@ -745,6 +755,7 @@ export function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage
       ? `PROTAGONIST IDENTITY: the hero is a grown adult (${heroDescriptor(order)}); write the hero at their real adult age and do not reduce their apparent age or infantilize them. Any child or grandchild is the audience or a supporting character, not the protagonist.`
       : null,
     special,
+    customStorySourceBlock(order).trim() || null,
     // Additive + bounded: empty string when there's no voice inspiration, so
     // existing prompts are unchanged. filter(Boolean) drops the '' case.
     voiceInspirationBlock(order).trim() || null,

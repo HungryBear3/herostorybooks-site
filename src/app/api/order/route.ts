@@ -46,6 +46,7 @@ import {
 } from '@/lib/checkout-direct-order';
 import { createVercelIntakeStore } from '@/lib/checkout-intake';
 import { checkoutRequestFingerprint } from '@/lib/checkout-request-fingerprint';
+import { classifyStoryAttachment } from '@/lib/story-attachment';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -60,8 +61,6 @@ function envFlag(name: string): boolean {
   return value === 'true' || value === '"true"';
 }
 
-const AUDIO_EXT_RE = /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i;
-const INSPIRATION_DOC_EXT_RE = /\.(txt|pdf|doc|docx)$/i;
 const PRIMARY_HERO_TYPES = new Set(['child', 'parent', 'grandparent']);
 const PRIMARY_HERO_BETA_ENABLED = envFlag('HSB_PRIMARY_HERO_BETA') || envFlag('NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA');
 const CUSTOM_STORY_PAID_BETA_ENABLED = envFlag('HSB_CUSTOM_STORY_PAID_BETA') || envFlag('NEXT_PUBLIC_HSB_CUSTOM_STORY_PAID_BETA');
@@ -74,18 +73,6 @@ function parseCustomStoryBrief(raw: FormDataEntryValue | null): CustomStoryBrief
   } catch {
     throw new Error('custom_story_brief_invalid_json');
   }
-}
-
-function isAudioInspirationFile(file: File): boolean {
-  if (file.type && file.type.startsWith('audio/')) return true;
-  if (file.name && AUDIO_EXT_RE.test(file.name)) return true;
-  return false;
-}
-
-function isDocumentInspirationFile(file: File): boolean {
-  if (['text/plain', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type)) return true;
-  if (file.name && INSPIRATION_DOC_EXT_RE.test(file.name)) return true;
-  return false;
 }
 
 function getReturnBaseUrl(request: Request): string {
@@ -202,14 +189,33 @@ export async function POST(request: Request) {
 
     const attachmentRaw = form.get('voice');
     const explicitDocumentRaw = form.get('document');
-    // Older open checkout tabs may still post a document under `voice`. Migrate
-    // that shape into the document lane rather than losing or mislabeling it.
-    const legacyDocumentInVoice = attachmentRaw instanceof File
-      && attachmentRaw.size > 0
-      && !isAudioInspirationFile(attachmentRaw)
-      && isDocumentInspirationFile(attachmentRaw);
-    const voiceRaw = legacyDocumentInVoice ? null : attachmentRaw;
-    const documentRaw = explicitDocumentRaw instanceof File && explicitDocumentRaw.size > 0
+    const attachmentClassification = attachmentRaw instanceof File && attachmentRaw.size > 0
+      ? classifyStoryAttachment(attachmentRaw)
+      : null;
+    const explicitDocumentClassification = explicitDocumentRaw instanceof File && explicitDocumentRaw.size > 0
+      ? classifyStoryAttachment(explicitDocumentRaw)
+      : null;
+    if (attachmentClassification?.kind === 'invalid') {
+      return NextResponse.json(
+        { error: 'The story attachment type does not match its filename. No charge was made.', code: 'attachment_type_conflict' },
+        { status: 400 },
+      );
+    }
+    if (explicitDocumentClassification && explicitDocumentClassification.kind !== 'document') {
+      return NextResponse.json(
+        { error: 'Story document must be a coherent text, PDF, or Word file. No charge was made.', code: 'document_invalid_type' },
+        { status: 400 },
+      );
+    }
+    const legacyDocumentInVoice = attachmentClassification?.kind === 'document';
+    if (legacyDocumentInVoice && explicitDocumentClassification?.kind === 'document') {
+      return NextResponse.json(
+        { error: 'Attach only one written story file. No charge was made.', code: 'duplicate_document_attachment' },
+        { status: 400 },
+      );
+    }
+    const voiceRaw = attachmentClassification?.kind === 'audio' ? attachmentRaw : null;
+    const documentRaw = explicitDocumentClassification?.kind === 'document'
       ? explicitDocumentRaw
       : legacyDocumentInVoice
         ? attachmentRaw
@@ -238,7 +244,7 @@ export async function POST(request: Request) {
       }
 
       const voiceFile = voiceRaw as File;
-      if (!isAudioInspirationFile(voiceFile)) {
+      if (classifyStoryAttachment(voiceFile).kind !== 'audio') {
         return NextResponse.json(
           { error: 'Voice attachment must be an accepted audio file.', code: 'voice_invalid_type' },
           { status: 400 },
@@ -264,7 +270,7 @@ export async function POST(request: Request) {
         );
       }
       const documentFile = documentRaw as File;
-      if (!isDocumentInspirationFile(documentFile)) {
+      if (classifyStoryAttachment(documentFile).kind !== 'document') {
         return NextResponse.json(
           { error: 'Story document must be a text, PDF, or Word file.', code: 'document_invalid_type' },
           { status: 400 },
@@ -645,12 +651,16 @@ export async function POST(request: Request) {
           voiceRaw as File,
           draftOrder.checkoutLeaseId ?? undefined,
         );
-        if (uploadedVoice) {
-          voiceBlobPath = uploadedVoice.pathname;
-          voiceBlobUrl = uploadedVoice.url;
-          voiceConsentAt = new Date().toISOString();
-          uploadedMediaPaths.push(uploadedVoice.pathname);
+        if (!uploadedVoice) {
+          throw new OrderPersistenceError(
+            draftOrder.id,
+            'Customer voice upload returned no durable reference',
+          );
         }
+        voiceBlobPath = uploadedVoice.pathname;
+        voiceBlobUrl = uploadedVoice.url;
+        voiceConsentAt = new Date().toISOString();
+        uploadedMediaPaths.push(uploadedVoice.pathname);
       } catch (error) {
         // Match the photo path: an OrderPersistenceError on voice persistence
         // must abort BEFORE Stripe, so no customer pays for an order whose

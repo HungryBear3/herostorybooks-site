@@ -19,6 +19,7 @@ import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts
 import { finalizationFingerprint, parseSelectionEntry, type FinalizedSelectionEntry } from './checkout-intake.ts';
 import { validateOrderPhotoFile } from './photo-file-validation.ts';
 import { PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
+import { classifyStoryAttachment } from './story-attachment.ts';
 export type { FulfillmentStatus, LayoutVersion, PageTextLayout, VoiceTranscriptMeta };
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
@@ -1229,32 +1230,13 @@ export interface UploadedVoiceRef {
   url: string;
 }
 
-function voiceExtForMime(mime: string): string {
-  const normalized = mime.split(';')[0]?.trim().toLowerCase() ?? '';
-  if (normalized === 'audio/webm') return 'webm';
-  if (normalized === 'audio/ogg') return 'ogg';
-  if (normalized === 'audio/mp4' || normalized === 'audio/x-m4a') return 'm4a';
-  if (normalized === 'audio/aac') return 'aac';
-  if (normalized === 'audio/mpeg' || normalized === 'audio/mp3') return 'mp3';
-  if (normalized === 'audio/wav' || normalized === 'audio/x-wav') return 'wav';
-  if (normalized === 'text/plain') return 'txt';
-  if (normalized === 'application/pdf') return 'pdf';
-  if (normalized === 'application/msword') return 'doc';
-  if (normalized === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
-  return 'bin';
-}
-
 /** Derive only an allowlisted extension; the original name is never persisted. */
 export function documentExtensionForFile(file: Pick<File, 'type' | 'name'>): 'txt' | 'pdf' | 'doc' | 'docx' {
-  const mimeExtension = voiceExtForMime(file.type);
-  if (mimeExtension === 'txt' || mimeExtension === 'pdf' || mimeExtension === 'doc' || mimeExtension === 'docx') {
-    return mimeExtension;
+  const classification = classifyStoryAttachment(file);
+  if (classification.kind === 'document') {
+    return classification.extension as 'txt' | 'pdf' | 'doc' | 'docx';
   }
-  const extension = /\.([^.]+)$/.exec(file.name || '')?.[1]?.toLowerCase();
-  if (extension === 'txt' || extension === 'pdf' || extension === 'doc' || extension === 'docx') {
-    return extension;
-  }
-  throw new Error('Unsupported customer document extension');
+  throw new Error('Unsupported or contradictory customer document type');
 }
 
 /**
@@ -1266,6 +1248,10 @@ export async function uploadOrderVoice(
   file: File,
   checkoutLeaseId?: string,
 ): Promise<UploadedVoiceRef | null> {
+  const classification = classifyStoryAttachment(file);
+  if (classification.kind !== 'audio') {
+    throw new OrderPersistenceError(orderId, 'Unsupported or contradictory customer voice upload type');
+  }
   const token = getBlobToken();
 
   if (typeof file.arrayBuffer !== 'function') {
@@ -1288,7 +1274,7 @@ export async function uploadOrderVoice(
   // Never derive durable identifiers from the caller-controlled filename.
   const assetId = crypto.randomBytes(12).toString('base64url');
   const scope = checkoutMediaScope(checkoutLeaseId);
-  const pathname = withBlobNamespace(`orders/${orderId}/${scope}voice-${assetId}.${voiceExtForMime(file.type)}`);
+  const pathname = withBlobNamespace(`orders/${orderId}/${scope}voice-${assetId}.${classification.extension}`);
   const buffer = Buffer.from(await file.arrayBuffer());
 
   try {
@@ -1296,7 +1282,7 @@ export async function uploadOrderVoice(
       access: getBlobAccessMode(),
       allowOverwrite: true,
       addRandomSuffix: false,
-      contentType: file.type || 'application/octet-stream',
+      contentType: classification.mimeType,
       token,
     });
     return { pathname: blob.pathname, url: blob.url };
@@ -1326,16 +1312,9 @@ export async function uploadOrderDocument(
   file: File,
   checkoutLeaseId?: string,
 ): Promise<UploadedVoiceRef | null> {
-  const mimeType = (file.type || '').toLowerCase().split(';', 1)[0].trim();
-  const acceptedMimeTypes = new Set([
-    'text/plain',
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  ]);
-  const acceptedExtension = /\.(txt|pdf|doc|docx)$/i.test(file.name || '');
-  if (!acceptedMimeTypes.has(mimeType) && !(mimeType === '' && acceptedExtension)) {
-    throw new OrderPersistenceError(orderId, 'Unsupported customer document upload type');
+  const classification = classifyStoryAttachment(file);
+  if (classification.kind !== 'document') {
+    throw new OrderPersistenceError(orderId, 'Unsupported or contradictory customer document upload type');
   }
   if (file.size > MAX_DOCUMENT_BYTES) {
     throw new OrderPersistenceError(orderId, 'Customer document upload exceeds the size limit');
@@ -1367,7 +1346,7 @@ export async function uploadOrderDocument(
       access: getBlobAccessMode(),
       allowOverwrite: true,
       addRandomSuffix: false,
-      contentType: file.type || 'application/octet-stream',
+      contentType: classification.mimeType,
       token,
     });
     return { pathname: blob.pathname, url: blob.url };

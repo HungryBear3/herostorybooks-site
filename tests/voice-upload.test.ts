@@ -36,6 +36,7 @@ import {
   updateOrderStatus,
   uploadOrderVoice,
 } from '../src/lib/orders.ts';
+import { classifyStoryAttachment } from '../src/lib/story-attachment.ts';
 
 function withEnv<T>(env: Record<string, string | undefined>, fn: () => Promise<T> | T): Promise<T> {
   const previous: Record<string, string | undefined> = {};
@@ -246,10 +247,11 @@ test('uploadOrderVoice uses a random asset id and never reads file.name', () => 
 });
 
 test('raw AAC uses an .aac extension rather than an M4A container extension', () => {
-  assert.match(
-    stripComments(ORDERS_SRC),
-    /normalized === ['"]audio\/aac['"]\) return ['"]aac['"]/,
-  );
+  assert.deepEqual(classifyStoryAttachment(makeAudioFile('voice.aac', 'audio/aac')), {
+    kind: 'audio',
+    mimeType: 'audio/aac',
+    extension: 'aac',
+  });
 });
 
 // ── /api/order route source contract (static grep) ──────────────────────────
