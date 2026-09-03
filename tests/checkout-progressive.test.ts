@@ -264,6 +264,16 @@ test('forward navigation is locked at the first incomplete step while completed 
   assert.equal(canNavigateToCheckoutStep(appearance.steps, 'story'), false);
 });
 
+test('checkout source includes a bottom next-section action for long steps', () => {
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="checkout-bottom-continue"/);
+  assert.match(CHECKOUT_FORM_SRC, /Continue to \{nextStep\.title\}/);
+  assert.match(CHECKOUT_FORM_SRC, /focus-visible:ring-\[#241914\]/);
+  assert.match(
+    CHECKOUT_FORM_SRC,
+    /data-testid="checkout-bottom-continue"[\s\S]*?type="button"[\s\S]*?onClick=\{continueCurrentStep\}/,
+  );
+});
+
 test('checkout source includes progressive step UI and sequential person editor affordances', () => {
   assert.match(CHECKOUT_FORM_SRC, /Step \{currentStepIndex \+ 1\} of \{checkoutSteps.length\}/);
   assert.match(CHECKOUT_FORM_SRC, /Save person/);

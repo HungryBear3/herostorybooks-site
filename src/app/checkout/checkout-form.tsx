@@ -727,6 +727,7 @@ export function CheckoutForm() {
   const checkoutSteps = checkoutProgress.steps;
   const currentStep = checkoutSteps.find((step) => step.id === currentStepId) ?? checkoutSteps[0];
   const currentStepIndex = checkoutSteps.findIndex((step) => step.id === currentStep.id);
+  const nextStep = checkoutSteps[currentStepIndex + 1];
   const paymentBlockers = getCheckoutPaymentBlockers({
     theme: form.theme,
     childName: form.childName,
@@ -807,12 +808,11 @@ export function CheckoutForm() {
 
     setStepError(null);
     setFieldErrors({});
-    const nextStep = checkoutSteps[currentStepIndex + 1];
     if (nextStep) {
       setCurrentStepId(nextStep.id);
       scrollToField(null, nextStep.id);
     }
-  }, [checkoutSteps, currentStep, currentStepIndex, scrollToField]);
+  }, [currentStep, nextStep, scrollToField]);
 
   const processPhoto = useCallback(async (file: File) => {
     const operation = ++heroPhotoOperationRef.current;
@@ -2586,6 +2586,19 @@ export function CheckoutForm() {
               )}
 
             </section>
+
+            {nextStep && (
+              <div className="rounded-[1.5rem] border border-[#d8c6a2] bg-[#fff8ec] p-4 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)]">
+                <button
+                  data-testid="checkout-bottom-continue"
+                  type="button"
+                  onClick={continueCurrentStep}
+                  className="w-full rounded-2xl bg-[#241914] px-5 py-4 text-base font-bold text-[#fff8ec] shadow-md transition hover:bg-[#3a2b23] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#241914] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fff8ec]"
+                >
+                  Continue to {nextStep.title}
+                </button>
+              </div>
+            )}
 
           </div>
 
