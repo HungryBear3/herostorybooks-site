@@ -497,6 +497,26 @@ test('a direct document upload uses document consent and the document slot, neve
   assert.equal(r.uploads, 1);
 });
 
+test('a direct empty-MIME audio upload derives canonical MIME and completes the voice slot', async () => {
+  const r = rig();
+  const voice = new File([new Uint8Array(23)], 'memory.mp3', { type: '' });
+  const result = await prepareDirectIntakeSubmission({
+    enabled: true,
+    transport: r.transport,
+    heroPhoto: null,
+    familyPhotos: [],
+    guidedStills: [],
+    voice: { file: voice, source: 'uploaded', consent: true, mimeType: voice.type },
+    document: null,
+  });
+
+  assert.ok(result);
+  const record = r.store.records.get(result.session.intakeId)!.record;
+  assert.equal(record.slots.voice_inspiration!.active!.mimeType, 'audio/mpeg');
+  assert.ok(result.selection.voiceAssetId);
+  assert.equal(record.slots.document_inspiration, undefined);
+});
+
 test('a direct empty-MIME document derives canonical MIME and stays in the document slot', async () => {
   const r = rig();
   const document = new File([new Uint8Array(23)], 'notes.docx', { type: '' });

@@ -87,6 +87,26 @@ test('desktop header Continue uses the same owner-facing destination label', asy
   );
 });
 
+test('switching from Custom Story to a ready-made adventure clears abandoned private source material', async ({ page, baseURL }) => {
+  const harness = await installHandoffHarness(page, baseURL!);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/checkout');
+  await page.getByRole('button', { name: /Custom Story/ }).click();
+  await page.getByLabel('Type the memory or story idea').fill('Private source that must not survive the switch.');
+  await page.getByLabel('Upload document').setInputFiles({
+    name: 'private-notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('private notes'),
+  });
+
+  await page.getByRole('button', { name: 'Choose a ready-made adventure instead' }).click();
+  await expect(page.getByTestId('custom-story-intake-panel')).toHaveCount(0);
+  await page.getByRole('button', { name: /Custom Story/ }).click();
+  await expect(page.getByLabel('Type the memory or story idea')).toHaveValue('');
+  await expect(page.getByText('private-notes.txt')).toHaveCount(0);
+  expect(harness.orderRequests).toHaveLength(0);
+});
+
 test('Custom Story immediately reveals written, recording, audio, and document paths', async ({ page, baseURL }) => {
   const harness = await installHandoffHarness(page, baseURL!);
   await page.setViewportSize({ width: 390, height: 844 });

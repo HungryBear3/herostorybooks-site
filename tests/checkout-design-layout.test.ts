@@ -49,6 +49,17 @@ test('main photo intake leads with recommended upload and keeps description as t
   assert.doesNotMatch(checkoutFormSource, /Drag &amp; drop · JPG\/PNG\/WebP\/HEIC/);
 });
 
+test('checkout direct-media consent explicitly covers uploaded documents', () => {
+  assert.match(
+    checkoutFormSource,
+    /I have permission to provide these photos, recordings, or documents and authorize/,
+  );
+  assert.doesNotMatch(
+    checkoutFormSource,
+    /I have permission to provide these photos or recordings and authorize/,
+  );
+});
+
 test('CD/Cowork checkout polish avoids contradictory or nervous copy', () => {
   assert.match(checkoutFormSource, /Only a few things are required to start/);
   assert.match(checkoutFormSource, /story direction/);

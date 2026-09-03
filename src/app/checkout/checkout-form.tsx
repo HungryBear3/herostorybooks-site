@@ -1512,7 +1512,22 @@ export function CheckoutForm() {
               ) : (
                 <button
                   type="button"
-                  onClick={() => set("theme", "")}
+                  onClick={() => {
+                    if (form.voicePreviewUrl?.startsWith("blob:")) {
+                      URL.revokeObjectURL(form.voicePreviewUrl);
+                    }
+                    intakeSessionRef.current = null;
+                    setForm((prev) => ({
+                      ...prev,
+                      theme: "",
+                      customStoryMemory: "",
+                      customStorySourceMode: "",
+                      voiceFile: null,
+                      voicePreviewUrl: null,
+                      voiceSource: null,
+                      voiceConsent: false,
+                    }));
+                  }}
                   className="w-full rounded-2xl border border-[#b8aa90] bg-[#fffaf1] px-4 py-3 text-sm font-semibold text-[#241914] underline decoration-[#a64c4c]/50 underline-offset-4"
                 >
                   Choose a ready-made adventure instead
@@ -2852,7 +2867,7 @@ export function CheckoutForm() {
                     className="mt-1 h-4 w-4 accent-deep-gold"
                   />
                   <span>
-                    I have permission to provide these photos or recordings and authorize
+                    I have permission to provide these photos, recordings, or documents and authorize
                     Hero Story Books to save them privately for this order and proof review.
                   </span>
                 </label>

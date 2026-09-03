@@ -578,7 +578,9 @@ export async function prepareDirectIntakeSubmission(
       { category: 'voice_inspiration' },
       params.voice.file,
       'voice note',
-      params.voice.mimeType,
+      voiceClassification?.kind === 'audio'
+        ? voiceClassification.mimeType
+        : params.voice.mimeType,
     );
   }
   if (params.document) {
