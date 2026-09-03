@@ -1157,8 +1157,8 @@ const MUTATE_ATTEMPTS = 5;
  *
  * WHY THIS EXISTS
  * ----------------
- * Incident `intake_9ca274951cc0f113fbb7a355068caf00`: a completion callback
- * and the browser's resolve/final-intake reconciliation both hit
+ * A Preview checkout incident showed a completion callback and the browser's
+ * resolve/final-intake reconciliation both hitting
  * `intake_write_conflict` within the same short window, and the durable slot
  * was left with the upload never activated. Root cause: this loop used to
  * re-read on every attempt with NO delay between them, so all five attempts

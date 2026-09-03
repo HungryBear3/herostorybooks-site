@@ -1,5 +1,5 @@
 /*
- * Regression for the PR #165 Preview incident (intake_9ca274951cc0f113fbb7a355068caf00):
+ * Regression for the PR #165 Preview intake incident:
  * a synthetic Digital checkout uploaded its hero photo successfully — the
  * private object landed — but the Vercel completion callback and the
  * browser's resolve/final-intake reconciliation both came back
@@ -31,7 +31,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createIntake, type IntakeStoreSnapshot } from '../src/lib/checkout-intake.ts';
+import {
+  createIntake,
+  refreshIntakeConsent,
+  type IntakeStoreSnapshot,
+} from '../src/lib/checkout-intake.ts';
 import { completeSlotUpload, reserveSlotUpload, resolveSlotUpload } from '../src/lib/checkout-intake-upload.ts';
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
 
@@ -48,6 +52,75 @@ function fastForwardWait(store: MemoryIntakeStore) {
     store.advanceSimulatedClock(delayMs);
   };
 }
+
+test('production completion waits, rereads a newer pending record, and reapplies activation', async () => {
+  const store = createMemoryIntakeStore();
+  const session = await newIntake(store);
+
+  const reservation = await reserveSlotUpload(store, {
+    intakeId: session.intakeId,
+    capability: session.capability,
+    slot: HERO,
+    mimeType: 'image/jpeg',
+    size: 1024,
+  });
+  const etag = `etag-${reservation.assetId}`;
+  store.putAsset({ pathname: reservation.pathname, mimeType: 'image/jpeg', size: 1024, etag });
+
+  // This is the pending snapshot the completion request initially sees.
+  const stalePending: IntakeStoreSnapshot = (await store.read(session.intakeId))!;
+
+  // A different request wins an unrelated intake mutation. The hero slot is
+  // still pending, but its prior ETag can no longer win CAS.
+  await refreshIntakeConsent(
+    store,
+    {
+      intakeId: session.intakeId,
+      capability: session.capability,
+      consent: { documentAuthorizedAt: '2026-09-02T12:00:01.000Z' },
+    },
+    new Date('2026-09-02T12:00:01.000Z'),
+  );
+  const unrelatedWinner = store.records.get(session.intakeId)!.record;
+  assert.ok(unrelatedWinner.consent.documentAuthorizedAt);
+  assert.equal(unrelatedWinner.slots[HERO.category]!.pending?.assetId, reservation.assetId);
+  assert.equal(unrelatedWinner.slots[HERO.category]!.active, null);
+
+  // The completion request sees the old pending ETag until 60 ms of the real
+  // production retry schedule has elapsed. Patch only the platform timer so
+  // the test remains deterministic; do NOT inject MutateIntakeIo here. This
+  // exercises completeSlotUpload's production/default composition.
+  store.armStaleReads(session.intakeId, stalePending, 60);
+  store.casAttempts = 0;
+  const delays: number[] = [];
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    const normalizedDelay = Number(delay ?? 0);
+    delays.push(normalizedDelay);
+    store.advanceSimulatedClock(normalizedDelay);
+    callback(...args);
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+
+  try {
+    const callback = await completeSlotUpload(store, {
+      tokenPayload: reservation.tokenPayload,
+      blob: { pathname: reservation.pathname, contentType: 'image/jpeg', size: 1024, etag },
+    });
+    assert.equal(callback.status, 'activated');
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+
+  assert.deepEqual(delays, [20, 40]);
+  assert.equal(store.casAttempts, 3);
+
+  const record = store.records.get(session.intakeId)!.record;
+  assert.ok(record.consent.documentAuthorizedAt, 'the unrelated winning mutation is preserved');
+  assert.equal(record.slots[HERO.category]!.active?.assetId, reservation.assetId);
+  assert.equal(record.slots[HERO.category]!.pending, null);
+  assert.equal(record.superseded.length, 0);
+});
 
 test('a completion that already landed converges after a lagging cross-request read, instead of exhausting', async () => {
   const store = createMemoryIntakeStore();
