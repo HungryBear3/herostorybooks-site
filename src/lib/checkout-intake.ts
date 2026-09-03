@@ -284,7 +284,7 @@ const DOCUMENT_MIME_TYPES = [
 export const INTAKE_CATEGORY_POLICY: Readonly<Record<IntakeAssetCategory, CategoryPolicy>> = {
   primary_hero_photo: { maxSlots: 1, maxBytes: 15 * 1024 * 1024, allowedMimeTypes: IMAGE_MIME_TYPES },
   family_pet_reference: { maxSlots: 4, maxBytes: 15 * 1024 * 1024, allowedMimeTypes: IMAGE_MIME_TYPES },
-  guided_still: { maxSlots: 3, maxBytes: 15 * 1024 * 1024, allowedMimeTypes: IMAGE_MIME_TYPES },
+  guided_still: { maxSlots: 5, maxBytes: 15 * 1024 * 1024, allowedMimeTypes: IMAGE_MIME_TYPES },
   voice_inspiration: {
     maxSlots: 1,
     maxBytes: 15 * 1024 * 1024,

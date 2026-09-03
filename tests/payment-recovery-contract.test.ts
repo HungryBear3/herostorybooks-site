@@ -27,6 +27,7 @@ async function withEnv<T>(env: Record<string, string | undefined>, fn: () => Pro
 test('checkout source uses stable attempt identity and Stripe idempotency before URL release', () => {
   const route = readFileSync('src/app/api/order/route.ts', 'utf8');
   const client = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  const fingerprint = readFileSync('src/lib/checkout-request-fingerprint.ts', 'utf8');
   assert.match(client, /sessionStorage\.getItem\(attemptStorageKey\)/);
   assert.match(client, /payload\.set\("checkoutAttemptId", checkoutAttemptId\)/);
   // The hand-off itself moved out of an inline `setTimeout` and into
@@ -43,8 +44,8 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   assert.ok(navigateAt >= 0 && clearAttemptAt > navigateAt);
   assert.match(route, /createHash\('sha256'\)\.update\(checkoutAttemptId\)/);
   assert.match(route, /persistOrResumeCheckoutOrder\(draftOrder\)/);
-  assert.match(route, /checkoutFingerprint\(form\)/);
-  assert.match(route, /value\.arrayBuffer\(\)/);
+  assert.match(route, /checkoutRequestFingerprint\(form\)/);
+  assert.match(fingerprint, /value\.arrayBuffer\(\)/);
   assert.match(route, /current\.checkoutLeaseId !== draftOrder\.checkoutLeaseId/);
   assert.match(route, /uploadOrderPhoto\(draftOrder\.id, photo, draftOrder\.checkoutLeaseId/);
   assert.match(route, /uploadOrderSupportingPhoto\([\s\S]*draftOrder\.checkoutLeaseId/);

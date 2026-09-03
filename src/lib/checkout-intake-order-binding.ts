@@ -198,9 +198,16 @@ function prepareOrder(
 /** Normalize exact pre-Stripe reconciliation while permitting only lease retry evidence. */
 function preStripeComparableOrder(order: OrderRecord): unknown {
   const comparable = JSON.parse(JSON.stringify(order)) as Record<string, unknown>;
+  delete comparable.createdAt;
   delete comparable.updatedAt;
   delete comparable.checkoutLeaseId;
   delete comparable.checkoutLeaseExpiresAt;
+  return comparable;
+}
+
+function boundSessionComparableOrder(order: OrderRecord): unknown {
+  const comparable = preStripeComparableOrder(order) as Record<string, unknown>;
+  delete comparable.stripeSessionId;
   return comparable;
 }
 
@@ -221,6 +228,30 @@ export function exactIntakeBoundOrder(actual: OrderRecord, expected: OrderRecord
     && (actual.stripePaymentIntentId ?? null) === null
     && (expected.stripePaymentIntentId ?? null) === null
     && same(preStripeComparableOrder(actual), preStripeComparableOrder(expected));
+}
+
+/**
+ * Exact immutable-order match for an attempt whose Checkout Session was
+ * already durably bound. The session id itself is verified against Stripe by
+ * the outer saga before any URL is released.
+ */
+export function exactIntakeBoundSessionOrder(actual: OrderRecord, expected: OrderRecord): boolean {
+  const expectedDigest = expected.checkoutIntake?.orderContractDigest;
+  return typeof expectedDigest === 'string'
+    && /^[a-f0-9]{64}$/.test(expectedDigest)
+    && actual.checkoutIntake?.orderContractDigest === expectedDigest
+    && checkoutIntakeOrderContractDigest(expected) === expectedDigest
+    && checkoutIntakeOrderContractDigest(actual) === expectedDigest
+    && actual.checkoutIntakeMediaRetention?.status === 'active'
+    && expected.checkoutIntakeMediaRetention?.status === 'active'
+    && actual.paymentStatus === 'pending'
+    && expected.paymentStatus === 'pending'
+    && typeof actual.stripeSessionId === 'string'
+    && actual.stripeSessionId.length > 0
+    && (expected.stripeSessionId ?? null) === null
+    && (actual.stripePaymentIntentId ?? null) === null
+    && (expected.stripePaymentIntentId ?? null) === null
+    && same(boundSessionComparableOrder(actual), boundSessionComparableOrder(expected));
 }
 
 function errorCode(error: unknown): string {
@@ -308,7 +339,8 @@ export async function runPreparedIntakeOrderBinding(
 
   if (persistence.status === 'created' || persistence.status === 'existing') {
     committed = persistence.order;
-    if (!exactIntakeBoundOrder(committed, prepared)) {
+    if (!exactIntakeBoundOrder(committed, prepared)
+      && !exactIntakeBoundSessionOrder(committed, prepared)) {
       return { status: 'order_conflict', orderId: prepared.id };
     }
   } else {
@@ -319,7 +351,8 @@ export async function runPreparedIntakeOrderBinding(
       lookup = { status: 'unknown' };
     }
     if (lookup.status === 'found') {
-      if (!exactIntakeBoundOrder(lookup.order, prepared)) {
+      if (!exactIntakeBoundOrder(lookup.order, prepared)
+        && !exactIntakeBoundSessionOrder(lookup.order, prepared)) {
         return { status: 'order_conflict', orderId: prepared.id };
       }
       committed = lookup.order;

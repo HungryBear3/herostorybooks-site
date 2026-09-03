@@ -1507,7 +1507,7 @@ export function checkoutIntakeOrderContractDigest(order: OrderRecord): string | 
       id: order.id,
       checkoutAttemptId: order.checkoutAttemptId,
       checkoutFingerprint: order.checkoutFingerprint,
-      createdAt: order.createdAt,
+
       fulfillmentMode: order.fulfillmentMode,
       childName: order.childName,
       childAge: order.childAge,
