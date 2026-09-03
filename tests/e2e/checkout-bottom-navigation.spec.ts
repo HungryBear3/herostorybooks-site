@@ -142,7 +142,9 @@ test('a late recorder stop after switching lanes cannot restore abandoned audio'
   await page.getByRole('button', { name: 'Choose a ready-made adventure instead' }).click();
   await page.evaluate(() => (window as unknown as { fireLateRecorderStop: () => void }).fireLateRecorderStop());
   await page.getByRole('button', { name: /Custom Story/ }).click();
-  await expect(page.getByText('recorded-story-note.webm')).toHaveCount(0);
+  await expect(page.getByText('Attached: voice note')).toHaveCount(0);
+  await expect(page.getByTestId('voice-preview')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Remove file' })).toHaveCount(0);
   expect(harness.orderRequests).toHaveLength(0);
 });
 

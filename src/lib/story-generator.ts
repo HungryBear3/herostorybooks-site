@@ -235,6 +235,15 @@ function assertTemplateFallbackAllowed(order: OrderRecord): void {
   if (hasCustomStoryBrief(order)) {
     throw new Error('template fallback is disabled for custom-story briefs; route to manual_queue');
   }
+  if (
+    sanitizeInput(order.theme, 60) === 'custom-voice-story'
+    || Boolean(order.voiceBlobPath)
+    || Boolean(order.documentBlobPath)
+    || Boolean(order.voiceIntakeMedia)
+    || Boolean(order.documentIntakeMedia)
+  ) {
+    throw new Error('template fallback is disabled for custom stories with voice or document source material; route to manual_queue');
+  }
   if (isNonChildPrimaryHero(order)) {
     throw new Error('template fallback is disabled for non-child primary heroes until the per-type QA gate passes');
   }
