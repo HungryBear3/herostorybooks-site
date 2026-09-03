@@ -238,7 +238,14 @@ function assertTemplateFallbackAllowed(order: OrderRecord): void {
   if (
     sanitizeInput(order.theme, 60) === 'custom-voice-story'
     || Boolean(order.voiceBlobPath)
+    || Boolean(order.voiceBlobUrl)
+    || Boolean(order.voiceConsentAt)
+    || Boolean(order.voiceSource)
+    || Boolean(order.voiceTranscript)
     || Boolean(order.documentBlobPath)
+    || Boolean(order.documentBlobUrl)
+    || Boolean(order.documentConsentAt)
+    || Boolean(order.documentSource)
     || Boolean(order.voiceIntakeMedia)
     || Boolean(order.documentIntakeMedia)
   ) {

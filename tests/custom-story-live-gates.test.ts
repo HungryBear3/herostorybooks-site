@@ -84,6 +84,13 @@ test('media-backed Custom Stories refuse every template fallback path', async ()
   const mediaCases: Array<{ label: string; fields: Partial<OrderInput> }> = [
     { label: 'legacy voice', fields: { voiceBlobPath: 'orders/test/voice.webm' } },
     { label: 'legacy document', fields: { documentBlobPath: 'orders/test/story.pdf' } },
+    { label: 'voice URL only', fields: { theme: 'space-voyager', voiceBlobUrl: 'https://private.invalid/voice' } },
+    { label: 'document URL only', fields: { theme: 'space-voyager', documentBlobUrl: 'https://private.invalid/story' } },
+    { label: 'voice transcript only', fields: { theme: 'space-voyager', voiceTranscript: { status: 'transcribed', text: 'private family memory' } } },
+    { label: 'voice source only', fields: { theme: 'space-voyager', voiceSource: 'uploaded' } },
+    { label: 'voice consent only', fields: { theme: 'space-voyager', voiceConsentAt: '2026-09-03T00:00:00.000Z' } },
+    { label: 'document source only', fields: { theme: 'space-voyager', documentSource: 'uploaded' } },
+    { label: 'document consent only', fields: { theme: 'space-voyager', documentConsentAt: '2026-09-03T00:00:00.000Z' } },
     {
       label: 'private intake voice',
       fields: {
