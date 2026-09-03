@@ -1,5 +1,7 @@
 import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
+
+import { BlobNamespaceError, getBlobNamespace, withBlobNamespace } from './blob-namespace.ts';
 import {
   BlobNotFoundError,
   BlobPreconditionFailedError,
@@ -14,6 +16,7 @@ import type { CustomerQueueStatus } from './order-queue.ts';
 import type { FulfillmentStatus, LayoutVersion, PageTextLayout, ProofCardOverride, VoiceTranscriptMeta } from './fulfillment-types.ts';
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts';
+import { finalizationFingerprint, parseSelectionEntry, type FinalizedSelectionEntry } from './checkout-intake.ts';
 import { validateOrderPhotoFile } from './photo-file-validation.ts';
 import { PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
 export type { FulfillmentStatus, LayoutVersion, PageTextLayout, VoiceTranscriptMeta };
@@ -24,6 +27,29 @@ export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'partially_refunded'
 export type InternalOrderDisposition =
   | 'abandoned_internal_test'
   | 'superseded_internal_smoke';
+
+/**
+ * Durable authority for private checkout-intake media selected by an order.
+ * The upload capability is intentionally absent: it is authentication material,
+ * not part of the order contract.
+ */
+export interface CheckoutIntakeBinding {
+  intakeId: string;
+  fingerprint: string;
+  /** SHA-256 of the canonical immutable durable order projection. */
+  orderContractDigest: string;
+  selection: FinalizedSelectionEntry[];
+}
+
+/** Durable deletion authority for media selected from a checkout intake. */
+export interface CheckoutIntakeMediaRetention {
+  status: 'active' | 'cleanup_claimed' | 'reclaimed';
+  activatedAt: string;
+  cleanupClaimedAt?: string | null;
+  reclaimedAt?: string | null;
+}
+
+export const CHECKOUT_INTAKE_MEDIA_ABANDONMENT_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface ShippingAddress {
   line1: string;
@@ -110,6 +136,13 @@ export interface OrderInput {
   customStoryValidation?: ValidationResult | null;
   /** Sanitized private tester/source tracking from normal checkout URL params. */
   checkoutTracking?: CheckoutTracking | null;
+  /** Lossless binding to the exact private intake tuple committed with this order. */
+  checkoutIntake?: CheckoutIntakeBinding | null;
+  /** Private intake references are not fetchable/public Blob URLs. */
+  primaryHeroIntakeMedia?: FinalizedSelectionEntry | null;
+  guidedStillIntakeMedia?: FinalizedSelectionEntry[];
+  voiceIntakeMedia?: FinalizedSelectionEntry | null;
+  documentIntakeMedia?: FinalizedSelectionEntry | null;
 }
 
 export type ReviewStatus =
@@ -304,6 +337,8 @@ export interface OrderRecord extends OrderInput {
   checkoutFingerprint?: string | null;
   checkoutLeaseId?: string | null;
   checkoutLeaseExpiresAt?: string | null;
+  /** Bounded retention lifecycle for media referenced by checkoutIntake. */
+  checkoutIntakeMediaRetention?: CheckoutIntakeMediaRetention | null;
   /** Non-PII compatibility signal derived while reading retired legacy data. */
   legacyVoiceUploadPresent?: boolean;
   bookFormat: BookFormat;
@@ -522,6 +557,8 @@ export interface FamilyCharacterInput {
   focusPersonLabel?: string | null;
   /** Where that person sits in the photo, e.g. "center", "top-left". */
   cropHint?: string | null;
+  /** Exact private intake tuple entry; never reinterpret pathname as a URL. */
+  checkoutIntakeMedia?: FinalizedSelectionEntry | null;
 }
 
 export interface FamilyCharacter {
@@ -540,6 +577,8 @@ export interface FamilyCharacter {
   mustIncludeOther: string;
   focusPersonLabel: string | null;
   cropHint: string | null;
+  /** Exact private intake tuple entry; never reinterpret pathname as a URL. */
+  checkoutIntakeMedia?: FinalizedSelectionEntry | null;
 }
 
 export function isPrintFormat(bookFormat: string): boolean {
@@ -1044,87 +1083,13 @@ function getBlobToken() {
 
 // ── Blob namespace isolation ─────────────────────────────────────────────────
 //
-// Without a namespace, every environment that shares BLOB_READ_WRITE_TOKEN
-// (Production / Preview / Development) writes to the same flat `orders/...`
-// keyspace and can read/mutate each other's records. To prevent Preview from
-// touching real customer order data, we prepend an environment-derived prefix
-// to every blob path used by this app.
-//
-// Required configuration:
-//   - Production: HSB_BLOB_NAMESPACE unset (or empty) → flat paths (legacy
-//     compatibility with already-stored orders).
-//   - Preview:    HSB_BLOB_NAMESPACE must be set to a non-empty, non-"production"
-//                 value (recommended: "preview"). Failing to set it on a Vercel
-//                 Preview deployment is a hard error — we fail closed rather
-//                 than silently target the production namespace.
-//   - Development: HSB_BLOB_NAMESPACE optional; defaults to "development".
-//
-// Recommended belt+suspenders in Vercel:
-//   1. Provision a separate Vercel Blob store for Preview/Development with its
-//      own BLOB_READ_WRITE_TOKEN, and scope that token only to Preview +
-//      Development.
-//   2. ALSO set HSB_BLOB_NAMESPACE=preview on Preview (and "development" on
-//      Development). The two together mean a token leak alone can't expose
-//      production data, and a namespace misconfiguration alone can't either.
-export class BlobNamespaceError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'BlobNamespaceError';
-  }
-}
-
-export function getBlobNamespace(): string {
-  const explicit = (process.env.HSB_BLOB_NAMESPACE ?? '').trim();
-  // Vercel automatically sets VERCEL_ENV to one of 'production' | 'preview' |
-  // 'development' on every deployment.
-  const vercelEnv = process.env.VERCEL_ENV;
-
-  if (vercelEnv === 'preview') {
-    if (!explicit) {
-      throw new BlobNamespaceError(
-        "HSB_BLOB_NAMESPACE must be set on Vercel Preview deployments " +
-          "to prevent reading/writing the production order namespace. " +
-          "Set HSB_BLOB_NAMESPACE='preview' (or any non-empty value other " +
-          "than 'production') on the Preview environment.",
-      );
-    }
-    if (explicit === 'production') {
-      throw new BlobNamespaceError(
-        "HSB_BLOB_NAMESPACE='production' is forbidden on Vercel Preview — " +
-          "it would target the production namespace. Use 'preview' instead.",
-      );
-    }
-    return explicit;
-  }
-
-  if (vercelEnv === 'development') {
-    return explicit || 'development';
-  }
-
-  // Production deployments OR non-Vercel runs (CI, local node, scripts):
-  // respect an explicit namespace if provided, otherwise use flat paths.
-  // Flat is required so that already-stored production blobs at `orders/...`
-  // remain readable without a one-time migration.
-  return explicit;
-}
-
-/**
- * Apply the configured namespace prefix to a blob path.
- *
- * Examples (with HSB_BLOB_NAMESPACE='preview'):
- *   withBlobNamespace('orders/abc.json') → 'preview/orders/abc.json'
- *   withBlobNamespace('orders/')         → 'preview/orders/'
- *
- * With no namespace (production default):
- *   withBlobNamespace('orders/abc.json') → 'orders/abc.json'  (unchanged)
- */
-export function withBlobNamespace(path: string): string {
-  const ns = getBlobNamespace();
-  if (!ns) return path;
-  // Strip any leading slashes from the input to keep the join clean.
-  const cleaned = path.replace(/^\/+/, '');
-  return `${ns}/${cleaned}`;
-}
+// Moved to ./blob-namespace.ts so subsystems that must not import this module
+// (checkout intake, the checkout abuse guard) can share the SAME primitive
+// rather than reimplementing it. Re-exported here because every existing
+// caller imports it from `orders.ts`.
+// Imported (not just re-exported) because this module calls it internally: a
+// bare `export ... from` does not bind the name in this scope.
+export { BlobNamespaceError, getBlobNamespace, withBlobNamespace };
 
 /**
  * Custom error thrown when an order cannot be durably persisted in a
@@ -1509,8 +1474,193 @@ function scrubRetiredPrivateFields(order: OrderRecord): OrderRecord {
   return sanitized;
 }
 
+function exactObjectKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function canonicalIso(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`).join(',')}}`;
+}
+
+export function checkoutIntakeOrderContractDigest(order: OrderRecord): string | null {
+  try {
+    // Explicit immutable allowlist. Payment, checkout lease, fulfillment,
+    // review, email, refund, and print lifecycle fields are CAS-controlled and
+    // intentionally absent so the digest remains valid after legitimate state
+    // transitions.
+    const projection = JSON.parse(JSON.stringify({
+      id: order.id,
+      checkoutAttemptId: order.checkoutAttemptId,
+      checkoutFingerprint: order.checkoutFingerprint,
+      createdAt: order.createdAt,
+      fulfillmentMode: order.fulfillmentMode,
+      childName: order.childName,
+      childAge: order.childAge,
+      childPronouns: order.childPronouns,
+      heroName: order.heroName,
+      heroType: order.heroType,
+      heroAgeOrStage: order.heroAgeOrStage,
+      recipientName: order.recipientName,
+      recipientRelationship: order.recipientRelationship,
+      storyPerspective: order.storyPerspective,
+      heroPhotoFocusLabel: order.heroPhotoFocusLabel,
+      heroPhotoCropHint: order.heroPhotoCropHint,
+      theme: order.theme,
+      lesson: order.lesson,
+      occasion: order.occasion,
+      giftMessage: order.giftMessage,
+      characterNotes: order.characterNotes,
+      familyCharacters: order.familyCharacters,
+      appearanceOptions: order.appearanceOptions,
+      bookFormat: order.bookFormat,
+      formatLabel: order.formatLabel,
+      priceCents: order.priceCents,
+      email: order.email,
+      photoFileName: order.photoFileName,
+      photoBlobPath: order.photoBlobPath,
+      photoBlobUrl: order.photoBlobUrl,
+      guidedReferencePhotos: order.guidedReferencePhotos,
+      voiceBlobPath: order.voiceBlobPath,
+      voiceBlobUrl: order.voiceBlobUrl,
+      voiceConsentAt: order.voiceConsentAt,
+      voiceSource: order.voiceSource,
+      voiceTranscript: order.voiceTranscript,
+      customStoryBrief: order.customStoryBrief,
+      customStoryValidation: order.customStoryValidation,
+      checkoutTracking: order.checkoutTracking,
+      checkoutIntake: order.checkoutIntake,
+      primaryHeroIntakeMedia: order.primaryHeroIntakeMedia,
+      guidedStillIntakeMedia: order.guidedStillIntakeMedia,
+      voiceIntakeMedia: order.voiceIntakeMedia,
+      documentIntakeMedia: order.documentIntakeMedia,
+      deliveryExpectation: order.deliveryExpectation,
+    })) as Record<string, unknown>;
+    if (projection.checkoutIntake && typeof projection.checkoutIntake === 'object'
+      && !Array.isArray(projection.checkoutIntake)) {
+      delete (projection.checkoutIntake as Record<string, unknown>).orderContractDigest;
+    }
+    return crypto.createHash('sha256').update(stableJson(projection)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+function assertCheckoutIntakeOrderContract(order: OrderRecord): void {
+  const binding = order.checkoutIntake;
+  const retention = order.checkoutIntakeMediaRetention;
+  const familyCharacters = Array.isArray(order.familyCharacters) ? order.familyCharacters : [];
+  const projected = [
+    order.primaryHeroIntakeMedia,
+    order.guidedStillIntakeMedia,
+    order.voiceIntakeMedia,
+    order.documentIntakeMedia,
+    ...familyCharacters.map((character) => character.checkoutIntakeMedia),
+  ].some((value) => value !== null && value !== undefined && (!Array.isArray(value) || value.length > 0));
+
+  if (binding == null) {
+    if (retention != null || projected) throw new Error('invalid checkout intake order contract');
+    return;
+  }
+  if (!binding || typeof binding !== 'object' || Array.isArray(binding)
+    || !exactObjectKeys(binding as unknown as Record<string, unknown>, [
+      'intakeId', 'fingerprint', 'orderContractDigest', 'selection',
+    ])
+    || !/^intake_[a-f0-9]{32}$/.test(binding.intakeId)
+    || !/^[a-f0-9]{64}$/.test(binding.fingerprint)
+    || !/^[a-f0-9]{64}$/.test(binding.orderContractDigest)
+    || !Array.isArray(binding.selection)
+    || binding.selection.length > 16) throw new Error('invalid checkout intake order contract');
+
+  const namespace = getBlobNamespace();
+  const selection = binding.selection.map((entry) => parseSelectionEntry(entry, binding.intakeId, namespace));
+  const slots = new Set<string>();
+  const assets = new Set<string>();
+  const familyIndexes = new Set<number>();
+  for (const entry of selection) {
+    if (slots.has(entry.slotKey) || assets.has(entry.assetId)) throw new Error('invalid checkout intake order contract');
+    slots.add(entry.slotKey);
+    assets.add(entry.assetId);
+    if (entry.familyCharacterIndex !== null) {
+      if (familyIndexes.has(entry.familyCharacterIndex)) throw new Error('invalid checkout intake order contract');
+      familyIndexes.add(entry.familyCharacterIndex);
+    }
+  }
+  if (binding.fingerprint !== finalizationFingerprint(binding.intakeId, selection)) {
+    throw new Error('invalid checkout intake order contract');
+  }
+  if (checkoutIntakeOrderContractDigest(order) !== binding.orderContractDigest) {
+    throw new Error('invalid checkout intake order contract');
+  }
+
+  const byCategory = (category: FinalizedSelectionEntry['category']) =>
+    selection.filter((entry) => entry.category === category);
+  const primary = byCategory('primary_hero_photo');
+  const family = byCategory('family_pet_reference');
+  const guided = byCategory('guided_still').sort((a, b) => (a.guidedStillIndex ?? -1) - (b.guidedStillIndex ?? -1));
+  const voice = byCategory('voice_inspiration');
+  const document = byCategory('document_inspiration');
+  if (primary.length > 1 || voice.length > 1 || document.length > 1
+    || (voice.length > 0 && document.length > 0)
+    || !sameJson(order.primaryHeroIntakeMedia ?? null, primary[0] ?? null)
+    || !sameJson(order.guidedStillIntakeMedia ?? [], guided)
+    || !sameJson(order.voiceIntakeMedia ?? null, voice[0] ?? null)
+    || !sameJson(order.documentIntakeMedia ?? null, document[0] ?? null)
+    || order.photoBlobPath != null || order.photoBlobUrl != null
+    || order.voiceBlobPath != null || order.voiceBlobUrl != null) {
+    throw new Error('invalid checkout intake order contract');
+  }
+
+  const familyProjected = familyCharacters
+    .map((character) => character.checkoutIntakeMedia ?? null)
+    .filter((entry): entry is FinalizedSelectionEntry => entry !== null);
+  if (familyProjected.length !== family.length) throw new Error('invalid checkout intake order contract');
+  for (const entry of family) {
+    if (entry.familyCharacterIndex === null
+      || !sameJson(familyCharacters[entry.familyCharacterIndex]?.checkoutIntakeMedia ?? null, entry)) {
+      throw new Error('invalid checkout intake order contract');
+    }
+  }
+
+  if (!retention || typeof retention !== 'object' || Array.isArray(retention)
+    || !canonicalIso(retention.activatedAt)) throw new Error('invalid checkout intake media retention');
+  const retentionKeys = retention.status === 'active'
+    ? ['status', 'activatedAt']
+    : retention.status === 'cleanup_claimed'
+      ? ['status', 'activatedAt', 'cleanupClaimedAt']
+      : retention.status === 'reclaimed'
+        ? ['status', 'activatedAt', 'cleanupClaimedAt', 'reclaimedAt']
+        : [];
+  if (retentionKeys.length === 0
+    || !exactObjectKeys(retention as unknown as Record<string, unknown>, retentionKeys)
+    || (retention.status !== 'active' && !canonicalIso(retention.cleanupClaimedAt))
+    || (retention.status === 'reclaimed' && !canonicalIso(retention.reclaimedAt))
+    || Date.parse(retention.activatedAt) > Date.parse(order.updatedAt)
+    || (retention.cleanupClaimedAt && Date.parse(retention.cleanupClaimedAt) < Date.parse(retention.activatedAt))
+    || (retention.reclaimedAt && Date.parse(retention.reclaimedAt) < Date.parse(retention.cleanupClaimedAt ?? ''))) {
+    throw new Error('invalid checkout intake media retention');
+  }
+  order.checkoutIntake = { ...binding, selection };
+}
+
 function parseOrderRecord(serialized: string): OrderRecord {
-  return scrubRetiredPrivateFields(JSON.parse(serialized) as OrderRecord);
+  const order = scrubRetiredPrivateFields(JSON.parse(serialized) as OrderRecord);
+  assertCheckoutIntakeOrderContract(order);
+  return order;
 }
 
 export async function persistOrder(order: OrderRecord) {
@@ -1536,6 +1686,7 @@ export async function persistOrder(order: OrderRecord) {
 async function persistOrderUnsafe(order: OrderRecord) {
   const token = getBlobToken();
   const sanitized = scrubRetiredPrivateFields(order);
+  assertCheckoutIntakeOrderContract(sanitized);
   const serialized = JSON.stringify(sanitized, null, 2);
   const requireDurable = requiresDurablePersistence();
 
@@ -2608,6 +2759,7 @@ export async function readOrderVersioned(
 /** Create a new order only when its deterministic record path is absent. */
 export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> {
   const sanitized = scrubRetiredPrivateFields(order);
+  assertCheckoutIntakeOrderContract(sanitized);
   const adapter = resolveOrderStoreAdapter();
   // NO up-front generation claim here, unlike persistOrder. A create that loses
   // to an existing record is a provable no-write, and an up-front claim would
@@ -2655,6 +2807,8 @@ export async function persistOrResumeCheckoutOrder(
     const existing = await getOrderAuthoritative(order.id);
     if (!(error instanceof OrderPersistenceError)
       || existing?.paymentStatus !== 'pending'
+      || (existing.checkoutIntakeMediaRetention?.status !== undefined
+        && existing.checkoutIntakeMediaRetention.status !== 'active')
       || !order.checkoutFingerprint
       || existing.checkoutAttemptId !== order.checkoutAttemptId
       || existing.checkoutFingerprint !== order.checkoutFingerprint) throw error;
@@ -2671,6 +2825,8 @@ export async function persistOrResumeCheckoutOrder(
 
     const claimed = await withOrderTransaction<OrderRecord | null>(order.id, (current) => {
       if (current.paymentStatus !== 'pending'
+        || (current.checkoutIntakeMediaRetention?.status !== undefined
+          && current.checkoutIntakeMediaRetention.status !== 'active')
         || current.stripeSessionId
         || current.checkoutAttemptId !== order.checkoutAttemptId
         || current.checkoutFingerprint !== order.checkoutFingerprint) {
@@ -2703,6 +2859,8 @@ export async function renewCheckoutLease(
   const leaseMs = opts.leaseMs ?? 5 * 60_000;
   return withOrderTransaction<OrderRecord | null>(orderId, (current) => {
     if (current.paymentStatus !== 'pending'
+      || (current.checkoutIntakeMediaRetention?.status !== undefined
+        && current.checkoutIntakeMediaRetention.status !== 'active')
       || current.stripeSessionId
       || current.checkoutLeaseId !== checkoutLeaseId
       || current.checkoutFingerprint !== checkoutFingerprint) {
@@ -2736,9 +2894,11 @@ export async function commitOrderConditional(
   const generation = beginOrderWrite(order.id);
   let result: ConditionalCommitResult;
   try {
+    const sanitized = scrubRetiredPrivateFields(order);
+    assertCheckoutIntakeOrderContract(sanitized);
     result = await adapter.replaceIfVersion(
       getOrderBlobPath(order.id),
-      JSON.stringify(scrubRetiredPrivateFields(order), null, 2),
+      JSON.stringify(sanitized, null, 2),
       expectedVersion,
     );
   } catch (error) {
@@ -3036,6 +3196,91 @@ export async function recordStripeTerminalPaymentState(
   );
 }
 
+export type CheckoutIntakeMediaCleanupClaimResult = {
+  status: 'claimed' | 'already_claimed' | 'already_reclaimed' | 'retained';
+};
+
+/**
+ * Atomically gives cleanup deletion authority over one exact intake binding.
+ * Payment/session/lease decisions are evaluated inside the same order CAS that
+ * records the claim, so checkout-session binding and cleanup cannot both win.
+ */
+export async function claimCheckoutIntakeMediaCleanup(
+  orderId: string,
+  intakeId: string,
+  opts: { now?: Date } = {},
+): Promise<CheckoutIntakeMediaCleanupClaimResult> {
+  const now = opts.now ?? new Date();
+  return withOrderTransaction<CheckoutIntakeMediaCleanupClaimResult>(
+    orderId,
+    (current) => {
+      if (current.checkoutIntake?.intakeId !== intakeId) return { abort: { status: 'retained' } };
+      const retention = current.checkoutIntakeMediaRetention;
+      if (retention?.status === 'reclaimed') return { abort: { status: 'already_reclaimed' } };
+      if (retention?.status === 'cleanup_claimed') return { abort: { status: 'already_claimed' } };
+      const activatedAt = Date.parse(retention?.activatedAt ?? '');
+      const abandoned = Number.isFinite(activatedAt)
+        && activatedAt + CHECKOUT_INTAKE_MEDIA_ABANDONMENT_MS <= now.getTime();
+      const unpaidAndUnpayable = current.paymentStatus === 'failed'
+        || (current.paymentStatus === 'pending'
+          && (current.stripeSessionId === null || current.stripeSessionId === undefined));
+      if (retention?.status !== 'active' || !abandoned || !unpaidAndUnpayable) {
+        return { abort: { status: 'retained' } };
+      }
+      if (current.checkoutLeaseId) {
+        const leaseExpiresAt = Date.parse(current.checkoutLeaseExpiresAt ?? '');
+        if (!Number.isFinite(leaseExpiresAt) || leaseExpiresAt > now.getTime()) {
+          return { abort: { status: 'retained' } };
+        }
+      }
+      const updated: OrderRecord = {
+        ...current,
+        checkoutIntakeMediaRetention: {
+          ...retention,
+          status: 'cleanup_claimed',
+          cleanupClaimedAt: now.toISOString(),
+        },
+        updatedAt: now.toISOString(),
+      };
+      return { commit: updated, result: { status: 'claimed' } };
+    },
+    { notFound: () => ({ status: 'retained' }) },
+  );
+}
+
+export type CheckoutIntakeMediaReclaimResult = {
+  status: 'reclaimed' | 'already_reclaimed' | 'not_claimed';
+};
+
+/** Mark deletion complete only from an exact, durable cleanup claim. */
+export async function markCheckoutIntakeMediaReclaimed(
+  orderId: string,
+  intakeId: string,
+  opts: { now?: Date } = {},
+): Promise<CheckoutIntakeMediaReclaimResult> {
+  const now = opts.now ?? new Date();
+  return withOrderTransaction<CheckoutIntakeMediaReclaimResult>(
+    orderId,
+    (current) => {
+      if (current.checkoutIntake?.intakeId !== intakeId) return { abort: { status: 'not_claimed' } };
+      const retention = current.checkoutIntakeMediaRetention;
+      if (retention?.status === 'reclaimed') return { abort: { status: 'already_reclaimed' } };
+      if (retention?.status !== 'cleanup_claimed') return { abort: { status: 'not_claimed' } };
+      const updated: OrderRecord = {
+        ...current,
+        checkoutIntakeMediaRetention: {
+          ...retention,
+          status: 'reclaimed',
+          reclaimedAt: now.toISOString(),
+        },
+        updatedAt: now.toISOString(),
+      };
+      return { commit: updated, result: { status: 'reclaimed' } };
+    },
+    { notFound: () => ({ status: 'not_claimed' }) },
+  );
+}
+
 export async function bindOrderCheckoutSession(
   orderId: string,
   stripeSessionId: string,
@@ -3044,7 +3289,9 @@ export async function bindOrderCheckoutSession(
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
-      if (current.paymentStatus !== 'pending') return { abort: null };
+      if (current.paymentStatus !== 'pending'
+        || (current.checkoutIntakeMediaRetention?.status !== undefined
+          && current.checkoutIntakeMediaRetention.status !== 'active')) return { abort: null };
       if (checkout) {
         const leaseExpiresAt = Date.parse(current.checkoutLeaseExpiresAt ?? '');
         const nowMs = (checkout.now ?? new Date()).getTime();
