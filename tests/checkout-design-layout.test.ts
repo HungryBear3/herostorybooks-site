@@ -13,6 +13,26 @@ test('Custom Story is the primary story direction and templates are secondary', 
   assert.match(checkoutFormSource, /templateThemes = THEMES\.filter\(\(theme\) => theme\.id !== CUSTOM_STORY_THEME_ID\)/);
 });
 
+test('Custom Story selection immediately reveals all source inputs before templates and hero details', () => {
+  const panel = checkoutFormSource.indexOf('data-testid="custom-story-intake-panel"');
+  const templates = checkoutFormSource.indexOf('Or pick a ready adventure template');
+  const heroDetails = checkoutFormSource.indexOf('Who this story celebrates');
+  assert.ok(panel > -1 && panel < templates && templates < heroDetails);
+  assert.match(checkoutFormSource, /data-testid="custom-story-intake-panel"[\s\S]*?Type the memory or story idea[\s\S]*?<VoiceRecorderSection/);
+  assert.match(checkoutFormSource, /Choose a ready-made adventure instead/);
+  assert.doesNotMatch(checkoutFormSource, /STORY_UPLOAD_ENABLED|NEXT_PUBLIC_HSB_STORY_UPLOAD/);
+});
+
+test('Custom Story editor is not duplicated on the Story step', () => {
+  const panelCount = checkoutFormSource.match(/data-testid="custom-story-intake-panel"/g) ?? [];
+  const textareaCount = checkoutFormSource.match(/id="customStoryMemory"/g) ?? [];
+  const recorderCount = checkoutFormSource.match(/<VoiceRecorderSection/g) ?? [];
+  assert.equal(panelCount.length, 1);
+  assert.equal(textareaCount.length, 1);
+  assert.equal(recorderCount.length, 1);
+  assert.match(checkoutFormSource, /Custom Story source[\s\S]*?Return to Hero details anytime to edit it/);
+});
+
 test('main photo intake leads with recommended upload and keeps description as the alternative', () => {
   assert.match(checkoutFormSource, /Upload a photo for the best likeness/);
   assert.match(checkoutFormSource, /Recommended/);

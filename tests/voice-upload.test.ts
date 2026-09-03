@@ -308,42 +308,35 @@ test('order route handles OrderPersistenceError from voice upload (aborts before
   assert.ok(matches.length >= 2, `expected ≥2 OrderPersistenceError usages, got ${matches.length}`);
 });
 
-// ── Checkout client source contract: feature flag + FormData wiring ─────────
+// ── Checkout client source contract: visible Custom Story intake + wiring ───
 
 const CHECKOUT_SRC = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
 
-test('checkout source reads NEXT_PUBLIC_HSB_STORY_UPLOAD feature flag', () => {
-  assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
+test('checkout source mounts VoiceRecorderSection immediately in the Custom Story intake panel', () => {
+  assert.match(CHECKOUT_SRC, /data-testid="custom-story-intake-panel"[\s\S]*?<VoiceRecorderSection/);
+  assert.doesNotMatch(CHECKOUT_SRC, /STORY_UPLOAD_ENABLED|NEXT_PUBLIC_HSB_STORY_UPLOAD/);
 });
 
-test('checkout source mounts VoiceRecorderSection in the Custom Story source section', () => {
-  assert.match(CHECKOUT_SRC, /Tell us the memory in your own words[\s\S]*?STORY_UPLOAD_ENABLED && customStorySourceMode === ["']audio["'] && \(\s*<VoiceRecorderSection/);
-  assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
+test('Custom Story exposes typing and voice/document controls together without a source-mode chooser', () => {
+  assert.match(CHECKOUT_SRC, /Type the memory or story idea/);
+  assert.match(CHECKOUT_SRC, /Or add a voice note or file/);
+  assert.doesNotMatch(CHECKOUT_SRC, /Record or upload a voice note|Prefer typing\?/);
 });
 
-test('Custom Story chooser renders one audio card and one typing card, not two audio cards', () => {
-  // Single combined top-level audio card.
-  assert.match(CHECKOUT_SRC, /Record or upload a voice note/);
-  // Separate written-memory choice remains.
-  assert.match(CHECKOUT_SRC, /Prefer typing\?/);
-  // The old duplicated audio cards must be gone.
-  assert.doesNotMatch(CHECKOUT_SRC, /🎙️ Record a voice note</);
-  assert.doesNotMatch(CHECKOUT_SRC, /⬆️ Upload a voice memo/);
-  // Exactly one top-level card selects the audio source mode; the other selects written.
-  const audioCards = CHECKOUT_SRC.match(/set\(["']customStorySourceMode["'], ["']audio["']\)/g) ?? [];
-  assert.strictEqual(audioCards.length, 1, `expected exactly 1 top-level audio source card, got ${audioCards.length}`);
-  const writtenCards = CHECKOUT_SRC.match(/set\(["']customStorySourceMode["'], ["']written["']\)/g) ?? [];
-  assert.strictEqual(writtenCards.length, 1, `expected exactly 1 top-level typing source card, got ${writtenCards.length}`);
-});
-
-test('checkout source attaches voice fields to FormData only when story upload is on', () => {
-  // The single FormData wiring block must be guarded by STORY_UPLOAD_ENABLED.
+test('checkout source attaches voice fields whenever a voice or document file is attached', () => {
   assert.match(
     CHECKOUT_SRC,
-    /if \(STORY_UPLOAD_ENABLED && form\.voiceFile\) \{[\s\S]*?payload\.set\(['"]voice['"],/,
+    /if \(form\.voiceFile\) \{[\s\S]*?payload\.set\(['"]voice['"],/,
   );
   assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceConsent['"]/);
   assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceSource['"]/);
+});
+
+test('direct intake routes audio and documents to distinct slot parameters', () => {
+  assert.match(CHECKOUT_SRC, /const attachedStoryFileIsAudio = isStoryAudioFile\(form\.voiceFile\)/);
+  assert.match(CHECKOUT_SRC, /voice:\s*form\.voiceFile && attachedStoryFileIsAudio && form\.voiceSource/);
+  assert.match(CHECKOUT_SRC, /document:\s*form\.voiceFile && !attachedStoryFileIsAudio/);
+  assert.match(CHECKOUT_SRC, /document:[\s\S]*?consent: form\.voiceConsent/);
 });
 
 test('checkout source blocks submit when voice attached without consent', () => {
@@ -381,6 +374,13 @@ test('voice section releases mic tracks on stop AND on unmount', () => {
 
 test('voice section remains the single place offering Record and Upload controls', () => {
   assert.match(VOICE_UI_SRC, />\s*Record audio\s*</);
-  assert.match(VOICE_UI_SRC, />\s*Upload voice memo\s*</);
-  assert.match(VOICE_UI_SRC, />\s*Upload text\/document\s*</);
+  assert.match(VOICE_UI_SRC, /Upload voice memo/);
+  assert.match(VOICE_UI_SRC, /Upload text\/document/);
+});
+
+test('voice and document inputs stay keyboard reachable with visible focus treatment', () => {
+  assert.match(VOICE_UI_SRC, /aria-label="Upload voice memo"[\s\S]*?className="sr-only"/);
+  assert.match(VOICE_UI_SRC, /aria-label="Upload text\/document"[\s\S]*?className="sr-only"/);
+  assert.match(VOICE_UI_SRC, /htmlFor="custom-story-audio-upload"[\s\S]*?has-\[:focus-visible\]:ring-2[\s\S]*?custom-story-audio-upload-control/);
+  assert.match(VOICE_UI_SRC, /htmlFor="custom-story-document-upload"[\s\S]*?has-\[:focus-visible\]:ring-2[\s\S]*?custom-story-document-upload-control/);
 });

@@ -185,17 +185,18 @@ function missingSupportingCharacterDescriptionLabels(characters: SupportingChara
     .map(supportingCharacterLabel);
 }
 
-// Phase-A story upload visibility. This is intentionally default-OFF and is
-// not tied to NEXT_PUBLIC_HSB_VOICE_BETA. Enable only with
-// NEXT_PUBLIC_HSB_STORY_UPLOAD=true after legal/product QA.
-const STORY_UPLOAD_ENABLED = process.env.NEXT_PUBLIC_HSB_STORY_UPLOAD === "true";
-
 const STORAGE_KEY = "hsb_order_v1";
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
 const RECOVERY_DEBOUNCE_MS = 1500;
 
 function looksLikeEmail(e: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
+function isStoryAudioFile(file: File | null): boolean {
+  if (!file) return false;
+  return file.type.startsWith("audio/")
+    || /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i.test(file.name);
 }
 
 const directIntakeTransport: IntakeClientTransport = {
@@ -708,7 +709,7 @@ export function CheckoutForm() {
   const customStoryTheme = THEMES.find((theme) => theme.id === CUSTOM_STORY_THEME_ID) ?? null;
   const templateThemes = THEMES.filter((theme) => theme.id !== CUSTOM_STORY_THEME_ID);
   const hasCustomStoryInput = Boolean(form.voiceFile || form.customStoryMemory.trim());
-  const customStorySourceMode = form.customStorySourceMode || (form.voiceFile ? "audio" : form.customStoryMemory.trim() ? "written" : "");
+
   const guidedPhotoSummary = guidedFrames.length > 0
     ? `${guidedFrames.length} guided photo${guidedFrames.length === 1 ? "" : "s"} added`
     : "5 quick angles, about a minute (optional).";
@@ -728,6 +729,11 @@ export function CheckoutForm() {
   const currentStep = checkoutSteps.find((step) => step.id === currentStepId) ?? checkoutSteps[0];
   const currentStepIndex = checkoutSteps.findIndex((step) => step.id === currentStep.id);
   const nextStep = checkoutSteps[currentStepIndex + 1];
+  const nextStepActionLabel = nextStep
+    ? currentStep.id === "hero-details"
+      ? "Next: Add hero photo or description"
+      : `Next: ${nextStep.title}`
+    : null;
   const paymentBlockers = getCheckoutPaymentBlockers({
     theme: form.theme,
     childName: form.childName,
@@ -740,8 +746,7 @@ export function CheckoutForm() {
     voiceConsent: form.voiceConsent,
     activeSupportingCharacterDraft: supportingCharacterDraft,
   });
-  const missingVoiceConsent =
-    STORY_UPLOAD_ENABLED && form.voiceFile != null && !form.voiceConsent;
+  const missingVoiceConsent = form.voiceFile != null && !form.voiceConsent;
   const directMediaFilesPresent = Boolean(
     form.photoFile ||
       form.voiceFile ||
@@ -1006,6 +1011,7 @@ export function CheckoutForm() {
       if (checkoutTracking?.invite) payload.set("invite", checkoutTracking.invite);
       const gaClientId = currentGaClientId();
       if (gaClientId) payload.set("gaClientId", gaClientId);
+      const attachedStoryFileIsAudio = isStoryAudioFile(form.voiceFile);
       const preparedDirectIntake = await prepareOrReuseDirectIntakeSubmission({
         enabled: directUploadEnabled && directMediaFilesPresent,
         transport: directIntakeTransport,
@@ -1025,10 +1031,18 @@ export function CheckoutForm() {
             ? guidedFrames.map((frame) => ({ file: frame.file, mimeType: frame.file.type }))
             : [],
         voice:
-          STORY_UPLOAD_ENABLED && form.voiceFile && form.voiceSource
+          form.voiceFile && attachedStoryFileIsAudio && form.voiceSource
             ? {
                 file: form.voiceFile,
                 source: form.voiceSource,
+                consent: form.voiceConsent,
+                mimeType: form.voiceFile.type,
+              }
+            : null,
+        document:
+          form.voiceFile && !attachedStoryFileIsAudio
+            ? {
+                file: form.voiceFile,
                 consent: form.voiceConsent,
                 mimeType: form.voiceFile.type,
               }
@@ -1043,7 +1057,7 @@ export function CheckoutForm() {
       if (directIntakeSubmission && preparedDirectIntake) {
         intakeSessionRef.current = preparedDirectIntake.cache;
       } else {
-        if (STORY_UPLOAD_ENABLED && form.voiceFile) {
+        if (form.voiceFile) {
           payload.set("voice", form.voiceFile);
           payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
           if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
@@ -1233,7 +1247,7 @@ export function CheckoutForm() {
                   onClick={continueCurrentStep}
                   className="hidden rounded-full border border-[#cbbda4] bg-[#fff8ec] px-4 py-2 text-sm font-semibold text-[#241914] transition hover:border-deep-gold sm:inline-flex"
                 >
-                  Continue to Step {currentStepIndex + 2}: {nextStep.title}
+                  {nextStepActionLabel}
                 </button>
               )}
             </div>
@@ -1389,7 +1403,79 @@ export function CheckoutForm() {
                 </button>
               )}
 
-              <div className="space-y-2">
+              {isCustomStorySelected && (
+                <div
+                  data-testid="custom-story-intake-panel"
+                  className="space-y-4 rounded-[1.5rem] border-2 border-[#241914] bg-white p-4 shadow-md sm:p-5"
+                >
+                  <div>
+                    <h3 className="font-serif text-xl font-semibold text-[#1f1a16]">
+                      Tell us your story
+                    </h3>
+                    <p className="mt-1 text-sm leading-6 text-[#695f54]">
+                      Type or paste the memory below, record it, or attach an audio or text file. Use whichever is easiest.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label htmlFor="customStoryMemory" className="block text-sm font-bold text-[#1f1a16]">
+                      Type the memory or story idea
+                    </label>
+                    <textarea
+                      id="customStoryMemory"
+                      value={form.customStoryMemory}
+                      onChange={(e) => {
+                        const value = e.target.value.slice(0, 1200);
+                        setForm((prev) => ({
+                          ...prev,
+                          customStoryMemory: value,
+                          customStorySourceMode: value.trim() ? "written" : prev.voiceFile ? "audio" : "",
+                        }));
+                      }}
+                      placeholder="Paste a memory, funny quote, family moment, or the story idea you want us to build from..."
+                      rows={5}
+                      className="mt-2 w-full resize-y rounded-2xl border-2 border-[#b8aa90] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] placeholder:text-[#8a7b6a] focus:border-[#241914] focus:outline-none focus:ring-2 focus:ring-[#241914]/30"
+                    />
+                    <div className="mt-2 flex items-center justify-between gap-2 text-xs text-[#695f54]">
+                      <span>{form.customStoryMemory.trim() ? "✓ Written story added" : "You can type as much or as little as you have."}</span>
+                      <span>{form.customStoryMemory.length}/1200</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 text-xs font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                    <span className="h-px flex-1 bg-[#d8c6a2]" />
+                    Or add a voice note or file
+                    <span className="h-px flex-1 bg-[#d8c6a2]" />
+                  </div>
+
+                  <VoiceRecorderSection
+                    voiceFile={form.voiceFile}
+                    voicePreviewUrl={form.voicePreviewUrl}
+                    voiceSource={form.voiceSource}
+                    voiceConsent={form.voiceConsent}
+                    onVoiceChange={(file, previewUrl, source) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        customStorySourceMode: file ? "audio" : prev.customStoryMemory.trim() ? "written" : "",
+                        voiceFile: file,
+                        voicePreviewUrl: previewUrl,
+                        voiceSource: source,
+                        voiceConsent: file ? prev.voiceConsent : false,
+                      }))
+                    }
+                    onConsentChange={(consent) =>
+                      setForm((prev) => ({ ...prev, voiceConsent: consent }))
+                    }
+                  />
+
+                  <p className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-4 py-3 text-xs leading-5 text-[#695f54]">
+                    Your story materials stay private to this order. Voice notes are never used for voice cloning or model training.
+                  </p>
+                </div>
+              )}
+
+              {!isCustomStorySelected ? (
+                <div className="space-y-2">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#8a7663]">
                   Or pick a ready adventure template
                 </p>
@@ -1427,6 +1513,15 @@ export function CheckoutForm() {
                   ))}
                 </div>
               </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => set("theme", "")}
+                  className="w-full rounded-2xl border border-[#b8aa90] bg-[#fffaf1] px-4 py-3 text-sm font-semibold text-[#241914] underline decoration-[#a64c4c]/50 underline-offset-4"
+                >
+                  Choose a ready-made adventure instead
+                </button>
+              )}
             </section>
 
             {isCustomStorySelected && (
@@ -1436,98 +1531,14 @@ export function CheckoutForm() {
               >
                 <div>
                   <h2 className="font-serif text-2xl text-[#1f1a16]">
-                    Tell us the memory in your own words
+                    Custom Story source
                   </h2>
                   <p className="mt-1 text-sm leading-6 text-[#695f54]">
-                    Rambling is perfect. We turn it into the story. Choose the easiest way to send it now.
+                    {hasCustomStoryInput
+                      ? "✓ Your story source is added. Return to Hero details anytime to edit it."
+                      : "Add your written memory, voice note, or document in Hero details before checkout."}
                   </p>
                 </div>
-
-                <div className="grid gap-3 md:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => set("customStorySourceMode", "audio")}
-                    className={`rounded-2xl border-2 p-4 text-left transition ${
-                      customStorySourceMode === "audio"
-                        ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30"
-                        : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2]"
-                    }`}
-                  >
-                    <span className="block text-sm font-bold text-[#1f1a16]">🎙️ Record or upload a voice note</span>
-                    <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
-                      Record up to 3 minutes, or upload a voice memo or audio file.
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => set("customStorySourceMode", "written")}
-                    className={`rounded-2xl border-2 p-4 text-left transition ${
-                      customStorySourceMode === "written"
-                        ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30"
-                        : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2]"
-                    }`}
-                  >
-                    <span className="block text-sm font-bold text-[#1f1a16]">✍️ Prefer typing?</span>
-                    <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
-                      Write the memory instead.
-                    </span>
-                  </button>
-                </div>
-
-                {STORY_UPLOAD_ENABLED && customStorySourceMode === "audio" && (
-                  <VoiceRecorderSection
-                    voiceFile={form.voiceFile}
-                    voicePreviewUrl={form.voicePreviewUrl}
-                    voiceSource={form.voiceSource}
-                    voiceConsent={form.voiceConsent}
-                    onVoiceChange={(file, previewUrl, source) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        theme: file && !prev.theme ? CUSTOM_STORY_THEME_ID : prev.theme,
-                        customStorySourceMode: "audio",
-                        voiceFile: file,
-                        voicePreviewUrl: previewUrl,
-                        voiceSource: source,
-                        voiceConsent: file ? prev.voiceConsent : false,
-                      }))
-                    }
-                    onConsentChange={(consent) =>
-                      setForm((prev) => ({ ...prev, voiceConsent: consent }))
-                    }
-                  />
-                )}
-
-                {customStorySourceMode === "written" && (
-                  <div className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] p-4">
-                    <label
-                      htmlFor="customStoryMemory"
-                      className="block text-sm font-semibold text-[#1f1a16]"
-                    >
-                      Tell us the memory in your own words
-                    </label>
-                    <p className="mt-1 text-xs leading-5 text-[#8a7b6a]">
-                      Rambling is perfect. Type the story idea, funny quote, family moment, or scene you want us to build from.
-                    </p>
-                    <textarea
-                      id="customStoryMemory"
-                      value={form.customStoryMemory}
-                      onChange={(e) => set("customStoryMemory", e.target.value.slice(0, 1200))}
-                      placeholder="e.g. Lukas and Dad found a tiny dinosaur footprint at the park, then Brody helped track it through the woods..."
-                      rows={4}
-                      className="mt-3 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                    />
-                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[#8a7b6a]">
-                      <span>{hasCustomStoryInput ? "✓ Custom Story source added" : "Add the memory before checkout feels complete."}</span>
-                      <span>{form.customStoryMemory.length}/1200</span>
-                    </div>
-                  </div>
-                )}
-
-                {!customStorySourceMode && (
-                  <p className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-4 py-3 text-xs leading-5 text-[#8a7b6a]">
-                    Voice notes stay private — used only to write your book, never to train anything, deleted on request. Written memories stay private to this order.
-                  </p>
-                )}
               </section>
             )}
 
@@ -1655,7 +1666,7 @@ export function CheckoutForm() {
                     onClick={continueCurrentStep}
                     className="w-full rounded-2xl bg-[#241914] px-5 py-4 text-base font-bold text-[#fff8ec] shadow-md transition hover:bg-[#3a2b23] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#241914] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fff8ec]"
                   >
-                    Continue to Step {currentStepIndex + 2}: {nextStep.title}
+                    {nextStepActionLabel}
                   </button>
                   <p className="mt-2 text-center text-xs leading-5 text-[#695f54]">
                     The details below are optional. You can return to add them later.
@@ -2635,7 +2646,7 @@ export function CheckoutForm() {
                   onClick={continueCurrentStep}
                   className="w-full rounded-2xl bg-[#241914] px-5 py-4 text-base font-bold text-[#fff8ec] shadow-md transition hover:bg-[#3a2b23] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#241914] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fff8ec]"
                 >
-                  Continue to Step {currentStepIndex + 2}: {nextStep.title}
+                  {nextStepActionLabel}
                 </button>
               </div>
             )}

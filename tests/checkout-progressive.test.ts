@@ -269,7 +269,8 @@ test('checkout source includes early and end-of-step next-section actions withou
   assert.match(CHECKOUT_FORM_SRC, /data-testid="checkout-primary-continue"/);
   assert.match(CHECKOUT_FORM_SRC, /data-testid="checkout-bottom-continue"/);
   assert.doesNotMatch(CHECKOUT_FORM_SRC, /data-testid="checkout-sticky-continue"/);
-  assert.match(CHECKOUT_FORM_SRC, /Continue to Step \{currentStepIndex \+ 2\}: \{nextStep\.title\}/);
+  assert.match(CHECKOUT_FORM_SRC, /Next: Add hero photo or description/);
+  assert.match(CHECKOUT_FORM_SRC, /`Next: \$\{nextStep\.title\}`/);
   assert.match(CHECKOUT_FORM_SRC, /focus-visible:ring-\[#241914\]/);
   assert.match(
     CHECKOUT_FORM_SRC,

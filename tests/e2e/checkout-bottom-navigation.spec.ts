@@ -10,8 +10,8 @@ test('linear Continue controls advance every step without covering fields or sub
   const bottom = page.getByTestId('checkout-bottom-continue');
   await expect(page.getByTestId('checkout-sticky-continue')).toHaveCount(0);
   await expect(primary).toBeVisible();
-  await expect(primary).toHaveText('Continue to Step 2: Hero photo or description');
-  await expect(bottom).toHaveText('Continue to Step 2: Hero photo or description');
+  await expect(primary).toHaveText('Next: Add hero photo or description');
+  await expect(bottom).toHaveText('Next: Add hero photo or description');
 
   await primary.click();
   await expect(page.getByRole('heading', { level: 1, name: 'Hero details' })).toBeVisible();
@@ -27,7 +27,7 @@ test('linear Continue controls advance every step without covering fields or sub
   await expect
     .poll(async () => (await page.getByTestId('hero-photo-primary-choice').boundingBox())?.y ?? -9999)
     .toBeGreaterThanOrEqual(0);
-  await expect(bottom).toHaveText('Continue to Step 3: Story');
+  await expect(bottom).toHaveText('Next: Story');
   await expect(page.getByRole('heading', { name: 'Upload a photo for the best likeness' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Or describe the hero instead' })).toBeVisible();
   const photoBox = await page.getByTestId('hero-photo-primary-choice').boundingBox();
@@ -66,11 +66,11 @@ test('linear Continue controls advance every step without covering fields or sub
     .fill('6 years old, short curly dark hair, bright green hoodie');
   await bottom.click();
   await expect(page.getByRole('heading', { level: 1, name: 'Story' })).toBeVisible();
-  await expect(bottom).toHaveText('Continue to Step 4: People and pets');
+  await expect(bottom).toHaveText('Next: People and pets');
 
   await bottom.click();
   await expect(page.getByRole('heading', { level: 1, name: 'People and pets' })).toBeVisible();
-  await expect(bottom).toHaveText('Continue to Step 5: Contact, delivery, and review');
+  await expect(bottom).toHaveText('Next: Contact, delivery, and review');
 
   await bottom.click();
   await expect(page.getByRole('heading', { level: 1, name: 'Contact, delivery, and review' })).toBeVisible();
@@ -78,11 +78,58 @@ test('linear Continue controls advance every step without covering fields or sub
   expect(harness.orderRequests).toHaveLength(0);
 });
 
-test('desktop header Continue uses the same numbered destination label', async ({ page, baseURL }) => {
+test('desktop header Continue uses the same owner-facing destination label', async ({ page, baseURL }) => {
   await installHandoffHarness(page, baseURL!);
   await page.setViewportSize({ width: 1024, height: 900 });
   await page.goto('/checkout');
   await expect(page.getByTestId('checkout-header-continue')).toHaveText(
-    'Continue to Step 2: Hero photo or description',
+    'Next: Add hero photo or description',
   );
+});
+
+test('Custom Story immediately reveals written, recording, audio, and document paths', async ({ page, baseURL }) => {
+  const harness = await installHandoffHarness(page, baseURL!);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/checkout');
+
+  await expect(page.getByTestId('custom-story-intake-panel')).toHaveCount(0);
+  await page.getByRole('button', { name: /Custom Story/ }).click();
+
+  const panel = page.getByTestId('custom-story-intake-panel');
+  await expect(panel).toBeVisible();
+  await expect(page.getByLabel('Type the memory or story idea')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Record audio' })).toBeVisible();
+  await expect(page.getByTestId('custom-story-audio-upload-control')).toBeVisible();
+  await expect(page.getByTestId('custom-story-document-upload-control')).toBeVisible();
+  await expect(page.getByText('Or pick a ready adventure template')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Choose a ready-made adventure instead' })).toBeVisible();
+
+  const panelBox = await panel.boundingBox();
+  const heroBox = await page.getByRole('heading', { name: 'Who this story celebrates' }).boundingBox();
+  expect(panelBox).not.toBeNull();
+  expect(heroBox).not.toBeNull();
+  expect(panelBox!.y).toBeLessThan(heroBox!.y);
+
+  await page.getByLabel('Type the memory or story idea').fill('A short family memory for the custom story.');
+  await page.locator('#childName').fill('Testhero');
+  await expect(page.getByTestId('checkout-primary-continue')).toHaveText('Next: Add hero photo or description');
+
+  const record = page.getByRole('button', { name: 'Record audio' });
+  const audioInput = page.getByLabel('Upload voice memo');
+  const documentInput = page.getByLabel('Upload text/document');
+  await record.focus();
+  await page.keyboard.press('Tab');
+  await expect(audioInput).toBeFocused();
+  const audioChooser = page.waitForEvent('filechooser');
+  await page.keyboard.press('Enter');
+  await audioChooser;
+
+  await record.focus();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  await expect(documentInput).toBeFocused();
+  const documentChooser = page.waitForEvent('filechooser');
+  await page.keyboard.press('Enter');
+  await documentChooser;
+  expect(harness.orderRequests).toHaveLength(0);
 });

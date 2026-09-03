@@ -69,10 +69,11 @@ test('checkout hides primary-hero selector unless private beta flag is enabled',
 });
 
 
-test('story upload section is default-off and no longer inherits the broad voice beta flag', () => {
+test('Custom Story upload intake is no longer gated behind a client flag', () => {
   const src = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
-  assert.match(src, /const STORY_UPLOAD_ENABLED =\s*process\.env\.NEXT_PUBLIC_HSB_STORY_UPLOAD === ["']true["'];/);
-  assert.doesNotMatch(src, /STORY_UPLOAD_ENABLED =\s*VOICE_BETA_ENABLED \|\|/);
+  assert.doesNotMatch(src, /STORY_UPLOAD_ENABLED/);
+  assert.doesNotMatch(src, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
+  assert.match(src, /isCustomStorySelected && \([\s\S]*?data-testid="custom-story-intake-panel"/);
 });
 
 test('primary hero beta exposes only parent and grandparent as sellable non-child types', () => {

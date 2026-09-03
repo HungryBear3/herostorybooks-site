@@ -60,9 +60,8 @@ export interface VoiceRecorderSectionProps {
 }
 
 /**
- * Optional UI for attaching a short story voice note or family memory note
- * (audio, or a text/PDF/Word document). Mounts only when the checkout form's
- * `STORY_UPLOAD_ENABLED` gate is on and the customer selected Custom Story. The microphone
+ * Custom Story UI for attaching a short voice note or family memory note
+ * (audio, or a text/PDF/Word document). It mounts beside the Custom Story choice. The microphone
  * is requested only after the user taps Record; tracks are released as soon as
  * recording stops.
  *
@@ -83,8 +82,6 @@ export function VoiceRecorderSection({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
-  const audioFileInputRef = useRef<HTMLInputElement | null>(null);
-  const documentFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Always release the mic + revoke the preview URL on unmount.
   useEffect(() => {
@@ -222,34 +219,36 @@ export function VoiceRecorderSection({
         )}
         {!isRecording && (
           <>
-            <button
-              type="button"
-              onClick={() => audioFileInputRef.current?.click()}
-              className="px-4 py-2 rounded-full border-2 border-gray-200 text-forest font-semibold text-sm hover:border-deep-gold transition"
+            <label
+              htmlFor="custom-story-audio-upload"
+              className="cursor-pointer rounded-full border-2 border-gray-200 px-4 py-2 text-sm font-semibold text-forest transition hover:border-deep-gold has-[:focus-visible]:border-[#241914] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#241914] has-[:focus-visible]:ring-offset-2"
+              data-testid="custom-story-audio-upload-control"
             >
               Upload voice memo
-            </button>
-            <input
-              ref={audioFileInputRef}
-              type="file"
-              accept={VOICE_AUDIO_UPLOAD_ACCEPT_ATTR}
-              className="hidden"
-              onChange={handleUpload}
-            />
-            <button
-              type="button"
-              onClick={() => documentFileInputRef.current?.click()}
-              className="px-4 py-2 rounded-full border-2 border-gray-200 text-forest font-semibold text-sm hover:border-deep-gold transition"
+              <input
+                id="custom-story-audio-upload"
+                aria-label="Upload voice memo"
+                type="file"
+                accept={VOICE_AUDIO_UPLOAD_ACCEPT_ATTR}
+                className="sr-only"
+                onChange={handleUpload}
+              />
+            </label>
+            <label
+              htmlFor="custom-story-document-upload"
+              className="cursor-pointer rounded-full border-2 border-gray-200 px-4 py-2 text-sm font-semibold text-forest transition hover:border-deep-gold has-[:focus-visible]:border-[#241914] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#241914] has-[:focus-visible]:ring-offset-2"
+              data-testid="custom-story-document-upload-control"
             >
               Upload text/document
-            </button>
-            <input
-              ref={documentFileInputRef}
-              type="file"
-              accept={VOICE_DOCUMENT_UPLOAD_ACCEPT_ATTR}
-              className="hidden"
-              onChange={handleUpload}
-            />
+              <input
+                id="custom-story-document-upload"
+                aria-label="Upload text/document"
+                type="file"
+                accept={VOICE_DOCUMENT_UPLOAD_ACCEPT_ATTR}
+                className="sr-only"
+                onChange={handleUpload}
+              />
+            </label>
           </>
         )}
         {voiceFile && !isRecording && (

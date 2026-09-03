@@ -479,6 +479,7 @@ export interface PrepareDirectIntakeSubmissionParams {
   familyPhotos: Array<{ familyCharacterId: string; file: Blob; mimeType?: string }>;
   guidedStills: Array<{ file: Blob; mimeType?: string }>;
   voice: { file: Blob; source: 'recorded' | 'uploaded'; consent: boolean; mimeType?: string } | null;
+  document?: { file: Blob; consent: boolean; mimeType?: string } | null;
 }
 
 export class DirectIntakePreparationError extends Error {
@@ -508,11 +509,15 @@ export async function prepareDirectIntakeSubmission(
   if (params.voice && !params.voice.consent) {
     throw new DirectIntakePreparationError('voice_consent_required');
   }
+  if (params.document && !params.document.consent) {
+    throw new DirectIntakePreparationError('document_consent_required');
+  }
 
   const familyCharacterIds = [...(params.familyCharacterIds
     ?? params.familyPhotos.map((entry) => entry.familyCharacterId))];
   const session = await createCheckoutIntakeSession(params.transport, {
     mediaAuthorized: true,
+    documentAuthorized: Boolean(params.document),
     childVoiceAuthorized: Boolean(params.voice),
     voiceSource: params.voice?.source ?? null,
   });
@@ -563,6 +568,14 @@ export async function prepareDirectIntakeSubmission(
       params.voice.mimeType,
     );
   }
+  if (params.document) {
+    await uploadOne(
+      { category: 'document_inspiration' },
+      params.document.file,
+      'story document',
+      params.document.mimeType,
+    );
+  }
 
   const blockers = directUploadBlockers(state.get(), expected);
   if (blockers.length > 0) throw new DirectIntakePreparationError('direct_upload_unsettled');
@@ -578,6 +591,7 @@ export interface DirectIntakeSubmissionCache {
   familyPhotos: ReadonlyArray<{ familyCharacterId: string; file: Blob }>;
   guidedStills: readonly Blob[];
   voice: { file: Blob; source: 'recorded' | 'uploaded'; consent: boolean } | null;
+  document: { file: Blob; consent: boolean } | null;
 }
 
 function sameBlobList(left: readonly Blob[], right: readonly Blob[]): boolean {
@@ -603,7 +617,11 @@ function cacheMatches(
       || (cache.voice !== null && params.voice !== null
         && cache.voice.file === params.voice.file
         && cache.voice.source === params.voice.source
-        && cache.voice.consent === params.voice.consent));
+        && cache.voice.consent === params.voice.consent))
+    && ((cache.document === null && !params.document)
+      || (cache.document !== null && params.document != null
+        && cache.document.file === params.document.file
+        && cache.document.consent === params.document.consent));
 }
 
 /**
@@ -636,6 +654,9 @@ export async function prepareOrReuseDirectIntakeSubmission(
     guidedStills: params.guidedStills.map((entry) => entry.file),
     voice: params.voice
       ? { file: params.voice.file, source: params.voice.source, consent: params.voice.consent }
+      : null,
+    document: params.document
+      ? { file: params.document.file, consent: params.document.consent }
       : null,
   };
   return { submission, cache: nextCache };

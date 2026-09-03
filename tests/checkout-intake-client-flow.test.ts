@@ -470,6 +470,33 @@ test('the high-level checkout orchestrator uploads every current file and preser
   assert.equal(r.uploads, 3);
 });
 
+test('a direct document upload uses document consent and the document slot, never the voice slot', async () => {
+  const r = rig();
+  const document = new Blob([new Uint8Array(23)], { type: 'application/pdf' });
+  const result = await prepareDirectIntakeSubmission({
+    enabled: true,
+    transport: r.transport,
+    heroPhoto: null,
+    familyPhotos: [],
+    guidedStills: [],
+    voice: null,
+    document: { file: document, consent: true, mimeType: document.type },
+  });
+
+  assert.ok(result);
+  assert.equal(result.selection.voiceAssetId, null);
+  assert.ok(result.selection.documentAssetId);
+  const record = r.store.records.get(result.session.intakeId)!.record;
+  assert.equal(record.consent.childVoiceAuthorizedAt, null);
+  assert.ok(record.consent.documentAuthorizedAt);
+  assert.equal(record.slots.voice_inspiration, undefined);
+  assert.equal(
+    record.slots.document_inspiration!.active!.assetId,
+    result.selection.documentAssetId,
+  );
+  assert.equal(r.uploads, 1);
+});
+
 test('one failed direct upload aborts preparation while leaving the caller file available for retry', async () => {
   const r = rig();
   const localFile = jpeg(33);
@@ -516,6 +543,22 @@ test('a repeated order attempt reuses the exact prepared intake and changed medi
     /direct_upload_selection_changed_reload_required/,
   );
   assert.equal(r.uploads, 1, 'changed media may not silently replace a frozen checkout attempt');
+
+  const document = new Blob([new Uint8Array(43)], { type: 'application/pdf' });
+  const documentParams = {
+    ...params,
+    heroPhoto: null,
+    document: { file: document, consent: true, mimeType: document.type },
+  };
+  const documentFirst = await prepareOrReuseDirectIntakeSubmission(documentParams, null);
+  assert.ok(documentFirst);
+  await assert.rejects(
+    prepareOrReuseDirectIntakeSubmission(
+      { ...documentParams, document: { ...documentParams.document, file: new Blob([new Uint8Array(44)], { type: 'application/pdf' }) } },
+      documentFirst.cache,
+    ),
+    /direct_upload_selection_changed_reload_required/,
+  );
 });
 
 test('all five guided UI stills upload and map in canonical index order', async () => {
