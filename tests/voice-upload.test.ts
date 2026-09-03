@@ -32,6 +32,7 @@ import {
   getOrder,
   MAX_VOICE_BYTES,
   OrderPersistenceError,
+  assertPrivateStorySourceStorage,
   updateOrderPayment,
   updateOrderStatus,
   uploadOrderVoice,
@@ -63,6 +64,36 @@ function makeAudioFile(name = 'voice.webm', type = 'audio/webm', size = 32): Fil
     arrayBuffer: async () => new Uint8Array(size).buffer,
   } as unknown as File;
 }
+
+test('legacy story-source storage fails closed unless Blob access is private', async () => {
+  await assert.rejects(
+    () => withEnv({ HSB_BLOB_ACCESS_MODE: undefined }, () => assertPrivateStorySourceStorage('ord_default_public')),
+    /private Blob storage is required/i,
+  );
+  await assert.rejects(
+    () => withEnv({ HSB_BLOB_ACCESS_MODE: 'public' }, () => assertPrivateStorySourceStorage('ord_explicit_public')),
+    /private Blob storage is required/i,
+  );
+  await assert.doesNotReject(
+    () => withEnv({ HSB_BLOB_ACCESS_MODE: 'private' }, () => assertPrivateStorySourceStorage('ord_private')),
+  );
+
+  const ordersSource = readFileSync('src/lib/orders.ts', 'utf8');
+  const functionRanges = [
+    ['uploadOrderVoice', 'export const MAX_DOCUMENT_BYTES'],
+    ['uploadOrderDocument', 'async function uploadOrderPhotoAtPath'],
+  ] as const;
+  for (const [functionName, nextMarker] of functionRanges) {
+    const start = ordersSource.indexOf(`export async function ${functionName}`);
+    const end = ordersSource.indexOf(nextMarker, start);
+    const body = ordersSource.slice(start, end);
+    assert.ok(body.indexOf('assertPrivateStorySourceStorage(orderId)') > 0, `${functionName} must enforce private storage`);
+    assert.ok(
+      body.indexOf('assertPrivateStorySourceStorage(orderId)') < body.indexOf('put(pathname'),
+      `${functionName} must fail before Blob write`,
+    );
+  }
+});
 
 test('switching away from Custom Story resets every source consent and fences late recorder callbacks', () => {
   const checkout = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');

@@ -1243,6 +1243,15 @@ export function documentExtensionForFile(file: Pick<File, 'type' | 'name'>): 'tx
  * Upload an attached child-voice audio file to durable blob storage. Mirrors
  * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
  */
+export function assertPrivateStorySourceStorage(orderId: string): void {
+  if (getBlobAccessMode() !== 'private') {
+    throw new OrderPersistenceError(
+      orderId,
+      'Private Blob storage is required for customer voice notes and story documents.',
+    );
+  }
+}
+
 export async function uploadOrderVoice(
   orderId: string,
   file: File,
@@ -1270,6 +1279,8 @@ export async function uploadOrderVoice(
     }
     return null;
   }
+
+  assertPrivateStorySourceStorage(orderId);
 
   // Never derive durable identifiers from the caller-controlled filename.
   const assetId = crypto.randomBytes(12).toString('base64url');
@@ -1335,6 +1346,8 @@ export async function uploadOrderDocument(
     }
     return null;
   }
+
+  assertPrivateStorySourceStorage(orderId);
 
   const assetId = crypto.randomBytes(12).toString('base64url');
   const scope = checkoutMediaScope(checkoutLeaseId);

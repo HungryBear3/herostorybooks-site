@@ -738,6 +738,8 @@ export function CheckoutForm() {
     email: form.email,
     voiceFile: form.voiceFile,
     voiceConsent: form.voiceConsent,
+    customStoryMemory: form.customStoryMemory,
+    directMediaConsent,
     activeSupportingCharacterDraft: supportingCharacterDraft,
   });
   const checkoutSteps = checkoutProgress.steps;
@@ -759,6 +761,8 @@ export function CheckoutForm() {
     email: form.email,
     voiceFile: form.voiceFile,
     voiceConsent: form.voiceConsent,
+    customStoryMemory: form.customStoryMemory,
+    directMediaConsent,
     activeSupportingCharacterDraft: supportingCharacterDraft,
   });
   const missingVoiceConsent = form.voiceFile != null && !form.voiceConsent;
@@ -779,6 +783,7 @@ export function CheckoutForm() {
     Boolean(form.bookFormat) &&
     Boolean(form.email) &&
     Boolean(form.photoFile || form.characterNotes.trim()) &&
+    (!isCustomStorySelected || hasCustomStoryInput) &&
     missingSupportingDescriptionLabels.length === 0 &&
     !supportingCharacterDraft &&
     !missingVoiceConsent &&
@@ -1326,6 +1331,8 @@ export function CheckoutForm() {
                   setSupportingPhotoPendingId(null);
                   setGuidedFrames([]);
                   setGuidedConsent(false);
+                  setDirectMediaConsent(false);
+                  intakeSessionRef.current = null;
                   setShowGuidedPhotos(false);
                   setStepError(null);
                   setFieldErrors({});
@@ -1460,27 +1467,33 @@ export function CheckoutForm() {
                     <span className="h-px flex-1 bg-[#d8c6a2]" />
                   </div>
 
-                  <VoiceRecorderSection
-                    voiceFile={form.voiceFile}
-                    voicePreviewUrl={form.voicePreviewUrl}
-                    voiceSource={form.voiceSource}
-                    voiceConsent={form.voiceConsent}
-                    onVoiceChange={(file, previewUrl, source) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        customStorySourceMode: file
-                          ? isStoryAudioFile(file) ? "audio" : "document"
-                          : prev.customStoryMemory.trim() ? "written" : "",
-                        voiceFile: file,
-                        voicePreviewUrl: previewUrl,
-                        voiceSource: source,
-                        voiceConsent: file ? prev.voiceConsent : false,
-                      }))
-                    }
-                    onConsentChange={(consent) =>
-                      setForm((prev) => ({ ...prev, voiceConsent: consent }))
-                    }
-                  />
+                  <div
+                    ref={registerFieldRef("voiceConsent")}
+                    tabIndex={-1}
+                    aria-label="Custom Story source and consent"
+                  >
+                    <VoiceRecorderSection
+                      voiceFile={form.voiceFile}
+                      voicePreviewUrl={form.voicePreviewUrl}
+                      voiceSource={form.voiceSource}
+                      voiceConsent={form.voiceConsent}
+                      onVoiceChange={(file, previewUrl, source) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          customStorySourceMode: file
+                            ? isStoryAudioFile(file) ? "audio" : "document"
+                            : prev.customStoryMemory.trim() ? "written" : "",
+                          voiceFile: file,
+                          voicePreviewUrl: previewUrl,
+                          voiceSource: source,
+                          voiceConsent: file ? prev.voiceConsent : false,
+                        }))
+                      }
+                      onConsentChange={(consent) =>
+                        setForm((prev) => ({ ...prev, voiceConsent: consent }))
+                      }
+                    />
+                  </div>
 
                   <p className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-4 py-3 text-xs leading-5 text-[#695f54]">
                     Your typed story, voice note, and files are read by our team and used only to write this book. Never used for voice cloning or AI training.

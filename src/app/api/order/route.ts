@@ -238,6 +238,15 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    if (theme === 'custom-voice-story' && !hasCustomStorySource) {
+      return NextResponse.json(
+        {
+          error: 'Add one Custom Story source: type a memory, record or upload audio, or attach a written file. No charge was made.',
+          code: 'custom_story_source_required',
+        },
+        { status: 400 },
+      );
+    }
     const voiceConsentRaw = String(form.get('voiceConsent') || '').trim().toLowerCase();
     const voiceConsentGiven = voiceConsentRaw === 'true' || voiceConsentRaw === 'on' || voiceConsentRaw === '1';
     const documentConsentRaw = String(

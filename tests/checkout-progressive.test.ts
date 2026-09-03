@@ -49,6 +49,8 @@ function makeForm(overrides: Partial<CheckoutProgressFormShape> = {}): CheckoutP
     email: 'parent@example.com',
     voiceFile: null,
     voiceConsent: false,
+    customStoryMemory: '',
+    directMediaConsent: false,
     ...overrides,
   };
 }
@@ -224,6 +226,67 @@ test('first invalid field mapping and focus target are stable for each step', ()
     missingFields: ['Email address'],
     firstInvalidField: 'email',
   });
+});
+
+test('Custom Story requires one source and returns consent recovery to the correct medium', () => {
+  const noSource = makeForm({ theme: 'custom-voice-story', customStoryMemory: '', voiceFile: null });
+  const noSourceProgress = getCheckoutProgress(noSource);
+  assert.equal(noSourceProgress.steps.find((step) => step.id === 'hero-details')?.complete, false);
+  assert.deepEqual(noSourceProgress.currentStep, {
+    id: 'hero-details',
+    title: 'Hero details',
+    missingFields: ['Custom Story source'],
+    firstInvalidField: 'customStoryMemory',
+  });
+  assert.match(getCheckoutPaymentBlockers(noSource).join(' '), /Custom Story source/);
+
+  const typed = makeForm({ theme: 'custom-voice-story', customStoryMemory: 'A real family memory.' });
+  assert.equal(getCheckoutProgress(typed).steps.find((step) => step.id === 'hero-details')?.complete, true);
+
+  const audio = makeForm({
+    theme: 'custom-voice-story',
+    voiceFile: new File(['audio'], 'memory.mp3', { type: 'audio/mpeg' }),
+    voiceConsent: false,
+  });
+  assert.deepEqual(getCheckoutProgress(audio).currentStep, {
+    id: 'hero-details',
+    title: 'Hero details',
+    missingFields: ['Voice note consent'],
+    firstInvalidField: 'voiceConsent',
+  });
+
+  const document = makeForm({
+    theme: 'custom-voice-story',
+    voiceFile: new File(['notes'], 'memory.pdf', { type: 'application/pdf' }),
+    voiceConsent: false,
+  });
+  assert.deepEqual(getCheckoutProgress(document).currentStep, {
+    id: 'hero-details',
+    title: 'Hero details',
+    missingFields: ['Document consent'],
+    firstInvalidField: 'voiceConsent',
+  });
+});
+
+test('server and Start fresh enforce the same source/reset contract before payment', () => {
+  const route = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const sourceRequired = route.indexOf('custom_story_source_required');
+  const stripe = route.indexOf('const stripe = getStripe()');
+  assert.ok(sourceRequired > 0 && sourceRequired < stripe);
+
+  const startFresh = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('We saved your progress'),
+    CHECKOUT_FORM_SRC.indexOf('Start fresh') + 200,
+  );
+  assert.match(startFresh, /setDirectMediaConsent\(false\)/);
+  assert.match(startFresh, /intakeSessionRef\.current = null/);
+  assert.match(CHECKOUT_FORM_SRC, /registerFieldRef\("voiceConsent"\)/);
+
+  const readiness = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('const isReadyToPay ='),
+    CHECKOUT_FORM_SRC.indexOf('const completedStepCount'),
+  );
+  assert.match(readiness, /!isCustomStorySelected \|\| hasCustomStoryInput/);
 });
 
 test('optional fields do not block', () => {
