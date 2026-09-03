@@ -104,7 +104,8 @@ test('server contract: stable Stripe Product binding preserves personalized succ
 
 test('checkout contract: simplified appearance UI removes stale single-select and suggestion copy', () => {
   const src = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
-  assert.match(src, /How should the hero look\?/);
+  assert.match(src, /Upload a photo for the best likeness/);
+  assert.match(src, /Or describe the hero instead/);
   assert.match(src, /Must include/);
   assert.match(src, /head-covering/);
   assert.match(src, /hero photo or description/);

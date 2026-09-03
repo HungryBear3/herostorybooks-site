@@ -214,7 +214,7 @@ test('first invalid field mapping and focus target are stable for each step', ()
   });
   assert.deepEqual(appearance.currentStep, {
     id: 'hero-appearance',
-    title: 'Hero appearance/photo',
+    title: 'Hero photo or description',
     missingFields: ['Hero appearance details or photo'],
     firstInvalidField: 'characterNotes',
   });
@@ -264,14 +264,34 @@ test('forward navigation is locked at the first incomplete step while completed 
   assert.equal(canNavigateToCheckoutStep(appearance.steps, 'story'), false);
 });
 
-test('checkout source includes a bottom next-section action for long steps', () => {
+test('checkout source includes early and end-of-step next-section actions without an overlay', () => {
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="checkout-header-continue"/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="checkout-primary-continue"/);
   assert.match(CHECKOUT_FORM_SRC, /data-testid="checkout-bottom-continue"/);
-  assert.match(CHECKOUT_FORM_SRC, /Continue to \{nextStep\.title\}/);
+  assert.doesNotMatch(CHECKOUT_FORM_SRC, /data-testid="checkout-sticky-continue"/);
+  assert.match(CHECKOUT_FORM_SRC, /Continue to Step \{currentStepIndex \+ 2\}: \{nextStep\.title\}/);
   assert.match(CHECKOUT_FORM_SRC, /focus-visible:ring-\[#241914\]/);
+  assert.match(
+    CHECKOUT_FORM_SRC,
+    /id="childName"[\s\S]*?data-testid="checkout-primary-continue"[\s\S]*?id="recipientName"/,
+  );
   assert.match(
     CHECKOUT_FORM_SRC,
     /data-testid="checkout-bottom-continue"[\s\S]*?type="button"[\s\S]*?onClick=\{continueCurrentStep\}/,
   );
+});
+
+test('checkout makes photo the primary likeness path and description the alternative', () => {
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="checkout-theme-step"[\s\S]*?tabIndex=\{-1\}/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="hero-photo-primary-choice"/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="hero-photo-primary-choice"[\s\S]*?tabIndex=\{-1\}/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="hero-photo-upload-control"/);
+  assert.match(CHECKOUT_FORM_SRC, /aria-label="Upload hero photo from your phone"[\s\S]*?className="peer sr-only"/);
+  assert.match(CHECKOUT_FORM_SRC, /aria-label="Take a new hero photo"[\s\S]*?className="peer sr-only"/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="hero-photo-proof-example"/);
+  assert.match(CHECKOUT_FORM_SRC, /Upload a photo for the best likeness/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="hero-description-alternative"/);
+  assert.match(CHECKOUT_FORM_SRC, /Or describe the hero instead/);
 });
 
 test('checkout source includes progressive step UI and sequential person editor affordances', () => {

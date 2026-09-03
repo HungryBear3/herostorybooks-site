@@ -788,9 +788,9 @@ export function CheckoutForm() {
     requestAnimationFrame(() => {
       const target = (fieldName ? fieldRefs.current[fieldName] : null) ?? (stepId ? stepRefs.current[stepId] : null);
       if (target) {
-        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.scrollIntoView({ behavior: "smooth", block: fieldName ? "center" : "start" });
         if ("focus" in target) {
-          (target as HTMLElement).focus();
+          (target as HTMLElement).focus({ preventScroll: true });
         }
       }
     });
@@ -1226,13 +1226,16 @@ export function CheckoutForm() {
                   {currentStep.title}
                 </h1>
               </div>
-              <button
-                type="button"
-                onClick={continueCurrentStep}
-                className="rounded-full border border-[#cbbda4] bg-[#fff8ec] px-4 py-2 text-sm font-semibold text-[#241914] transition hover:border-deep-gold"
-              >
-                Continue
-              </button>
+              {nextStep && (
+                <button
+                  data-testid="checkout-header-continue"
+                  type="button"
+                  onClick={continueCurrentStep}
+                  className="hidden rounded-full border border-[#cbbda4] bg-[#fff8ec] px-4 py-2 text-sm font-semibold text-[#241914] transition hover:border-deep-gold sm:inline-flex"
+                >
+                  Continue to Step {currentStepIndex + 2}: {nextStep.title}
+                </button>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c7b68]">
               {checkoutSteps.map((step, index) => (
@@ -1324,17 +1327,20 @@ export function CheckoutForm() {
           onSubmit={handleSubmit}
           className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_340px]"
         >
-          <div className="space-y-5">
+          <div className="flex flex-col gap-5">
             {/* ── 1. Theme ── */}
             <section
               ref={(node) => {
                 registerStepRef("hero-details")(node);
                 registerFieldRef("theme")(node);
               }}
-              className={`${currentStepId !== "hero-details" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
+              data-testid="checkout-theme-step"
+              tabIndex={-1}
+              aria-labelledby="checkout-story-direction-heading"
+              className={`${currentStepId !== "hero-details" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#241914] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fff8ec]`}
             >
               <div>
-                <h2 className="font-serif text-2xl text-[#1f1a16]">
+                <h2 id="checkout-story-direction-heading" className="font-serif text-2xl text-[#1f1a16]">
                   Choose a story direction
                 </h2>
                 <p className="mt-1 text-sm leading-6 text-[#695f54]">
@@ -1641,6 +1647,22 @@ export function CheckoutForm() {
                 </div>
               </div>
 
+              {nextStep && (
+                <div className="rounded-2xl border border-[#d8c6a2] bg-[#f8f0dd] p-3">
+                  <button
+                    data-testid="checkout-primary-continue"
+                    type="button"
+                    onClick={continueCurrentStep}
+                    className="w-full rounded-2xl bg-[#241914] px-5 py-4 text-base font-bold text-[#fff8ec] shadow-md transition hover:bg-[#3a2b23] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#241914] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fff8ec]"
+                  >
+                    Continue to Step {currentStepIndex + 2}: {nextStep.title}
+                  </button>
+                  <p className="mt-2 text-center text-xs leading-5 text-[#695f54]">
+                    The details below are optional. You can return to add them later.
+                  </p>
+                </div>
+              )}
+
               {/* Book recipient / audience — optional fully-custom context */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -1813,17 +1835,20 @@ export function CheckoutForm() {
 
             {/* ── 2.5 Hero appearance ── */}
             <section
-              ref={registerStepRef("hero-appearance")}
-              className={`${currentStepId !== "hero-appearance" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
+              data-testid="hero-description-alternative"
+              className={`${currentStepId !== "hero-appearance" ? "hidden" : ""} order-2 rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
             >
               <div>
+                <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.18em] text-[#a64c4c]">
+                  Option 2 · No photo
+                </p>
                 <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
-                  How should the hero look?
+                  Or describe the hero instead
                 </h2>
                 <p className="text-sm text-[#695f54]">
                   {form.photoFile
-                    ? "We'll use the uploaded photo as the hero's visual reference."
-                    : "No photo is required. Describe the hero and we'll draw them as a storybook character."}
+                    ? "Your photo is the main visual reference. Add written details only if the photo does not show something important."
+                    : "Prefer not to upload a photo? Describe the hero and we'll do our best to represent them as a storybook character."}
                 </p>
               </div>
 
@@ -1849,11 +1874,12 @@ export function CheckoutForm() {
                 </details>
               ) : (
                 <div>
-                  <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
+                  <label htmlFor="hero-description" className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
                     Describe the hero <span className="text-[#a64c4c]">(required without a photo)</span>
                   </label>
                   <textarea
                     ref={registerFieldRef("characterNotes")}
+                    id="hero-description"
                     value={form.characterNotes}
                     onChange={(e) => set("characterNotes", e.target.value)}
                     placeholder="Example: 6 years old, warm brown skin, short curly dark hair, bright green hoodie"
@@ -2252,58 +2278,31 @@ export function CheckoutForm() {
             </section>
 
             {/* ── 3. Hero photo ── */}
-            <section className={`${currentStepId !== "hero-appearance" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}>
+            <section
+              ref={registerStepRef("hero-appearance")}
+              data-testid="hero-photo-primary-choice"
+              tabIndex={-1}
+              aria-labelledby="hero-photo-heading"
+              className={`${currentStepId !== "hero-appearance" ? "hidden" : ""} order-1 flex flex-col gap-4 rounded-[1.75rem] border-2 border-[#a64c4c]/55 bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#241914] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fff8ec]`}
+            >
               <div>
-                <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
-                  Add one clear photo for the main character
+                <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.18em] text-[#a64c4c]">
+                  Option 1 · Recommended
+                </p>
+                <h2 id="hero-photo-heading" className="font-serif text-2xl text-[#1f1a16] mb-1">
+                  Upload a photo for the best likeness
                 </h2>
                 <p className="text-sm leading-6 text-[#695f54]">
-                  Optional, but best for the closest hero likeness. If you skip it, we&apos;ll build the hero from the written description above, and you review the proof before anything prints.
+                  Choose one clear, front-facing photo of the hero. We&apos;ll use it as the visual reference for the closest likeness, and you&apos;ll review the proof before anything prints.
                 </p>
               </div>
               <div className="inline-flex w-fit rounded-full border border-[#d8c6a2] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54]">
-                {form.photoFile ? "Main character photo added" : "No hero photo required"}
+                {form.photoFile ? "✓ Hero photo added" : "Best choice for a recognizable hero"}
               </div>
-
-              {/* Sample teaser — shown before upload */}
-              {!form.photoDataUrl && (
-                <div className="space-y-2">
-                  <p className="text-xs font-semibold text-[#8a7b6a] uppercase tracking-widest text-center">
-                    What your proof includes
-                  </p>
-                  <div className="grid gap-2 sm:grid-cols-[0.85fr_1.15fr]">
-                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src="/assets/real-photo-demo.png"
-                        alt="Example reference photo used for a personalized book"
-                        className="h-40 w-full object-cover sm:h-full"
-                      />
-                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
-                        Uploaded photo
-                      </div>
-                    </div>
-                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src="/assets/storybook-transform-demo.png"
-                        alt="Example storybook illustration created from the uploaded photo"
-                        className="h-40 w-full object-cover sm:h-full"
-                      />
-                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
-                        Illustration proof
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-xs text-center text-[#8a7b6a]">
-                    Uploaded photo → storybook illustration · you approve before print
-                  </p>
-                </div>
-              )}
 
               {/* Upload zone / preview */}
               {form.photoDataUrl ? (
-                <div className="space-y-3">
+                <div className="order-1 space-y-3">
                   <div className="relative rounded-2xl overflow-hidden border-2 border-[#a64c4c] shadow-md">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
@@ -2376,26 +2375,29 @@ export function CheckoutForm() {
                   </div>
                 </div>
               ) : (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div
+                <div className="order-1 grid gap-3 sm:grid-cols-2">
+                  <label
+                    htmlFor="hero-photo-upload"
+                    data-testid="hero-photo-upload-control"
                     onDragOver={(e) => {
                       e.preventDefault();
                       setDragOver(true);
                     }}
                     onDragLeave={() => setDragOver(false)}
                     onDrop={handleDrop}
-                    onClick={() => photoInputRef.current?.click()}
-                    className={`flex cursor-pointer items-start gap-3 rounded-2xl border-2 p-4 text-left transition-all ${
+                    className={`flex cursor-pointer items-start gap-3 rounded-2xl border-2 p-4 text-left transition-all has-[:focus-visible]:outline-none has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#241914] has-[:focus-visible]:ring-offset-2 ${
                       dragOver
                         ? "border-[#a64c4c] bg-[#a64c4c]/10 scale-[1.01]"
-                        : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2] hover:bg-[#f8f0dd]"
+                        : "border-[#a64c4c] bg-[#fffaf1] shadow-sm hover:bg-[#f8f0dd]"
                     }`}
                   >
                     <input
                       ref={photoInputRef}
+                      id="hero-photo-upload"
                       type="file"
+                      aria-label="Upload hero photo from your phone"
                       accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
-                      className="hidden"
+                      className="peer sr-only"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) processPhoto(f);
@@ -2407,15 +2409,15 @@ export function CheckoutForm() {
                     </span>
                     <span className="min-w-0">
                       <span className="block text-sm font-bold text-[#1f1a16]">
-                        {dragOver ? "Drop it here" : "Use camera roll"}
+                        {dragOver ? "Drop it here" : "Upload from your phone"}
                       </span>
                       <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
-                        Choose an existing photo from your phone.
+                        Choose an existing JPG, PNG, or WebP photo.
                       </span>
                     </span>
-                  </div>
+                  </label>
 
-                  <label className="flex cursor-pointer items-start gap-3 rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] p-4 text-left transition hover:border-[#d8c6a2] hover:bg-[#f8f0dd]">
+                  <label htmlFor="hero-photo-camera" className="flex cursor-pointer items-start gap-3 rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] p-4 text-left transition hover:border-[#d8c6a2] hover:bg-[#f8f0dd] has-[:focus-visible]:outline-none has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#241914] has-[:focus-visible]:ring-offset-2">
                     <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-[#d8c6a2] bg-[#f8f0dd] text-2xl">🤳</span>
                     <span className="min-w-0">
                       <span className="block text-sm font-bold text-[#1f1a16]">Take a new picture</span>
@@ -2424,10 +2426,12 @@ export function CheckoutForm() {
                       </span>
                     </span>
                     <input
+                      id="hero-photo-camera"
                       type="file"
+                      aria-label="Take a new hero photo"
                       accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
                       capture="user"
-                      className="hidden"
+                      className="peer sr-only"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) processPhoto(f);
@@ -2438,12 +2442,48 @@ export function CheckoutForm() {
                 </div>
               )}
 
-              <p className="text-xs text-center leading-5 text-[#8a7b6a]">
+              {/* Proof example follows the upload controls in both DOM and visual order. */}
+              {!form.photoDataUrl && (
+                <div data-testid="hero-photo-proof-example" className="order-2 space-y-2">
+                  <p className="text-xs font-semibold text-[#8a7b6a] uppercase tracking-widest text-center">
+                    What your proof includes
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-[0.85fr_1.15fr]">
+                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src="/assets/real-photo-demo.png"
+                        alt="Example reference photo used for a personalized book"
+                        className="h-40 w-full object-cover sm:h-full"
+                      />
+                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                        Uploaded photo
+                      </div>
+                    </div>
+                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src="/assets/storybook-transform-demo.png"
+                        alt="Example storybook illustration created from the uploaded photo"
+                        className="h-40 w-full object-cover sm:h-full"
+                      />
+                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                        Illustration proof
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-xs text-center text-[#8a7b6a]">
+                    Uploaded photo → storybook illustration · you approve before print
+                  </p>
+                </div>
+              )}
+
+              <p className="order-3 text-center text-xs leading-5 text-[#8a7b6a]">
                 🔒 Photos stay private — used only to illustrate your book, never to train AI. You can review before print.
               </p>
 
               {guidedCaptureEnabled && (
-                <div className="space-y-3">
+                <div className="order-4 space-y-3">
                   <button
                     type="button"
                     onClick={() => setShowGuidedPhotos((open) => !open)}
@@ -2588,14 +2628,14 @@ export function CheckoutForm() {
             </section>
 
             {nextStep && (
-              <div className="rounded-[1.5rem] border border-[#d8c6a2] bg-[#fff8ec] p-4 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)]">
+              <div className="order-[100] rounded-[1.5rem] border border-[#d8c6a2] bg-[#fff8ec] p-4 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)]">
                 <button
                   data-testid="checkout-bottom-continue"
                   type="button"
                   onClick={continueCurrentStep}
                   className="w-full rounded-2xl bg-[#241914] px-5 py-4 text-base font-bold text-[#fff8ec] shadow-md transition hover:bg-[#3a2b23] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#241914] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fff8ec]"
                 >
-                  Continue to {nextStep.title}
+                  Continue to Step {currentStepIndex + 2}: {nextStep.title}
                 </button>
               </div>
             )}

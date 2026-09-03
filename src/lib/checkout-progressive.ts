@@ -247,7 +247,7 @@ function getStepBlueprints(form: CheckoutProgressFormShape): CheckoutStepProgres
     },
     {
       id: 'hero-appearance',
-      title: 'Hero appearance/photo',
+      title: 'Hero photo or description',
       status: 'upcoming',
       complete: hasHeroAppearance(form),
       summary: hasHeroAppearance(form) ? 'Done' : 'Add a hero photo or written appearance details.',

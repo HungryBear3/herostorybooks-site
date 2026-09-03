@@ -13,13 +13,19 @@ test('Custom Story is the primary story direction and templates are secondary', 
   assert.match(checkoutFormSource, /templateThemes = THEMES\.filter\(\(theme\) => theme\.id !== CUSTOM_STORY_THEME_ID\)/);
 });
 
-test('optional main photo intake uses simple audio-style choice cards', () => {
-  assert.match(checkoutFormSource, /Add one clear photo for the main character/);
-  assert.match(checkoutFormSource, /Optional, but best for the closest hero likeness/);
-  assert.match(checkoutFormSource, /No hero photo required/);
-  assert.match(checkoutFormSource, /Main character photo added/);
-  assert.match(checkoutFormSource, /Choose an existing photo from your phone\./);
+test('main photo intake leads with recommended upload and keeps description as the alternative', () => {
+  assert.match(checkoutFormSource, /Upload a photo for the best likeness/);
+  assert.match(checkoutFormSource, /Recommended/);
+  assert.match(checkoutFormSource, /Or describe the hero instead/);
+  assert.match(checkoutFormSource, /Upload from your phone/);
+  assert.match(checkoutFormSource, /Choose an existing JPG, PNG, or WebP photo\./);
   assert.match(checkoutFormSource, /Open your camera for a still photo\./);
+  assert.match(checkoutFormSource, /data-testid="hero-photo-proof-example"/);
+  assert.ok(
+    checkoutFormSource.indexOf('data-testid="hero-photo-upload-control"') <
+      checkoutFormSource.indexOf('data-testid="hero-photo-proof-example"'),
+    'upload controls must precede the proof example in semantic DOM order',
+  );
   assert.doesNotMatch(checkoutFormSource, /Drag &amp; drop · JPG\/PNG\/WebP\/HEIC/);
 });
 
