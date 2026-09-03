@@ -87,6 +87,65 @@ test('desktop header Continue uses the same owner-facing destination label', asy
   );
 });
 
+test('restored ready-made progress drops stale Custom Story text before it can re-enter the lane', async ({ page, baseURL }) => {
+  await installHandoffHarness(page, baseURL!);
+  await page.addInitScript(() => {
+    localStorage.setItem('hsb_order_v1', JSON.stringify({
+      theme: 'space-voyager',
+      childName: 'Testhero',
+      customStoryMemory: 'PRIVATE SOURCE MUST NOT CROSS',
+      customStorySourceMode: 'written',
+      familyCharacters: [],
+      mustInclude: [],
+      mustIncludeOther: '',
+      bookFormat: 'digital',
+      email: '',
+      savedAt: Date.now(),
+    }));
+  });
+  await page.goto('/checkout');
+  await expect(page.getByTestId('custom-story-intake-panel')).toHaveCount(0);
+  await page.getByRole('button', { name: /Custom Story/ }).click();
+  await expect(page.getByLabel('Type the memory or story idea')).toHaveValue('');
+});
+
+test('a late recorder stop after switching lanes cannot restore abandoned audio', async ({ page, baseURL }) => {
+  const harness = await installHandoffHarness(page, baseURL!);
+  await page.addInitScript(() => {
+    const track = { stop() {} };
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: async () => ({ getTracks: () => [track] }) },
+    });
+    class FakeMediaRecorder {
+      state = 'inactive';
+      mimeType = 'audio/webm';
+      private listeners: Record<string, Array<(event?: { data?: Blob }) => void>> = {};
+      constructor(_stream: unknown, _options?: unknown) {}
+      addEventListener(name: string, listener: (event?: { data?: Blob }) => void) {
+        (this.listeners[name] ??= []).push(listener);
+      }
+      start() {
+        this.state = 'recording';
+        (window as unknown as { fireLateRecorderStop: () => void }).fireLateRecorderStop = () => {
+          this.listeners.dataavailable?.forEach((listener) => listener({ data: new Blob(['late'], { type: 'audio/webm' }) }));
+          this.listeners.stop?.forEach((listener) => listener());
+        };
+      }
+      stop() { this.state = 'inactive'; }
+    }
+    Object.defineProperty(window, 'MediaRecorder', { configurable: true, value: FakeMediaRecorder });
+  });
+  await page.goto('/checkout');
+  await page.getByRole('button', { name: /Custom Story/ }).click();
+  await page.getByRole('button', { name: 'Record audio' }).click();
+  await page.getByRole('button', { name: 'Choose a ready-made adventure instead' }).click();
+  await page.evaluate(() => (window as unknown as { fireLateRecorderStop: () => void }).fireLateRecorderStop());
+  await page.getByRole('button', { name: /Custom Story/ }).click();
+  await expect(page.getByText('recorded-story-note.webm')).toHaveCount(0);
+  expect(harness.orderRequests).toHaveLength(0);
+});
+
 test('switching from Custom Story to a ready-made adventure clears abandoned private source material', async ({ page, baseURL }) => {
   const harness = await installHandoffHarness(page, baseURL!);
   await page.setViewportSize({ width: 390, height: 844 });

@@ -76,10 +76,13 @@ export function VoiceRecorderSection({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  const mountedRef = useRef(true);
 
   // Always release the mic + revoke the preview URL on unmount.
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
       if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
@@ -109,6 +112,11 @@ export function VoiceRecorderSection({
         if (event.data && event.data.size > 0) recordedChunksRef.current.push(event.data);
       });
       recorder.addEventListener('stop', () => {
+        if (!mountedRef.current) {
+          recordedChunksRef.current = [];
+          stopStream();
+          return;
+        }
         const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
         const file = new File([blob], RECORDED_FILE_NAME, { type: blob.type });
         const previewUrl = URL.createObjectURL(blob);

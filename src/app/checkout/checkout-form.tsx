@@ -329,8 +329,10 @@ function saveProgress(form: FormState) {
         occasion: form.occasion,
         giftMessage: form.giftMessage,
         characterNotes: form.characterNotes,
-        customStoryMemory: form.customStoryMemory,
-        customStorySourceMode: form.customStorySourceMode,
+        customStoryMemory:
+          form.theme === CUSTOM_STORY_THEME_ID ? form.customStoryMemory : "",
+        customStorySourceMode:
+          form.theme === CUSTOM_STORY_THEME_ID ? form.customStorySourceMode : "",
         familyCharacters: form.familyCharacters.map((character) => ({
           ...character,
           pronouns: "",
@@ -508,7 +510,20 @@ export function CheckoutForm() {
 
     if (savedWithDefaults && (savedWithDefaults.childName || savedWithDefaults.theme)) {
       setShowRecovery(true);
-      setForm((prev) => ({ ...prev, ...savedWithDefaults, ...queryPrefill }));
+      setForm((prev) => {
+        const restored = { ...prev, ...savedWithDefaults, ...queryPrefill };
+        return restored.theme === CUSTOM_STORY_THEME_ID
+          ? restored
+          : {
+              ...restored,
+              customStoryMemory: "",
+              customStorySourceMode: "",
+              voiceFile: null,
+              voicePreviewUrl: null,
+              voiceSource: null,
+              voiceConsent: false,
+            };
+      });
     } else if (nextFormat || childNamePrefill || themeFromDirection || occasionFromUrl) {
       setForm((prev) => ({ ...prev, ...queryPrefill }));
     }
@@ -962,7 +977,9 @@ export function CheckoutForm() {
       payload.set("occasion", form.occasion);
       payload.set("giftMessage", form.giftMessage);
       payload.set("characterNotes", form.characterNotes.trim());
-      payload.set("customStoryText", form.customStoryMemory.trim());
+      if (isCustomStorySelected && form.customStoryMemory.trim()) {
+        payload.set("customStoryText", form.customStoryMemory.trim());
+      }
       payload.set(
         "familyCharacters",
         JSON.stringify(
@@ -1002,7 +1019,8 @@ export function CheckoutForm() {
       if (checkoutTracking?.invite) payload.set("invite", checkoutTracking.invite);
       const gaClientId = currentGaClientId();
       if (gaClientId) payload.set("gaClientId", gaClientId);
-      const attachedStoryFileIsAudio = isStoryAudioFile(form.voiceFile);
+      const attachedStoryFile = isCustomStorySelected ? form.voiceFile : null;
+      const attachedStoryFileIsAudio = isStoryAudioFile(attachedStoryFile);
       const preparedDirectIntake = await prepareOrReuseDirectIntakeSubmission({
         enabled: directUploadEnabled && directMediaFilesPresent,
         transport: directIntakeTransport,
@@ -1022,20 +1040,20 @@ export function CheckoutForm() {
             ? guidedFrames.map((frame) => ({ file: frame.file, mimeType: frame.file.type }))
             : [],
         voice:
-          form.voiceFile && attachedStoryFileIsAudio && form.voiceSource
+          attachedStoryFile && attachedStoryFileIsAudio && form.voiceSource
             ? {
-                file: form.voiceFile,
+                file: attachedStoryFile,
                 source: form.voiceSource,
                 consent: form.voiceConsent,
-                mimeType: form.voiceFile.type,
+                mimeType: attachedStoryFile.type,
               }
             : null,
         document:
-          form.voiceFile && !attachedStoryFileIsAudio
+          attachedStoryFile && !attachedStoryFileIsAudio
             ? {
-                file: form.voiceFile,
+                file: attachedStoryFile,
                 consent: form.voiceConsent,
-                mimeType: form.voiceFile.type,
+                mimeType: attachedStoryFile.type,
               }
             : null,
       }, intakeSessionRef.current);
@@ -1048,12 +1066,12 @@ export function CheckoutForm() {
       if (directIntakeSubmission && preparedDirectIntake) {
         intakeSessionRef.current = preparedDirectIntake.cache;
       } else {
-        if (form.voiceFile && attachedStoryFileIsAudio) {
-          payload.set("voice", form.voiceFile);
+        if (attachedStoryFile && attachedStoryFileIsAudio) {
+          payload.set("voice", attachedStoryFile);
           payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
           if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
-        } else if (form.voiceFile) {
-          payload.set("document", form.voiceFile);
+        } else if (attachedStoryFile) {
+          payload.set("document", attachedStoryFile);
           payload.set("documentConsent", form.voiceConsent ? "true" : "false");
         }
         // Optional guided child stills. Appends only parent-approved still photos; no video.
@@ -1517,8 +1535,12 @@ export function CheckoutForm() {
                       URL.revokeObjectURL(form.voicePreviewUrl);
                     }
                     intakeSessionRef.current = null;
-                    setForm((prev) => ({
-                      ...prev,
+                    if (recoveryTimerRef.current) {
+                      clearTimeout(recoveryTimerRef.current);
+                      recoveryTimerRef.current = null;
+                    }
+                    const clearedForm: FormState = {
+                      ...form,
                       theme: "",
                       customStoryMemory: "",
                       customStorySourceMode: "",
@@ -1526,7 +1548,10 @@ export function CheckoutForm() {
                       voicePreviewUrl: null,
                       voiceSource: null,
                       voiceConsent: false,
-                    }));
+                    };
+                    setDirectMediaConsent(false);
+                    saveProgress(clearedForm);
+                    setForm(clearedForm);
                   }}
                   className="w-full rounded-2xl border border-[#b8aa90] bg-[#fffaf1] px-4 py-3 text-sm font-semibold text-[#241914] underline decoration-[#a64c4c]/50 underline-offset-4"
                 >

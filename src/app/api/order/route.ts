@@ -222,6 +222,22 @@ export async function POST(request: Request) {
         : null;
     const hasVoiceUpload = voiceRaw instanceof File && voiceRaw.size > 0;
     const hasDocumentUpload = documentRaw instanceof File && documentRaw.size > 0;
+    const hasCustomStorySource = Boolean(
+      customStoryText
+      || hasVoiceUpload
+      || hasDocumentUpload
+      || directSelection?.voiceAssetId
+      || directSelection?.documentAssetId,
+    );
+    if (theme !== 'custom-voice-story' && hasCustomStorySource) {
+      return NextResponse.json(
+        {
+          error: 'Custom Story source material requires the Custom Story direction. No charge was made.',
+          code: 'custom_story_source_theme_mismatch',
+        },
+        { status: 400 },
+      );
+    }
     const voiceConsentRaw = String(form.get('voiceConsent') || '').trim().toLowerCase();
     const voiceConsentGiven = voiceConsentRaw === 'true' || voiceConsentRaw === 'on' || voiceConsentRaw === '1';
     const documentConsentRaw = String(

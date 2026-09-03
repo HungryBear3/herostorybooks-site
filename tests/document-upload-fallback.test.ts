@@ -21,8 +21,9 @@ const orders = readFileSync('src/lib/orders.ts', 'utf8');
 const adminOrder = readFileSync('src/app/admin/orders/[orderId]/page.tsx', 'utf8');
 
 test('legacy checkout sends audio as voice and non-audio as document', () => {
-  assert.match(checkout, /if \(form\.voiceFile && attachedStoryFileIsAudio\)[\s\S]*?payload\.set\("voice", form\.voiceFile\)/);
-  assert.match(checkout, /else if \(form\.voiceFile\)[\s\S]*?payload\.set\("document", form\.voiceFile\)/);
+  assert.match(checkout, /const attachedStoryFile = isCustomStorySelected \? form\.voiceFile : null/);
+  assert.match(checkout, /if \(attachedStoryFile && attachedStoryFileIsAudio\)[\s\S]*?payload\.set\("voice", attachedStoryFile\)/);
+  assert.match(checkout, /else if \(attachedStoryFile\)[\s\S]*?payload\.set\("document", attachedStoryFile\)/);
   assert.match(checkout, /payload\.set\("documentConsent", form\.voiceConsent \? "true" : "false"\)/);
 });
 
@@ -96,7 +97,9 @@ test('admin exposes document presence, storage reference, and consent without an
 });
 
 test('typed story crosses checkout, API, order storage, and admin as its own full-length lane', () => {
-  assert.match(checkout, /payload\.set\("customStoryText", form\.customStoryMemory\.trim\(\)\)/);
+  assert.match(checkout, /if \(isCustomStorySelected && form\.customStoryMemory\.trim\(\)\) \{[\s\S]*?payload\.set\("customStoryText", form\.customStoryMemory\.trim\(\)\)/);
+  assert.match(route, /custom_story_source_theme_mismatch/);
+  assert.match(route, /theme !== ['"]custom-voice-story['"][\s\S]*?customStoryText/);
   assert.doesNotMatch(checkout, /Custom story memory \/ typed fallback/);
   assert.match(route, /const customStoryText = String\(form\.get\('customStoryText'\)[\s\S]*?slice\(0, 1200\)/);
   assert.match(route, /customStoryText,/);

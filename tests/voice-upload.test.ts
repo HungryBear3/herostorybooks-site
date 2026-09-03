@@ -64,6 +64,14 @@ function makeAudioFile(name = 'voice.webm', type = 'audio/webm', size = 32): Fil
   } as unknown as File;
 }
 
+test('switching away from Custom Story resets every source consent and fences late recorder callbacks', () => {
+  const checkout = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  const recorder = readFileSync('src/components/checkout/VoiceRecorderSection.tsx', 'utf8');
+  assert.match(checkout, /onClick=\{\(\) => \{[\s\S]{0,1200}setDirectMediaConsent\(false\)[\s\S]{0,500}Choose a ready-made adventure instead/);
+  assert.match(recorder, /mountedRef\.current = false/);
+  assert.match(recorder, /if \(!mountedRef\.current\)[\s\S]{0,300}return/);
+});
+
 // ── createOrderRecord persists voice metadata ────────────────────────────────
 
 test('createOrderRecord persists privacy-safe voice metadata when provided', () => {
@@ -328,19 +336,20 @@ test('Custom Story exposes typing and voice/document controls together without a
 test('checkout source attaches audio as voice and documents through the separate document field', () => {
   assert.match(
     CHECKOUT_SRC,
-    /if \(form\.voiceFile && attachedStoryFileIsAudio\) \{[\s\S]*?payload\.set\(['"]voice['"],/,
+    /if \(attachedStoryFile && attachedStoryFileIsAudio\) \{[\s\S]*?payload\.set\(['"]voice['"], attachedStoryFile\)/,
   );
   assert.match(
     CHECKOUT_SRC,
-    /else if \(form\.voiceFile\) \{[\s\S]*?payload\.set\(['"]document['"],/,
+    /else if \(attachedStoryFile\) \{[\s\S]*?payload\.set\(['"]document['"], attachedStoryFile\)/,
   );
   assert.match(CHECKOUT_SRC, /payload\.set\(['"]documentConsent['"]/);
 });
 
 test('direct intake routes audio and documents to distinct slot parameters', () => {
-  assert.match(CHECKOUT_SRC, /const attachedStoryFileIsAudio = isStoryAudioFile\(form\.voiceFile\)/);
-  assert.match(CHECKOUT_SRC, /voice:\s*form\.voiceFile && attachedStoryFileIsAudio && form\.voiceSource/);
-  assert.match(CHECKOUT_SRC, /document:\s*form\.voiceFile && !attachedStoryFileIsAudio/);
+  assert.match(CHECKOUT_SRC, /const attachedStoryFile = isCustomStorySelected \? form\.voiceFile : null/);
+  assert.match(CHECKOUT_SRC, /const attachedStoryFileIsAudio = isStoryAudioFile\(attachedStoryFile\)/);
+  assert.match(CHECKOUT_SRC, /voice:\s*attachedStoryFile && attachedStoryFileIsAudio && form\.voiceSource/);
+  assert.match(CHECKOUT_SRC, /document:\s*attachedStoryFile && !attachedStoryFileIsAudio/);
   assert.match(CHECKOUT_SRC, /document:[\s\S]*?consent: form\.voiceConsent/);
 });
 
