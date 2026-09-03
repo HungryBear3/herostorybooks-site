@@ -96,6 +96,8 @@ export interface OrderInput {
   occasion?: string;
   giftMessage?: string;
   characterNotes?: string;
+  /** Buyer-typed Custom Story source text, kept separate from appearance notes. */
+  customStoryText?: string;
   familyCharacters?: FamilyCharacterInput[] | string | null;
   appearanceOptions?: string;
   bookFormat: string;
@@ -123,6 +125,11 @@ export interface OrderInput {
   voiceBlobUrl?: string | null;
   voiceConsentAt?: string | null;
   voiceSource?: 'recorded' | 'uploaded' | null;
+  /** Optional written/PDF/Word story inspiration, kept separate from voice metadata. */
+  documentBlobPath?: string | null;
+  documentBlobUrl?: string | null;
+  documentConsentAt?: string | null;
+  documentSource?: 'uploaded' | null;
   /**
    * Transcription metadata for the optional consented voice note. Populated
    * during checkout only when HSB_VOICE_TRANSCRIPTION_ENABLED is on; null
@@ -1037,6 +1044,7 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     occasion: input.occasion?.trim() || '',
     giftMessage: input.giftMessage?.trim() || '',
     characterNotes: input.characterNotes?.trim() || '',
+    customStoryText: input.customStoryText?.trim().slice(0, 1200) || '',
     familyCharacters: sanitizeFamilyCharacters(input.familyCharacters),
     appearanceOptions: input.appearanceOptions?.trim() || '',
     bookFormat: format,
@@ -1053,6 +1061,10 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
       input.voiceSource === 'recorded' || input.voiceSource === 'uploaded'
         ? input.voiceSource
         : null,
+    documentBlobPath: input.documentBlobPath?.trim() || null,
+    documentBlobUrl: input.documentBlobUrl?.trim() || null,
+    documentConsentAt: input.documentConsentAt?.trim() || null,
+    documentSource: input.documentSource === 'uploaded' ? 'uploaded' : null,
     // Transcription is produced after createOrderRecord (post voice-upload),
     // so this is normally null here and set later in the persist call. We
     // still pass it through when supplied so the field round-trips cleanly.
@@ -1232,6 +1244,19 @@ function voiceExtForMime(mime: string): string {
   return 'bin';
 }
 
+/** Derive only an allowlisted extension; the original name is never persisted. */
+export function documentExtensionForFile(file: Pick<File, 'type' | 'name'>): 'txt' | 'pdf' | 'doc' | 'docx' {
+  const mimeExtension = voiceExtForMime(file.type);
+  if (mimeExtension === 'txt' || mimeExtension === 'pdf' || mimeExtension === 'doc' || mimeExtension === 'docx') {
+    return mimeExtension;
+  }
+  const extension = /\.([^.]+)$/.exec(file.name || '')?.[1]?.toLowerCase();
+  if (extension === 'txt' || extension === 'pdf' || extension === 'doc' || extension === 'docx') {
+    return extension;
+  }
+  throw new Error('Unsupported customer document extension');
+}
+
 /**
  * Upload an attached child-voice audio file to durable blob storage. Mirrors
  * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
@@ -1288,6 +1313,77 @@ export async function uploadOrderVoice(
       );
     }
     console.warn(`[orders] uploadOrderVoice blob put failed in dev for ${orderId}:`, err);
+    return null;
+  }
+}
+
+/** Maximum accepted size for a written/PDF/Word story attachment (10 MB). */
+export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+
+/** Store a document in a dedicated namespace; never retain its original filename. */
+export async function uploadOrderDocument(
+  orderId: string,
+  file: File,
+  checkoutLeaseId?: string,
+): Promise<UploadedVoiceRef | null> {
+  const mimeType = (file.type || '').toLowerCase().split(';', 1)[0].trim();
+  const acceptedMimeTypes = new Set([
+    'text/plain',
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ]);
+  const acceptedExtension = /\.(txt|pdf|doc|docx)$/i.test(file.name || '');
+  if (!acceptedMimeTypes.has(mimeType) && !(mimeType === '' && acceptedExtension)) {
+    throw new OrderPersistenceError(orderId, 'Unsupported customer document upload type');
+  }
+  if (file.size > MAX_DOCUMENT_BYTES) {
+    throw new OrderPersistenceError(orderId, 'Customer document upload exceeds the size limit');
+  }
+
+  const token = getBlobToken();
+
+  if (typeof file.arrayBuffer !== 'function') return null;
+  if (!token) {
+    if (requiresDurablePersistence()) {
+      console.error(
+        `[orders] uploadOrderDocument: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=${orderId}). Refusing to drop customer document silently.`,
+      );
+      throw new OrderPersistenceError(
+        orderId,
+        'BLOB_READ_WRITE_TOKEN missing in production — cannot durably store customer document',
+      );
+    }
+    return null;
+  }
+
+  const assetId = crypto.randomBytes(12).toString('base64url');
+  const scope = checkoutMediaScope(checkoutLeaseId);
+  const pathname = withBlobNamespace(`orders/${orderId}/${scope}document-${assetId}.${documentExtensionForFile(file)}`);
+  const buffer = Buffer.from(await file.arrayBuffer());
+
+  try {
+    const blob = await put(pathname, buffer, {
+      access: getBlobAccessMode(),
+      allowOverwrite: true,
+      addRandomSuffix: false,
+      contentType: file.type || 'application/octet-stream',
+      token,
+    });
+    return { pathname: blob.pathname, url: blob.url };
+  } catch (err) {
+    if (requiresDurablePersistence()) {
+      console.error(
+        `[orders] uploadOrderDocument: blob put failed in production-like env (orderId=${orderId}, pathname=${pathname}):`,
+        err,
+      );
+      throw new OrderPersistenceError(
+        orderId,
+        'Customer document upload to durable storage failed',
+        err,
+      );
+    }
+    console.warn(`[orders] uploadOrderDocument blob put failed in dev for ${orderId}:`, err);
     return null;
   }
 }
@@ -1525,6 +1621,7 @@ export function checkoutIntakeOrderContractDigest(order: OrderRecord): string | 
       occasion: order.occasion,
       giftMessage: order.giftMessage,
       characterNotes: order.characterNotes,
+      customStoryText: order.customStoryText,
       familyCharacters: order.familyCharacters,
       appearanceOptions: order.appearanceOptions,
       bookFormat: order.bookFormat,

@@ -52,7 +52,8 @@ export default async function AdminOrderDetail({ params }: Props) {
   };
   const storyInput = {
     theme: order.theme ?? null,
-    hasCustomText: Boolean((order.lesson ?? '').trim() || (order.giftMessage ?? '').trim() || (order.characterNotes ?? '').trim()),
+    hasCustomText: Boolean((order.customStoryText ?? '').trim() || (order.lesson ?? '').trim() || (order.giftMessage ?? '').trim() || (order.characterNotes ?? '').trim()),
+    customStoryText: order.customStoryText ?? null,
     lesson: order.lesson ?? null,
     occasion: order.occasion ?? null,
     giftMessagePreview: previewText(order.giftMessage),
@@ -66,6 +67,13 @@ export default async function AdminOrderDetail({ params }: Props) {
     voiceSource: order.voiceSource ?? null,
     voiceBlobPath: order.voiceBlobPath ?? null,
     voiceConsentAt: order.voiceConsentAt ?? null,
+    hasDocumentUpload: Boolean(
+      order.documentBlobPath
+      || order.documentConsentAt
+      || order.documentIntakeMedia,
+    ),
+    documentStoragePath: order.documentBlobPath ?? order.documentIntakeMedia?.pathname ?? null,
+    documentConsentAt: order.documentConsentAt ?? order.documentIntakeMedia?.consentAt ?? null,
     transcriptStatus: order.voiceTranscript?.status ?? 'not_enabled',
     transcriptModel: order.voiceTranscript?.model ?? null,
     inspirationPreview: previewText(order.voiceTranscript?.inspiration, 400),
@@ -178,8 +186,9 @@ export default async function AdminOrderDetail({ params }: Props) {
           <Row label="Custom story lesson" value={storyInput.lesson ?? '—'} />
           <Row label="Occasion" value={storyInput.occasion ?? '—'} />
           <Row label="Gift message" value={storyInput.giftMessagePreview ?? '—'} />
+          <Row label="Typed story" value={storyInput.customStoryText ?? '—'} />
           <Row label="Character notes" value={storyInput.characterNotesPreview ?? '—'} />
-          <Row label="Inspiration upload present" value={storyInput.hasVoiceOrUpload ? 'yes' : 'no'} />
+          <Row label="Voice upload present" value={storyInput.hasVoiceOrUpload ? 'yes' : 'no'} />
           {storyInput.hasVoiceOrUpload && (
             <>
               <Row label="Upload source" value={storyInput.voiceSource ?? 'uploaded/unknown'} />
@@ -199,6 +208,14 @@ export default async function AdminOrderDetail({ params }: Props) {
               {storyInput.transcriptError && (
                 <Row label="Transcript error" value={storyInput.transcriptError} tone="bad" />
               )}
+            </>
+          )}
+          <Row label="Document upload present" value={storyInput.hasDocumentUpload ? 'yes' : 'no'} />
+          {storyInput.hasDocumentUpload && (
+            <>
+              <Row label="Document storage path" value={storyInput.documentStoragePath ?? '—'} mono />
+              <Row label="Document consent recorded" value={storyInput.documentConsentAt ?? '—'} />
+              <Row label="Document handling" value="manual review only (not parsed)" />
             </>
           )}
           {storyInput.customBriefTitle && (

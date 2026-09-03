@@ -319,17 +319,20 @@ test('checkout source mounts VoiceRecorderSection immediately in the Custom Stor
 
 test('Custom Story exposes typing and voice/document controls together without a source-mode chooser', () => {
   assert.match(CHECKOUT_SRC, /Type the memory or story idea/);
-  assert.match(CHECKOUT_SRC, /Or add a voice note or file/);
+  assert.match(CHECKOUT_SRC, /Or add audio or a file/);
   assert.doesNotMatch(CHECKOUT_SRC, /Record or upload a voice note|Prefer typing\?/);
 });
 
-test('checkout source attaches voice fields whenever a voice or document file is attached', () => {
+test('checkout source attaches audio as voice and documents through the separate document field', () => {
   assert.match(
     CHECKOUT_SRC,
-    /if \(form\.voiceFile\) \{[\s\S]*?payload\.set\(['"]voice['"],/,
+    /if \(form\.voiceFile && attachedStoryFileIsAudio\) \{[\s\S]*?payload\.set\(['"]voice['"],/,
   );
-  assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceConsent['"]/);
-  assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceSource['"]/);
+  assert.match(
+    CHECKOUT_SRC,
+    /else if \(form\.voiceFile\) \{[\s\S]*?payload\.set\(['"]document['"],/,
+  );
+  assert.match(CHECKOUT_SRC, /payload\.set\(['"]documentConsent['"]/);
 });
 
 test('direct intake routes audio and documents to distinct slot parameters', () => {
@@ -356,12 +359,13 @@ test('voice section never auto-starts the microphone (only on Record tap)', () =
 });
 
 test('voice section copy explicitly disclaims voice cloning', () => {
-  assert.match(VOICE_UI_SRC, /not.*clone/i);
+  assert.match(VOICE_UI_SRC, /won&apos;t be used for voice cloning/i);
 });
 
 test('voice section avoids beta/data-loss confidence killers', () => {
-  assert.match(VOICE_UI_SRC, /30 seconds is plenty, and up to 3 minutes is supported/);
-  assert.match(VOICE_UI_SRC, /Voice notes stay private/);
+  assert.match(VOICE_UI_SRC, /Up to 3 minutes\. 30 seconds is plenty\./);
+  assert.match(VOICE_UI_SRC, /Our story team reads your file and uses it as inspiration\. Nothing is generated from it automatically\./);
+  assert.doesNotMatch(VOICE_UI_SRC, /deleted on request/i);
   assert.doesNotMatch(VOICE_UI_SRC, /Beta · Optional/i);
   assert.doesNotMatch(VOICE_UI_SRC, /Notes and uploads are in beta/i);
   assert.doesNotMatch(VOICE_UI_SRC, /checkout hits an\s+unexpected error/i);
@@ -372,15 +376,24 @@ test('voice section releases mic tracks on stop AND on unmount', () => {
   assert.match(VOICE_UI_SRC, /getTracks\(\)\.forEach\(\(t\) => t\.stop\(\)\)/);
 });
 
-test('voice section remains the single place offering Record and Upload controls', () => {
+test('attachment section presents separate voice-note and written-file cards', () => {
+  assert.match(VOICE_UI_SRC, />\s*🎙️ Voice note\s*</);
+  assert.match(VOICE_UI_SRC, />\s*📄 Written file\s*</);
   assert.match(VOICE_UI_SRC, />\s*Record audio\s*</);
-  assert.match(VOICE_UI_SRC, /Upload voice memo/);
-  assert.match(VOICE_UI_SRC, /Upload text\/document/);
+  assert.match(VOICE_UI_SRC, /Upload audio file/);
+  assert.match(VOICE_UI_SRC, /Upload document/);
+  assert.match(VOICE_UI_SRC, /TXT, PDF, or Word, up to 10 MB\./);
 });
 
 test('voice and document inputs stay keyboard reachable with visible focus treatment', () => {
-  assert.match(VOICE_UI_SRC, /aria-label="Upload voice memo"[\s\S]*?className="sr-only"/);
-  assert.match(VOICE_UI_SRC, /aria-label="Upload text\/document"[\s\S]*?className="sr-only"/);
+  assert.match(VOICE_UI_SRC, /aria-label="Upload audio file"[\s\S]*?className="sr-only"/);
+  assert.match(VOICE_UI_SRC, /aria-label="Upload document"[\s\S]*?className="sr-only"/);
   assert.match(VOICE_UI_SRC, /htmlFor="custom-story-audio-upload"[\s\S]*?has-\[:focus-visible\]:ring-2[\s\S]*?custom-story-audio-upload-control/);
   assert.match(VOICE_UI_SRC, /htmlFor="custom-story-document-upload"[\s\S]*?has-\[:focus-visible\]:ring-2[\s\S]*?custom-story-document-upload-control/);
+});
+
+test('consent wording switches by attached media type', () => {
+  assert.match(VOICE_UI_SRC, /I have the right to share this document/);
+  assert.match(VOICE_UI_SRC, /parent\/guardian or an authorized adult for everyone in this recording/);
+  assert.match(VOICE_UI_SRC, /won&apos;t be used for AI training and won&apos;t be shared/);
 });

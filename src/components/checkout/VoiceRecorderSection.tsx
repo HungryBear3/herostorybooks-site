@@ -27,12 +27,6 @@ const VOICE_DOCUMENT_UPLOAD_ACCEPT_ATTR = [
   '.doc',
   '.docx',
 ].join(',');
-const VOICE_PROMPTS = [
-  'What adventure should you go on?',
-  'What do you love most right now?',
-  'What should your hero be brave about?',
-];
-
 function pickSupportedMimeType(): string | undefined {
   if (typeof MediaRecorder === 'undefined') return undefined;
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
@@ -174,100 +168,87 @@ export function VoiceRecorderSection({
   return (
     <section
       className="bg-white rounded-2xl border-2 border-gray-100 p-6 shadow-sm space-y-4"
-      aria-label="Optional story voice note or family memory note"
+      aria-label="Optional voice note or written file"
       data-testid="voice-recorder-section"
     >
-      <div>
-        <div className="flex items-center gap-2">
-          <h2 className="font-serif text-xl text-forest">🎙️ Add a story voice note or family memory</h2>
+      {!voiceFile && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-2xl border-2 border-[#d8c6a2] bg-[#fffaf1] p-4">
+            <h2 className="font-serif text-xl text-forest">🎙️ Voice note</h2>
+            <p className="mt-1 text-sm text-gray-600">Up to 3 minutes. 30 seconds is plenty.</p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {!isRecording ? (
+                <button
+                  type="button"
+                  onClick={handleRecord}
+                  className="rounded-full border-2 border-deep-gold bg-deep-gold px-4 py-2 text-sm font-semibold text-white transition hover:bg-deep-gold/90"
+                >
+                  Record audio
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleStop}
+                  className="rounded-full border-2 border-red-500 bg-red-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-600"
+                >
+                  ◼ Stop
+                </button>
+              )}
+              {!isRecording && (
+                <label
+                  htmlFor="custom-story-audio-upload"
+                  className="cursor-pointer rounded-full border-2 border-gray-300 px-4 py-2 text-sm font-semibold text-forest transition hover:border-deep-gold has-[:focus-visible]:border-[#241914] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#241914] has-[:focus-visible]:ring-offset-2"
+                  data-testid="custom-story-audio-upload-control"
+                >
+                  Upload audio file
+                  <input
+                    id="custom-story-audio-upload"
+                    aria-label="Upload audio file"
+                    type="file"
+                    accept={VOICE_AUDIO_UPLOAD_ACCEPT_ATTR}
+                    className="sr-only"
+                    onChange={handleUpload}
+                  />
+                </label>
+              )}
+            </div>
+          </div>
+
+          {!isRecording && (
+            <div className="rounded-2xl border-2 border-[#d8c6a2] bg-[#fffaf1] p-4">
+              <h2 className="font-serif text-xl text-forest">📄 Written file</h2>
+              <p className="mt-1 text-sm text-gray-600">TXT, PDF, or Word, up to 10 MB.</p>
+              <p className="mt-2 text-xs leading-5 text-gray-600">
+                Our story team reads your file and uses it as inspiration. Nothing is generated from it automatically.
+              </p>
+              <label
+                htmlFor="custom-story-document-upload"
+                className="mt-4 inline-flex cursor-pointer rounded-full border-2 border-gray-300 px-4 py-2 text-sm font-semibold text-forest transition hover:border-deep-gold has-[:focus-visible]:border-[#241914] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#241914] has-[:focus-visible]:ring-offset-2"
+                data-testid="custom-story-document-upload-control"
+              >
+                Upload document
+                <input
+                  id="custom-story-document-upload"
+                  aria-label="Upload document"
+                  type="file"
+                  accept={VOICE_DOCUMENT_UPLOAD_ACCEPT_ATTR}
+                  className="sr-only"
+                  onChange={handleUpload}
+                />
+              </label>
+            </div>
+          )}
         </div>
-        <p className="text-sm text-gray-500 mt-1">
-          This helps us capture the memory — 30 seconds is plenty, and up to 3 minutes is supported. Record a voice note or upload a note, PDF, Word doc, or audio file.
-        </p>
-        <p className="text-xs text-gray-500 mt-1">
-          Voice notes stay private — used only to write your book, never cloned or published, and deleted on request.
-        </p>
-      </div>
+      )}
 
-      <div className="rounded-xl border border-deep-gold/20 bg-deep-gold/5 px-4 py-3 text-sm text-forest">
-        <p className="font-semibold mb-1">Try one of these prompts:</p>
-        <ul className="list-disc pl-5 space-y-0.5">
-          {VOICE_PROMPTS.map((prompt) => (
-            <li key={prompt}>{prompt}</li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {!isRecording && !voiceFile && (
-          <button
-            type="button"
-            onClick={handleRecord}
-            className="px-4 py-2 rounded-full border-2 border-deep-gold bg-deep-gold text-white font-semibold text-sm hover:bg-deep-gold/90 transition"
-          >
-            Record audio
-          </button>
-        )}
-        {isRecording && (
-          <button
-            type="button"
-            onClick={handleStop}
-            className="px-4 py-2 rounded-full border-2 border-red-500 bg-red-500 text-white font-semibold text-sm hover:bg-red-600 transition"
-          >
-            ◼ Stop
-          </button>
-        )}
-        {!isRecording && (
-          <>
-            <label
-              htmlFor="custom-story-audio-upload"
-              className="cursor-pointer rounded-full border-2 border-gray-200 px-4 py-2 text-sm font-semibold text-forest transition hover:border-deep-gold has-[:focus-visible]:border-[#241914] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#241914] has-[:focus-visible]:ring-offset-2"
-              data-testid="custom-story-audio-upload-control"
-            >
-              Upload voice memo
-              <input
-                id="custom-story-audio-upload"
-                aria-label="Upload voice memo"
-                type="file"
-                accept={VOICE_AUDIO_UPLOAD_ACCEPT_ATTR}
-                className="sr-only"
-                onChange={handleUpload}
-              />
-            </label>
-            <label
-              htmlFor="custom-story-document-upload"
-              className="cursor-pointer rounded-full border-2 border-gray-200 px-4 py-2 text-sm font-semibold text-forest transition hover:border-deep-gold has-[:focus-visible]:border-[#241914] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#241914] has-[:focus-visible]:ring-offset-2"
-              data-testid="custom-story-document-upload-control"
-            >
-              Upload text/document
-              <input
-                id="custom-story-document-upload"
-                aria-label="Upload text/document"
-                type="file"
-                accept={VOICE_DOCUMENT_UPLOAD_ACCEPT_ATTR}
-                className="sr-only"
-                onChange={handleUpload}
-              />
-            </label>
-          </>
-        )}
-        {voiceFile && !isRecording && (
-          <button
-            type="button"
-            onClick={handleRemove}
-            className="px-4 py-2 rounded-full border-2 border-gray-200 text-gray-700 font-semibold text-sm hover:border-red-300 hover:text-red-600 transition"
-          >
-            Remove file
-          </button>
-        )}
-      </div>
-
-      {!voiceFile && !isRecording && (
-        <p className="text-xs text-gray-500">
-          Use <strong>Record audio</strong> for a new voice note, <strong>Upload voice memo</strong>{' '}
-          for a saved recording, or <strong>Upload text/document</strong> for text, PDF, or Word
-          notes.
-        </p>
+      {voiceFile && !isRecording && (
+        <button
+          type="button"
+          onClick={handleRemove}
+          className="rounded-full border-2 border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:border-red-300 hover:text-red-600"
+        >
+          Remove file
+        </button>
       )}
 
       {recorderError && (
@@ -279,10 +260,13 @@ export function VoiceRecorderSection({
       {voicePreviewUrl && (
         <div className="space-y-2">
           {attachedFileIsAudio ? (
-            <audio controls src={voicePreviewUrl} className="w-full" data-testid="voice-preview" />
+            <div className="space-y-2">
+              <p className="text-sm font-semibold text-forest">Attached: voice note</p>
+              <audio controls src={voicePreviewUrl} className="w-full" data-testid="voice-preview" />
+            </div>
           ) : voiceFile ? (
             <div className="rounded-xl border border-deep-gold/20 bg-deep-gold/5 px-4 py-3 text-sm text-forest">
-              Attached inspiration file: <strong>{voiceFile.name}</strong>
+              Attached: <strong>{voiceFile.name}</strong> · {(voiceFile.size / (1024 * 1024)).toFixed(1)} MB
             </div>
           ) : null}
           {voiceFile && (
@@ -312,10 +296,15 @@ export function VoiceRecorderSection({
             data-testid="voice-consent"
           />
           <span>
-            I&apos;m the parent/guardian or an authorized adult with permission for everyone in this
-            recording or document, and I consent to HeroStoryBooks using it
-            only to personalize this order. I understand it will <strong>not</strong> be used
-            for voice cloning and will <strong>not</strong> be published or shared.
+            {attachedFileIsAudio ? (
+              <>
+                I&apos;m the parent/guardian or an authorized adult for everyone in this recording. Hero Story Books may use it only to write this book. It won&apos;t be used for voice cloning or AI training, and won&apos;t be shared.
+              </>
+            ) : (
+              <>
+                I have the right to share this document. Hero Story Books may use it only to write this book. It won&apos;t be used for AI training and won&apos;t be shared.
+              </>
+            )}
           </span>
         </label>
       )}

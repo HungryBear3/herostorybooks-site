@@ -115,8 +115,8 @@ test('Custom Story immediately reveals written, recording, audio, and document p
   await expect(page.getByTestId('checkout-primary-continue')).toHaveText('Next: Add hero photo or description');
 
   const record = page.getByRole('button', { name: 'Record audio' });
-  const audioInput = page.getByLabel('Upload voice memo');
-  const documentInput = page.getByLabel('Upload text/document');
+  const audioInput = page.getByLabel('Upload audio file');
+  const documentInput = page.getByLabel('Upload document');
   await record.focus();
   await page.keyboard.press('Tab');
   await expect(audioInput).toBeFocused();

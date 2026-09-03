@@ -1059,6 +1059,7 @@ export function buildUserPrompt(order: OrderRecord): string {
   const childName = heroDisplayName(order);
   const giftMessage = sanitizeInput(order.giftMessage, 200);
   const characterNotes = sanitizeInput(order.characterNotes, 200);
+  const customStoryText = sanitizeInput(order.customStoryText, 1200);
   const appearanceOptions = sanitizeInput(order.appearanceOptions, 200);
   const pageCount = getStoryPageCount(order.bookFormat);
   return `Write a ${pageCount}-page personalized children's storybook with the following details:
@@ -1071,6 +1072,7 @@ export function buildUserPrompt(order: OrderRecord): string {
 - Core lesson: ${sanitizeInput(order.lesson, 100) || 'courage and bravery'}
 - Occasion: ${sanitizeInput(order.occasion, 60) || 'general'}
 - Gift message: ${giftMessage || 'none'}
+- Typed story source: ${customStoryText || 'none'}
 - Character notes: ${characterNotes || 'none'}
 - Appearance: ${appearanceOptions || 'not specified'}
 - Format: ${order.bookFormat}

@@ -255,7 +255,7 @@ interface FormState {
   giftMessage: string;
   characterNotes: string;
   customStoryMemory: string;
-  customStorySourceMode: "audio" | "written" | "";
+  customStorySourceMode: "audio" | "document" | "written" | "";
   familyCharacters: SupportingCharacter[];
   mustInclude: string[];
   mustIncludeOther: string;
@@ -961,17 +961,8 @@ export function CheckoutForm() {
       payload.set("lesson", form.lesson);
       payload.set("occasion", form.occasion);
       payload.set("giftMessage", form.giftMessage);
-      payload.set(
-        "characterNotes",
-        [
-          form.characterNotes.trim(),
-          form.customStoryMemory.trim()
-            ? `Custom story memory / typed fallback: ${form.customStoryMemory.trim()}`
-            : "",
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-      );
+      payload.set("characterNotes", form.characterNotes.trim());
+      payload.set("customStoryText", form.customStoryMemory.trim());
       payload.set(
         "familyCharacters",
         JSON.stringify(
@@ -1057,10 +1048,13 @@ export function CheckoutForm() {
       if (directIntakeSubmission && preparedDirectIntake) {
         intakeSessionRef.current = preparedDirectIntake.cache;
       } else {
-        if (form.voiceFile) {
+        if (form.voiceFile && attachedStoryFileIsAudio) {
           payload.set("voice", form.voiceFile);
           payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
           if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
+        } else if (form.voiceFile) {
+          payload.set("document", form.voiceFile);
+          payload.set("documentConsent", form.voiceConsent ? "true" : "false");
         }
         // Optional guided child stills. Appends only parent-approved still photos; no video.
         if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
@@ -1391,7 +1385,7 @@ export function CheckoutForm() {
                         Custom Story
                       </span>
                       <span className="mt-1 block text-sm leading-6 text-[#695f54]">
-                        Built from your written memory, optional voice note, family details, and story ideas.
+                        Built from your written memory, voice note, or document, plus family details.
                       </span>
                     </span>
                     {form.theme === customStoryTheme.id && (
@@ -1413,7 +1407,7 @@ export function CheckoutForm() {
                       Tell us your story
                     </h3>
                     <p className="mt-1 text-sm leading-6 text-[#695f54]">
-                      Type or paste the memory below, record it, or attach an audio or text file. Use whichever is easiest.
+                      Type it, say it, or attach a file. One is enough.
                     </p>
                   </div>
 
@@ -1444,7 +1438,7 @@ export function CheckoutForm() {
 
                   <div className="flex items-center gap-3 text-xs font-bold uppercase tracking-[0.16em] text-[#695f54]">
                     <span className="h-px flex-1 bg-[#d8c6a2]" />
-                    Or add a voice note or file
+                    Or add audio or a file
                     <span className="h-px flex-1 bg-[#d8c6a2]" />
                   </div>
 
@@ -1456,7 +1450,9 @@ export function CheckoutForm() {
                     onVoiceChange={(file, previewUrl, source) =>
                       setForm((prev) => ({
                         ...prev,
-                        customStorySourceMode: file ? "audio" : prev.customStoryMemory.trim() ? "written" : "",
+                        customStorySourceMode: file
+                          ? isStoryAudioFile(file) ? "audio" : "document"
+                          : prev.customStoryMemory.trim() ? "written" : "",
                         voiceFile: file,
                         voicePreviewUrl: previewUrl,
                         voiceSource: source,
@@ -1469,7 +1465,7 @@ export function CheckoutForm() {
                   />
 
                   <p className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-4 py-3 text-xs leading-5 text-[#695f54]">
-                    Your story materials stay private to this order. Voice notes are never used for voice cloning or model training.
+                    Your typed story, voice note, and files are read by our team and used only to write this book. Never used for voice cloning or AI training.
                   </p>
                 </div>
               )}

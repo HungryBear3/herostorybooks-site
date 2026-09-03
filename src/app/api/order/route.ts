@@ -6,6 +6,7 @@ import {
   bindOrderCheckoutSession,
   createOrderRecord,
   isPrintFormat,
+  MAX_DOCUMENT_BYTES,
   MAX_VOICE_BYTES,
   OrderPersistenceError,
   type OrderRecord,
@@ -14,6 +15,7 @@ import {
   rollbackOrderMediaUploads,
   sanitizeFamilyCharacters,
   uploadOrderPhoto,
+  uploadOrderDocument,
   uploadOrderSupportingPhoto,
   uploadOrderVoice,
   withOrderTransaction,
@@ -80,8 +82,7 @@ function isAudioInspirationFile(file: File): boolean {
   return false;
 }
 
-function isAcceptedInspirationFile(file: File): boolean {
-  if (isAudioInspirationFile(file)) return true;
+function isDocumentInspirationFile(file: File): boolean {
   if (['text/plain', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type)) return true;
   if (file.name && INSPIRATION_DOC_EXT_RE.test(file.name)) return true;
   return false;
@@ -154,6 +155,7 @@ export async function POST(request: Request) {
     const bookFormat = String(form.get('bookFormat') || 'classic').trim();
     const theme = String(form.get('theme') || '').trim();
     const childPronouns = String(form.get('childPronouns') || '').trim();
+    const customStoryText = String(form.get('customStoryText') || '').trim().slice(0, 1200);
     // Appearance details ride inside appearanceOptions. The server derives
     // hero likeness intent from actual photo presence rather than a buyer
     // toggle, so checkout cannot claim a photo-backed match when no usable
@@ -198,10 +200,28 @@ export async function POST(request: Request) {
       likenessIntent: likenessIntentForPhoto(photoReady),
     });
 
-    const voiceRaw = form.get('voice');
+    const attachmentRaw = form.get('voice');
+    const explicitDocumentRaw = form.get('document');
+    // Older open checkout tabs may still post a document under `voice`. Migrate
+    // that shape into the document lane rather than losing or mislabeling it.
+    const legacyDocumentInVoice = attachmentRaw instanceof File
+      && attachmentRaw.size > 0
+      && !isAudioInspirationFile(attachmentRaw)
+      && isDocumentInspirationFile(attachmentRaw);
+    const voiceRaw = legacyDocumentInVoice ? null : attachmentRaw;
+    const documentRaw = explicitDocumentRaw instanceof File && explicitDocumentRaw.size > 0
+      ? explicitDocumentRaw
+      : legacyDocumentInVoice
+        ? attachmentRaw
+        : null;
     const hasVoiceUpload = voiceRaw instanceof File && voiceRaw.size > 0;
+    const hasDocumentUpload = documentRaw instanceof File && documentRaw.size > 0;
     const voiceConsentRaw = String(form.get('voiceConsent') || '').trim().toLowerCase();
     const voiceConsentGiven = voiceConsentRaw === 'true' || voiceConsentRaw === 'on' || voiceConsentRaw === '1';
+    const documentConsentRaw = String(
+      form.get('documentConsent') || (legacyDocumentInVoice ? form.get('voiceConsent') : ''),
+    ).trim().toLowerCase();
+    const documentConsentGiven = documentConsentRaw === 'true' || documentConsentRaw === 'on' || documentConsentRaw === '1';
     const voiceSourceRaw = String(form.get('voiceSource') || '').trim();
     const voiceSource: 'recorded' | 'uploaded' | null =
       voiceSourceRaw === 'recorded' || voiceSourceRaw === 'uploaded' ? voiceSourceRaw : null;
@@ -218,9 +238,9 @@ export async function POST(request: Request) {
       }
 
       const voiceFile = voiceRaw as File;
-      if (!isAcceptedInspirationFile(voiceFile)) {
+      if (!isAudioInspirationFile(voiceFile)) {
         return NextResponse.json(
-          { error: 'Story inspiration attachment must be an audio, text, PDF, or Word document.', code: 'voice_invalid_type' },
+          { error: 'Voice attachment must be an accepted audio file.', code: 'voice_invalid_type' },
           { status: 400 },
         );
       }
@@ -229,6 +249,31 @@ export async function POST(request: Request) {
         return NextResponse.json(
           { error: 'Voice attachment is too large (max 15 MB).', code: 'voice_too_large' },
           { status: 400 },
+        );
+      }
+    }
+
+    if (hasDocumentUpload) {
+      if (!documentConsentGiven) {
+        return NextResponse.json(
+          {
+            error: 'Permission is required to attach written story material.',
+            code: 'document_consent_required',
+          },
+          { status: 400 },
+        );
+      }
+      const documentFile = documentRaw as File;
+      if (!isDocumentInspirationFile(documentFile)) {
+        return NextResponse.json(
+          { error: 'Story document must be a text, PDF, or Word file.', code: 'document_invalid_type' },
+          { status: 400 },
+        );
+      }
+      if (documentFile.size > MAX_DOCUMENT_BYTES) {
+        return NextResponse.json(
+          { error: 'Story document is too large (max 10 MB).', code: 'document_too_large' },
+          { status: 413 },
         );
       }
     }
@@ -382,6 +427,7 @@ export async function POST(request: Request) {
       occasion: String(form.get('occasion') || ''),
       giftMessage: String(form.get('giftMessage') || ''),
       characterNotes: String(form.get('characterNotes') || ''),
+      customStoryText,
       familyCharacters,
       childPronouns: childPronouns === 'he/him' || childPronouns === 'she/her' || childPronouns === 'they/them' ? childPronouns as 'he/him' | 'she/her' | 'they/them' : '',
       appearanceOptions: normalizedAppearanceRaw,
@@ -637,6 +683,40 @@ export async function POST(request: Request) {
       }
     }
 
+    let documentBlobPath: string | null = null;
+    let documentBlobUrl: string | null = null;
+    let documentConsentAt: string | null = null;
+    if (hasDocumentUpload) {
+      try {
+        await requireActiveLease();
+        const uploadedDocument = await uploadOrderDocument(
+          draftOrder.id,
+          documentRaw as File,
+          draftOrder.checkoutLeaseId ?? undefined,
+        );
+        if (!uploadedDocument) {
+          throw new OrderPersistenceError(
+            draftOrder.id,
+            'Customer document upload returned no durable reference',
+          );
+        }
+        documentBlobPath = uploadedDocument.pathname;
+        documentBlobUrl = uploadedDocument.url;
+        documentConsentAt = new Date().toISOString();
+        uploadedMediaPaths.push(uploadedDocument.pathname);
+      } catch (error) {
+        console.error(`[order] ABORT BEFORE STRIPE: document persistence failed for ${draftOrder.id}`, error);
+        await rollbackUploadedMedia('document persistence failure');
+        return NextResponse.json(
+          {
+            error: 'We could not securely save your story document, so we stopped before payment. No charge was made. Please try again.',
+            code: 'document_persist_failed',
+          },
+          { status: 503 },
+        );
+      }
+    }
+
     // Persist the order record durably. If this throws OrderPersistenceError
     // we MUST NOT create a Stripe Checkout Session — the customer would pay
     // for an order the webhook + status page can never find.
@@ -656,6 +736,10 @@ export async function POST(request: Request) {
           voiceBlobUrl,
           voiceConsentAt,
           voiceSource: hasVoiceUpload ? voiceSource : null,
+          documentBlobPath,
+          documentBlobUrl,
+          documentConsentAt,
+          documentSource: hasDocumentUpload ? 'uploaded' as const : null,
         };
         return { commit: updated, result: updated };
       });
