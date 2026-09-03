@@ -12,6 +12,12 @@
  * `failNextCas` lets a test force a specific CAS attempt to lose the race
  * without needing real concurrency, which keeps the race regressions
  * deterministic.
+ *
+ * `armStaleReads` models the OTHER half of a real Blob store's failure modes:
+ * a cross-request `read` that lags briefly behind a write a different request
+ * already committed. It is driven by a SIMULATED clock (`advanceSimulatedClock`)
+ * rather than real time, so a test can reproduce a lagging-read regression
+ * without ever actually waiting.
  */
 import { IntakeError } from '../../src/lib/checkout-intake.ts';
 import type { IntakeRecord, IntakeStore, IntakeStoreSnapshot } from '../../src/lib/checkout-intake.ts';
@@ -39,6 +45,20 @@ export interface MemoryIntakeStore extends IntakeStore {
   /** Run `mutate` between the next read and its CAS, forcing a real conflict. */
   interleaveBeforeNextCas(mutate: () => void | Promise<void>): void;
   casAttempts: number;
+  /**
+   * Pins `read(intakeId)` to `snapshot` — instead of the live record — until
+   * the store's simulated clock reaches `untilMs`. Models a storage replica
+   * that has not yet observed a write another request already committed.
+   * `compareAndSwap` is untouched: it always judges the live record, exactly
+   * like a real CAS precondition would.
+   */
+  armStaleReads(intakeId: string, snapshot: IntakeStoreSnapshot, untilMs: number): void;
+  /**
+   * Advances the store's simulated clock. Meant to be called from a test's
+   * fake `wait`, so a retry loop's backoff can be proven to matter without
+   * any real time passing.
+   */
+  advanceSimulatedClock(ms: number): void;
 }
 
 let etagCounter = 0;
@@ -55,11 +75,24 @@ export function createMemoryIntakeStore(): MemoryIntakeStore {
   let pendingHeadError: Error | null = null;
   let pendingCasFailures = 0;
   let interleave: (() => void | Promise<void>) | null = null;
+  let simulatedNowMs = 0;
+  const staleReads = new Map<string, { snapshot: IntakeStoreSnapshot; untilMs: number }>();
 
   const store: MemoryIntakeStore = {
     records,
     assets,
     casAttempts: 0,
+
+    armStaleReads(intakeId, snapshot, untilMs) {
+      staleReads.set(intakeId, {
+        snapshot: { record: structuredClone(snapshot.record), etag: snapshot.etag },
+        untilMs,
+      });
+    },
+
+    advanceSimulatedClock(ms) {
+      simulatedNowMs += ms;
+    },
 
     putAsset(blob) {
       assets.set(blob.pathname, { ...blob });
@@ -91,6 +124,10 @@ export function createMemoryIntakeStore(): MemoryIntakeStore {
         const error = pendingReadError;
         pendingReadError = null;
         throw error;
+      }
+      const stale = staleReads.get(intakeId);
+      if (stale && simulatedNowMs < stale.untilMs) {
+        return { record: structuredClone(stale.snapshot.record), etag: stale.snapshot.etag };
       }
       const entry = records.get(intakeId);
       if (!entry) return null;

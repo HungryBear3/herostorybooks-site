@@ -1152,6 +1152,42 @@ export function finalizationLeaseActive(record: IntakeRecord, now: number): bool
 const MUTATE_ATTEMPTS = 5;
 
 /**
+ * Bounded, deterministic backoff between CAS retry attempts (ms), one entry
+ * per retry — i.e. `MUTATE_ATTEMPTS - 1` entries.
+ *
+ * WHY THIS EXISTS
+ * ----------------
+ * Incident `intake_9ca274951cc0f113fbb7a355068caf00`: a completion callback
+ * and the browser's resolve/final-intake reconciliation both hit
+ * `intake_write_conflict` within the same short window, and the durable slot
+ * was left with the upload never activated. Root cause: this loop used to
+ * re-read on every attempt with NO delay between them, so all five attempts
+ * fired within microseconds of each other. Vercel Blob's cross-request `read`
+ * can lag briefly behind a write a different request already committed
+ * (`useCache: false` on our `get` call only disables OUR application cache,
+ * not the storage backend's own propagation window) — and when every attempt
+ * lands inside that lagging window, exhaustion reports a permanent conflict
+ * for what is really a transient visibility gap that would have resolved a
+ * few tens of milliseconds later.
+ *
+ * The schedule is fixed and increasing, never random: a genuine, permanent
+ * conflict (another writer that keeps winning, not a lagging read) must still
+ * exhaust in bounded, predictable time and fail closed — this is spacing for
+ * visibility to catch up, not a promise that it will.
+ */
+export const MUTATE_RETRY_BACKOFF_MS: readonly number[] = [20, 40, 80, 160];
+
+export interface MutateIntakeIo {
+  /** Test seam: replaces the real inter-attempt delay. Never overridden in production. */
+  wait?: (delayMs: number, attempt: number) => Promise<void>;
+}
+
+function defaultMutateWait(delayMs: number): Promise<void> {
+  if (delayMs <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+/**
  * Read-modify-CAS with bounded retries.
  *
  * `apply` returns `{ next, result }`; a null `next` means "nothing to write"
@@ -1162,8 +1198,13 @@ export async function mutateIntake<T>(
   store: IntakeStore,
   intakeId: string,
   apply: (record: IntakeRecord) => { next: IntakeRecord | null; result: T },
+  io: MutateIntakeIo = {},
 ): Promise<T> {
+  const wait = io.wait ?? defaultMutateWait;
   for (let attempt = 0; attempt < MUTATE_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) {
+      await wait(MUTATE_RETRY_BACKOFF_MS[attempt - 1]!, attempt);
+    }
     const snapshot = await readIntake(store, intakeId);
     const { next, result } = apply(snapshot.record);
     if (!next) return result;
