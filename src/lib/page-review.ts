@@ -293,6 +293,9 @@ export async function publishProofGuarded(
       (order) => {
         const refusal = evaluateReviewMutationEligibility(order, opts.actor);
         if (refusal) return { abort: { refreshed: false, error: refusal.error } };
+        if (hasMediaBackedCustomStorySource(order)) {
+          return { abort: { refreshed: false, error: 'media_story_manual_review_required' } };
+        }
         // An approved book is frozen: never replace its proof or clear its ack.
         if (order.reviewStatus === 'approved') {
           return { abort: { refreshed: false, error: 'already_approved' } };
@@ -1068,6 +1071,9 @@ export async function resolveTextChangeRequest(
           reason: 'admin_resolve_text_change',
         });
         if (refusal) return { abort: { ok: false, status: refusal.status, error: refusal.error } };
+        if (hasMediaBackedCustomStorySource(order)) {
+          return { abort: { ok: false, status: 409, error: 'media_story_manual_review_required' } };
+        }
         if (order.reviewStatus === 'approved') {
           return { abort: { ok: false, status: 409, error: 'already_approved' } };
         }
