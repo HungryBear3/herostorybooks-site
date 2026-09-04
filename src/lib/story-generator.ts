@@ -242,6 +242,7 @@ function assertTemplateFallbackAllowed(order: OrderRecord): void {
     || Boolean(order.voiceConsentAt)
     || Boolean(order.voiceSource)
     || Boolean(order.voiceTranscript)
+    || Boolean(order.legacyVoiceUploadPresent)
     || Boolean(order.documentBlobPath)
     || Boolean(order.documentBlobUrl)
     || Boolean(order.documentConsentAt)

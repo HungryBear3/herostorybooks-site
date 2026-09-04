@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { createOrderRecord, type OrderInput } from '../src/lib/orders.ts';
+import { createOrderRecord, type OrderInput, type OrderRecord } from '../src/lib/orders.ts';
 import { generateStoryWithMeta } from '../src/lib/story-generator.ts';
 import { TACO_GATE_BRIEF } from './fixtures/taco-gate-brief.ts';
 
@@ -81,7 +81,11 @@ test('media-backed Custom Stories refuse every template fallback path', async ()
   const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
   for (const key of envKeys) delete process.env[key];
 
-  const mediaCases: Array<{ label: string; fields: Partial<OrderInput> }> = [
+  const mediaCases: Array<{
+    label: string;
+    fields: Partial<OrderInput>;
+    recordFields?: Partial<OrderRecord>;
+  }> = [
     { label: 'legacy voice', fields: { voiceBlobPath: 'orders/test/voice.webm' } },
     { label: 'legacy document', fields: { documentBlobPath: 'orders/test/story.pdf' } },
     { label: 'voice URL only', fields: { theme: 'space-voyager', voiceBlobUrl: 'https://private.invalid/voice' } },
@@ -91,9 +95,11 @@ test('media-backed Custom Stories refuse every template fallback path', async ()
     { label: 'voice consent only', fields: { theme: 'space-voyager', voiceConsentAt: '2026-09-03T00:00:00.000Z' } },
     { label: 'document source only', fields: { theme: 'space-voyager', documentSource: 'uploaded' } },
     { label: 'document consent only', fields: { theme: 'space-voyager', documentConsentAt: '2026-09-03T00:00:00.000Z' } },
+    { label: 'retired legacy filename marker only', fields: {}, recordFields: { legacyVoiceUploadPresent: true } },
     {
       label: 'private intake voice',
-      fields: {
+      fields: {},
+      recordFields: {
         voiceIntakeMedia: {
           slotKey: 'voice', category: 'voice_inspiration', familyCharacterId: null,
           familyCharacterIndex: null, guidedStillIndex: null, assetId: 'asset_voice',
@@ -105,7 +111,8 @@ test('media-backed Custom Stories refuse every template fallback path', async ()
     },
     {
       label: 'private intake document',
-      fields: {
+      fields: {},
+      recordFields: {
         documentIntakeMedia: {
           slotKey: 'document', category: 'document_inspiration', familyCharacterId: null,
           familyCharacterIndex: null, guidedStillIndex: null, assetId: 'asset_document',
@@ -118,15 +125,18 @@ test('media-backed Custom Stories refuse every template fallback path', async ()
   ];
 
   try {
-    for (const { label, fields } of mediaCases) {
-      const order = createOrderRecord({
+    for (const { label, fields, recordFields } of mediaCases) {
+      const order = {
+        ...createOrderRecord({
         childName: 'Lukas',
         childPronouns: 'he/him',
         bookFormat: 'classic',
         email: 'parent@example.com',
-        theme: 'custom-voice-story',
+        theme: 'space-voyager',
         ...fields,
-      });
+        }),
+        ...recordFields,
+      };
       await assert.rejects(
         () => generateStoryWithMeta(order, {
           fetch: async () => { throw new Error('provider must remain unavailable'); },
