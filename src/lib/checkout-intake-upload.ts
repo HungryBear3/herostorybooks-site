@@ -39,6 +39,7 @@ import {
   newReservationId,
   normalizeSlotRef,
   readIntake,
+  readIntakeWithTransientRetry,
   touch,
   type IntakeAsset,
   type IntakeRecord,
@@ -553,7 +554,7 @@ export async function resolveSlotUpload(
   io: MutateIntakeIo = {},
 ): Promise<{ status: SlotResolutionStatus; asset: IntakeAsset | null }> {
   const ref = normalizeSlotRef(params.slot);
-  const { record } = await readIntake(store, params.intakeId);
+  const { record } = await readIntakeWithTransientRetry(store, params.intakeId, io);
   assertCapability(record, params.capability);
   if (Date.parse(record.expiresAt) <= now.getTime()) throw new IntakeError('intake_expired', 410);
 

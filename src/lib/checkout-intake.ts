@@ -1189,6 +1189,35 @@ function defaultMutateWait(delayMs: number): Promise<void> {
 }
 
 /**
+ * Bounded retry for the immediate read that follows a client Blob upload.
+ *
+ * The upload callback can commit the slot before the browser's reconciliation
+ * request reaches another function instance. During that short propagation
+ * window private Blob `get()` may transiently fail even though the committed
+ * record is already durable. Retry only the store-unavailable class; missing,
+ * invalid, expired, or unauthorized records still fail closed immediately.
+ */
+export async function readIntakeWithTransientRetry(
+  store: IntakeStore,
+  intakeId: string,
+  io: MutateIntakeIo = {},
+): Promise<IntakeStoreSnapshot> {
+  const wait = io.wait ?? defaultMutateWait;
+  for (let attempt = 0; attempt < MUTATE_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await wait(MUTATE_RETRY_BACKOFF_MS[attempt - 1]!, attempt);
+    try {
+      return await readIntake(store, intakeId);
+    } catch (error) {
+      const retryable = error instanceof IntakeError
+        && error.code === 'intake_store_unavailable'
+        && attempt < MUTATE_ATTEMPTS - 1;
+      if (!retryable) throw error;
+    }
+  }
+  throw new IntakeError('intake_store_unavailable', 503);
+}
+
+/**
  * Read-modify-CAS with bounded retries.
  *
  * `apply` returns `{ next, result }`; a null `next` means "nothing to write"
