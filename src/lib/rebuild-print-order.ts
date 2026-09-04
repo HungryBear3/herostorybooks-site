@@ -135,13 +135,6 @@ export function checkRebuildSafety(order: OrderRecord): RebuildRefusal | null {
   if (order.paymentStatus !== 'paid') {
     return { ok: false, reason: 'not_paid', detail: `paymentStatus=${order.paymentStatus}` };
   }
-  if (hasMediaBackedCustomStorySource(order)) {
-    return {
-      ok: false,
-      reason: 'media_story_manual_review_required',
-      detail: 'Audio/document-backed Custom Stories require operator-authored prose; automated rebuild is disabled.',
-    };
-  }
   if (order.status === 'shipped') {
     return { ok: false, reason: 'already_shipped' };
   }
@@ -157,6 +150,13 @@ export function checkRebuildSafety(order: OrderRecord): RebuildRefusal | null {
       ok: false,
       reason: 'already_submitted_to_lulu',
       detail: `printJobId=${order.printJobId ?? 'null'} fulfillmentStatus=${order.fulfillmentStatus ?? 'null'}`,
+    };
+  }
+  if (hasMediaBackedCustomStorySource(order)) {
+    return {
+      ok: false,
+      reason: 'media_story_manual_review_required',
+      detail: 'Audio/document-backed Custom Stories require operator-authored prose; automated rebuild is disabled.',
     };
   }
   return null;

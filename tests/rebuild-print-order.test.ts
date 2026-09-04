@@ -206,6 +206,29 @@ test('checkRebuildSafety: media-backed Custom Story is manual-review only', () =
   assert.equal(r?.reason, 'media_story_manual_review_required');
 });
 
+test('checkRebuildSafety: irreversible print states outrank the media-only policy', () => {
+  const base = {
+    bookFormat: 'classic',
+    paymentStatus: 'paid',
+    theme: 'custom-voice-story',
+    documentBlobPath: 'orders/test/story.pdf',
+  };
+  const cases = [
+    [{ status: 'shipped' }, 'already_shipped'],
+    [{ status: 'print_in_production' }, 'already_in_production'],
+    [{ status: 'order_received', printJobId: 'lulu-1234' }, 'already_submitted_to_lulu'],
+    [{ status: 'order_received', fulfillmentStatus: 'submitting_to_print' }, 'already_submitted_to_lulu'],
+  ] as const;
+
+  for (const [fields, expected] of cases) {
+    const refusal = checkRebuildSafety(({
+      ...base,
+      ...fields,
+    } as unknown) as OrderRecord);
+    assert.equal(refusal?.reason, expected);
+  }
+});
+
 // ── Plan / dry-run ───────────────────────────────────────────────────────────
 
 test('planRebuildPrintOrder: classic plan targets 24 story pages and 32 interior pages', async () => {
