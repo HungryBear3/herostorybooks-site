@@ -78,6 +78,36 @@ test('linear Continue controls advance every step without covering fields or sub
   expect(harness.orderRequests).toHaveLength(0);
 });
 
+test('fourth hero type and save-before-next-person guidance are explicit', async ({ page, baseURL }) => {
+  const harness = await installHandoffHarness(page, baseURL!);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/checkout');
+
+  await expect(page.getByRole('button', { name: /Child Available now/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Parent Available by review only/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Grandparent Available by review only/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Friend \/ other family member Available by review only/ })).toBeVisible();
+
+  await page.getByRole('button', { name: /Space Voyager/ }).click();
+  await page.locator('#childName').fill('Testhero');
+  await page.getByTestId('checkout-primary-continue').click();
+  await page.getByLabel('Describe the hero').fill('Short dark hair and a bright green hoodie');
+  await page.getByTestId('checkout-bottom-continue').click();
+  await page.getByTestId('checkout-bottom-continue').click();
+
+  await expect(page.getByText('Add one person at a time. Complete and save their profile before adding the next person.')).toBeVisible();
+  const dadButton = page.getByRole('button', { name: '+ Dad' });
+  const momButton = page.getByRole('button', { name: '+ Mom' });
+  await dadButton.click();
+  await expect(momButton).toBeDisabled();
+  await expect(page.getByText('Select “Save person” below before choosing another person.')).toBeVisible();
+  await page.getByPlaceholder('e.g., Alexy').fill('Dad');
+  await page.getByPlaceholder(/Hair, skin tone/).fill('Short brown hair and glasses');
+  await page.getByRole('button', { name: 'Save person' }).click();
+  await expect(momButton).toBeEnabled();
+  expect(harness.orderRequests).toHaveLength(0);
+});
+
 test('desktop header Continue uses the same owner-facing destination label', async ({ page, baseURL }) => {
   await installHandoffHarness(page, baseURL!);
   await page.setViewportSize({ width: 1024, height: 900 });

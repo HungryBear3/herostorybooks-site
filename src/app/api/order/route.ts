@@ -61,7 +61,7 @@ function envFlag(name: string): boolean {
   return value === 'true' || value === '"true"';
 }
 
-const PRIMARY_HERO_TYPES = new Set(['child', 'parent', 'grandparent']);
+const PRIMARY_HERO_TYPES = new Set(['child', 'parent', 'grandparent', 'other']);
 const PRIMARY_HERO_BETA_ENABLED = envFlag('HSB_PRIMARY_HERO_BETA') || envFlag('NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA');
 const CUSTOM_STORY_PAID_BETA_ENABLED = envFlag('HSB_CUSTOM_STORY_PAID_BETA') || envFlag('NEXT_PUBLIC_HSB_CUSTOM_STORY_PAID_BETA');
 

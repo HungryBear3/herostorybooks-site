@@ -148,6 +148,7 @@ const PRIMARY_HERO_TYPES = [
   { id: "child", label: "Child", helper: "Available now" },
   { id: "parent", label: "Parent", helper: "Available by review only" },
   { id: "grandparent", label: "Grandparent", helper: "Available by review only" },
+  { id: "other", label: "Friend / other family member", helper: "Available by review only" },
 ] as const;
 const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings";
 const MUST_INCLUDE_OPTIONS = [
@@ -2024,6 +2025,9 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
                   appearance details or a reference photo before they can be saved.
                   Pets still need a name, but photo and notes stay optional.
                 </p>
+                <p className="mt-3 rounded-2xl border border-[#d8c6a2] bg-[#f8f0dd] px-4 py-3 text-sm font-semibold leading-6 text-[#1f1a16]">
+                  Add one person at a time. Complete and save their profile before adding the next person.
+                </p>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -2048,7 +2052,7 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
                         {editingSupportingCharacterId ? "Edit person" : "Add person"}
                       </p>
                       <p className="text-xs leading-5 text-[#8a7b6a]">
-                        Save or cancel this draft before adding another person.
+                        Select “Save person” below before choosing another person.
                       </p>
                     </div>
                     <span className="rounded-full border border-[#dfd2b8] bg-[#f8f0dd] px-3 py-1 text-xs font-semibold text-[#695f54]">

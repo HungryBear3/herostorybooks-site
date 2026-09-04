@@ -386,6 +386,14 @@ test('checkout source includes progressive step UI and sequential person editor 
   assert.match(CHECKOUT_FORM_SRC, /currentStepId !== "review"/);
   assert.match(CHECKOUT_FORM_SRC, /supportingPhotoPendingId === supportingCharacterDraft\.id/);
   assert.match(CHECKOUT_FORM_SRC, /This person is the gift recipient/);
+  assert.match(
+    CHECKOUT_FORM_SRC,
+    /Add one person at a time\. Complete and save their profile before adding the next person\./,
+  );
+  assert.match(
+    CHECKOUT_FORM_SRC,
+    /Select “Save person” below before choosing another person\./,
+  );
   assert.match(CHECKOUT_FORM_SRC, /setGuidedFrames\(\[\]\)/);
   assert.match(
     CHECKOUT_FORM_SRC,

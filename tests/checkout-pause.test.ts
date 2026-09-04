@@ -76,15 +76,15 @@ test('Custom Story upload intake is no longer gated behind a client flag', () =>
   assert.match(src, /isCustomStorySelected && \([\s\S]*?data-testid="custom-story-intake-panel"/);
 });
 
-test('primary hero beta exposes only parent and grandparent as sellable non-child types', () => {
+test('primary hero beta exposes friend or other family member as a fourth review-only hero type', () => {
   const formSrc = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
   const routeSrc = readFileSync('src/app/api/order/route.ts', 'utf8');
   assert.match(formSrc, /id: "parent"/);
   assert.match(formSrc, /id: "grandparent"/);
+  assert.match(formSrc, /id: "other", label: "Friend \/ other family member", helper: "Available by review only"/);
   assert.doesNotMatch(formSrc, /id: "pet"/);
   assert.doesNotMatch(formSrc, /id: "whole-family"/);
-  assert.doesNotMatch(formSrc, /id: "other"/);
-  assert.match(routeSrc, /PRIMARY_HERO_TYPES = new Set\(\['child', 'parent', 'grandparent'\]\)/);
+  assert.match(routeSrc, /PRIMARY_HERO_TYPES = new Set\(\['child', 'parent', 'grandparent', 'other'\]\)/);
 });
 
 test('supporting photo upload failures fail before Stripe for every error path', () => {

@@ -116,7 +116,7 @@ test('turnaround change adds no guaranteed/instant/same-day/holiday-delivery pro
 
 // ── 5. Server-side non-child gate preserved (not weakened by copy changes) ────
 test('server-side non-child primary-hero gate remains intact', () => {
-  assert.match(orderRoute, /PRIMARY_HERO_TYPES = new Set\(\['child', 'parent', 'grandparent'\]\)/);
+  assert.match(orderRoute, /PRIMARY_HERO_TYPES = new Set\(\['child', 'parent', 'grandparent', 'other'\]\)/);
   assert.match(orderRoute, /if \(heroType !== 'child'\)/);
   assert.match(orderRoute, /PRIMARY_HERO_BETA_ENABLED/);
   assert.match(orderRoute, /primary_hero_beta_required/);
