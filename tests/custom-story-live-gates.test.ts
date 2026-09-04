@@ -102,7 +102,47 @@ test('unparsed media-backed Custom Stories fail before successful providers can 
             }), { status: 200, headers: { 'content-type': 'application/json' } });
           },
         }),
-        /media-backed custom story requires an approved sanitized brief before generation/,
+        /media-backed custom stories require operator-authored prose/,
+      );
+      assert.equal(providerCalls, 0);
+    }
+  } finally {
+    for (const key of envKeys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('approved briefs do not opt media-backed Custom Stories into automated prose', async () => {
+  const envKeys = ['OPENAI_API_KEY', 'HSB_ENABLE_OPENAI_STORY'] as const;
+  const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  process.env.OPENAI_API_KEY = 'test-key';
+  process.env.HSB_ENABLE_OPENAI_STORY = 'true';
+
+  try {
+    for (const fields of [
+      { documentBlobPath: 'orders/test/story.pdf' },
+      { voiceBlobPath: 'orders/test/voice.webm' },
+    ]) {
+      let providerCalls = 0;
+      const order = createOrderRecord({
+        childName: 'Lukas', childPronouns: 'he/him', bookFormat: 'classic',
+        email: 'parent@example.com', theme: 'custom-voice-story',
+        customStoryBrief: TACO_GATE_BRIEF,
+        customStoryValidation: { ok: true, route: 'proceed', failures: [] },
+        ...fields,
+      });
+
+      await assert.rejects(
+        () => generateStoryWithMeta(order, {
+          fetch: async () => {
+            providerCalls += 1;
+            throw new Error('provider must not be called');
+          },
+        }),
+        /media-backed custom stories require operator-authored prose/,
       );
       assert.equal(providerCalls, 0);
     }
@@ -187,7 +227,7 @@ test('media-backed Custom Stories refuse generation before every template fallba
         () => generateStoryWithMeta(order, {
           fetch: async () => { throw new Error('provider must remain unavailable'); },
         }),
-        /media-backed custom story requires an approved sanitized brief before generation/,
+        /media-backed custom stories require operator-authored prose/,
         label,
       );
     }
@@ -228,7 +268,7 @@ test('every enabled model path refuses unparsed media-backed Custom Stories befo
       });
       await assert.rejects(
         () => generateStoryWithMeta(order, { fetch: async () => { throw new Error('provider offline'); } }),
-        /media-backed custom story requires an approved sanitized brief before generation/,
+        /media-backed custom stories require operator-authored prose/,
         label,
       );
     }

@@ -194,6 +194,18 @@ test('checkRebuildSafety: fulfillmentStatus=submitting_to_print refused', () => 
   assert.deepEqual(r?.reason, 'already_submitted_to_lulu');
 });
 
+test('checkRebuildSafety: media-backed Custom Story is manual-review only', () => {
+  const r = checkRebuildSafety(({
+    bookFormat: 'classic',
+    paymentStatus: 'paid',
+    status: 'order_received',
+    fulfillmentStatus: 'failed_manual_review',
+    theme: 'custom-voice-story',
+    documentBlobPath: 'orders/test/story.pdf',
+  } as unknown) as OrderRecord);
+  assert.equal(r?.reason, 'media_story_manual_review_required');
+});
+
 // ── Plan / dry-run ───────────────────────────────────────────────────────────
 
 test('planRebuildPrintOrder: classic plan targets 24 story pages and 32 interior pages', async () => {

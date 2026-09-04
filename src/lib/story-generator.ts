@@ -217,7 +217,7 @@ function hasCustomStoryBrief(order: OrderRecord): boolean {
   return Boolean(order.customStoryBrief);
 }
 
-function hasMediaBackedCustomStorySource(order: OrderRecord): boolean {
+export function hasMediaBackedCustomStorySource(order: OrderRecord): boolean {
   return Boolean(
     order.voiceBlobPath
     || order.voiceBlobUrl
@@ -235,13 +235,11 @@ function hasMediaBackedCustomStorySource(order: OrderRecord): boolean {
 }
 
 function customStoryGenerationGate(order: OrderRecord): void {
-  const brief = order.customStoryBrief;
-  if (!brief) {
-    if (hasMediaBackedCustomStorySource(order)) {
-      throw new Error('media-backed custom story requires an approved sanitized brief before generation; route to manual_queue');
-    }
-    return;
+  if (hasMediaBackedCustomStorySource(order)) {
+    throw new Error('media-backed custom stories require operator-authored prose; automated generation is disabled');
   }
+  const brief = order.customStoryBrief;
+  if (!brief) return;
   const validation = validateCustomStoryBrief(brief);
   const shapeStatus = statusForShape(brief.storyShape);
   if (!validation.ok || !shapeStatus.conciergeAllowed || !brief.provenance?.briefApprovedByOperator) {
