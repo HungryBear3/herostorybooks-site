@@ -1243,13 +1243,15 @@ export function documentExtensionForFile(file: Pick<File, 'type' | 'name'>): 'tx
  * Upload an attached child-voice audio file to durable blob storage. Mirrors
  * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
  */
-export function assertPrivateStorySourceStorage(orderId: string): void {
-  if (getBlobAccessMode() !== 'private') {
+export function assertPrivateStorySourceStorage(orderId: string): 'private' {
+  const access = getBlobAccessMode();
+  if (access !== 'private') {
     throw new OrderPersistenceError(
       orderId,
       'Private Blob storage is required for customer voice notes and story documents.',
     );
   }
+  return access;
 }
 
 export async function uploadOrderVoice(
@@ -1280,7 +1282,7 @@ export async function uploadOrderVoice(
     return null;
   }
 
-  assertPrivateStorySourceStorage(orderId);
+  const access = assertPrivateStorySourceStorage(orderId);
 
   // Never derive durable identifiers from the caller-controlled filename.
   const assetId = crypto.randomBytes(12).toString('base64url');
@@ -1290,7 +1292,7 @@ export async function uploadOrderVoice(
 
   try {
     const blob = await put(pathname, buffer, {
-      access: getBlobAccessMode(),
+      access,
       allowOverwrite: true,
       addRandomSuffix: false,
       contentType: classification.mimeType,
@@ -1347,7 +1349,7 @@ export async function uploadOrderDocument(
     return null;
   }
 
-  assertPrivateStorySourceStorage(orderId);
+  const access = assertPrivateStorySourceStorage(orderId);
 
   const assetId = crypto.randomBytes(12).toString('base64url');
   const scope = checkoutMediaScope(checkoutLeaseId);
@@ -1356,7 +1358,7 @@ export async function uploadOrderDocument(
 
   try {
     const blob = await put(pathname, buffer, {
-      access: getBlobAccessMode(),
+      access,
       allowOverwrite: true,
       addRandomSuffix: false,
       contentType: classification.mimeType,

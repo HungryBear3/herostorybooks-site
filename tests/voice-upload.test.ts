@@ -25,6 +25,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 import {
   bindOrderCheckoutSession,
@@ -93,6 +94,25 @@ test('legacy story-source storage fails closed unless Blob access is private', a
       `${functionName} must fail before Blob write`,
     );
   }
+});
+
+test('legacy story-source uploads use the exact access mode validated before async file reads', () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--experimental-strip-types',
+      '--import',
+      './tests/helpers/blob-fake-register.mjs',
+      './tests/helpers/story-source-access-race-scenario.mjs',
+    ],
+    { cwd: process.cwd(), encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const writes = JSON.parse(result.stdout) as Array<{ pathname: string; access: string }>;
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes.map((write) => write.access), ['private', 'private']);
+  assert.match(writes[0].pathname, /voice-/);
+  assert.match(writes[1].pathname, /document-/);
 });
 
 test('switching away from Custom Story resets every source consent and fences late recorder callbacks', () => {
