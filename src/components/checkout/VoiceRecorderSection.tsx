@@ -77,12 +77,14 @@ export function VoiceRecorderSection({
   const recordedChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const mountedRef = useRef(true);
+  const mediaOperationRef = useRef(0);
 
   // Always release the mic + revoke the preview URL on unmount.
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      mediaOperationRef.current += 1;
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
       if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
@@ -97,6 +99,7 @@ export function VoiceRecorderSection({
   }, []);
 
   const handleRecord = useCallback(async () => {
+    const operationId = ++mediaOperationRef.current;
     setRecorderError(null);
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       setRecorderError('Voice recording is not supported on this browser. You can upload a file instead.');
@@ -104,7 +107,7 @@ export function VoiceRecorderSection({
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (!mountedRef.current) {
+      if (!mountedRef.current || operationId !== mediaOperationRef.current) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
@@ -116,9 +119,10 @@ export function VoiceRecorderSection({
         if (event.data && event.data.size > 0) recordedChunksRef.current.push(event.data);
       });
       recorder.addEventListener('stop', () => {
-        if (!mountedRef.current) {
+        if (!mountedRef.current || operationId !== mediaOperationRef.current) {
           recordedChunksRef.current = [];
-          stopStream();
+          stream.getTracks().forEach((track) => track.stop());
+          if (streamRef.current === stream) streamRef.current = null;
           return;
         }
         const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
@@ -134,6 +138,7 @@ export function VoiceRecorderSection({
       recorder.start();
       setIsRecording(true);
     } catch (err) {
+      if (!mountedRef.current || operationId !== mediaOperationRef.current) return;
       setRecorderError('We could not access the microphone. Please allow access, or upload a file instead.');
       stopStream();
       setIsRecording(false);
@@ -155,6 +160,7 @@ export function VoiceRecorderSection({
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       if (!file) return;
+      mediaOperationRef.current += 1;
       const previewUrl = URL.createObjectURL(file);
       if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
       onVoiceChange(file, previewUrl, 'uploaded');
@@ -166,6 +172,7 @@ export function VoiceRecorderSection({
   );
 
   const handleRemove = useCallback(() => {
+    mediaOperationRef.current += 1;
     if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
     onVoiceChange(null, null, null);
     onConsentChange(false);

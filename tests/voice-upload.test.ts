@@ -100,7 +100,8 @@ test('switching away from Custom Story resets every source consent and fences la
   const recorder = readFileSync('src/components/checkout/VoiceRecorderSection.tsx', 'utf8');
   assert.match(checkout, /onClick=\{\(\) => \{[\s\S]{0,1200}setDirectMediaConsent\(false\)[\s\S]{0,500}Choose a ready-made adventure instead/);
   assert.match(recorder, /mountedRef\.current = false/);
-  assert.match(recorder, /if \(!mountedRef\.current\)[\s\S]{0,300}return/);
+  assert.match(recorder, /mediaOperationRef\.current \+= 1/);
+  assert.match(recorder, /if \(!mountedRef\.current \|\| operationId !== mediaOperationRef\.current\)[\s\S]{0,300}return/);
 });
 
 // ── createOrderRecord persists voice metadata ────────────────────────────────

@@ -192,6 +192,56 @@ test('a delayed microphone permission grant cannot start recording after leaving
   expect(harness.orderRequests).toHaveLength(0);
 });
 
+test('selecting a document invalidates a pending microphone permission request', async ({ page, baseURL }) => {
+  const harness = await installHandoffHarness(page, baseURL!);
+  await page.addInitScript(() => {
+    let resolvePermission: ((stream: { getTracks: () => Array<{ stop: () => void }> }) => void) | null = null;
+    Object.assign(window, {
+      recorderStartedAfterUpload: false,
+      replacedPermissionTrackStopped: false,
+      resolveReplacedMicPermission: () => resolvePermission?.({
+        getTracks: () => [{
+          stop: () => { (window as unknown as { replacedPermissionTrackStopped: boolean }).replacedPermissionTrackStopped = true; },
+        }],
+      }),
+    });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: () => new Promise((resolve) => { resolvePermission = resolve; }),
+      },
+    });
+    class FakeMediaRecorder {
+      state = 'inactive';
+      mimeType = 'audio/webm';
+      constructor(_stream: unknown, _options?: unknown) {}
+      addEventListener() {}
+      start() {
+        (window as unknown as { recorderStartedAfterUpload: boolean }).recorderStartedAfterUpload = true;
+      }
+      stop() { this.state = 'inactive'; }
+    }
+    Object.defineProperty(window, 'MediaRecorder', { configurable: true, value: FakeMediaRecorder });
+  });
+
+  await page.goto('/checkout');
+  await page.getByRole('button', { name: /Custom Story/ }).click();
+  await page.getByRole('button', { name: 'Record audio' }).click();
+  await page.getByLabel('Upload document').setInputFiles({
+    name: 'replacement.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('%PDF-1.4 replacement'),
+  });
+  await page.evaluate(() => (window as unknown as { resolveReplacedMicPermission: () => void }).resolveReplacedMicPermission());
+
+  await expect(page.getByText(/Attached:/)).toContainText('replacement.pdf');
+  await expect.poll(() => page.evaluate(() => ({
+    started: (window as unknown as { recorderStartedAfterUpload: boolean }).recorderStartedAfterUpload,
+    stopped: (window as unknown as { replacedPermissionTrackStopped: boolean }).replacedPermissionTrackStopped,
+  }))).toEqual({ started: false, stopped: true });
+  expect(harness.orderRequests).toHaveLength(0);
+});
+
 test('switching from Custom Story to a ready-made adventure clears abandoned private source material', async ({ page, baseURL }) => {
   const harness = await installHandoffHarness(page, baseURL!);
   await page.setViewportSize({ width: 390, height: 844 });
