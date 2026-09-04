@@ -2179,10 +2179,12 @@ export async function updateFulfillmentState(
 /** Explicit operator transition from a paid, undisposed order back to auto. */
 export async function prepareOrderForAdminFulfillmentRetry(
   orderId: string,
+  eligible: (order: OrderRecord) => boolean = () => true,
 ): Promise<OrderRecord | null> {
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
+      if (!eligible(current)) return { abort: null };
       if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
         return { abort: null };
       }

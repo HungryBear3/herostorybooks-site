@@ -7,7 +7,11 @@ import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
 import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION, withRecommendedPageMetadata } from './fulfillment-types.ts';
 import { assertStoryPageSet, validateStoryPageSet } from './story-page-contract.ts';
-import { generateStory, generateStoryWithMeta } from './story-generator.ts';
+import {
+  generateStory,
+  generateStoryWithMeta,
+  hasMediaBackedCustomStorySource,
+} from './story-generator.ts';
 import type { StoryWithMeta } from './story-generator.ts';
 import { generateStoryImageResults, requireCompleteImageResults } from './image-generator.ts';
 import type { GeneratedImageResult } from './image-generator.ts';
@@ -280,6 +284,7 @@ async function commitProofPatchIfSourceCurrent(
       if (claimId && (current.fulfillmentMode !== 'auto' || current.internalDisposition != null)) {
         return { abort: false };
       }
+      if (hasMediaBackedCustomStorySource(current)) return { abort: false };
       const currentPages = normalizePageArtifactTextLayouts(current.pageArtifacts ?? []);
       const next = applyFulfillmentPatchTo(current, paidFulfillmentPatch(current, {
         ...patch,
@@ -1141,6 +1146,9 @@ export async function buildProofArtifactFromPageArtifacts(
 ): Promise<ProofBuildResult> {
   const order = await getOrder(orderId);
   if (!order) return { ok: false, error: 'order_not_found' };
+  if (hasMediaBackedCustomStorySource(order)) {
+    return { ok: false, error: 'media_story_manual_review_required' };
+  }
   if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
     return { ok: false, error: 'no_page_artifacts' };
   }

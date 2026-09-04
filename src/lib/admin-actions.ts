@@ -13,6 +13,7 @@ import {
   type OrderRecord,
 } from './orders.ts';
 import { triggerFulfillment, approvePrintProof, type FulfillmentDeps } from './fulfillment.ts';
+import { hasMediaBackedCustomStorySource } from './story-generator.ts';
 import {
   sendProofReadyEmail,
   sendLifecycleEmail,
@@ -100,6 +101,13 @@ export async function retryOrderFulfillment(
   if (order.paymentStatus !== 'paid') {
     return { ok: false, status: 400, error: 'Cannot retry: payment not confirmed' };
   }
+  if (hasMediaBackedCustomStorySource(order)) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Media-backed Custom Stories require manual fulfillment',
+    };
+  }
   if (order.fulfillmentStatus === 'submitting_to_print' || order.printSubmissionAttemptedAt) {
     return {
       ok: false,
@@ -120,7 +128,10 @@ export async function retryOrderFulfillment(
     };
   }
 
-  const prepared = await prepareOrderForAdminFulfillmentRetry(orderId);
+  const prepared = await prepareOrderForAdminFulfillmentRetry(
+    orderId,
+    (current) => !hasMediaBackedCustomStorySource(current),
+  );
   if (!prepared) {
     return { ok: false, status: 409, error: 'Order is not eligible for an automatic retry' };
   }

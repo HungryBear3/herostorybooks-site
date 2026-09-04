@@ -19,7 +19,10 @@ import {
   type OrderRecord,
   type PageArtifact,
 } from '../src/lib/orders.ts';
-import { rebuildProofFromPageArtifacts } from '../src/lib/fulfillment.ts';
+import {
+  buildProofArtifactFromPageArtifacts,
+  rebuildProofFromPageArtifacts,
+} from '../src/lib/fulfillment.ts';
 import {
   acknowledgeProofReview,
   approveWholeBook,
@@ -119,6 +122,39 @@ test('rebuildProofFromPageArtifacts clears proofReviewedAt on success', async ()
     assert.equal(after?.proofReviewedAt, null);
     // Proofs land at an IMMUTABLE, version-keyed path.
     assert.match(after?.storyArtifactUrl ?? '', /\/proofs\/pv_[a-z0-9_]+\.pdf$/);
+  } finally { cleanup(dir); }
+});
+
+test('media-backed Custom Stories never build, upload, or persist automated proofs', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      theme: 'custom-voice-story',
+      fulfillmentMode: 'manual_hold',
+      documentBlobPath: 'orders/ord_ack_inv/story-source/document.pdf',
+      documentConsentAt: '2026-04-27T09:00:00Z',
+    });
+    const before = await getOrder('ord_ack_inv');
+    let pdfBuildCalls = 0;
+    let proofUploadCalls = 0;
+    const deps = {
+      buildPdf: async () => {
+        pdfBuildCalls += 1;
+        return Buffer.from('%PDF forbidden');
+      },
+      uploadArtifact: async () => {
+        proofUploadCalls += 1;
+        return 'https://example.invalid/forbidden.pdf';
+      },
+    };
+
+    const built = await buildProofArtifactFromPageArtifacts('ord_ack_inv', deps);
+    assert.deepEqual(built, { ok: false, error: 'media_story_manual_review_required' });
+    const rebuilt = await rebuildProofFromPageArtifacts('ord_ack_inv', deps);
+    assert.deepEqual(rebuilt, { ok: false, error: 'media_story_manual_review_required' });
+    assert.equal(pdfBuildCalls, 0);
+    assert.equal(proofUploadCalls, 0);
+    assert.deepEqual(await getOrder('ord_ack_inv'), before);
   } finally { cleanup(dir); }
 });
 
