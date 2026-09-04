@@ -217,9 +217,31 @@ function hasCustomStoryBrief(order: OrderRecord): boolean {
   return Boolean(order.customStoryBrief);
 }
 
+function hasMediaBackedCustomStorySource(order: OrderRecord): boolean {
+  return Boolean(
+    order.voiceBlobPath
+    || order.voiceBlobUrl
+    || order.voiceConsentAt
+    || order.voiceSource
+    || order.voiceTranscript
+    || order.legacyVoiceUploadPresent
+    || order.documentBlobPath
+    || order.documentBlobUrl
+    || order.documentConsentAt
+    || order.documentSource
+    || order.voiceIntakeMedia
+    || order.documentIntakeMedia
+  );
+}
+
 function customStoryGenerationGate(order: OrderRecord): void {
   const brief = order.customStoryBrief;
-  if (!brief) return;
+  if (!brief) {
+    if (hasMediaBackedCustomStorySource(order)) {
+      throw new Error('media-backed custom story requires an approved sanitized brief before generation; route to manual_queue');
+    }
+    return;
+  }
   const validation = validateCustomStoryBrief(brief);
   const shapeStatus = statusForShape(brief.storyShape);
   if (!validation.ok || !shapeStatus.conciergeAllowed || !brief.provenance?.briefApprovedByOperator) {
@@ -237,18 +259,7 @@ function assertTemplateFallbackAllowed(order: OrderRecord): void {
   }
   if (
     sanitizeInput(order.theme, 60) === 'custom-voice-story'
-    || Boolean(order.voiceBlobPath)
-    || Boolean(order.voiceBlobUrl)
-    || Boolean(order.voiceConsentAt)
-    || Boolean(order.voiceSource)
-    || Boolean(order.voiceTranscript)
-    || Boolean(order.legacyVoiceUploadPresent)
-    || Boolean(order.documentBlobPath)
-    || Boolean(order.documentBlobUrl)
-    || Boolean(order.documentConsentAt)
-    || Boolean(order.documentSource)
-    || Boolean(order.voiceIntakeMedia)
-    || Boolean(order.documentIntakeMedia)
+    || hasMediaBackedCustomStorySource(order)
   ) {
     throw new Error('template fallback is disabled for custom stories with voice or document source material; route to manual_queue');
   }

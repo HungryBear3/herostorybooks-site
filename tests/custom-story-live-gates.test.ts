@@ -69,7 +69,53 @@ test('custom story generation refuses template fallback when LLM path fails', as
   }
 });
 
-test('media-backed Custom Stories refuse every template fallback path', async () => {
+test('unparsed media-backed Custom Stories fail before successful providers can ignore the source', async () => {
+  const envKeys = ['OPENAI_API_KEY', 'HSB_ENABLE_OPENAI_STORY'] as const;
+  const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  process.env.OPENAI_API_KEY = 'test-key';
+  process.env.HSB_ENABLE_OPENAI_STORY = 'true';
+
+  try {
+    for (const fields of [
+      { documentBlobPath: 'orders/test/story.pdf' },
+      { voiceBlobPath: 'orders/test/voice.webm' },
+    ]) {
+      let providerCalls = 0;
+      const order = createOrderRecord({
+        childName: 'Lukas',
+        childPronouns: 'he/him',
+        bookFormat: 'classic',
+        email: 'parent@example.com',
+        theme: 'custom-voice-story',
+        ...fields,
+      });
+
+      await assert.rejects(
+        () => generateStoryWithMeta(order, {
+          fetch: async () => {
+            providerCalls += 1;
+            return new Response(JSON.stringify({
+              choices: [{ message: { content: JSON.stringify({
+                title: 'Generic Adventure', dedication: 'For Lukas', characterDescription: 'A child',
+                pages: [{ pageNum: 1, sceneTitle: 'Ignored source', story: 'Generic.', imagePrompt: 'Generic.' }],
+              }) } }],
+            }), { status: 200, headers: { 'content-type': 'application/json' } });
+          },
+        }),
+        /media-backed custom story requires an approved sanitized brief before generation/,
+      );
+      assert.equal(providerCalls, 0);
+    }
+  } finally {
+    for (const key of envKeys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('media-backed Custom Stories refuse generation before every template fallback path', async () => {
   const envKeys = [
     'OPENAI_API_KEY',
     'HSB_ENABLE_OPENAI_STORY',
@@ -141,7 +187,7 @@ test('media-backed Custom Stories refuse every template fallback path', async ()
         () => generateStoryWithMeta(order, {
           fetch: async () => { throw new Error('provider must remain unavailable'); },
         }),
-        /template fallback is disabled for custom stories/,
+        /media-backed custom story requires an approved sanitized brief before generation/,
         label,
       );
     }
@@ -154,7 +200,7 @@ test('media-backed Custom Stories refuse every template fallback path', async ()
   }
 });
 
-test('every enabled model failure path refuses media-backed Custom Story template fallback', async () => {
+test('every enabled model path refuses unparsed media-backed Custom Stories before provider calls', async () => {
   const envKeys = [
     'OPENAI_API_KEY',
     'HSB_ENABLE_OPENAI_STORY',
@@ -182,7 +228,7 @@ test('every enabled model failure path refuses media-backed Custom Story templat
       });
       await assert.rejects(
         () => generateStoryWithMeta(order, { fetch: async () => { throw new Error('provider offline'); } }),
-        /template fallback is disabled for custom stories/,
+        /media-backed custom story requires an approved sanitized brief before generation/,
         label,
       );
     }
