@@ -61,6 +61,7 @@ import {
 } from './customer-text-change-request.ts';
 import { pageGenerationSourceFingerprint } from './review-source-identity.ts';
 import { hasAnyReviewCapability, hasReviewCapability } from './review-capability.ts';
+import { hasMediaBackedCustomStorySource } from './story-generator.ts';
 
 // Soft internal thresholds (runbook): warn at 3, manual review at 5.
 export const REGEN_WARNING_THRESHOLD = 3;
@@ -384,6 +385,9 @@ export async function regeneratePage(
   if (!preOrder) return { ok: false, status: 404, error: 'Order not found' };
   const preRefusal = evaluateReviewMutationEligibility(preOrder, input.actor);
   if (preRefusal) return { ok: false, status: preRefusal.status, error: preRefusal.error };
+  if (hasMediaBackedCustomStorySource(preOrder)) {
+    return { ok: false, status: 409, error: 'media_story_manual_review_required' };
+  }
   if (preOrder.reviewStatus === 'approved') {
     return { ok: false, status: 409, error: 'already_approved' };
   }
@@ -444,6 +448,13 @@ export async function regeneratePage(
         const refusal = evaluateReviewMutationEligibility(order, input.actor);
         if (refusal) {
           return { abort: { error: { ok: false, status: refusal.status, error: refusal.error } } };
+        }
+        if (hasMediaBackedCustomStorySource(order)) {
+          return {
+            abort: {
+              error: { ok: false, status: 409, error: 'media_story_manual_review_required' },
+            },
+          };
         }
         if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
           return { abort: { error: { ok: false, status: 409, error: 'Page review not yet ready for this order' } } };
