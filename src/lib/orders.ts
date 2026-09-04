@@ -2355,6 +2355,12 @@ export function normalizeEtag(raw: string | null | undefined): string | null {
   return value.length ? value : null;
 }
 
+/** Convert any equivalent validator into the strong quoted shape Blob `ifMatch` accepts. */
+export function normalizeEtagForIfMatch(raw: string | null | undefined): string | null {
+  const value = normalizeEtag(raw);
+  return value ? `"${value}"` : null;
+}
+
 type PublicVersionedReadDeps = {
   listImpl?: (options: { prefix: string; token: string }) => Promise<{
     blobs: Array<{ pathname: string; url: string; downloadUrl?: string; etag: string }>;
@@ -2522,7 +2528,11 @@ function blobOrderStoreAdapter(token: string): OrderStoreAdapter {
         });
         if (!result || !result.stream) return null;
         const body = await new Response(result.stream).text();
-        return { body, version: result.blob.etag };
+        const version = normalizeEtagForIfMatch(result.blob.etag);
+        if (!version) {
+          throw new Error('Private Blob GET response omitted the order ETag');
+        }
+        return { body, version };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (error instanceof BlobNotFoundError || isBlobNotFoundError(message)) return null;

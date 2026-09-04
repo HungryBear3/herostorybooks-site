@@ -17,8 +17,10 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 
 import {
+  normalizeEtagForIfMatch,
   readPublicOrderBlobVersioned,
   persistNewOrder,
   withOrderTransaction,
@@ -119,6 +121,14 @@ class PublicBlobSim {
 }
 
 test.afterEach(() => __resetOrderStoreAdapterFactoryForTests());
+
+test('private Blob weak GET validators are converted to strong ifMatch validators', () => {
+  assert.equal(normalizeEtagForIfMatch('W/"de9a57214a197df40902185cb8049f9a"'), '"de9a57214a197df40902185cb8049f9a"');
+  assert.equal(normalizeEtagForIfMatch('"de9a57214a197df40902185cb8049f9a"'), '"de9a57214a197df40902185cb8049f9a"');
+  assert.equal(normalizeEtagForIfMatch('de9a57214a197df40902185cb8049f9a'), '"de9a57214a197df40902185cb8049f9a"');
+  const source = readFileSync('src/lib/orders.ts', 'utf8');
+  assert.match(source, /normalizeEtagForIfMatch\(result\.blob\.etag\)/);
+});
 
 test('draft create then immediate guarded final save converges when the CDN weakens/requotes the ETag', async () => {
   const sim = new PublicBlobSim();
