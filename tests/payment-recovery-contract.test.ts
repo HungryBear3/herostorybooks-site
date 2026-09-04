@@ -28,9 +28,11 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   const route = readFileSync('src/app/api/order/route.ts', 'utf8');
   const client = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
   const fingerprint = readFileSync('src/lib/checkout-request-fingerprint.ts', 'utf8');
+  const browserRandomId = readFileSync('src/lib/browser-random-id.ts', 'utf8');
   assert.match(client, /checkoutAttemptIdRef\.current \?\? readStoredCheckoutAttemptId\(\)/);
   assert.match(client, /sessionStorage\.getItem\(CHECKOUT_ATTEMPT_STORAGE_KEY\)/);
-  assert.match(client, /crypto\.getRandomValues\(bytes\)/);
+  assert.match(client, /browserRandomHex\(16\)/);
+  assert.match(browserRandomId, /crypto\.getRandomValues\(bytes\)/);
   assert.match(client, /checkoutAttemptIdRef\.current = checkoutAttemptId/);
   assert.match(client, /payload\.set\("checkoutAttemptId", checkoutAttemptId\)/);
   // The hand-off itself moved out of an inline `setTimeout` and into

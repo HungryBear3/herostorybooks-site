@@ -64,7 +64,7 @@ test('restored supporting character ids cannot collide with a newly-created draf
   );
   assert.ok(draft);
   assert.notEqual(draft.id, restored.id);
-  assert.match(draft.id, /^supporting-character-[0-9a-f-]{36}$/i);
+  assert.match(draft.id, /^supporting-character-[0-9a-f]{32}$/i);
 });
 
 test('checkout source fences overlapping and reset photo callbacks with operation tokens', () => {

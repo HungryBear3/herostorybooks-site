@@ -1,4 +1,5 @@
 import { classifyStoryAttachment } from "./story-attachment.ts";
+import { browserRandomHex } from "./browser-random-id.ts";
 
 export interface SupportingCharacterRecord {
   id: string;
@@ -57,7 +58,7 @@ export interface CheckoutProgressState {
 function nextSupportingCharacterDraftId(existingIds: Set<string>) {
   let id: string;
   do {
-    id = `supporting-character-${crypto.randomUUID()}`;
+    id = `supporting-character-${browserRandomHex(16)}`;
   } while (existingIds.has(id));
   return id;
 }

@@ -40,6 +40,7 @@ import {
 import { upload } from "@vercel/blob/client";
 import { isDirectUploadClientEnabled } from "@/lib/checkout-direct-flags";
 import { classifyStoryAttachment } from "@/lib/story-attachment";
+import { browserRandomHex } from "@/lib/browser-random-id";
 import {
   applyPrimaryAndSupportingMediaToOrderPayload,
   prepareOrReuseDirectIntakeSubmission,
@@ -194,9 +195,7 @@ const CHECKOUT_ATTEMPT_STORAGE_KEY = "hsb-checkout-attempt-id";
 const CHECKOUT_ATTEMPT_ID_RE = /^[a-f0-9]{32}$/;
 
 function newCheckoutAttemptId(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return browserRandomHex(16);
 }
 
 function readStoredCheckoutAttemptId(): string | null {

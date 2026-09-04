@@ -72,6 +72,12 @@ test('an older in-app browser without crypto.randomUUID can still start one orde
   });
   const harness = await installHandoffHarness(page, baseURL!, { redirectTo: STRIPE_SESSION_URL });
   const pay = await fillCheckoutToReview(page);
+  await page.getByRole('button', { name: /People and pets/ }).click();
+  await page.getByRole('button', { name: /Dad/ }).click();
+  await page.getByPlaceholder('e.g., Alexy').fill('Dad');
+  await page.getByPlaceholder(/Hair, skin tone/).fill('Short brown hair and glasses');
+  await page.getByRole('button', { name: 'Save person' }).click();
+  await page.getByTestId('checkout-bottom-continue').click();
 
   await pay.click();
 
