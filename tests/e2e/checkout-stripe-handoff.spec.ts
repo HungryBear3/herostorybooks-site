@@ -63,9 +63,13 @@ test('clicks batched in one task create only one order/session attempt', async (
   expect(harness.orderRequests, 'one submit, one order').toHaveLength(1);
 });
 
-test('an older in-app browser without crypto.randomUUID can still start one order', async ({ page, baseURL }) => {
+test('a restricted in-app browser without Web Crypto ID methods can still start one order', async ({ page, baseURL }) => {
   await page.addInitScript(() => {
     Object.defineProperty(Crypto.prototype, 'randomUUID', {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(Crypto.prototype, 'getRandomValues', {
       configurable: true,
       value: undefined,
     });
@@ -83,6 +87,9 @@ test('an older in-app browser without crypto.randomUUID can still start one orde
 
   await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
   expect(harness.orderRequests, 'one submit, one order').toHaveLength(1);
+  expect(harness.orderBodies[0]).toMatch(
+    /name="checkoutAttemptId"\r?\n\r?\n[a-f0-9]{32}\r?\n/,
+  );
 });
 
 test('an in-app browser that blocks sessionStorage can still start one order', async ({ page, baseURL }) => {

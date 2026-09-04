@@ -36,6 +36,8 @@ export interface HarnessOptions {
 export interface HandoffHarness {
   /** One entry per /api/order request the page made. */
   orderRequests: string[];
+  /** Raw multipart bodies, used to assert client/server field contracts. */
+  orderBodies: string[];
 }
 
 export async function installHandoffHarness(
@@ -43,7 +45,7 @@ export async function installHandoffHarness(
   baseURL: string,
   options: HarnessOptions = {},
 ): Promise<HandoffHarness> {
-  const harness: HandoffHarness = { orderRequests: [] };
+  const harness: HandoffHarness = { orderRequests: [], orderBodies: [] };
   const appOrigin = new URL(baseURL).origin;
   const body = options.redirectTo !== undefined
     ? { ok: true, redirectTo: options.redirectTo }
@@ -56,6 +58,7 @@ export async function installHandoffHarness(
 
     if (url.origin === appOrigin && url.pathname === '/api/order') {
       harness.orderRequests.push(request.method());
+      harness.orderBodies.push(request.postData() ?? '');
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
