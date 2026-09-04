@@ -1,7 +1,6 @@
 'use client';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-
-const RECORDED_FILE_NAME = 'child-voice-note.webm';
+import { recordedStoryAudioFileName } from '@/lib/story-attachment';
 const VOICE_AUDIO_UPLOAD_ACCEPT_ATTR = [
   'audio/*',
   '.m4a',
@@ -126,7 +125,7 @@ export function VoiceRecorderSection({
           return;
         }
         const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
-        const file = new File([blob], RECORDED_FILE_NAME, { type: blob.type });
+        const file = new File([blob], recordedStoryAudioFileName(blob.type), { type: blob.type });
         const previewUrl = URL.createObjectURL(blob);
         if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
         onVoiceChange(file, previewUrl, 'recorded');

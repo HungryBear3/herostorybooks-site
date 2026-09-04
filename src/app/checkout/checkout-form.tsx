@@ -39,6 +39,7 @@ import {
 } from "@/lib/checkout-handoff";
 import { upload } from "@vercel/blob/client";
 import { isDirectUploadClientEnabled } from "@/lib/checkout-direct-flags";
+import { classifyStoryAttachment } from "@/lib/story-attachment";
 import {
   applyPrimaryAndSupportingMediaToOrderPayload,
   prepareOrReuseDirectIntakeSubmission,
@@ -430,7 +431,7 @@ function checkoutReferralCode(): string {
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export function CheckoutForm() {
+export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?: boolean }) {
   const [form, setForm] = useState<FormState>(emptyForm);
   const [currentStepId, setCurrentStepId] = useState<"hero-details" | "hero-appearance" | "story" | "people" | "review">("hero-details");
   const [supportingCharacterDraft, setSupportingCharacterDraft] = useState<SupportingCharacter | null>(null);
@@ -723,7 +724,9 @@ export function CheckoutForm() {
   const isCustomStorySelected = form.theme === CUSTOM_STORY_THEME_ID;
   const customStoryTheme = THEMES.find((theme) => theme.id === CUSTOM_STORY_THEME_ID) ?? null;
   const templateThemes = THEMES.filter((theme) => theme.id !== CUSTOM_STORY_THEME_ID);
-  const hasCustomStoryInput = Boolean(form.voiceFile || form.customStoryMemory.trim());
+  const customStoryAttachment = form.voiceFile ? classifyStoryAttachment(form.voiceFile) : null;
+  const customStoryAttachmentIsCoherent = customStoryAttachment?.kind === "audio" || customStoryAttachment?.kind === "document";
+  const hasCustomStoryInput = Boolean(customStoryAttachmentIsCoherent || form.customStoryMemory.trim());
 
   const guidedPhotoSummary = guidedFrames.length > 0
     ? `${guidedFrames.length} guided photo${guidedFrames.length === 1 ? "" : "s"} added`
@@ -784,6 +787,7 @@ export function CheckoutForm() {
     Boolean(form.email) &&
     Boolean(form.photoFile || form.characterNotes.trim()) &&
     (!isCustomStorySelected || hasCustomStoryInput) &&
+    (!isCustomStorySelected || !form.voiceFile || customStoryAttachmentIsCoherent) &&
     missingSupportingDescriptionLabels.length === 0 &&
     !supportingCharacterDraft &&
     !missingVoiceConsent &&
@@ -1461,42 +1465,48 @@ export function CheckoutForm() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 text-xs font-bold uppercase tracking-[0.16em] text-[#695f54]">
-                    <span className="h-px flex-1 bg-[#d8c6a2]" />
-                    Or add audio or a file
-                    <span className="h-px flex-1 bg-[#d8c6a2]" />
-                  </div>
+                  {storyMediaEnabled && (
+                    <>
+                      <div className="flex items-center gap-3 text-xs font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                        <span className="h-px flex-1 bg-[#d8c6a2]" />
+                        Or add audio or a file
+                        <span className="h-px flex-1 bg-[#d8c6a2]" />
+                      </div>
 
-                  <div
-                    ref={registerFieldRef("voiceConsent")}
-                    tabIndex={-1}
-                    aria-label="Custom Story source and consent"
-                  >
-                    <VoiceRecorderSection
-                      voiceFile={form.voiceFile}
-                      voicePreviewUrl={form.voicePreviewUrl}
-                      voiceSource={form.voiceSource}
-                      voiceConsent={form.voiceConsent}
-                      onVoiceChange={(file, previewUrl, source) =>
-                        setForm((prev) => ({
-                          ...prev,
-                          customStorySourceMode: file
-                            ? isStoryAudioFile(file) ? "audio" : "document"
-                            : prev.customStoryMemory.trim() ? "written" : "",
-                          voiceFile: file,
-                          voicePreviewUrl: previewUrl,
-                          voiceSource: source,
-                          voiceConsent: file ? prev.voiceConsent : false,
-                        }))
-                      }
-                      onConsentChange={(consent) =>
-                        setForm((prev) => ({ ...prev, voiceConsent: consent }))
-                      }
-                    />
-                  </div>
+                      <div
+                        ref={registerFieldRef("voiceConsent")}
+                        tabIndex={-1}
+                        aria-label="Custom Story source and consent"
+                      >
+                        <VoiceRecorderSection
+                          voiceFile={form.voiceFile}
+                          voicePreviewUrl={form.voicePreviewUrl}
+                          voiceSource={form.voiceSource}
+                          voiceConsent={form.voiceConsent}
+                          onVoiceChange={(file, previewUrl, source) =>
+                            setForm((prev) => ({
+                              ...prev,
+                              customStorySourceMode: file
+                                ? isStoryAudioFile(file) ? "audio" : "document"
+                                : prev.customStoryMemory.trim() ? "written" : "",
+                              voiceFile: file,
+                              voicePreviewUrl: previewUrl,
+                              voiceSource: source,
+                              voiceConsent: file ? prev.voiceConsent : false,
+                            }))
+                          }
+                          onConsentChange={(consent) =>
+                            setForm((prev) => ({ ...prev, voiceConsent: consent }))
+                          }
+                        />
+                      </div>
+                    </>
+                  )}
 
                   <p className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-4 py-3 text-xs leading-5 text-[#695f54]">
-                    Your typed story, voice note, and files are read by our team and used only to write this book. Never used for voice cloning or AI training.
+                    {storyMediaEnabled
+                      ? "Your typed story, voice note, and files are read by our team and used only to write this book. Never used for voice cloning or AI training."
+                      : "Your typed story is read by our team and used only to write this book. Never used for AI training."}
                   </p>
                 </div>
               )}

@@ -19,3 +19,12 @@ export function isDirectUploadServerEnabled(env: NodeJS.ProcessEnv = process.env
 export function isDirectUploadClientEnabled(): boolean {
   return process.env.NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD === 'true';
 }
+
+export function isCheckoutStoryMediaEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const privateBlobReady = env.HSB_BLOB_ACCESS_MODE === 'private'
+    && Boolean(env.BLOB_READ_WRITE_TOKEN?.trim());
+  const hermeticBrowserQa = env.HSB_E2E_STORY_MEDIA_ENABLED === 'true'
+    && env.HSB_REQUIRE_DURABLE_PERSISTENCE === 'false'
+    && env.HSB_ORDER_STORE_DIR?.endsWith('/.e2e-store') === true;
+  return privateBlobReady || hermeticBrowserQa;
+}

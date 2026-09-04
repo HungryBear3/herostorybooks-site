@@ -266,6 +266,19 @@ test('Custom Story requires one source and returns consent recovery to the corre
     missingFields: ['Document consent'],
     firstInvalidField: 'voiceConsent',
   });
+
+  const contradictory = makeForm({
+    theme: 'custom-voice-story',
+    voiceFile: new File(['bad'], 'memory.pdf', { type: 'audio/webm' }),
+    voiceConsent: true,
+  });
+  assert.deepEqual(getCheckoutProgress(contradictory).currentStep, {
+    id: 'hero-details',
+    title: 'Hero details',
+    missingFields: ['Custom Story source', 'Supported story attachment'],
+    firstInvalidField: 'customStoryMemory',
+  });
+  assert.match(getCheckoutPaymentBlockers(contradictory).join(' '), /Custom Story source/);
 });
 
 test('server and Start fresh enforce the same source/reset contract before payment', () => {
@@ -287,6 +300,7 @@ test('server and Start fresh enforce the same source/reset contract before payme
     CHECKOUT_FORM_SRC.indexOf('const completedStepCount'),
   );
   assert.match(readiness, /!isCustomStorySelected \|\| hasCustomStoryInput/);
+  assert.match(CHECKOUT_FORM_SRC, /classifyStoryAttachment\(form\.voiceFile\)/);
 });
 
 test('optional fields do not block', () => {

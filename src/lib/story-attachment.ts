@@ -44,6 +44,12 @@ const AUDIO_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
   aiff: 'audio/aiff',
 };
 
+export function recordedStoryAudioFileName(mimeType: string): string {
+  const normalized = mimeType.split(';', 1)[0]!.trim().toLowerCase();
+  const extension = AUDIO_BY_MIME[normalized] ?? 'webm';
+  return `child-voice-note.${extension}`;
+}
+
 const DOCUMENT_BY_MIME: Readonly<Record<string, string>> = {
   'text/plain': 'txt',
   'application/pdf': 'pdf',

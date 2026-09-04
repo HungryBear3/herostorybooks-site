@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   classifyStoryAttachment,
   documentMimeForFile,
+  recordedStoryAudioFileName,
 } from '../src/lib/story-attachment.ts';
 
 const file = (name: string, type: string) => new File(['fixture'], name, { type });
@@ -39,4 +40,17 @@ test('empty MIME audio keeps the legacy extension-derived lane without accepting
     kind: 'audio', mimeType: 'audio/webm', extension: 'webm',
   });
   assert.deepEqual(classifyStoryAttachment(file('memo.bin', '')), { kind: 'invalid' });
+});
+
+test('recorded audio filenames stay coherent with each supported MediaRecorder MIME', () => {
+  for (const [mimeType, expectedName] of [
+    ['audio/webm;codecs=opus', 'child-voice-note.webm'],
+    ['audio/webm', 'child-voice-note.webm'],
+    ['audio/mp4', 'child-voice-note.m4a'],
+    ['audio/ogg', 'child-voice-note.ogg'],
+  ] as const) {
+    const name = recordedStoryAudioFileName(mimeType);
+    assert.equal(name, expectedName);
+    assert.equal(classifyStoryAttachment(file(name, mimeType)).kind, 'audio');
+  }
 });

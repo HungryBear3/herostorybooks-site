@@ -73,6 +73,9 @@ export default defineConfig({
     env: {
       ...STRIPPED,
       HSB_ORDER_STORE_DIR: E2E_STORE_DIR,
+      // Enable media UI only inside this credential-free, disposable sandbox.
+      // Checkout navigation tests intercept/forbid order and payment requests.
+      HSB_E2E_STORY_MEDIA_ENABLED: 'true',
       // A production build otherwise refuses the local file store and demands a
       // real blob token. This is the opt-out orders.ts documents for tests — it
       // relaxes WHERE orders are stored, never any authorization, lifecycle,

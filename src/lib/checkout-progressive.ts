@@ -237,14 +237,17 @@ function getPeopleStepDetails(form: CheckoutProgressFormShape) {
 
 function getStepBlueprints(form: CheckoutProgressFormShape): CheckoutStepProgress[] {
   const customStorySelected = form.theme === 'custom-voice-story';
-  const hasCustomStorySource = Boolean(form.customStoryMemory.trim() || form.voiceFile);
   const attachment = form.voiceFile ? classifyStoryAttachment(form.voiceFile) : null;
+  const attachmentIsCoherent = attachment?.kind === 'audio' || attachment?.kind === 'document';
+  const attachmentIsInvalid = attachment?.kind === 'invalid';
+  const hasCustomStorySource = Boolean(form.customStoryMemory.trim() || attachmentIsCoherent);
   const sourceConsentLabel = attachment?.kind === 'document' ? 'Document consent' : 'Voice note consent';
   const heroMissingFields = [
     ...(form.theme.trim() ? [] : ['Story direction']),
     ...(form.childName.trim() ? [] : ["Main hero's name"]),
     ...(customStorySelected && !hasCustomStorySource ? ['Custom Story source'] : []),
-    ...(customStorySelected && form.voiceFile && !form.voiceConsent ? [sourceConsentLabel] : []),
+    ...(customStorySelected && attachmentIsInvalid ? ['Supported story attachment'] : []),
+    ...(customStorySelected && attachmentIsCoherent && !form.voiceConsent ? [sourceConsentLabel] : []),
   ];
   const heroFirstInvalidField = !form.theme.trim()
     ? 'theme'
@@ -252,9 +255,11 @@ function getStepBlueprints(form: CheckoutProgressFormShape): CheckoutStepProgres
       ? 'childName'
       : customStorySelected && !hasCustomStorySource
         ? 'customStoryMemory'
-        : customStorySelected && form.voiceFile && !form.voiceConsent
+        : customStorySelected && attachmentIsInvalid
           ? 'voiceConsent'
-          : null;
+          : customStorySelected && attachmentIsCoherent && !form.voiceConsent
+            ? 'voiceConsent'
+            : null;
   const steps: CheckoutStepProgress[] = [
     {
       id: 'hero-details',
