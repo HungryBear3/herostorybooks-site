@@ -1182,11 +1182,21 @@ export async function buildProofArtifactFromPageArtifacts(
   let candidate: ProofBuildSuccess;
   try {
     const pdfBuffer = await _buildPdf(story, orderForBuild, allUrls);
+    const afterProofRender = await getOrder(order.id);
+    if (!afterProofRender) return { ok: false, error: 'order_not_found' };
+    if (hasMediaBackedCustomStorySource(afterProofRender)) {
+      return { ok: false, error: 'media_story_manual_review_required' };
+    }
     // Immutable, version-keyed path. Never reuses a published proof path.
     const proofUrl = await _upload(order.id, pdfBuffer, proofArtifactPath(proofVersion));
     candidate = { ok: true, proofUrl, sourceFingerprint, proofVersion };
     if (isPrintFormat(order.bookFormat)) {
       const interiorBuffer = await _buildPrintInteriorPdf(story, orderForBuild, allUrls);
+      const afterInteriorRender = await getOrder(order.id);
+      if (!afterInteriorRender) return { ok: false, error: 'order_not_found' };
+      if (hasMediaBackedCustomStorySource(afterInteriorRender)) {
+        return { ok: false, error: 'media_story_manual_review_required' };
+      }
       candidate.printInteriorArtifactUrl = await _upload(
         order.id,
         interiorBuffer,

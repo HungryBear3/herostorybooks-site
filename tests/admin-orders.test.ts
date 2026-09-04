@@ -4,7 +4,13 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createOrderRecord, persistOrder, listOrders } from '../src/lib/orders.ts';
+import {
+  createOrderRecord,
+  getOrder,
+  listOrders,
+  persistOrder,
+  prepareOrderForAdminFulfillmentRetry,
+} from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 import { isAdminAuthedFromRequest } from '../src/lib/admin-auth.ts';
 
@@ -185,6 +191,24 @@ test('retryOrderFulfillment refuses media-backed Custom Stories before provider 
    assert.equal(storyProviderCalls, 0);
    assert.deepEqual(await getOrder('ord_retry_media'), before);
  } finally { cleanup(dir); }
+});
+
+test('retry preparation without an explicit eligibility policy fails closed', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      paymentStatus: 'paid',
+      fulfillmentMode: 'manual_hold',
+      fulfillmentStatus: 'failed_manual_review',
+      fulfillmentAttempts: 2,
+      fulfillmentLastError: 'manual only',
+      voiceBlobPath: 'orders/ord_retry_direct/story-source.webm',
+    }, 'ord_retry_direct');
+    const before = await getOrder('ord_retry_direct');
+    const prepared = await prepareOrderForAdminFulfillmentRetry('ord_retry_direct');
+    assert.equal(prepared, null);
+    assert.deepEqual(await getOrder('ord_retry_direct'), before);
+  } finally { cleanup(dir); }
 });
 
 test('retryOrderFulfillment uses the transactional retry preparation helper instead of a blind state reset', () => {

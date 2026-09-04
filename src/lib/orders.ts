@@ -2179,12 +2179,15 @@ export async function updateFulfillmentState(
 /** Explicit operator transition from a paid, undisposed order back to auto. */
 export async function prepareOrderForAdminFulfillmentRetry(
   orderId: string,
-  eligible: (order: OrderRecord) => boolean = () => true,
+  eligible?: (order: OrderRecord) => boolean,
 ): Promise<OrderRecord | null> {
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
-      if (!eligible(current)) return { abort: null };
+      // This low-level exported mutation boundary is fail-closed. Callers must
+      // supply the current release policy; omitting it can never opt an order
+      // back into automatic fulfillment.
+      if (!eligible || !eligible(current)) return { abort: null };
       if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
         return { abort: null };
       }

@@ -158,6 +158,36 @@ test('media-backed Custom Stories never build, upload, or persist automated proo
   } finally { cleanup(dir); }
 });
 
+test('proof build refuses upload when media evidence appears during rendering', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({ theme: 'custom-voice-story', fulfillmentMode: 'manual_hold' });
+    const before = await getOrder('ord_ack_inv');
+    let uploadCalls = 0;
+    const built = await buildProofArtifactFromPageArtifacts('ord_ack_inv', {
+      buildPdf: async () => {
+        const current = await getOrder('ord_ack_inv');
+        assert.ok(current);
+        await persistOrder({
+          ...current,
+          documentBlobPath: 'orders/ord_ack_inv/story-source/document.pdf',
+          documentConsentAt: '2026-04-27T09:00:00Z',
+        });
+        return Buffer.from('%PDF discard');
+      },
+      uploadArtifact: async () => {
+        uploadCalls += 1;
+        return 'https://example.invalid/must-not-upload.pdf';
+      },
+    });
+    assert.deepEqual(built, { ok: false, error: 'media_story_manual_review_required' });
+    assert.equal(uploadCalls, 0);
+    const after = await getOrder('ord_ack_inv');
+    assert.equal(after?.storyArtifactUrl, before?.storyArtifactUrl);
+    assert.equal(after?.proofVersion, before?.proofVersion);
+  } finally { cleanup(dir); }
+});
+
 // ── Regenerate auto-rebuild path clears the ack ─────────────────────────────
 
 test('regenerate auto-rebuild clears proofReviewedAt; approve then 409s with proof_ack_missing', async () => {
