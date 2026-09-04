@@ -72,6 +72,8 @@ export interface SlotUploadReservation {
   reservationId: string;
   assetId: string;
   pathname: string;
+  /** The canonical MIME the reservation holds; the upload must use exactly this. */
+  mimeType: string;
   allowedContentTypes: string[];
   maximumSizeInBytes: number;
   /** Opaque payload echoed back by Vercel on the completion callback. */
@@ -273,7 +275,7 @@ export async function reserveSlotUpload(
   return mutateIntake(store, input.intakeId, (record) => {
     assertCapability(record, input.capability);
     assertIntakeUsable(record, now.getTime());
-    const consentAt = assertUploadPolicy({
+    const { consentAt, mimeType } = assertUploadPolicy({
       category: ref.category,
       mimeType: input.mimeType,
       size: input.size,
@@ -312,7 +314,7 @@ export async function reserveSlotUpload(
       assetId,
       generation,
       pathname: intakeAssetPath(record.intakeId, assetId),
-      mimeType: input.mimeType,
+      mimeType,
       size: input.size,
       consentAt,
       voiceSource: ref.category === 'voice_inspiration' ? record.consent.voiceSource! : null,
@@ -331,6 +333,7 @@ export async function reserveSlotUpload(
       reservationId: reservation.reservationId,
       assetId,
       pathname: reservation.pathname,
+      mimeType: reservation.mimeType,
       allowedContentTypes: [...INTAKE_CATEGORY_POLICY[ref.category].allowedMimeTypes],
       maximumSizeInBytes: INTAKE_CATEGORY_POLICY[ref.category].maxBytes,
       tokenPayload: buildTokenPayload({

@@ -57,6 +57,13 @@ import { BlobNotFoundError, BlobPreconditionFailedError, get, head, put } from '
 import { applyBlobNamespace, getBlobNamespace } from './blob-namespace.ts';
 import { normalizeEtagForIfMatch } from './blob-etag.ts';
 import { assertDistinctBlobStores, parseBlobToken } from './checkout-blob-identity.ts';
+import {
+  AUDIO_MIME_TYPES,
+  DOCUMENT_MIME_TYPES,
+  PHOTO_MIME_TYPES,
+  canonicalAllowlistedMime,
+  mediaClassForCategory,
+} from './checkout-media-mime.ts';
 
 /**
  * Dedicated Blob credential for checkout intake. Intentionally NOT
@@ -272,15 +279,10 @@ interface CategoryPolicy {
   requiresVoiceConsent?: boolean;
 }
 
-const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
-const AUDIO_MIME_TYPES = [
-  'audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/ogg',
-  'audio/aac', 'audio/flac', 'audio/x-flac', 'audio/x-caf', 'audio/aiff',
-] as const;
-const DOCUMENT_MIME_TYPES = [
-  'text/plain', 'application/pdf', 'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-] as const;
+// The allowlists live in `checkout-media-mime.ts`, which the browser imports
+// too. This file must never hold a private copy: the 2026-09-04 incident was a
+// client-accepted `audio/x-m4a` refused here by a list the client never saw.
+const IMAGE_MIME_TYPES = PHOTO_MIME_TYPES;
 
 export const INTAKE_CATEGORY_POLICY: Readonly<Record<IntakeAssetCategory, CategoryPolicy>> = {
   primary_hero_photo: { maxSlots: 1, maxBytes: 15 * 1024 * 1024, allowedMimeTypes: IMAGE_MIME_TYPES },
@@ -500,20 +502,31 @@ export function consentTimestampFor(category: IntakeAssetCategory, consent: Inta
   return consent.mediaAuthorizedAt;
 }
 
+/**
+ * Validates a reservation against the category policy and returns the exact
+ * values the reservation must carry.
+ *
+ * The MIME string is CANONICALIZED through the shared contract before it is
+ * judged (lowercased, parameters stripped, known browser aliases resolved) and
+ * the canonical string — never the caller's — is what the reservation stores.
+ * Everything after reservation (token allow-list, Blob head, active asset,
+ * finalization) compares that one string by exact equality.
+ */
 export function assertUploadPolicy(params: {
   category: IntakeAssetCategory;
   mimeType: string;
   size: number;
   consent: IntakeConsent;
-}): string {
+}): { consentAt: string; mimeType: string } {
   const policy = INTAKE_CATEGORY_POLICY[params.category];
   if (!policy) throw new IntakeError('asset_category_invalid');
-  if (typeof params.mimeType !== 'string' || !policy.allowedMimeTypes.includes(params.mimeType)) {
+  const mimeType = canonicalAllowlistedMime(params.mimeType, mediaClassForCategory(params.category));
+  if (!mimeType || !policy.allowedMimeTypes.includes(mimeType)) {
     throw new IntakeError('asset_mime_invalid', 415);
   }
   if (!Number.isSafeInteger(params.size) || params.size <= 0) throw new IntakeError('asset_size_invalid');
   if (params.size > policy.maxBytes) throw new IntakeError('asset_too_large', 413);
-  return consentTimestampFor(params.category, params.consent);
+  return { consentAt: consentTimestampFor(params.category, params.consent), mimeType };
 }
 
 // ---------------------------------------------------------------------------

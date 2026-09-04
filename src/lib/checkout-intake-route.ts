@@ -235,6 +235,9 @@ export async function handleIntakeRequest(request: Request, deps: IntakeRouteDep
         generation: reservation.generation,
         reservationId: reservation.reservationId,
         pathname: reservation.pathname,
+        // Echoed so the browser can prove it is uploading the string that was
+        // reserved; a disagreement is a contract drift and fails closed there.
+        mimeType: reservation.mimeType,
         allowedContentTypes: reservation.allowedContentTypes,
         maximumSizeInBytes: reservation.maximumSizeInBytes,
       }, { status: 200 });

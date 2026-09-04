@@ -40,8 +40,14 @@ import {
 import { upload } from "@vercel/blob/client";
 import { isDirectUploadClientEnabled } from "@/lib/checkout-direct-flags";
 import { classifyStoryAttachment } from "@/lib/story-attachment";
+import { canonicalMediaMime } from "@/lib/checkout-media-mime";
+import {
+  describeCheckoutSubmitError,
+  photoTypeUnsupportedMessage,
+} from "@/lib/checkout-direct-intake-error-copy";
 import { browserRandomHex } from "@/lib/browser-random-id";
 import {
+  DirectIntakePreparationError,
   applyPrimaryAndSupportingMediaToOrderPayload,
   prepareOrReuseDirectIntakeSubmission,
   type DirectIntakeSubmissionCache,
@@ -480,7 +486,15 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
   // window.alert so the exact server reason is visible/scrollable (alerts get
   // dismissed instantly on mobile) and so we can reassure the customer that no
   // charge was made and nothing was saved when submission fails before Stripe.
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitError, setSubmitErrorState] = useState<string | null>(null);
+  // The recorded-note preservation hint is only true when the failed attempt
+  // held an in-checkout RECORDING; an uploaded memo or a photo failure gets
+  // no such advice. Set together with the message so they cannot drift.
+  const [showRecordedVoiceHint, setShowRecordedVoiceHint] = useState(false);
+  const setSubmitError = useCallback((message: string | null, recordedVoiceHint = false) => {
+    setSubmitErrorState(message);
+    setShowRecordedVoiceHint(Boolean(message) && recordedVoiceHint);
+  }, []);
   const [photoNotice, setPhotoNotice] = useState<string | null>(null);
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -872,6 +886,12 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
 
   const processPhoto = useCallback(async (file: File) => {
     const operation = ++heroPhotoOperationRef.current;
+    // Refuse an unsupported still format at the picker, with photo-specific
+    // copy, instead of discovering it at the payment button.
+    if (!canonicalMediaMime(file, "photo").ok) {
+      setSubmitError(photoTypeUnsupportedMessage("hero photo"));
+      return;
+    }
     try {
       const uploadFile = await shrinkPhotoForUpload(file, CHECKOUT_PHOTO_MAX_BYTES);
       if (operation !== heroPhotoOperationRef.current) return;
@@ -894,10 +914,14 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
         "That photo is too large for checkout on this device. Please choose a smaller JPG/PNG, screenshot/crop it, or continue without the child photo and add it later.",
       );
     }
-  }, []);
+  }, [setSubmitError]);
 
   const processSupportingCharacterPhoto = useCallback(async (id: string, file: File) => {
     const operation = ++supportingPhotoOperationRef.current;
+    if (!canonicalMediaMime(file, "photo").ok) {
+      setSubmitError(photoTypeUnsupportedMessage("family or pet photo"));
+      return;
+    }
     setSupportingPhotoPendingId(id);
     try {
       const uploadFile = await shrinkPhotoForUpload(file, CHECKOUT_PHOTO_MAX_BYTES);
@@ -929,7 +953,7 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
         "That family/pet photo is too large for checkout on this device. Please choose a smaller JPG/PNG or crop/screenshot it before retrying.",
       );
     }
-  }, []);
+  }, [setSubmitError]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -1194,11 +1218,18 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
       // checkoutAttemptId, so a retry cannot create a second order or charge.
       submitLockRef.current?.release();
       // Inline banner instead of window.alert — see submitError declaration.
-      setSubmitError(
-        error instanceof Error
-          ? error.message
-          : "We couldn't start your order. You have not been charged. Please try again.",
-      );
+      // A direct-intake refusal arrives as a stable code plus the label of the
+      // asset that failed; the mapper turns that into a sentence and decides
+      // whether a recorded note is at risk. A legacy server sentence is kept.
+      const described = describeCheckoutSubmitError({
+        voiceSource: form.voiceSource,
+        code: error instanceof DirectIntakePreparationError ? error.code : "order_request_failed",
+        label: error instanceof DirectIntakePreparationError ? error.label : null,
+        serverMessage: error instanceof DirectIntakePreparationError
+          ? null
+          : error instanceof Error ? error.message : null,
+      });
+      setSubmitError(described.message, described.showRecordedVoiceHint);
     } finally {
       setIsSubmitting(false);
     }
@@ -2996,9 +3027,14 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
                   <p className="font-semibold">We couldn&apos;t start your order.</p>
                   <p className="mt-1">{submitError}</p>
                   <p className="mt-1 text-xs text-red-600">
-                    You have not been charged. If you recorded a voice note,
-                    download it from the section above before retrying so it
-                    isn&apos;t lost.
+                    You have not been charged.
+                    {showRecordedVoiceHint && (
+                      <>
+                        {" "}If you recorded a voice note,
+                        download it from the section above before retrying so it
+                        isn&apos;t lost.
+                      </>
+                    )}
                   </p>
                   <p className="mt-2 text-xs font-medium text-red-700">
                     If the issue continues, email{" "}

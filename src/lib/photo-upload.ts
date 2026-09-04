@@ -1,16 +1,15 @@
+import { PHOTO_MIME_TYPES } from './checkout-media-mime.ts';
+
 export const MAX_PHOTO_BYTES = 4 * 1024 * 1024;
 const TARGET_PHOTO_BYTES = Math.floor(MAX_PHOTO_BYTES * 0.82);
 const MAX_RESIZE_DIMENSION = 1600;
 const MIN_JPEG_QUALITY = 0.55;
 const INITIAL_JPEG_QUALITY = 0.86;
-const RESIZABLE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const RESIZABLE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp']);
 export const ALLOWED_PHOTO_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'];
-export const ALLOWED_PHOTO_MIME_TYPES = new Set([
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-]);
+/** The shared still-photo allowlist; never a private copy. */
+export const ALLOWED_PHOTO_MIME_TYPES = new Set<string>(PHOTO_MIME_TYPES);
+const RESIZABLE_MIME_TYPES = ALLOWED_PHOTO_MIME_TYPES;
 
 export type BasicPhotoFile = {
   name: string;

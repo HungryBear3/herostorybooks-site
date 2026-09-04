@@ -1,3 +1,10 @@
+import {
+  AUDIO_MIME_BY_EXTENSION,
+  AUDIO_MIME_TYPES,
+  DOCUMENT_MIME_BY_EXTENSION,
+  MEDIA_MIME_ALIASES,
+} from './checkout-media-mime.ts';
+
 export type StoryAttachmentKind = 'audio' | 'document';
 
 export type StoryAttachmentClassification =
@@ -9,44 +16,33 @@ interface FileIdentity {
   name?: string;
 }
 
+/**
+ * Canonical audio MIME → the extension a coherent filename carries. Browser
+ * aliases (`audio/x-m4a`, `audio/mp3`, `audio/x-aiff`) are resolved through
+ * the shared `MEDIA_MIME_ALIASES` BEFORE this table is consulted, so the
+ * string this module emits is always the one the server intake policy accepts.
+ */
 const AUDIO_BY_MIME: Readonly<Record<string, string>> = {
   'audio/webm': 'webm',
   'audio/ogg': 'ogg',
   'audio/mp4': 'm4a',
-  'audio/x-m4a': 'm4a',
   'audio/aac': 'aac',
   'audio/mpeg': 'mp3',
-  'audio/mp3': 'mp3',
   'audio/wav': 'wav',
   'audio/x-wav': 'wav',
   'audio/flac': 'flac',
   'audio/x-caf': 'caf',
   'audio/aiff': 'aiff',
-  'audio/x-aiff': 'aiff',
 };
 
 const AUDIO_EXTENSIONS = new Set([
   'webm', 'ogg', 'oga', 'mp4', 'm4a', 'aac', 'mp3', 'wav', 'flac', 'caf', 'aif', 'aiff',
 ]);
 
-const AUDIO_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
-  webm: 'audio/webm',
-  ogg: 'audio/ogg',
-  oga: 'audio/ogg',
-  mp4: 'audio/mp4',
-  m4a: 'audio/x-m4a',
-  aac: 'audio/aac',
-  mp3: 'audio/mpeg',
-  wav: 'audio/wav',
-  flac: 'audio/flac',
-  caf: 'audio/x-caf',
-  aif: 'audio/aiff',
-  aiff: 'audio/aiff',
-};
-
 export function recordedStoryAudioFileName(mimeType: string): string {
   const normalized = mimeType.split(';', 1)[0]!.trim().toLowerCase();
-  const extension = AUDIO_BY_MIME[normalized] ?? 'webm';
+  const canonical = MEDIA_MIME_ALIASES[normalized] ?? normalized;
+  const extension = AUDIO_BY_MIME[canonical] ?? 'webm';
   return `child-voice-note.${extension}`;
 }
 
@@ -55,13 +51,6 @@ const DOCUMENT_BY_MIME: Readonly<Record<string, string>> = {
   'application/pdf': 'pdf',
   'application/msword': 'doc',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
-};
-
-const DOCUMENT_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
-  txt: 'text/plain',
-  pdf: 'application/pdf',
-  doc: 'application/msword',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 };
 
 function normalizedMime(file: FileIdentity): string {
@@ -98,16 +87,21 @@ export function classifyStoryAttachment(file: FileIdentity): StoryAttachmentClas
     return { kind: 'invalid' };
   }
 
-  const documentExtension = DOCUMENT_BY_MIME[mime];
+  // Resolve a browser alias to the canonical string FIRST: what this function
+  // returns is what gets reserved, uploaded, and stored, so it must be the
+  // exact value the server policy accepts.
+  const canonical = MEDIA_MIME_ALIASES[mime] ?? mime;
+
+  const documentExtension = DOCUMENT_BY_MIME[canonical];
   if (documentExtension) {
     if (extension && !extensionMatchesMime('document', documentExtension, extension)) return { kind: 'invalid' };
-    return { kind: 'document', mimeType: mime, extension: documentExtension };
+    return { kind: 'document', mimeType: canonical, extension: documentExtension };
   }
 
-  const audioExtension = AUDIO_BY_MIME[mime];
-  if (audioExtension) {
+  const audioExtension = AUDIO_BY_MIME[canonical];
+  if (audioExtension && (AUDIO_MIME_TYPES as readonly string[]).includes(canonical)) {
     if (extension && !extensionMatchesMime('audio', audioExtension, extension)) return { kind: 'invalid' };
-    return { kind: 'audio', mimeType: mime, extension: audioExtension };
+    return { kind: 'audio', mimeType: canonical, extension: audioExtension };
   }
 
   return { kind: 'invalid' };
