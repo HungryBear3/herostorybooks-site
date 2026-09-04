@@ -2,7 +2,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { recordedStoryAudioFileName } from '@/lib/story-attachment';
 const VOICE_AUDIO_UPLOAD_ACCEPT_ATTR = [
-  'audio/*',
   '.m4a',
   '.mp3',
   '.wav',

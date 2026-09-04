@@ -97,3 +97,8 @@ test('the accepted still formats are exactly JPEG, PNG, and WebP', () => {
   assert.ok(!PHOTO_MIME_TYPES.includes('image/heic' as never));
   assert.ok(!PHOTO_MIME_TYPES.includes('image/heif' as never));
 });
+
+test('the buyer-facing audio picker does not advertise a broad audio wildcard', () => {
+  const source = readFileSync('src/components/checkout/VoiceRecorderSection.tsx', 'utf8');
+  assert.doesNotMatch(source, /['"]audio\/\*['"]/);
+});
