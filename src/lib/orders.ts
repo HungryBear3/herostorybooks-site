@@ -2,6 +2,7 @@ import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:
 import crypto from 'node:crypto';
 
 import { BlobNamespaceError, getBlobNamespace, withBlobNamespace } from './blob-namespace.ts';
+import { normalizeEtag, normalizeEtagForIfMatch } from './blob-etag.ts';
 import {
   BlobNotFoundError,
   BlobPreconditionFailedError,
@@ -21,6 +22,7 @@ import { validateOrderPhotoFile } from './photo-file-validation.ts';
 import { PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
 import { classifyStoryAttachment } from './story-attachment.ts';
 export type { FulfillmentStatus, LayoutVersion, PageTextLayout, VoiceTranscriptMeta };
+export { normalizeEtag, normalizeEtagForIfMatch } from './blob-etag.ts';
 
 export type OrderStatus = 'order_received' | 'preview_ready' | 'print_in_production' | 'shipped';
 export type BookFormat = 'digital' | 'classic' | 'premium';
@@ -2332,33 +2334,6 @@ function isBlobAlreadyExistsError(message: string): boolean {
 
 function isBlobNotFoundError(message: string): boolean {
   return /not ?found|404|BlobNotFound/i.test(message);
-}
-
-/**
- * Canonicalize an HTTP ETag validator so the SAME underlying version compares
- * equal across subsystems that decorate it differently. The Blob metadata API
- * (`list`) and the public CDN edge do not guarantee byte-identical ETag
- * representations for identical bytes — one may return a strong quoted value
- * (`"abc"`) while the other returns a weak (`W/"abc"`) or unquoted (`abc`)
- * form. Comparing the raw strings then reads an equivalent validator as a
- * foreign change and fails every CAS read (the production 503). We strip the
- * optional weak prefix, surrounding quotes, and whitespace before comparing.
- * Returns null for an absent/empty validator.
- */
-export function normalizeEtag(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  let value = raw.trim();
-  if (/^W\//i.test(value)) value = value.slice(2).trim();
-  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    value = value.slice(1, -1);
-  }
-  return value.length ? value : null;
-}
-
-/** Convert any equivalent validator into the strong quoted shape Blob `ifMatch` accepts. */
-export function normalizeEtagForIfMatch(raw: string | null | undefined): string | null {
-  const value = normalizeEtag(raw);
-  return value ? `"${value}"` : null;
 }
 
 type PublicVersionedReadDeps = {

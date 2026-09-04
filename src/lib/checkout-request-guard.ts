@@ -43,6 +43,7 @@
 import { BlobPreconditionFailedError, get, put } from '@vercel/blob';
 
 import { applyBlobNamespace, getBlobNamespace } from './blob-namespace.ts';
+import { normalizeEtagForIfMatch } from './blob-etag.ts';
 import { assertDistinctBlobStores, parseBlobToken } from './checkout-blob-identity.ts';
 import { IntakeError } from './checkout-intake.ts';
 
@@ -50,6 +51,11 @@ export const CHECKOUT_GUARD_TOKEN_ENV = 'HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKE
 export const GUARD_BUCKET_MS = 60_000;
 const GUARD_CAS_ATTEMPTS = 6;
 const SCOPE_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+export interface CheckoutGuardStoreIo {
+  get?: typeof get;
+  put?: typeof put;
+}
 
 export interface CheckoutGuardCost {
   requestCount?: number;
@@ -485,13 +491,16 @@ const processLocalGuardStore: CheckoutGuardStore = createMemoryCheckoutGuardStor
 export function createBlobCheckoutGuardStore(
   token: string,
   env: NodeJS.ProcessEnv = process.env,
+  io: CheckoutGuardStoreIo = {},
 ): CheckoutGuardStore {
   // Resolved at construction so a Preview deployment with no explicit
   // namespace cannot come into existence pointing at production buckets.
   getBlobNamespace(env);
+  const getImpl = io.get ?? get;
+  const putImpl = io.put ?? put;
   return {
     async read(pathname) {
-      const result = await get(pathname, { access: 'private', token, useCache: false });
+      const result = await getImpl(pathname, { access: 'private', token, useCache: false });
       if (!result || !result.stream) return null;
       const text = await new Response(result.stream).text();
       let record: unknown;
@@ -500,14 +509,16 @@ export function createBlobCheckoutGuardStore(
       } catch {
         throw new IntakeError('abuse_guard_state_invalid', 503);
       }
-      return { record, etag: result.blob.etag };
+      const etag = normalizeEtagForIfMatch(result.blob.etag);
+      if (!etag) throw new IntakeError('abuse_guard_unavailable', 503);
+      return { record, etag };
     },
 
     async write(pathname, record, options) {
       const body = JSON.stringify(record);
       if (options.ifMatch !== undefined) {
         try {
-          await put(pathname, body, {
+          await putImpl(pathname, body, {
             access: 'private',
             token,
             addRandomSuffix: false,
@@ -522,7 +533,7 @@ export function createBlobCheckoutGuardStore(
         }
       }
       try {
-        await put(pathname, body, {
+        await putImpl(pathname, body, {
           access: 'private',
           token,
           addRandomSuffix: false,
@@ -536,7 +547,7 @@ export function createBlobCheckoutGuardStore(
         // between our read and our write. Rather than pattern-matching the
         // provider's message, ask storage: if the object now exists this was a
         // lost race and the caller should retry with a real CAS.
-        const existing = await get(pathname, { access: 'private', token, useCache: false }).catch(() => null);
+        const existing = await getImpl(pathname, { access: 'private', token, useCache: false }).catch(() => null);
         if (existing) return false;
         throw error;
       }

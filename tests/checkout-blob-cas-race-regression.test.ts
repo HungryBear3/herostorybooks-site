@@ -29,6 +29,8 @@ import {
   __resetOrderStoreAdapterFactoryForTests,
 } from '../src/lib/orders.ts';
 import type { OrderRecord, OrderStoreAdapter } from '../src/lib/orders.ts';
+import { createVercelIntakeStore, IntakeError } from '../src/lib/checkout-intake.ts';
+import { createBlobCheckoutGuardStore } from '../src/lib/checkout-request-guard.ts';
 
 const ORDER_ID = 'ord_cas_regression';
 const orderPath = (id: string) => `orders/${id}.json`;
@@ -122,12 +124,44 @@ class PublicBlobSim {
 
 test.afterEach(() => __resetOrderStoreAdapterFactoryForTests());
 
-test('private Blob weak GET validators are converted to strong ifMatch validators', () => {
+test('every private Blob CAS read converts weak GET validators to strong ifMatch validators', () => {
   assert.equal(normalizeEtagForIfMatch('W/"de9a57214a197df40902185cb8049f9a"'), '"de9a57214a197df40902185cb8049f9a"');
   assert.equal(normalizeEtagForIfMatch('"de9a57214a197df40902185cb8049f9a"'), '"de9a57214a197df40902185cb8049f9a"');
   assert.equal(normalizeEtagForIfMatch('de9a57214a197df40902185cb8049f9a'), '"de9a57214a197df40902185cb8049f9a"');
-  const source = readFileSync('src/lib/orders.ts', 'utf8');
-  assert.match(source, /normalizeEtagForIfMatch\(result\.blob\.etag\)/);
+  const orderSource = readFileSync('src/lib/orders.ts', 'utf8');
+  const intakeSource = readFileSync('src/lib/checkout-intake.ts', 'utf8');
+  const guardSource = readFileSync('src/lib/checkout-request-guard.ts', 'utf8');
+  assert.match(orderSource, /normalizeEtagForIfMatch\(result\.blob\.etag\)/);
+  assert.match(intakeSource, /normalizeEtagForIfMatch\(result\.blob\.etag\)/);
+  assert.match(guardSource, /normalizeEtagForIfMatch\(result\.blob\.etag\)/);
+});
+
+test('malformed ETag decoration fails closed instead of becoming an ifMatch token', () => {
+  for (const malformed of ['W/abc', '"abc', 'abc"', 'abc def', 'W/ "abc"']) {
+    assert.equal(normalizeEtagForIfMatch(malformed), null, malformed);
+  }
+});
+
+test('intake and guard Blob reads reject malformed or missing validators', async () => {
+  const env = { VERCEL_ENV: 'preview', HSB_BLOB_NAMESPACE: 'preview' } as unknown as NodeJS.ProcessEnv;
+  const getWithEtag = (etag: string | undefined) => (async () => ({
+    stream: new Blob(['{}']).stream(),
+    blob: { etag },
+  })) as unknown as typeof import('@vercel/blob').get;
+
+  for (const etag of [undefined, 'W/not-quoted']) {
+    const intake = createVercelIntakeStore('intake-test-token', env, { get: getWithEtag(etag) });
+    await assert.rejects(
+      intake.read('intake_00000000000000000000000000000000'),
+      (error) => error instanceof IntakeError && error.code === 'intake_store_unavailable' && error.status === 503,
+    );
+
+    const guard = createBlobCheckoutGuardStore('guard-test-token', env, { get: getWithEtag(etag) });
+    await assert.rejects(
+      guard.read('preview/checkout-guard/test.json'),
+      (error) => error instanceof IntakeError && error.code === 'abuse_guard_unavailable' && error.status === 503,
+    );
+  }
 });
 
 test('draft create then immediate guarded final save converges when the CDN weakens/requotes the ETag', async () => {

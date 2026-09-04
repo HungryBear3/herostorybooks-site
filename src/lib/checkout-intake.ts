@@ -55,6 +55,7 @@ import crypto from 'node:crypto';
 import { BlobNotFoundError, BlobPreconditionFailedError, get, head, put } from '@vercel/blob';
 
 import { applyBlobNamespace, getBlobNamespace } from './blob-namespace.ts';
+import { normalizeEtagForIfMatch } from './blob-etag.ts';
 import { assertDistinctBlobStores, parseBlobToken } from './checkout-blob-identity.ts';
 
 /**
@@ -1413,6 +1414,8 @@ export function getRequiredIntakeBlobToken(env: NodeJS.ProcessEnv = process.env)
  * and cannot be produced any other way. Production passes nothing.
  */
 export interface IntakeStoreIo {
+  get?: typeof get;
+  put?: typeof put;
   head?: typeof head;
 }
 
@@ -1435,10 +1438,12 @@ export function createVercelIntakeStore(
   // Resolved once, at construction: a namespace misconfiguration must stop the
   // store from existing, not surface later as a path that silently went flat.
   const namespace = getBlobNamespace(env);
+  const getImpl = io.get ?? get;
+  const putImpl = io.put ?? put;
   return {
     async create(record) {
       assertIntakeRecordWritable(record);
-      await put(intakeRecordPath(record.intakeId, namespace), JSON.stringify(record), {
+      await putImpl(intakeRecordPath(record.intakeId, namespace), JSON.stringify(record), {
         access: 'private',
         token,
         addRandomSuffix: false,
@@ -1450,7 +1455,7 @@ export function createVercelIntakeStore(
     async read(intakeId) {
       // `useCache: false` is required: a cached read would let a stale record
       // win a CAS and silently drop a concurrent write.
-      const result = await get(intakeRecordPath(intakeId, namespace), { access: 'private', token, useCache: false });
+      const result = await getImpl(intakeRecordPath(intakeId, namespace), { access: 'private', token, useCache: false });
       if (!result || !result.stream) return null;
       const text = await readJsonTextWithLimit(result.stream, INTAKE_MAX_RECORD_BYTES);
       let raw: unknown;
@@ -1459,14 +1464,16 @@ export function createVercelIntakeStore(
       } catch {
         throw new IntakeError('intake_record_invalid', 503);
       }
-      return { record: raw as IntakeRecord, etag: result.blob.etag };
+      const etag = normalizeEtagForIfMatch(result.blob.etag);
+      if (!etag) throw new IntakeError('intake_store_unavailable', 503);
+      return { record: raw as IntakeRecord, etag };
     },
 
     async compareAndSwap(intakeId, etag, record) {
       try {
         if (record.intakeId !== intakeId) throw new IntakeError('intake_record_invalid', 503);
         assertIntakeRecordWritable(record);
-        await put(intakeRecordPath(intakeId, namespace), JSON.stringify(record), {
+        await putImpl(intakeRecordPath(intakeId, namespace), JSON.stringify(record), {
           access: 'private',
           token,
           addRandomSuffix: false,
