@@ -63,6 +63,40 @@ test('clicks batched in one task create only one order/session attempt', async (
   expect(harness.orderRequests, 'one submit, one order').toHaveLength(1);
 });
 
+test('an older in-app browser without crypto.randomUUID can still start one order', async ({ page, baseURL }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(Crypto.prototype, 'randomUUID', {
+      configurable: true,
+      value: undefined,
+    });
+  });
+  const harness = await installHandoffHarness(page, baseURL!, { redirectTo: STRIPE_SESSION_URL });
+  const pay = await fillCheckoutToReview(page);
+
+  await pay.click();
+
+  await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
+  expect(harness.orderRequests, 'one submit, one order').toHaveLength(1);
+});
+
+test('an in-app browser that blocks sessionStorage can still start one order', async ({ page, baseURL }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Storage is unavailable', 'SecurityError');
+      },
+    });
+  });
+  const harness = await installHandoffHarness(page, baseURL!, { redirectTo: STRIPE_SESSION_URL });
+  const pay = await fillCheckoutToReview(page);
+
+  await pay.click();
+
+  await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
+  expect(harness.orderRequests, 'one submit, one order').toHaveLength(1);
+});
+
 test('a dropped hand-off leaves a working manual link to the SAME session', async ({
   page,
   baseURL,

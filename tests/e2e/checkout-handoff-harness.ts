@@ -87,7 +87,7 @@ export async function fillCheckoutToReview(page: Page): Promise<Locator> {
   await page.getByRole('button', { name: /Space Voyager/ }).click();
   await page.locator('#childName').fill('Testhero');
 
-  const continueButton = page.getByRole('button', { name: /^Continue$/ });
+  const continueButton = page.getByTestId('checkout-bottom-continue');
   await continueButton.click(); // Hero details → Hero appearance/photo
   await page
     .getByPlaceholder('Example: 6 years old, warm brown skin, short curly dark hair, bright green hoodie')

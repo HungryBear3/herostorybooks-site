@@ -190,6 +190,32 @@ function missingSupportingCharacterDescriptionLabels(characters: SupportingChara
 const STORAGE_KEY = "hsb_order_v1";
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
 const RECOVERY_DEBOUNCE_MS = 1500;
+const CHECKOUT_ATTEMPT_STORAGE_KEY = "hsb-checkout-attempt-id";
+const CHECKOUT_ATTEMPT_ID_RE = /^[a-f0-9]{32}$/;
+
+function newCheckoutAttemptId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function readStoredCheckoutAttemptId(): string | null {
+  try {
+    const stored = sessionStorage.getItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+    return stored && CHECKOUT_ATTEMPT_ID_RE.test(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeCheckoutAttemptId(attemptId: string): void {
+  try {
+    sessionStorage.setItem(CHECKOUT_ATTEMPT_STORAGE_KEY, attemptId);
+  } catch {
+    // Some in-app/private browsers deny session storage. The component ref
+    // still preserves one attempt ID for every retry in this mounted form.
+  }
+}
 
 function looksLikeEmail(e: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
@@ -469,6 +495,7 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
   const directUploadEnabled = isDirectUploadClientEnabled();
   const [directMediaConsent, setDirectMediaConsent] = useState(false);
   const intakeSessionRef = useRef<DirectIntakeSubmissionCache | null>(null);
+  const checkoutAttemptIdRef = useRef<string | null>(null);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Ref-backed one-shot submit guard. `isSubmitting` alone cannot prevent a
   // double submit: it is React state, so two clicks in the same batch both
@@ -948,12 +975,12 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
 
     try {
       const payload = new FormData();
-      const attemptStorageKey = "hsb-checkout-attempt-id";
-      let checkoutAttemptId = sessionStorage.getItem(attemptStorageKey);
+      let checkoutAttemptId = checkoutAttemptIdRef.current ?? readStoredCheckoutAttemptId();
       if (!checkoutAttemptId) {
-        checkoutAttemptId = crypto.randomUUID().replace(/-/g, "");
-        sessionStorage.setItem(attemptStorageKey, checkoutAttemptId);
+        checkoutAttemptId = newCheckoutAttemptId();
+        storeCheckoutAttemptId(checkoutAttemptId);
       }
+      checkoutAttemptIdRef.current = checkoutAttemptId;
       payload.set("checkoutAttemptId", checkoutAttemptId);
       const familyCharactersForOrder = form.familyCharacters
         .filter((character) =>
@@ -1144,7 +1171,7 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
         // resubmission would be rejected as an in-flight attempt.
         navigate: (url) => window.location.replace(url),
         clearSavedDraft: () => localStorage.removeItem(STORAGE_KEY),
-        clearAttemptId: () => sessionStorage.removeItem(attemptStorageKey),
+        clearAttemptId: () => sessionStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY),
       });
 
       if (handoff.reason === "invalid_url") {
