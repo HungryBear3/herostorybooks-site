@@ -160,6 +160,32 @@ test('an unapproved redirect target fails closed and keeps the recovery path', a
   await expect(pay).toBeEnabled();
 });
 
+test('a picker error after an ambiguous hand-off keeps the entire banner reconciliation-safe', async ({
+  page,
+  baseURL,
+}) => {
+  const harness = await installHandoffHarness(page, baseURL!, {
+    redirectTo: 'https://checkout.stripe.com.attacker.invalid/c/pay/cs_x',
+  });
+  const pay = await fillCheckoutToReview(page);
+  await pay.click();
+  await expect(page.getByTestId('submit-error')).toContainText(/do not pay again/i);
+
+  await page.getByRole('button', { name: 'Hero photo or description' }).click();
+  await page.getByLabel('Upload hero photo from your phone').setInputFiles({
+    name: 'not-a-photo.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('not a photo'),
+  });
+
+  const submitError = page.getByTestId('submit-error');
+  await expect(submitError).toContainText('We need to confirm your order status.');
+  await expect(submitError).toContainText(/do not pay again/i);
+  await expect(submitError).not.toContainText("We couldn't start your order.");
+  await expect(submitError).not.toContainText(/have not been charged/i);
+  expect(harness.orderRequests).toHaveLength(1);
+});
+
 test('a response carrying no redirect URL never navigates', async ({ page, baseURL }) => {
   await installHandoffHarness(page, baseURL!, {});
   const pay = await fillCheckoutToReview(page);

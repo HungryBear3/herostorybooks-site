@@ -3069,7 +3069,11 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
                   data-testid="submit-error"
                   className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700"
                 >
-                  <p className="font-semibold">We couldn&apos;t start your order.</p>
+                  <p className="font-semibold">
+                    {chargeUnconfirmed
+                      ? "We need to confirm your order status."
+                      : "We couldn't start your order."}
+                  </p>
                   <p className="mt-1">{submitError}</p>
                   <p className="mt-1 text-xs text-red-600">
                     {!chargeUnconfirmed && "You have not been charged. "}

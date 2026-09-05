@@ -113,7 +113,17 @@ test('the error banner denies a charge only for a fresh attempt that never left 
   assert.match(FORM, /setSubmitError\(described\.message, described\.showRecordedVoiceHint, requestSent \|\| attemptWasReused\)/);
   assert.match(FORM, /const retainedAttemptMayHaveReachedServer = Boolean\([\s\S]{0,140}checkoutAttemptIdRef\.current[\s\S]{0,140}readStoredCheckoutAttemptId\(\)/);
   assert.match(FORM, /const chargeIsUnconfirmed = unconfirmedCharge \?\? retainedAttemptMayHaveReachedServer/);
+  assert.match(
+    FORM,
+    /setSubmitErrorState\(\s*message \? checkoutSubmitErrorMessageForAttempt\(message, chargeIsUnconfirmed\) : null,?\s*\)/,
+    'the central state sink must normalize every banner message against attempt risk',
+  );
   assert.match(FORM, /setChargeUnconfirmed\(Boolean\(message\) && chargeIsUnconfirmed\)/);
+  assert.match(
+    FORM,
+    /chargeUnconfirmed\s*\?\s*"We need to confirm your order status\."\s*:\s*"We couldn't start your order\."/,
+    'the banner heading must not deny a durable order when payment state is uncertain',
+  );
 });
 
 test('clearing recovered form details never advertises or creates a fresh payment attempt', () => {
