@@ -25,6 +25,7 @@
 import assert from 'node:assert/strict';
 import test, { afterEach, before, after } from 'node:test';
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import sharp from 'sharp';
 
 import {
@@ -75,7 +76,15 @@ after(() => {
 
 afterEach(() => __resetOrderStoreAdapterFactoryForTests());
 
-function installMemoryOrderStore() {
+function installMemoryOrderStore(
+  opts: {
+    /**
+     * Report a losing CAS for the commits this predicate selects — i.e. make a
+     * concurrent mutation happen underneath a specific write, deterministically.
+     */
+    rejectReplaceWhen?: (body: string) => boolean;
+  } = {},
+) {
   const cells = new Map<string, { body: string; version: number }>();
   const adapter: OrderStoreAdapter = {
     kind: 'test-memory',
@@ -91,6 +100,7 @@ function installMemoryOrderStore() {
     async replaceIfVersion(pathname, body, expectedVersion) {
       const cell = cells.get(pathname);
       if (!cell || String(cell.version) !== expectedVersion) return { ok: false, reason: 'version_conflict' };
+      if (opts.rejectReplaceWhen?.(body)) return { ok: false, reason: 'version_conflict' };
       cell.body = body;
       cell.version += 1;
       return { ok: true, version: String(cell.version) };
@@ -285,6 +295,231 @@ test('an unresolved provider create from an earlier request stops the handler be
     0,
     'the marker survives for reconciliation',
   );
+});
+
+// ---------------------------------------------------------------------------
+// A stale media worker may not tell the buyer their money is untouched
+//
+// The browser deliberately reuses one checkoutAttemptId, so an exact retry is
+// the ordinary case, and persistOrResumeCheckoutOrder lets such a retry take
+// over an EXPIRED lease. A lease can expire inside any awaited media upload.
+// The worker that then wakes up has made zero provider calls of its own — and
+// that is a fact about the worker, not about the order: the retry that took
+// over may already have minted and bound a payable Session.
+//
+// Both windows below are that state. Neither may say "no charge" or ask the
+// buyer to submit or pay again.
+// ---------------------------------------------------------------------------
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+async function expireDurableCheckoutLease() {
+  await withOrderTransaction<null>(ORDER_ID, (current) => ({
+    commit: { ...current, checkoutLeaseExpiresAt: new Date(Date.now() - 60_000).toISOString() },
+    result: null,
+  }));
+}
+
+/**
+ * Drive the reviewer's reproduction against the real handler and the real order
+ * CAS: worker A blocks inside its hero-photo upload, its lease expires, an
+ * identical worker B takes over and binds `cs_concurrent`, and only then does
+ * A's upload settle the way `settleUpload` says.
+ */
+async function raceStaleMediaWorker(
+  settleUpload: (photoRef: UploadedPhotoRef) => UploadedPhotoRef | null,
+) {
+  installMemoryOrderStore();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+
+  const a = harness({
+    async uploadOrderPhoto(orderId) {
+      entered.resolve();
+      await release.promise;
+      return settleUpload({
+        pathname: `orders/${orderId}/photo-hero.jpg`,
+        url: `https://blob.test/orders/${orderId}/photo-hero.jpg`,
+      } as UploadedPhotoRef);
+    },
+  });
+  const pendingA = handleCheckoutOrderPost(legacyRequest(), a.deps);
+  await entered.promise;
+
+  // A holds the durable owner record and a renewed lease. Then it lapses.
+  assert.equal((await stored())?.id, ORDER_ID, 'A created the durable owner record');
+  await expireDurableCheckoutLease();
+
+  // The identical retry takes the order over and reaches payment.
+  const b = harness({
+    async createCheckoutSession({ order, idempotencyKey }) {
+      b.provider.push(`create:${idempotencyKey}`);
+      const session: ProviderCheckoutSession = {
+        id: 'cs_concurrent',
+        url: `https://checkout.stripe.test/${order.id}/concurrent`,
+        status: 'open',
+      };
+      b.minted.set(session.id, session);
+      return session;
+    },
+  });
+  const responseB = await handleCheckoutOrderPost(legacyRequest(), b.deps);
+  assert.equal(responseB.httpStatus, 200, JSON.stringify(responseB));
+  assert.equal(responseB.body.redirectTo, b.minted.get('cs_concurrent')!.url);
+  assert.equal((await stored())?.stripeSessionId, 'cs_concurrent');
+
+  release.resolve();
+  return { a, b, responseA: await pendingA };
+}
+
+function assertReconciliationRefusal(response: RouteResponse, label: string) {
+  assert.equal(response.httpStatus, 503, `${label}: ${JSON.stringify(response)}`);
+  const copy = String(response.body.error);
+  assert.equal(copy, CHECKOUT_RECONCILIATION_SUPPORT, `${label} must use the shared reconciliation copy`);
+  assert.doesNotMatch(copy, /no charge/i, `${label} may not deny a charge`);
+  assert.doesNotMatch(copy, /not been charged/i, `${label} may not deny a charge`);
+  assert.doesNotMatch(copy, /stopped before payment/i, `${label} may not claim it stopped before payment`);
+  assert.doesNotMatch(copy, /\b(retry|try again|submit again)\b/i, `${label} may not invite resubmission`);
+  assert.match(copy, /do not pay again/i, `${label} must tell the buyer not to pay again`);
+  assert.match(copy, /support@herostorybooks\.com/, `${label} must route to support`);
+  assert.ok(typeof response.body.code === 'string' && response.body.code, `${label} must carry a stable code`);
+}
+
+test('a stale worker whose photo upload returns null must not claim no charge', async () => {
+  const { a, responseA } = await raceStaleMediaWorker(() => null);
+
+  assert.deepEqual(a.provider, [], 'the stale worker itself never touched the provider');
+  assertReconciliationRefusal(responseA, 'upload-returned-null');
+  assert.equal(responseA.body.code, 'hero_photo_persist_failed');
+  assert.equal(
+    (await stored())?.stripeSessionId,
+    'cs_concurrent',
+    'the payable Session the winner bound survives the loser',
+  );
+});
+
+test('a stale worker that uploads successfully and then loses the final CAS must not claim no charge', async () => {
+  const { a, responseA } = await raceStaleMediaWorker((ref) => ref);
+
+  assert.deepEqual(a.provider, [], 'the stale worker itself never touched the provider');
+  assert.ok(a.uploads.includes('rollback:1'), 'its orphaned upload is still rolled back');
+  assert.deepEqual(a.converted, [], 'and it never reaches the post-CAS stage');
+  assertReconciliationRefusal(responseA, 'final-CAS-loss');
+  assert.equal(responseA.body.code, 'checkout_order_media_persist_failed');
+  assert.equal(
+    (await stored())?.stripeSessionId,
+    'cs_concurrent',
+    'the payable Session the winner bound survives the loser',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// …and neither may any of the other post-durable media exits
+//
+// Only two of these windows can be reached at runtime from one request shape,
+// so the remaining branches are pinned at the source: every refusal inside
+// `continueWithMedia` is the one shared constant, and none of them carries a
+// claim about the buyer's money.
+// ---------------------------------------------------------------------------
+
+test('every refusal inside the post-durable media stage uses the shared reconciliation constant', () => {
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8');
+  const start = src.indexOf('continueWithMedia: async (persisted) => {');
+  // The media stage ends where the order is durable and the shared provisioner
+  // takes over the answer; from there the copy is `provisioned.message`, which
+  // the provisioner already classifies for charge risk.
+  const end = src.indexOf('deps.markRecoveryLeadConverted(order.email', start);
+  assert.ok(start > -1 && end > start, 'the media continuation must still exist');
+  const stage = src.slice(start, end);
+
+  const refusals = [...stage.matchAll(/return json\(\s*\{([\s\S]*?)\}\s*,\s*(\d{3})\s*,?\s*\)/g)];
+  assert.ok(refusals.length >= 9, `expected every media exit to be pinned, found ${refusals.length}`);
+  const codes = new Set<string>();
+  for (const [, body, status] of refusals) {
+    assert.equal(status, '503', `a post-durable media exit answered ${status}: ${body}`);
+    assert.match(
+      body,
+      /error:\s*POST_DURABLE_MEDIA_REFUSAL/,
+      `a post-durable media exit does not use the shared constant: ${body}`,
+    );
+    const code = body.match(/code:\s*'([a-z_]+)'/);
+    assert.ok(code, `a post-durable media exit has no stable code: ${body}`);
+    codes.add(code[1]);
+  }
+  assert.deepEqual(
+    [...codes].sort(),
+    [
+      'checkout_order_media_persist_failed',
+      'document_persist_failed',
+      'hero_photo_persist_failed',
+      'supporting_photo_persist_failed',
+      'voice_persist_failed',
+    ],
+    'every media asset stage keeps its own operator-facing code',
+  );
+  // No literal customer copy may be reintroduced alongside it.
+  assert.doesNotMatch(stage, /error:\s*['"`]/, 'media-stage copy must be single-sourced');
+  assert.match(
+    src.slice(end),
+    /error: provisioned\.message/,
+    'and the provisioner hand-off still returns the provisioner\'s own classified copy',
+  );
+});
+
+test('the post-durable constant is the shared reconciliation copy, not a second wording', () => {
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8');
+  assert.match(
+    src,
+    /const POST_DURABLE_MEDIA_REFUSAL = CHECKOUT_RECONCILIATION_SUPPORT;/,
+    'the media stage must alias the shared constant rather than restate it',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The outer catch answers for whichever stage threw
+// ---------------------------------------------------------------------------
+
+test('an unclassified throw after the durable order exists reconciles instead of failing generically', async () => {
+  // `withOrderTransaction` gives up with an OrderVersionConflictError, which is
+  // NOT an OrderPersistenceError — so the final media CAS rethrows it past its
+  // own classification and only the outer catch answers. Repeated concurrent
+  // mutation is exactly the state where another worker may hold a payable
+  // Session, so the generic answer may not be a bare failure either.
+  installMemoryOrderStore({
+    rejectReplaceWhen: (body) => body.includes(`orders/${ORDER_ID}/photo-hero.jpg`),
+  });
+  const h = harness();
+
+  const response = await handleCheckoutOrderPost(legacyRequest(), h.deps);
+
+  assertReconciliationRefusal(response, 'final-CAS version-conflict exhaustion');
+  assert.equal(response.body.code, 'checkout_unconfirmed');
+  assert.deepEqual(h.provider, [], 'the losing worker never reached the provider');
+  assert.ok(h.uploads.includes('rollback:1'), 'and its orphaned upload is still rolled back');
+});
+
+test('a pre-durable failure keeps its proven no-charge answer', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  // A body that is not multipart at all: request.formData() throws before any
+  // durable record — and before any concurrent worker — can exist.
+  const response = await handleCheckoutOrderPost(
+    new Request('https://preview.test/api/order', {
+      method: 'POST',
+      headers: { 'content-type': 'multipart/form-data; boundary=nope' },
+      body: 'not a real multipart body',
+    }),
+    h.deps,
+  );
+
+  assert.equal(response.httpStatus, 500);
+  assert.equal(response.body.error, 'Order submission failed');
+  assert.equal(await stored(), null, 'nothing durable exists, so nothing can be outstanding');
+  assert.deepEqual(h.provider, []);
 });
 
 // ---------------------------------------------------------------------------

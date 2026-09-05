@@ -72,6 +72,7 @@ import {
   runDirectIntakeCheckout,
 } from './checkout-direct-order.ts';
 import {
+  CHECKOUT_RECONCILIATION_SUPPORT,
   provisionCheckoutSession,
   type CheckoutSessionProvisionDeps,
 } from './checkout-session-provisioning.ts';
@@ -157,12 +158,44 @@ export function getReturnBaseUrl(request: Request): string {
   return process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'http://localhost:3000';
 }
 
+/**
+ * WHICH FAILURES MAY DENY A CHARGE, AND WHICH MAY NOT
+ * ---------------------------------------------------
+ * Everything before the durable owner record exists is a proven no-charge
+ * state: the request has parsed a form and validated fields, nothing durable
+ * was written, and — decisively — no other worker can be acting on this order,
+ * because there is no order. Those refusals may say "no charge was made".
+ *
+ * Once `persistOrResumeCheckoutOrder` has created or resumed the durable owner
+ * record, that stops being true, and it stops being true for THIS worker's
+ * failures too. The browser deliberately reuses one `checkoutAttemptId`, so an
+ * exact retry is the ordinary case; `persistOrResumeCheckoutOrder` lets such a
+ * retry take over an EXPIRED lease (`orders.ts`), and a lease can expire inside
+ * any awaited media upload. From then on the winner may persist media, mint a
+ * Session and bind it while this worker is still suspended in an upload it
+ * started first. So every exit below an `await` or a CAS inside
+ * `continueWithMedia` is a state where a payable Session may exist for this
+ * order — including the exits whose local evidence is "this worker never called
+ * the provider". That is not global evidence, and the copy may not spend it.
+ *
+ * Hence: post-durable refusals all carry the shared reconciliation wording,
+ * which tells the buyer not to pay again and to contact support. They keep
+ * distinct stable codes so operators can still tell the stages apart.
+ */
+const POST_DURABLE_MEDIA_REFUSAL = CHECKOUT_RECONCILIATION_SUPPORT;
+
 export async function handleCheckoutOrderPost<TResponse>(
   request: Request,
   deps: CheckoutOrderRouteDeps<TResponse>,
 ): Promise<TResponse> {
   const json = deps.json;
   const logError = deps.logError;
+  // Which of the two states above this request is in. Raised exactly once, at
+  // the point where a durable owner record — and therefore a concurrent worker
+  // that may bind a payable Session — first becomes possible. Read only by the
+  // outer catch, which is the one place that answers without knowing which
+  // stage threw.
+  let reachedDurableStage = false;
   try {
     if (isCheckoutPaused()) {
       return json(
@@ -558,6 +591,9 @@ export async function handleCheckoutOrderPost<TResponse>(
           503,
         );
       }
+      // From here the saga may create the durable owner record and reach the
+      // provider, so a throw that escapes it is no longer a proven no-charge.
+      reachedDurableStage = true;
       const directResult = await runDirectIntakeCheckout({
         draftOrder,
         request: directRequest.request,
@@ -633,6 +669,11 @@ export async function handleCheckoutOrderPost<TResponse>(
     // which permanently tombstoned any attempt whose Session had expired and
     // was blind to a Session created but never bound. Both paths now recover
     // through the same machine. See lib/checkout-legacy-order.ts.
+    //
+    // Everything from this call onwards — the durable create-or-resume, the
+    // media uploads, the final CAS and the provisioner — is the post-durable
+    // stage described at the top of this file.
+    reachedDurableStage = true;
     return await runLegacyCheckoutRoute<TResponse>({
       draftOrder,
       stripeProductId,
@@ -688,29 +729,35 @@ export async function handleCheckoutOrderPost<TResponse>(
             photoBlobUrl = uploaded.url;
             uploadedMediaPaths.push(uploaded.pathname);
           } else {
+            // This worker never reached the provider. That says nothing about
+            // the order: the lease renewed above may have lapsed inside this
+            // very upload, and an exact retry may already have taken it over,
+            // uploaded, and bound a payable Session.
             logError(`[order] ABORT BEFORE STRIPE: photo upload failed for ${draftOrder.id}`);
             return json(
-              { error: 'We could not securely save your photo. Please retry — no charge was made.' },
+              { error: POST_DURABLE_MEDIA_REFUSAL, code: 'hero_photo_persist_failed' },
               503,
             );
           }
         } catch (error) {
           // In production, OrderPersistenceError from photo upload must abort
-          // BEFORE the Stripe Checkout Session — otherwise the customer pays
-          // for an order whose photo is missing from durable storage.
+          // BEFORE this worker's Stripe Checkout Session — otherwise the
+          // customer pays for an order whose photo is missing from durable
+          // storage. A refused lease renewal lands here too, and refusal is
+          // exactly what a concurrent takeover looks like.
           if (error instanceof OrderPersistenceError) {
             logError(
               `[order] ABORT BEFORE STRIPE: photo persistence failed for ${draftOrder.id}: ${error.message}`,
               error.cause,
             );
             return json(
-              { error: 'We could not securely save your photo. Please retry — no charge was made.' },
+              { error: POST_DURABLE_MEDIA_REFUSAL, code: 'hero_photo_persist_failed' },
               503,
             );
           }
           logError(`[order] ABORT BEFORE STRIPE: photo upload failed for ${draftOrder.id}`, error);
           return json(
-            { error: 'We could not securely save your photo. Please retry — no charge was made.' },
+            { error: POST_DURABLE_MEDIA_REFUSAL, code: 'hero_photo_persist_failed' },
             503,
           );
         }
@@ -736,11 +783,7 @@ export async function handleCheckoutOrderPost<TResponse>(
             logError(`[order] ABORT BEFORE STRIPE: supporting photo upload failed; supporting photo persistence failed for ${draftOrder.id}`);
             await rollbackUploadedMedia('supporting photo upload returned no durable reference');
             return json(
-              {
-                error:
-                  'We could not securely save one of your family or pet photos. Please retry — no charge was made.',
-                code: 'supporting_photo_persist_failed',
-              },
+              { error: POST_DURABLE_MEDIA_REFUSAL, code: 'supporting_photo_persist_failed' },
               503,
             );
           }
@@ -758,11 +801,7 @@ export async function handleCheckoutOrderPost<TResponse>(
           logError(`[order] ABORT BEFORE STRIPE: supporting photo persistence failed for ${draftOrder.id}: ${message}`, cause);
           await rollbackUploadedMedia('supporting photo persistence failure');
           return json(
-            {
-              error:
-                'We could not securely save one of your family or pet photos. Please retry — no charge was made.',
-              code: 'supporting_photo_persist_failed',
-            },
+            { error: POST_DURABLE_MEDIA_REFUSAL, code: 'supporting_photo_persist_failed' },
             503,
           );
         }
@@ -791,8 +830,11 @@ export async function handleCheckoutOrderPost<TResponse>(
           uploadedMediaPaths.push(uploadedVoice.pathname);
         } catch (error) {
           // Match the photo path: an OrderPersistenceError on voice persistence
-          // must abort BEFORE Stripe, so no customer pays for an order whose
-          // consented audio note was dropped.
+          // must abort BEFORE this worker's Stripe Session, so no customer pays
+          // for an order whose consented audio note was dropped. The copy may
+          // not say we "stopped before payment" or ask for a resubmission: this
+          // worker stopped, and a concurrent takeover of an expired lease may
+          // not have.
           if (error instanceof OrderPersistenceError) {
             logError(
               `[order] ABORT BEFORE STRIPE: voice persistence failed for ${draftOrder.id}: ${error.message}`,
@@ -800,22 +842,14 @@ export async function handleCheckoutOrderPost<TResponse>(
             );
             await rollbackUploadedMedia('voice persistence failure');
             return json(
-              {
-                error:
-                  'We could not securely save your voice recording, so we stopped before payment. No charge was made and the recording was not saved — please download it from the checkout page and try again.',
-                code: 'voice_persist_failed',
-              },
+              { error: POST_DURABLE_MEDIA_REFUSAL, code: 'voice_persist_failed' },
               503,
             );
           }
           logError(`[order] voice upload failed for ${draftOrder.id}; aborting`, error);
           await rollbackUploadedMedia('voice upload failure');
           return json(
-            {
-              error:
-                'We could not securely save your voice recording, so we stopped before payment. No charge was made and the recording was not saved — please download it from the checkout page and try again.',
-              code: 'voice_persist_failed',
-            },
+            { error: POST_DURABLE_MEDIA_REFUSAL, code: 'voice_persist_failed' },
             503,
           );
         }
@@ -846,10 +880,7 @@ export async function handleCheckoutOrderPost<TResponse>(
           logError(`[order] ABORT BEFORE STRIPE: document persistence failed for ${draftOrder.id}`, error);
           await rollbackUploadedMedia('document persistence failure');
           return json(
-            {
-              error: 'We could not securely save your story document, so we stopped before payment. No charge was made. Please try again.',
-              code: 'document_persist_failed',
-            },
+            { error: POST_DURABLE_MEDIA_REFUSAL, code: 'document_persist_failed' },
             503,
           );
         }
@@ -887,15 +918,19 @@ export async function handleCheckoutOrderPost<TResponse>(
       } catch (error) {
         await rollbackUploadedMedia('final order persistence failure');
         if (error instanceof OrderPersistenceError) {
+          // The `abort` above is a LOST RACE, not a store outage: the durable
+          // record no longer carries this worker's lease/fingerprint. The
+          // ordinary reason for that is an exact retry that took over an
+          // expired lease while this worker was suspended in an upload — and
+          // that retry may already have created and bound a payable Session.
+          // "This worker called the provider zero times" is not evidence about
+          // the order, so this may not deny a charge or ask for a retry.
           logError(
             `[order] ABORT BEFORE STRIPE: durable order persistence failed for ${draftOrder.id}: ${error.message}`,
             error.cause,
           );
           return json(
-            {
-              error:
-                'We could not securely save your order. No charge was made. Please retry in a moment, and contact support@herostorybooks.com if it keeps happening.',
-            },
+            { error: POST_DURABLE_MEDIA_REFUSAL, code: 'checkout_order_media_persist_failed' },
             503,
           );
         }
@@ -930,6 +965,24 @@ export async function handleCheckoutOrderPost<TResponse>(
     });
   } catch (error) {
     logError('Order error:', error);
+    // This catch spans BOTH stages, and the two states are not interchangeable.
+    //
+    // Post-durable, it is the last resort for anything the staged handlers did
+    // not classify — a non-OrderPersistenceError rethrown from the final CAS, a
+    // throw out of the provisioner or the direct saga. Every one of those is a
+    // state where a payable Session may exist for this order, so the generic
+    // answer has to be the reconciliation answer.
+    //
+    // Pre-durable, no order and therefore no concurrent worker exists yet, and
+    // the existing generic wording stays: it neither denies a charge nor claims
+    // one, so it is safe in that state without telling a buyer who has nothing
+    // outstanding to go and contact support.
+    if (reachedDurableStage) {
+      return json(
+        { error: CHECKOUT_RECONCILIATION_SUPPORT, code: 'checkout_unconfirmed' },
+        503,
+      );
+    }
     return json({ error: 'Order submission failed' }, 500);
   }
 }
