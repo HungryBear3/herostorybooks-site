@@ -47,7 +47,6 @@ import { abortIntakeFinalization, finalizeIntakeSelection } from './checkout-fin
 import { markIntakeFinalized, type IntakeStore } from './checkout-intake.ts';
 import {
   getOrderAuthoritative,
-  hasCheckoutProviderEvidence,
   persistNewOrder,
   requiresDurablePersistence,
   sanitizeFamilyCharacters,
@@ -69,6 +68,10 @@ import {
 export type DirectCheckoutSessionRequest = ProviderCheckoutSessionRequest;
 export type DirectCheckoutSession = ProviderCheckoutSession;
 
+const NO_CHARGE_RETRY = CHECKOUT_NO_CHARGE_RETRY;
+const RECONCILIATION_REQUIRED = CHECKOUT_RECONCILIATION_NO_CHARGE;
+const ATTEMPT_ALREADY_RESOLVED = CHECKOUT_ATTEMPT_ALREADY_RESOLVED;
+
 export interface DirectIntakeCheckoutDeps extends CheckoutSessionProvisionDeps {
   binding: PreparedIntakeOrderBindingDependencies;
   /** Non-essential. Runs only after the durable commit, and never blocks it. */
@@ -88,9 +91,6 @@ export type DirectIntakeCheckoutResult =
   | { status: 'redirect'; redirectTo: string; order: OrderRecord }
   | { status: 'refused'; httpStatus: number; code: string; error: string };
 
-const NO_CHARGE_RETRY = CHECKOUT_NO_CHARGE_RETRY;
-const RECONCILIATION_REQUIRED = CHECKOUT_RECONCILIATION_NO_CHARGE;
-const ATTEMPT_ALREADY_RESOLVED = CHECKOUT_ATTEMPT_ALREADY_RESOLVED;
 
 /**
  * The shared provisioning codes, renamed into this path's stable vocabulary.
@@ -144,7 +144,15 @@ const FINALIZE_STATUS: Readonly<Record<string, number>> = {
   intake_finalization_unavailable: 503,
 };
 
-function refused(httpStatus: number, code: string, error: string): DirectIntakeCheckoutResult {
+function refused(httpStatus: number, code: string, _error: string): DirectIntakeCheckoutResult {
+  // This saga is entered only after the exported handler has validated the
+  // deterministic attempt ID. Every refusal can therefore overlap another
+  // request for the same attempt; no local snapshot can prove globally that no
+  // payable Session exists or invite another payment safely.
+  const error = /do not pay again/i.test(_error)
+    && !/no charge|not been charged|stopped before payment|\b(retry|try again|submit again)\b|start a fresh attempt/i.test(_error)
+    ? _error
+    : CHECKOUT_RECONCILIATION_SUPPORT;
   return { status: 'refused', httpStatus, code, error };
 }
 
@@ -268,13 +276,11 @@ export async function runDirectIntakeCheckout(
         `[order] ABORT BEFORE STRIPE: durable order persistence failed for ${bound.orderId} `
         + `(reconciliation=${bound.reconciliation}, reservation=${bound.reservation})`,
       );
-      // Two different failures wear this status, and only one of them is
-      // provable. `absent` means the AUTHORITATIVE store answered and no order
-      // exists for this id — no order, therefore no lease, no marker and no
-      // create: the no-charge sentence is earned. `unknown` means the store did
-      // not answer at all, so whether an earlier request of this same attempt
-      // already reached the provider is exactly what cannot be seen. Reporting
-      // that as "no charge was made" would be inventing evidence.
+      // `absent` and `unknown` keep distinct operator codes, but neither can
+      // settle customer-facing payment status. An authoritative read is still
+      // only a point-in-time snapshot; another request for the same attempt can
+      // progress immediately afterward. `refused` normalizes both through the
+      // attempt-wide reconciliation policy.
       return bound.reconciliation === 'unknown'
         ? refused(503, 'direct_intake_order_persist_unknown', CHECKOUT_RECONCILIATION_SUPPORT)
         : refused(503, 'direct_intake_order_persist_failed', NO_CHARGE_RETRY);
@@ -291,7 +297,7 @@ export async function runDirectIntakeCheckout(
       return refused(
         503,
         'direct_intake_mark_pending',
-        hasCheckoutProviderEvidence(bound.order) ? CHECKOUT_RECONCILIATION_SUPPORT : NO_CHARGE_RETRY,
+        NO_CHARGE_RETRY,
       );
     default:
       return refused(503, 'direct_intake_binding_unrecognised', NO_CHARGE_RETRY);
@@ -305,7 +311,7 @@ export async function runDirectIntakeCheckout(
     return refused(
       503,
       'direct_intake_checkout_lease_missing',
-      hasCheckoutProviderEvidence(order) ? CHECKOUT_RECONCILIATION_SUPPORT : RECONCILIATION_REQUIRED,
+      RECONCILIATION_REQUIRED,
     );
   }
 

@@ -1026,6 +1026,30 @@ test('a finalization conflict on an attempt that already has a payable Session n
   assert.match(result.error, /support@herostorybooks\.com/);
 });
 
+test('a direct attempt mismatch is normalized to attempt-safe copy before any side effect', async () => {
+  installMemoryOrderStore();
+  const { store, session, assets } = await intakeWithMedia();
+  const h = harness(store);
+  const mismatchedDraft = draftOrder([], { checkoutAttemptId: 'f'.repeat(32) });
+
+  const result = await runDirectIntakeCheckout({
+    draftOrder: mismatchedDraft,
+    request: request(session, assets),
+    stripeProductId: 'prod_test',
+    baseUrl: 'https://preview.test',
+    gaClientId: null,
+  }, h.deps);
+
+  assert.equal(result.status, 'refused');
+  if (result.status !== 'refused') return;
+  assert.equal(result.code, 'direct_intake_checkout_attempt_mismatch');
+  assert.equal(result.httpStatus, 400);
+  assert.equal(result.error, CHECKOUT_RECONCILIATION_SUPPORT);
+  assert.doesNotMatch(result.error, /no charge|stopped before payment|\btry again\b|\bretry\b/i);
+  assert.match(result.error, /do not pay again/i);
+  assert.deepEqual(h.calls, []);
+});
+
 test('every finalization refusal is reconciliation-safe against a concurrent payable attempt', async () => {
   // Any finalization refusal can race a prior/concurrent request for the same
   // attempt. Drive every mapped outcome through the real exported saga so none

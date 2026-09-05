@@ -158,44 +158,30 @@ export function getReturnBaseUrl(request: Request): string {
   return process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'http://localhost:3000';
 }
 
-/**
- * WHICH FAILURES MAY DENY A CHARGE, AND WHICH MAY NOT
- * ---------------------------------------------------
- * Everything before the durable owner record exists is a proven no-charge
- * state: the request has parsed a form and validated fields, nothing durable
- * was written, and — decisively — no other worker can be acting on this order,
- * because there is no order. Those refusals may say "no charge was made".
- *
- * Once `persistOrResumeCheckoutOrder` has created or resumed the durable owner
- * record, that stops being true, and it stops being true for THIS worker's
- * failures too. The browser deliberately reuses one `checkoutAttemptId`, so an
- * exact retry is the ordinary case; `persistOrResumeCheckoutOrder` lets such a
- * retry take over an EXPIRED lease (`orders.ts`), and a lease can expire inside
- * any awaited media upload. From then on the winner may persist media, mint a
- * Session and bind it while this worker is still suspended in an upload it
- * started first. So every exit below an `await` or a CAS inside
- * `continueWithMedia` is a state where a payable Session may exist for this
- * order — including the exits whose local evidence is "this worker never called
- * the provider". That is not global evidence, and the copy may not spend it.
- *
- * Hence: post-durable refusals all carry the shared reconciliation wording,
- * which tells the buyer not to pay again and to contact support. They keep
- * distinct stable codes so operators can still tell the stages apart.
- */
+/** Every refusal after a valid deterministic attempt is concurrency-ambiguous. */
 const POST_DURABLE_MEDIA_REFUSAL = CHECKOUT_RECONCILIATION_SUPPORT;
+
+function attemptSafeError(error: unknown): string {
+  if (typeof error === 'string'
+    && /do not pay again/i.test(error)
+    && !/no charge|not been charged|stopped before payment|\b(retry|try again|submit again)\b|start a fresh attempt/i.test(error)) {
+    return error;
+  }
+  return CHECKOUT_RECONCILIATION_SUPPORT;
+}
 
 export async function handleCheckoutOrderPost<TResponse>(
   request: Request,
   deps: CheckoutOrderRouteDeps<TResponse>,
 ): Promise<TResponse> {
-  const json = deps.json;
+  let checkoutAttemptKnown = false;
+  const json = (body: Record<string, unknown>, httpStatus: number): TResponse => deps.json(
+    checkoutAttemptKnown && httpStatus >= 400
+      ? { ...body, error: attemptSafeError(body.error) }
+      : body,
+    httpStatus,
+  );
   const logError = deps.logError;
-  // Which of the two states above this request is in. Raised exactly once, at
-  // the point where a durable owner record — and therefore a concurrent worker
-  // that may bind a payable Session — first becomes possible. Read only by the
-  // outer catch, which is the one place that answers without knowing which
-  // stage threw.
-  let reachedDurableStage = false;
   try {
     if (isCheckoutPaused()) {
       return json(
@@ -208,6 +194,8 @@ export async function handleCheckoutOrderPost<TResponse>(
     }
 
     const form = await request.formData();
+    const checkoutAttemptId = String(form.get('checkoutAttemptId') || '').trim();
+    checkoutAttemptKnown = /^[a-f0-9]{32}$/i.test(checkoutAttemptId);
     const directRequest = parseDirectIntakeOrderRequest(form);
     if (directRequest.kind === 'invalid') {
       return json(
@@ -222,8 +210,7 @@ export async function handleCheckoutOrderPost<TResponse>(
       );
     }
     const directSelection = directRequest.kind === 'direct' ? directRequest.request.selection : null;
-    const checkoutAttemptId = String(form.get('checkoutAttemptId') || '').trim();
-    if (!/^[a-f0-9]{32}$/i.test(checkoutAttemptId)) {
+    if (!checkoutAttemptKnown) {
       return json({ error: 'Invalid checkout attempt. Please reload and try again.' }, 400);
     }
     const requestFingerprint = await checkoutRequestFingerprint(form);
@@ -591,9 +578,6 @@ export async function handleCheckoutOrderPost<TResponse>(
           503,
         );
       }
-      // From here the saga may create the durable owner record and reach the
-      // provider, so a throw that escapes it is no longer a proven no-charge.
-      reachedDurableStage = true;
       const directResult = await runDirectIntakeCheckout({
         draftOrder,
         request: directRequest.request,
@@ -673,7 +657,6 @@ export async function handleCheckoutOrderPost<TResponse>(
     // Everything from this call onwards — the durable create-or-resume, the
     // media uploads, the final CAS and the provisioner — is the post-durable
     // stage described at the top of this file.
-    reachedDurableStage = true;
     return await runLegacyCheckoutRoute<TResponse>({
       draftOrder,
       stripeProductId,
@@ -965,19 +948,11 @@ export async function handleCheckoutOrderPost<TResponse>(
     });
   } catch (error) {
     logError('Order error:', error);
-    // This catch spans BOTH stages, and the two states are not interchangeable.
-    //
-    // Post-durable, it is the last resort for anything the staged handlers did
-    // not classify — a non-OrderPersistenceError rethrown from the final CAS, a
-    // throw out of the provisioner or the direct saga. Every one of those is a
-    // state where a payable Session may exist for this order, so the generic
-    // answer has to be the reconciliation answer.
-    //
-    // Pre-durable, no order and therefore no concurrent worker exists yet, and
-    // the existing generic wording stays: it neither denies a charge nor claims
-    // one, so it is safe in that state without telling a buyer who has nothing
-    // outstanding to go and contact support.
-    if (reachedDurableStage) {
+    // Once a syntactically valid deterministic attempt is known, any failure
+    // can overlap another request for that same attempt. A local validation,
+    // read, or write result cannot prove that the other request has not created
+    // or bound a payable Session, so the attempt-wide response must reconcile.
+    if (checkoutAttemptKnown) {
       return json(
         { error: CHECKOUT_RECONCILIATION_SUPPORT, code: 'checkout_unconfirmed' },
         503,

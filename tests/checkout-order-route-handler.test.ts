@@ -563,3 +563,30 @@ test('an invalid submission is refused before any durable order or media exists'
   assert.deepEqual(h.provider, []);
   assert.equal(await stored(), null);
 });
+
+test('a valid attempt uses reconciliation-safe copy even when asynchronous photo validation refuses it', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  const form = new FormData();
+  form.set('checkoutAttemptId', ATTEMPT);
+  form.set('childName', 'Mina');
+  form.set('email', 'buyer@example.com');
+  form.set('bookFormat', 'digital');
+  form.set('theme', 'space-adventure');
+  form.set('characterNotes', 'Curly hair');
+  form.set('photo', new File([new TextEncoder().encode('not an image')], 'hero.png', { type: 'image/png' }));
+
+  const response = await handleCheckoutOrderPost(
+    new Request('https://preview.test/api/order', { method: 'POST', body: form }),
+    h.deps,
+  );
+
+  assert.equal(response.httpStatus, 400);
+  assert.equal(response.body.code, 'photo_invalid_content');
+  assert.equal(response.body.error, CHECKOUT_RECONCILIATION_SUPPORT);
+  assert.doesNotMatch(String(response.body.error), /no charge|stopped before payment|\btry again\b|\bretry\b/i);
+  assert.match(String(response.body.error), /do not pay again/i);
+  assert.deepEqual(h.uploads, []);
+  assert.deepEqual(h.provider, []);
+  assert.equal(await stored(), null);
+});
