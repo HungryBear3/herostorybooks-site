@@ -66,7 +66,7 @@ test('malformed Product binding fails closed instead of accepting a Price or arb
 });
 
 test('primary checkout binds price_data to a stable Product and allows promotion codes', () => {
-  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   const bindingIdx = src.indexOf('getRequiredStripeProductId(draftOrder.bookFormat)');
   // The binding must resolve before EITHER path can reach the provisioner —
   // stronger than the old single inline-create boundary — and the resolved id

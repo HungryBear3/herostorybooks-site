@@ -7,7 +7,7 @@ import { generateStoryWithMeta } from '../src/lib/story-generator.ts';
 import { TACO_GATE_BRIEF } from './fixtures/taco-gate-brief.ts';
 
 test('order route validates sanitized customStoryBrief before Stripe and returns manual_queue failures', () => {
-  const source = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const source = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   const validateIdx = source.indexOf('validateCustomStoryBrief(customStoryBrief)');
   // Provider Session creation now happens inside the shared provisioner, so
   // the boundary is the first orchestration entry point the handler reaches.
@@ -26,7 +26,7 @@ test('order route validates sanitized customStoryBrief before Stripe and returns
 });
 
 test('order route does not call statusForShape on malformed customStoryBrief', () => {
-  const source = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const source = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   const validationIdx = source.indexOf('customStoryValidation = validateCustomStoryBrief(customStoryBrief)');
   const gatedStatusIdx = source.indexOf('customStoryValidation.ok\n        ? statusForShape(customStoryBrief.storyShape)');
   assert.ok(validationIdx > 0, 'validation assignment is present');

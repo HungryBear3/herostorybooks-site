@@ -26,7 +26,7 @@ test('checkout page gates the active form behind the pause flag', () => {
 });
 
 test('order route checks pause before parsing form data or creating Stripe checkout', () => {
-  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   const pauseIdx = src.indexOf('if (isCheckoutPaused())');
   const formIdx = src.indexOf('await request.formData()');
   // Session creation moved into the shared provisioner; the handler's provider
@@ -48,7 +48,7 @@ test('order route checks pause before parsing form data or creating Stripe check
 
 
 test('order route fails closed for non-child primary heroes unless beta gate is enabled', () => {
-  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   const gateIdx = src.indexOf("if (heroType !== 'child')");
   // Must precede BOTH provider paths, not just the old inline legacy create.
   const directEntryIdx = src.indexOf('await runDirectIntakeCheckout({');
@@ -85,7 +85,7 @@ test('Custom Story upload intake is no longer gated behind a client flag', () =>
 
 test('primary hero beta exposes friend or other family member as a fourth review-only hero type', () => {
   const formSrc = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
-  const routeSrc = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const routeSrc = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   assert.match(formSrc, /id: "parent"/);
   assert.match(formSrc, /id: "grandparent"/);
   assert.match(formSrc, /id: "other", label: "Friend \/ other family member", helper: "Available by review only"/);
@@ -95,7 +95,7 @@ test('primary hero beta exposes friend or other family member as a fourth review
 });
 
 test('supporting photo upload failures fail before Stripe for every error path', () => {
-  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   const supportIdx = src.indexOf('supporting photo persistence failed');
   // Supporting photos are a legacy-path concern; the direct branch has already
   // returned by here, so the boundary is the legacy provisioning entry.

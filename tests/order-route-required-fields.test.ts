@@ -75,8 +75,8 @@ test('server contract: written appearance description satisfies the no-photo pat
 // anyone refactors the route to do its own ad-hoc validation.
 import { readFileSync } from 'node:fs';
 test('server contract: /api/order POST imports + calls missingRequiredField', () => {
-  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
-  assert.match(src, /from\s+['"]@\/lib\/checkout-flow['"]/);
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
+  assert.match(src, /from\s+['"](?:@\/lib|\.)\/checkout-flow(?:\.ts)?['"]/);
   assert.match(src, /missingRequiredField\(/);
   assert.match(src, /missingFieldErrorCode\(/);
   assert.doesNotMatch(src, /missingRequiredField\(\{[^}]*childPronouns/s);
@@ -87,7 +87,7 @@ test('server contract: /api/order POST imports + calls missingRequiredField', ()
 // CA/GB/AU/NZ let non-US buyers complete a print order we don't promise
 // to ship. Pin the allow-list to US so checkout can't outrun the copy.
 test('server contract: print shipping is restricted to US only', () => {
-  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   assert.match(src, /allowed_countries:\s*\[\s*['"]US['"]\s*\]/);
   assert.doesNotMatch(src, /allowed_countries:[^\]]*['"](?:CA|GB|AU|NZ)['"]/);
 });
@@ -96,7 +96,7 @@ test('server contract: print shipping is restricted to US only', () => {
 // childName field. Stripe line items now bind to stable catalog Products so
 // product-scoped promotion codes cannot spill across Digital and Print.
 test('server contract: stable Stripe Product binding preserves personalized success param', () => {
-  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   assert.match(src, /childName:\s*order\.heroName\s*\?\?\s*order\.childName/);
   assert.match(src, /product:\s*stripeProductId/);
   assert.doesNotMatch(src, /product_data:\s*\{/);
@@ -115,7 +115,7 @@ test('checkout contract: simplified appearance UI removes stale single-select an
 });
 
 test('checkout contract: order route validates real photo bytes, derives intent, and fails closed on upload loss', () => {
-  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   assert.match(src, /const hasPhotoUpload = photo instanceof File && photo\.size > 0/);
   assert.match(src, /await validateOrderPhotoFile\(photo\)/);
   assert.match(src, /const photoReady = photoValidation\.ok === true/);
@@ -127,9 +127,9 @@ test('checkout contract: order route validates real photo bytes, derives intent,
   // now literally inside the continuation it only reaches for an order with no
   // provider history (src/lib/checkout-legacy-order.ts, driven end-to-end in
   // tests/checkout-legacy-order-entrypoint.test.ts).
-  assert.match(src, /await runLegacyCheckoutRoute<NextResponse>\(/);
+  assert.match(src, /await runLegacyCheckoutRoute<TResponse>\(/);
   assert.match(src, /withOrderTransaction(?:<[^>]+>)?\(persisted\.id/);
-  assert.ok(src.indexOf('await runLegacyCheckoutRoute<NextResponse>(') < src.indexOf('await uploadOrderPhoto'));
+  assert.ok(src.indexOf('await runLegacyCheckoutRoute<TResponse>(') < src.indexOf('await deps.uploadOrderPhoto'));
   assert.match(src, /rollbackOrderMediaUploads/);
   assert.match(src, /rollbackUploadedMedia\('supporting photo persistence failure'\)/);
   assert.match(src, /rollbackUploadedMedia\('voice persistence failure'\)/);
@@ -141,7 +141,7 @@ test('checkout contract: order route validates real photo bytes, derives intent,
 });
 
 test('checkout contract advertises and accepts only deployed-runtime photo codecs', () => {
-  const route = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const route = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   const checkout = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
   const validator = readFileSync('src/lib/photo-file-validation.ts', 'utf8');
   for (const src of [route, checkout, validator]) {

@@ -23,7 +23,7 @@ const giftDetail = read('src/app/gifts/[occasion]/page.tsx');
 const checkoutForm = read('src/app/checkout/checkout-form.tsx');
 const sitemap = read('src/app/sitemap.ts');
 const siteUrl = read('src/lib/site-url.ts');
-const orderRoute = read('src/app/api/order/route.ts');
+const orderRoute = read('src/lib/checkout-order-route-handler.ts') + read('src/app/api/order/route.ts');
 
 // ── 1. Shared editorial chrome on gift routes ────────────────────────────────
 test('gift index and detail routes render the shared EditorialPageShell chrome', () => {

@@ -57,7 +57,7 @@ test('checkout client forwards tracking params to the normal order API payload',
 });
 
 test('order route sanitizes tracking before persistence and Stripe metadata', () => {
-  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   assert.match(src, /buildCheckoutTracking/);
   assert.match(src, /checkoutTracking,/);
   assert.match(src, /metadata:\s*{[\s\S]*orderId: order\.id[\s\S]*cohort: order\.checkoutTracking\.cohort[\s\S]*invite: order\.checkoutTracking\.invite[\s\S]*}/);

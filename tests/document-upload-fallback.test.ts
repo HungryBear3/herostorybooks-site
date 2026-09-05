@@ -16,7 +16,7 @@ import {
 } from '../src/lib/orders.ts';
 
 const checkout = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
-const route = readFileSync('src/app/api/order/route.ts', 'utf8');
+const route = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
 const orders = readFileSync('src/lib/orders.ts', 'utf8');
 const adminOrder = readFileSync('src/app/admin/orders/[orderId]/page.tsx', 'utf8');
 
@@ -46,7 +46,7 @@ test('legacy route rejects contradictory or duplicate attachment lanes and null 
 });
 
 test('legacy order route persists dedicated document metadata before Stripe', () => {
-  const uploadIndex = route.indexOf('await uploadOrderDocument');
+  const uploadIndex = route.indexOf('await deps.uploadOrderDocument');
   const persistIndex = route.indexOf('documentBlobPath,');
   // Document metadata is a legacy-path concern and must be durable before the
   // legacy provisioner can create anything payable.

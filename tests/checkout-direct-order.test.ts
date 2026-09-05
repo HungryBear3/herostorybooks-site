@@ -53,7 +53,7 @@ const FAMILY_B = 'supporting-character-bbbb';
 const LEASE = '11111111-1111-4111-8111-111111111111';
 const FOREIGN_LEASE = '22222222-2222-4222-8222-222222222222';
 const IDEMPOTENCY_KEY = `hsb_checkout_${ORDER_ID}`;
-const ROUTE = readFileSync('src/app/api/order/route.ts', 'utf8');
+const ROUTE = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
 
 const savedEnv: Record<string, string | undefined> = {};
 

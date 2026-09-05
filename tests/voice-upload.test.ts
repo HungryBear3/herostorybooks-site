@@ -317,7 +317,7 @@ test('raw AAC uses an .aac extension rather than an M4A container extension', ()
 
 // ── /api/order route source contract (static grep) ──────────────────────────
 
-const ROUTE_SRC = readFileSync('src/app/api/order/route.ts', 'utf8');
+const ROUTE_SRC = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
 const ADMIN_ORDER_SRC = readFileSync('src/app/admin/orders/[orderId]/page.tsx', 'utf8');
 
 test('order and admin surfaces do not retain or display customer voice filenames', () => {

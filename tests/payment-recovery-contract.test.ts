@@ -27,7 +27,7 @@ async function withEnv<T>(env: Record<string, string | undefined>, fn: () => Pro
 }
 
 test('checkout source uses stable attempt identity and Stripe idempotency before URL release', () => {
-  const route = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const route = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   const client = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
   const fingerprint = readFileSync('src/lib/checkout-request-fingerprint.ts', 'utf8');
   const browserRandomId = readFileSync('src/lib/browser-random-id.ts', 'utf8');
@@ -57,16 +57,16 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   // hands that whole orchestration its dependencies; the behaviour is driven
   // end-to-end through the exported production function against the real order
   // CAS in tests/checkout-legacy-order-entrypoint.test.ts.
-  assert.match(route, /await runLegacyCheckoutRoute<NextResponse>\(\{[\s\S]{0,400}?draftOrder,/);
+  assert.match(route, /await runLegacyCheckoutRoute<TResponse>\(\{[\s\S]{0,400}?draftOrder,/);
   const legacyEntrypoint = readFileSync('src/lib/checkout-legacy-order.ts', 'utf8');
   assert.match(legacyEntrypoint, /await resumeOrContinueLegacyCheckout\(params, deps\)/);
   assert.match(legacyEntrypoint, /await deps\.persistOrResumeCheckoutOrder\(draft\)/);
   assert.match(route, /checkoutRequestFingerprint\(form\)/);
   assert.match(fingerprint, /value\.arrayBuffer\(\)/);
   assert.match(route, /current\.checkoutLeaseId !== draftOrder\.checkoutLeaseId/);
-  assert.match(route, /uploadOrderPhoto\(draftOrder\.id, photo, draftOrder\.checkoutLeaseId/);
-  assert.match(route, /uploadOrderSupportingPhoto\([\s\S]*draftOrder\.checkoutLeaseId/);
-  assert.match(route, /uploadOrderVoice\([\s\S]*draftOrder\.checkoutLeaseId/);
+  assert.match(route, /deps\.uploadOrderPhoto\(draftOrder\.id, photo, draftOrder\.checkoutLeaseId/);
+  assert.match(route, /deps\.uploadOrderSupportingPhoto\([\s\S]*draftOrder\.checkoutLeaseId/);
+  assert.match(route, /deps\.uploadOrderVoice\([\s\S]*draftOrder\.checkoutLeaseId/);
   // The lease is still proven immediately before the provider call — that step
   // simply moved into the shared provisioner, where both paths get it. Assert
   // the guarantee where it is now enforced, and that it is atomic renewal
@@ -75,7 +75,13 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   const renewAt = provisioner.indexOf('await deps.renewCheckoutLease(');
   const providerCreateAt = provisioner.indexOf('await deps.createCheckoutSession({');
   assert.ok(renewAt > -1 && providerCreateAt > renewAt, 'the exact lease is renewed before creating a Session');
-  assert.match(provisioner, /if \(!renewed\) \{[\s\S]{0,400}?checkout_lease_lost/);
+  // The refusal itself, not merely the code string: a renewal that does not
+  // commit refuses with ambiguity-safe copy, because a concurrent worker may
+  // have bound a payable Session in the window this worker cannot see.
+  assert.match(
+    provisioner,
+    /if \(!renewed\) \{[\s\S]{0,1200}?refused\(409, 'checkout_lease_lost', CHECKOUT_RECONCILIATION_SUPPORT, 'may_be_charged'\)/,
+  );
   // Stripe idempotency stays deterministic per order and per provider attempt,
   // and the durable pre-provider marker names the SAME attempt the key was
   // derived from. The key is the second line of defence, not the first: a

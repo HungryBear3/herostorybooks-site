@@ -124,17 +124,27 @@ export interface CheckoutSessionProvisionParams {
  * nothing.
  *
  * `not_charged` requires that NO provider create was ever entered for this
- * order — not merely that no URL was released. Once the provider has been asked
- * to mint a Session, a provider object may exist whatever the local outcome
- * was: a create that threw may have succeeded server-side, and a local
- * persistence failure after a successful create says nothing at all about the
- * provider. Categorically denying a charge there claims more than this code can
- * see, so everything from the create onwards is `may_be_charged` and gets copy
- * that tells the buyer not to pay again and to reconcile with support.
+ * ORDER — by anyone — not merely that this worker made no call and released no
+ * URL. Once the provider has been asked to mint a Session, a provider object
+ * may exist whatever the local outcome was: a create that threw may have
+ * succeeded server-side, and a local persistence failure after a successful
+ * create says nothing at all about the provider. Categorically denying a charge
+ * there claims more than this code can see, so everything from the create
+ * onwards is `may_be_charged` and gets copy that tells the buyer not to pay
+ * again and to reconcile with support.
  *
  * Durable evidence from an EARLIER request counts the same way. A bound
  * Session, a candidate, or a provisioning marker each mean a create was already
  * entered on some previous attempt.
+ *
+ * And evidence from a CONCURRENT request counts the same way even though it
+ * cannot be seen. The record handed to this function is a snapshot; another
+ * worker of the same attempt may bind a payable Session at any moment after it
+ * was taken. That is why the two guarded writes below — the lease renewal and
+ * the pre-provider marker — may never report a proven no-charge when they
+ * refuse: refusing is exactly what they do when the durable record has moved
+ * on, and a concurrent bind is the ordinary reason it moved. Absence of local
+ * provider calls is not absence of provider objects.
  */
 export type CheckoutChargeRisk = 'not_charged' | 'may_be_charged';
 
@@ -187,8 +197,28 @@ export async function provisionCheckoutSession(
   // it is known whether that call succeeded — because a create that throws is
   // exactly the case where a provider object may exist anyway.
   //
-  // This is the sole gate on every "no charge was made" sentence below.
+  // This is the sole gate on every "no charge was made" sentence below, and it
+  // is only ever an ANSWER where the record it was computed from is authoritative
+  // — see `observe`.
   let providerAttempted = hasCheckoutProviderEvidence(params.order);
+
+  /**
+   * Fold a record the STORE just committed and handed back into what is known
+   * about this order's exposure.
+   *
+   * The record passed into this function is a snapshot taken before the first
+   * await; a record returned by a guarded transaction is what the store held at
+   * the instant that transaction committed. Only the latter can raise or clear
+   * doubt, and evidence never un-happens, so this only ever adds.
+   */
+  const observe = (record: OrderRecord): OrderRecord => {
+    if (hasCheckoutProviderEvidence(record)) providerAttempted = true;
+    if (typeof record.stripeSessionId === 'string' && record.stripeSessionId.length > 0) {
+      everExposed = true;
+    }
+    return record;
+  };
+
   const risk = (): CheckoutChargeRisk =>
     (everExposed || providerAttempted ? 'may_be_charged' : 'not_charged');
   const reconciliationCopy = () => (risk() === 'may_be_charged'
@@ -199,6 +229,10 @@ export async function provisionCheckoutSession(
   // that does not describe this order's current attempt, is impossible state.
   // The parser already refuses to read either, so this is the runtime backstop
   // for a record handed in from memory rather than loaded from the store.
+  //
+  // Either verdict requires one of the three evidence fields to be present, so
+  // `risk()` here is `may_be_charged` by construction — a record cannot be
+  // unreadable about a provider call it never made.
   if (readCheckoutSessionCandidate(params.order).status === 'invalid'
     || readCheckoutSessionProvisioning(params.order).status === 'invalid') {
     log(`[checkout] unusable Session evidence on ${orderId}; refusing before the provider`);
@@ -227,13 +261,20 @@ export async function provisionCheckoutSession(
         renewed = null;
       }
       if (!renewed) {
+        // NOT a proof of anything about the buyer's money. `renewCheckoutLease`
+        // refuses whenever the durable record no longer matches what this worker
+        // holds, and the ordinary cause is a CONCURRENT worker of this same
+        // attempt that has just bound a Session — the store refuses a renewal
+        // outright once `stripeSessionId` is set. That Session is payable and it
+        // is invisible from here: this worker's zero provider calls describe this
+        // worker only. A throw is weaker still — it does not even establish that
+        // the refusal happened. Ambiguity-safe copy, unconditionally.
         log(`[checkout] ABORT BEFORE PROVIDER: lease no longer held for ${orderId}`);
-        // The "no new charge was made" wording is only usable where no provider
-        // create was ever entered for this order.
-        return refused(409, 'checkout_lease_lost', providerAttempted
-          ? CHECKOUT_RECONCILIATION_SUPPORT
-          : CHECKOUT_ATTEMPT_ALREADY_RESOLVED, risk());
+        return refused(409, 'checkout_lease_lost', CHECKOUT_RECONCILIATION_SUPPORT, 'may_be_charged');
       }
+      // Committed by the store this instant, so what it says about provider
+      // evidence is authoritative — unlike the snapshot this request carried in.
+      observe(renewed);
       if (!renewed.checkoutLeaseId || !renewed.checkoutFingerprint || !renewed.checkoutAttemptId) {
         log(`[checkout] ABORT BEFORE PROVIDER: ${orderId} carries no checkout identity`);
         return refused(503, 'checkout_session_identity_missing', reconciliationCopy(), risk());
@@ -349,13 +390,21 @@ export async function provisionCheckoutSession(
       // a refusal, a malformed answer, nothing at all — leaves this order with
       // no durable evidence, and a create without that is the one thing this
       // barrier exists to prevent.
+      //
+      // Same ambiguity as the lost lease above, for the same reason: this CAS
+      // refuses precisely when the durable record has moved on, and a concurrent
+      // worker binding a payable Session between the renewal and this commit is
+      // exactly that. Holding the lease a moment ago proves nothing now.
       if (marked?.status !== 'committed' || !marked.order) {
         log(`[checkout] ABORT BEFORE PROVIDER: no durable provisioning evidence for ${orderId}`);
-        return refused(503, 'checkout_session_provisioning_failed', providerAttempted
-          ? CHECKOUT_RECONCILIATION_SUPPORT
-          : CHECKOUT_NO_CHARGE_RETRY, risk());
+        return refused(
+          503,
+          'checkout_session_provisioning_failed',
+          CHECKOUT_RECONCILIATION_SUPPORT,
+          'may_be_charged',
+        );
       }
-      current = marked.order;
+      current = observe(marked.order);
 
       // Everything from here on is ambiguous about the buyer's money.
       providerAttempted = true;
@@ -403,7 +452,7 @@ export async function provisionCheckoutSession(
         log(`[checkout] Session ${session.id} created but not durably recorded for ${orderId}`);
         return refused(503, 'checkout_session_candidate_persist_failed', CHECKOUT_RECONCILIATION_SUPPORT, risk());
       }
-      current = recorded;
+      current = observe(recorded);
     }
 
     // ── What did the provider actually say? ───────────────────────────────
@@ -433,7 +482,7 @@ export async function provisionCheckoutSession(
         log(`[checkout] ABORT: could not durably retire expired Session ${session.id} for ${orderId}`);
         return refused(409, 'checkout_session_supersede_failed', reconciliationCopy(), risk());
       }
-      current = retired;
+      current = observe(retired);
       continue;
     }
 
@@ -460,7 +509,7 @@ export async function provisionCheckoutSession(
         log(`[checkout] Session ${session.id} created but durable binding failed for ${orderId}`);
         return refused(503, 'checkout_session_bind_failed', reconciliationCopy(), risk());
       }
-      released = bound;
+      released = observe(bound);
     }
     if (!session.url) {
       log(`[checkout] Session ${session.id} for ${orderId} carried no checkout URL`);

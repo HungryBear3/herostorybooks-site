@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const orderRoute = readFileSync('src/app/api/order/route.ts', 'utf8');
+const orderRoute = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
 const webhookRoute = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
 const thankYouPage = readFileSync('src/app/thank-you/page.tsx', 'utf8');
 const pendingConfirmation = readFileSync('src/app/thank-you/pending-confirmation.tsx', 'utf8');

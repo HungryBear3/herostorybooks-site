@@ -115,7 +115,7 @@ test('checkout source binds Stripe Session before releasing redirect URL', () =>
   // A bind that fails releases nothing.
   assert.match(provisioner, /if \(!bound\) \{[\s\S]{0,400}?checkout_session_bind_failed/);
 
-  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   assert.match(src, /redirectTo: provisioned\.url/);
   assert.doesNotMatch(src, /redirectTo: session\.url/);
   const handler = src.slice(0, src.indexOf('async function retrieveDirectCheckoutSession'));

@@ -604,7 +604,92 @@ test('a lease lost before the provider call creates nothing', async () => {
   assert.equal(result.status, 'refused');
   assert.equal(result.status === 'refused' && result.code, 'checkout_lease_lost');
   assert.equal(creates(p).length, 0);
-  assert.equal(result.status === 'refused' && result.chargeRisk, 'not_charged');
+  // THIS worker created nothing. That is not the same claim as "this order was
+  // never charged": the lease moved because some other worker is acting on the
+  // same order, and what it did is invisible from here.
+  assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
+  assert.equal(result.status === 'refused' && result.message, CHECKOUT_RECONCILIATION_SUPPORT);
+});
+
+// ---------------------------------------------------------------------------
+// A concurrent worker's evidence is invisible to this worker's call count
+//
+// Both refusals below are the store telling a stale worker "the record has
+// moved on". The commonest way it moves on is another worker of the same
+// attempt binding a Session — which is a payable object at the provider. The
+// stale worker sees zero of its own provider calls and used to conclude, and
+// tell the buyer, that no charge was made. It could not know that.
+//
+// Both windows are driven deterministically through the REAL writers: the
+// concurrent bind commits inside the dependency the stale worker is about to
+// call, so there is no timing to race.
+// ---------------------------------------------------------------------------
+
+/** Everything a concurrent worker of this attempt does to become bound. */
+async function concurrentWorkerBinds(stripeSessionId: string): Promise<void> {
+  await seedCandidate(stripeSessionId);
+  assert.ok(
+    await bindOrderCheckoutSession(ORDER_ID, stripeSessionId, {
+      leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: NOW,
+    }),
+    'the concurrent worker must actually bind',
+  );
+}
+
+test('a concurrent bind BEFORE the stale worker renews is answered as ambiguity, never as no-charge', async () => {
+  installMemoryOrderStore();
+  await persistNewOrder(intakeOrder());
+  let bound = false;
+  const p: Provider = provider({
+    async renewCheckoutLease(orderId, leaseId, fingerprint) {
+      if (!bound) {
+        bound = true;
+        await concurrentWorkerBinds('cs_concurrent');
+      }
+      p.calls.push('renew');
+      return renewCheckoutLease(orderId, leaseId, fingerprint, { now: NOW });
+    },
+  });
+
+  // The stale worker carries the snapshot it was handed: no provider evidence.
+  const result = await provision(intakeOrder(), p.deps);
+
+  assert.equal(result.status, 'refused');
+  assert.equal(result.status === 'refused' && result.code, 'checkout_lease_lost');
+  assert.equal(creates(p).length, 0, 'the stale worker itself creates nothing');
+  assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
+  assert.equal(result.status === 'refused' && result.message, CHECKOUT_RECONCILIATION_SUPPORT);
+  assert.doesNotMatch(result.status === 'refused' ? result.message : '', /no charge/i);
+  assert.match(result.status === 'refused' ? result.message : '', /do not pay again/i);
+  assert.equal((await stored())?.stripeSessionId, 'cs_concurrent', 'a payable Session does exist');
+});
+
+test('a concurrent bind BETWEEN renewal and the marker commit is answered as ambiguity, never as no-charge', async () => {
+  installMemoryOrderStore();
+  await persistNewOrder(intakeOrder());
+  let bound = false;
+  const p: Provider = provider({
+    async beginCheckoutSessionProvisioning(orderId, checkout) {
+      if (!bound) {
+        bound = true;
+        await concurrentWorkerBinds('cs_concurrent');
+      }
+      p.calls.push('provisioning');
+      return orders.beginCheckoutSessionProvisioning(orderId, { ...checkout, now: NOW });
+    },
+  });
+
+  const result = await provision(intakeOrder(), p.deps);
+
+  assert.equal(result.status, 'refused');
+  assert.equal(result.status === 'refused' && result.code, 'checkout_session_provisioning_failed');
+  assert.ok(p.calls.includes('renew'), 'the stale worker did hold the lease a moment earlier');
+  assert.equal(creates(p).length, 0, 'the stale worker itself creates nothing');
+  assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
+  assert.equal(result.status === 'refused' && result.message, CHECKOUT_RECONCILIATION_SUPPORT);
+  assert.doesNotMatch(result.status === 'refused' ? result.message : '', /no charge/i);
+  assert.match(result.status === 'refused' ? result.message : '', /do not pay again/i);
+  assert.equal((await stored())?.stripeSessionId, 'cs_concurrent', 'a payable Session does exist');
 });
 
 // ---------------------------------------------------------------------------
@@ -827,11 +912,24 @@ test('copy: a durable provisioning marker from an EARLIER request already forbid
   assert.equal(creates(p).length, 0);
 });
 
-test('copy: failures proven to precede every provider attempt keep the no-charge sentence', async () => {
+test('copy: a refusal at the lease or at the marker is never reported as a proven no-charge', async () => {
+  // These two are the LAST refusals before this worker touches the provider,
+  // and they were once treated as proof that nothing had been created at all.
+  // They are not. Each of them fires exactly when the durable record no longer
+  // matches what this worker holds — a concurrent worker of the same attempt
+  // having bound a payable Session is the ordinary cause — and a count of THIS
+  // worker's provider calls says nothing about that one's. A throw is weaker
+  // still: it does not even establish that the refusal happened.
   for (const [name, override, code] of [
-    ['lease lost', { async renewCheckoutLease() { return null; } }, 'checkout_lease_lost'],
-    ['provisioning evidence refused', {
+    ['lease renewal refuses', { async renewCheckoutLease() { return null; } }, 'checkout_lease_lost'],
+    ['lease renewal throws', {
+      async renewCheckoutLease(): Promise<never> { throw new Error('store unavailable'); },
+    }, 'checkout_lease_lost'],
+    ['provisioning evidence refuses', {
       async beginCheckoutSessionProvisioning() { return null; },
+    }, 'checkout_session_provisioning_failed'],
+    ['provisioning evidence throws', {
+      async beginCheckoutSessionProvisioning(): Promise<never> { throw new Error('store unavailable'); },
     }, 'checkout_session_provisioning_failed'],
   ] as Array<[string, Partial<CheckoutSessionProvisionDeps>, string]>) {
     __resetOrderStoreAdapterFactoryForTests();
@@ -843,8 +941,9 @@ test('copy: failures proven to precede every provider attempt keep the no-charge
 
     assert.equal(result.status, 'refused', name);
     assert.equal(result.status === 'refused' && result.code, code, name);
-    assert.equal(result.status === 'refused' && result.chargeRisk, 'not_charged', name);
-    assert.match(result.status === 'refused' ? result.message : '', /no (new )?charge was made/i, name);
+    assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged', name);
+    assert.equal(result.status === 'refused' && result.message, CHECKOUT_RECONCILIATION_SUPPORT, name);
+    assert.doesNotMatch(result.status === 'refused' ? result.message : '', /no charge/i, name);
     assert.equal(creates(p).length, 0, name);
   }
 });

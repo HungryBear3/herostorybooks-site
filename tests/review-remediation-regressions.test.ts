@@ -102,6 +102,7 @@ test('production order writers do not use unconditional persistOrder for existin
 
   for (const rel of [
     'src/app/api/order/route.ts',
+    'src/lib/checkout-order-route-handler.ts',
     'src/lib/admin-actions.ts',
     'src/lib/order-recovery.ts',
     'src/lib/print-upgrades.ts',

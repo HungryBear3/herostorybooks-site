@@ -292,7 +292,7 @@ test('Custom Story requires one source and returns consent recovery to the corre
 });
 
 test('server and Start fresh enforce the same source/reset contract before payment', () => {
-  const route = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const route = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   const sourceRequired = route.indexOf('custom_story_source_required');
   // The source/reset contract must hold before EITHER provider path can run.
   const stripe = Math.min(

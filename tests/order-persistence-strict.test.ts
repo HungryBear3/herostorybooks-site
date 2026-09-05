@@ -260,7 +260,8 @@ test('legacy checkout entrypoint: persistence failure refuses before the provide
 
 test('order route source: the handler keeps no provider call and no session decision of its own', async () => {
   const { readFile } = await import('node:fs/promises');
-  const src = await readFile('src/app/api/order/route.ts', 'utf8');
+  const src = (await readFile('src/lib/checkout-order-route-handler.ts', 'utf8'))
+    + (await readFile('src/app/api/order/route.ts', 'utf8'));
   const handler = src.slice(0, src.indexOf('async function retrieveDirectCheckoutSession'));
   assert.ok(handler.length > 0, 'the provider adapters must stay below the request handler');
   // The durable create-or-resume, and the recovery decision that depends on it,
@@ -287,7 +288,8 @@ test('order route source: the handler keeps no provider call and no session deci
 
 test('order route source: Stripe Checkout enables buyer-entered promotion codes', async () => {
   const { readFile } = await import('node:fs/promises');
-  const src = await readFile('src/app/api/order/route.ts', 'utf8');
+  const src = (await readFile('src/lib/checkout-order-route-handler.ts', 'utf8'))
+    + (await readFile('src/app/api/order/route.ts', 'utf8'));
   const stripeIdx = src.indexOf('checkout.sessions.create');
   const promoIdx = src.indexOf('allow_promotion_codes: true');
   assert.ok(stripeIdx > -1, 'route must call checkout.sessions.create');

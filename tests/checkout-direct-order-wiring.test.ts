@@ -3,19 +3,20 @@
  * once the direct private-intake path is switched on — and, more importantly,
  * what they must keep doing identically when it is not.
  *
- * The route cannot be imported under `node:test` (next/server + Stripe).
- * Everything that CAN be executed — the request fingerprint, the payload
- * assembly — is executed, and the route's actual checkout behaviour is driven
- * end-to-end at its extracted entrypoints against the real order CAS (see
- * checkout-legacy-order-entrypoint.test.ts and
- * checkout-session-provisioning.test.ts).
+ * The route FILE cannot be imported under `node:test` (next/server + Stripe),
+ * but the handler it instantiates can be, and is: the production handler is
+ * executed end-to-end, with only its Next/Stripe/Blob boundaries injected, in
+ * checkout-order-route-handler.test.ts. That is where reachability is proven —
+ * a mutation that makes the legacy resume unreachable fails there.
  *
- * What is left for source inspection is only what those cannot show about a
- * file they do not import: that the handler retains NO provider surface and no
- * session decision of its own. Those guards are stated as absence inside the
- * handler body, not as "X appears before Y" — position was the weakness in the
- * tests this replaces, because the provider adapters are declared below the
- * handler and so came "after" everything regardless of control flow.
+ * Everything here that CAN be executed — the request fingerprint, the payload
+ * assembly — still is. What is left for source inspection is only what the
+ * behavioural suites cannot show: that the handler retains NO provider surface
+ * and no session decision of its own for the removed bypass to grow back into,
+ * and that the route file is nothing but a thin instantiation. These are
+ * tripwires against a shape regressing, NOT evidence that a line runs; they are
+ * stated as absence inside the handler body rather than as "X appears before
+ * Y", because position was the weakness in the tests these replace.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -34,7 +35,14 @@ import {
 } from '../src/lib/checkout-intake-client-flow.ts';
 import { parseDirectIntakeOrderRequest } from '../src/lib/checkout-direct-order-request.ts';
 
-const ROUTE = readFileSync('src/app/api/order/route.ts', 'utf8');
+const ROUTE_FILE = readFileSync('src/app/api/order/route.ts', 'utf8');
+const HANDLER_FILE = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8');
+/**
+ * The production POST path is these two files, in the order they run: the
+ * handler that owns every decision, then the route file whose only content is
+ * the thin instantiation and the provider adapters.
+ */
+const ROUTE = HANDLER_FILE + ROUTE_FILE;
 const FORM = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
 
 /**
@@ -46,9 +54,13 @@ const FORM = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
  * These guards therefore say something a reordering cannot satisfy — the
  * handler body must contain no provider call and no session decision at all.
  */
-const ADAPTERS_AT = ROUTE.indexOf('async function retrieveDirectCheckoutSession');
-const HANDLER = ROUTE.slice(ROUTE.indexOf('export async function POST'), ADAPTERS_AT);
-const ADAPTERS = ROUTE.slice(ADAPTERS_AT);
+const ADAPTERS_AT = ROUTE_FILE.indexOf('async function retrieveDirectCheckoutSession');
+/** The thin instantiation the route file is now reduced to. */
+const THIN_POST = ROUTE_FILE.slice(ROUTE_FILE.indexOf('export async function POST'), ADAPTERS_AT);
+const HANDLER =
+  HANDLER_FILE.slice(HANDLER_FILE.indexOf('export async function handleCheckoutOrderPost'))
+  + THIN_POST;
+const ADAPTERS = ROUTE_FILE.slice(ADAPTERS_AT);
 const CAPABILITY = 'Zm9vYmFyLWNhcGFiaWxpdHktdG9rZW4tdmFsdWUtMDAx';
 
 /** The pre-existing algorithm, reproduced so a drift is visible as a diff. */
@@ -173,9 +185,9 @@ test('order route: the path is chosen by request shape AND the server flag, neve
 
 test('order route: the direct branch returns before any legacy public upload helper runs', () => {
   const directIdx = ROUTE.indexOf('runDirectIntakeCheckout');
-  const photoUploadIdx = ROUTE.indexOf('await uploadOrderPhoto');
-  const supportingUploadIdx = ROUTE.indexOf('await uploadOrderSupportingPhoto');
-  const voiceUploadIdx = ROUTE.indexOf('await uploadOrderVoice');
+  const photoUploadIdx = ROUTE.indexOf('await deps.uploadOrderPhoto');
+  const supportingUploadIdx = ROUTE.indexOf('await deps.uploadOrderSupportingPhoto');
+  const voiceUploadIdx = ROUTE.indexOf('await deps.uploadOrderVoice');
   assert.ok(directIdx > -1, 'route must run the direct saga');
   for (const [label, idx] of [
     ['hero', photoUploadIdx], ['supporting', supportingUploadIdx], ['voice', voiceUploadIdx],
@@ -185,7 +197,7 @@ test('order route: the direct branch returns before any legacy public upload hel
 });
 
 test('order route: legacy ordering guarantees are untouched', () => {
-  const resumeIdx = HANDLER.indexOf('await runLegacyCheckoutRoute<NextResponse>');
+  const resumeIdx = HANDLER.indexOf('await runLegacyCheckoutRoute<TResponse>');
   const casIdx = HANDLER.indexOf('await withOrderTransaction');
   const provisionIdx = HANDLER.indexOf('await provisionCheckoutSession');
   const promoIdx = ROUTE.indexOf('allow_promotion_codes: true');
@@ -297,11 +309,11 @@ test('order route: every legacy exit to the provider goes through a shared entry
   // (checkout-legacy-order-entrypoint.test.ts drives it with injected
   // dependencies), because a decision made inline in an un-importable handler
   // could be removed without a single test noticing — it was.
-  assert.match(HANDLER, /await runLegacyCheckoutRoute<NextResponse>\(/);
+  assert.match(HANDLER, /await runLegacyCheckoutRoute<TResponse>\(/);
   assert.match(HANDLER, /continueWithMedia: async \(persisted\) => \{/);
   assert.match(HANDLER, /await provisionCheckoutSession\(/);
-  assert.match(ROUTE, /from '@\/lib\/checkout-legacy-order'/);
-  assert.match(ROUTE, /from '@\/lib\/checkout-session-provisioning'/);
+  assert.match(HANDLER_FILE, /from '\.\/checkout-legacy-order\.ts'/);
+  assert.match(HANDLER_FILE, /from '\.\/checkout-session-provisioning\.ts'/);
   // The resume decision itself lives in the shared entrypoint, and the media
   // continuation is reachable only through it.
   const entrypoint = readFileSync('src/lib/checkout-legacy-order.ts', 'utf8');
@@ -309,21 +321,21 @@ test('order route: every legacy exit to the provider goes through a shared entry
   assert.match(entrypoint, /return deps\.continueWithMedia\(resumed\.order\)/);
   assert.doesNotMatch(HANDLER, /resumeOrContinueLegacyCheckout/);
   // Media, pause, and order persistence all precede BOTH of them.
-  const resumeIdx = HANDLER.indexOf('await runLegacyCheckoutRoute<NextResponse>(');
+  const resumeIdx = HANDLER.indexOf('await runLegacyCheckoutRoute<TResponse>(');
   const provisionIdx = HANDLER.indexOf('await provisionCheckoutSession(');
   for (const [label, marker] of [
     ['checkout pause', 'isCheckoutPaused()'],
     ['request parse', 'parseDirectIntakeOrderRequest(form)'],
-    ['durable owner record', 'await runLegacyCheckoutRoute<NextResponse>('],
+    ['durable owner record', 'await runLegacyCheckoutRoute<TResponse>('],
   ] as const) {
     const idx = HANDLER.indexOf(marker);
     assert.ok(idx > -1 && idx <= resumeIdx, `${label} must precede the legacy resume entrypoint`);
   }
   for (const [label, marker] of [
-    ['hero photo upload', 'await uploadOrderPhoto'],
-    ['supporting photo upload', 'await uploadOrderSupportingPhoto'],
-    ['voice upload', 'await uploadOrderVoice'],
-    ['document upload', 'await uploadOrderDocument'],
+    ['hero photo upload', 'await deps.uploadOrderPhoto'],
+    ['supporting photo upload', 'await deps.uploadOrderSupportingPhoto'],
+    ['voice upload', 'await deps.uploadOrderVoice'],
+    ['document upload', 'await deps.uploadOrderDocument'],
     ['final order CAS', 'await withOrderTransaction'],
   ] as const) {
     const idx = HANDLER.indexOf(marker);
@@ -343,8 +355,38 @@ test('order route: both paths inject the same durable order primitives', () => {
       HANDLER.split(primitive).length - 1 >= 2,
       `${primitive} must be wired on both the direct and the legacy path`,
     );
-    const imports = ROUTE.slice(0, ROUTE.indexOf("} from '@/lib/orders';"));
+    const imports = HANDLER_FILE.slice(0, HANDLER_FILE.indexOf("} from './orders.ts';"));
     assert.ok(imports.includes(primitive), `${primitive} must be imported from lib/orders`);
+  }
+});
+
+test('order route: the route file is a thin instantiation with nothing left to decide', () => {
+  // The reachability guarantee rests on this: everything the handler decides is
+  // in a module the tests EXECUTE, and the route file contains no branch, no
+  // form parsing and no second entry point for a legacy path to grow back into.
+  assert.match(THIN_POST, /return handleCheckoutOrderPost<NextResponse>\(request, \{/);
+  assert.match(THIN_POST, /json: \(body, httpStatus\) => NextResponse\.json\(body, \{ status: httpStatus \}\)/);
+  for (const forbidden of [
+    /\bif\s*\(/,
+    /request\.formData\(\)/,
+    /runLegacyCheckoutRoute/,
+    /provisionCheckoutSession/,
+    /runDirectIntakeCheckout/,
+  ]) {
+    assert.doesNotMatch(THIN_POST, forbidden, `the route file may not decide anything: ${forbidden}`);
+  }
+  // And there is exactly one of each hand-off in the whole production path, so
+  // no second, unprovisioned legacy exit can exist beside the tested one.
+  for (const [label, marker] of [
+    ['legacy orchestration', 'runLegacyCheckoutRoute<TResponse>('],
+    ['direct saga', 'runDirectIntakeCheckout('],
+    ['shared provisioner', 'provisionCheckoutSession('],
+  ] as const) {
+    assert.equal(
+      HANDLER.split(`await ${marker}`).length - 1,
+      1,
+      `exactly one ${label} hand-off may exist on the production path`,
+    );
   }
 });
 

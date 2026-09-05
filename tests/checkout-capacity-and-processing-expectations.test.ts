@@ -30,7 +30,7 @@ import {
 } from '../src/lib/proof-turnaround.ts';
 
 const read = (p: string) => readFileSync(p, 'utf8');
-const orderRoute = () => read('src/app/api/order/route.ts');
+const orderRoute = () => read('src/lib/checkout-order-route-handler.ts') + read('src/app/api/order/route.ts');
 
 /** Every identifier the unmerged capacity-cap stack used. None may return. */
 const CAP_IDENTIFIERS = [
@@ -61,6 +61,7 @@ const FORMATS = ['digital', 'classic', 'premium'] as const;
 test('no daily paid-order cap identifier survives anywhere in the intake path', () => {
   const scanned: Array<[string, string]> = [
     ['order route', 'src/app/api/order/route.ts'],
+    ['order route handler', 'src/lib/checkout-order-route-handler.ts'],
     ['checkout pause', 'src/lib/checkout-pause.ts'],
     ['checkout page', 'src/app/checkout/page.tsx'],
     ...CUSTOMER_SURFACES,
