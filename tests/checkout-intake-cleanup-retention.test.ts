@@ -29,8 +29,11 @@ import {
   intakeRecordPath,
   markIntakeFinalized,
 } from '../src/lib/checkout-intake.ts';
-import { completeSlotUpload, reserveSlotUpload } from '../src/lib/checkout-intake-upload.ts';
-import { finalizeIntakeSelection } from '../src/lib/checkout-finalize.ts';
+import {
+  completeSlotUpload as completeSlotUploadAt,
+  reserveSlotUpload as reserveSlotUploadAt,
+} from '../src/lib/checkout-intake-upload.ts';
+import { finalizeIntakeSelection as finalizeIntakeSelectionAt } from '../src/lib/checkout-finalize.ts';
 import {
   runCheckoutIntakeCleanup,
   type CheckoutIntakeCleanupDeps,
@@ -43,6 +46,21 @@ const AFTER_EXPIRY = new Date('2026-09-04T12:30:00.000Z');
 const TOMBSTONE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const HERO = { category: 'primary_hero_photo' } as const;
 const ALICE = { category: 'family_pet_reference', familyCharacterId: 'char-alice' } as const;
+const reserveSlotUpload = (
+  store: Parameters<typeof reserveSlotUploadAt>[0],
+  input: Parameters<typeof reserveSlotUploadAt>[1],
+  now = NOW,
+) => reserveSlotUploadAt(store, input, now);
+const completeSlotUpload = (
+  store: Parameters<typeof completeSlotUploadAt>[0],
+  input: Parameters<typeof completeSlotUploadAt>[1],
+  now = NOW,
+) => completeSlotUploadAt(store, input, now);
+const finalizeIntakeSelection = (
+  store: Parameters<typeof finalizeIntakeSelectionAt>[0],
+  input: Parameters<typeof finalizeIntakeSelectionAt>[1],
+  now = NOW,
+) => finalizeIntakeSelectionAt(store, input, now);
 
 function testOrderId(hexDigit: string): string {
   return `ord_${hexDigit.repeat(16)}`;
@@ -99,18 +117,18 @@ async function upload(
     slot,
     mimeType: 'image/jpeg',
     size,
-  });
+  }, NOW);
   const etag = `etag-${reservation.assetId}`;
   store.putAsset({ pathname: reservation.pathname, mimeType: 'image/jpeg', size, etag });
   await completeSlotUpload(store, {
     tokenPayload: reservation.tokenPayload,
     blob: { pathname: reservation.pathname, contentType: 'image/jpeg', size, etag },
-  });
+  }, NOW);
   return reservation;
 }
 
 async function intakeWithHero(store: MemoryIntakeStore) {
-  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT });
+  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT }, NOW);
   const reservation = await upload(store, session, HERO);
   return { session, reservation };
 }
@@ -231,7 +249,7 @@ test('finalization cannot succeed merely because a cleanup claim lease elapsed m
 
 test('a finalized order keeps exactly its selected media and reclaims the rest', async () => {
   const store = createMemoryIntakeStore();
-  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT });
+  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT }, NOW);
   const hero = await upload(store, session, HERO);
   // Uploaded but deliberately NOT selected for the order.
   const unselected = await upload(store, session, ALICE, 2048);
@@ -318,7 +336,7 @@ test('a partial deletion failure keeps the record and is reported', async () => 
 
 test('a failed claim release is surfaced rather than swallowed', async () => {
   const store = createMemoryIntakeStore();
-  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT });
+  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT }, NOW);
   const first = await upload(store, session, HERO);
   // Replace it so there is an orphan to reclaim on a LIVE intake, which is the
   // path that has to release its claim afterwards.

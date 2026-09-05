@@ -18,17 +18,42 @@ import test from 'node:test';
 import {
   createIntake,
   IntakeError,
-  listIntakeSlots,
+  listIntakeSlots as listIntakeSlotsAt,
   refreshIntakeConsent,
 } from '../src/lib/checkout-intake.ts';
-import { completeSlotUpload, releaseSlot, reserveSlotUpload } from '../src/lib/checkout-intake-upload.ts';
 import {
-  validateFinalizeSelection,
+  completeSlotUpload as completeSlotUploadAt,
+  releaseSlot as releaseSlotAt,
+  reserveSlotUpload as reserveSlotUploadAt,
+} from '../src/lib/checkout-intake-upload.ts';
+import {
+  validateFinalizeSelection as validateFinalizeSelectionAt,
   type CheckoutFinalizeSelection,
 } from '../src/lib/checkout-finalize.ts';
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
 
 const HERO = { category: 'primary_hero_photo' } as const;
+const TEST_NOW = new Date('2026-09-02T12:00:10.000Z');
+const reserveSlotUpload = (
+  store: Parameters<typeof reserveSlotUploadAt>[0],
+  input: Parameters<typeof reserveSlotUploadAt>[1],
+) => reserveSlotUploadAt(store, input, TEST_NOW);
+const completeSlotUpload = (
+  store: Parameters<typeof completeSlotUploadAt>[0],
+  input: Parameters<typeof completeSlotUploadAt>[1],
+) => completeSlotUploadAt(store, input, TEST_NOW);
+const releaseSlot = (
+  store: Parameters<typeof releaseSlotAt>[0],
+  input: Parameters<typeof releaseSlotAt>[1],
+) => releaseSlotAt(store, input, TEST_NOW);
+const validateFinalizeSelection = (
+  store: Parameters<typeof validateFinalizeSelectionAt>[0],
+  input: Parameters<typeof validateFinalizeSelectionAt>[1],
+) => validateFinalizeSelectionAt(store, input, TEST_NOW);
+const listIntakeSlots = (
+  store: Parameters<typeof listIntakeSlotsAt>[0],
+  input: Parameters<typeof listIntakeSlotsAt>[1],
+) => listIntakeSlotsAt(store, input, TEST_NOW);
 
 function emptySelection(): CheckoutFinalizeSelection {
   return {
@@ -300,7 +325,7 @@ test('a voice note and an inspiration document cannot both be the story source',
     childVoiceAuthorizedAt: '2026-09-02T12:00:05.000Z',
     voiceSource: 'uploaded',
     documentAuthorizedAt: '2026-09-02T12:00:06.000Z',
-  });
+  }, TEST_NOW);
   const voice = await upload(store, session, { category: 'voice_inspiration' }, { mimeType: 'audio/mp4', size: 2048 });
   const doc = await upload(store, session, { category: 'document_inspiration' }, { mimeType: 'application/pdf', size: 2048 });
 

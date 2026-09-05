@@ -384,6 +384,8 @@ test('finalized authority is recomputed and cross-validated against current slot
 // Cardinality
 // ---------------------------------------------------------------------------
 
+const CARDINALITY_NOW = new Date('2026-09-02T12:01:00.000Z');
+
 test('100 reserve/release cycles cannot retain 100 slots', async () => {
   const store = createMemoryIntakeStore();
   const { record, capability } = createIntakeRecord(CONSENT, new Date(CONSENT.mediaAuthorizedAt));
@@ -400,8 +402,8 @@ test('100 reserve/release cycles cannot retain 100 slots', async () => {
         slot,
         mimeType: 'image/jpeg',
         size: 1024,
-      });
-      await releaseSlot(store, { intakeId: record.intakeId, capability, slot });
+      }, CARDINALITY_NOW);
+      await releaseSlot(store, { intakeId: record.intakeId, capability, slot }, CARDINALITY_NOW);
       created += 1;
     } catch (error) {
       refusal = error;
@@ -434,8 +436,8 @@ test('100 reserve/release cycles on ONE slot cannot produce unbounded generation
         slot,
         mimeType: 'image/jpeg',
         size: 1024,
-      });
-      await releaseSlot(store, { intakeId: record.intakeId, capability, slot });
+      }, CARDINALITY_NOW);
+      await releaseSlot(store, { intakeId: record.intakeId, capability, slot }, CARDINALITY_NOW);
     } catch (error) {
       refusal = error;
       break;
