@@ -101,6 +101,16 @@ test('supporting photo completion is draft-only and cancel/remove invalidate pen
   assert.match(removeButton, /setSupportingPhotoPendingId\(null\)/);
 });
 
+test('additional-person name is visibly and semantically marked required', () => {
+  const editor = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('{supportingCharacterDraft && ('),
+    CHECKOUT_FORM_SRC.indexOf('Who are they in the story?'),
+  );
+
+  assert.match(editor, /htmlFor="supporting-character-name"[\s\S]*?Name[\s\S]*?aria-hidden="true"[^>]*>\s*\*[\s\S]*?\(required\)/);
+  assert.match(editor, /id="supporting-character-name"[\s\S]*?required/);
+});
+
 test('incomplete human draft cannot save', () => {
   const draft = createSupportingCharacterDraft({ role: 'dad', relationshipLabel: 'Dad' });
   const state = createSupportingCharacterEditorState([]);

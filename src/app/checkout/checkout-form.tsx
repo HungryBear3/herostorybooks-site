@@ -2119,12 +2119,19 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div>
-                      <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
-                        Name
+                      <label
+                        htmlFor="supporting-character-name"
+                        className="mb-1.5 block text-sm font-semibold text-[#1f1a16]"
+                      >
+                        Name <span aria-hidden="true" className="text-[#a64c4c]">*</span>
+                        <span className="sr-only"> (required)</span>
                       </label>
                       <input
+                        id="supporting-character-name"
                         ref={registerFieldRef("supportingCharacter.name")}
                         type="text"
+                        required
+                        aria-required="true"
                         value={supportingCharacterDraft.name}
                         onChange={(e) => updateSupportingCharacter(supportingCharacterDraft.id, { name: e.target.value })}
                         placeholder={supportingCharacterDraft.role === "pet" ? "e.g., Brody" : "e.g., Alexy"}
