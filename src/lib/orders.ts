@@ -54,6 +54,61 @@ export interface CheckoutIntakeMediaRetention {
 
 export const CHECKOUT_INTAKE_MEDIA_ABANDONMENT_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * A provider Checkout Session that was created but not (yet) bound.
+ *
+ * Written create-only, immediately after a successful provider create and
+ * BEFORE anything else may fail. It confers no authority by itself — it cannot
+ * be paid against, and releasing its URL still requires a current exact lease
+ * and an exact bind. Its whole job is to stop a later retry from minting a
+ * SECOND payable Session once the provider's idempotency retention lapses.
+ *
+ * Bound to order identity (`checkoutAttemptId` + `checkoutFingerprint`) rather
+ * than to a lease: the worker that created the Session may well have lost the
+ * lease, and the retry that resumes it legitimately holds a different one.
+ */
+export interface CheckoutSessionCandidate {
+  stripeSessionId: string;
+  checkoutAttemptId: string;
+  checkoutFingerprint: string;
+  recordedAt: string;
+}
+
+/** Provider Checkout Session ids. Deliberately narrow — a candidate that does
+ *  not match is unusable evidence and must fail closed, never be "fixed up". */
+const CHECKOUT_SESSION_ID = /^cs_[A-Za-z0-9_]{1,255}$/;
+
+export type CheckoutSessionCandidateState =
+  | { status: 'absent' }
+  | { status: 'resumable'; candidate: CheckoutSessionCandidate }
+  | { status: 'invalid' };
+
+/**
+ * Classify an order's durable unbound-Session evidence.
+ *
+ * Tri-state on purpose. "Absent" and "invalid" must never collapse together:
+ * absent means there is nothing to resume (so creating is correct), while
+ * invalid means the record carries evidence this code cannot account for (so
+ * creating would risk a second payable Session and must be refused).
+ */
+export function readCheckoutSessionCandidate(order: OrderRecord): CheckoutSessionCandidateState {
+  const candidate = order.checkoutSessionCandidate;
+  if (candidate === null || candidate === undefined) return { status: 'absent' };
+  if (typeof candidate !== 'object' || Array.isArray(candidate)) return { status: 'invalid' };
+  const value = candidate as unknown as Record<string, unknown>;
+  if (!exactObjectKeys(value, [
+    'stripeSessionId', 'checkoutAttemptId', 'checkoutFingerprint', 'recordedAt',
+  ])
+    || typeof value.stripeSessionId !== 'string'
+    || !CHECKOUT_SESSION_ID.test(value.stripeSessionId)
+    || typeof order.checkoutAttemptId !== 'string'
+    || value.checkoutAttemptId !== order.checkoutAttemptId
+    || typeof order.checkoutFingerprint !== 'string'
+    || value.checkoutFingerprint !== order.checkoutFingerprint
+    || !canonicalIso(value.recordedAt)) return { status: 'invalid' };
+  return { status: 'resumable', candidate: candidate as CheckoutSessionCandidate };
+}
+
 export interface ShippingAddress {
   line1: string;
   line2?: string | null;
@@ -349,6 +404,10 @@ export interface OrderRecord extends OrderInput {
   checkoutLeaseExpiresAt?: string | null;
   /** Bounded retention lifecycle for media referenced by checkoutIntake. */
   checkoutIntakeMediaRetention?: CheckoutIntakeMediaRetention | null;
+  /** Create-only evidence of a provider Session created but not yet bound.
+   *  Cleared atomically by the bind that consumes it. See
+   *  CheckoutSessionCandidate — it is NOT a payment or authority field. */
+  checkoutSessionCandidate?: CheckoutSessionCandidate | null;
   /** Non-PII compatibility signal derived while reading retired legacy data. */
   legacyVoiceUploadPresent?: boolean;
   bookFormat: BookFormat;
@@ -3362,6 +3421,62 @@ export async function markCheckoutIntakeMediaReclaimed(
   );
 }
 
+/**
+ * Durably remember a provider Session that was created but could not be bound.
+ *
+ * CREATE-ONLY: an existing candidate for a DIFFERENT Session is a conflict and
+ * refuses, because two candidate ids for one order means the invariant this
+ * field exists to protect has already been broken and guessing which is payable
+ * is exactly the wrong move. Re-recording the SAME id is idempotent, so a
+ * retried write after a lost acknowledgement still succeeds.
+ *
+ * Deliberately does NOT require the checkout lease. The caller that must record
+ * a candidate is, by construction, often the worker that just LOST its lease
+ * during the provider call — demanding the lease here would throw away the one
+ * piece of evidence that prevents a duplicate charge. Nothing is released on
+ * the strength of this write: exposure still requires a current exact lease
+ * renewal and an exact bind.
+ */
+export async function recordCheckoutSessionCandidate(
+  orderId: string,
+  stripeSessionId: string,
+  checkout: { checkoutAttemptId: string; fingerprint: string; now?: Date },
+): Promise<OrderRecord | null> {
+  if (!CHECKOUT_SESSION_ID.test(stripeSessionId)) return null;
+  const now = checkout.now ?? new Date();
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.paymentStatus !== 'pending'
+        || (current.checkoutIntakeMediaRetention?.status !== undefined
+          && current.checkoutIntakeMediaRetention.status !== 'active')
+        || current.stripeSessionId
+        || current.checkoutAttemptId !== checkout.checkoutAttemptId
+        || current.checkoutFingerprint !== checkout.fingerprint) return { abort: null };
+
+      const existing = readCheckoutSessionCandidate(current);
+      if (existing.status === 'invalid') return { abort: null };
+      if (existing.status === 'resumable') {
+        return existing.candidate.stripeSessionId === stripeSessionId
+          ? { abort: current }
+          : { abort: null };
+      }
+      const updated: OrderRecord = {
+        ...current,
+        checkoutSessionCandidate: {
+          stripeSessionId,
+          checkoutAttemptId: checkout.checkoutAttemptId,
+          checkoutFingerprint: checkout.fingerprint,
+          recordedAt: now.toISOString(),
+        },
+        updatedAt: now.toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
 export async function bindOrderCheckoutSession(
   orderId: string,
   stripeSessionId: string,
@@ -3382,7 +3497,18 @@ export async function bindOrderCheckoutSession(
           || leaseExpiresAt <= nowMs) return { abort: null };
       }
       if (current.stripeSessionId && current.stripeSessionId !== stripeSessionId) return { abort: null };
-      const updated = { ...current, stripeSessionId, updatedAt: new Date().toISOString() };
+      // A recorded candidate is the order's declared unbound Session. Binding a
+      // DIFFERENT id would strand a payable Session nobody is reconciling, so
+      // the bind must consume its own candidate or refuse. Orders that never
+      // had one (every legacy checkout) are unaffected.
+      const candidate = readCheckoutSessionCandidate(current);
+      if (candidate.status === 'invalid') return { abort: null };
+      if (candidate.status === 'resumable'
+        && candidate.candidate.stripeSessionId !== stripeSessionId) return { abort: null };
+      const updated: OrderRecord = { ...current, stripeSessionId, updatedAt: new Date().toISOString() };
+      // Resolved atomically with the bind it authorised: one commit, so no
+      // window exists in which the order is both bound and still a candidate.
+      delete updated.checkoutSessionCandidate;
       return { commit: updated, result: updated };
     },
     { notFound: () => null },

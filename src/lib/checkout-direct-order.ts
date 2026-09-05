@@ -4,7 +4,20 @@
  * THE ORDER OF OPERATIONS IS THE FEATURE
  * --------------------------------------
  *   finalize the intake  →  create-only persist  →  mark the intake finalized
- *   →  Stripe Checkout Session  →  bind the session under the exact lease
+ *   →  RENEW the exact lease  →  Stripe Checkout Session  →  record the created
+ *   session id durably  →  bind the session under the exact lease
+ *
+ * The renewal is not bookkeeping. Between the durable commit and the provider
+ * call there is at least one await, and the lease can be lost inside it — so
+ * ownership is re-proved ATOMICALLY immediately before an unbound Session is
+ * created, and proved AGAIN by the binder immediately after. A worker that has
+ * lost the lease creates nothing, binds nothing and releases nothing.
+ *
+ * The durable candidate closes the other half. Refusing after a successful
+ * create is safe for the buyer but not free: the provider's idempotency
+ * retention is finite, so a later retry would create a SECOND payable Session.
+ * The created id is therefore persisted create-only before anything else may
+ * fail, and an authoritative retry resumes that exact id.
  *
  * Every earlier step is a commit the buyer can be held to, so each one has to
  * be provably done before the next begins. In particular the Checkout Session
@@ -35,6 +48,7 @@ import { markIntakeFinalized, type IntakeStore } from './checkout-intake.ts';
 import {
   getOrderAuthoritative,
   persistNewOrder,
+  readCheckoutSessionCandidate,
   requiresDurablePersistence,
   sanitizeFamilyCharacters,
   type FamilyCharacter,
@@ -59,6 +73,22 @@ export interface DirectIntakeCheckoutDeps {
   binding: PreparedIntakeOrderBindingDependencies;
   createCheckoutSession(request: DirectCheckoutSessionRequest): Promise<DirectCheckoutSession>;
   retrieveCheckoutSession(sessionId: string): Promise<DirectCheckoutSession>;
+  /**
+   * Atomically re-prove ownership of the EXACT lease/fingerprint and extend it.
+   * Must fail (null) on expiry, takeover, a claimed retention, a settled
+   * payment, or an order that has moved on. Wired to orders.renewCheckoutLease.
+   */
+  renewCheckoutLease(
+    orderId: string,
+    checkoutLeaseId: string,
+    checkoutFingerprint: string,
+  ): Promise<OrderRecord | null>;
+  /** Create-only durable record of a Session created but not yet bound. */
+  recordCheckoutSessionCandidate(
+    orderId: string,
+    stripeSessionId: string,
+    checkout: { checkoutAttemptId: string; fingerprint: string },
+  ): Promise<OrderRecord | null>;
   bindCheckoutSession(
     orderId: string,
     stripeSessionId: string,
@@ -259,35 +289,23 @@ export async function runDirectIntakeCheckout(
     // A recovery-lead bookkeeping failure must never affect checkout.
   }
 
-  let session: DirectCheckoutSession;
-  try {
-    session = order.stripeSessionId
-      ? await deps.retrieveCheckoutSession(order.stripeSessionId)
-      : await deps.createCheckoutSession({
-          order,
-          stripeProductId: params.stripeProductId,
-          baseUrl: params.baseUrl,
-          gaClientId: params.gaClientId,
-          idempotencyKey: `hsb_checkout_${order.id}`,
-        });
-  } catch (error) {
-    const action = order.stripeSessionId ? 'retrieval' : 'creation';
-    log(`[order] Stripe Checkout Session ${action} failed for ${order.id}`, error);
-    return refused(
-      503,
-      order.stripeSessionId
-        ? 'direct_intake_session_retrieve_failed'
-        : 'direct_intake_session_create_failed',
-      NO_CHARGE_RETRY,
-    );
-  }
-
-  if (session.status !== 'open') {
-    log(`[order] Stripe Session ${session.id} for ${order.id} is not open`);
-    return refused(409, 'direct_intake_session_not_open', RECONCILIATION_REQUIRED);
-  }
-
+  // ── The already-bound path is unchanged ────────────────────────────────
+  // This attempt's Session was durably bound under an exact lease in an
+  // earlier request, so the binder has already fenced it. Retrieval is a call
+  // ABOUT a bound Session, not an unbound creation, and it can release only the
+  // one id the order itself names.
   if (order.stripeSessionId) {
+    let session: DirectCheckoutSession;
+    try {
+      session = await deps.retrieveCheckoutSession(order.stripeSessionId);
+    } catch (error) {
+      log(`[order] Stripe Checkout Session retrieval failed for ${order.id}`, error);
+      return refused(503, 'direct_intake_session_retrieve_failed', NO_CHARGE_RETRY);
+    }
+    if (session.status !== 'open') {
+      log(`[order] Stripe Session ${session.id} for ${order.id} is not open`);
+      return refused(409, 'direct_intake_session_not_open', RECONCILIATION_REQUIRED);
+    }
     if (session.id !== order.stripeSessionId || !session.url) {
       log(`[order] Existing Stripe Session reconciliation failed for ${order.id}`);
       return refused(503, 'direct_intake_session_reconciliation_failed', RECONCILIATION_REQUIRED);
@@ -295,9 +313,108 @@ export async function runDirectIntakeCheckout(
     return { status: 'redirect', redirectTo: session.url, order };
   }
 
+  // ── Renew the exact lease IMMEDIATELY before the unbound provider call ──
+  // Everything above — the persist, the intake acknowledgement, the recovery
+  // lead — is an intervening await, and the lease can be lost in any of them.
+  // The durable order existing is not authority to create something payable,
+  // so ownership is re-proved atomically here, with nothing awaited in between.
+  let current: OrderRecord | null;
+  try {
+    current = await deps.renewCheckoutLease(
+      order.id,
+      order.checkoutLeaseId,
+      order.checkoutFingerprint,
+    );
+  } catch (error) {
+    log(`[order] ABORT BEFORE STRIPE: checkout lease renewal failed for ${order.id}`, error);
+    current = null;
+  }
+  if (!current) {
+    // Expired, stolen, retention claimed, or the order moved on. Refuse BEFORE
+    // the provider: zero Sessions created, no URL, nothing bound.
+    log(`[order] ABORT BEFORE STRIPE: checkout lease no longer held for ${order.id}`);
+    return refused(409, 'direct_intake_checkout_lease_lost', ATTEMPT_ALREADY_RESOLVED);
+  }
+  if (!current.checkoutLeaseId || !current.checkoutFingerprint || !current.checkoutAttemptId) {
+    log(`[order] ABORT BEFORE STRIPE: renewed order ${order.id} carries no checkout identity`);
+    return refused(503, 'direct_intake_checkout_lease_missing', RECONCILIATION_REQUIRED);
+  }
+
+  // The renewal result is the freshest authoritative record, so it — not the
+  // copy read before those awaits — decides whether a Session already exists.
+  const candidate = readCheckoutSessionCandidate(current);
+  if (candidate.status === 'invalid') {
+    log(`[order] ABORT BEFORE STRIPE: unusable Checkout Session candidate on ${order.id}`);
+    return refused(409, 'direct_intake_session_candidate_invalid', RECONCILIATION_REQUIRED);
+  }
+
+  let session: DirectCheckoutSession;
+  if (candidate.status === 'resumable') {
+    // A previous attempt created this Session but could not bind it. Resuming
+    // it is mandatory, not an optimisation: creating again once the provider's
+    // idempotency retention has lapsed would mint a SECOND payable Session.
+    const { stripeSessionId } = candidate.candidate;
+    try {
+      session = await deps.retrieveCheckoutSession(stripeSessionId);
+    } catch (error) {
+      log(`[order] Stripe Checkout Session retrieval failed for ${order.id}`, error);
+      return refused(503, 'direct_intake_session_retrieve_failed', NO_CHARGE_RETRY);
+    }
+    if (session.id !== stripeSessionId) {
+      log(`[order] Stripe returned ${session.id} for candidate ${stripeSessionId} on ${order.id}`);
+      return refused(503, 'direct_intake_session_candidate_mismatch', RECONCILIATION_REQUIRED);
+    }
+  } else {
+    try {
+      session = await deps.createCheckoutSession({
+        order: current,
+        stripeProductId: params.stripeProductId,
+        baseUrl: params.baseUrl,
+        gaClientId: params.gaClientId,
+        // Deterministic per order, so a retry inside the provider's retention
+        // window returns this exact Session rather than a second one.
+        idempotencyKey: `hsb_checkout_${order.id}`,
+      });
+    } catch (error) {
+      log(`[order] Stripe Checkout Session creation failed for ${order.id}`, error);
+      return refused(503, 'direct_intake_session_create_failed', NO_CHARGE_RETRY);
+    }
+
+    // Durable BEFORE anything else may fail. From here the Session exists at
+    // the provider whatever happens next, and only this record lets a later
+    // retry reconcile it instead of creating another payable one.
+    let recorded: OrderRecord | null;
+    try {
+      recorded = await deps.recordCheckoutSessionCandidate(order.id, session.id, {
+        checkoutAttemptId: current.checkoutAttemptId,
+        fingerprint: current.checkoutFingerprint,
+      });
+    } catch (error) {
+      log(`[order] Checkout Session candidate persistence failed for ${order.id}`, error);
+      recorded = null;
+    }
+    if (!recorded) {
+      // No durable evidence, so nothing may be released on the strength of it.
+      // A safe retry finds no candidate and calls the provider again — but
+      // under the same deterministic idempotency key, so within the retention
+      // window it recovers this exact Session rather than minting another.
+      log(`[order] Stripe Session ${session.id} created but not durably recorded for ${order.id}`);
+      return refused(503, 'direct_intake_session_candidate_persist_failed', NO_CHARGE_RETRY);
+    }
+  }
+
+  if (session.status !== 'open') {
+    log(`[order] Stripe Session ${session.id} for ${order.id} is not open`);
+    return refused(409, 'direct_intake_session_not_open', RECONCILIATION_REQUIRED);
+  }
+
+  // The binder re-proves the exact ACTIVE, UNEXPIRED lease one last time. A
+  // Session that came back after the lease was lost is refused here: this
+  // worker exposes nothing and binds nothing, and the candidate above is what
+  // an authoritative retry uses to finish the job.
   const boundSession = await deps.bindCheckoutSession(order.id, session.id, {
-    leaseId: order.checkoutLeaseId,
-    fingerprint: order.checkoutFingerprint,
+    leaseId: current.checkoutLeaseId,
+    fingerprint: current.checkoutFingerprint,
   });
   if (!boundSession) {
     log(`[order] Stripe Session ${session.id} created but durable binding failed for ${order.id}`);

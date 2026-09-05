@@ -11,6 +11,7 @@ import {
   OrderPersistenceError,
   type OrderRecord,
   persistOrResumeCheckoutOrder,
+  recordCheckoutSessionCandidate,
   renewCheckoutLease,
   rollbackOrderMediaUploads,
   sanitizeFamilyCharacters,
@@ -506,6 +507,12 @@ export async function POST(request: Request) {
         binding: buildDirectIntakeBindingDependencies(intakeStore),
         createCheckoutSession: createDirectCheckoutSession,
         retrieveCheckoutSession: retrieveDirectCheckoutSession,
+        // The real guarded transactions. The saga must never re-implement
+        // either check locally: only the store can settle who holds the lease.
+        renewCheckoutLease: (orderId, leaseId, fingerprint) =>
+          renewCheckoutLease(orderId, leaseId, fingerprint),
+        recordCheckoutSessionCandidate: (orderId, stripeSessionId, checkout) =>
+          recordCheckoutSessionCandidate(orderId, stripeSessionId, checkout),
         bindCheckoutSession: (orderId, stripeSessionId, checkout) =>
           bindOrderCheckoutSession(orderId, stripeSessionId, checkout),
         markRecoveryLeadConverted,

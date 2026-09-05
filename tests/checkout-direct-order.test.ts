@@ -15,6 +15,7 @@
  */
 import assert from 'node:assert/strict';
 import test, { afterEach, before, after } from 'node:test';
+import { readFileSync } from 'node:fs';
 
 import {
   __resetOrderStoreAdapterFactoryForTests,
@@ -22,6 +23,9 @@ import {
   bindOrderCheckoutSession,
   createOrderRecord,
   readOrderVersioned,
+  recordCheckoutSessionCandidate,
+  renewCheckoutLease,
+  withOrderTransaction,
   type OrderRecord,
   type OrderStoreAdapter,
 } from '../src/lib/orders.ts';
@@ -40,6 +44,10 @@ const ORDER_ID = ['ord', '0123456789abcdef'].join('_');
 const NOW = new Date('2026-03-01T12:00:00.000Z');
 const FAMILY_A = 'supporting-character-aaaa';
 const FAMILY_B = 'supporting-character-bbbb';
+const LEASE = '11111111-1111-4111-8111-111111111111';
+const FOREIGN_LEASE = '22222222-2222-4222-8222-222222222222';
+const IDEMPOTENCY_KEY = `hsb_checkout_${ORDER_ID}`;
+const ROUTE = readFileSync('src/app/api/order/route.ts', 'utf8');
 
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -167,10 +175,36 @@ function draftOrder(familyCharacterIds: string[] = [], overrides: Partial<OrderR
   }, { id: ORDER_ID, now: NOW.toISOString(), fulfillmentMode: 'manual_hold' });
   order.checkoutAttemptId = ATTEMPT;
   order.checkoutFingerprint = 'f'.repeat(64);
-  order.checkoutLeaseId = '11111111-1111-4111-8111-111111111111';
+  order.checkoutLeaseId = LEASE;
   order.checkoutLeaseExpiresAt = new Date(NOW.getTime() + 5 * 60_000).toISOString();
   return { ...order, ...overrides };
 }
+
+/**
+ * Deterministic interleaving barrier: a competing writer moves the durable
+ * order at an exact point in the saga. Routed through the real guarded
+ * transaction rather than the raw cell, so the read-your-own-writes cache
+ * sees the change exactly as a concurrent worker's commit would.
+ */
+async function mutateStoredOrder(patch: (order: OrderRecord) => OrderRecord): Promise<void> {
+  await withOrderTransaction<null>(ORDER_ID, (current) => ({ commit: patch(current), result: null }));
+}
+
+/** Another checkout attempt takes the lease. */
+const stealLease = () => mutateStoredOrder((order) => ({ ...order, checkoutLeaseId: FOREIGN_LEASE }));
+
+/** The lease runs out while a slow provider call is in flight. */
+const expireLease = () => mutateStoredOrder((order) => ({
+  ...order,
+  checkoutLeaseExpiresAt: new Date(NOW.getTime() - 1_000).toISOString(),
+}));
+
+/** This worker (or an authoritative retry) holds current, unexpired authority. */
+const restoreLease = () => mutateStoredOrder((order) => ({
+  ...order,
+  checkoutLeaseId: LEASE,
+  checkoutLeaseExpiresAt: new Date(NOW.getTime() + 5 * 60_000).toISOString(),
+}));
 
 interface Harness {
   deps: DirectIntakeCheckoutDeps;
@@ -218,6 +252,14 @@ function harness(
       const found = sessionsById.get(sessionId);
       if (!found) throw new Error('session unavailable');
       return found;
+    },
+    async renewCheckoutLease(orderId, leaseId, fingerprint) {
+      calls.push('renew-lease');
+      return renewCheckoutLease(orderId, leaseId, fingerprint, { now: NOW });
+    },
+    async recordCheckoutSessionCandidate(orderId, sessionId, checkout) {
+      calls.push('record-candidate');
+      return recordCheckoutSessionCandidate(orderId, sessionId, { ...checkout, now: NOW });
     },
     async bindCheckoutSession(orderId, sessionId, checkout) {
       calls.push('bind-session');
@@ -273,7 +315,13 @@ test('the safety-critical order is exact: finalize, create-only persist, mark, T
     'persist',
     'mark-finalized',
     'recovery-lead',
+    // The lease is proven again ATOMICALLY here — after the last intervening
+    // await/side effect and immediately before the unbound provider call — so
+    // nothing can be created against authority this worker no longer holds.
+    'renew-lease',
     'stripe-create',
+    // The created Session id is durable before anything else may fail.
+    'record-candidate',
     'bind-session',
   ]);
 });
@@ -323,6 +371,9 @@ test('a bound-session retry retrieves by durable session id after provider idemp
   assert.equal(h.calls.filter((call) => call === 'stripe-retrieve').length, 1);
   assert.equal(h.sessionsById.size, 1, 'retry must not mint an orphan payable Session');
   if (retry.status === 'redirect') assert.equal(retry.order.stripeSessionId, 'cs_1');
+  // An ALREADY-BOUND session is reconciled exactly as before: the binder has
+  // already fenced this attempt, so the retrieval path takes no new lease.
+  assert.equal(h.calls.filter((call) => call === 'renew-lease').length, 1);
 });
 
 test('a real second HTTP request with a new server timestamp recovers the same session', async () => {
@@ -837,4 +888,302 @@ test('a foreign order already owning this intake cannot be finalized over', asyn
 
   assert.equal(result.status, 'refused');
   assert.equal(second.calls.includes('stripe-create'), false);
+});
+
+// ---------------------------------------------------------------------------
+// Payment hand-off: lease/provider reconciliation
+//
+// The durable order existing is NOT authority to create a payable Session.
+// Between the commit and the provider call there is at least one intervening
+// await, and the lease can be lost in it — expired, stolen by a competing
+// attempt, or overtaken by a retention claim. So the exact lease/fingerprint is
+// renewed ATOMICALLY immediately before the unbound provider call, and proven
+// AGAIN by the binder immediately after it.
+//
+// The asymmetry that makes this hard: refusing after a successful create is
+// safe for the buyer but NOT free. The provider's idempotency retention is
+// finite, so a retry after it lapses would mint a SECOND payable Session for
+// the same order. The created id is therefore made durable before anything
+// else may fail, and an authoritative retry resumes that exact candidate
+// instead of creating again.
+// ---------------------------------------------------------------------------
+
+/** Standard params for the single order/intake under test. */
+function checkoutParams(session: { intakeId: string; capability: string }, assets: Record<string, string>) {
+  return {
+    draftOrder: draftOrder(),
+    request: request(session, assets),
+    stripeProductId: 'prod_test',
+    baseUrl: 'https://preview.test',
+    gaClientId: null,
+  };
+}
+
+test('a lease stolen immediately before provider creation creates ZERO Sessions', async () => {
+  installMemoryOrderStore();
+  const { store, session, assets } = await intakeWithMedia();
+  const h = harness(store);
+  // The barrier sits on the LAST awaited step before the provider call — a step
+  // that exists whether or not a renewal does. A competing attempt takes the
+  // lease there, so from this point on the worker holds no authority at all.
+  const mark = h.deps.binding.markIntakeFinalized;
+  h.deps.binding = {
+    ...h.deps.binding,
+    async markIntakeFinalized(p) {
+      await mark(p);
+      await stealLease();
+    },
+  };
+
+  const result = await runDirectIntakeCheckout(checkoutParams(session, assets), h.deps);
+
+  assert.equal(result.status, 'refused');
+  assert.equal(result.status === 'refused' && result.code, 'direct_intake_checkout_lease_lost');
+  assert.equal(result.status === 'refused' && result.httpStatus, 409);
+  assert.equal(h.calls.includes('stripe-create'), false, 'no Session may be created without the lease');
+  assert.equal(h.calls.includes('record-candidate'), false);
+  assert.equal(h.calls.includes('bind-session'), false);
+  assert.equal(h.sessions.size, 0);
+  assert.equal(h.sessionsById.size, 0);
+  assert.equal(JSON.stringify(result).includes('checkout.stripe.test'), false);
+  const durable = await storedOrder();
+  assert.equal(durable?.stripeSessionId ?? null, null);
+  assert.equal(durable?.checkoutSessionCandidate ?? null, null, 'nothing was created, so nothing is recorded');
+});
+
+/**
+ * The interleaving the reviewer named: the provider call SUCCEEDS, but the
+ * lease is gone by the time it returns. Nothing may be bound or released — and
+ * the created id must survive, or a later retry pays twice.
+ */
+async function checkoutLosingLeaseDuringCreate() {
+  const { store, session, assets } = await intakeWithMedia();
+  const h = harness(store);
+  const create = h.deps.createCheckoutSession;
+  h.deps.createCheckoutSession = async (req) => {
+    const created = await create(req);
+    await expireLease(); // the provider outlived this worker's authority
+    return created;
+  };
+  const params = checkoutParams(session, assets);
+  const result = await runDirectIntakeCheckout(params, h.deps);
+  return { h, store, session, assets, params, result };
+}
+
+test('a lease lost DURING provider creation binds nothing, releases nothing, and keeps the Session id', async () => {
+  installMemoryOrderStore();
+  const { h, result } = await checkoutLosingLeaseDuringCreate();
+
+  assert.equal(result.status, 'refused');
+  assert.equal(result.status === 'refused' && result.code, 'direct_intake_session_bind_failed');
+  assert.equal(result.status === 'refused' && result.httpStatus, 503);
+  assert.equal(JSON.stringify(result).includes('checkout.stripe.test'), false, 'a stale worker exposes no URL');
+
+  const durable = await storedOrder();
+  assert.equal(durable?.stripeSessionId ?? null, null, 'the stale worker may not bind');
+  assert.equal(
+    durable?.checkoutSessionCandidate?.stripeSessionId,
+    'cs_1',
+    'the successful-but-unbound Session id must be durable for authoritative retry',
+  );
+  assert.equal(durable?.checkoutSessionCandidate?.checkoutAttemptId, ATTEMPT);
+  assert.equal(durable?.checkoutSessionCandidate?.checkoutFingerprint, durable?.checkoutFingerprint);
+  assert.equal(h.sessionsById.size, 1);
+});
+
+test('a later retry under current authority binds the durable candidate WITHOUT a second create', async () => {
+  installMemoryOrderStore();
+  const { h, params, result } = await checkoutLosingLeaseDuringCreate();
+  assert.equal(result.status, 'refused');
+
+  // Authoritative retry: current, unexpired lease — and the provider's
+  // idempotency retention has since lapsed, so a second create would mint a
+  // second payable Session rather than return cs_1.
+  await restoreLease();
+  h.sessions.delete(IDEMPOTENCY_KEY);
+
+  const retry = await runDirectIntakeCheckout(params, h.deps);
+
+  assert.equal(retry.status, 'redirect', JSON.stringify(retry));
+  assert.equal(h.calls.filter((call) => call === 'stripe-create').length, 1, 'exactly one create, ever');
+  assert.equal(h.calls.filter((call) => call === 'stripe-retrieve').length, 1, 'the candidate is retrieved');
+  assert.equal(h.sessionsById.size, 1, 'no second payable Session may exist');
+  if (retry.status === 'redirect') {
+    assert.equal(retry.redirectTo, 'https://checkout.stripe.test/' + ORDER_ID);
+    assert.equal(retry.order.stripeSessionId, 'cs_1');
+  }
+  const durable = await storedOrder();
+  assert.equal(durable?.stripeSessionId, 'cs_1');
+  assert.equal(
+    durable?.checkoutSessionCandidate ?? null,
+    null,
+    'the candidate is resolved atomically by the bind that consumed it',
+  );
+  // And the renewal still precedes the provider call on the resume path.
+  const renewIdx = h.calls.lastIndexOf('renew-lease');
+  assert.ok(renewIdx > -1 && renewIdx < h.calls.lastIndexOf('stripe-retrieve'));
+});
+
+/**
+ * A stranded candidate is evidence, NOT a licence.
+ *
+ * Note what "still lost" has to mean here. An EXPIRED lease is not lost: the
+ * lease id still names this attempt, and renewing your own lapsed lease is
+ * exactly what makes an ordinary retry work (the whole retry suite above
+ * depends on it). Authority is genuinely gone only when the lease MOVES — and
+ * the window that matters is the same one the renewal exists to close, now
+ * exercised on the resume path instead of the create path.
+ */
+test('a retry that loses the lease before resuming retrieves, binds and exposes nothing', async () => {
+  installMemoryOrderStore();
+  const { h, params, result } = await checkoutLosingLeaseDuringCreate();
+  assert.equal(result.status, 'refused');
+  await restoreLease();
+  const before = [...h.calls];
+  // A competing attempt takes the lease during the retry's own last awaited
+  // step — after the order was reconciled, before the candidate is resumed.
+  const mark = h.deps.binding.markIntakeFinalized;
+  h.deps.binding = {
+    ...h.deps.binding,
+    async markIntakeFinalized(p) {
+      await mark(p);
+      await stealLease();
+    },
+  };
+
+  const retry = await runDirectIntakeCheckout(params, h.deps);
+
+  assert.equal(retry.status, 'refused');
+  assert.equal(retry.status === 'refused' && retry.code, 'direct_intake_checkout_lease_lost');
+  assert.equal(retry.status === 'refused' && retry.httpStatus, 409);
+  assert.equal(JSON.stringify(retry).includes('checkout.stripe.test'), false);
+  assert.equal(h.calls.filter((call) => call === 'stripe-create').length, 1, 'no second create');
+  assert.equal(h.calls.filter((call) => call === 'stripe-retrieve').length, 0, 'the candidate is not even read');
+  assert.equal(h.calls.filter((call) => call === 'bind-session').length, 1, 'no new bind attempt');
+  assert.equal(h.sessionsById.size, 1);
+  assert.ok(h.calls.length > before.length, 'the retry really ran');
+  const durable = await storedOrder();
+  assert.equal(durable?.stripeSessionId ?? null, null);
+  assert.equal(
+    durable?.checkoutSessionCandidate?.stripeSessionId,
+    'cs_1',
+    'the candidate survives for whoever legitimately holds the order next',
+  );
+});
+
+test('a candidate the provider does not answer with exactly fails closed', async () => {
+  installMemoryOrderStore();
+  const { h, params, result } = await checkoutLosingLeaseDuringCreate();
+  assert.equal(result.status, 'refused');
+  await restoreLease();
+  // The provider answers the retrieval with a DIFFERENT session.
+  h.sessionsById.set('cs_1', { id: 'cs_rotated', url: 'https://checkout.stripe.test/rotated', status: 'open' });
+
+  const retry = await runDirectIntakeCheckout(params, h.deps);
+
+  assert.equal(retry.status, 'refused');
+  assert.equal(retry.status === 'refused' && retry.code, 'direct_intake_session_candidate_mismatch');
+  assert.equal(retry.status === 'refused' && retry.httpStatus, 503);
+  assert.equal(JSON.stringify(retry).includes('checkout.stripe.test'), false);
+  assert.equal(h.calls.filter((call) => call === 'stripe-create').length, 1, 'a mismatch is never resolved by creating');
+  assert.equal((await storedOrder())?.stripeSessionId ?? null, null);
+});
+
+test('a malformed or foreign durable candidate is a conflict and never reaches the provider', async () => {
+  for (const candidate of [
+    { sessionId: 'not-a-stripe-session-id' },
+    { sessionId: 'cs_injected', checkoutAttemptId: 'c'.repeat(32), checkoutFingerprint: 'f'.repeat(64), recordedAt: NOW.toISOString() },
+    'cs_injected',
+  ]) {
+    __resetOrderStoreAdapterFactoryForTests();
+    installMemoryOrderStore();
+    const { store, session, assets } = await intakeWithMedia();
+    const h = harness(store);
+    const params = checkoutParams(session, assets);
+    assert.equal((await runDirectIntakeCheckout(params, h.deps)).status, 'redirect');
+    // Unbind and plant an unusable candidate, as a corrupted/foreign write would.
+    await mutateStoredOrder((order) => ({
+      ...order,
+      stripeSessionId: null,
+      checkoutSessionCandidate: candidate as never,
+    }));
+    const createsBefore = h.calls.filter((call) => call === 'stripe-create').length;
+
+    const retry = await runDirectIntakeCheckout(params, h.deps);
+
+    assert.equal(retry.status, 'refused', JSON.stringify(candidate));
+    assert.equal(retry.status === 'refused' && retry.code, 'direct_intake_order_conflict');
+    assert.equal(retry.status === 'refused' && retry.httpStatus, 409);
+    assert.equal(
+      h.calls.filter((call) => call === 'stripe-create').length,
+      createsBefore,
+      'an unreadable candidate must never be resolved by creating a new Session',
+    );
+    assert.equal(h.calls.filter((call) => call === 'stripe-retrieve').length, 0);
+  }
+});
+
+test('a candidate that cannot be persisted releases no URL and mints no second Session on retry', async () => {
+  installMemoryOrderStore();
+  const { store, session, assets } = await intakeWithMedia();
+  const h = harness(store);
+  const keys: string[] = [];
+  const create = h.deps.createCheckoutSession;
+  h.deps.createCheckoutSession = async (req) => {
+    keys.push(req.idempotencyKey);
+    return create(req);
+  };
+  const record = h.deps.recordCheckoutSessionCandidate;
+  let persistenceAvailable = false;
+  h.deps.recordCheckoutSessionCandidate = async (...args) => (persistenceAvailable ? record(...args) : null);
+  const params = checkoutParams(session, assets);
+
+  const first = await runDirectIntakeCheckout(params, h.deps);
+
+  assert.equal(first.status, 'refused');
+  assert.equal(first.status === 'refused' && first.code, 'direct_intake_session_candidate_persist_failed');
+  assert.equal(first.status === 'refused' && first.httpStatus, 503);
+  assert.equal(JSON.stringify(first).includes('checkout.stripe.test'), false, 'no URL without durable evidence');
+  assert.equal(h.calls.includes('bind-session'), false, 'nothing is bound that was not first recorded');
+  const stranded = await storedOrder();
+  assert.equal(stranded?.stripeSessionId ?? null, null);
+  assert.equal(stranded?.checkoutSessionCandidate ?? null, null);
+
+  // EXACT documented fail-closed behaviour of this branch: with no durable
+  // candidate there is nothing to resume, so a safe retry DOES call the
+  // provider again — but under the same deterministic idempotency key, so the
+  // provider returns the same Session rather than minting a second payable one.
+  persistenceAvailable = true;
+  const retry = await runDirectIntakeCheckout(params, h.deps);
+
+  assert.equal(retry.status, 'redirect', JSON.stringify(retry));
+  assert.deepEqual(keys, [IDEMPOTENCY_KEY, IDEMPOTENCY_KEY], 'the idempotency key stays deterministic');
+  assert.equal(h.sessions.size, 1);
+  assert.equal(h.sessionsById.size, 1, 'exactly one payable Session for one attempt');
+  assert.equal((await storedOrder())?.stripeSessionId, 'cs_1');
+  assert.equal((await storedOrder())?.checkoutSessionCandidate ?? null, null);
+});
+
+test('a renewal outage refuses before the provider rather than creating on stale authority', async () => {
+  installMemoryOrderStore();
+  const { store, session, assets } = await intakeWithMedia();
+  const h = harness(store, {
+    async renewCheckoutLease() { throw new Error('order store unavailable'); },
+  });
+
+  const result = await runDirectIntakeCheckout(checkoutParams(session, assets), h.deps);
+
+  assert.equal(result.status, 'refused');
+  assert.equal(result.status === 'refused' && result.code, 'direct_intake_checkout_lease_lost');
+  assert.equal(h.calls.includes('stripe-create'), false);
+  assert.equal(h.sessionsById.size, 0);
+});
+
+test('order route: the direct saga is wired to the durable lease and candidate primitives', () => {
+  // The renewal must be the REAL guarded transaction, not a saga-local guess.
+  assert.match(ROUTE, /renewCheckoutLease: \(orderId, leaseId, fingerprint\) =>\s*renewCheckoutLease\(/);
+  assert.match(ROUTE, /recordCheckoutSessionCandidate: \(orderId, stripeSessionId, checkout\) =>\s*recordCheckoutSessionCandidate\(/);
+  const importIdx = ROUTE.indexOf('recordCheckoutSessionCandidate,');
+  const sagaIdx = ROUTE.indexOf('runDirectIntakeCheckout({');
+  assert.ok(importIdx > -1 && importIdx < sagaIdx, 'both primitives come from lib/orders');
 });

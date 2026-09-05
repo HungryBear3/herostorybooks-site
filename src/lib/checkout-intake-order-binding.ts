@@ -14,7 +14,12 @@ import type {
   FinalizeIntakeResult,
 } from './checkout-finalize.ts';
 import type { FinalizedSelectionEntry } from './checkout-intake.ts';
-import { checkoutIntakeOrderContractDigest, type FamilyCharacter, type OrderRecord } from './orders.ts';
+import {
+  checkoutIntakeOrderContractDigest,
+  readCheckoutSessionCandidate,
+  type FamilyCharacter,
+  type OrderRecord,
+} from './orders.ts';
 
 export type AuthoritativeOrderLookup =
   | { status: 'found'; order: OrderRecord }
@@ -202,6 +207,15 @@ function preStripeComparableOrder(order: OrderRecord): unknown {
   delete comparable.updatedAt;
   delete comparable.checkoutLeaseId;
   delete comparable.checkoutLeaseExpiresAt;
+  // Narrow whitelist, NOT a blanket exemption. A durable unbound-Session
+  // candidate is legitimate retry evidence a prepared draft can never carry, so
+  // it is exempted — but only when it reads as this exact order's own
+  // candidate. Anything else (malformed, or naming a different attempt or
+  // fingerprint) stays in the comparison and is reported as an order conflict,
+  // which is the fail-closed answer for evidence we cannot account for.
+  if (readCheckoutSessionCandidate(order).status !== 'invalid') {
+    delete comparable.checkoutSessionCandidate;
+  }
   return comparable;
 }
 
