@@ -89,8 +89,6 @@ export type DirectIntakeCheckoutResult =
   | { status: 'refused'; httpStatus: number; code: string; error: string };
 
 const NO_CHARGE_RETRY = CHECKOUT_NO_CHARGE_RETRY;
-const MEDIA_MOVED =
-  'Your photos changed while we were starting checkout. No charge was made — please review your photos and try again.';
 const RECONCILIATION_REQUIRED = CHECKOUT_RECONCILIATION_NO_CHARGE;
 const ATTEMPT_ALREADY_RESOLVED = CHECKOUT_ATTEMPT_ALREADY_RESOLVED;
 
@@ -245,7 +243,16 @@ export async function runDirectIntakeCheckout(
       break;
     case 'intake_finalize_failed':
       log(`[order] ABORT BEFORE STRIPE: intake finalization refused for ${bound.orderId}: ${bound.code}`);
-      return refused(FINALIZE_STATUS[bound.code] ?? 400, bound.code, MEDIA_MOVED);
+      // Finalization is an awaited, shared-state boundary. Even a validation
+      // refusal can race a prior/concurrent request for this same attempt that
+      // has already created or bound a payable Session. A point-in-time order
+      // read cannot prove otherwise, so no finalization failure may claim that
+      // no charge exists or invite the buyer to pay again.
+      return refused(
+        FINALIZE_STATUS[bound.code] ?? 400,
+        bound.code,
+        CHECKOUT_RECONCILIATION_SUPPORT,
+      );
     case 'preparation_failed':
       log(`[order] ABORT BEFORE STRIPE: direct order preparation failed for ${bound.orderId}: ${bound.code}`);
       return refused(400, 'direct_intake_preparation_failed', NO_CHARGE_RETRY);

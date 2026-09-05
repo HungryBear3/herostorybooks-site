@@ -31,7 +31,7 @@ import {
   type OrderRecord,
   type OrderStoreAdapter,
 } from '../src/lib/orders.ts';
-import { createIntake, markIntakeFinalized } from '../src/lib/checkout-intake.ts';
+import { createIntake, IntakeError, markIntakeFinalized } from '../src/lib/checkout-intake.ts';
 import { completeSlotUpload, releaseSlot, reserveSlotUpload } from '../src/lib/checkout-intake-upload.ts';
 import {
   buildDirectIntakeBindingDependencies,
@@ -962,6 +962,122 @@ test('a foreign order already owning this intake cannot be finalized over', asyn
 
   assert.equal(result.status, 'refused');
   assert.equal(second.calls.includes('stripe-create'), false);
+});
+
+test('a finalization conflict on an attempt that already has a payable Session never claims no charge', async () => {
+  installMemoryOrderStore();
+  const { store, session, assets } = await intakeWithMedia({ voice: 'recorded' });
+  let created = 0;
+  const winner = harness(store, {
+    async createCheckoutSession({ order }) {
+      created += 1;
+      return { id: 'cs_payable_existing', url: `https://checkout.stripe.test/${order.id}`, status: 'open' };
+    },
+  });
+
+  // The winning request finalized this intake against this order and released
+  // a payable Checkout Session. The buyer may be paying on it right now.
+  const first = await runDirectIntakeCheckout({
+    draftOrder: draftOrder(),
+    request: request(session, assets),
+    stripeProductId: 'prod_test',
+    baseUrl: 'https://preview.test',
+    gaClientId: null,
+  }, winner.deps);
+  assert.equal(first.status, 'redirect');
+  assert.equal((await storedOrder())?.stripeSessionId, 'cs_payable_existing');
+  assert.equal(store.records.get(session.intakeId)?.record.finalizedOrderId, ORDER_ID);
+
+  // A second tab of the SAME attempt submits a different selection. The intake
+  // is already finalized, so this is the "already paid for" branch of
+  // `finalizeIntakeSelection` — never a stale-photo problem the buyer can fix.
+  const loser = harness(store);
+  const result = await runDirectIntakeCheckout({
+    draftOrder: draftOrder(),
+    request: request(session, assets, {
+      selection: {
+        primaryHeroPhotoAssetId: assets.hero!,
+        familyCharacterAssets: [],
+        guidedStillAssetIds: [],
+        voiceAssetId: assets.voice!,
+        documentAssetId: null,
+      },
+    }),
+    stripeProductId: 'prod_test',
+    baseUrl: 'https://preview.test',
+    gaClientId: null,
+  }, loser.deps);
+
+  assert.equal(result.status, 'refused');
+  if (result.status !== 'refused') return;
+  assert.equal(result.code, 'intake_finalization_conflict', 'the stable support code must not churn');
+  assert.equal(result.httpStatus, 409);
+  assert.equal(loser.calls.includes('stripe-create'), false, 'no second Session may be minted');
+  assert.equal(loser.calls.includes('persist'), false);
+  assert.equal(created, 1, 'exactly one payable Session exists across both requests');
+
+  // The buyer may already be charged on `cs_payable_existing`.
+  assert.equal(result.error, CHECKOUT_RECONCILIATION_SUPPORT);
+  assert.doesNotMatch(result.error, /no charge/i);
+  assert.doesNotMatch(result.error, /stopped before payment/i);
+  assert.doesNotMatch(result.error, /\btry again\b/i);
+  assert.doesNotMatch(result.error, /\bretry\b/i);
+  assert.match(result.error, /do not pay again/i);
+  assert.match(result.error, /support@herostorybooks\.com/);
+});
+
+test('every finalization refusal is reconciliation-safe against a concurrent payable attempt', async () => {
+  // Any finalization refusal can race a prior/concurrent request for the same
+  // attempt. Drive every mapped outcome through the real exported saga so none
+  // can regress to categorical no-charge or pay-again guidance.
+  const finalizeOutcomes: ReadonlyArray<readonly [string, number]> = [
+    ['intake_forbidden', 403],
+    ['intake_expired', 410],
+    ['intake_not_found', 404],
+    ['asset_not_current', 409],
+    ['asset_metadata_changed', 409],
+    ['asset_prefix_mismatch', 403],
+    ['intake_replacement_pending', 409],
+    ['intake_already_finalized', 409],
+    ['intake_finalization_conflict', 409],
+    ['intake_finalization_reconciliation_required', 409],
+    ['intake_cleanup_in_progress', 409],
+    ['intake_store_unavailable', 503],
+    ['intake_record_invalid', 503],
+    ['intake_record_too_large', 503],
+    ['intake_finalization_unavailable', 503],
+  ];
+  for (const [code, httpStatus] of finalizeOutcomes) {
+    installMemoryOrderStore();
+    const { store, session, assets } = await intakeWithMedia();
+    const h = harness(store);
+    h.deps.binding = {
+      ...h.deps.binding,
+      async finalizeIntake() { throw new IntakeError(code, 409); },
+    };
+
+    const result = await runDirectIntakeCheckout({
+      draftOrder: draftOrder(),
+      request: request(session, assets),
+      stripeProductId: 'prod_test',
+      baseUrl: 'https://preview.test',
+      gaClientId: null,
+    }, h.deps);
+
+    assert.equal(result.status, 'refused');
+    if (result.status !== 'refused') return;
+    assert.equal(result.code, code);
+    assert.equal(result.httpStatus, httpStatus, code);
+    assert.equal(h.calls.includes('stripe-create'), false);
+    assert.equal(result.error, CHECKOUT_RECONCILIATION_SUPPORT, code);
+    assert.doesNotMatch(result.error, /no charge/i, code);
+    assert.doesNotMatch(result.error, /stopped before payment/i, code);
+    assert.doesNotMatch(result.error, /\btry again\b/i, code);
+    assert.doesNotMatch(result.error, /\bretry\b/i, code);
+    assert.match(result.error, /do not pay again/i, code);
+    assert.match(result.error, /support@herostorybooks\.com/, code);
+    __resetOrderStoreAdapterFactoryForTests();
+  }
 });
 
 // ---------------------------------------------------------------------------
