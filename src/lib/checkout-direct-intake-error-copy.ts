@@ -53,6 +53,16 @@ const BARE_CODE = /^[a-z0-9]+(?:_[a-z0-9]+)*$/;
 const UNSAFE_ATTEMPT_GUIDANCE = /\b(?:not been charged|no charge|nothing was charged|stopped before payment|try again|retry|reload|start a fresh attempt)\b/i;
 const GENERIC = `We couldn't start your order. ${NOT_CHARGED} Please try again.`;
 
+export function checkoutSubmitErrorMessageForAttempt(
+  proposedMessage: string,
+  attemptMayHaveReachedServer: boolean,
+): string {
+  if (!attemptMayHaveReachedServer) return proposedMessage;
+  return /do not pay again/i.test(proposedMessage) && !UNSAFE_ATTEMPT_GUIDANCE.test(proposedMessage)
+    ? proposedMessage
+    : CHECKOUT_SUBMIT_UNCONFIRMED;
+}
+
 type AssetKind = 'photo' | 'audio' | 'document' | 'unknown';
 
 function kindOf(label: string | null | undefined): AssetKind {
@@ -135,11 +145,10 @@ export function describeCheckoutSubmitError(input: CheckoutSubmitErrorInput): Ch
   const serverMessage = (input.serverMessage ?? '').trim();
   const serverSentence = serverMessage && !BARE_CODE.test(serverMessage) ? serverMessage : null;
   const proposedMessage = serverSentence ?? messageFor(code, input.label);
-  const message = input.attemptMayHaveReachedServer
-    ? (/do not pay again/i.test(proposedMessage) && !UNSAFE_ATTEMPT_GUIDANCE.test(proposedMessage)
-      ? proposedMessage
-      : CHECKOUT_SUBMIT_UNCONFIRMED)
-    : proposedMessage;
+  const message = checkoutSubmitErrorMessageForAttempt(
+    proposedMessage,
+    Boolean(input.attemptMayHaveReachedServer),
+  );
   return {
     message,
     showRecordedVoiceHint: input.voiceSource === 'recorded' && !input.attemptMayHaveReachedServer,

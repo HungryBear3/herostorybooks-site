@@ -111,5 +111,18 @@ test('the error banner denies a charge only for a fresh attempt that never left 
   assert.match(FORM, /requestSent = true;\s*\n\s*const response = await fetch\("\/api\/order"/);
   assert.match(FORM, /attemptMayHaveReachedServer:\s*requestSent \|\| attemptWasReused/);
   assert.match(FORM, /setSubmitError\(described\.message, described\.showRecordedVoiceHint, requestSent \|\| attemptWasReused\)/);
-  assert.match(FORM, /setChargeUnconfirmed\(Boolean\(message\) && unconfirmedCharge\)/);
+  assert.match(FORM, /const retainedAttemptMayHaveReachedServer = Boolean\([\s\S]{0,140}checkoutAttemptIdRef\.current[\s\S]{0,140}readStoredCheckoutAttemptId\(\)/);
+  assert.match(FORM, /const chargeIsUnconfirmed = unconfirmedCharge \?\? retainedAttemptMayHaveReachedServer/);
+  assert.match(FORM, /setChargeUnconfirmed\(Boolean\(message\) && chargeIsUnconfirmed\)/);
+});
+
+test('clearing recovered form details never advertises or creates a fresh payment attempt', () => {
+  const recoveryStart = FORM.indexOf('{showRecovery &&');
+  const recoveryEnd = FORM.indexOf('</AnimatePresence>', recoveryStart);
+  const recovery = FORM.slice(recoveryStart, recoveryEnd);
+  assert.ok(recoveryStart > -1 && recoveryEnd > recoveryStart);
+  assert.match(recovery, />\s*Clear saved details\s*</);
+  assert.doesNotMatch(recovery, />\s*Start fresh\s*</);
+  assert.doesNotMatch(recovery, /checkoutAttemptIdRef\.current\s*=\s*null/);
+  assert.doesNotMatch(recovery, /removeItem\(CHECKOUT_ATTEMPT_STORAGE_KEY\)/);
 });

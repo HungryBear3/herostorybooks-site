@@ -44,6 +44,7 @@ import { isDirectUploadClientEnabled } from "@/lib/checkout-direct-flags";
 import { classifyStoryAttachment } from "@/lib/story-attachment";
 import { canonicalMediaMime } from "@/lib/checkout-media-mime";
 import {
+  checkoutSubmitErrorMessageForAttempt,
   describeCheckoutSubmitError,
   photoTypeUnsupportedMessage,
 } from "@/lib/checkout-direct-intake-error-copy";
@@ -488,6 +489,7 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
   // window.alert so the exact server reason is visible/scrollable (alerts get
   // dismissed instantly on mobile).
   const [submitError, setSubmitErrorState] = useState<string | null>(null);
+  const checkoutAttemptIdRef = useRef<string | null>(null);
   // The recorded-note preservation hint is only true when the failed attempt
   // held an in-checkout RECORDING; an uploaded memo or a photo failure gets
   // no such advice. Set together with the message so they cannot drift.
@@ -507,11 +509,17 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
   const setSubmitError = useCallback((
     message: string | null,
     recordedVoiceHint = false,
-    unconfirmedCharge = false,
+    unconfirmedCharge?: boolean,
   ) => {
-    setSubmitErrorState(message);
-    setShowRecordedVoiceHint(Boolean(message) && recordedVoiceHint);
-    setChargeUnconfirmed(Boolean(message) && unconfirmedCharge);
+    const retainedAttemptMayHaveReachedServer = Boolean(
+      checkoutAttemptIdRef.current ?? readStoredCheckoutAttemptId(),
+    );
+    const chargeIsUnconfirmed = unconfirmedCharge ?? retainedAttemptMayHaveReachedServer;
+    setSubmitErrorState(
+      message ? checkoutSubmitErrorMessageForAttempt(message, chargeIsUnconfirmed) : null,
+    );
+    setShowRecordedVoiceHint(Boolean(message) && recordedVoiceHint && !chargeIsUnconfirmed);
+    setChargeUnconfirmed(Boolean(message) && chargeIsUnconfirmed);
   }, []);
   const [photoNotice, setPhotoNotice] = useState<string | null>(null);
   const [showRecovery, setShowRecovery] = useState(false);
@@ -526,7 +534,6 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
   const directUploadEnabled = isDirectUploadClientEnabled();
   const [directMediaConsent, setDirectMediaConsent] = useState(false);
   const intakeSessionRef = useRef<DirectIntakeSubmissionCache | null>(null);
-  const checkoutAttemptIdRef = useRef<string | null>(null);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Ref-backed one-shot submit guard. `isSubmitting` alone cannot prevent a
   // double submit: it is React state, so two clicks in the same batch both
@@ -1435,7 +1442,7 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
                 }}
                 className="text-xs text-[#6e6154] underline hover:text-[#241914]"
               >
-                Start fresh
+                Clear saved details
               </button>
             </motion.div>
           )}

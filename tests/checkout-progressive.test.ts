@@ -291,7 +291,7 @@ test('Custom Story requires one source and returns consent recovery to the corre
   assert.match(getCheckoutPaymentBlockers(contradictory).join(' '), /Custom Story source/);
 });
 
-test('server and Start fresh enforce the same source/reset contract before payment', () => {
+test('server and Clear saved details enforce the same source/reset contract before payment', () => {
   const route = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   const sourceRequired = route.indexOf('custom_story_source_required');
   // The source/reset contract must hold before EITHER provider path can run.
@@ -302,12 +302,12 @@ test('server and Start fresh enforce the same source/reset contract before payme
   assert.ok(stripe > 0, 'route must still reach provider provisioning');
   assert.ok(sourceRequired > 0 && sourceRequired < stripe);
 
-  const startFresh = CHECKOUT_FORM_SRC.slice(
+  const clearSavedDetails = CHECKOUT_FORM_SRC.slice(
     CHECKOUT_FORM_SRC.indexOf('We saved your progress'),
-    CHECKOUT_FORM_SRC.indexOf('Start fresh') + 200,
+    CHECKOUT_FORM_SRC.indexOf('Clear saved details') + 240,
   );
-  assert.match(startFresh, /setDirectMediaConsent\(false\)/);
-  assert.match(startFresh, /intakeSessionRef\.current = null/);
+  assert.match(clearSavedDetails, /setDirectMediaConsent\(false\)/);
+  assert.match(clearSavedDetails, /intakeSessionRef\.current = null/);
   assert.match(CHECKOUT_FORM_SRC, /registerFieldRef\("voiceConsent"\)/);
 
   const readiness = CHECKOUT_FORM_SRC.slice(
