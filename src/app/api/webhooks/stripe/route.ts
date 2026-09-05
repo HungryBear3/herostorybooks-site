@@ -13,6 +13,7 @@ import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '../.
 import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment, recordPrintUpgradeSettlementConflict } from '../../../../lib/print-upgrades.ts';
 import { isExactSettledCheckoutSession } from '../../../../lib/checkout-session-confirmation.ts';
 import { scheduleGa4Purchase } from '../../../../lib/ga4-purchase.ts';
+import { validateUtmTuple } from '../../../../lib/marketing/utm-contract.ts';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -41,6 +42,25 @@ interface StripeCheckoutSession {
       country?: string | null;
     } | null;
   } | null;
+}
+
+/**
+ * Recover governed campaign attribution from the SIGNED Stripe session.
+ *
+ * The tuple was validated when the checkout session was created; it is
+ * validated again here because the webhook is a separate trust boundary and
+ * because a partially-populated metadata bag must resolve to null, not to a
+ * half tuple. Returns null unless the whole tuple passes.
+ */
+function campaignFromSession(session: StripeCheckoutSession) {
+  const metadata = (session as { metadata?: Record<string, string> }).metadata ?? {};
+  const result = validateUtmTuple({
+    utm_source: metadata.utm_source,
+    utm_medium: metadata.utm_medium,
+    utm_campaign: metadata.utm_campaign,
+    utm_content: metadata.utm_content,
+  });
+  return result.ok && result.tuple ? result.tuple : null;
 }
 
 function getStripe() {
@@ -191,6 +211,7 @@ export async function POST(request: Request) {
           itemName: `Print upgrade: ${targetFormat}`,
           paymentStatus: session.payment_status,
           clientId: session.metadata?.gaClientId,
+          campaign: campaignFromSession(session),
         }, after);
       } catch (err) {
         console.error(`Stripe webhook: failed to process print upgrade for ${upgradeOrderId}:`, err);
@@ -302,6 +323,7 @@ export async function POST(request: Request) {
             itemName: `HeroStoryBooks ${replayOrder.bookFormat}`,
             paymentStatus: session.payment_status,
             clientId: session.metadata?.gaClientId,
+            campaign: campaignFromSession(session),
           }, after);
           scheduleOrderConfirmationEmail(replayOrder, { afterImpl: after });
           if (!replayOrder.fulfillmentStatus || replayOrder.fulfillmentStatus === 'not_started') {
@@ -386,6 +408,7 @@ export async function POST(request: Request) {
         itemName: `HeroStoryBooks ${updated.bookFormat}`,
         paymentStatus: session.payment_status,
         clientId: session.metadata?.gaClientId,
+        campaign: campaignFromSession(session),
       }, after);
 
       // Webhook contract:

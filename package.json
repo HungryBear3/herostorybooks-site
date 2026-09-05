@@ -6,6 +6,7 @@
     "build": "next build",
     "dev": "next dev",
     "launch:hygiene": "node scripts/launch-hygiene-check.mjs",
+    "marketing:board": "node --experimental-strip-types --test tests/marketing-experiments-board.test.ts",
     "lint": "eslint .",
     "order:status": "node --experimental-strip-types scripts/order-status.ts",
     "start": "next start",

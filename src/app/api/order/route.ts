@@ -28,6 +28,11 @@ import {
   missingSupportingCharacterDescriptionLabels,
 } from '@/lib/checkout-photo-policy';
 import { buildCheckoutTracking } from '@/lib/checkout-tracking';
+import { validateUtmTuple } from '@/lib/marketing/utm-contract';
+import {
+  attributionMetadata,
+  ungovernedCampaignKey,
+} from '@/lib/marketing/attribution-session';
 import { sanitizeGaClientId } from '@/lib/ga4-purchase';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
@@ -147,6 +152,28 @@ export async function POST(request: Request) {
       invite: form.get('invite'),
     });
     const gaClientId = sanitizeGaClientId(form.get('gaClientId'));
+    // Governed campaign attribution. The browser proposes; the server decides.
+    // Every field is re-validated here against the same contract the browser
+    // used, so a hand-crafted POST cannot persist an unapproved medium, an
+    // oversized label, or anything PII-shaped. An invalid tuple becomes null
+    // rather than a partial record.
+    // Whole-tuple rejection applies here too. If the POST carries any
+    // campaign-governed field outside the four -- utm_term, ref, an arbitrary
+    // utm_* -- the tuple is disqualified rather than having the stray field
+    // dropped and the remainder accepted.
+    const smuggledCampaignKey = ungovernedCampaignKey([...form.keys()]);
+    const campaignAttributionResult = smuggledCampaignKey
+      ? { ok: false as const, tuple: undefined }
+      : validateUtmTuple({
+          utm_source: form.get('utm_source'),
+          utm_medium: form.get('utm_medium'),
+          utm_campaign: form.get('utm_campaign'),
+          utm_content: form.get('utm_content'),
+        });
+    const campaignAttribution =
+      campaignAttributionResult.ok && campaignAttributionResult.tuple
+        ? campaignAttributionResult.tuple
+        : null;
     const childName = String(form.get('childName') || '').trim();
     const email = String(form.get('email') || '').trim();
     const bookFormat = String(form.get('bookFormat') || 'classic').trim();
@@ -384,6 +411,7 @@ export async function POST(request: Request) {
       customStoryBrief,
       customStoryValidation,
       checkoutTracking,
+      campaignAttribution,
     }, {
       id: `ord_${crypto.createHash('sha256').update(checkoutAttemptId).digest('hex').slice(0, 16)}`,
       // Explicit workflow intent (NOT a default): every current customer-checkout
@@ -659,6 +687,12 @@ export async function POST(request: Request) {
         ...(gaClientId ? { gaClientId } : {}),
         ...(order.checkoutTracking?.cohort ? { cohort: order.checkoutTracking.cohort } : {}),
         ...(order.checkoutTracking?.invite ? { invite: order.checkoutTracking.invite } : {}),
+        // Campaign attribution rides in METADATA only: Stripe metadata is not
+        // shown to the customer anywhere in Checkout, and it comes back
+        // signature-verified on the webhook, which is what makes it usable by
+        // the trusted purchase path. It is never placed in a product name,
+        // description, or any customer-visible field.
+        ...attributionMetadata(order.campaignAttribution ?? null),
       },
       // Reversal events expose the PaymentIntent/Charge rather than the
       // Checkout Session. Copy the opaque local identity onto the PI so signed

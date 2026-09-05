@@ -1,23 +1,52 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { trackPageView } from "@/lib/analytics";
+import { deliverGa4PageView } from "@/lib/analytics";
+import { getConsent, subscribeConsent } from "@/lib/marketing/consent-store";
+import { getAnalyticsCoordinator } from "@/lib/marketing/analytics-coordinator";
+import type { ConsentState } from "@/lib/marketing/consent";
 
 /**
- * Fires one sanitized `page_view` HSB analytics event per pathname.
+ * Asks the coordinator to deliver exactly one sanitized page view per route.
  *
- * Mounted once from the root layout. Query strings are deliberately excluded
- * so checkout-prefill values such as childName never reach analytics.
- * The previous-path latch also prevents React strict-mode duplicates.
+ * All of the hard parts -- the readiness race, the single-slot pending route,
+ * the delivered-route latch, cancellation on withdrawal -- live in
+ * `analytics-coordinator.ts`, which is testable without a browser. This
+ * component only reports two facts: which route is current, and what consent
+ * says.
+ *
+ * The coordinator is a per-tab singleton, so a remount or a React StrictMode
+ * double effect re-reports the same route and is absorbed rather than
+ * duplicated.
  */
 export function AnalyticsPageView() {
   const pathname = usePathname();
-  const lastPathnameRef = useRef<string | null>(null);
+  const [consent, setConsentState] = useState<ConsentState>("unknown");
+  const coordinatorRef = useRef<ReturnType<typeof getAnalyticsCoordinator> | null>(null);
+
+  if (coordinatorRef.current === null) {
+    coordinatorRef.current = getAnalyticsCoordinator({
+      emit: (route) => deliverGa4PageView(route),
+      consent: () => getConsent(),
+    });
+  }
+
   useEffect(() => {
-    if (!pathname || lastPathnameRef.current === pathname) return;
-    lastPathnameRef.current = pathname;
-    trackPageView(pathname);
-  }, [pathname]);
+    setConsentState(getConsent());
+    return subscribeConsent(setConsentState);
+  }, []);
+
+  useEffect(() => {
+    const coordinator = coordinatorRef.current;
+    if (!coordinator || !pathname) return;
+    if (consent !== "granted") {
+      // Withdrawal or decline cancels anything waiting on readiness.
+      coordinator.cancelPending();
+      return;
+    }
+    coordinator.requestPageView(pathname);
+  }, [pathname, consent]);
+
   return null;
 }

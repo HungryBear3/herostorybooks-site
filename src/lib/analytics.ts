@@ -3,6 +3,35 @@
 // when GA isn't wired yet.
 import type { CoverVariant } from './cover-variant';
 import { track as trackVercelEvent } from '@vercel/analytics';
+import { metaHandleHsbEvent } from './marketing/meta-bridge.ts';
+import { getConsent } from './marketing/consent-store.ts';
+import {
+  attributionMetadata,
+  currentAttribution,
+} from './marketing/attribution-session.ts';
+import { sanitizeRoute } from './marketing/route-sanitizer.ts';
+import { isMarketingConsentGranted } from './marketing/consent.ts';
+
+/**
+ * Optional browser measurement is off until the visitor explicitly grants it.
+ *
+ * This governs the THREE outbound browser destinations -- GA4 (gtag), Vercel
+ * Analytics, and the Meta candidate -- from one source of truth, so they cannot
+ * drift apart. The in-memory `window.hsbEvents` buffer is deliberately still
+ * populated: it never leaves the tab, it carries no identifier, and it is what
+ * makes the funnel inspectable in DevTools and assertable in Playwright without
+ * turning on any transmission.
+ *
+ * Essential behaviour and the trusted server-side Stripe purchase path do not
+ * consult this.
+ */
+function optionalAnalyticsAllowed(): boolean {
+  try {
+    return isMarketingConsentGranted(getConsent());
+  } catch {
+    return false;
+  }
+}
 
 type GtagFn = {
   (command: 'config' | 'event', target: string, params?: Record<string, unknown>): void;
@@ -24,6 +53,7 @@ export type CoverEventName =
 
 export function trackCoverEvent(name: CoverEventName, params: Record<string, unknown>): void {
   if (typeof window === 'undefined') return;
+  if (!optionalAnalyticsAllowed()) return;
   try {
     const campaignParams = currentCampaignParams();
     const eventParams = { ...campaignParams, ...params };
@@ -84,6 +114,13 @@ export type HsbEventName =
   | 'purchase_intent'
   | 'proof_approved';
 
+declare global {
+  interface Window {
+    /** In-memory funnel buffer. Never transmitted; inspectable in DevTools. */
+    hsbEvents?: HsbEventRecord[];
+  }
+}
+
 export interface HsbEventRecord {
   event: HsbEventName;
   timestamp: number;
@@ -92,71 +129,31 @@ export interface HsbEventRecord {
   [k: string]: string | number | boolean | null | undefined;
 }
 
-const campaignParamKeys = [
-  'utm_source',
-  'utm_medium',
-  'utm_campaign',
-  'utm_term',
-  'utm_content',
-  'ref',
-] as const;
-
-declare global {
-  interface Window {
-    hsbEvents?: HsbEventRecord[];
-  }
+/**
+ * Campaign attribution comes from ONE place: the governed record in
+ * ./marketing/attribution-session.ts, validated by ./marketing/utm-contract.ts.
+ *
+ * The previous implementation read utm_term, ref, and any utm_* value up to
+ * 160 raw characters straight off the URL, mirrored them into sessionStorage,
+ * and forwarded them to GA4 and Vercel. That was the last ungoverned campaign
+ * surface in the browser: it accepted media outside the closed vocabulary,
+ * values past the 40-character bound, and anything PII-shaped. It is gone. A
+ * link using a non-allowlisted medium, or a legacy utm_term / ref link, now
+ * contributes NO campaign attribution rather than bypassing governance.
+ */
+function currentCampaignParams(): Record<string, string> {
+  return attributionMetadata(currentAttribution());
 }
 
-type CampaignParams = Partial<Record<(typeof campaignParamKeys)[number], string>>;
-const campaignSessionKey = 'hsb:first-touch-campaign:v1';
-
-function campaignParamsFromUrl(): CampaignParams {
-  if (typeof window === 'undefined' || typeof window.location === 'undefined') return {};
-  const params = new URLSearchParams(window.location.search);
-  const campaignParams: CampaignParams = {};
-  for (const key of campaignParamKeys) {
-    const value = params.get(key);
-    if (value) campaignParams[key] = value.slice(0, 160);
-  }
-  return campaignParams;
-}
-
-function parseStoredCampaign(value: string | null): CampaignParams {
-  if (!value) return {};
-  try {
-    const candidate = JSON.parse(value) as Record<string, unknown>;
-    const campaignParams: CampaignParams = {};
-    for (const key of campaignParamKeys) {
-      const field = candidate[key];
-      if (typeof field === 'string' && field) campaignParams[key] = field.slice(0, 160);
-    }
-    return campaignParams;
-  } catch {
-    return {};
-  }
-}
-
-function currentCampaignParams(): CampaignParams {
-  const fromUrl = campaignParamsFromUrl();
-  if (typeof window === 'undefined') return fromUrl;
-  try {
-    const stored = parseStoredCampaign(window.sessionStorage?.getItem(campaignSessionKey) ?? null);
-    if (Object.keys(stored).length) return stored;
-    if (Object.keys(fromUrl).length) {
-      window.sessionStorage?.setItem(campaignSessionKey, JSON.stringify(fromUrl));
-    }
-  } catch {
-    /* storage can be unavailable in privacy modes; current URL still works */
-  }
-  return fromUrl;
-}
-
-function googleCampaignFields(campaign: CampaignParams): Record<string, string> {
+/**
+ * GA4's reserved campaign fields, built only from a governed tuple. There is
+ * no governed equivalent of utm_term, so nothing maps to campaign_term.
+ */
+function googleCampaignFields(campaign: Record<string, string>): Record<string, string> {
   const fields: Record<string, string> = {};
   if (campaign.utm_source) fields.campaign_source = campaign.utm_source;
   if (campaign.utm_medium) fields.campaign_medium = campaign.utm_medium;
   if (campaign.utm_campaign) fields.campaign_name = campaign.utm_campaign;
-  if (campaign.utm_term) fields.campaign_term = campaign.utm_term;
   if (campaign.utm_content) fields.campaign_content = campaign.utm_content;
   return fields;
 }
@@ -264,6 +261,15 @@ export function track(
   try {
     window.hsbEvents = window.hsbEvents ?? [];
     window.hsbEvents.push(record);
+    // Everything below this line leaves the browser. Nothing does without an
+    // explicit grant.
+    if (!optionalAnalyticsAllowed()) {
+      if (hsbAnalyticsIsDev()) {
+        // eslint-disable-next-line no-console
+        console.info(`[hsb-analytics] ${event} (buffered only: no consent)`);
+      }
+      return record;
+    }
     if (typeof window.gtag === 'function') {
       const googleCampaign = googleCampaignFields(campaignParams);
       if (Object.keys(googleCampaign).length) window.gtag('set', googleCampaign);
@@ -272,6 +278,11 @@ export function track(
     if (event !== 'page_view') {
       trackVercelEvent(event, vercelSafeProps(record));
     }
+    // Meta candidate. Only the event NAME crosses this line: the bridge
+    // supplies its own fixed, allowlisted parameters and never reads `record`,
+    // which carries theme, photo/voice flags, and URL-prefill hints. Returns a
+    // skip reason and does nothing at all unless the pixel is fully enabled.
+    metaHandleHsbEvent(event);
   } catch {
     /* never throw from analytics */
   }
@@ -282,6 +293,70 @@ export function track(
   return record;
 }
 
+/**
+ * Append to the in-memory funnel buffer and nothing else.
+ *
+ * `window.hsbEvents` is a local debugging and test-observation aid: it never
+ * leaves the tab, carries no identifier, and is not a measurement destination.
+ * Writing to it is therefore not "emitting analytics".
+ */
+function bufferHsbEvent(
+  event: HsbEventName,
+  props: Record<string, string | number | boolean | null | undefined> = {},
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const pathname =
+      typeof window.location !== 'undefined' ? window.location.pathname : undefined;
+    window.hsbEvents = window.hsbEvents ?? [];
+    window.hsbEvents.push({
+      event,
+      timestamp: Date.now(),
+      href:
+        typeof window.location !== 'undefined'
+          ? `${window.location.origin ?? ''}${pathname ?? ''}`
+          : undefined,
+      pathname,
+      ...props,
+    });
+  } catch {
+    /* never throw from analytics */
+  }
+}
+
+/**
+ * Deliver one sanitized page view to GA4, reporting TRUTHFULLY whether it went.
+ *
+ * The coordinator latches a route only on a `true` from here, so every
+ * precondition the emission actually depends on is checked explicitly rather
+ * than assumed: a browser, a granted consent, and a callable `gtag`. Returning
+ * false leaves the route pending instead of pretending it was counted.
+ */
+export function deliverGa4PageView(pathname: string): boolean {
+  if (typeof window === 'undefined') return false;
+  if (!optionalAnalyticsAllowed()) return false;
+  const route = sanitizeRoute(pathname);
+
+  if (typeof window.gtag !== 'function') {
+    // GA4 has not mounted -- either it is still loading, or this environment
+    // never mounts it (local, CI, Preview without the validation switch). Record
+    // the route in the in-memory buffer so the funnel stays inspectable, and
+    // report FALSE so the coordinator keeps the route pending rather than
+    // marking it delivered. The buffer never leaves the tab.
+    bufferHsbEvent('page_view', { pathname: route });
+    return false;
+  }
+
+  track('page_view', { pathname: route });
+  return true;
+}
+
+/**
+ * One sanitized page view. The route is templated by `sanitizeRoute`, so
+ * /review/<id> is reported as /review/[orderId] and an order id, review token,
+ * or asset id can never itself become the route. Query strings and fragments
+ * were already excluded by the caller and are stripped again here.
+ */
 export function trackPageView(pathname?: string): void {
-  track('page_view', pathname ? { pathname } : {});
+  track('page_view', pathname ? { pathname: sanitizeRoute(pathname) } : {});
 }

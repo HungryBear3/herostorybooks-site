@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
 
+import {
+  validateUtmTuple,
+  type GovernedUtmTuple,
+} from './marketing/utm-contract.ts';
+
 export interface Ga4PurchaseInput {
   transactionId: string;
   amountCents: number;
@@ -8,6 +13,13 @@ export interface Ga4PurchaseInput {
   itemName: string;
   paymentStatus?: string | null;
   clientId?: string | null;
+  /**
+   * Governed campaign attribution, already validated by
+   * src/lib/marketing/utm-contract.ts. Re-validated here regardless, because
+   * this is the last boundary before the value leaves for Google and a caller
+   * is not a trust boundary.
+   */
+  campaign?: GovernedUtmTuple | null;
 }
 
 interface Ga4PurchaseDeps {
@@ -26,6 +38,25 @@ function configured(env: NodeJS.ProcessEnv) {
 
 function isVerifiedPayment(status: string | null | undefined): boolean {
   return status === 'paid' || status === 'no_payment_required';
+}
+
+/**
+ * GA4's reserved campaign parameter names, populated ONLY from a tuple that
+ * passes the governed contract here, at the last boundary before the request.
+ * A tuple that does not validate contributes nothing rather than partially.
+ */
+function campaignParams(campaign: GovernedUtmTuple | null | undefined): Record<string, string> {
+  if (!campaign) return {};
+  const result = validateUtmTuple(campaign);
+  if (!result.ok || !result.tuple) return {};
+  const tuple = result.tuple;
+  const params: Record<string, string> = {
+    campaign_source: tuple.utm_source,
+    campaign_medium: tuple.utm_medium,
+    campaign_name: tuple.utm_campaign,
+  };
+  if (tuple.utm_content) params.campaign_content = tuple.utm_content;
+  return params;
 }
 
 export function sanitizeGaClientId(value: unknown): string | null {
@@ -67,6 +98,7 @@ export async function sendGa4Purchase(
           transaction_id: input.transactionId,
           value,
           currency,
+          ...campaignParams(input.campaign),
           items: [{
             item_id: input.itemId,
             item_name: input.itemName,

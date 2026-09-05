@@ -21,3 +21,12 @@ If either variable is absent, the event no-ops. Delivery is deferred until after
 the webhook response and failures are warning-only, so analytics cannot block a
 payment, confirmation, or fulfillment. Validate with GA4 DebugView/Realtime
 using a test-mode paid Checkout Session before promoting the environment change.
+
+## Meta Conversions API sibling (candidate, disabled)
+
+`scheduleMetaCapiPurchase` (`src/lib/marketing/meta-capi.ts`) sits beside every
+`scheduleGa4Purchase` call in the same webhook, and behaves the same way: deferred
+past the response, bounded timeout, failures swallowed. It is disabled unless
+`META_CAPI_ENABLED`, `META_CAPI_DATASET_ID`, and `META_CAPI_ACCESS_TOKEN` are all
+set, and it sends no order, customer, or session identifier — only a hashed dedupe
+pseudonym. See `docs/marketing/meta-measurement-candidate.md` before enabling it.
