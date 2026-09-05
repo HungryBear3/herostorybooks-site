@@ -28,7 +28,6 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 import {
-  bindOrderCheckoutSession,
   createOrderRecord,
   getOrder,
   MAX_VOICE_BYTES,
@@ -202,6 +201,9 @@ test('legacy voice filenames are scrubbed whenever an order is re-persisted', as
       { id: 'ord_legacy_voice', now: '2026-05-14T10:00:00.000Z' },
     ),
     voiceFileName: 'Synthetic Legacy Recording 2026.m4a',
+    // A historical order whose bind is already history — the shape every order
+    // written before the generation fence has, and which must stay readable.
+    stripeSessionId: 'cs_legacy_voice',
   };
 
   try {
@@ -219,7 +221,6 @@ test('legacy voice filenames are scrubbed whenever an order is re-persisted', as
         assert.equal((loaded as unknown as Record<string, unknown>).voiceFileName, undefined);
         assert.equal(loaded.legacyVoiceUploadPresent, true);
 
-        await bindOrderCheckoutSession('ord_legacy_voice', 'cs_legacy_voice');
         const paymentResult = await updateOrderPayment('ord_legacy_voice', 'paid', {
           stripeSessionId: 'cs_legacy_voice',
         });

@@ -48,7 +48,7 @@ import {
   type DirectCheckoutSessionRequest,
 } from '@/lib/checkout-direct-order';
 import { provisionCheckoutSession } from '@/lib/checkout-session-provisioning';
-import { resumeOrContinueLegacyCheckout } from '@/lib/checkout-legacy-order';
+import { runLegacyCheckoutRoute } from '@/lib/checkout-legacy-order';
 import { createVercelIntakeStore } from '@/lib/checkout-intake';
 import { checkoutRequestFingerprint } from '@/lib/checkout-request-fingerprint';
 import { classifyStoryAttachment } from '@/lib/story-attachment';
@@ -551,7 +551,7 @@ export async function POST(request: Request) {
       recordCheckoutSessionCandidate: (
         orderId: string,
         stripeSessionId: string,
-        checkout: { checkoutAttemptId: string; fingerprint: string },
+        checkout: { checkoutAttemptId: string; fingerprint: string; checkoutSessionAttempt: number },
       ) => recordCheckoutSessionCandidate(orderId, stripeSessionId, checkout),
       supersedeCheckoutSession: (
         orderId: string,
@@ -561,7 +561,7 @@ export async function POST(request: Request) {
       bindCheckoutSession: (
         orderId: string,
         stripeSessionId: string,
-        checkout: { leaseId: string; fingerprint: string },
+        checkout: { leaseId: string; fingerprint: string; checkoutSessionAttempt: number },
       ) => bindOrderCheckoutSession(orderId, stripeSessionId, checkout),
       logError: (message: string, detail?: unknown) => console.error(message, detail ?? ''),
     };
@@ -576,7 +576,7 @@ export async function POST(request: Request) {
     // which permanently tombstoned any attempt whose Session had expired and
     // was blind to a Session created but never bound. Both paths now recover
     // through the same machine. See lib/checkout-legacy-order.ts.
-    const resumed = await resumeOrContinueLegacyCheckout({
+    return await runLegacyCheckoutRoute<NextResponse>({
       draftOrder,
       stripeProductId,
       baseUrl: getReturnBaseUrl(request),
@@ -584,105 +584,122 @@ export async function POST(request: Request) {
     }, {
       ...legacyCheckoutDeps,
       persistOrResumeCheckoutOrder: (order) => persistOrResumeCheckoutOrder(order),
-    });
-    if (resumed.status === 'refused') {
-      return NextResponse.json(
-        { error: resumed.message, code: resumed.code },
-        { status: resumed.httpStatus },
-      );
-    }
-    if (resumed.status === 'released') {
-      return NextResponse.json({ ok: true, redirectTo: resumed.url });
-    }
-
-    const uploadedMediaPaths: string[] = [];
-    const requireActiveLease = async () => {
-      const renewed = await renewCheckoutLease(
-        draftOrder.id,
-        draftOrder.checkoutLeaseId!,
-        draftOrder.checkoutFingerprint!,
-      );
-      if (!renewed) throw new OrderPersistenceError(draftOrder.id, 'checkout_lease_lost');
-      draftOrder.checkoutLeaseExpiresAt = renewed.checkoutLeaseExpiresAt;
-    };
-    const rollbackUploadedMedia = async (reason: string) => {
-      if (uploadedMediaPaths.length === 0) return;
-      try {
-        await rollbackOrderMediaUploads(
+      json: (body, httpStatus) => NextResponse.json(body, { status: httpStatus }),
+      // Reached ONLY for an order with no provider history of any kind. Every
+      // resumable order — bound Session, unbound candidate, provisioning marker
+      // — is answered by the entrypoint above, before a single byte of customer
+      // media is uploaded and without this handler deciding anything about it.
+      continueWithMedia: async (persisted) => {
+      const uploadedMediaPaths: string[] = [];
+      const requireActiveLease = async () => {
+        const renewed = await renewCheckoutLease(
           draftOrder.id,
-          uploadedMediaPaths,
-          draftOrder.checkoutLeaseId ?? undefined,
+          draftOrder.checkoutLeaseId!,
+          draftOrder.checkoutFingerprint!,
         );
-        uploadedMediaPaths.length = 0;
-      } catch (rollbackError) {
-        // The durable draft above remains the owner-of-record even when Blob
-        // deletion fails after its retry. Keep the original checkout failure
-        // response while surfacing the cleanup incident for manual follow-up.
-        console.error(
-          `[order] MEDIA ROLLBACK FAILED for ${draftOrder.id} after ${reason}:`,
-          rollbackError,
-        );
-      }
-    };
-
-    let photoBlobPath: string | null = null;
-    let photoBlobUrl: string | null = null;
-    if (photo instanceof File && photo.size > 0) {
-      try {
-        await requireActiveLease();
-        const uploaded = await uploadOrderPhoto(draftOrder.id, photo, draftOrder.checkoutLeaseId ?? undefined);
-        if (uploaded) {
-          photoBlobPath = uploaded.pathname;
-          photoBlobUrl = uploaded.url;
-          uploadedMediaPaths.push(uploaded.pathname);
-        } else {
-          console.error(`[order] ABORT BEFORE STRIPE: photo upload failed for ${draftOrder.id}`);
-          return NextResponse.json(
-            { error: 'We could not securely save your photo. Please retry — no charge was made.' },
-            { status: 503 },
+        if (!renewed) throw new OrderPersistenceError(draftOrder.id, 'checkout_lease_lost');
+        draftOrder.checkoutLeaseExpiresAt = renewed.checkoutLeaseExpiresAt;
+      };
+      const rollbackUploadedMedia = async (reason: string) => {
+        if (uploadedMediaPaths.length === 0) return;
+        try {
+          await rollbackOrderMediaUploads(
+            draftOrder.id,
+            uploadedMediaPaths,
+            draftOrder.checkoutLeaseId ?? undefined,
           );
-        }
-      } catch (error) {
-        // In production, OrderPersistenceError from photo upload must abort
-        // BEFORE the Stripe Checkout Session — otherwise the customer pays
-        // for an order whose photo is missing from durable storage.
-        if (error instanceof OrderPersistenceError) {
+          uploadedMediaPaths.length = 0;
+        } catch (rollbackError) {
+          // The durable draft above remains the owner-of-record even when Blob
+          // deletion fails after its retry. Keep the original checkout failure
+          // response while surfacing the cleanup incident for manual follow-up.
           console.error(
-            `[order] ABORT BEFORE STRIPE: photo persistence failed for ${draftOrder.id}: ${error.message}`,
-            error.cause,
+            `[order] MEDIA ROLLBACK FAILED for ${draftOrder.id} after ${reason}:`,
+            rollbackError,
           );
+        }
+      };
+
+      let photoBlobPath: string | null = null;
+      let photoBlobUrl: string | null = null;
+      if (photo instanceof File && photo.size > 0) {
+        try {
+          await requireActiveLease();
+          const uploaded = await uploadOrderPhoto(draftOrder.id, photo, draftOrder.checkoutLeaseId ?? undefined);
+          if (uploaded) {
+            photoBlobPath = uploaded.pathname;
+            photoBlobUrl = uploaded.url;
+            uploadedMediaPaths.push(uploaded.pathname);
+          } else {
+            console.error(`[order] ABORT BEFORE STRIPE: photo upload failed for ${draftOrder.id}`);
+            return NextResponse.json(
+              { error: 'We could not securely save your photo. Please retry — no charge was made.' },
+              { status: 503 },
+            );
+          }
+        } catch (error) {
+          // In production, OrderPersistenceError from photo upload must abort
+          // BEFORE the Stripe Checkout Session — otherwise the customer pays
+          // for an order whose photo is missing from durable storage.
+          if (error instanceof OrderPersistenceError) {
+            console.error(
+              `[order] ABORT BEFORE STRIPE: photo persistence failed for ${draftOrder.id}: ${error.message}`,
+              error.cause,
+            );
+            return NextResponse.json(
+              { error: 'We could not securely save your photo. Please retry — no charge was made.' },
+              { status: 503 },
+            );
+          }
+          console.error(`[order] ABORT BEFORE STRIPE: photo upload failed for ${draftOrder.id}`, error);
           return NextResponse.json(
             { error: 'We could not securely save your photo. Please retry — no charge was made.' },
             { status: 503 },
           );
         }
-        console.error(`[order] ABORT BEFORE STRIPE: photo upload failed for ${draftOrder.id}`, error);
-        return NextResponse.json(
-          { error: 'We could not securely save your photo. Please retry — no charge was made.' },
-          { status: 503 },
-        );
       }
-    }
 
-    const familyCharactersWithPhotos = [];
-    for (const [index, character] of familyCharacters.entries()) {
-      const validatedFamilyPhoto = supportingPhotoFiles.get(index);
-      const familyPhoto = validatedFamilyPhoto?.file;
-      if (!familyPhoto || !validatedFamilyPhoto) {
-        familyCharactersWithPhotos.push(character);
-        continue;
-      }
-      try {
-        await requireActiveLease();
-        const uploaded = await uploadOrderSupportingPhoto(
-          draftOrder.id,
-          index,
-          familyPhoto,
-          draftOrder.checkoutLeaseId ?? undefined,
-        );
-        if (!uploaded) {
-          console.error(`[order] ABORT BEFORE STRIPE: supporting photo upload failed; supporting photo persistence failed for ${draftOrder.id}`);
-          await rollbackUploadedMedia('supporting photo upload returned no durable reference');
+      const familyCharactersWithPhotos = [];
+      for (const [index, character] of familyCharacters.entries()) {
+        const validatedFamilyPhoto = supportingPhotoFiles.get(index);
+        const familyPhoto = validatedFamilyPhoto?.file;
+        if (!familyPhoto || !validatedFamilyPhoto) {
+          familyCharactersWithPhotos.push(character);
+          continue;
+        }
+        try {
+          await requireActiveLease();
+          const uploaded = await uploadOrderSupportingPhoto(
+            draftOrder.id,
+            index,
+            familyPhoto,
+            draftOrder.checkoutLeaseId ?? undefined,
+          );
+          if (!uploaded) {
+            console.error(`[order] ABORT BEFORE STRIPE: supporting photo upload failed; supporting photo persistence failed for ${draftOrder.id}`);
+            await rollbackUploadedMedia('supporting photo upload returned no durable reference');
+            return NextResponse.json(
+              {
+                error:
+                  'We could not securely save one of your family or pet photos. Please retry — no charge was made.',
+                code: 'supporting_photo_persist_failed',
+              },
+              { status: 503 },
+            );
+          }
+          uploadedMediaPaths.push(uploaded.pathname);
+          familyCharactersWithPhotos.push({
+            ...character,
+            photoFileName: `supporting-${index + 1}.${validatedFamilyPhoto.extension}`,
+            photoBlobPath: uploaded.pathname,
+            photoBlobUrl: uploaded.url,
+            likenessIntent: 'reference' as const,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const cause = error instanceof OrderPersistenceError ? error.cause : error;
+          console.error(`[order] ABORT BEFORE STRIPE: supporting photo persistence failed for ${draftOrder.id}: ${message}`, cause);
+          await rollbackUploadedMedia('supporting photo persistence failure');
           return NextResponse.json(
             {
               error:
@@ -692,61 +709,50 @@ export async function POST(request: Request) {
             { status: 503 },
           );
         }
-        uploadedMediaPaths.push(uploaded.pathname);
-        familyCharactersWithPhotos.push({
-          ...character,
-          photoFileName: `supporting-${index + 1}.${validatedFamilyPhoto.extension}`,
-          photoBlobPath: uploaded.pathname,
-          photoBlobUrl: uploaded.url,
-          likenessIntent: 'reference' as const,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const cause = error instanceof OrderPersistenceError ? error.cause : error;
-        console.error(`[order] ABORT BEFORE STRIPE: supporting photo persistence failed for ${draftOrder.id}: ${message}`, cause);
-        await rollbackUploadedMedia('supporting photo persistence failure');
-        return NextResponse.json(
-          {
-            error:
-              'We could not securely save one of your family or pet photos. Please retry — no charge was made.',
-            code: 'supporting_photo_persist_failed',
-          },
-          { status: 503 },
-        );
       }
-    }
 
-    let voiceBlobPath: string | null = null;
-    let voiceBlobUrl: string | null = null;
-    let voiceConsentAt: string | null = null;
-    if (hasVoiceUpload) {
-      try {
-        await requireActiveLease();
-        const uploadedVoice = await uploadOrderVoice(
-          draftOrder.id,
-          voiceRaw as File,
-          draftOrder.checkoutLeaseId ?? undefined,
-        );
-        if (!uploadedVoice) {
-          throw new OrderPersistenceError(
+      let voiceBlobPath: string | null = null;
+      let voiceBlobUrl: string | null = null;
+      let voiceConsentAt: string | null = null;
+      if (hasVoiceUpload) {
+        try {
+          await requireActiveLease();
+          const uploadedVoice = await uploadOrderVoice(
             draftOrder.id,
-            'Customer voice upload returned no durable reference',
+            voiceRaw as File,
+            draftOrder.checkoutLeaseId ?? undefined,
           );
-        }
-        voiceBlobPath = uploadedVoice.pathname;
-        voiceBlobUrl = uploadedVoice.url;
-        voiceConsentAt = new Date().toISOString();
-        uploadedMediaPaths.push(uploadedVoice.pathname);
-      } catch (error) {
-        // Match the photo path: an OrderPersistenceError on voice persistence
-        // must abort BEFORE Stripe, so no customer pays for an order whose
-        // consented audio note was dropped.
-        if (error instanceof OrderPersistenceError) {
-          console.error(
-            `[order] ABORT BEFORE STRIPE: voice persistence failed for ${draftOrder.id}: ${error.message}`,
-            error.cause,
-          );
-          await rollbackUploadedMedia('voice persistence failure');
+          if (!uploadedVoice) {
+            throw new OrderPersistenceError(
+              draftOrder.id,
+              'Customer voice upload returned no durable reference',
+            );
+          }
+          voiceBlobPath = uploadedVoice.pathname;
+          voiceBlobUrl = uploadedVoice.url;
+          voiceConsentAt = new Date().toISOString();
+          uploadedMediaPaths.push(uploadedVoice.pathname);
+        } catch (error) {
+          // Match the photo path: an OrderPersistenceError on voice persistence
+          // must abort BEFORE Stripe, so no customer pays for an order whose
+          // consented audio note was dropped.
+          if (error instanceof OrderPersistenceError) {
+            console.error(
+              `[order] ABORT BEFORE STRIPE: voice persistence failed for ${draftOrder.id}: ${error.message}`,
+              error.cause,
+            );
+            await rollbackUploadedMedia('voice persistence failure');
+            return NextResponse.json(
+              {
+                error:
+                  'We could not securely save your voice recording, so we stopped before payment. No charge was made and the recording was not saved — please download it from the checkout page and try again.',
+                code: 'voice_persist_failed',
+              },
+              { status: 503 },
+            );
+          }
+          console.error(`[order] voice upload failed for ${draftOrder.id}; aborting`, error);
+          await rollbackUploadedMedia('voice upload failure');
           return NextResponse.json(
             {
               error:
@@ -756,122 +762,115 @@ export async function POST(request: Request) {
             { status: 503 },
           );
         }
-        console.error(`[order] voice upload failed for ${draftOrder.id}; aborting`, error);
-        await rollbackUploadedMedia('voice upload failure');
-        return NextResponse.json(
-          {
-            error:
-              'We could not securely save your voice recording, so we stopped before payment. No charge was made and the recording was not saved — please download it from the checkout page and try again.',
-            code: 'voice_persist_failed',
-          },
-          { status: 503 },
-        );
       }
-    }
 
-    let documentBlobPath: string | null = null;
-    let documentBlobUrl: string | null = null;
-    let documentConsentAt: string | null = null;
-    if (hasDocumentUpload) {
-      try {
-        await requireActiveLease();
-        const uploadedDocument = await uploadOrderDocument(
-          draftOrder.id,
-          documentRaw as File,
-          draftOrder.checkoutLeaseId ?? undefined,
-        );
-        if (!uploadedDocument) {
-          throw new OrderPersistenceError(
+      let documentBlobPath: string | null = null;
+      let documentBlobUrl: string | null = null;
+      let documentConsentAt: string | null = null;
+      if (hasDocumentUpload) {
+        try {
+          await requireActiveLease();
+          const uploadedDocument = await uploadOrderDocument(
             draftOrder.id,
-            'Customer document upload returned no durable reference',
+            documentRaw as File,
+            draftOrder.checkoutLeaseId ?? undefined,
+          );
+          if (!uploadedDocument) {
+            throw new OrderPersistenceError(
+              draftOrder.id,
+              'Customer document upload returned no durable reference',
+            );
+          }
+          documentBlobPath = uploadedDocument.pathname;
+          documentBlobUrl = uploadedDocument.url;
+          documentConsentAt = new Date().toISOString();
+          uploadedMediaPaths.push(uploadedDocument.pathname);
+        } catch (error) {
+          console.error(`[order] ABORT BEFORE STRIPE: document persistence failed for ${draftOrder.id}`, error);
+          await rollbackUploadedMedia('document persistence failure');
+          return NextResponse.json(
+            {
+              error: 'We could not securely save your story document, so we stopped before payment. No charge was made. Please try again.',
+              code: 'document_persist_failed',
+            },
+            { status: 503 },
           );
         }
-        documentBlobPath = uploadedDocument.pathname;
-        documentBlobUrl = uploadedDocument.url;
-        documentConsentAt = new Date().toISOString();
-        uploadedMediaPaths.push(uploadedDocument.pathname);
+      }
+
+      // Persist the order record durably. If this throws OrderPersistenceError
+      // we MUST NOT create a Stripe Checkout Session — the customer would pay
+      // for an order the webhook + status page can never find.
+      let order;
+      try {
+        // Keyed on the DURABLE owner record the entrypoint returned — the same
+        // id as the draft, proven so before it returned.
+        order = await withOrderTransaction<OrderRecord | null>(persisted.id, (current) => {
+          if (current.checkoutLeaseId !== draftOrder.checkoutLeaseId
+            || current.checkoutFingerprint !== draftOrder.checkoutFingerprint) {
+            return { abort: null };
+          }
+          const updated = {
+            ...current,
+            familyCharacters: familyCharactersWithPhotos,
+            photoBlobPath,
+            photoBlobUrl,
+            voiceBlobPath,
+            voiceBlobUrl,
+            voiceConsentAt,
+            voiceSource: hasVoiceUpload ? voiceSource : null,
+            documentBlobPath,
+            documentBlobUrl,
+            documentConsentAt,
+            documentSource: hasDocumentUpload ? 'uploaded' as const : null,
+          };
+          return { commit: updated, result: updated };
+        });
+        if (!order) throw new OrderPersistenceError(draftOrder.id, 'checkout_lease_lost');
       } catch (error) {
-        console.error(`[order] ABORT BEFORE STRIPE: document persistence failed for ${draftOrder.id}`, error);
-        await rollbackUploadedMedia('document persistence failure');
-        return NextResponse.json(
-          {
-            error: 'We could not securely save your story document, so we stopped before payment. No charge was made. Please try again.',
-            code: 'document_persist_failed',
-          },
-          { status: 503 },
-        );
-      }
-    }
-
-    // Persist the order record durably. If this throws OrderPersistenceError
-    // we MUST NOT create a Stripe Checkout Session — the customer would pay
-    // for an order the webhook + status page can never find.
-    let order;
-    try {
-      order = await withOrderTransaction<OrderRecord | null>(draftOrder.id, (current) => {
-        if (current.checkoutLeaseId !== draftOrder.checkoutLeaseId
-          || current.checkoutFingerprint !== draftOrder.checkoutFingerprint) {
-          return { abort: null };
+        await rollbackUploadedMedia('final order persistence failure');
+        if (error instanceof OrderPersistenceError) {
+          console.error(
+            `[order] ABORT BEFORE STRIPE: durable order persistence failed for ${draftOrder.id}: ${error.message}`,
+            error.cause,
+          );
+          return NextResponse.json(
+            {
+              error:
+                'We could not securely save your order. No charge was made. Please retry in a moment, and contact support@herostorybooks.com if it keeps happening.',
+            },
+            { status: 503 },
+          );
         }
-        const updated = {
-          ...current,
-          familyCharacters: familyCharactersWithPhotos,
-          photoBlobPath,
-          photoBlobUrl,
-          voiceBlobPath,
-          voiceBlobUrl,
-          voiceConsentAt,
-          voiceSource: hasVoiceUpload ? voiceSource : null,
-          documentBlobPath,
-          documentBlobUrl,
-          documentConsentAt,
-          documentSource: hasDocumentUpload ? 'uploaded' as const : null,
-        };
-        return { commit: updated, result: updated };
-      });
-      if (!order) throw new OrderPersistenceError(draftOrder.id, 'checkout_lease_lost');
-    } catch (error) {
-      await rollbackUploadedMedia('final order persistence failure');
-      if (error instanceof OrderPersistenceError) {
-        console.error(
-          `[order] ABORT BEFORE STRIPE: durable order persistence failed for ${draftOrder.id}: ${error.message}`,
-          error.cause,
-        );
+        throw error;
+      }
+
+      markRecoveryLeadConverted(order.email, order.id).catch(() => {});
+
+      // ── The legacy public path uses the SAME provisioning machine ────────
+      // It previously created a Session and bound it in one breath, with no
+      // durable record in between: a create that succeeded followed by a bind
+      // that failed lost the provider identity entirely, leaving retry safety to
+      // Stripe's finite idempotency retention. Once that lapsed, an ordinary
+      // retry could mint a second payable Session. Same invariant, same code.
+      const provisioned = await provisionCheckoutSession({
+        order,
+        leaseId: draftOrder.checkoutLeaseId!,
+        fingerprint: draftOrder.checkoutFingerprint!,
+        stripeProductId,
+        baseUrl: getReturnBaseUrl(request),
+        gaClientId,
+      }, legacyCheckoutDeps);
+
+      if (provisioned.status === 'refused') {
         return NextResponse.json(
-          {
-            error:
-              'We could not securely save your order. No charge was made. Please retry in a moment, and contact support@herostorybooks.com if it keeps happening.',
-          },
-          { status: 503 },
+          { error: provisioned.message, code: provisioned.code },
+          { status: provisioned.httpStatus },
         );
       }
-      throw error;
-    }
-
-    markRecoveryLeadConverted(order.email, order.id).catch(() => {});
-
-    // ── The legacy public path uses the SAME provisioning machine ────────
-    // It previously created a Session and bound it in one breath, with no
-    // durable record in between: a create that succeeded followed by a bind
-    // that failed lost the provider identity entirely, leaving retry safety to
-    // Stripe's finite idempotency retention. Once that lapsed, an ordinary
-    // retry could mint a second payable Session. Same invariant, same code.
-    const provisioned = await provisionCheckoutSession({
-      order,
-      leaseId: draftOrder.checkoutLeaseId!,
-      fingerprint: draftOrder.checkoutFingerprint!,
-      stripeProductId,
-      baseUrl: getReturnBaseUrl(request),
-      gaClientId,
-    }, legacyCheckoutDeps);
-
-    if (provisioned.status === 'refused') {
-      return NextResponse.json(
-        { error: provisioned.message, code: provisioned.code },
-        { status: provisioned.httpStatus },
-      );
-    }
-    return NextResponse.json({ ok: true, redirectTo: provisioned.url });
+      return NextResponse.json({ ok: true, redirectTo: provisioned.url });
+      },
+    });
   } catch (error) {
     console.error('Order error:', error);
     return NextResponse.json({ error: 'Order submission failed' }, { status: 500 });

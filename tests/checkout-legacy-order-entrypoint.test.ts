@@ -39,6 +39,7 @@ import {
 } from '../src/lib/orders.ts';
 import {
   resumeOrContinueLegacyCheckout,
+  runLegacyCheckoutRoute,
   type LegacyCheckoutEntrypointResult,
 } from '../src/lib/checkout-legacy-order.ts';
 import {
@@ -194,6 +195,21 @@ function run(h: Harness, draft = legacyDraft({ checkoutLeaseId: RETRY_LEASE })) 
   }, h.deps);
 }
 
+/**
+ * A durable order whose bind is already HISTORY: bound Session, no candidate,
+ * no marker — both were consumed by the commit that bound it. Records written
+ * before the generation fence existed look exactly like this, and they must
+ * stay readable and resumable, so they are seeded as stored state rather than
+ * driven through a bind that legitimately refuses without current evidence.
+ */
+async function seedBoundOrder(stripeSessionId: string, overrides: Partial<OrderRecord> = {}) {
+  return persistNewOrder(legacyDraft({
+    checkoutLeaseExpiresAt: EXPIRED,
+    stripeSessionId,
+    ...overrides,
+  }));
+}
+
 async function stored(): Promise<OrderRecord | null> {
   return (await readOrderVersioned(ORDER_ID, { preferRecentCommit: true }))?.order ?? null;
 }
@@ -215,7 +231,13 @@ test('a first request continues to the media/order steps and touches no provider
   assert.deepEqual(h.calls, [], 'the provider is not reachable before uploads and the final order CAS');
 });
 
-test('a durable persistence failure refuses before any provider attempt, and may say so', async () => {
+test('a durable persistence failure refuses without claiming the buyer was not charged', async () => {
+  // The catch covers BOTH shapes of this call: creating the owner record for a
+  // first request, and reading back the existing one on a retry. The second can
+  // fail while an earlier request of the same attempt already entered a provider
+  // create — the failure is precisely that this code cannot see the evidence
+  // either way — so absence of evidence may not be reported as proof of no
+  // charge.
   installMemoryOrderStore();
   const h = harness({});
   h.deps.persistOrResumeCheckoutOrder = async () => { throw new Error('store unavailable'); };
@@ -224,7 +246,11 @@ test('a durable persistence failure refuses before any provider attempt, and may
 
   assert.equal(result.status, 'refused');
   assert.equal(result.status === 'refused' && result.httpStatus, 503);
-  assert.match(result.status === 'refused' ? result.message : '', /No charge was made/);
+  assert.equal(result.status === 'refused' && result.code, 'checkout_order_persist_failed');
+  assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
+  assert.doesNotMatch(result.status === 'refused' ? result.message : '', /no charge/i);
+  assert.match(result.status === 'refused' ? result.message : '', /do not pay again/i);
+  assert.match(result.status === 'refused' ? result.message : '', /support@herostorybooks\.com/);
   assert.deepEqual(h.calls, []);
 });
 
@@ -234,11 +260,8 @@ test('a durable persistence failure refuses before any provider attempt, and may
 
 test('an EXPIRED bound Session supersedes durably and creates exactly one replacement', async () => {
   installMemoryOrderStore();
-  await persistNewOrder(legacyDraft({ checkoutLeaseExpiresAt: EXPIRED }));
+  await seedBoundOrder('cs_old');
   const h = harness();
-  assert.ok(await bindOrderCheckoutSession(ORDER_ID, 'cs_old', {
-    leaseId: LEASE, fingerprint: FINGERPRINT, now: EARLIER,
-  }));
   h.minted.set('cs_old', { id: 'cs_old', url: 'https://checkout.stripe.test/old', status: 'expired' });
 
   const result = await run(h);
@@ -261,11 +284,8 @@ test('an EXPIRED bound Session supersedes durably and creates exactly one replac
 
 test('an OPEN bound Session is reused verbatim, and nothing is created', async () => {
   installMemoryOrderStore();
-  await persistNewOrder(legacyDraft({ checkoutLeaseExpiresAt: EXPIRED }));
+  await seedBoundOrder('cs_live');
   const h = harness();
-  assert.ok(await bindOrderCheckoutSession(ORDER_ID, 'cs_live', {
-    leaseId: LEASE, fingerprint: FINGERPRINT, now: EARLIER,
-  }));
   h.minted.set('cs_live', { id: 'cs_live', url: 'https://checkout.stripe.test/live', status: 'open' });
 
   const result = await run(h);
@@ -278,11 +298,8 @@ test('an OPEN bound Session is reused verbatim, and nothing is created', async (
 
 test('a COMPLETE bound Session refuses truthfully — never replaced, never denied', async () => {
   installMemoryOrderStore();
-  await persistNewOrder(legacyDraft({ checkoutLeaseExpiresAt: EXPIRED }));
+  await seedBoundOrder('cs_paid');
   const h = harness();
-  assert.ok(await bindOrderCheckoutSession(ORDER_ID, 'cs_paid', {
-    leaseId: LEASE, fingerprint: FINGERPRINT, now: EARLIER,
-  }));
   h.minted.set('cs_paid', { id: 'cs_paid', url: 'https://checkout.stripe.test/paid', status: 'complete' });
 
   const result = await run(h);
@@ -297,11 +314,8 @@ test('a COMPLETE bound Session refuses truthfully — never replaced, never deni
 
 test('an UNKNOWN bound Session fails closed on the provider outage instead of 409-ing forever', async () => {
   installMemoryOrderStore();
-  await persistNewOrder(legacyDraft({ checkoutLeaseExpiresAt: EXPIRED }));
+  await seedBoundOrder('cs_gone');
   const h = harness();
-  assert.ok(await bindOrderCheckoutSession(ORDER_ID, 'cs_gone', {
-    leaseId: LEASE, fingerprint: FINGERPRINT, now: EARLIER,
-  }));
 
   const result = await run(h);
 
@@ -316,8 +330,17 @@ test('an unbound CANDIDATE is reconciled by the shared machine, not re-created',
   installMemoryOrderStore();
   await persistNewOrder(legacyDraft({ checkoutLeaseExpiresAt: EXPIRED }));
   const h = harness();
+  // Exactly what the shared provisioner leaves behind when a create succeeds
+  // and the bind does not: the marker it committed before the provider call,
+  // and the candidate naming what the provider answered.
+  assert.equal(
+    (await beginCheckoutSessionProvisioning(ORDER_ID, {
+      leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: EARLIER,
+    })).status,
+    'committed',
+  );
   assert.ok(await recordCheckoutSessionCandidate(ORDER_ID, 'cs_lost', {
-    checkoutAttemptId: ATTEMPT, fingerprint: FINGERPRINT, now: NOW,
+    checkoutAttemptId: ATTEMPT, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: EARLIER,
   }));
   h.minted.set('cs_lost', { id: 'cs_lost', url: 'https://checkout.stripe.test/lost', status: 'open' });
 
@@ -331,18 +354,177 @@ test('an unbound CANDIDATE is reconciled by the shared machine, not re-created',
   assert.equal(durable?.checkoutSessionCandidate ?? null, null);
 });
 
-test('a bare provisioning marker enters recovery rather than falling through to re-upload', async () => {
+test('a bare provisioning marker enters recovery and stops there, creating nothing', async () => {
   installMemoryOrderStore();
   await persistNewOrder(legacyDraft({ checkoutLeaseExpiresAt: EXPIRED }));
   const h = harness();
-  assert.ok(await beginCheckoutSessionProvisioning(ORDER_ID, {
-    leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: EARLIER,
-  }));
+  assert.equal(
+    (await beginCheckoutSessionProvisioning(ORDER_ID, {
+      leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: EARLIER,
+    })).status,
+    'committed',
+  );
 
   const result = await run(h);
 
   assert.notEqual(result.status, 'continue', 'evidence of an earlier provider call must reach the shared machine');
-  // Same deterministic key as the interrupted attempt, so the provider itself
-  // collapses the retry onto whatever it already minted.
-  assert.deepEqual(creates(h), [`create:${checkoutProviderIdempotencyKey(ORDER_ID, 0)}`]);
+  // A marker with no candidate and no binding means a create was entered and
+  // its outcome is unknown. The provider may already hold a payable Session for
+  // this exact order, so this is where the machine stops and asks for
+  // reconciliation — it does not re-derive the key and try again.
+  assert.deepEqual(creates(h), [], 'no provider create may follow a bare marker');
+  assert.equal(result.status === 'refused' && result.code, 'checkout_session_reconciliation_required');
+  assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
+  assert.doesNotMatch(result.status === 'refused' ? result.message : '', /no charge/i);
+  assert.equal(
+    (await stored())?.checkoutSessionProvisioning?.checkoutSessionAttempt,
+    0,
+    'the marker survives for reconciliation',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The REACHABLE production route path
+//
+// `resumeOrContinueLegacyCheckout` being correct proves nothing about whether
+// `/api/order` actually reaches it. The route cannot be imported here
+// (next/server + Stripe), so its whole legacy orchestration — resume, then
+// media, then the shared machine — is the exported function below, and the
+// route is a thin adapter over it. These tests execute that production
+// function with injected dependencies, against the real order CAS.
+//
+// Wrapping the resume call inside it in `if (false)` fails every test here:
+// a resumable order would reach `continueWithMedia`, which is exactly what the
+// route must never do with an order that already has provider history.
+// ---------------------------------------------------------------------------
+
+interface RouteResponse { httpStatus: number; body: Record<string, unknown> }
+
+function routeHarness(h: Harness) {
+  const mediaUploads: string[] = [];
+  const deps = {
+    ...h.deps,
+    json: (body: Record<string, unknown>, httpStatus: number): RouteResponse => ({ httpStatus, body }),
+    async continueWithMedia(order: OrderRecord): Promise<RouteResponse> {
+      mediaUploads.push(order.id);
+      return { httpStatus: 200, body: { ok: true, redirectTo: 'https://checkout.stripe.test/after-media' } };
+    },
+  };
+  return { deps, mediaUploads };
+}
+
+function runRoute(h: Harness, draft = legacyDraft({ checkoutLeaseId: RETRY_LEASE })) {
+  const route = routeHarness(h);
+  return {
+    route,
+    result: runLegacyCheckoutRoute({
+      draftOrder: draft,
+      stripeProductId: 'prod_test',
+      baseUrl: 'https://preview.test',
+      gaClientId: null,
+    }, route.deps),
+  };
+}
+
+test('route: a first request reaches the media stage exactly once', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+
+  const { route, result } = runRoute(h, legacyDraft());
+  const response = await result;
+
+  assert.deepEqual(route.mediaUploads, [ORDER_ID], 'a clean order continues to its uploads');
+  assert.equal(response.httpStatus, 200);
+  assert.deepEqual(h.calls, [], 'and touches no provider before them');
+});
+
+test('route: an EXPIRED bound Session recovers through the shared machine, never through media', async () => {
+  installMemoryOrderStore();
+  await seedBoundOrder('cs_old');
+  const h = harness();
+  h.minted.set('cs_old', { id: 'cs_old', url: 'https://checkout.stripe.test/old', status: 'expired' });
+
+  const { route, result } = runRoute(h);
+  const response = await result;
+
+  assert.deepEqual(route.mediaUploads, [], 'a resumable order must never re-enter media upload');
+  assert.ok(h.calls.indexOf('supersede:cs_old') > -1, 'the route reached the shared provisioner');
+  assert.equal(response.httpStatus, 200);
+  assert.equal(response.body.redirectTo, h.minted.get('cs_1')!.url);
+  assert.equal((await stored())?.stripeSessionId, 'cs_1');
+});
+
+test('route: an OPEN bound Session is released without any media work', async () => {
+  installMemoryOrderStore();
+  await seedBoundOrder('cs_live');
+  const h = harness();
+  h.minted.set('cs_live', { id: 'cs_live', url: 'https://checkout.stripe.test/live', status: 'open' });
+
+  const { route, result } = runRoute(h);
+  const response = await result;
+
+  assert.deepEqual(route.mediaUploads, []);
+  assert.equal(response.body.redirectTo, 'https://checkout.stripe.test/live');
+  assert.equal(creates(h).length, 0);
+});
+
+test('route: an unbound CANDIDATE is reconciled by the shared machine, not re-uploaded', async () => {
+  installMemoryOrderStore();
+  await persistNewOrder(legacyDraft({ checkoutLeaseExpiresAt: EXPIRED }));
+  const h = harness();
+  assert.equal(
+    (await beginCheckoutSessionProvisioning(ORDER_ID, {
+      leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: EARLIER,
+    })).status,
+    'committed',
+  );
+  assert.ok(await recordCheckoutSessionCandidate(ORDER_ID, 'cs_lost', {
+    checkoutAttemptId: ATTEMPT, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: EARLIER,
+  }));
+  h.minted.set('cs_lost', { id: 'cs_lost', url: 'https://checkout.stripe.test/lost', status: 'open' });
+
+  const { route, result } = runRoute(h);
+  const response = await result;
+
+  assert.deepEqual(route.mediaUploads, []);
+  assert.ok(h.calls.indexOf('retrieve:cs_lost') > -1, 'the candidate was reconciled at the provider');
+  assert.equal(response.body.redirectTo, 'https://checkout.stripe.test/lost');
+  assert.equal(creates(h).length, 0);
+  assert.equal((await stored())?.stripeSessionId, 'cs_lost');
+});
+
+test('route: a refusal from the shared machine is returned verbatim and skips media', async () => {
+  installMemoryOrderStore();
+  await seedBoundOrder('cs_paid');
+  const h = harness();
+  h.minted.set('cs_paid', { id: 'cs_paid', url: 'https://checkout.stripe.test/paid', status: 'complete' });
+
+  const { route, result } = runRoute(h);
+  const response = await result;
+
+  assert.deepEqual(route.mediaUploads, []);
+  assert.equal(response.httpStatus, 409);
+  assert.equal(response.body.code, 'checkout_session_complete');
+  assert.equal(response.body.error, CHECKOUT_PAYMENT_MAY_BE_COMPLETE);
+  assert.equal(JSON.stringify(response).includes('checkout.stripe.test'), false);
+});
+
+test('route: a bare provisioning marker stops before media AND before the provider', async () => {
+  installMemoryOrderStore();
+  await persistNewOrder(legacyDraft({ checkoutLeaseExpiresAt: EXPIRED }));
+  const h = harness();
+  assert.equal(
+    (await beginCheckoutSessionProvisioning(ORDER_ID, {
+      leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: EARLIER,
+    })).status,
+    'committed',
+  );
+
+  const { route, result } = runRoute(h);
+  const response = await result;
+
+  assert.deepEqual(route.mediaUploads, []);
+  assert.deepEqual(creates(h), []);
+  assert.equal(response.body.code, 'checkout_session_reconciliation_required');
+  assert.doesNotMatch(String(response.body.error), /no charge/i);
 });

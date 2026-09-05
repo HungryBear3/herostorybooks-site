@@ -1194,9 +1194,14 @@ test('a malformed or foreign durable candidate never reaches the provider', asyn
 
     assert.equal(retry.status, 'refused', JSON.stringify(candidate));
     // Uncertainty, not absence: the order cannot be read, so the reservation is
-    // preserved and nothing downstream may act on a guess.
-    assert.equal(retry.status === 'refused' && retry.code, 'direct_intake_order_persist_failed');
+    // preserved and nothing downstream may act on a guess. It is reported as
+    // the UNKNOWN reconciliation it is — a Session for this order was already
+    // created and released once, and an unreadable record is not evidence that
+    // the buyer's money is untouched.
+    assert.equal(retry.status === 'refused' && retry.code, 'direct_intake_order_persist_unknown');
     assert.equal(retry.status === 'refused' && retry.httpStatus, 503);
+    assert.doesNotMatch(retry.status === 'refused' ? retry.error : '', /no charge/i);
+    assert.match(retry.status === 'refused' ? retry.error : '', /do not pay again/i);
     assert.equal(
       h.calls.filter((call) => call === 'stripe-create').length,
       createsBefore,
@@ -1232,19 +1237,38 @@ test('a candidate that cannot be persisted releases no URL and mints no second S
   assert.equal(stranded?.stripeSessionId ?? null, null);
   assert.equal(stranded?.checkoutSessionCandidate ?? null, null);
 
-  // EXACT documented fail-closed behaviour of this branch: with no durable
-  // candidate there is nothing to resume, so a safe retry DOES call the
-  // provider again — but under the same deterministic idempotency key, so the
-  // provider returns the same Session rather than minting a second payable one.
+  // What is left behind is the marker, and a Session that EXISTS at the
+  // provider but is named nowhere durable. That is the ambiguous state, and the
+  // retry may not resolve it by asking again: re-issuing the same key only
+  // returns the same Session for as long as the provider still remembers it,
+  // and nothing here controls that window. So the retry creates NOTHING and
+  // asks for reconciliation, with the marker and the media intact.
   persistenceAvailable = true;
   const retry = await runDirectIntakeCheckout(params, h.deps);
 
-  assert.equal(retry.status, 'redirect', JSON.stringify(retry));
-  assert.deepEqual(keys, [IDEMPOTENCY_KEY, IDEMPOTENCY_KEY], 'the idempotency key stays deterministic');
+  assert.equal(retry.status, 'refused', JSON.stringify(retry));
+  assert.equal(
+    retry.status === 'refused' && retry.code,
+    'direct_intake_session_reconciliation_required',
+  );
+  assert.deepEqual(keys, [IDEMPOTENCY_KEY], 'zero provider creates on the retry');
   assert.equal(h.sessions.size, 1);
   assert.equal(h.sessionsById.size, 1, 'exactly one payable Session for one attempt');
-  assert.equal((await storedOrder())?.stripeSessionId, 'cs_1');
-  assert.equal((await storedOrder())?.checkoutSessionCandidate ?? null, null);
+  assert.equal(JSON.stringify(retry).includes('checkout.stripe.test'), false);
+  assert.doesNotMatch(retry.status === 'refused' ? retry.error : '', /no charge/i);
+  const durable = await storedOrder();
+  assert.equal(durable?.stripeSessionId ?? null, null);
+  assert.equal(durable?.checkoutSessionCandidate ?? null, null);
+  assert.equal(
+    durable?.checkoutSessionProvisioning?.checkoutSessionAttempt,
+    0,
+    'the marker naming the outstanding create is preserved for reconciliation',
+  );
+  assert.equal(
+    durable?.checkoutIntakeMediaRetention?.status,
+    'active',
+    'and the media that Session would be paid for is retained',
+  );
 });
 
 test('a renewal outage refuses before the provider rather than creating on stale authority', async () => {

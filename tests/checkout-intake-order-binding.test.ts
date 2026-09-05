@@ -696,10 +696,28 @@ test('a replacement CANDIDATE after one supersession reconciles as the same orde
     stripeSessionId: 'cs_replacement',
     checkoutAttemptId: ATTEMPT,
     checkoutFingerprint: committed.order.checkoutFingerprint!,
+    checkoutSessionAttempt: 1,
     recordedAt: '2026-09-02T12:31:00.000Z',
   };
 
   assert.equal(exactIntakeBoundOrder(retried, committed.order), true);
+
+  // The exemption is for evidence this code can ACCOUNT for. A candidate stuck
+  // on the retired generation, or naming a Session this order already retired,
+  // is not server-written bookkeeping we recognise — it stays in the comparison
+  // and is reported as the conflict it is.
+  for (const unaccountable of [
+    { checkoutSessionAttempt: 0 },
+    { stripeSessionId: 'cs_dead' },
+  ]) {
+    const drifted = structuredClone(retried);
+    drifted.checkoutSessionCandidate = { ...retried.checkoutSessionCandidate!, ...unaccountable };
+    assert.equal(
+      exactIntakeBoundOrder(drifted, committed.order),
+      false,
+      JSON.stringify(unaccountable),
+    );
+  }
 });
 
 test('a replacement BOUND Session after one supersession reconciles as the same order', async () => {
@@ -745,6 +763,7 @@ test('the saga itself resumes a superseded, candidate-bearing durable order inst
     stripeSessionId: 'cs_replacement',
     checkoutAttemptId: ATTEMPT,
     checkoutFingerprint: durable.checkoutFingerprint!,
+    checkoutSessionAttempt: 1,
     recordedAt: '2026-09-02T12:31:00.000Z',
   };
   h.orders.set(ORDER_ID, durable);

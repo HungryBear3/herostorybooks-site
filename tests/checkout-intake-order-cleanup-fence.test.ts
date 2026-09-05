@@ -335,17 +335,43 @@ test('finalized cleanup retains paid, session-bound, active-lease, mismatched, a
 });
 
 test('claim versus checkout-session binding has exactly one atomic winner', async () => {
-  await installOrder(order());
-  const [claim, binding] = await Promise.all([
-    claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER }),
-    bindOrderCheckoutSession(ORDER_ID, 'cs_race'),
-  ]);
-  assert.equal((claim.status === 'claimed') !== Boolean(binding), true);
-  const stored = await storedOrder();
-  assert.equal(
-    stored?.checkoutIntakeMediaRetention?.status === 'cleanup_claimed',
-    stored?.stripeSessionId !== 'cs_race',
-  );
+  // Run from BOTH sides, because the two are no longer symmetrical: a bind now
+  // has to prove a live lease and current evidence, and a claim has to prove
+  // the opposite. Whichever state they meet in, exactly one may commit.
+  for (const [name, seed, expectClaimed] of [
+    ['nothing to bind: cleanup owns it', order(), true],
+    [
+      'a live attempt mid-bind: the buyer owns it',
+      order({
+        checkoutLeaseExpiresAt: new Date(TEN_YEARS_LATER.getTime() + 60_000).toISOString(),
+        checkoutSessionProvisioning: PROVISIONING,
+        checkoutSessionCandidate: { ...CANDIDATE, stripeSessionId: 'cs_race' },
+      }),
+      false,
+    ],
+  ] as Array<[string, OrderRecord, boolean]>) {
+    __resetOrderStoreAdapterFactoryForTests();
+    await installOrder(seed);
+
+    const [claim, binding] = await Promise.all([
+      claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER }),
+      bindOrderCheckoutSession(ORDER_ID, 'cs_race', {
+        leaseId: LEASE_ID,
+        fingerprint: FINGERPRINT,
+        checkoutSessionAttempt: 0,
+        now: TEN_YEARS_LATER,
+      }),
+    ]);
+
+    assert.equal((claim.status === 'claimed') !== Boolean(binding), true, name);
+    assert.equal(claim.status === 'claimed', expectClaimed, name);
+    const stored = await storedOrder();
+    assert.equal(
+      stored?.checkoutIntakeMediaRetention?.status === 'cleanup_claimed',
+      stored?.stripeSessionId !== 'cs_race',
+      name,
+    );
+  }
 });
 
 test('stale renew and expired-lease takeover are blocked after cleanup claim', async () => {
@@ -494,6 +520,9 @@ const CANDIDATE = {
   stripeSessionId: 'cs_candidate',
   checkoutAttemptId: ATTEMPT,
   checkoutFingerprint: FINGERPRINT,
+  // The supersession generation the Session was created under. A candidate
+  // without one cannot be told apart from a retired attempt's leftovers.
+  checkoutSessionAttempt: 0,
   recordedAt: FINALIZED_AT.toISOString(),
 };
 
@@ -548,10 +577,11 @@ test('a provider create in flight is never overtaken by cleanup: the marker wins
   await installOrder(order({
     checkoutLeaseExpiresAt: new Date(FINALIZED_AT.getTime() + 5 * 60_000).toISOString(),
   }));
-  assert.ok(
-    await beginCheckoutSessionProvisioning(ORDER_ID, {
+  assert.equal(
+    (await beginCheckoutSessionProvisioning(ORDER_ID, {
       leaseId: LEASE_ID, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: FINALIZED_AT,
-    }),
+    })).status,
+    'committed',
     'the marker is committed under the exact live lease, before the provider call',
   );
 
@@ -565,6 +595,7 @@ test('a provider create in flight is never overtaken by cleanup: the marker wins
   const recorded = await recordCheckoutSessionCandidate(ORDER_ID, 'cs_inflight', {
     checkoutAttemptId: ATTEMPT,
     fingerprint: FINGERPRINT,
+    checkoutSessionAttempt: 0,
     now: TEN_YEARS_LATER,
   });
   assert.equal(recorded?.checkoutSessionCandidate?.stripeSessionId, 'cs_inflight');
@@ -572,7 +603,7 @@ test('a provider create in flight is never overtaken by cleanup: the marker wins
   // …and it still may not bind or expose anything under a dead lease.
   assert.equal(
     await bindOrderCheckoutSession(ORDER_ID, 'cs_inflight', {
-      leaseId: LEASE_ID, fingerprint: FINGERPRINT, now: TEN_YEARS_LATER,
+      leaseId: LEASE_ID, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: TEN_YEARS_LATER,
     }),
     null,
     'a stale worker records for reconciliation; it never binds',
@@ -593,13 +624,14 @@ test('a cleanup claim that wins an unprotected race still makes candidate persis
   const recorded = await recordCheckoutSessionCandidate(ORDER_ID, 'cs_inflight', {
     checkoutAttemptId: ATTEMPT,
     fingerprint: FINGERPRINT,
+    checkoutSessionAttempt: 0,
     now: TEN_YEARS_LATER,
   });
 
   assert.equal(recorded, null, 'a claimed order may not accept new Session evidence');
   assert.equal(
     await bindOrderCheckoutSession(ORDER_ID, 'cs_inflight', {
-      leaseId: LEASE_ID, fingerprint: FINGERPRINT, now: TEN_YEARS_LATER,
+      leaseId: LEASE_ID, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: TEN_YEARS_LATER,
     }),
     null,
     'and it may certainly not be bound',
@@ -615,11 +647,11 @@ test('a claimed order can no longer authorise a new provider create', async () =
     (await claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER })).status,
     'claimed',
   );
-  assert.equal(
+  assert.deepEqual(
     await beginCheckoutSessionProvisioning(ORDER_ID, {
       leaseId: LEASE_ID, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: FINALIZED_AT,
     }),
-    null,
+    { status: 'refused' },
   );
 });
 
@@ -680,11 +712,14 @@ test('a record carrying BOTH a bound session and a provisioning marker is unread
 });
 
 test('candidate persistence and cleanup claim have exactly one atomic winner', async () => {
-  await installOrder(order());
+  // The marker is what a create is entered from, so a candidate landing in a
+  // race always has one behind it. It also means cleanup is already fenced —
+  // which is the point: these two can never both win.
+  await installOrder(order({ checkoutSessionProvisioning: PROVISIONING }));
   const [claim, recorded] = await Promise.all([
     claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER }),
     recordCheckoutSessionCandidate(ORDER_ID, 'cs_race', {
-      checkoutAttemptId: ATTEMPT, fingerprint: FINGERPRINT, now: TEN_YEARS_LATER,
+      checkoutAttemptId: ATTEMPT, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: TEN_YEARS_LATER,
     }),
   ]);
 

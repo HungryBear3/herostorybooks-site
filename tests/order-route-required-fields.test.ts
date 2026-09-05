@@ -123,10 +123,13 @@ test('checkout contract: order route validates real photo bytes, derives intent,
   assert.match(src, /clearUntrustedSupportingPhotoMetadata/);
   assert.match(src, /new Set\(supportingPhotoFiles\.keys\(\)\)/);
   // The durable owner record is created-or-resumed through the shared legacy
-  // entrypoint, which still runs before any media upload.
-  assert.match(src, /await resumeOrContinueLegacyCheckout\(/);
-  assert.match(src, /withOrderTransaction(?:<[^>]+>)?\(draftOrder\.id/);
-  assert.ok(src.indexOf('await resumeOrContinueLegacyCheckout(') < src.indexOf('await uploadOrderPhoto'));
+  // orchestration, which still runs before any media upload — the uploads are
+  // now literally inside the continuation it only reaches for an order with no
+  // provider history (src/lib/checkout-legacy-order.ts, driven end-to-end in
+  // tests/checkout-legacy-order-entrypoint.test.ts).
+  assert.match(src, /await runLegacyCheckoutRoute<NextResponse>\(/);
+  assert.match(src, /withOrderTransaction(?:<[^>]+>)?\(persisted\.id/);
+  assert.ok(src.indexOf('await runLegacyCheckoutRoute<NextResponse>(') < src.indexOf('await uploadOrderPhoto'));
   assert.match(src, /rollbackOrderMediaUploads/);
   assert.match(src, /rollbackUploadedMedia\('supporting photo persistence failure'\)/);
   assert.match(src, /rollbackUploadedMedia\('voice persistence failure'\)/);

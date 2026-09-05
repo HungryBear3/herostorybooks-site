@@ -47,6 +47,7 @@ import { abortIntakeFinalization, finalizeIntakeSelection } from './checkout-fin
 import { markIntakeFinalized, type IntakeStore } from './checkout-intake.ts';
 import {
   getOrderAuthoritative,
+  hasCheckoutProviderEvidence,
   persistNewOrder,
   requiresDurablePersistence,
   sanitizeFamilyCharacters,
@@ -57,6 +58,7 @@ import {
   CHECKOUT_ATTEMPT_ALREADY_RESOLVED,
   CHECKOUT_NO_CHARGE_RETRY,
   CHECKOUT_RECONCILIATION_NO_CHARGE,
+  CHECKOUT_RECONCILIATION_SUPPORT,
   provisionCheckoutSession,
   type CheckoutSessionProvisionDeps,
   type ProviderCheckoutSession,
@@ -104,6 +106,7 @@ const DIRECT_INTAKE_CODE: Readonly<Record<string, string>> = {
   checkout_session_identity_missing: 'direct_intake_checkout_lease_missing',
   checkout_session_candidate_invalid: 'direct_intake_session_candidate_invalid',
   checkout_session_provisioning_failed: 'direct_intake_session_provisioning_failed',
+  checkout_session_reconciliation_required: 'direct_intake_session_reconciliation_required',
   checkout_session_create_failed: 'direct_intake_session_create_failed',
   checkout_session_retrieve_failed: 'direct_intake_session_retrieve_failed',
   checkout_session_candidate_persist_failed: 'direct_intake_session_candidate_persist_failed',
@@ -258,13 +261,31 @@ export async function runDirectIntakeCheckout(
         `[order] ABORT BEFORE STRIPE: durable order persistence failed for ${bound.orderId} `
         + `(reconciliation=${bound.reconciliation}, reservation=${bound.reservation})`,
       );
-      return refused(503, 'direct_intake_order_persist_failed', NO_CHARGE_RETRY);
+      // Two different failures wear this status, and only one of them is
+      // provable. `absent` means the AUTHORITATIVE store answered and no order
+      // exists for this id — no order, therefore no lease, no marker and no
+      // create: the no-charge sentence is earned. `unknown` means the store did
+      // not answer at all, so whether an earlier request of this same attempt
+      // already reached the provider is exactly what cannot be seen. Reporting
+      // that as "no charge was made" would be inventing evidence.
+      return bound.reconciliation === 'unknown'
+        ? refused(503, 'direct_intake_order_persist_unknown', CHECKOUT_RECONCILIATION_SUPPORT)
+        : refused(503, 'direct_intake_order_persist_failed', NO_CHARGE_RETRY);
     case 'intake_mark_pending':
       // The order IS durable. Refusing here leaves it for the authoritative
       // reconciliation sweep rather than charging against an intake that does
       // not yet know which order owns its media.
+      //
+      // A resumed order can arrive here carrying provider evidence from an
+      // earlier request of the same attempt — a candidate or a provisioning
+      // marker are both exempt from the pre-Stripe comparison, by design — and
+      // then a payable Session may already exist.
       log(`[order] ABORT BEFORE STRIPE: intake acknowledgement pending for ${bound.order.id}`);
-      return refused(503, 'direct_intake_mark_pending', NO_CHARGE_RETRY);
+      return refused(
+        503,
+        'direct_intake_mark_pending',
+        hasCheckoutProviderEvidence(bound.order) ? CHECKOUT_RECONCILIATION_SUPPORT : NO_CHARGE_RETRY,
+      );
     default:
       return refused(503, 'direct_intake_binding_unrecognised', NO_CHARGE_RETRY);
   }
@@ -272,7 +293,13 @@ export async function runDirectIntakeCheckout(
   const order = bound.order;
   if (!order.checkoutLeaseId || !order.checkoutFingerprint) {
     log(`[order] ABORT BEFORE STRIPE: durable order ${order.id} has no checkout lease to bind against`);
-    return refused(503, 'direct_intake_checkout_lease_missing', RECONCILIATION_REQUIRED);
+    // Nothing was released by THIS request, but a resumed order can already
+    // carry a candidate or a provisioning marker from an earlier one.
+    return refused(
+      503,
+      'direct_intake_checkout_lease_missing',
+      hasCheckoutProviderEvidence(order) ? CHECKOUT_RECONCILIATION_SUPPORT : RECONCILIATION_REQUIRED,
+    );
   }
 
   // Non-essential, and strictly after the safety-critical commit.

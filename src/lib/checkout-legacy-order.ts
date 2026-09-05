@@ -40,8 +40,7 @@ import {
   type OrderRecord,
 } from './orders.ts';
 import {
-  CHECKOUT_NO_CHARGE_RETRY,
-  CHECKOUT_RECONCILIATION_NO_CHARGE,
+  CHECKOUT_RECONCILIATION_SUPPORT,
   provisionCheckoutSession,
   type CheckoutChargeRisk,
   type CheckoutSessionProvisionDeps,
@@ -86,15 +85,24 @@ export async function resumeOrContinueLegacyCheckout(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     log(`[order] ABORT BEFORE MEDIA/PROVIDER: durable draft persistence failed for ${draft.id}: ${message}`);
-    // Provably before any provider attempt of any kind: nothing in this request
-    // has touched the provider, and no durable evidence was read. This is one
-    // of the few places the no-charge sentence is actually earned.
+    // This request has certainly not touched the provider. That is NOT the same
+    // as no provider call having happened for this order, and the difference is
+    // the whole point of this catch.
+    //
+    // `persistOrResumeCheckoutOrder` does two things: it creates the owner
+    // record, and — on a retry, which is the ordinary case here, since the
+    // browser deliberately reuses its `checkoutAttemptId` — it reads back the
+    // existing one. When it throws, the failure is exactly that this code
+    // cannot see the durable record: whether that record carries a bound
+    // Session, a candidate, or a provisioning marker from an earlier request is
+    // precisely what is unknown. A store or parser outage is not evidence of
+    // absence, so this may not tell the buyer their money is untouched.
     return {
       status: 'refused',
       httpStatus: 503,
       code: 'checkout_order_persist_failed',
-      message: CHECKOUT_NO_CHARGE_RETRY,
-      chargeRisk: 'not_charged',
+      message: CHECKOUT_RECONCILIATION_SUPPORT,
+      chargeRisk: 'may_be_charged',
     };
   }
 
@@ -108,13 +116,15 @@ export async function resumeOrContinueLegacyCheckout(
   const fingerprint = persisted.checkoutFingerprint ?? draft.checkoutFingerprint;
   if (!leaseId || !fingerprint) {
     // A record carrying provider evidence but no checkout identity cannot be
-    // reconciled by anything here, and must not be guessed at.
+    // reconciled by anything here, and must not be guessed at. This branch is
+    // only reachable BECAUSE there is provider evidence, so the copy may not
+    // deny a charge — a Session for this order may exist and may be payable.
     log(`[order] ABORT BEFORE PROVIDER: ${persisted.id} carries provider evidence but no checkout identity`);
     return {
       status: 'refused',
       httpStatus: 503,
       code: 'checkout_session_identity_missing',
-      message: CHECKOUT_RECONCILIATION_NO_CHARGE,
+      message: CHECKOUT_RECONCILIATION_SUPPORT,
       chargeRisk: 'may_be_charged',
     };
   }
@@ -130,4 +140,52 @@ export async function resumeOrContinueLegacyCheckout(
 
   if (provisioned.status === 'refused') return provisioned;
   return { status: 'released', url: provisioned.url, order: provisioned.order };
+}
+
+/**
+ * The legacy path's whole pre-media orchestration, as a function that can
+ * actually be executed.
+ *
+ * `/api/order` cannot be imported under `node:test` — it pulls in `next/server`
+ * and the Stripe SDK — so for as long as the decision above was made inline in
+ * the handler, no test could show that the handler REACHES it. That gap was
+ * real: wrapping the route's resume block in `if (false)` removed the entire
+ * pre-media recovery and every test still passed, because they proved the
+ * entrypoint's behaviour in isolation and the route's shape lexically.
+ *
+ * So the decision and its two exits live here, the route is a thin adapter that
+ * supplies its response type, its dependencies and its media continuation, and
+ * the behaviour is driven end-to-end in checkout-legacy-order-entrypoint.test.
+ * `continueWithMedia` — the route's uploads, its final order CAS and its
+ * provisioning hand-off — is reached ONLY for an order with no provider
+ * history. Anything resumable is answered here, before a single byte of media
+ * is uploaded, and a mutation that skips the resume shows up immediately as an
+ * order with provider history reaching the media stage.
+ *
+ * Generic in the response type so the route keeps returning real
+ * `NextResponse`s and this module keeps knowing nothing about Next.
+ */
+export interface LegacyCheckoutRouteDeps<TResponse> extends LegacyCheckoutEntrypointDeps {
+  /** Build the route's response object. Wired to NextResponse.json. */
+  json(body: Record<string, unknown>, httpStatus: number): TResponse;
+  /**
+   * Everything the route does when — and only when — this order has no provider
+   * history: media uploads, the final order CAS, then the shared provisioner.
+   */
+  continueWithMedia(order: OrderRecord): Promise<TResponse>;
+}
+
+export async function runLegacyCheckoutRoute<TResponse>(
+  params: LegacyCheckoutEntrypointParams,
+  deps: LegacyCheckoutRouteDeps<TResponse>,
+): Promise<TResponse> {
+  const resumed = await resumeOrContinueLegacyCheckout(params, deps);
+
+  if (resumed.status === 'refused') {
+    return deps.json({ error: resumed.message, code: resumed.code }, resumed.httpStatus);
+  }
+  if (resumed.status === 'released') {
+    return deps.json({ ok: true, redirectTo: resumed.url }, 200);
+  }
+  return deps.continueWithMedia(resumed.order);
 }

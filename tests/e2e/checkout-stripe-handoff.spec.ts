@@ -148,8 +148,11 @@ test('an unapproved redirect target fails closed and keeps the recovery path', a
   const pay = await fillCheckoutToReview(page);
   await pay.click();
 
-  await expect(page.getByTestId('submit-error')).toBeVisible();
-  await expect(page.getByTestId('submit-error')).toContainText(/have not been charged/i);
+  const submitError = page.getByTestId('submit-error');
+  await expect(submitError).toBeVisible();
+  await expect(submitError).toContainText(/do not pay again/i);
+  await expect(submitError).toContainText(/support@herostorybooks\.com/i);
+  await expect(submitError).not.toContainText(/have not been charged/i);
   // Still on checkout: the lookalike host was never navigated to.
   expect(new URL(page.url()).pathname).toBe('/checkout');
   expect(harness.orderRequests).toHaveLength(1);

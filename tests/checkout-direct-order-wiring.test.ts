@@ -185,7 +185,7 @@ test('order route: the direct branch returns before any legacy public upload hel
 });
 
 test('order route: legacy ordering guarantees are untouched', () => {
-  const resumeIdx = HANDLER.indexOf('await resumeOrContinueLegacyCheckout');
+  const resumeIdx = HANDLER.indexOf('await runLegacyCheckoutRoute<NextResponse>');
   const casIdx = HANDLER.indexOf('await withOrderTransaction');
   const provisionIdx = HANDLER.indexOf('await provisionCheckoutSession');
   const promoIdx = ROUTE.indexOf('allow_promotion_codes: true');
@@ -291,19 +291,30 @@ test('order route: the legacy bound-Session fast path cannot come back', () => {
 });
 
 test('order route: every legacy exit to the provider goes through a shared entrypoint', () => {
-  // Exactly two hand-offs exist on the legacy path: the resume/recovery
-  // entrypoint before media, and the shared machine after the final order CAS.
-  assert.match(HANDLER, /await resumeOrContinueLegacyCheckout\(/);
+  // Exactly two hand-offs exist on the legacy path: the orchestration that owns
+  // the resume/recovery decision before media, and the shared machine after the
+  // final order CAS. The first one is a function the tests can actually EXECUTE
+  // (checkout-legacy-order-entrypoint.test.ts drives it with injected
+  // dependencies), because a decision made inline in an un-importable handler
+  // could be removed without a single test noticing — it was.
+  assert.match(HANDLER, /await runLegacyCheckoutRoute<NextResponse>\(/);
+  assert.match(HANDLER, /continueWithMedia: async \(persisted\) => \{/);
   assert.match(HANDLER, /await provisionCheckoutSession\(/);
   assert.match(ROUTE, /from '@\/lib\/checkout-legacy-order'/);
   assert.match(ROUTE, /from '@\/lib\/checkout-session-provisioning'/);
+  // The resume decision itself lives in the shared entrypoint, and the media
+  // continuation is reachable only through it.
+  const entrypoint = readFileSync('src/lib/checkout-legacy-order.ts', 'utf8');
+  assert.match(entrypoint, /await resumeOrContinueLegacyCheckout\(params, deps\)/);
+  assert.match(entrypoint, /return deps\.continueWithMedia\(resumed\.order\)/);
+  assert.doesNotMatch(HANDLER, /resumeOrContinueLegacyCheckout/);
   // Media, pause, and order persistence all precede BOTH of them.
-  const resumeIdx = HANDLER.indexOf('await resumeOrContinueLegacyCheckout(');
+  const resumeIdx = HANDLER.indexOf('await runLegacyCheckoutRoute<NextResponse>(');
   const provisionIdx = HANDLER.indexOf('await provisionCheckoutSession(');
   for (const [label, marker] of [
     ['checkout pause', 'isCheckoutPaused()'],
     ['request parse', 'parseDirectIntakeOrderRequest(form)'],
-    ['durable owner record', 'await resumeOrContinueLegacyCheckout('],
+    ['durable owner record', 'await runLegacyCheckoutRoute<NextResponse>('],
   ] as const) {
     const idx = HANDLER.indexOf(marker);
     assert.ok(idx > -1 && idx <= resumeIdx, `${label} must precede the legacy resume entrypoint`);

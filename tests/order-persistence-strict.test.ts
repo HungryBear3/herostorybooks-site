@@ -263,10 +263,17 @@ test('order route source: the handler keeps no provider call and no session deci
   const src = await readFile('src/app/api/order/route.ts', 'utf8');
   const handler = src.slice(0, src.indexOf('async function retrieveDirectCheckoutSession'));
   assert.ok(handler.length > 0, 'the provider adapters must stay below the request handler');
-  assert.ok(handler.indexOf('await resumeOrContinueLegacyCheckout') > -1,
+  // The durable create-or-resume, and the recovery decision that depends on it,
+  // are delegated to one exported orchestration the tests can execute directly
+  // (tests/checkout-legacy-order-entrypoint.test.ts). The handler supplies its
+  // dependencies and its media continuation, and decides nothing itself.
+  assert.ok(handler.indexOf('await runLegacyCheckoutRoute<NextResponse>') > -1,
     'route must atomically create or resume the exact durable owner record through the shared entrypoint');
+  const entrypoint = await readFile('src/lib/checkout-legacy-order.ts', 'utf8');
+  assert.ok(entrypoint.indexOf('await deps.persistOrResumeCheckoutOrder(draft)') > -1,
+    'the shared entrypoint owns the durable create-or-resume');
   assert.ok(
-    handler.indexOf('await withOrderTransaction') > handler.indexOf('await resumeOrContinueLegacyCheckout'),
+    handler.indexOf('await withOrderTransaction') > handler.indexOf('await runLegacyCheckoutRoute<NextResponse>'),
     'route must update the draft through versioned CAS after the durable owner record exists',
   );
   assert.ok(

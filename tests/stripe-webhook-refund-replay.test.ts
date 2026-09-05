@@ -19,8 +19,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  beginCheckoutSessionProvisioning,
   bindOrderCheckoutSession,
   createOrderRecord,
+  recordCheckoutSessionCandidate,
   getOrder,
   persistOrder,
   recordPaymentSettlementConflict,
@@ -216,10 +218,34 @@ test('unbound pending order cannot be claimed by settlement', async () => {
 
 test('checkout binding and conflict ledger are durable and idempotent', async () => {
   const dir = makeTmp();
+  const now = new Date('2026-04-29T00:05:00.000Z');
+  const LEASE = '11111111-1111-4111-8111-111111111111';
+  const ATTEMPT = 'a'.repeat(32);
+  const FINGERPRINT = 'f'.repeat(64);
   try {
-    await seed({ paymentStatus: 'pending', stripeSessionId: null }, 'ord_bind');
-    assert.equal((await bindOrderCheckoutSession('ord_bind', 'cs_bound'))?.stripeSessionId, 'cs_bound');
-    assert.equal(await bindOrderCheckoutSession('ord_bind', 'cs_other'), null);
+    await seed({
+      paymentStatus: 'pending',
+      stripeSessionId: null,
+      checkoutAttemptId: ATTEMPT,
+      checkoutFingerprint: FINGERPRINT,
+      checkoutLeaseId: LEASE,
+      checkoutLeaseExpiresAt: new Date(now.getTime() + 5 * 60_000).toISOString(),
+    }, 'ord_bind');
+    // The bind is the commit that makes a Session payable, so it consumes the
+    // exact evidence the provisioner laid down for it — the marker committed
+    // before the create, and the candidate naming what came back.
+    assert.equal(
+      (await beginCheckoutSessionProvisioning('ord_bind', {
+        leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now,
+      })).status,
+      'committed',
+    );
+    assert.ok(await recordCheckoutSessionCandidate('ord_bind', 'cs_bound', {
+      checkoutAttemptId: ATTEMPT, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now,
+    }));
+    const checkout = { leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now };
+    assert.equal((await bindOrderCheckoutSession('ord_bind', 'cs_bound', checkout))?.stripeSessionId, 'cs_bound');
+    assert.equal(await bindOrderCheckoutSession('ord_bind', 'cs_other', checkout), null);
     const conflict = { stripeSessionId: 'cs_other', amountSubtotalCents: 1900, amountTotalCents: 950, reason: 'stripe_session_binding_mismatch' };
     await recordPaymentSettlementConflict('ord_bind', conflict);
     await recordPaymentSettlementConflict('ord_bind', conflict);

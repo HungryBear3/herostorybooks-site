@@ -78,10 +78,9 @@ test('updateOrderPayment patches paymentStatus without touching other fields', a
   try {
     // Persist the dummy order first
     const ordersModule = await import('../src/lib/orders.ts');
-    await ordersModule.persistOrder(DUMMY_ORDER);
-
-    // Bind the exact provider obligation before settlement.
-    await ordersModule.bindOrderCheckoutSession('ord_test_abc', 'cs_test_session_123');
+    // The exact provider obligation is already bound, as it is for any order
+    // that reached payment: the bind is what released the URL to the buyer.
+    await ordersModule.persistOrder({ ...DUMMY_ORDER, stripeSessionId: 'cs_test_session_123' });
 
     // Now call updateOrderPayment
     const result = await ordersModule.updateOrderPayment('ord_test_abc', 'paid', {

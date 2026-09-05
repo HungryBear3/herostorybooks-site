@@ -8,9 +8,11 @@ import { readFileSync } from 'node:fs';
 
 import { recordUnmatchedPaymentSettlement } from '../src/lib/payment-recovery.ts';
 import {
+  beginCheckoutSessionProvisioning,
   createOrderRecord,
   bindOrderCheckoutSession,
   persistOrResumeCheckoutOrder,
+  recordCheckoutSessionCandidate,
   renewCheckoutLease,
 } from '../src/lib/orders.ts';
 
@@ -50,11 +52,14 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   assert.match(route, /createHash\('sha256'\)\.update\(checkoutAttemptId\)/);
   // The durable create-or-exact-resume of the owner record still happens
   // before any media and any provider call — it simply moved into the shared
-  // legacy entrypoint, where the recovery decision that depends on it also
-  // lives. Behaviour is driven end-to-end there against the real order CAS in
-  // tests/checkout-legacy-order-entrypoint.test.ts.
-  assert.match(route, /await resumeOrContinueLegacyCheckout\(\{[\s\S]{0,400}?draftOrder,/);
+  // legacy entrypoint, together with the recovery decision that depends on it
+  // and the media continuation that may only run when there is none. The route
+  // hands that whole orchestration its dependencies; the behaviour is driven
+  // end-to-end through the exported production function against the real order
+  // CAS in tests/checkout-legacy-order-entrypoint.test.ts.
+  assert.match(route, /await runLegacyCheckoutRoute<NextResponse>\(\{[\s\S]{0,400}?draftOrder,/);
   const legacyEntrypoint = readFileSync('src/lib/checkout-legacy-order.ts', 'utf8');
+  assert.match(legacyEntrypoint, /await resumeOrContinueLegacyCheckout\(params, deps\)/);
   assert.match(legacyEntrypoint, /await deps\.persistOrResumeCheckoutOrder\(draft\)/);
   assert.match(route, /checkoutRequestFingerprint\(form\)/);
   assert.match(fingerprint, /value\.arrayBuffer\(\)/);
@@ -73,13 +78,18 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   assert.match(provisioner, /if \(!renewed\) \{[\s\S]{0,400}?checkout_lease_lost/);
   // Stripe idempotency stays deterministic per order and per provider attempt,
   // and the durable pre-provider marker names the SAME attempt the key was
-  // derived from — so a retry of an interrupted create reuses that exact key
-  // instead of minting a second payable Session.
+  // derived from. The key is the second line of defence, not the first: a
+  // retry that finds that marker still standing does not re-issue it at all —
+  // it stops and asks for reconciliation, because provider retention is finite
+  // and an interrupted create may already have minted a payable Session.
   assert.match(
     provisioner,
-    /const attempt = current\.checkoutSessionAttempt \?\? 0;\s*\n\s*const idempotencyKey = checkoutProviderIdempotencyKey\(orderId, attempt\);/,
+    /const attempt = current\.checkoutSessionAttempt \?\? 0;[\s\S]{0,200}?const idempotencyKey = checkoutProviderIdempotencyKey\(orderId, attempt\);/,
   );
+  // The same generation the key came from is what the marker names, what the
+  // candidate is filed under, and what the bind is fenced on.
   assert.match(provisioner, /checkoutSessionAttempt: attempt,/);
+  assert.match(provisioner, /checkoutSessionAttempt: sessionAttempt,/);
   const markerAt = provisioner.indexOf('await deps.beginCheckoutSessionProvisioning(');
   assert.ok(
     markerAt > -1 && markerAt < provisioner.indexOf('await deps.createCheckoutSession({'),
@@ -172,28 +182,75 @@ test('checkout resume rejects active duplicates and payload mismatch, then permi
         { now: new Date('2026-08-12T20:06:01.000Z'), leaseMs: 300_000 },
       );
       assert.equal(renewed?.checkoutLeaseExpiresAt, '2026-08-12T20:11:01.000Z');
+      // The superseded lease can bind nothing, whatever it names.
       assert.equal(
         await bindOrderCheckoutSession(original.id, 'cs_stale_a', {
           leaseId: '11111111-1111-4111-8111-111111111111',
           fingerprint: 'fingerprint-a',
+          checkoutSessionAttempt: 0,
           now: new Date('2026-08-12T20:06:02.000Z'),
         }),
         null,
       );
+
+      // The winner does what the provisioner does, in the order it does it:
+      // commit the marker under its live lease, ask the provider, record what
+      // came back. Only then is there anything a bind may consume.
+      assert.equal(
+        (await beginCheckoutSessionProvisioning(original.id, {
+          leaseId: '22222222-2222-4222-8222-222222222222',
+          fingerprint: 'fingerprint-a',
+          checkoutSessionAttempt: 0,
+          now: new Date('2026-08-12T20:06:02.000Z'),
+        })).status,
+        'committed',
+      );
+      assert.ok(await recordCheckoutSessionCandidate(original.id, 'cs_winner_b', {
+        checkoutAttemptId: 'a'.repeat(32),
+        fingerprint: 'fingerprint-a',
+        checkoutSessionAttempt: 0,
+        now: new Date('2026-08-12T20:06:02.000Z'),
+      }));
+
+      // Right lease, right evidence, dead lease: liveness is still required.
+      assert.equal(
+        await bindOrderCheckoutSession(original.id, 'cs_winner_b', {
+          leaseId: '22222222-2222-4222-8222-222222222222',
+          fingerprint: 'fingerprint-a',
+          checkoutSessionAttempt: 0,
+          now: new Date('2026-08-12T20:11:02.000Z'),
+        }),
+        null,
+      );
+      // Right lease, live, but naming a Session this order never recorded.
       assert.equal(
         await bindOrderCheckoutSession(original.id, 'cs_expired_b', {
           leaseId: '22222222-2222-4222-8222-222222222222',
           fingerprint: 'fingerprint-a',
-          now: new Date('2026-08-12T20:11:02.000Z'),
+          checkoutSessionAttempt: 0,
+          now: new Date('2026-08-12T20:06:02.000Z'),
+        }),
+        null,
+      );
+      // Right lease, live, but claiming a generation this order is not on.
+      assert.equal(
+        await bindOrderCheckoutSession(original.id, 'cs_winner_b', {
+          leaseId: '22222222-2222-4222-8222-222222222222',
+          fingerprint: 'fingerprint-a',
+          checkoutSessionAttempt: 1,
+          now: new Date('2026-08-12T20:06:02.000Z'),
         }),
         null,
       );
       const bound = await bindOrderCheckoutSession(original.id, 'cs_winner_b', {
         leaseId: '22222222-2222-4222-8222-222222222222',
         fingerprint: 'fingerprint-a',
+        checkoutSessionAttempt: 0,
         now: new Date('2026-08-12T20:06:02.000Z'),
       });
       assert.equal(bound?.stripeSessionId, 'cs_winner_b');
+      assert.equal(bound?.checkoutSessionCandidate ?? null, null, 'the bind consumed its candidate');
+      assert.equal(bound?.checkoutSessionProvisioning ?? null, null, 'and the marker that authorised it');
     });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

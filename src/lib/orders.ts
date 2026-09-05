@@ -66,11 +66,21 @@ export const CHECKOUT_INTAKE_MEDIA_ABANDONMENT_MS = 30 * 24 * 60 * 60 * 1000;
  * Bound to order identity (`checkoutAttemptId` + `checkoutFingerprint`) rather
  * than to a lease: the worker that created the Session may well have lost the
  * lease, and the retry that resumes it legitimately holds a different one.
+ *
+ * It IS bound to a supersession generation, because that is what identity alone
+ * cannot express. The attempt id survives supersession by design — the browser
+ * keeps sending it — so without `checkoutSessionAttempt` a candidate written
+ * under attempt 0 reads as the current candidate of attempt 1, and a worker
+ * that outlived the retirement of its own Session could have it bound and its
+ * URL released. The generation is what retires evidence along with the Session
+ * it describes.
  */
 export interface CheckoutSessionCandidate {
   stripeSessionId: string;
   checkoutAttemptId: string;
   checkoutFingerprint: string;
+  /** The supersession generation this Session was created under. */
+  checkoutSessionAttempt: number;
   recordedAt: string;
 }
 
@@ -93,9 +103,13 @@ export const CHECKOUT_SESSION_SUPERSEDE_LIMIT = 3;
  *
  * Attempt 0 keeps the historical key verbatim, so orders created before
  * supersession existed keep colliding onto their original Session. Every later
- * attempt gets its own key: deterministic, so concurrent retries of the SAME
- * attempt collapse onto one Session; distinct, so a legitimate replacement is
- * not silently deduplicated onto the dead Session it is replacing.
+ * attempt gets its own key: distinct, so a legitimate replacement is not
+ * silently deduplicated onto the dead Session it is replacing.
+ *
+ * The key is a second line of defence and never the first. What actually holds
+ * "one create per generation" is the durable provisioning marker, which is
+ * create-only and outlives any retention window the provider offers — see
+ * `beginCheckoutSessionProvisioning`.
  */
 export function checkoutProviderIdempotencyKey(orderId: string, attempt?: number | null): string {
   const n = typeof attempt === 'number' && Number.isInteger(attempt) && attempt > 0 ? attempt : 0;
@@ -156,6 +170,21 @@ export type CheckoutSessionProvisioningState =
  * two can never legitimately coexist; seeing both means either a corrupted
  * record or a writer this code does not know about, and releasing the bound
  * Session's URL on that basis would be releasing a URL we cannot account for.
+ *
+ * Three generation rules, all of them about the same failure — evidence that
+ * outlived the attempt it describes:
+ *
+ *  - the candidate must name the attempt generation this order is CURRENTLY on.
+ *    Supersession retires a generation wholesale, and a candidate written under
+ *    a retired one is a Session this order has already replaced;
+ *  - it may never name a Session in `supersededCheckoutSessionIds`. That list is
+ *    the durable record of Sessions this order has retired; resuming one would
+ *    hand the buyer a link to a Session we ourselves declared dead, and could
+ *    put a second payable Session behind the same order;
+ *  - the provisioning marker, when present, is parsed too. The two describe one
+ *    provider call each and are pinned to the same current generation, so a
+ *    record whose marker is unaccountable makes its candidate unaccountable as
+ *    well rather than half-readable.
  */
 export function readCheckoutSessionCandidate(order: OrderRecord): CheckoutSessionCandidateState {
   const candidate = order.checkoutSessionCandidate;
@@ -166,7 +195,7 @@ export function readCheckoutSessionCandidate(order: OrderRecord): CheckoutSessio
   if (typeof candidate !== 'object' || Array.isArray(candidate)) return { status: 'invalid' };
   const value = candidate as unknown as Record<string, unknown>;
   if (!exactObjectKeys(value, [
-    'stripeSessionId', 'checkoutAttemptId', 'checkoutFingerprint', 'recordedAt',
+    'stripeSessionId', 'checkoutAttemptId', 'checkoutFingerprint', 'checkoutSessionAttempt', 'recordedAt',
   ])
     || typeof value.stripeSessionId !== 'string'
     || !CHECKOUT_SESSION_ID.test(value.stripeSessionId)
@@ -174,6 +203,10 @@ export function readCheckoutSessionCandidate(order: OrderRecord): CheckoutSessio
     || value.checkoutAttemptId !== order.checkoutAttemptId
     || typeof order.checkoutFingerprint !== 'string'
     || value.checkoutFingerprint !== order.checkoutFingerprint
+    || !checkoutSessionAttemptStateValid(order)
+    || value.checkoutSessionAttempt !== (order.checkoutSessionAttempt ?? 0)
+    || (order.supersededCheckoutSessionIds ?? []).includes(value.stripeSessionId)
+    || readCheckoutSessionProvisioning(order).status === 'invalid'
     || !canonicalIso(value.recordedAt)) return { status: 'invalid' };
   return { status: 'resumable', candidate: candidate as CheckoutSessionCandidate };
 }
@@ -3605,6 +3638,18 @@ export async function markCheckoutIntakeMediaReclaimed(
 }
 
 /**
+ * The outcome of trying to commit a provisioning marker.
+ *
+ * Three outcomes, not two, because "we could not write" and "someone already
+ * did" mean opposite things to a buyer: the first proves no create was entered
+ * here, the second means one is outstanding and its result is unknown.
+ */
+export type CheckoutSessionProvisioningCommit =
+  | { status: 'committed'; order: OrderRecord }
+  | { status: 'already_in_flight'; order: OrderRecord }
+  | { status: 'refused' };
+
+/**
  * Commit the durable pre-provider provisioning marker for one exact attempt.
  *
  * Called immediately BEFORE `createCheckoutSession`, and the create is refused
@@ -3623,9 +3668,13 @@ export async function markCheckoutIntakeMediaReclaimed(
  *    so a marker can never be committed for a generation the order is not on;
  *  - the order must be unpaid with retention still active and nothing bound,
  *    so a cleanup claim that got there first wins and this fails closed;
- *  - idempotent for the SAME attempt (a retry of the same create converges),
- *    refused for any other. A marker naming a different attempt is conflicting
- *    evidence about a provider call, not an update.
+ *  - CREATE-ONLY. An existing marker is reported as `already_in_flight` and
+ *    never overwritten or silently reused. It means a provider create was
+ *    already entered for this exact generation and its outcome is not durably
+ *    known, which is a state only reconciliation can leave — not a state a
+ *    second create may be issued from. The distinct result exists so the caller
+ *    can tell "another worker is mid-create" (ambiguous, may be charged) apart
+ *    from "the store refused us" (nothing was entered here).
  */
 export async function beginCheckoutSessionProvisioning(
   orderId: string,
@@ -3635,12 +3684,12 @@ export async function beginCheckoutSessionProvisioning(
     checkoutSessionAttempt: number;
     now?: Date;
   },
-): Promise<OrderRecord | null> {
+): Promise<CheckoutSessionProvisioningCommit> {
   const now = checkout.now ?? new Date();
   if (!Number.isInteger(checkout.checkoutSessionAttempt)
     || checkout.checkoutSessionAttempt < 0
-    || checkout.checkoutSessionAttempt > CHECKOUT_SESSION_SUPERSEDE_LIMIT) return null;
-  return withOrderTransaction<OrderRecord | null>(
+    || checkout.checkoutSessionAttempt > CHECKOUT_SESSION_SUPERSEDE_LIMIT) return { status: 'refused' };
+  return withOrderTransaction<CheckoutSessionProvisioningCommit>(
     orderId,
     (current) => {
       const leaseExpiresAt = Date.parse(current.checkoutLeaseExpiresAt ?? '');
@@ -3655,14 +3704,19 @@ export async function beginCheckoutSessionProvisioning(
         || !Number.isFinite(leaseExpiresAt)
         || leaseExpiresAt <= now.getTime()
         || !checkoutSessionAttemptStateValid(current)
-        || (current.checkoutSessionAttempt ?? 0) !== checkout.checkoutSessionAttempt) return { abort: null };
+        || (current.checkoutSessionAttempt ?? 0) !== checkout.checkoutSessionAttempt) {
+        return { abort: { status: 'refused' } };
+      }
 
       const existing = readCheckoutSessionProvisioning(current);
-      if (existing.status === 'invalid') return { abort: null };
-      // The parser already pins a valid marker to this order's attempt id,
-      // fingerprint and current generation, so an existing valid one IS this
-      // exact attempt's marker and re-committing it would only churn the store.
-      if (existing.status === 'in_flight') return { abort: current };
+      if (existing.status === 'invalid') return { abort: { status: 'refused' } };
+      // A marker is already standing for this generation. Whoever committed it
+      // — this worker on an earlier request, or a concurrent one — has already
+      // entered a create whose outcome nobody durably knows. Report it as the
+      // ambiguity it is instead of authorising a second call.
+      if (existing.status === 'in_flight') {
+        return { abort: { status: 'already_in_flight', order: current } };
+      }
 
       const updated: OrderRecord = {
         ...current,
@@ -3675,9 +3729,9 @@ export async function beginCheckoutSessionProvisioning(
         },
         updatedAt: now.toISOString(),
       };
-      return { commit: updated, result: updated };
+      return { commit: updated, result: { status: 'committed', order: updated } };
     },
-    { notFound: () => null },
+    { notFound: () => ({ status: 'refused' }) },
   );
 }
 
@@ -3696,13 +3750,29 @@ export async function beginCheckoutSessionProvisioning(
  * piece of evidence that prevents a duplicate charge. Nothing is released on
  * the strength of this write: exposure still requires a current exact lease
  * renewal and an exact bind.
+ *
+ * It DOES require the generation, and the marker that authorised the create it
+ * is reporting. A create is only ever entered from a committed marker, so a
+ * candidate with no live marker for its own generation describes a provider
+ * call this order has no record of entering — a stale worker whose attempt was
+ * superseded while its call was open, most of all. Such a worker still has an
+ * outstanding Session at the provider, but the reconciliation that owns it is
+ * the retired generation's, not the current one's.
  */
 export async function recordCheckoutSessionCandidate(
   orderId: string,
   stripeSessionId: string,
-  checkout: { checkoutAttemptId: string; fingerprint: string; now?: Date },
+  checkout: {
+    checkoutAttemptId: string;
+    fingerprint: string;
+    checkoutSessionAttempt: number;
+    now?: Date;
+  },
 ): Promise<OrderRecord | null> {
   if (!CHECKOUT_SESSION_ID.test(stripeSessionId)) return null;
+  if (!Number.isInteger(checkout.checkoutSessionAttempt)
+    || checkout.checkoutSessionAttempt < 0
+    || checkout.checkoutSessionAttempt > CHECKOUT_SESSION_SUPERSEDE_LIMIT) return null;
   const now = checkout.now ?? new Date();
   return withOrderTransaction<OrderRecord | null>(
     orderId,
@@ -3712,7 +3782,18 @@ export async function recordCheckoutSessionCandidate(
           && current.checkoutIntakeMediaRetention.status !== 'active')
         || current.stripeSessionId
         || current.checkoutAttemptId !== checkout.checkoutAttemptId
-        || current.checkoutFingerprint !== checkout.fingerprint) return { abort: null };
+        || current.checkoutFingerprint !== checkout.fingerprint
+        || !checkoutSessionAttemptStateValid(current)
+        || (current.checkoutSessionAttempt ?? 0) !== checkout.checkoutSessionAttempt
+        || (current.supersededCheckoutSessionIds ?? []).includes(stripeSessionId)) return { abort: null };
+
+      // The marker for THIS generation is what authorised the create being
+      // reported. Without it there is nothing to attach this Session to.
+      const marker = readCheckoutSessionProvisioning(current);
+      if (marker.status !== 'in_flight'
+        || marker.provisioning.checkoutSessionAttempt !== checkout.checkoutSessionAttempt) {
+        return { abort: null };
+      }
 
       const existing = readCheckoutSessionCandidate(current);
       if (existing.status === 'invalid') return { abort: null };
@@ -3727,6 +3808,7 @@ export async function recordCheckoutSessionCandidate(
           stripeSessionId,
           checkoutAttemptId: checkout.checkoutAttemptId,
           checkoutFingerprint: checkout.fingerprint,
+          checkoutSessionAttempt: checkout.checkoutSessionAttempt,
           recordedAt: now.toISOString(),
         },
         updatedAt: now.toISOString(),
@@ -3817,34 +3899,77 @@ export async function supersedeExpiredCheckoutSession(
   );
 }
 
+/**
+ * Bind an exact provider Session to an order: the single commit that makes a
+ * checkout URL releasable to a buyer.
+ *
+ * Fenced on the exact SUPERSESSION GENERATION, not merely on the lease. The
+ * lease id names the attempt and survives supersession; the generation names
+ * which provider call within that attempt is the live one. A worker whose
+ * Session was retired while its request was still running holds a perfectly
+ * valid lease and a perfectly real Session id — and binding it would release a
+ * URL for a Session this order already declared dead, while consuming the
+ * replacement attempt's marker and candidate on the way through.
+ *
+ * So a bind may only commit when ALL of these hold atomically:
+ *
+ *  - the caller's generation is the one the record is currently on;
+ *  - the id is not in `supersededCheckoutSessionIds`;
+ *  - the order's candidate names EXACTLY this Session, at this generation, and
+ *    the marker that authorised its create is still standing. Both are consumed
+ *    here. Absence of a candidate is not permission: every Session reaching a
+ *    bind was recorded as a candidate first, by the one provisioner that
+ *    creates them, so "no candidate" means this Session is not the one this
+ *    order is waiting on;
+ *  - the lease is this order's exact lease id and fingerprint, and still live.
+ *
+ * Re-binding the Session already bound is idempotent, so a retried write after
+ * a lost acknowledgement converges instead of failing a live checkout.
+ */
 export async function bindOrderCheckoutSession(
   orderId: string,
   stripeSessionId: string,
-  checkout?: { leaseId: string; fingerprint: string; now?: Date },
+  checkout: { leaseId: string; fingerprint: string; checkoutSessionAttempt: number; now?: Date },
 ): Promise<OrderRecord | null> {
+  // The fence is not optional. A caller that supplies no lease/generation at
+  // all is a caller that cannot prove anything, and a bind is the one commit
+  // that makes a Session payable to a buyer.
+  if (!checkout
+    || !Number.isInteger(checkout.checkoutSessionAttempt)
+    || checkout.checkoutSessionAttempt < 0
+    || checkout.checkoutSessionAttempt > CHECKOUT_SESSION_SUPERSEDE_LIMIT) return null;
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
       if (current.paymentStatus !== 'pending'
         || (current.checkoutIntakeMediaRetention?.status !== undefined
           && current.checkoutIntakeMediaRetention.status !== 'active')) return { abort: null };
-      if (checkout) {
-        const leaseExpiresAt = Date.parse(current.checkoutLeaseExpiresAt ?? '');
-        const nowMs = (checkout.now ?? new Date()).getTime();
-        if (current.checkoutLeaseId !== checkout.leaseId
-          || current.checkoutFingerprint !== checkout.fingerprint
-          || !Number.isFinite(leaseExpiresAt)
-          || leaseExpiresAt <= nowMs) return { abort: null };
-      }
-      if (current.stripeSessionId && current.stripeSessionId !== stripeSessionId) return { abort: null };
-      // A recorded candidate is the order's declared unbound Session. Binding a
-      // DIFFERENT id would strand a payable Session nobody is reconciling, so
-      // the bind must consume its own candidate or refuse. Orders that never
-      // had one (every legacy checkout) are unaffected.
+      const leaseExpiresAt = Date.parse(current.checkoutLeaseExpiresAt ?? '');
+      const nowMs = (checkout.now ?? new Date()).getTime();
+      if (current.checkoutLeaseId !== checkout.leaseId
+        || current.checkoutFingerprint !== checkout.fingerprint
+        || !Number.isFinite(leaseExpiresAt)
+        || leaseExpiresAt <= nowMs) return { abort: null };
+      // The generation fence. Both halves matter: the caller must be on the
+      // record's current generation, and the id it carries must not be one this
+      // order has already retired.
+      if (!checkoutSessionAttemptStateValid(current)
+        || (current.checkoutSessionAttempt ?? 0) !== checkout.checkoutSessionAttempt
+        || (current.supersededCheckoutSessionIds ?? []).includes(stripeSessionId)) return { abort: null };
+      // Already bound to this exact Session: converge rather than re-commit.
+      if (current.stripeSessionId === stripeSessionId) return { abort: current };
+      if (current.stripeSessionId) return { abort: null };
+      // The candidate is the order's declared unbound Session, and the marker is
+      // the authority its create was entered under. The bind consumes exactly
+      // that pair or refuses; anything else would strand a payable Session
+      // nobody is reconciling.
       const candidate = readCheckoutSessionCandidate(current);
-      if (candidate.status === 'invalid') return { abort: null };
-      if (candidate.status === 'resumable'
-        && candidate.candidate.stripeSessionId !== stripeSessionId) return { abort: null };
+      if (candidate.status !== 'resumable'
+        || candidate.candidate.stripeSessionId !== stripeSessionId
+        || candidate.candidate.checkoutSessionAttempt !== checkout.checkoutSessionAttempt) return { abort: null };
+      const marker = readCheckoutSessionProvisioning(current);
+      if (marker.status !== 'in_flight'
+        || marker.provisioning.checkoutSessionAttempt !== checkout.checkoutSessionAttempt) return { abort: null };
       const updated: OrderRecord = { ...current, stripeSessionId, updatedAt: new Date().toISOString() };
       // Resolved atomically with the bind it authorised: one commit, so no
       // window exists in which the order is both bound and still a candidate,

@@ -33,6 +33,8 @@ import {
   supportingCharacterDraftMissingFields,
 } from "@/lib/checkout-progressive";
 import {
+  CHECKOUT_HANDOFF_UNCONFIRMED,
+  checkoutSubmitFailureMessage,
   createSubmitLock,
   performStripeHandoff,
   type SubmitLock,
@@ -484,16 +486,33 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
   const [handoffNavigationFailed, setHandoffNavigationFailed] = useState(false);
   // Specific, inline submit error. We use an in-page banner rather than
   // window.alert so the exact server reason is visible/scrollable (alerts get
-  // dismissed instantly on mobile) and so we can reassure the customer that no
-  // charge was made and nothing was saved when submission fails before Stripe.
+  // dismissed instantly on mobile).
   const [submitError, setSubmitErrorState] = useState<string | null>(null);
   // The recorded-note preservation hint is only true when the failed attempt
   // held an in-checkout RECORDING; an uploaded memo or a photo failure gets
   // no such advice. Set together with the message so they cannot drift.
   const [showRecordedVoiceHint, setShowRecordedVoiceHint] = useState(false);
-  const setSubmitError = useCallback((message: string | null, recordedVoiceHint = false) => {
+  /**
+   * Whether the banner may add its own "You have not been charged" line.
+   *
+   * It used to say that for EVERY submit failure, including ones that happened
+   * after the request reached the server — where a Session may have been
+   * created and bound, and where the message above it now says the opposite.
+   * The browser can only prove the negative BEFORE the request is sent, so the
+   * line is limited to exactly that case. Once the request is out, the message
+   * itself is the only thing allowed to speak about the buyer's money: the
+   * server says so when it can prove it, and says "do not pay again" when it
+   * cannot.
+   */
+  const [chargeUnconfirmed, setChargeUnconfirmed] = useState(false);
+  const setSubmitError = useCallback((
+    message: string | null,
+    recordedVoiceHint = false,
+    unconfirmedCharge = false,
+  ) => {
     setSubmitErrorState(message);
     setShowRecordedVoiceHint(Boolean(message) && recordedVoiceHint);
+    setChargeUnconfirmed(Boolean(message) && unconfirmedCharge);
   }, []);
   const [photoNotice, setPhotoNotice] = useState<string | null>(null);
   const [showRecovery, setShowRecovery] = useState(false);
@@ -996,6 +1015,12 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
       recoveryTimerRef.current = null;
     }
 
+    // The single fact that decides whether this page may speak about the
+    // buyer's money. Everything before the request is provably chargeless —
+    // nothing has left the browser. Everything from the request onwards may
+    // have created and bound a payable Session, whatever comes back.
+    let requestSent = false;
+
     try {
       const payload = new FormData();
       let checkoutAttemptId = checkoutAttemptIdRef.current ?? readStoredCheckoutAttemptId();
@@ -1140,6 +1165,7 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
         }
       }
 
+      requestSent = true;
       const response = await fetch("/api/order", {
         method: "POST",
         body: payload,
@@ -1148,28 +1174,30 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
       if (!response.ok) {
         // Surface the server's SPECIFIC reason (e.g. the voice-save abort)
         // rather than a generic message, so the customer knows exactly what
-        // failed and — critically — that nothing was saved or charged.
-        let message =
-          "We couldn't start your order. You have not been charged. Please try again.";
+        // failed. When the body carries no message — it was not JSON, or the
+        // failure happened somewhere that could not describe itself — we fall
+        // back to reconciliation copy rather than to a charge claim: this
+        // response can arrive after the server created and bound a payable
+        // Session, and the browser can never see that.
+        let serverMessage: unknown = null;
         try {
-          const body = await response.json();
-          if (typeof body?.error === "string" && body.error.trim()) {
-            message = body.error;
-          }
+          serverMessage = (await response.json())?.error;
         } catch {
-          /* non-JSON response — keep the safe default */
+          /* non-JSON response — the shared fallback is the safe default */
         }
-        throw new Error(message);
+        throw new Error(checkoutSubmitFailureMessage(serverMessage));
       }
 
       const result = await response.json();
       // Only reached when the order was durably persisted AND a Stripe session
       // was created. We are about to redirect to PAYMENT — do not claim the
       // order/recording is finished here (see the interstitial copy below).
+      //
+      // A 2xx with no redirect target means the Session almost certainly EXISTS
+      // and we simply cannot see where to send the buyer. Denying a charge was
+      // exactly the wrong thing to say about that.
       if (!result?.redirectTo) {
-        throw new Error(
-          "We couldn't reach secure payment. You have not been charged. Please try again.",
-        );
+        throw new Error(CHECKOUT_HANDOFF_UNCONFIRMED);
       }
       // The capability has completed its only job. Drop the in-memory reference
       // before handing the page to Stripe; it is never persisted or put in a URL.
@@ -1199,10 +1227,10 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
 
       if (handoff.reason === "invalid_url") {
         // Fail closed: an unexpected redirect target is a failed hand-off, not
-        // something to navigate to.
-        throw new Error(
-          "We couldn't reach secure payment. You have not been charged. Please try again.",
-        );
+        // something to navigate to. The server still got far enough to hand us
+        // a target, so the Session behind it may well be payable — refusing to
+        // navigate is not evidence that nothing was charged.
+        throw new Error(CHECKOUT_HANDOFF_UNCONFIRMED);
       }
 
       // Navigation is already under way (or was refused). Only presentational
@@ -1229,7 +1257,7 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
           ? null
           : error instanceof Error ? error.message : null,
       });
-      setSubmitError(described.message, described.showRecordedVoiceHint);
+      setSubmitError(described.message, described.showRecordedVoiceHint, requestSent);
     } finally {
       setIsSubmitting(false);
     }
@@ -3020,10 +3048,12 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
                   </div>
                 </div>
               )}
-              {/* Inline submit error. Shows the SPECIFIC server reason and
-                  reassures the customer nothing was saved or charged — so a
+              {/* Inline submit error. Shows the SPECIFIC server reason, so a
                   failed submission (e.g. a voice-save abort) never looks like
-                  it went through. */}
+                  it went through. The blanket reassurance below it is limited
+                  to failures that happened BEFORE the request left the browser:
+                  after that, only the message itself may speak about the
+                  buyer's money, because only the server can see the provider. */}
               {submitError && (
                 <div
                   role="alert"
@@ -3034,10 +3064,10 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
                   <p className="font-semibold">We couldn&apos;t start your order.</p>
                   <p className="mt-1">{submitError}</p>
                   <p className="mt-1 text-xs text-red-600">
-                    You have not been charged.
+                    {!chargeUnconfirmed && "You have not been charged. "}
                     {showRecordedVoiceHint && (
                       <>
-                        {" "}If you recorded a voice note,
+                        If you recorded a voice note,
                         download it from the section above before retrying so it
                         isn&apos;t lost.
                       </>

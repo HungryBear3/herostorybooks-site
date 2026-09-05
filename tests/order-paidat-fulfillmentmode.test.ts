@@ -13,7 +13,6 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  bindOrderCheckoutSession,
   createOrderRecord,
   persistOrder,
   getOrder,
@@ -61,8 +60,7 @@ test('paidAt is written on the authoritative paid webhook transition', async () 
   await localStore(async () => {
     const order = createOrderRecord({ childName: 'Mia', bookFormat: 'digital', email: 'a@b.com' }, { id: 'ord_paid', fulfillmentMode: 'auto' });
     assert.equal(order.paidAt, undefined);
-    await persistOrder(order);
-    await bindOrderCheckoutSession('ord_paid', 'cs_test_1');
+    await persistOrder({ ...order, stripeSessionId: 'cs_test_1' });
     const before = Date.now();
     const updated = await updateOrderPayment('ord_paid', 'paid', { stripeSessionId: 'cs_test_1' });
     const after = Date.now();
@@ -79,8 +77,7 @@ test('paidAt is written on the authoritative paid webhook transition', async () 
 test('webhook replay preserves the original paidAt (idempotent)', async () => {
   await localStore(async () => {
     const order = createOrderRecord({ childName: 'Mia', bookFormat: 'digital', email: 'a@b.com' }, { id: 'ord_replay', fulfillmentMode: 'auto' });
-    await persistOrder(order);
-    await bindOrderCheckoutSession('ord_replay', 'cs_1');
+    await persistOrder({ ...order, stripeSessionId: 'cs_1' });
     const first = await updateOrderPayment('ord_replay', 'paid', { stripeSessionId: 'cs_1' });
     const originalPaidAt = first!.paidAt;
     await new Promise((r) => setTimeout(r, 5)); // ensure clock would differ
@@ -104,8 +101,7 @@ test('paidAt is NOT set on a non-paid transition', async () => {
 test('later fulfillment update preserves fulfillmentMode and paidAt', async () => {
   await localStore(async () => {
     const order = createOrderRecord({ childName: 'Mia', bookFormat: 'digital', email: 'a@b.com' }, { id: 'ord_keep', fulfillmentMode: 'auto' });
-    await persistOrder(order);
-    await bindOrderCheckoutSession('ord_keep', 'cs_2');
+    await persistOrder({ ...order, stripeSessionId: 'cs_2' });
     const paid = await updateOrderPayment('ord_keep', 'paid', { stripeSessionId: 'cs_2' });
     const paidAt = paid!.paidAt;
     // A later, unrelated fulfillment-state write (paid order) must not drop either field.
