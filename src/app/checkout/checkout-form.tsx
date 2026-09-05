@@ -12,6 +12,7 @@ import {
 import { checkoutTrackingFromSearchParams } from "@/lib/checkout-tracking";
 import { VoiceRecorderSection } from "@/components/checkout/VoiceRecorderSection";
 import { GuidedPhotoCapture } from "@/components/checkout/GuidedPhotoCapture";
+import { PhotoSubmissionGuide } from "@/components/photo-submission-guide";
 import {
   appendGuidedCaptureToFormData,
   isGuidedPhotoCaptureEnabled,
@@ -2181,6 +2182,23 @@ export function CheckoutForm() {
               <div className="inline-flex w-fit rounded-full border border-[#d8c6a2] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54]">
                 {form.photoFile ? "Main character photo added" : "No hero photo required"}
               </div>
+
+              {!form.photoDataUrl && (
+                <details className="group rounded-2xl border border-[#d8c6a2] bg-[#fffaf1]">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 text-sm font-bold text-[#1f1a16] marker:hidden">
+                    See which photos work best
+                    <span className="rounded-full border border-[#d8c6a2] bg-[#f8f0dd] px-2 py-0.5 text-xs text-[#695f54] group-open:hidden">
+                      45-sec guide
+                    </span>
+                    <span className="hidden rounded-full border border-[#d8c6a2] bg-[#f8f0dd] px-2 py-0.5 text-xs text-[#695f54] group-open:inline">
+                      Close
+                    </span>
+                  </summary>
+                  <div className="border-t border-[#dfd2b8] p-4">
+                    <PhotoSubmissionGuide compact showCta={false} />
+                  </div>
+                </details>
+              )}
 
               {/* Sample teaser — shown before upload */}
               {!form.photoDataUrl && (

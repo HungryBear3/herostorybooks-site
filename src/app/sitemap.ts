@@ -20,6 +20,11 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.8,
     },
     {
+      url: `${origin}/photo-guide`,
+      changeFrequency: 'monthly',
+      priority: 0.8,
+    },
+    {
       url: `${origin}/about`,
       changeFrequency: 'yearly',
       priority: 0.6,
