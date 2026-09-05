@@ -8,10 +8,13 @@
  * `asset_mime_invalid` as the entire explanation. This module turns a code into
  * a sentence, keeps the code as a support reference, and decides whether the
  * "download your recorded voice note before retrying" hint applies — it only
- * does when there is an in-checkout RECORDING that a reload would lose.
+ * does for a fresh, unsent attempt with an in-checkout RECORDING that a reload
+ * would lose.
  *
  * Browser-safe on purpose: the checkout page imports it.
  */
+
+import { CHECKOUT_SUBMIT_UNCONFIRMED } from './checkout-handoff.ts';
 
 export type CheckoutVoiceSource = 'recorded' | 'uploaded' | null | undefined;
 
@@ -28,6 +31,8 @@ export interface CheckoutSubmitErrorInput {
    * is a bare code.
    */
   serverMessage?: string | null;
+  /** This attempt ID existed before the current local submit, or this submit sent it. */
+  attemptMayHaveReachedServer?: boolean;
 }
 
 export interface CheckoutSubmitErrorCopy {
@@ -45,6 +50,7 @@ export const ACCEPTED_AUDIO_FORMATS = 'M4A, MP3, WAV, AAC, OGG, FLAC, AIFF, CAF,
 export const ACCEPTED_DOCUMENT_FORMATS = 'TXT, PDF, or Word';
 
 const BARE_CODE = /^[a-z0-9]+(?:_[a-z0-9]+)*$/;
+const UNSAFE_ATTEMPT_GUIDANCE = /\b(?:not been charged|no charge|nothing was charged|stopped before payment|try again|retry|reload|start a fresh attempt)\b/i;
 const GENERIC = `We couldn't start your order. ${NOT_CHARGED} Please try again.`;
 
 type AssetKind = 'photo' | 'audio' | 'document' | 'unknown';
@@ -128,9 +134,15 @@ export function describeCheckoutSubmitError(input: CheckoutSubmitErrorInput): Ch
   const code = typeof input.code === 'string' && input.code ? input.code : 'unknown_error';
   const serverMessage = (input.serverMessage ?? '').trim();
   const serverSentence = serverMessage && !BARE_CODE.test(serverMessage) ? serverMessage : null;
+  const proposedMessage = serverSentence ?? messageFor(code, input.label);
+  const message = input.attemptMayHaveReachedServer
+    ? (/do not pay again/i.test(proposedMessage) && !UNSAFE_ATTEMPT_GUIDANCE.test(proposedMessage)
+      ? proposedMessage
+      : CHECKOUT_SUBMIT_UNCONFIRMED)
+    : proposedMessage;
   return {
-    message: serverSentence ?? messageFor(code, input.label),
-    showRecordedVoiceHint: input.voiceSource === 'recorded',
+    message,
+    showRecordedVoiceHint: input.voiceSource === 'recorded' && !input.attemptMayHaveReachedServer,
     reference: code,
   };
 }

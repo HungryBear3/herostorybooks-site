@@ -95,20 +95,21 @@ test('the checkout form uses the shared reconciliation copy on every unconfirmed
   );
 });
 
-test('the error banner only denies a charge for failures that never left the browser', () => {
+test('the error banner denies a charge only for a fresh attempt that never left the browser', () => {
   // The banner used to append "You have not been charged." to EVERY submit
-  // failure, including ones that reached the server — contradicting the very
-  // reconciliation sentence printed directly above it.
+  // failure, including ones that happened after this or an earlier invocation
+  // could have reached the server.
   assert.equal(
     FORM.split('You have not been charged.').length - 1,
     1,
     'exactly one place may make that claim',
   );
   assert.match(FORM, /\{!chargeUnconfirmed && "You have not been charged\. "\}/);
-  // And the flag is derived from whether the request was actually sent, not
-  // from the shape of the error.
   assert.match(FORM, /let requestSent = false;/);
+  assert.match(FORM, /let attemptWasReused = false;/);
+  assert.match(FORM, /attemptWasReused = Boolean\(checkoutAttemptId\);[\s\S]{0,180}if \(!checkoutAttemptId\)/);
   assert.match(FORM, /requestSent = true;\s*\n\s*const response = await fetch\("\/api\/order"/);
-  assert.match(FORM, /setSubmitError\(described\.message, described\.showRecordedVoiceHint, requestSent\)/);
+  assert.match(FORM, /attemptMayHaveReachedServer:\s*requestSent \|\| attemptWasReused/);
+  assert.match(FORM, /setSubmitError\(described\.message, described\.showRecordedVoiceHint, requestSent \|\| attemptWasReused\)/);
   assert.match(FORM, /setChargeUnconfirmed\(Boolean\(message\) && unconfirmedCharge\)/);
 });

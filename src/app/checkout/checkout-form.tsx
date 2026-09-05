@@ -498,11 +498,10 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
    * It used to say that for EVERY submit failure, including ones that happened
    * after the request reached the server — where a Session may have been
    * created and bound, and where the message above it now says the opposite.
-   * The browser can only prove the negative BEFORE the request is sent, so the
-   * line is limited to exactly that case. Once the request is out, the message
-   * itself is the only thing allowed to speak about the buyer's money: the
-   * server says so when it can prove it, and says "do not pay again" when it
-   * cannot.
+   * The browser can prove the negative only for a freshly generated attempt
+   * that has not been sent. A reused ref/session attempt may have reached the
+   * server earlier, so its message must say "do not pay again" even when this
+   * invocation fails locally before fetch.
    */
   const [chargeUnconfirmed, setChargeUnconfirmed] = useState(false);
   const setSubmitError = useCallback((
@@ -1015,15 +1014,16 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
       recoveryTimerRef.current = null;
     }
 
-    // The single fact that decides whether this page may speak about the
-    // buyer's money. Everything before the request is provably chargeless —
-    // nothing has left the browser. Everything from the request onwards may
-    // have created and bound a payable Session, whatever comes back.
+    // A local failure is provably chargeless only when this invocation created
+    // a brand-new attempt and never sent it. An attempt already held in the ref
+    // or session storage may have reached the server during an earlier submit.
     let requestSent = false;
+    let attemptWasReused = false;
 
     try {
       const payload = new FormData();
       let checkoutAttemptId = checkoutAttemptIdRef.current ?? readStoredCheckoutAttemptId();
+      attemptWasReused = Boolean(checkoutAttemptId);
       if (!checkoutAttemptId) {
         checkoutAttemptId = newCheckoutAttemptId();
         storeCheckoutAttemptId(checkoutAttemptId);
@@ -1253,11 +1253,12 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
         voiceSource: form.voiceSource,
         code: error instanceof DirectIntakePreparationError ? error.code : "order_request_failed",
         label: error instanceof DirectIntakePreparationError ? error.label : null,
+        attemptMayHaveReachedServer: requestSent || attemptWasReused,
         serverMessage: error instanceof DirectIntakePreparationError
           ? null
           : error instanceof Error ? error.message : null,
       });
-      setSubmitError(described.message, described.showRecordedVoiceHint, requestSent);
+      setSubmitError(described.message, described.showRecordedVoiceHint, requestSent || attemptWasReused);
     } finally {
       setIsSubmitting(false);
     }

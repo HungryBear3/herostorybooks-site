@@ -41,6 +41,20 @@ test('an unknown code still maps to a sentence and keeps the code as a reference
   assert.equal(described.reference, 'something_new_9');
 });
 
+test('every direct-intake code is reconciliation-safe when the attempt may have reached the server', () => {
+  for (const code of [...KNOWN_CODES, 'something_new_9']) {
+    const described = describeCheckoutSubmitError({
+      code,
+      label: 'hero photo',
+      attemptMayHaveReachedServer: true,
+    });
+    assert.match(described.message, /do not pay again/i, code);
+    assert.match(described.message, /support@herostorybooks\.com/i, code);
+    assert.doesNotMatch(described.message, /not been charged|no charge|try again|retry|reload|start a fresh/i, code);
+    assert.equal(described.reference, code);
+  }
+});
+
 test('a refused voice-note MIME names the voice note and the accepted audio formats', () => {
   const described = describeCheckoutSubmitError({ code: 'asset_mime_invalid', label: 'voice note', voiceSource: 'uploaded' });
   assert.match(described.message, /voice note/i);
@@ -65,9 +79,10 @@ test('the photo-specific refusal from the pre-intake gate is a sentence with the
   assert.doesNotMatch(described.message, /HEIC/i);
 });
 
-test('recorded-note preservation guidance appears only for an in-checkout recording', () => {
+test('recorded-note preservation guidance appears only for a fresh-attempt in-checkout recording', () => {
   assert.equal(describeCheckoutSubmitError({ code: 'asset_mime_invalid', label: 'hero photo', voiceSource: 'recorded' }).showRecordedVoiceHint, true);
   assert.equal(describeCheckoutSubmitError({ code: 'upload_failed', voiceSource: 'recorded' }).showRecordedVoiceHint, true);
+  assert.equal(describeCheckoutSubmitError({ code: 'upload_failed', voiceSource: 'recorded', attemptMayHaveReachedServer: true }).showRecordedVoiceHint, false);
   assert.equal(describeCheckoutSubmitError({ code: 'asset_mime_invalid', label: 'voice note', voiceSource: 'uploaded' }).showRecordedVoiceHint, false);
   assert.equal(describeCheckoutSubmitError({ code: 'asset_mime_invalid', label: 'hero photo', voiceSource: null }).showRecordedVoiceHint, false);
   assert.equal(describeCheckoutSubmitError({ code: 'asset_mime_invalid', label: 'hero photo' }).showRecordedVoiceHint, false);
