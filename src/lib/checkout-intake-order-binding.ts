@@ -16,7 +16,9 @@ import type {
 import type { FinalizedSelectionEntry } from './checkout-intake.ts';
 import {
   checkoutIntakeOrderContractDigest,
+  checkoutSessionAttemptStateValid,
   readCheckoutSessionCandidate,
+  readCheckoutSessionProvisioning,
   type FamilyCharacter,
   type OrderRecord,
 } from './orders.ts';
@@ -200,21 +202,52 @@ function prepareOrder(
   return prepared;
 }
 
-/** Normalize exact pre-Stripe reconciliation while permitting only lease retry evidence. */
+/**
+ * Normalize exact pre-Stripe reconciliation while permitting only the durable
+ * checkout-retry bookkeeping the SERVER writes on this order's behalf.
+ *
+ * A fresh request always builds a pristine prepared draft. It has no way to
+ * know that the durable order has since renewed a lease, recorded a Session
+ * candidate, entered a provider create, or retired a dead Session and moved to
+ * its replacement — all of which are written by the checkout machinery, never
+ * by anything a caller sends. Comparing those fields would report every second
+ * recovery of an order as a conflict and strand the buyer, which is exactly
+ * what `checkoutSessionAttempt` / `supersededCheckoutSessionIds` did.
+ *
+ * Each exemption is CLASSIFIED, not blanket:
+ *
+ *  - the lease pair is unconditional; it is pure liveness and carries no
+ *    identity a comparison could protect;
+ *  - the candidate, the provisioning marker, and the attempt/superseded pair
+ *    are exempted only when they read as THIS order's own, internally
+ *    consistent, server-written evidence. Their parsers already pin them to
+ *    this record's attempt id, fingerprint and generation.
+ *
+ * Anything malformed, internally inconsistent, or naming another attempt stays
+ * in the comparison and is reported as an order conflict — the fail-closed
+ * answer for evidence this code cannot account for. Every other field,
+ * including everything about the customer, the payment, the media, the
+ * fulfillment and the refund lifecycle, is compared byte for byte.
+ */
 function preStripeComparableOrder(order: OrderRecord): unknown {
   const comparable = JSON.parse(JSON.stringify(order)) as Record<string, unknown>;
   delete comparable.createdAt;
   delete comparable.updatedAt;
   delete comparable.checkoutLeaseId;
   delete comparable.checkoutLeaseExpiresAt;
-  // Narrow whitelist, NOT a blanket exemption. A durable unbound-Session
-  // candidate is legitimate retry evidence a prepared draft can never carry, so
-  // it is exempted — but only when it reads as this exact order's own
-  // candidate. Anything else (malformed, or naming a different attempt or
-  // fingerprint) stays in the comparison and is reported as an order conflict,
-  // which is the fail-closed answer for evidence we cannot account for.
   if (readCheckoutSessionCandidate(order).status !== 'invalid') {
     delete comparable.checkoutSessionCandidate;
+  }
+  if (readCheckoutSessionProvisioning(order).status !== 'invalid') {
+    delete comparable.checkoutSessionProvisioning;
+  }
+  // The counter and its audit trail move together — one supersession appends
+  // exactly one id and bumps the counter by exactly one — so they are exempted
+  // together or not at all. A record where they disagree is unaccountable
+  // evidence about how many payable Sessions this order has had.
+  if (checkoutSessionAttemptStateValid(order)) {
+    delete comparable.checkoutSessionAttempt;
+    delete comparable.supersededCheckoutSessionIds;
   }
   return comparable;
 }

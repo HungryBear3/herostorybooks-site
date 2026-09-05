@@ -3,10 +3,19 @@
  * once the direct private-intake path is switched on — and, more importantly,
  * what they must keep doing identically when it is not.
  *
- * The route cannot be imported under `node:test` (next/server + Stripe), so
- * the ordering guarantees inside it are pinned the same way the existing
- * checkout regressions pin them: by source position. Everything that CAN be
- * executed — the request fingerprint, the payload assembly — is executed.
+ * The route cannot be imported under `node:test` (next/server + Stripe).
+ * Everything that CAN be executed — the request fingerprint, the payload
+ * assembly — is executed, and the route's actual checkout behaviour is driven
+ * end-to-end at its extracted entrypoints against the real order CAS (see
+ * checkout-legacy-order-entrypoint.test.ts and
+ * checkout-session-provisioning.test.ts).
+ *
+ * What is left for source inspection is only what those cannot show about a
+ * file they do not import: that the handler retains NO provider surface and no
+ * session decision of its own. Those guards are stated as absence inside the
+ * handler body, not as "X appears before Y" — position was the weakness in the
+ * tests this replaces, because the provider adapters are declared below the
+ * handler and so came "after" everything regardless of control flow.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -27,6 +36,19 @@ import { parseDirectIntakeOrderRequest } from '../src/lib/checkout-direct-order-
 
 const ROUTE = readFileSync('src/app/api/order/route.ts', 'utf8');
 const FORM = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+
+/**
+ * The request handler body ONLY, and the provider adapters below it.
+ *
+ * Lexical position is a weak guarantee and was previously used as if it were a
+ * strong one: `checkout.sessions.create` lives in an adapter declared BELOW the
+ * handler, so "the create comes after X" held no matter what the handler did.
+ * These guards therefore say something a reordering cannot satisfy — the
+ * handler body must contain no provider call and no session decision at all.
+ */
+const ADAPTERS_AT = ROUTE.indexOf('async function retrieveDirectCheckoutSession');
+const HANDLER = ROUTE.slice(ROUTE.indexOf('export async function POST'), ADAPTERS_AT);
+const ADAPTERS = ROUTE.slice(ADAPTERS_AT);
 const CAPABILITY = 'Zm9vYmFyLWNhcGFiaWxpdHktdG9rZW4tdmFsdWUtMDAx';
 
 /** The pre-existing algorithm, reproduced so a drift is visible as a diff. */
@@ -143,11 +165,10 @@ test('order route: the path is chosen by request shape AND the server flag, neve
   // A direct request into a deployment that does not serve it is refused, not
   // silently downgraded to an order with no media.
   assert.match(ROUTE, /direct_upload_disabled/);
-  const parseIdx = ROUTE.indexOf('parseDirectIntakeOrderRequest(form)');
-  const disabledIdx = ROUTE.indexOf('direct_upload_disabled');
-  const stripeIdx = ROUTE.indexOf('checkout.sessions.create');
-  assert.ok(parseIdx > -1 && disabledIdx > parseIdx, 'the half-enabled refusal follows the parse');
-  assert.ok(disabledIdx < stripeIdx, 'the half-enabled refusal happens before Stripe');
+  const parseIdx = HANDLER.indexOf('parseDirectIntakeOrderRequest(form)');
+  const disabledIdx = HANDLER.indexOf('direct_upload_disabled');
+  assert.ok(parseIdx > -1, 'the request shape is parsed inside the handler');
+  assert.ok(disabledIdx > parseIdx, 'the half-enabled refusal follows the parse, inside the handler');
 });
 
 test('order route: the direct branch returns before any legacy public upload helper runs', () => {
@@ -164,12 +185,14 @@ test('order route: the direct branch returns before any legacy public upload hel
 });
 
 test('order route: legacy ordering guarantees are untouched', () => {
-  const createIdx = ROUTE.indexOf('await persistOrResumeCheckoutOrder');
-  const casIdx = ROUTE.indexOf('await withOrderTransaction');
-  const stripeIdx = ROUTE.indexOf('checkout.sessions.create');
+  const resumeIdx = HANDLER.indexOf('await resumeOrContinueLegacyCheckout');
+  const casIdx = HANDLER.indexOf('await withOrderTransaction');
+  const provisionIdx = HANDLER.indexOf('await provisionCheckoutSession');
   const promoIdx = ROUTE.indexOf('allow_promotion_codes: true');
-  assert.ok(createIdx > -1 && casIdx > createIdx && stripeIdx > casIdx);
-  assert.ok(promoIdx > stripeIdx, 'promotion codes remain part of session creation');
+  const createIdx = ROUTE.indexOf('checkout.sessions.create');
+  assert.ok(resumeIdx > -1 && casIdx > resumeIdx && provisionIdx > casIdx,
+    'the durable owner record and the final order CAS both precede the provider hand-off');
+  assert.ok(promoIdx > createIdx, 'promotion codes remain part of session creation');
   assert.match(ROUTE, /const photoReady = photoValidation\.ok === true/);
   assert.match(ROUTE, /likenessIntent: likenessIntentForPhoto\(photoReady\)/);
   assert.match(ROUTE, /fulfillmentMode: 'manual_hold'/);
@@ -218,54 +241,110 @@ test('checkout form: payment stays blocked until every chosen file is saved priv
 // ---------------------------------------------------------------------------
 // Both checkout paths share ONE provider-Session state machine
 //
-// The legacy public path used to create a Session and bind it in one breath,
-// with no durable record in between. A create that succeeded followed by a bind
-// that failed lost the provider identity entirely, leaving retry safety to
-// Stripe's finite idempotency retention — after which an ordinary retry could
-// mint a second payable Session. Source position is how the ordering guarantee
-// inside this un-importable route is pinned; the behaviour itself is proven
-// against the real order CAS in checkout-session-provisioning.test.ts.
+// The legacy public path used to answer from a local fast path: it read
+// `persistedDraft.stripeSessionId`, retrieved that Session itself, and returned
+// either its URL or a permanent 409 — all BEFORE the shared machine, and so
+// with none of its recovery. An expired Session tombstoned the buyer's attempt
+// forever; a Session created but never bound was invisible.
+//
+// The behaviour is proven against the real order CAS and the real provisioning
+// machine at the actual legacy entrypoint in
+// checkout-legacy-order-entrypoint.test.ts. What these source guards add is the
+// thing behaviour cannot show about an un-importable file: that the handler
+// retains no session decision of its own for the bypass to grow back into.
 // ---------------------------------------------------------------------------
 
-test('order route: the legacy path provisions through the shared primitive, not inline', () => {
-  const legacyIdx = ROUTE.indexOf('const provisioned = await provisionCheckoutSession({');
-  assert.ok(legacyIdx > -1, 'the legacy branch must call the shared provisioning primitive');
-  assert.match(ROUTE, /import \{ provisionCheckoutSession \} from '@\/lib\/checkout-session-provisioning'/);
-
-  // The inline create-then-bind pair is gone. Any direct session creation in
-  // this file must now live inside the injected provider adapter, never in the
-  // request handler where it can outrun candidate persistence.
-  const handlerEnd = ROUTE.indexOf('async function retrieveDirectCheckoutSession');
-  const handler = ROUTE.slice(0, handlerEnd);
-  assert.doesNotMatch(handler, /stripe\.checkout\.sessions\.create/);
-  assert.doesNotMatch(handler, /bindOrderCheckoutSession\(order\.id, session\.id/);
+test('order route: the handler has no provider surface of its own at all', () => {
+  // Not "the create comes later" — later is free when the adapter is declared
+  // below. The handler body must contain no provider verb whatsoever.
+  for (const forbidden of [
+    /checkout\.sessions\.create/,
+    /checkout\.sessions\.retrieve/,
+    /getStripe\(\)/,
+    /new Stripe\(/,
+  ]) {
+    assert.doesNotMatch(HANDLER, forbidden, `the request handler must not reach the provider directly: ${forbidden}`);
+  }
+  // The only provider entrypoints in the whole file are the two injected
+  // adapters, and they are declared outside the handler.
+  assert.match(ADAPTERS, /checkout\.sessions\.create/);
+  assert.match(ADAPTERS, /checkout\.sessions\.retrieve/);
 });
 
-test('order route: both paths inject the same four durable order primitives', () => {
+test('order route: the legacy bound-Session fast path cannot come back', () => {
+  // The exact shape of the removed bypass, and the generalisations of it.
+  for (const forbidden of [
+    /persistedDraft\.stripeSessionId/,
+    /existingSession/,
+    /already reached payment/,
+    /sessions\.retrieve\(/,
+    /bindOrderCheckoutSession\(order\.id, session\.id/,
+    /redirectTo: session\.url/,
+    /redirectTo: existing/,
+  ]) {
+    assert.doesNotMatch(HANDLER, forbidden, `a local bound-Session decision is forbidden here: ${forbidden}`);
+  }
+  // Nothing in the handler may read a durable session field to decide an answer.
+  assert.doesNotMatch(HANDLER, /\.stripeSessionId/);
+  assert.doesNotMatch(HANDLER, /\.checkoutSessionCandidate/);
+  assert.doesNotMatch(HANDLER, /\.checkoutSessionProvisioning/);
+});
+
+test('order route: every legacy exit to the provider goes through a shared entrypoint', () => {
+  // Exactly two hand-offs exist on the legacy path: the resume/recovery
+  // entrypoint before media, and the shared machine after the final order CAS.
+  assert.match(HANDLER, /await resumeOrContinueLegacyCheckout\(/);
+  assert.match(HANDLER, /await provisionCheckoutSession\(/);
+  assert.match(ROUTE, /from '@\/lib\/checkout-legacy-order'/);
+  assert.match(ROUTE, /from '@\/lib\/checkout-session-provisioning'/);
+  // Media, pause, and order persistence all precede BOTH of them.
+  const resumeIdx = HANDLER.indexOf('await resumeOrContinueLegacyCheckout(');
+  const provisionIdx = HANDLER.indexOf('await provisionCheckoutSession(');
+  for (const [label, marker] of [
+    ['checkout pause', 'isCheckoutPaused()'],
+    ['request parse', 'parseDirectIntakeOrderRequest(form)'],
+    ['durable owner record', 'await resumeOrContinueLegacyCheckout('],
+  ] as const) {
+    const idx = HANDLER.indexOf(marker);
+    assert.ok(idx > -1 && idx <= resumeIdx, `${label} must precede the legacy resume entrypoint`);
+  }
+  for (const [label, marker] of [
+    ['hero photo upload', 'await uploadOrderPhoto'],
+    ['supporting photo upload', 'await uploadOrderSupportingPhoto'],
+    ['voice upload', 'await uploadOrderVoice'],
+    ['document upload', 'await uploadOrderDocument'],
+    ['final order CAS', 'await withOrderTransaction'],
+  ] as const) {
+    const idx = HANDLER.indexOf(marker);
+    assert.ok(idx > -1 && idx < provisionIdx, `${label} must precede the shared provisioning hand-off`);
+  }
+});
+
+test('order route: both paths inject the same durable order primitives', () => {
   for (const primitive of [
     'renewCheckoutLease',
+    'beginCheckoutSessionProvisioning',
     'recordCheckoutSessionCandidate',
     'supersedeExpiredCheckoutSession',
     'bindOrderCheckoutSession',
   ]) {
     assert.ok(
-      ROUTE.split(primitive).length - 1 >= 2,
+      HANDLER.split(primitive).length - 1 >= 2,
       `${primitive} must be wired on both the direct and the legacy path`,
     );
-  }
-  // And every one of them comes from lib/orders, not a local reimplementation.
-  const imports = ROUTE.slice(0, ROUTE.indexOf("} from '@/lib/orders';"));
-  for (const primitive of [
-    'recordCheckoutSessionCandidate',
-    'renewCheckoutLease',
-    'supersedeExpiredCheckoutSession',
-    'bindOrderCheckoutSession',
-  ]) {
+    const imports = ROUTE.slice(0, ROUTE.indexOf("} from '@/lib/orders';"));
     assert.ok(imports.includes(primitive), `${primitive} must be imported from lib/orders`);
   }
 });
 
-test('order route: the legacy branch releases the provisioner URL, never a raw session URL', () => {
-  assert.match(ROUTE, /redirectTo: provisioned\.url/);
-  assert.doesNotMatch(ROUTE, /redirectTo: session\.url/);
+test('order route: the legacy branch releases only a provisioner-approved URL', () => {
+  const releases = [...HANDLER.matchAll(/redirectTo: ([A-Za-z0-9_.]+)/g)].map((match) => match[1]);
+  assert.ok(releases.length > 0, 'the handler must release a checkout URL somewhere');
+  for (const release of releases) {
+    assert.match(
+      release!,
+      /^(directResult\.redirectTo|provisioned\.url|resumed\.url)$/,
+      `a checkout URL may only come from a shared machine result, not ${release}`,
+    );
+  }
 });

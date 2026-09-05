@@ -48,7 +48,14 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   const clearAttemptAt = handoff.indexOf('deps.clearAttemptId?.()');
   assert.ok(navigateAt >= 0 && clearAttemptAt > navigateAt);
   assert.match(route, /createHash\('sha256'\)\.update\(checkoutAttemptId\)/);
-  assert.match(route, /persistOrResumeCheckoutOrder\(draftOrder\)/);
+  // The durable create-or-exact-resume of the owner record still happens
+  // before any media and any provider call — it simply moved into the shared
+  // legacy entrypoint, where the recovery decision that depends on it also
+  // lives. Behaviour is driven end-to-end there against the real order CAS in
+  // tests/checkout-legacy-order-entrypoint.test.ts.
+  assert.match(route, /await resumeOrContinueLegacyCheckout\(\{[\s\S]{0,400}?draftOrder,/);
+  const legacyEntrypoint = readFileSync('src/lib/checkout-legacy-order.ts', 'utf8');
+  assert.match(legacyEntrypoint, /await deps\.persistOrResumeCheckoutOrder\(draft\)/);
   assert.match(route, /checkoutRequestFingerprint\(form\)/);
   assert.match(fingerprint, /value\.arrayBuffer\(\)/);
   assert.match(route, /current\.checkoutLeaseId !== draftOrder\.checkoutLeaseId/);
@@ -64,15 +71,36 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   const providerCreateAt = provisioner.indexOf('await deps.createCheckoutSession({');
   assert.ok(renewAt > -1 && providerCreateAt > renewAt, 'the exact lease is renewed before creating a Session');
   assert.match(provisioner, /if \(!renewed\) \{[\s\S]{0,400}?checkout_lease_lost/);
-  // Stripe idempotency stays deterministic per order and per provider attempt.
-  assert.match(provisioner, /idempotencyKey = checkoutProviderIdempotencyKey\(orderId, current\.checkoutSessionAttempt\)/);
+  // Stripe idempotency stays deterministic per order and per provider attempt,
+  // and the durable pre-provider marker names the SAME attempt the key was
+  // derived from — so a retry of an interrupted create reuses that exact key
+  // instead of minting a second payable Session.
+  assert.match(
+    provisioner,
+    /const attempt = current\.checkoutSessionAttempt \?\? 0;\s*\n\s*const idempotencyKey = checkoutProviderIdempotencyKey\(orderId, attempt\);/,
+  );
+  assert.match(provisioner, /checkoutSessionAttempt: attempt,/);
+  const markerAt = provisioner.indexOf('await deps.beginCheckoutSessionProvisioning(');
+  assert.ok(
+    markerAt > -1 && markerAt < provisioner.indexOf('await deps.createCheckoutSession({'),
+    'durable provisioning evidence must be committed before the provider is asked to create',
+  );
   const orderIdempotency = readFileSync('src/lib/orders.ts', 'utf8');
   assert.match(orderIdempotency, /return n === 0 \? `hsb_checkout_\$\{orderId\}` : `hsb_checkout_\$\{orderId\}_r\$\{n\}`/);
   // And both paths hand that renewal to the real guarded transaction.
   assert.equal(route.split('renewCheckoutLease').length - 1 >= 2, true);
   const orders = readFileSync('src/lib/orders.ts', 'utf8');
   assert.match(orders, /checkout-\$\{checkoutLeaseId\}/);
-  assert.match(route, /checkout\.sessions\.retrieve\(persistedDraft\.stripeSessionId\)/);
+  // An order that already has provider history is recovered by the SHARED
+  // machine, never by a local fast path in the route. The route used to
+  // retrieve the bound Session itself and answer with its URL or a flat 409,
+  // which permanently tombstoned any attempt whose Session had expired and was
+  // blind to a Session created but never bound.
+  const handler = route.slice(0, route.indexOf('async function retrieveDirectCheckoutSession'));
+  assert.doesNotMatch(handler, /checkout\.sessions\.retrieve/);
+  assert.doesNotMatch(handler, /persistedDraft\.stripeSessionId/);
+  assert.match(legacyEntrypoint, /hasCheckoutProviderEvidence\(persisted\)/);
+  assert.match(legacyEntrypoint, /await provisionCheckoutSession\(/);
   // create → durable candidate → bind → release, now enforced once in the
   // shared provisioner instead of being open-coded per path. The durable
   // candidate between create and bind is new and strictly stronger: a Session

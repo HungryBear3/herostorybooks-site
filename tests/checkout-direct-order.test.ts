@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import {
   __resetOrderStoreAdapterFactoryForTests,
   __setOrderStoreAdapterFactoryForTests,
+  beginCheckoutSessionProvisioning,
   bindOrderCheckoutSession,
   createOrderRecord,
   readOrderVersioned,
@@ -262,6 +263,10 @@ function harness(
       calls.push('renew-lease');
       return renewCheckoutLease(orderId, leaseId, fingerprint, { now: NOW });
     },
+    async beginCheckoutSessionProvisioning(orderId, checkout) {
+      calls.push('begin-provisioning');
+      return beginCheckoutSessionProvisioning(orderId, { ...checkout, now: NOW });
+    },
     async recordCheckoutSessionCandidate(orderId, sessionId, checkout) {
       calls.push('record-candidate');
       return recordCheckoutSessionCandidate(orderId, sessionId, { ...checkout, now: NOW });
@@ -328,6 +333,12 @@ test('the safety-critical order is exact: finalize, create-only persist, mark, T
     // await/side effect and immediately before the unbound provider call — so
     // nothing can be created against authority this worker no longer holds.
     'renew-lease',
+    // Durable evidence that a create is about to happen, committed under that
+    // exact live lease BEFORE the provider is touched. Unlike the lease it has
+    // no expiry, so abandoned-media cleanup cannot delete the buyer's private
+    // media while this create is in flight — the one step here that can
+    // outlive the authority that started it.
+    'begin-provisioning',
     'stripe-create',
     // The created Session id is durable before anything else may fail.
     'record-candidate',

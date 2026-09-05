@@ -4,8 +4,10 @@ import test, { afterEach } from 'node:test';
 import {
   __resetOrderStoreAdapterFactoryForTests,
   __setOrderStoreAdapterFactoryForTests,
+  beginCheckoutSessionProvisioning,
   bindOrderCheckoutSession,
   checkoutIntakeOrderContractDigest,
+  checkoutProviderIdempotencyKey,
   claimCheckoutIntakeMediaCleanup,
   createOrderRecord,
   readOrderVersioned,
@@ -405,8 +407,38 @@ test('the atomic order claim enforces abandonment age even when called directly'
   assert.equal((await storedOrder())?.checkoutIntakeMediaRetention?.status, 'active');
 });
 
-test('an abandoned failed-payment order is reclaimable even with its dead session binding', async () => {
-  await installOrder(order({ paymentStatus: 'failed', stripeSessionId: 'cs_failed' }));
+// ---------------------------------------------------------------------------
+// `paymentStatus: 'failed'` is a LOCAL observation, not provider proof
+//
+// It is written when this system fails to complete something — it is never a
+// statement by the provider that a Checkout Session cannot be paid. A Session
+// that exists at the provider stays payable regardless of what this record says
+// about a past attempt, so a failed order carrying provider or provisioning
+// evidence must retain its media exactly like a pending one. Only a failed
+// order with no provider evidence at all follows the reclaim contract.
+// ---------------------------------------------------------------------------
+
+test('a failed-payment order with provider or provisioning evidence is RETAINED, never claimed', async (t) => {
+  const evidence: Array<[string, Partial<OrderRecord>]> = [
+    ['bound session', { stripeSessionId: 'cs_failed' }],
+    ['session candidate', { checkoutSessionCandidate: CANDIDATE }],
+    ['provisioning marker', { checkoutSessionProvisioning: PROVISIONING }],
+  ];
+  for (const [name, overrides] of evidence) {
+    await t.test(name, async () => {
+      __resetOrderStoreAdapterFactoryForTests();
+      await installOrder(order({ paymentStatus: 'failed', ...overrides }));
+
+      const claim = await claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER });
+
+      assert.deepEqual(claim, { status: 'retained' });
+      assert.equal((await storedOrder())?.checkoutIntakeMediaRetention?.status, 'active');
+    });
+  }
+});
+
+test('a failed-payment order with no provider evidence at all remains reclaimable', async () => {
+  await installOrder(order({ paymentStatus: 'failed' }));
   assert.equal(
     (await claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER })).status,
     'claimed',
@@ -465,6 +497,21 @@ const CANDIDATE = {
   recordedAt: FINALIZED_AT.toISOString(),
 };
 
+/**
+ * Durable evidence that a provider create was ENTERED for this exact attempt.
+ *
+ * It exists to cover the window the candidate cannot: between "we asked the
+ * provider to mint a payable Session" and "the provider answered". In that
+ * window the order looks, to cleanup, exactly like an abandoned one.
+ */
+const PROVISIONING = {
+  checkoutAttemptId: ATTEMPT,
+  checkoutFingerprint: FINGERPRINT,
+  checkoutSessionAttempt: 0,
+  idempotencyKey: checkoutProviderIdempotencyKey(ORDER_ID, 0),
+  startedAt: FINALIZED_AT.toISOString(),
+};
+
 test('an abandoned, lease-expired order carrying a candidate is RETAINED, not claimed', async () => {
   await installOrder(order({ checkoutSessionCandidate: CANDIDATE }));
 
@@ -493,11 +540,51 @@ test('the whole cleanup sweep leaves candidate-bearing media in place', async ()
   assert.ok(store.records.has(INTAKE_ID));
 });
 
-test('a cleanup claim that wins the race makes candidate persistence fail closed', async () => {
+test('a provider create in flight is never overtaken by cleanup: the marker wins, then the candidate lands', async () => {
+  // The worker commits the marker while its lease is still live, immediately
+  // before asking the provider to mint a payable Session. By the time cleanup
+  // looks, that lease is ten years dead — so the marker is the ONLY thing
+  // standing between cleanup and the buyer's photos.
+  await installOrder(order({
+    checkoutLeaseExpiresAt: new Date(FINALIZED_AT.getTime() + 5 * 60_000).toISOString(),
+  }));
+  assert.ok(
+    await beginCheckoutSessionProvisioning(ORDER_ID, {
+      leaseId: LEASE_ID, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: FINALIZED_AT,
+    }),
+    'the marker is committed under the exact live lease, before the provider call',
+  );
+
+  const claim = await claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER });
+
+  assert.deepEqual(claim, { status: 'retained' }, 'cleanup must not delete media under an open provider call');
+  assert.equal((await storedOrder())?.checkoutIntakeMediaRetention?.status, 'active');
+
+  // The provider answers late; the worker's lease is gone, but recording the
+  // exact Session for reconciliation still has to succeed.
+  const recorded = await recordCheckoutSessionCandidate(ORDER_ID, 'cs_inflight', {
+    checkoutAttemptId: ATTEMPT,
+    fingerprint: FINGERPRINT,
+    now: TEN_YEARS_LATER,
+  });
+  assert.equal(recorded?.checkoutSessionCandidate?.stripeSessionId, 'cs_inflight');
+
+  // …and it still may not bind or expose anything under a dead lease.
+  assert.equal(
+    await bindOrderCheckoutSession(ORDER_ID, 'cs_inflight', {
+      leaseId: LEASE_ID, fingerprint: FINGERPRINT, now: TEN_YEARS_LATER,
+    }),
+    null,
+    'a stale worker records for reconciliation; it never binds',
+  );
+  assert.equal((await storedOrder())?.stripeSessionId ?? null, null);
+});
+
+test('a cleanup claim that wins an unprotected race still makes candidate persistence fail closed', async () => {
   await installOrder(order());
-  // Cleanup claims while a provider create is in flight. The claim moves
-  // retention off `active`, which is the same fence candidate persistence and
-  // session binding are already gated on.
+  // No marker was ever committed, so cleanup legitimately owns this order. The
+  // claim moves retention off `active`, which is the fence candidate
+  // persistence and session binding are already gated on.
   assert.equal(
     (await claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER })).status,
     'claimed',
@@ -520,6 +607,76 @@ test('a cleanup claim that wins the race makes candidate persistence fail closed
   const stored = await storedOrder();
   assert.equal(stored?.checkoutSessionCandidate ?? null, null);
   assert.equal(stored?.stripeSessionId ?? null, null);
+});
+
+test('a claimed order can no longer authorise a new provider create', async () => {
+  await installOrder(order({ checkoutLeaseExpiresAt: new Date(FINALIZED_AT.getTime() + 60_000).toISOString() }));
+  assert.equal(
+    (await claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER })).status,
+    'claimed',
+  );
+  assert.equal(
+    await beginCheckoutSessionProvisioning(ORDER_ID, {
+      leaseId: LEASE_ID, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: FINALIZED_AT,
+    }),
+    null,
+  );
+});
+
+test('the whole cleanup sweep leaves marker-bearing media in place', async () => {
+  const memory = memoryOrderAdapter();
+  __setOrderStoreAdapterFactoryForTests(() => memory.adapter);
+  await memory.adapter.createIfAbsent(
+    `orders/${ORDER_ID}.json`,
+    JSON.stringify(order({ checkoutSessionProvisioning: PROVISIONING })),
+  );
+  const { store, reservation } = await finalizedIntake();
+
+  await runCheckoutIntakeCleanup(cleanupDeps(store), { now: TEN_YEARS_LATER });
+
+  assert.equal(store.assets.has(reservation.pathname), true, 'media behind an open provider call must survive');
+  assert.ok(store.records.has(INTAKE_ID));
+});
+
+test('a malformed or conflicting provisioning marker makes the stored record unreadable', async () => {
+  const memory = memoryOrderAdapter();
+  for (const malformed of [
+    { ...PROVISIONING, idempotencyKey: 'hsb_checkout_somebody_else' },
+    { ...PROVISIONING, checkoutAttemptId: 'd'.repeat(32) },
+    { ...PROVISIONING, checkoutFingerprint: 'e'.repeat(64) },
+    { ...PROVISIONING, checkoutSessionAttempt: 2 },
+    { ...PROVISIONING, startedAt: 'not-a-timestamp' },
+    { ...PROVISIONING, extra: 'forbidden' },
+    'cs_x',
+    42,
+  ]) {
+    memory.cells.set(`orders/${ORDER_ID}.json`, {
+      body: JSON.stringify({ ...order(), checkoutSessionProvisioning: malformed }),
+      version: 1,
+    });
+    __resetOrderStoreAdapterFactoryForTests();
+    __setOrderStoreAdapterFactoryForTests(() => memory.adapter);
+
+    await assert.rejects(
+      readOrderVersioned(ORDER_ID),
+      `unaccountable provisioning evidence must fail closed: ${JSON.stringify(malformed)}`,
+    );
+    await assert.rejects(claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER }));
+  }
+});
+
+test('a record carrying BOTH a bound session and a provisioning marker is unreadable', async () => {
+  const memory = memoryOrderAdapter();
+  memory.cells.set(`orders/${ORDER_ID}.json`, {
+    body: JSON.stringify({ ...order(), stripeSessionId: 'cs_bound', checkoutSessionProvisioning: PROVISIONING }),
+    version: 1,
+  });
+  __setOrderStoreAdapterFactoryForTests(() => memory.adapter);
+
+  await assert.rejects(
+    readOrderVersioned(ORDER_ID),
+    'the bind retires the marker in the same commit, so both together is impossible state',
+  );
 });
 
 test('candidate persistence and cleanup claim have exactly one atomic winner', async () => {

@@ -32,7 +32,9 @@
 import {
   CHECKOUT_SESSION_SUPERSEDE_LIMIT,
   checkoutProviderIdempotencyKey,
+  hasCheckoutProviderEvidence,
   readCheckoutSessionCandidate,
+  readCheckoutSessionProvisioning,
   type OrderRecord,
 } from './orders.ts';
 
@@ -58,6 +60,16 @@ export interface CheckoutSessionProvisionDeps {
     orderId: string,
     checkoutLeaseId: string,
     checkoutFingerprint: string,
+  ): Promise<OrderRecord | null>;
+  /**
+   * Commit durable pre-provider evidence for this exact attempt. Wired to
+   * orders.beginCheckoutSessionProvisioning. A create is refused outright if
+   * this does not commit, because without it a create that outlives its lease
+   * has nothing protecting the private media it is about to become payable for.
+   */
+  beginCheckoutSessionProvisioning(
+    orderId: string,
+    checkout: { leaseId: string; fingerprint: string; checkoutSessionAttempt: number },
   ): Promise<OrderRecord | null>;
   /** Create-only durable record of a Session created but not yet bound. */
   recordCheckoutSessionCandidate(
@@ -90,11 +102,21 @@ export interface CheckoutSessionProvisionParams {
 }
 
 /**
- * Whether a checkout URL for this order may already have reached the buyer.
+ * Whether this order can still be said, provably, to have cost the buyer
+ * nothing.
  *
- * `not_charged` is only used where no URL was ever released on any request, so
- * the buyer provably cannot have paid. Everything else is `may_be_charged`,
- * and gets copy that tells them not to pay again.
+ * `not_charged` requires that NO provider create was ever entered for this
+ * order — not merely that no URL was released. Once the provider has been asked
+ * to mint a Session, a provider object may exist whatever the local outcome
+ * was: a create that threw may have succeeded server-side, and a local
+ * persistence failure after a successful create says nothing at all about the
+ * provider. Categorically denying a charge there claims more than this code can
+ * see, so everything from the create onwards is `may_be_charged` and gets copy
+ * that tells the buyer not to pay again and to reconcile with support.
+ *
+ * Durable evidence from an EARLIER request counts the same way. A bound
+ * Session, a candidate, or a provisioning marker each mean a create was already
+ * entered on some previous attempt.
  */
 export type CheckoutChargeRisk = 'not_charged' | 'may_be_charged';
 
@@ -137,20 +159,31 @@ export async function provisionCheckoutSession(
 
   // Was a checkout URL ever released to this buyer? A bound Session means yes:
   // the only way `stripeSessionId` gets set is the bind that immediately
-  // precedes releasing the URL. This decides the copy on every failure below,
-  // and it is captured from the order as it arrived, before any recovery.
+  // precedes releasing the URL.
   let everExposed = typeof params.order.stripeSessionId === 'string'
     && params.order.stripeSessionId.length > 0;
-  const risk = (): CheckoutChargeRisk => (everExposed ? 'may_be_charged' : 'not_charged');
-  const reconciliationCopy = () => (everExposed
+
+  // Has the provider ever been asked to mint a Session for this order? Durable
+  // evidence carried in on the record answers for previous requests; the flag
+  // is raised the instant this request enters `createCheckoutSession`, BEFORE
+  // it is known whether that call succeeded — because a create that throws is
+  // exactly the case where a provider object may exist anyway.
+  //
+  // This is the sole gate on every "no charge was made" sentence below.
+  let providerAttempted = hasCheckoutProviderEvidence(params.order);
+  const risk = (): CheckoutChargeRisk =>
+    (everExposed || providerAttempted ? 'may_be_charged' : 'not_charged');
+  const reconciliationCopy = () => (risk() === 'may_be_charged'
     ? CHECKOUT_RECONCILIATION_SUPPORT
     : CHECKOUT_RECONCILIATION_NO_CHARGE);
 
-  // An order carrying BOTH a binding and a candidate is impossible state. The
-  // parser already refuses to read one, so this is the runtime backstop for a
-  // record handed in from memory rather than loaded from the store.
-  if (readCheckoutSessionCandidate(params.order).status === 'invalid') {
-    log(`[checkout] unusable Session candidate on ${orderId}; refusing before the provider`);
+  // An order carrying BOTH a binding and a candidate, or a provisioning marker
+  // that does not describe this order's current attempt, is impossible state.
+  // The parser already refuses to read either, so this is the runtime backstop
+  // for a record handed in from memory rather than loaded from the store.
+  if (readCheckoutSessionCandidate(params.order).status === 'invalid'
+    || readCheckoutSessionProvisioning(params.order).status === 'invalid') {
+    log(`[checkout] unusable Session evidence on ${orderId}; refusing before the provider`);
     return refused(409, 'checkout_session_candidate_invalid', reconciliationCopy(), risk());
   }
 
@@ -177,7 +210,11 @@ export async function provisionCheckoutSession(
       }
       if (!renewed) {
         log(`[checkout] ABORT BEFORE PROVIDER: lease no longer held for ${orderId}`);
-        return refused(409, 'checkout_lease_lost', CHECKOUT_ATTEMPT_ALREADY_RESOLVED, risk());
+        // The "no new charge was made" wording is only usable where no provider
+        // create was ever entered for this order.
+        return refused(409, 'checkout_lease_lost', providerAttempted
+          ? CHECKOUT_RECONCILIATION_SUPPORT
+          : CHECKOUT_ATTEMPT_ALREADY_RESOLVED, risk());
       }
       if (!renewed.checkoutLeaseId || !renewed.checkoutFingerprint || !renewed.checkoutAttemptId) {
         log(`[checkout] ABORT BEFORE PROVIDER: ${orderId} carries no checkout identity`);
@@ -207,9 +244,7 @@ export async function provisionCheckoutSession(
         // An outage says nothing about whether the Session is alive. Creating
         // a replacement here is exactly how a duplicate charge happens.
         log(`[checkout] Session retrieval failed for ${orderId}`, error);
-        return refused(503, 'checkout_session_retrieve_failed', everExposed
-          ? CHECKOUT_RECONCILIATION_SUPPORT
-          : CHECKOUT_NO_CHARGE_RETRY, risk());
+        return refused(503, 'checkout_session_retrieve_failed', reconciliationCopy(), risk());
       }
       if (session.id !== existingId) {
         log(`[checkout] provider answered ${session.id} for ${existingId} on ${orderId}`);
@@ -221,7 +256,42 @@ export async function provisionCheckoutSession(
         );
       }
     } else {
-      const idempotencyKey = checkoutProviderIdempotencyKey(orderId, current.checkoutSessionAttempt);
+      const attempt = current.checkoutSessionAttempt ?? 0;
+      const idempotencyKey = checkoutProviderIdempotencyKey(orderId, attempt);
+
+      // ── The barrier ────────────────────────────────────────────────────
+      // Durable evidence that a create is about to happen, committed under
+      // the exact live lease BEFORE the provider is touched. The candidate
+      // below cannot cover this window — there is nothing to record until the
+      // provider answers — and the provider call is the one step here that can
+      // outlive its own lease. Without this, abandoned-media cleanup can claim
+      // and delete the buyer's private media while the create is in flight,
+      // and the candidate write then fails closed against the claimed
+      // retention, stranding a payable Session with no media behind it.
+      //
+      // This is the last point at which "no charge was made" is provable, so
+      // its own failure keeps that copy and every failure after it does not.
+      let marked: OrderRecord | null;
+      try {
+        marked = await deps.beginCheckoutSessionProvisioning(orderId, {
+          leaseId: params.leaseId,
+          fingerprint: params.fingerprint,
+          checkoutSessionAttempt: attempt,
+        });
+      } catch (error) {
+        log(`[checkout] provisioning evidence failed for ${orderId}`, error);
+        marked = null;
+      }
+      if (!marked) {
+        log(`[checkout] ABORT BEFORE PROVIDER: no durable provisioning evidence for ${orderId}`);
+        return refused(503, 'checkout_session_provisioning_failed', providerAttempted
+          ? CHECKOUT_RECONCILIATION_SUPPORT
+          : CHECKOUT_NO_CHARGE_RETRY, risk());
+      }
+      current = marked;
+
+      // Everything from here on is ambiguous about the buyer's money.
+      providerAttempted = true;
       try {
         session = await deps.createCheckoutSession({
           order: current,
@@ -231,15 +301,21 @@ export async function provisionCheckoutSession(
           idempotencyKey,
         });
       } catch (error) {
+        // A throw is NOT proof the provider minted nothing — the request may
+        // have been served and the response lost. The marker stays, so a retry
+        // reuses this exact idempotency key and the media survives until it.
         log(`[checkout] Session creation failed for ${orderId}`, error);
-        return refused(503, 'checkout_session_create_failed', everExposed
-          ? CHECKOUT_RECONCILIATION_SUPPORT
-          : CHECKOUT_NO_CHARGE_RETRY, risk());
+        return refused(503, 'checkout_session_create_failed', CHECKOUT_RECONCILIATION_SUPPORT, risk());
       }
 
       // Durable before anything else may fail. From here the Session exists at
       // the provider whatever happens next, and only this record lets a later
-      // retry reconcile it — or stops cleanup deleting the media under it.
+      // retry reconcile it by id rather than by a finite idempotency key.
+      //
+      // Deliberately NOT lease-gated: the worker that must record a candidate
+      // is often the one that just lost its lease inside the create above, and
+      // demanding the lease here would throw away the only evidence naming the
+      // Session. Recording exposes nothing; the bind below still fences it.
       let recorded: OrderRecord | null;
       try {
         recorded = await deps.recordCheckoutSessionCandidate(orderId, session.id, {
@@ -252,9 +328,7 @@ export async function provisionCheckoutSession(
       }
       if (!recorded) {
         log(`[checkout] Session ${session.id} created but not durably recorded for ${orderId}`);
-        return refused(503, 'checkout_session_candidate_persist_failed', everExposed
-          ? CHECKOUT_RECONCILIATION_SUPPORT
-          : CHECKOUT_NO_CHARGE_RETRY, risk());
+        return refused(503, 'checkout_session_candidate_persist_failed', CHECKOUT_RECONCILIATION_SUPPORT, risk());
       }
       current = recorded;
     }

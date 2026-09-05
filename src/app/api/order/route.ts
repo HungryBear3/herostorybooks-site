@@ -3,6 +3,7 @@ import Stripe from 'stripe';
 import crypto from 'node:crypto';
 
 import {
+  beginCheckoutSessionProvisioning,
   bindOrderCheckoutSession,
   createOrderRecord,
   isPrintFormat,
@@ -47,6 +48,7 @@ import {
   type DirectCheckoutSessionRequest,
 } from '@/lib/checkout-direct-order';
 import { provisionCheckoutSession } from '@/lib/checkout-session-provisioning';
+import { resumeOrContinueLegacyCheckout } from '@/lib/checkout-legacy-order';
 import { createVercelIntakeStore } from '@/lib/checkout-intake';
 import { checkoutRequestFingerprint } from '@/lib/checkout-request-fingerprint';
 import { classifyStoryAttachment } from '@/lib/story-attachment';
@@ -513,6 +515,8 @@ export async function POST(request: Request) {
         // either check locally: only the store can settle who holds the lease.
         renewCheckoutLease: (orderId, leaseId, fingerprint) =>
           renewCheckoutLease(orderId, leaseId, fingerprint),
+        beginCheckoutSessionProvisioning: (orderId, checkout) =>
+          beginCheckoutSessionProvisioning(orderId, checkout),
         recordCheckoutSessionCandidate: (orderId, stripeSessionId, checkout) =>
           recordCheckoutSessionCandidate(orderId, stripeSessionId, checkout),
         supersedeCheckoutSession: (orderId, expiredStripeSessionId, checkout) =>
@@ -531,28 +535,64 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, redirectTo: directResult.redirectTo });
     }
 
+    // The legacy path's durable order primitives, wired once. The saga must
+    // never re-implement any of these checks locally: only the store can settle
+    // who holds the lease, and only the shared machine may decide what an
+    // existing provider Session means.
+    const legacyCheckoutDeps = {
+      createCheckoutSession: createDirectCheckoutSession,
+      retrieveCheckoutSession: retrieveDirectCheckoutSession,
+      renewCheckoutLease: (orderId: string, leaseId: string, fingerprint: string) =>
+        renewCheckoutLease(orderId, leaseId, fingerprint),
+      beginCheckoutSessionProvisioning: (
+        orderId: string,
+        checkout: { leaseId: string; fingerprint: string; checkoutSessionAttempt: number },
+      ) => beginCheckoutSessionProvisioning(orderId, checkout),
+      recordCheckoutSessionCandidate: (
+        orderId: string,
+        stripeSessionId: string,
+        checkout: { checkoutAttemptId: string; fingerprint: string },
+      ) => recordCheckoutSessionCandidate(orderId, stripeSessionId, checkout),
+      supersedeCheckoutSession: (
+        orderId: string,
+        expiredStripeSessionId: string,
+        checkout: { leaseId: string; fingerprint: string },
+      ) => supersedeExpiredCheckoutSession(orderId, expiredStripeSessionId, checkout),
+      bindCheckoutSession: (
+        orderId: string,
+        stripeSessionId: string,
+        checkout: { leaseId: string; fingerprint: string },
+      ) => bindOrderCheckoutSession(orderId, stripeSessionId, checkout),
+      logError: (message: string, detail?: unknown) => console.error(message, detail ?? ''),
+    };
+
     // Create the durable owner record before uploading any public customer
     // media. If cleanup itself later fails, the deterministic orders/<id>/
     // Blob prefix still has an owning record for retention/deletion handling.
-    try {
-      const persistedDraft = await persistOrResumeCheckoutOrder(draftOrder);
-      if (persistedDraft.stripeSessionId) {
-        const existingSession = await getStripe().checkout.sessions.retrieve(persistedDraft.stripeSessionId);
-        if (existingSession.url && existingSession.status === 'open') {
-          return NextResponse.json({ ok: true, redirectTo: existingSession.url });
-        }
-        return NextResponse.json({ error: 'This checkout attempt already reached payment. Contact support before retrying.' }, { status: 409 });
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[order] ABORT BEFORE MEDIA/STRIPE: durable draft persistence failed for ${draftOrder.id}: ${message}`);
+    //
+    // This entrypoint also owns the ONLY question this handler used to answer
+    // for itself: what to do about an order that already has provider history.
+    // It used to retrieve that Session inline and return its URL or a flat 409,
+    // which permanently tombstoned any attempt whose Session had expired and
+    // was blind to a Session created but never bound. Both paths now recover
+    // through the same machine. See lib/checkout-legacy-order.ts.
+    const resumed = await resumeOrContinueLegacyCheckout({
+      draftOrder,
+      stripeProductId,
+      baseUrl: getReturnBaseUrl(request),
+      gaClientId,
+    }, {
+      ...legacyCheckoutDeps,
+      persistOrResumeCheckoutOrder: (order) => persistOrResumeCheckoutOrder(order),
+    });
+    if (resumed.status === 'refused') {
       return NextResponse.json(
-        {
-          error:
-            'We could not securely save your order. No charge was made. Please retry in a moment, and contact support@herostorybooks.com if it keeps happening.',
-        },
-        { status: 503 },
+        { error: resumed.message, code: resumed.code },
+        { status: resumed.httpStatus },
       );
+    }
+    if (resumed.status === 'released') {
+      return NextResponse.json({ ok: true, redirectTo: resumed.url });
     }
 
     const uploadedMediaPaths: string[] = [];
@@ -823,19 +863,7 @@ export async function POST(request: Request) {
       stripeProductId,
       baseUrl: getReturnBaseUrl(request),
       gaClientId,
-    }, {
-      createCheckoutSession: createDirectCheckoutSession,
-      retrieveCheckoutSession: retrieveDirectCheckoutSession,
-      renewCheckoutLease: (orderId, leaseId, fingerprint) =>
-        renewCheckoutLease(orderId, leaseId, fingerprint),
-      recordCheckoutSessionCandidate: (orderId, stripeSessionId, checkout) =>
-        recordCheckoutSessionCandidate(orderId, stripeSessionId, checkout),
-      supersedeCheckoutSession: (orderId, expiredStripeSessionId, checkout) =>
-        supersedeExpiredCheckoutSession(orderId, expiredStripeSessionId, checkout),
-      bindCheckoutSession: (orderId, stripeSessionId, checkout) =>
-        bindOrderCheckoutSession(orderId, stripeSessionId, checkout),
-      logError: (message, detail) => console.error(message, detail ?? ''),
-    });
+    }, legacyCheckoutDeps);
 
     if (provisioned.status === 'refused') {
       return NextResponse.json(

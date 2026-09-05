@@ -183,8 +183,14 @@ test('pause kill switch and every unrelated safety gate still precede Stripe con
   const handler = src.slice(0, src.indexOf('async function retrieveDirectCheckoutSession'));
   assert.doesNotMatch(handler, /checkout\.sessions\.create/);
 
-  // Duplicate/idempotency protection is untouched by capacity policy.
-  assert.match(src, /already reached payment/, 'duplicate-payment protection must remain');
+  // Duplicate/idempotency protection is untouched by capacity policy. It no
+  // longer lives in the route as a flat "already reached payment" 409 — that
+  // string asserted a payment the status did not prove, and tombstoned every
+  // attempt whose Session had merely expired. The protection is now the shared
+  // provisioner's: a complete Session is never replaced and never denied.
+  const provisioner = readFileSync('src/lib/checkout-session-provisioning.ts', 'utf8');
+  assert.match(provisioner, /checkout_session_complete/, 'duplicate-payment protection must remain');
+  assert.match(provisioner, /CHECKOUT_PAYMENT_MAY_BE_COMPLETE/);
   assert.match(src, /checkoutFingerprint/, 'idempotency fingerprint must remain');
 });
 

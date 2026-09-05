@@ -102,9 +102,45 @@ export function checkoutProviderIdempotencyKey(orderId: string, attempt?: number
   return n === 0 ? `hsb_checkout_${orderId}` : `hsb_checkout_${orderId}_r${n}`;
 }
 
+/**
+ * Durable evidence that a provider create was ENTERED for one exact attempt.
+ *
+ * The candidate above covers everything after the provider answers. Nothing
+ * covered the window BEFORE it — and that window contains a network call, so it
+ * can outlive the lease that authorised it. To abandoned-media cleanup an order
+ * in that window is indistinguishable from a dead one: pending, no bound
+ * Session, no candidate (there cannot be one yet), lease expired. Cleanup used
+ * to delete the buyer's private media there, and the candidate write that
+ * followed then failed closed against the claimed retention — leaving a payable
+ * Session at the provider with nothing behind it.
+ *
+ * So this marker is committed BEFORE the provider is asked for anything, under
+ * the exact live lease, and it makes the order undeletable until the attempt it
+ * names is resolved — by the bind that succeeds, or by the supersession that
+ * retires the whole attempt. Unlike the lease it has no expiry: the whole point
+ * is that it must outlive the lease that wrote it.
+ *
+ * It confers NO authority. It cannot be paid against, and releasing a URL still
+ * requires a current exact lease and an exact bind.
+ */
+export interface CheckoutSessionProvisioning {
+  checkoutAttemptId: string;
+  checkoutFingerprint: string;
+  /** The supersession generation this create belongs to. */
+  checkoutSessionAttempt: number;
+  /** Deterministic, and redundant by construction — see the parser. */
+  idempotencyKey: string;
+  startedAt: string;
+}
+
 export type CheckoutSessionCandidateState =
   | { status: 'absent' }
   | { status: 'resumable'; candidate: CheckoutSessionCandidate }
+  | { status: 'invalid' };
+
+export type CheckoutSessionProvisioningState =
+  | { status: 'absent' }
+  | { status: 'in_flight'; provisioning: CheckoutSessionProvisioning }
   | { status: 'invalid' };
 
 /**
@@ -143,6 +179,57 @@ export function readCheckoutSessionCandidate(order: OrderRecord): CheckoutSessio
 }
 
 /**
+ * Classify an order's durable pre-provider provisioning evidence.
+ *
+ * Tri-state for the same reason the candidate is: absent means "no provider
+ * call was ever entered for the current attempt, so the media behind this order
+ * is genuinely unclaimed"; invalid means "this record carries evidence about a
+ * provider call that this code cannot account for", and answering that with
+ * "absent" is how the media gets deleted or a second Session gets minted.
+ *
+ * Strict symmetry with the writer below:
+ *  - a bound `stripeSessionId` together with a marker is impossible state. The
+ *    bind retires the marker in the same commit, so seeing both means either
+ *    corruption or a writer this code does not know about;
+ *  - the marker must name THIS order's attempt id and fingerprint;
+ *  - it must name the CURRENT supersession generation. A marker left behind by
+ *    a retired attempt is stale evidence, not live evidence;
+ *  - the idempotency key is stored and re-derived rather than trusted, so a
+ *    record can never steer a create onto a key this code would not have chosen.
+ */
+export function readCheckoutSessionProvisioning(order: OrderRecord): CheckoutSessionProvisioningState {
+  const provisioning = order.checkoutSessionProvisioning;
+  if (provisioning === null || provisioning === undefined) return { status: 'absent' };
+  if (typeof order.stripeSessionId === 'string' && order.stripeSessionId.length > 0) {
+    return { status: 'invalid' };
+  }
+  if (typeof provisioning !== 'object' || Array.isArray(provisioning)) return { status: 'invalid' };
+  const value = provisioning as unknown as Record<string, unknown>;
+  if (!exactObjectKeys(value, [
+    'checkoutAttemptId', 'checkoutFingerprint', 'checkoutSessionAttempt', 'idempotencyKey', 'startedAt',
+  ])
+    || typeof order.checkoutAttemptId !== 'string'
+    || value.checkoutAttemptId !== order.checkoutAttemptId
+    || typeof order.checkoutFingerprint !== 'string'
+    || value.checkoutFingerprint !== order.checkoutFingerprint
+    || !checkoutSessionAttemptStateValid(order)
+    || value.checkoutSessionAttempt !== (order.checkoutSessionAttempt ?? 0)
+    || value.idempotencyKey !== checkoutProviderIdempotencyKey(
+      order.id,
+      order.checkoutSessionAttempt ?? 0,
+    )
+    || !canonicalIso(value.startedAt)) return { status: 'invalid' };
+  return { status: 'in_flight', provisioning: provisioning as CheckoutSessionProvisioning };
+}
+
+/** Any durable sign that a provider Session may already exist for this order. */
+export function hasCheckoutProviderEvidence(order: OrderRecord): boolean {
+  return (order.stripeSessionId !== null && order.stripeSessionId !== undefined)
+    || (order.checkoutSessionCandidate !== null && order.checkoutSessionCandidate !== undefined)
+    || (order.checkoutSessionProvisioning !== null && order.checkoutSessionProvisioning !== undefined);
+}
+
+/**
  * Validate the durable provider-attempt bookkeeping.
  *
  * `checkoutSessionAttempt` and `supersededCheckoutSessionIds` move together —
@@ -150,7 +237,7 @@ export function readCheckoutSessionCandidate(order: OrderRecord): CheckoutSessio
  * one — so their lengths must agree. A record where they disagree cannot be
  * used to choose an idempotency key, and choosing wrongly mints money.
  */
-function checkoutSessionAttemptStateValid(order: OrderRecord): boolean {
+export function checkoutSessionAttemptStateValid(order: OrderRecord): boolean {
   const attempt = order.checkoutSessionAttempt;
   const superseded = order.supersededCheckoutSessionIds;
   if (attempt === null || attempt === undefined) {
@@ -463,6 +550,11 @@ export interface OrderRecord extends OrderInput {
    *  Cleared atomically by the bind that consumes it. See
    *  CheckoutSessionCandidate — it is NOT a payment or authority field. */
   checkoutSessionCandidate?: CheckoutSessionCandidate | null;
+  /** Durable evidence that a provider create was entered for the current
+   *  attempt and may not have answered yet. Retires with the attempt — cleared
+   *  by the bind that succeeds or the supersession that replaces it. See
+   *  CheckoutSessionProvisioning; it is NOT an authority field either. */
+  checkoutSessionProvisioning?: CheckoutSessionProvisioning | null;
   /** How many provider Sessions this order has superseded. Selects the
    *  idempotency key; absent/0 means the original, historical key. */
   checkoutSessionAttempt?: number | null;
@@ -1784,6 +1876,10 @@ function assertCheckoutIntakeOrderContract(order: OrderRecord): void {
   if (order.checkoutSessionCandidate !== null && order.checkoutSessionCandidate !== undefined
     && readCheckoutSessionCandidate(order).status !== 'resumable') {
     throw new Error('invalid checkout session candidate');
+  }
+  if (order.checkoutSessionProvisioning !== null && order.checkoutSessionProvisioning !== undefined
+    && readCheckoutSessionProvisioning(order).status !== 'in_flight') {
+    throw new Error('invalid checkout session provisioning evidence');
   }
   if (!checkoutSessionAttemptStateValid(order)) {
     throw new Error('invalid checkout session attempt state');
@@ -3437,18 +3533,20 @@ export async function claimCheckoutIntakeMediaCleanup(
       const activatedAt = Date.parse(retention?.activatedAt ?? '');
       const abandoned = Number.isFinite(activatedAt)
         && activatedAt + CHECKOUT_INTAKE_MEDIA_ABANDONMENT_MS <= now.getTime();
-      // A durable candidate falsifies cleanup's entire premise. It is proof
-      // that a provider Checkout Session EXISTS for this order and is still
-      // reconcilable — it may be retrieved, resumed and bound at any time, so
-      // the media it would be paid for is not abandoned. Only `stripeSessionId`
-      // was consulted here before, which deleted the buyer's photos out from
-      // under a live payable Session once the lease and abandonment age passed.
-      const hasProviderSession = current.stripeSessionId !== null
-        && current.stripeSessionId !== undefined;
-      const hasSessionCandidate = current.checkoutSessionCandidate !== null
-        && current.checkoutSessionCandidate !== undefined;
-      const unpaidAndUnpayable = current.paymentStatus === 'failed'
-        || (current.paymentStatus === 'pending' && !hasProviderSession && !hasSessionCandidate);
+      // Any durable provider or provisioning evidence falsifies cleanup's
+      // entire premise. A bound Session or a candidate is proof that a provider
+      // Checkout Session EXISTS and is still reconcilable; a provisioning
+      // marker is proof that a create was entered and may have produced one.
+      // The media such an order would be paid for is not abandoned.
+      //
+      // `paymentStatus: 'failed'` does not override any of that. It is a LOCAL
+      // observation about a past attempt of ours, never a statement by the
+      // provider that a Session cannot be paid — and it used to be treated as
+      // unconditional permission to delete, which is how a live bound Session
+      // lost its media. A failed order with no provider evidence at all keeps
+      // the reclaim contract it always had.
+      const unpaidAndUnpayable = !hasCheckoutProviderEvidence(current)
+        && (current.paymentStatus === 'failed' || current.paymentStatus === 'pending');
       if (retention?.status !== 'active' || !abandoned || !unpaidAndUnpayable) {
         return { abort: { status: 'retained' } };
       }
@@ -3503,6 +3601,83 @@ export async function markCheckoutIntakeMediaReclaimed(
       return { commit: updated, result: { status: 'reclaimed' } };
     },
     { notFound: () => ({ status: 'not_claimed' }) },
+  );
+}
+
+/**
+ * Commit the durable pre-provider provisioning marker for one exact attempt.
+ *
+ * Called immediately BEFORE `createCheckoutSession`, and the create is refused
+ * outright if this does not commit. That ordering is the whole mechanism: after
+ * it, no amount of elapsed time can make abandoned-media cleanup delete the
+ * private media this attempt is about to become payable for.
+ *
+ * Narrow on purpose:
+ *
+ *  - the caller must hold this order's exact lease identity AND fingerprint,
+ *    and unlike `supersedeExpiredCheckoutSession` the lease must be LIVE. That
+ *    asymmetry is deliberate. Supersession retires something already dead;
+ *    this authorises the provider to mint something payable, and a worker whose
+ *    lease has lapsed has no business doing that.
+ *  - the attempt generation is named by the caller and must match the record,
+ *    so a marker can never be committed for a generation the order is not on;
+ *  - the order must be unpaid with retention still active and nothing bound,
+ *    so a cleanup claim that got there first wins and this fails closed;
+ *  - idempotent for the SAME attempt (a retry of the same create converges),
+ *    refused for any other. A marker naming a different attempt is conflicting
+ *    evidence about a provider call, not an update.
+ */
+export async function beginCheckoutSessionProvisioning(
+  orderId: string,
+  checkout: {
+    leaseId: string;
+    fingerprint: string;
+    checkoutSessionAttempt: number;
+    now?: Date;
+  },
+): Promise<OrderRecord | null> {
+  const now = checkout.now ?? new Date();
+  if (!Number.isInteger(checkout.checkoutSessionAttempt)
+    || checkout.checkoutSessionAttempt < 0
+    || checkout.checkoutSessionAttempt > CHECKOUT_SESSION_SUPERSEDE_LIMIT) return null;
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      const leaseExpiresAt = Date.parse(current.checkoutLeaseExpiresAt ?? '');
+      if (current.paymentStatus !== 'pending'
+        || current.stripePaymentIntentId
+        || (current.checkoutIntakeMediaRetention?.status !== undefined
+          && current.checkoutIntakeMediaRetention.status !== 'active')
+        || current.stripeSessionId
+        || current.checkoutLeaseId !== checkout.leaseId
+        || current.checkoutFingerprint !== checkout.fingerprint
+        || current.checkoutAttemptId == null
+        || !Number.isFinite(leaseExpiresAt)
+        || leaseExpiresAt <= now.getTime()
+        || !checkoutSessionAttemptStateValid(current)
+        || (current.checkoutSessionAttempt ?? 0) !== checkout.checkoutSessionAttempt) return { abort: null };
+
+      const existing = readCheckoutSessionProvisioning(current);
+      if (existing.status === 'invalid') return { abort: null };
+      // The parser already pins a valid marker to this order's attempt id,
+      // fingerprint and current generation, so an existing valid one IS this
+      // exact attempt's marker and re-committing it would only churn the store.
+      if (existing.status === 'in_flight') return { abort: current };
+
+      const updated: OrderRecord = {
+        ...current,
+        checkoutSessionProvisioning: {
+          checkoutAttemptId: current.checkoutAttemptId,
+          checkoutFingerprint: checkout.fingerprint,
+          checkoutSessionAttempt: checkout.checkoutSessionAttempt,
+          idempotencyKey: checkoutProviderIdempotencyKey(orderId, checkout.checkoutSessionAttempt),
+          startedAt: now.toISOString(),
+        },
+        updatedAt: now.toISOString(),
+      };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
   );
 }
 
@@ -3632,6 +3807,10 @@ export async function supersedeExpiredCheckoutSession(
       };
       if (boundHere) updated.stripeSessionId = null;
       delete updated.checkoutSessionCandidate;
+      // The marker belongs to the attempt being retired, and the replacement
+      // create will commit its own under the new generation. Leaving this one
+      // behind would be evidence about a provider call that no longer exists.
+      delete updated.checkoutSessionProvisioning;
       return { commit: updated, result: updated };
     },
     { notFound: () => null },
@@ -3668,8 +3847,11 @@ export async function bindOrderCheckoutSession(
         && candidate.candidate.stripeSessionId !== stripeSessionId) return { abort: null };
       const updated: OrderRecord = { ...current, stripeSessionId, updatedAt: new Date().toISOString() };
       // Resolved atomically with the bind it authorised: one commit, so no
-      // window exists in which the order is both bound and still a candidate.
+      // window exists in which the order is both bound and still a candidate,
+      // or both bound and still mid-create. The binding itself is now the
+      // deletion-blocking evidence, so nothing is weakened by retiring these.
       delete updated.checkoutSessionCandidate;
+      delete updated.checkoutSessionProvisioning;
       return { commit: updated, result: updated };
     },
     { notFound: () => null },

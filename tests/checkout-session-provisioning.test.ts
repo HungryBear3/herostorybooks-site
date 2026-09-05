@@ -26,6 +26,7 @@
 import assert from 'node:assert/strict';
 import test, { afterEach, before, after } from 'node:test';
 
+import * as orders from '../src/lib/orders.ts';
 import {
   __resetOrderStoreAdapterFactoryForTests,
   __setOrderStoreAdapterFactoryForTests,
@@ -33,6 +34,7 @@ import {
   CHECKOUT_SESSION_SUPERSEDE_LIMIT,
   checkoutIntakeOrderContractDigest,
   checkoutProviderIdempotencyKey,
+  claimCheckoutIntakeMediaCleanup,
   createOrderRecord,
   persistNewOrder,
   readOrderVersioned,
@@ -160,7 +162,10 @@ interface Provider {
   createStatuses: Array<'open' | 'complete' | 'expired' | null>;
 }
 
-function provider(overrides: Partial<CheckoutSessionProvisionDeps> = {}): Provider {
+function provider(
+  overrides: Partial<CheckoutSessionProvisionDeps> = {},
+  clock: { value: Date } = { value: NOW },
+): Provider {
   const calls: string[] = [];
   const minted = new Map<string, ProviderCheckoutSession>();
   const byKey = new Map<string, ProviderCheckoutSession>();
@@ -188,19 +193,23 @@ function provider(overrides: Partial<CheckoutSessionProvisionDeps> = {}): Provid
     },
     async renewCheckoutLease(orderId, leaseId, fingerprint) {
       calls.push('renew');
-      return renewCheckoutLease(orderId, leaseId, fingerprint, { now: NOW });
+      return renewCheckoutLease(orderId, leaseId, fingerprint, { now: clock.value });
+    },
+    async beginCheckoutSessionProvisioning(orderId, checkout) {
+      calls.push('provisioning');
+      return orders.beginCheckoutSessionProvisioning(orderId, { ...checkout, now: clock.value });
     },
     async recordCheckoutSessionCandidate(orderId, sessionId, checkout) {
       calls.push('record');
-      return recordCheckoutSessionCandidate(orderId, sessionId, { ...checkout, now: NOW });
+      return recordCheckoutSessionCandidate(orderId, sessionId, { ...checkout, now: clock.value });
     },
     async supersedeCheckoutSession(orderId, expiredSessionId, checkout) {
       calls.push(`supersede:${expiredSessionId}`);
-      return supersedeExpiredCheckoutSession(orderId, expiredSessionId, { ...checkout, now: NOW });
+      return supersedeExpiredCheckoutSession(orderId, expiredSessionId, { ...checkout, now: clock.value });
     },
     async bindCheckoutSession(orderId, sessionId, checkout) {
       calls.push('bind');
-      return bindOrderCheckoutSession(orderId, sessionId, { ...checkout, now: NOW });
+      return bindOrderCheckoutSession(orderId, sessionId, { ...checkout, now: clock.value });
     },
     ...overrides,
   };
@@ -255,11 +264,16 @@ test('a fresh order creates exactly one Session, records it, binds it, releases 
 
   assert.equal(result.status, 'released');
   assert.deepEqual(p.calls, [
-    'renew', `create:hsb_checkout_${ORDER_ID}`, 'record', 'bind',
-  ]);
+    'renew', 'provisioning', `create:hsb_checkout_${ORDER_ID}`, 'record', 'bind',
+  ], 'durable provisioning evidence is committed BEFORE the provider is asked to create');
   const durable = await stored();
   assert.equal(durable?.stripeSessionId, 'cs_1');
   assert.equal(durable?.checkoutSessionCandidate ?? null, null, 'the bind consumed the candidate');
+  assert.equal(
+    durable?.checkoutSessionProvisioning ?? null,
+    null,
+    'and the same bind retired the provisioning marker it authorised',
+  );
   assert.equal(durable?.checkoutSessionAttempt ?? 0, 0);
 });
 
@@ -371,7 +385,10 @@ test('supersession is bounded — it can never mint payable Sessions without lim
     'at most limit+1 Sessions may ever exist for one order',
   );
   assert.equal((await stored())?.checkoutSessionAttempt, CHECKOUT_SESSION_SUPERSEDE_LIMIT);
-  assert.equal(result.status === 'refused' && result.chargeRisk, 'not_charged');
+  // Four provider objects were created on this order. None was ever exposed,
+  // but "no charge was made" is still more than this code can prove.
+  assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
+  assert.doesNotMatch(result.status === 'refused' ? result.message : '', /no charge/i);
 });
 
 // ---------------------------------------------------------------------------
@@ -691,18 +708,260 @@ test('copy: a bound-Session retrieval failure never claims no charge was made', 
   assert.doesNotMatch(result.status === 'refused' ? result.message : '', /No charge was made/);
 });
 
-test('copy: an unexposed candidate failure may still say no charge was made', async () => {
+test('copy: a candidate persistence failure AFTER the provider create never denies a charge', async () => {
   installMemoryOrderStore();
   await persistNewOrder(intakeOrder());
-  // A candidate is created but never bound, so its URL was never released.
+  // The provider was asked to create, and answered. Whether or not the id was
+  // durably recorded, a provider object may now exist — "no charge was made" is
+  // a claim about the buyer's money that this code cannot substantiate.
   const p = provider({ async recordCheckoutSessionCandidate() { return null; } });
 
   const result = await provision(intakeOrder(), p.deps);
 
   assert.equal(result.status, 'refused');
   assert.equal(result.status === 'refused' && result.code, 'checkout_session_candidate_persist_failed');
-  assert.equal(result.status === 'refused' && result.chargeRisk, 'not_charged');
-  assert.equal(result.status === 'refused' && result.message, CHECKOUT_NO_CHARGE_RETRY);
+  assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
+  assert.equal(result.status === 'refused' && result.message, CHECKOUT_RECONCILIATION_SUPPORT);
+  assert.doesNotMatch(result.status === 'refused' ? result.message : '', /no charge/i);
+});
+
+test('copy: no post-provider-attempt failure anywhere claims that no charge was made', async (t) => {
+  // Every ambiguity that can arise once `createCheckoutSession` has been
+  // ENTERED. The provider object may exist in all of them.
+  const ambiguities: Array<[string, Partial<CheckoutSessionProvisionDeps>, string]> = [
+    ['create throws', {
+      async createCheckoutSession() { throw new Error('provider unavailable'); },
+    }, 'checkout_session_create_failed'],
+    ['candidate persistence refuses', {
+      async recordCheckoutSessionCandidate() { return null; },
+    }, 'checkout_session_candidate_persist_failed'],
+    ['candidate persistence throws', {
+      async recordCheckoutSessionCandidate() { throw new Error('store unavailable'); },
+    }, 'checkout_session_candidate_persist_failed'],
+    ['the bind refuses', {
+      async bindCheckoutSession() { return null; },
+    }, 'checkout_session_bind_failed'],
+  ];
+  for (const [name, override, code] of ambiguities) {
+    await t.test(name, async () => {
+      __resetOrderStoreAdapterFactoryForTests();
+      installMemoryOrderStore();
+      await persistNewOrder(intakeOrder());
+      const p = provider(override);
+
+      const result = await provision(intakeOrder(), p.deps);
+
+      assert.equal(result.status, 'refused');
+      assert.equal(result.status === 'refused' && result.code, code);
+      assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
+      assert.doesNotMatch(result.status === 'refused' ? result.message : '', /no charge/i);
+      assert.match(result.status === 'refused' ? result.message : '', /support@herostorybooks\.com/);
+    });
+  }
+});
+
+test('copy: a URL-less created Session is ambiguous too, and says so', async () => {
+  installMemoryOrderStore();
+  await persistNewOrder(intakeOrder());
+  const p = provider({
+    async createCheckoutSession() {
+      return { id: 'cs_nourl', url: null, status: 'open' as const };
+    },
+  });
+
+  const result = await provision(intakeOrder(), p.deps);
+
+  assert.equal(result.status, 'refused');
+  assert.equal(result.status === 'refused' && result.code, 'checkout_session_url_missing');
+  assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
+  assert.doesNotMatch(result.status === 'refused' ? result.message : '', /no charge/i);
+});
+
+test('copy: a durable provisioning marker from an EARLIER request already forbids no-charge copy', async () => {
+  installMemoryOrderStore();
+  await persistNewOrder(intakeOrder());
+  // A previous worker committed the marker and then vanished mid-create. This
+  // request cannot know whether the provider minted anything.
+  assert.ok(await orders.beginCheckoutSessionProvisioning(ORDER_ID, {
+    leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: NOW,
+  }));
+  const p = provider({ async renewCheckoutLease() { return null; } });
+
+  const result = await provision((await stored())!, p.deps);
+
+  assert.equal(result.status, 'refused');
+  assert.equal(result.status === 'refused' && result.code, 'checkout_lease_lost');
+  assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
+  assert.doesNotMatch(result.status === 'refused' ? result.message : '', /no charge/i);
+  assert.equal(creates(p).length, 0);
+});
+
+test('copy: failures proven to precede every provider attempt keep the no-charge sentence', async () => {
+  for (const [name, override, code] of [
+    ['lease lost', { async renewCheckoutLease() { return null; } }, 'checkout_lease_lost'],
+    ['provisioning evidence refused', {
+      async beginCheckoutSessionProvisioning() { return null; },
+    }, 'checkout_session_provisioning_failed'],
+  ] as Array<[string, Partial<CheckoutSessionProvisionDeps>, string]>) {
+    __resetOrderStoreAdapterFactoryForTests();
+    installMemoryOrderStore();
+    await persistNewOrder(intakeOrder());
+    const p = provider(override);
+
+    const result = await provision(intakeOrder(), p.deps);
+
+    assert.equal(result.status, 'refused', name);
+    assert.equal(result.status === 'refused' && result.code, code, name);
+    assert.equal(result.status === 'refused' && result.chargeRisk, 'not_charged', name);
+    assert.match(result.status === 'refused' ? result.message : '', /no (new )?charge was made/i, name);
+    assert.equal(creates(p).length, 0, name);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The in-flight barrier: a provider call that outlives its own lease
+//
+// This is the race the whole `checkoutSessionProvisioning` marker exists for.
+// A worker renews its lease, asks the provider to create a Session, and the
+// call takes longer than the lease. Abandoned-media cleanup wakes up, sees a
+// pending order with no bound Session and no candidate — because the candidate
+// cannot exist until the provider answers — and, before this marker, deleted
+// the buyer's private media out from under a Session that was seconds from
+// existing. The candidate write then failed closed against the claimed
+// retention, and the Session was stranded, payable, with no media behind it.
+// ---------------------------------------------------------------------------
+
+test('a provider create in flight across lease expiry: media retained, exact Session recorded, stale worker cannot expose', async () => {
+  installMemoryOrderStore();
+  await persistNewOrder(intakeOrder());
+  const clock = { value: NOW };
+  let releaseCreate: () => void = () => {};
+  const createEntered = Promise.withResolvers<void>();
+  const created = new Promise<void>((resolve) => { releaseCreate = resolve; });
+  const p = provider({
+    async createCheckoutSession({ order, idempotencyKey }) {
+      p.calls.push(`create:${idempotencyKey}`);
+      createEntered.resolve();
+      await created;
+      const session = {
+        id: 'cs_inflight',
+        url: `https://checkout.stripe.test/${order.id}/${idempotencyKey}`,
+        status: 'open' as const,
+      };
+      // The Session now exists AT THE PROVIDER, whatever this worker manages to
+      // do with it — which is the entire premise of the window under test.
+      p.minted.set(session.id, session);
+      p.byKey.set(idempotencyKey, session);
+      return session;
+    },
+  }, clock);
+
+  const inflight = provision(intakeOrder(), p.deps);
+  await createEntered.promise;
+
+  // ── Cleanup's takeover moment arrives while the provider call is open ──
+  clock.value = new Date(NOW.getTime() + 10 * 365 * 24 * 60 * 60 * 1000);
+  const claim = await claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: clock.value });
+  assert.deepEqual(claim, { status: 'retained' }, 'durable provisioning evidence blocks deletion');
+  assert.equal((await stored())?.checkoutIntakeMediaRetention?.status, 'active');
+
+  releaseCreate();
+  const result = await inflight;
+
+  // The stale worker records the exact Session for reconciliation …
+  const durable = await stored();
+  assert.equal(durable?.checkoutSessionCandidate?.stripeSessionId, 'cs_inflight');
+  // … and may not bind or expose anything, because its lease is long gone.
+  assert.equal(result.status, 'refused', JSON.stringify(result));
+  assert.equal(result.status === 'refused' && result.code, 'checkout_session_bind_failed');
+  assert.equal(JSON.stringify(result).includes('checkout.stripe.test'), false, 'no URL after lease loss');
+  assert.equal(durable?.stripeSessionId ?? null, null);
+  assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
+  assert.doesNotMatch(result.status === 'refused' ? result.message : '', /no charge/i);
+
+  // ── The retry reconciles the SAME Session, and never mints a second ──
+  p.byKey.clear();
+  const retry = await provision((await stored())!, p.deps);
+
+  assert.equal(retry.status, 'released', JSON.stringify(retry));
+  assert.equal(creates(p).length, 1, 'the durable evidence, not provider retention, prevents a second Session');
+  assert.equal(
+    retry.status === 'released' && retry.url,
+    `https://checkout.stripe.test/${ORDER_ID}/${checkoutProviderIdempotencyKey(ORDER_ID, 0)}`,
+  );
+  const settled = await stored();
+  assert.equal(settled?.stripeSessionId, 'cs_inflight');
+  assert.equal(settled?.checkoutSessionCandidate ?? null, null);
+  assert.equal(settled?.checkoutSessionProvisioning ?? null, null);
+  assert.equal(settled?.checkoutSessionAttempt ?? 0, 0, 'nothing was superseded; the same attempt converged');
+});
+
+test('the provisioning marker is written under the exact lease, attempt and fingerprint — or not at all', async () => {
+  installMemoryOrderStore();
+  await persistNewOrder(intakeOrder());
+
+  for (const [name, checkout] of [
+    ['foreign lease', { leaseId: FOREIGN_LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0 }],
+    ['foreign fingerprint', { leaseId: LEASE, fingerprint: 'd'.repeat(64), checkoutSessionAttempt: 0 }],
+    ['wrong attempt', { leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 1 }],
+  ] as Array<[string, { leaseId: string; fingerprint: string; checkoutSessionAttempt: number }]>) {
+    assert.equal(
+      await orders.beginCheckoutSessionProvisioning(ORDER_ID, { ...checkout, now: NOW }),
+      null,
+      name,
+    );
+    assert.equal((await stored())?.checkoutSessionProvisioning ?? null, null, name);
+  }
+
+  // An EXPIRED lease is liveness, not identity — but exposure authority has to
+  // be live at the moment the provider is asked to mint something payable.
+  assert.equal(
+    await orders.beginCheckoutSessionProvisioning(ORDER_ID, {
+      leaseId: LEASE,
+      fingerprint: FINGERPRINT,
+      checkoutSessionAttempt: 0,
+      now: new Date(NOW.getTime() + 60 * 60_000),
+    }),
+    null,
+    'an expired lease may not authorise a new provider create',
+  );
+
+  const written = await orders.beginCheckoutSessionProvisioning(ORDER_ID, {
+    leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: NOW,
+  });
+  assert.equal(written?.checkoutSessionProvisioning?.idempotencyKey, checkoutProviderIdempotencyKey(ORDER_ID, 0));
+  // Idempotent for the same exact attempt, refused for any other.
+  assert.ok(await orders.beginCheckoutSessionProvisioning(ORDER_ID, {
+    leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: NOW,
+  }));
+  assert.equal(
+    await orders.beginCheckoutSessionProvisioning(ORDER_ID, {
+      leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 2, now: NOW,
+    }),
+    null,
+    'a marker naming a different attempt is conflicting evidence, not an update',
+  );
+});
+
+test('supersession retires the provisioning marker with the attempt it belongs to', async () => {
+  installMemoryOrderStore();
+  await persistNewOrder(intakeOrder());
+  const p = provider();
+  assert.ok(await recordCheckoutSessionCandidate(ORDER_ID, 'cs_stale', {
+    checkoutAttemptId: ATTEMPT, fingerprint: FINGERPRINT, now: NOW,
+  }));
+  assert.ok(await orders.beginCheckoutSessionProvisioning(ORDER_ID, {
+    leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: NOW,
+  }));
+  p.minted.set('cs_stale', { id: 'cs_stale', url: 'https://checkout.stripe.test/stale', status: 'expired' });
+
+  const result = await provision((await stored())!, p.deps);
+
+  assert.equal(result.status, 'released', JSON.stringify(result));
+  const durable = await stored();
+  assert.equal(durable?.checkoutSessionAttempt, 1);
+  assert.equal(durable?.checkoutSessionProvisioning ?? null, null, 'the replacement bind retired its own marker');
+  assert.equal(durable?.stripeSessionId, 'cs_1');
 });
 
 test('copy: a bound-Session reconciliation mismatch does not deny a charge', async () => {
