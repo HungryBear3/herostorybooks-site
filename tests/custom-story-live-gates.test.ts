@@ -9,9 +9,15 @@ import { TACO_GATE_BRIEF } from './fixtures/taco-gate-brief.ts';
 test('order route validates sanitized customStoryBrief before Stripe and returns manual_queue failures', () => {
   const source = readFileSync('src/app/api/order/route.ts', 'utf8');
   const validateIdx = source.indexOf('validateCustomStoryBrief(customStoryBrief)');
-  const stripeIdx = source.indexOf('const stripe = getStripe()');
+  // Provider Session creation now happens inside the shared provisioner, so
+  // the boundary is the first orchestration entry point the handler reaches.
+  // Requiring validation to precede BOTH is stronger than the old single
+  // inline-create boundary, which only covered the legacy path.
+  const directEntryIdx = source.indexOf('await runDirectIntakeCheckout({');
+  const legacyEntryIdx = source.indexOf('await provisionCheckoutSession({');
+  const stripeIdx = Math.min(directEntryIdx, legacyEntryIdx);
   assert.ok(validateIdx > 0, 'customStoryBrief validation is present');
-  assert.ok(stripeIdx > 0, 'stripe creation is present');
+  assert.ok(directEntryIdx > 0 && legacyEntryIdx > 0, 'stripe creation is present');
   assert.ok(validateIdx < stripeIdx, 'custom brief validation must happen before Stripe creation');
   assert.match(source, /custom_story_manual_review_required/);
   assert.match(source, /custom_story_paid_beta_required/);

@@ -347,12 +347,14 @@ test('order route enforces the 15 MB cap (voice_too_large)', () => {
 
 test('order route uploads voice BEFORE creating the Stripe Checkout Session', () => {
   const voiceUploadIdx = ROUTE_SRC.indexOf('uploadOrderVoice');
-  const stripeIdx = ROUTE_SRC.indexOf('stripe.checkout.sessions.create');
+  // Voice upload is a legacy-path step; the provider Session for that path is
+  // created inside provisionCheckoutSession, so that call is the boundary.
+  const stripeIdx = ROUTE_SRC.indexOf('await provisionCheckoutSession({');
   assert.ok(voiceUploadIdx > -1, 'route must call uploadOrderVoice');
-  assert.ok(stripeIdx > -1, 'route must call stripe.checkout.sessions.create');
+  assert.ok(stripeIdx > -1, 'route must reach provider Session provisioning');
   assert.ok(
     voiceUploadIdx < stripeIdx,
-    'uploadOrderVoice must run before stripe.checkout.sessions.create',
+    'uploadOrderVoice must run before the provider Session is created',
   );
 });
 

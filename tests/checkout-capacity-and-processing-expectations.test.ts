@@ -139,29 +139,49 @@ test('obsolete limit env values cannot reactivate a cap or alter customer copy',
 
 test('pause kill switch and every unrelated safety gate still precede Stripe construction', () => {
   const src = orderRoute();
-  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
+  // Provider Session creation is no longer written inline in the handler: both
+  // paths now enter a shared provisioner (src/lib/checkout-session-provisioning.ts)
+  // which owns renew → create → record candidate → bind → release. The gate
+  // boundary is therefore the point where ANY provider work first becomes
+  // reachable — whichever orchestration entry point comes first.
+  const directEntryIdx = src.indexOf('await runDirectIntakeCheckout({');
+  const legacyEntryIdx = src.indexOf('await provisionCheckoutSession({');
+  assert.ok(directEntryIdx > -1, 'route still reaches the direct provisioning saga');
+  assert.ok(legacyEntryIdx > -1, 'route still reaches the legacy provisioning saga');
+  const stripeIdx = Math.min(directEntryIdx, legacyEntryIdx);
   const formIdx = src.indexOf('await request.formData()');
-  assert.ok(stripeIdx > -1, 'route still constructs a Stripe session');
 
   const pauseIdx = src.indexOf('if (isCheckoutPaused())');
   assert.ok(pauseIdx > -1, 'pause kill switch still exists');
   assert.ok(pauseIdx < formIdx, 'pause must refuse before form parsing');
   assert.ok(pauseIdx < stripeIdx, 'pause must refuse before Stripe');
 
-  const gates = [
+  // Gates that apply to every submission must precede BOTH entry points —
+  // strictly stronger than the old single-inline-create boundary.
+  for (const gate of [
     'voice_consent_required',
-    'supporting_character_details_required',
     'primary_hero_beta_required',
     'custom_story_paid_beta_required',
     'custom_story_manual_review_required',
-    'supporting_photo_persist_failed',
-    'voice_persist_failed',
-  ];
-  for (const gate of gates) {
+  ]) {
     const idx = src.indexOf(gate);
     assert.ok(idx > -1, `safety gate ${gate} must still exist`);
-    assert.ok(idx < stripeIdx, `safety gate ${gate} must refuse before Stripe`);
+    assert.ok(idx < stripeIdx, `safety gate ${gate} must refuse before either provider path`);
   }
+  // Legacy-path media gates run after the direct branch has already returned,
+  // so their boundary is the legacy provisioning entry.
+  for (const gate of [
+    'supporting_character_details_required',
+    'supporting_photo_persist_failed',
+    'voice_persist_failed',
+  ]) {
+    const idx = src.indexOf(gate);
+    assert.ok(idx > -1, `safety gate ${gate} must still exist`);
+    assert.ok(idx < legacyEntryIdx, `safety gate ${gate} must refuse before Stripe`);
+  }
+  // And nothing may construct a provider Session inside the handler itself.
+  const handler = src.slice(0, src.indexOf('async function retrieveDirectCheckoutSession'));
+  assert.doesNotMatch(handler, /checkout\.sessions\.create/);
 
   // Duplicate/idempotency protection is untouched by capacity policy.
   assert.match(src, /already reached payment/, 'duplicate-payment protection must remain');

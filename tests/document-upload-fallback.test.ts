@@ -48,7 +48,9 @@ test('legacy route rejects contradictory or duplicate attachment lanes and null 
 test('legacy order route persists dedicated document metadata before Stripe', () => {
   const uploadIndex = route.indexOf('await uploadOrderDocument');
   const persistIndex = route.indexOf('documentBlobPath,');
-  const stripeIndex = route.indexOf('stripe.checkout.sessions.create');
+  // Document metadata is a legacy-path concern and must be durable before the
+  // legacy provisioner can create anything payable.
+  const stripeIndex = route.indexOf('await provisionCheckoutSession({');
   assert.ok(uploadIndex > -1 && uploadIndex < persistIndex && persistIndex < stripeIndex);
   assert.match(route, /if \(!uploadedDocument\) \{[\s\S]*?document_persist_failed/);
   assert.match(route, /documentBlobUrl,/);

@@ -68,11 +68,24 @@ test('malformed Product binding fails closed instead of accepting a Price or arb
 test('primary checkout binds price_data to a stable Product and allows promotion codes', () => {
   const src = readFileSync('src/app/api/order/route.ts', 'utf8');
   const bindingIdx = src.indexOf('getRequiredStripeProductId(draftOrder.bookFormat)');
-  const createIdx = src.indexOf('stripe.checkout.sessions.create');
+  // The binding must resolve before EITHER path can reach the provisioner —
+  // stronger than the old single inline-create boundary — and the resolved id
+  // must be what the surviving creation call actually prices against.
+  const directEntryIdx = src.indexOf('await runDirectIntakeCheckout({');
+  const legacyEntryIdx = src.indexOf('await provisionCheckoutSession({');
+  const createIdx = src.indexOf('checkout.sessions.create');
 
   assert.ok(bindingIdx > -1, 'route must resolve the stable Product binding');
-  assert.ok(createIdx > bindingIdx, 'Product binding must resolve before Stripe Session creation');
+  assert.ok(directEntryIdx > bindingIdx, 'Product binding must resolve before the direct path');
+  assert.ok(legacyEntryIdx > bindingIdx, 'Product binding must resolve before the legacy path');
+  assert.ok(createIdx > -1, 'route still owns the provider Session creation adapter');
+  // Both paths pass the SAME resolved product id into the shared provisioner.
+  assert.match(src, /stripeProductId,\n/);
   assert.match(src, /allow_promotion_codes:\s*true/);
   assert.match(src, /price_data:\s*\{[\s\S]*?product:\s*stripeProductId/);
   assert.doesNotMatch(src, /price_data:\s*\{[\s\S]*?product_data:\s*\{/);
+  // The provisioner may never invent its own pricing — it only forwards.
+  const provisioner = readFileSync('src/lib/checkout-session-provisioning.ts', 'utf8');
+  assert.doesNotMatch(provisioner, /price_data|unit_amount|product_data/);
+  assert.match(provisioner, /stripeProductId: params\.stripeProductId/);
 });

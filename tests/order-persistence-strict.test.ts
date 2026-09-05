@@ -192,7 +192,7 @@ test('uploadOrderPhoto in dev with NO blob token → returns null silently (lega
 
 test('order route contract: persistOrder throws BEFORE any Stripe call would happen', async () => {
   // We can't import the route directly under node:test (it pulls next/server).
-  // The route's contract is: call persistOrder before stripe.checkout.sessions.create().
+  // The route's contract is: call persistOrder before checkout.sessions.create().
   // We assert the contract at the persistence layer: in production-like envs,
   // persistOrder throws OrderPersistenceError synchronously enough that any
   // code after it (including Stripe) cannot run. Combined with the static
@@ -225,11 +225,11 @@ test('order route source: atomic create-or-exact-resume persistence and final CA
   const src = await readFile('src/app/api/order/route.ts', 'utf8');
   const createIdx = src.indexOf('await persistOrResumeCheckoutOrder');
   const casIdx = src.indexOf('await withOrderTransaction');
-  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
+  const stripeIdx = src.indexOf('checkout.sessions.create');
   const orderPersistenceErrorIdx = src.indexOf('OrderPersistenceError');
   assert.ok(createIdx > -1, 'route must atomically create or resume the exact durable owner record');
   assert.ok(casIdx > createIdx, 'route must update the draft through versioned CAS');
-  assert.ok(stripeIdx > -1, 'route must call stripe.checkout.sessions.create');
+  assert.ok(stripeIdx > -1, 'route must call checkout.sessions.create');
   assert.ok(casIdx < stripeIdx, 'all durable writes must complete before Stripe');
   assert.ok(orderPersistenceErrorIdx > -1, 'route must handle OrderPersistenceError');
 });
@@ -237,9 +237,9 @@ test('order route source: atomic create-or-exact-resume persistence and final CA
 test('order route source: Stripe Checkout enables buyer-entered promotion codes', async () => {
   const { readFile } = await import('node:fs/promises');
   const src = await readFile('src/app/api/order/route.ts', 'utf8');
-  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
+  const stripeIdx = src.indexOf('checkout.sessions.create');
   const promoIdx = src.indexOf('allow_promotion_codes: true');
-  assert.ok(stripeIdx > -1, 'route must call stripe.checkout.sessions.create');
+  assert.ok(stripeIdx > -1, 'route must call checkout.sessions.create');
   assert.ok(promoIdx > -1, 'Checkout session must allow buyer-entered promotion codes');
   assert.ok(promoIdx > stripeIdx, 'promotion-code setting must be part of session creation');
 });

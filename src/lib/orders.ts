@@ -78,6 +78,30 @@ export interface CheckoutSessionCandidate {
  *  not match is unusable evidence and must fail closed, never be "fixed up". */
 const CHECKOUT_SESSION_ID = /^cs_[A-Za-z0-9_]{1,255}$/;
 
+/**
+ * How many times one order may supersede a dead provider Session.
+ *
+ * This is the hard ceiling on how many payable Sessions can ever exist for a
+ * single order: at most `LIMIT + 1`. Supersession is the only mechanism that
+ * can mint a second Session, so bounding it bounds the blast radius of any
+ * provider that misreports status.
+ */
+export const CHECKOUT_SESSION_SUPERSEDE_LIMIT = 3;
+
+/**
+ * The provider idempotency key for one exact attempt of one exact order.
+ *
+ * Attempt 0 keeps the historical key verbatim, so orders created before
+ * supersession existed keep colliding onto their original Session. Every later
+ * attempt gets its own key: deterministic, so concurrent retries of the SAME
+ * attempt collapse onto one Session; distinct, so a legitimate replacement is
+ * not silently deduplicated onto the dead Session it is replacing.
+ */
+export function checkoutProviderIdempotencyKey(orderId: string, attempt?: number | null): string {
+  const n = typeof attempt === 'number' && Number.isInteger(attempt) && attempt > 0 ? attempt : 0;
+  return n === 0 ? `hsb_checkout_${orderId}` : `hsb_checkout_${orderId}_r${n}`;
+}
+
 export type CheckoutSessionCandidateState =
   | { status: 'absent' }
   | { status: 'resumable'; candidate: CheckoutSessionCandidate }
@@ -90,10 +114,19 @@ export type CheckoutSessionCandidateState =
  * absent means there is nothing to resume (so creating is correct), while
  * invalid means the record carries evidence this code cannot account for (so
  * creating would risk a second payable Session and must be refused).
+ *
+ * A bound `stripeSessionId` together with ANY candidate is invalid whatever
+ * the ids are. Binding consumes its own candidate in the same commit, so the
+ * two can never legitimately coexist; seeing both means either a corrupted
+ * record or a writer this code does not know about, and releasing the bound
+ * Session's URL on that basis would be releasing a URL we cannot account for.
  */
 export function readCheckoutSessionCandidate(order: OrderRecord): CheckoutSessionCandidateState {
   const candidate = order.checkoutSessionCandidate;
   if (candidate === null || candidate === undefined) return { status: 'absent' };
+  if (typeof order.stripeSessionId === 'string' && order.stripeSessionId.length > 0) {
+    return { status: 'invalid' };
+  }
   if (typeof candidate !== 'object' || Array.isArray(candidate)) return { status: 'invalid' };
   const value = candidate as unknown as Record<string, unknown>;
   if (!exactObjectKeys(value, [
@@ -107,6 +140,28 @@ export function readCheckoutSessionCandidate(order: OrderRecord): CheckoutSessio
     || value.checkoutFingerprint !== order.checkoutFingerprint
     || !canonicalIso(value.recordedAt)) return { status: 'invalid' };
   return { status: 'resumable', candidate: candidate as CheckoutSessionCandidate };
+}
+
+/**
+ * Validate the durable provider-attempt bookkeeping.
+ *
+ * `checkoutSessionAttempt` and `supersededCheckoutSessionIds` move together —
+ * one supersession appends exactly one id and bumps the counter by exactly
+ * one — so their lengths must agree. A record where they disagree cannot be
+ * used to choose an idempotency key, and choosing wrongly mints money.
+ */
+function checkoutSessionAttemptStateValid(order: OrderRecord): boolean {
+  const attempt = order.checkoutSessionAttempt;
+  const superseded = order.supersededCheckoutSessionIds;
+  if (attempt === null || attempt === undefined) {
+    return superseded === null || superseded === undefined
+      || (Array.isArray(superseded) && superseded.length === 0);
+  }
+  if (!Number.isInteger(attempt) || attempt < 0 || attempt > CHECKOUT_SESSION_SUPERSEDE_LIMIT) return false;
+  const ids = superseded ?? [];
+  if (!Array.isArray(ids) || ids.length !== attempt) return false;
+  if (!ids.every((id) => typeof id === 'string' && CHECKOUT_SESSION_ID.test(id))) return false;
+  return new Set(ids).size === ids.length;
 }
 
 export interface ShippingAddress {
@@ -408,6 +463,13 @@ export interface OrderRecord extends OrderInput {
    *  Cleared atomically by the bind that consumes it. See
    *  CheckoutSessionCandidate — it is NOT a payment or authority field. */
   checkoutSessionCandidate?: CheckoutSessionCandidate | null;
+  /** How many provider Sessions this order has superseded. Selects the
+   *  idempotency key; absent/0 means the original, historical key. */
+  checkoutSessionAttempt?: number | null;
+  /** The exact provider Session ids this order has superseded, oldest first.
+   *  Append-only, bounded by CHECKOUT_SESSION_SUPERSEDE_LIMIT, and the audit
+   *  trail reconciliation needs to prove no superseded Session was ever paid. */
+  supersededCheckoutSessionIds?: string[] | null;
   /** Non-PII compatibility signal derived while reading retired legacy data. */
   legacyVoiceUploadPresent?: boolean;
   bookFormat: BookFormat;
@@ -1713,6 +1775,20 @@ export function checkoutIntakeOrderContractDigest(order: OrderRecord): string | 
 }
 
 function assertCheckoutIntakeOrderContract(order: OrderRecord): void {
+  // Provider-Session bookkeeping is validated for EVERY order, legacy public
+  // path included, and BEFORE the no-intake early return below. A malformed
+  // candidate must not degrade to "absent": absent means "no Session exists,
+  // creating one is correct", and reading corruption that way is how an order
+  // gets a second payable Session or has its private media deleted under a
+  // live one. Unreadable is the only safe reading of unaccountable evidence.
+  if (order.checkoutSessionCandidate !== null && order.checkoutSessionCandidate !== undefined
+    && readCheckoutSessionCandidate(order).status !== 'resumable') {
+    throw new Error('invalid checkout session candidate');
+  }
+  if (!checkoutSessionAttemptStateValid(order)) {
+    throw new Error('invalid checkout session attempt state');
+  }
+
   const binding = order.checkoutIntake;
   const retention = order.checkoutIntakeMediaRetention;
   const familyCharacters = Array.isArray(order.familyCharacters) ? order.familyCharacters : [];
@@ -3361,9 +3437,18 @@ export async function claimCheckoutIntakeMediaCleanup(
       const activatedAt = Date.parse(retention?.activatedAt ?? '');
       const abandoned = Number.isFinite(activatedAt)
         && activatedAt + CHECKOUT_INTAKE_MEDIA_ABANDONMENT_MS <= now.getTime();
+      // A durable candidate falsifies cleanup's entire premise. It is proof
+      // that a provider Checkout Session EXISTS for this order and is still
+      // reconcilable — it may be retrieved, resumed and bound at any time, so
+      // the media it would be paid for is not abandoned. Only `stripeSessionId`
+      // was consulted here before, which deleted the buyer's photos out from
+      // under a live payable Session once the lease and abandonment age passed.
+      const hasProviderSession = current.stripeSessionId !== null
+        && current.stripeSessionId !== undefined;
+      const hasSessionCandidate = current.checkoutSessionCandidate !== null
+        && current.checkoutSessionCandidate !== undefined;
       const unpaidAndUnpayable = current.paymentStatus === 'failed'
-        || (current.paymentStatus === 'pending'
-          && (current.stripeSessionId === null || current.stripeSessionId === undefined));
+        || (current.paymentStatus === 'pending' && !hasProviderSession && !hasSessionCandidate);
       if (retention?.status !== 'active' || !abandoned || !unpaidAndUnpayable) {
         return { abort: { status: 'retained' } };
       }
@@ -3471,6 +3556,82 @@ export async function recordCheckoutSessionCandidate(
         },
         updatedAt: now.toISOString(),
       };
+      return { commit: updated, result: updated };
+    },
+    { notFound: () => null },
+  );
+}
+
+/**
+ * Retire an exact provider Session the provider itself has declared expired.
+ *
+ * This is the ONLY way a second payable Session can ever come to exist for one
+ * order, so every part of it is deliberately narrow:
+ *
+ *  - the caller must name the EXACT id being retired, and that id must be the
+ *    one this order currently holds — as its candidate, or as its binding, but
+ *    never inferred;
+ *  - the order must still be unpaid with no PaymentIntent. A Session that
+ *    reached payment is never retired, whatever status the provider reports;
+ *  - the caller must hold this order's exact lease identity and fingerprint;
+ *  - the counter is bounded, so a provider that misreports "expired" forever
+ *    can still only ever cost `CHECKOUT_SESSION_SUPERSEDE_LIMIT + 1` Sessions.
+ *
+ * Lease EXPIRY is not a refusal here. The lease id is identity — it names the
+ * attempt — while its expiry is liveness, and the same-attempt owner renewing
+ * its own lapsed lease is exactly what makes an ordinary retry work
+ * (`renewCheckoutLease` has always behaved this way). So the lease is extended
+ * in the same commit that retires the Session: authority and supersession are
+ * acquired atomically or not at all.
+ *
+ * Idempotent by construction: a retry that finds the id already retired and no
+ * longer held returns the current record rather than bumping the counter
+ * again, so concurrent recoveries converge on one replacement.
+ */
+export async function supersedeExpiredCheckoutSession(
+  orderId: string,
+  expiredStripeSessionId: string,
+  checkout: { leaseId: string; fingerprint: string; now?: Date; leaseMs?: number },
+): Promise<OrderRecord | null> {
+  if (!CHECKOUT_SESSION_ID.test(expiredStripeSessionId)) return null;
+  const now = checkout.now ?? new Date();
+  const leaseMs = checkout.leaseMs ?? 5 * 60_000;
+  return withOrderTransaction<OrderRecord | null>(
+    orderId,
+    (current) => {
+      if (current.paymentStatus !== 'pending'
+        || current.stripePaymentIntentId
+        || (current.checkoutIntakeMediaRetention?.status !== undefined
+          && current.checkoutIntakeMediaRetention.status !== 'active')
+        || current.checkoutLeaseId !== checkout.leaseId
+        || current.checkoutFingerprint !== checkout.fingerprint) return { abort: null };
+
+      const superseded = current.supersededCheckoutSessionIds ?? [];
+      const boundHere = current.stripeSessionId === expiredStripeSessionId;
+      const candidate = readCheckoutSessionCandidate(current);
+      const candidateHere = candidate.status === 'resumable'
+        && candidate.candidate.stripeSessionId === expiredStripeSessionId;
+
+      if (!boundHere && !candidateHere) {
+        // Already retired by a concurrent recovery: converge instead of
+        // retiring a second time, which would skip an idempotency key and
+        // strand a Session nobody is reconciling.
+        if (superseded.includes(expiredStripeSessionId)) return { abort: current };
+        return { abort: null };
+      }
+      if (candidate.status === 'invalid') return { abort: null };
+      const attempt = current.checkoutSessionAttempt ?? 0;
+      if (attempt >= CHECKOUT_SESSION_SUPERSEDE_LIMIT) return { abort: null };
+
+      const updated: OrderRecord = {
+        ...current,
+        checkoutSessionAttempt: attempt + 1,
+        supersededCheckoutSessionIds: [...superseded, expiredStripeSessionId],
+        checkoutLeaseExpiresAt: new Date(now.getTime() + leaseMs).toISOString(),
+        updatedAt: now.toISOString(),
+      };
+      if (boundHere) updated.stripeSessionId = null;
+      delete updated.checkoutSessionCandidate;
       return { commit: updated, result: updated };
     },
     { notFound: () => null },

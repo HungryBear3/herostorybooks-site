@@ -93,11 +93,31 @@ test('webhook source: verifies exact settlement facts and returns retryable conf
 });
 
 test('checkout source binds Stripe Session before releasing redirect URL', () => {
+  // Both checkout paths now share one provisioner, so this ordering guarantee
+  // lives there rather than being written twice in the route. Assert it at the
+  // place that actually enforces it — and that the route only ever releases a
+  // URL the provisioner returned, never a raw provider Session URL.
+  const provisioner = readFileSync('src/lib/checkout-session-provisioning.ts', 'utf8');
+  const createAt = provisioner.indexOf('await deps.createCheckoutSession({');
+  const recordAt = provisioner.indexOf('await deps.recordCheckoutSessionCandidate(');
+  const bindAt = provisioner.indexOf('await deps.bindCheckoutSession(');
+  const releaseAt = provisioner.indexOf("return { status: 'released', url: session.url");
+  assert.ok(createAt > -1, 'the provisioner creates the Session');
+  assert.ok(
+    recordAt > createAt,
+    'the created Session id must be durably recorded before anything else may fail',
+  );
+  assert.ok(bindAt > recordAt, 'binding happens after the durable candidate exists');
+  assert.ok(releaseAt > bindAt, 'no URL may be released before the Session is bound');
+
+  // A bind that fails releases nothing.
+  assert.match(provisioner, /if \(!bound\) \{[\s\S]{0,400}?checkout_session_bind_failed/);
+
   const src = readFileSync('src/app/api/order/route.ts', 'utf8');
-  const createAt = src.indexOf('stripe.checkout.sessions.create');
-  const bindAt = src.indexOf('bindOrderCheckoutSession(order.id, session.id, {');
-  const redirectAt = src.indexOf('redirectTo: session.url');
-  assert.ok(createAt > -1 && bindAt > createAt && redirectAt > bindAt);
+  assert.match(src, /redirectTo: provisioned\.url/);
+  assert.doesNotMatch(src, /redirectTo: session\.url/);
+  const handler = src.slice(0, src.indexOf('async function retrieveDirectCheckoutSession'));
+  assert.doesNotMatch(handler, /checkout\.sessions\.create/);
 });
 
 test('webhook source: refuses to resurrect a refunded order on replay', () => {

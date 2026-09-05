@@ -145,7 +145,7 @@ test('order route: the path is chosen by request shape AND the server flag, neve
   assert.match(ROUTE, /direct_upload_disabled/);
   const parseIdx = ROUTE.indexOf('parseDirectIntakeOrderRequest(form)');
   const disabledIdx = ROUTE.indexOf('direct_upload_disabled');
-  const stripeIdx = ROUTE.indexOf('stripe.checkout.sessions.create');
+  const stripeIdx = ROUTE.indexOf('checkout.sessions.create');
   assert.ok(parseIdx > -1 && disabledIdx > parseIdx, 'the half-enabled refusal follows the parse');
   assert.ok(disabledIdx < stripeIdx, 'the half-enabled refusal happens before Stripe');
 });
@@ -166,7 +166,7 @@ test('order route: the direct branch returns before any legacy public upload hel
 test('order route: legacy ordering guarantees are untouched', () => {
   const createIdx = ROUTE.indexOf('await persistOrResumeCheckoutOrder');
   const casIdx = ROUTE.indexOf('await withOrderTransaction');
-  const stripeIdx = ROUTE.indexOf('stripe.checkout.sessions.create');
+  const stripeIdx = ROUTE.indexOf('checkout.sessions.create');
   const promoIdx = ROUTE.indexOf('allow_promotion_codes: true');
   assert.ok(createIdx > -1 && casIdx > createIdx && stripeIdx > casIdx);
   assert.ok(promoIdx > stripeIdx, 'promotion codes remain part of session creation');
@@ -213,4 +213,59 @@ test('checkout form: payment stays blocked until every chosen file is saved priv
   assert.match(FORM, /directUploadBlockers/);
   assert.match(FORM, /directMediaBlockers/);
   assert.match(FORM, /directMediaBlockers\.length === 0/);
+});
+
+// ---------------------------------------------------------------------------
+// Both checkout paths share ONE provider-Session state machine
+//
+// The legacy public path used to create a Session and bind it in one breath,
+// with no durable record in between. A create that succeeded followed by a bind
+// that failed lost the provider identity entirely, leaving retry safety to
+// Stripe's finite idempotency retention — after which an ordinary retry could
+// mint a second payable Session. Source position is how the ordering guarantee
+// inside this un-importable route is pinned; the behaviour itself is proven
+// against the real order CAS in checkout-session-provisioning.test.ts.
+// ---------------------------------------------------------------------------
+
+test('order route: the legacy path provisions through the shared primitive, not inline', () => {
+  const legacyIdx = ROUTE.indexOf('const provisioned = await provisionCheckoutSession({');
+  assert.ok(legacyIdx > -1, 'the legacy branch must call the shared provisioning primitive');
+  assert.match(ROUTE, /import \{ provisionCheckoutSession \} from '@\/lib\/checkout-session-provisioning'/);
+
+  // The inline create-then-bind pair is gone. Any direct session creation in
+  // this file must now live inside the injected provider adapter, never in the
+  // request handler where it can outrun candidate persistence.
+  const handlerEnd = ROUTE.indexOf('async function retrieveDirectCheckoutSession');
+  const handler = ROUTE.slice(0, handlerEnd);
+  assert.doesNotMatch(handler, /stripe\.checkout\.sessions\.create/);
+  assert.doesNotMatch(handler, /bindOrderCheckoutSession\(order\.id, session\.id/);
+});
+
+test('order route: both paths inject the same four durable order primitives', () => {
+  for (const primitive of [
+    'renewCheckoutLease',
+    'recordCheckoutSessionCandidate',
+    'supersedeExpiredCheckoutSession',
+    'bindOrderCheckoutSession',
+  ]) {
+    assert.ok(
+      ROUTE.split(primitive).length - 1 >= 2,
+      `${primitive} must be wired on both the direct and the legacy path`,
+    );
+  }
+  // And every one of them comes from lib/orders, not a local reimplementation.
+  const imports = ROUTE.slice(0, ROUTE.indexOf("} from '@/lib/orders';"));
+  for (const primitive of [
+    'recordCheckoutSessionCandidate',
+    'renewCheckoutLease',
+    'supersedeExpiredCheckoutSession',
+    'bindOrderCheckoutSession',
+  ]) {
+    assert.ok(imports.includes(primitive), `${primitive} must be imported from lib/orders`);
+  }
+});
+
+test('order route: the legacy branch releases the provisioner URL, never a raw session URL', () => {
+  assert.match(ROUTE, /redirectTo: provisioned\.url/);
+  assert.doesNotMatch(ROUTE, /redirectTo: session\.url/);
 });

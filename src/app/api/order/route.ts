@@ -13,6 +13,7 @@ import {
   persistOrResumeCheckoutOrder,
   recordCheckoutSessionCandidate,
   renewCheckoutLease,
+  supersedeExpiredCheckoutSession,
   rollbackOrderMediaUploads,
   sanitizeFamilyCharacters,
   uploadOrderPhoto,
@@ -45,6 +46,7 @@ import {
   runDirectIntakeCheckout,
   type DirectCheckoutSessionRequest,
 } from '@/lib/checkout-direct-order';
+import { provisionCheckoutSession } from '@/lib/checkout-session-provisioning';
 import { createVercelIntakeStore } from '@/lib/checkout-intake';
 import { checkoutRequestFingerprint } from '@/lib/checkout-request-fingerprint';
 import { classifyStoryAttachment } from '@/lib/story-attachment';
@@ -513,6 +515,8 @@ export async function POST(request: Request) {
           renewCheckoutLease(orderId, leaseId, fingerprint),
         recordCheckoutSessionCandidate: (orderId, stripeSessionId, checkout) =>
           recordCheckoutSessionCandidate(orderId, stripeSessionId, checkout),
+        supersedeCheckoutSession: (orderId, expiredStripeSessionId, checkout) =>
+          supersedeExpiredCheckoutSession(orderId, expiredStripeSessionId, checkout),
         bindCheckoutSession: (orderId, stripeSessionId, checkout) =>
           bindOrderCheckoutSession(orderId, stripeSessionId, checkout),
         markRecoveryLeadConverted,
@@ -806,65 +810,40 @@ export async function POST(request: Request) {
 
     markRecoveryLeadConverted(order.email, order.id).catch(() => {});
 
-    const stripe = getStripe();
-    const baseUrl = getReturnBaseUrl(request);
-    const successParams = new URLSearchParams({
-      orderId: order.id,
-      childName: order.heroName ?? order.childName,
-      format: order.formatLabel,
-      email: order.email,
-    });
-
-    await requireActiveLease();
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      allow_promotion_codes: true,
-      customer_email: order.email,
-      client_reference_id: order.id,
-      metadata: {
-        orderId: order.id,
-        ...(gaClientId ? { gaClientId } : {}),
-        ...(order.checkoutTracking?.cohort ? { cohort: order.checkoutTracking.cohort } : {}),
-        ...(order.checkoutTracking?.invite ? { invite: order.checkoutTracking.invite } : {}),
-      },
-      // Reversal events expose the PaymentIntent/Charge rather than the
-      // Checkout Session. Copy the opaque local identity onto the PI so signed
-      // refund/dispute events can converge without a Stripe lookup.
-      payment_intent_data: { metadata: { orderId: order.id } },
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            unit_amount: order.priceCents,
-            product: stripeProductId,
-          },
-          quantity: 1,
-        },
-      ],
-      ...(isPrintFormat(order.bookFormat)
-        ? { shipping_address_collection: { allowed_countries: ['US'] } }
-        : {}),
-      // Stripe replaces this literal placeholder after successful Checkout.
-      // Keep it outside URLSearchParams so the braces are not percent-encoded.
-      // The opaque Session id enables a server-side fallback when the webhook
-      // is delayed; it is never trusted without exact order/amount checks.
-      success_url: `${baseUrl}/thank-you?${successParams.toString()}&sessionId={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/checkout`,
-    }, { idempotencyKey: `hsb_checkout_${order.id}` });
-
-    const bound = await bindOrderCheckoutSession(order.id, session.id, {
+    // ── The legacy public path uses the SAME provisioning machine ────────
+    // It previously created a Session and bound it in one breath, with no
+    // durable record in between: a create that succeeded followed by a bind
+    // that failed lost the provider identity entirely, leaving retry safety to
+    // Stripe's finite idempotency retention. Once that lapsed, an ordinary
+    // retry could mint a second payable Session. Same invariant, same code.
+    const provisioned = await provisionCheckoutSession({
+      order,
       leaseId: draftOrder.checkoutLeaseId!,
       fingerprint: draftOrder.checkoutFingerprint!,
+      stripeProductId,
+      baseUrl: getReturnBaseUrl(request),
+      gaClientId,
+    }, {
+      createCheckoutSession: createDirectCheckoutSession,
+      retrieveCheckoutSession: retrieveDirectCheckoutSession,
+      renewCheckoutLease: (orderId, leaseId, fingerprint) =>
+        renewCheckoutLease(orderId, leaseId, fingerprint),
+      recordCheckoutSessionCandidate: (orderId, stripeSessionId, checkout) =>
+        recordCheckoutSessionCandidate(orderId, stripeSessionId, checkout),
+      supersedeCheckoutSession: (orderId, expiredStripeSessionId, checkout) =>
+        supersedeExpiredCheckoutSession(orderId, expiredStripeSessionId, checkout),
+      bindCheckoutSession: (orderId, stripeSessionId, checkout) =>
+        bindOrderCheckoutSession(orderId, stripeSessionId, checkout),
+      logError: (message, detail) => console.error(message, detail ?? ''),
     });
-    if (!bound) {
-      console.error(`[order] Stripe Session ${session.id} created but durable binding failed for ${order.id}`);
+
+    if (provisioned.status === 'refused') {
       return NextResponse.json(
-        { error: 'Checkout requires reconciliation. No checkout link was released.' },
-        { status: 503 },
+        { error: provisioned.message, code: provisioned.code },
+        { status: provisioned.httpStatus },
       );
     }
-
-    return NextResponse.json({ ok: true, redirectTo: session.url });
+    return NextResponse.json({ ok: true, redirectTo: provisioned.url });
   } catch (error) {
     console.error('Order error:', error);
     return NextResponse.json({ error: 'Order submission failed' }, { status: 500 });

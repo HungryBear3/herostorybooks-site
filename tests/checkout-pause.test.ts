@@ -29,11 +29,15 @@ test('order route checks pause before parsing form data or creating Stripe check
   const src = readFileSync('src/app/api/order/route.ts', 'utf8');
   const pauseIdx = src.indexOf('if (isCheckoutPaused())');
   const formIdx = src.indexOf('await request.formData()');
-  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
+  // Session creation moved into the shared provisioner; the handler's provider
+  // boundary is the first orchestration entry point it can reach.
+  const directEntryIdx = src.indexOf('await runDirectIntakeCheckout({');
+  const legacyEntryIdx = src.indexOf('await provisionCheckoutSession({');
+  const stripeIdx = Math.min(directEntryIdx, legacyEntryIdx);
 
   assert.ok(pauseIdx > -1, 'route must check checkout pause flag');
   assert.ok(formIdx > -1, 'route must parse form data after pause check');
-  assert.ok(stripeIdx > -1, 'route must create Stripe checkout after pause check');
+  assert.ok(directEntryIdx > -1 && legacyEntryIdx > -1, 'route must still reach both provider paths');
   assert.ok(pauseIdx < formIdx, 'pause response must happen before form validation/parsing');
   assert.ok(pauseIdx < stripeIdx, 'pause response must happen before Stripe checkout');
   assert.match(src, /CHECKOUT_PAUSED_MESSAGE/);
@@ -46,10 +50,13 @@ test('order route checks pause before parsing form data or creating Stripe check
 test('order route fails closed for non-child primary heroes unless beta gate is enabled', () => {
   const src = readFileSync('src/app/api/order/route.ts', 'utf8');
   const gateIdx = src.indexOf("if (heroType !== 'child')");
-  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
+  // Must precede BOTH provider paths, not just the old inline legacy create.
+  const directEntryIdx = src.indexOf('await runDirectIntakeCheckout({');
+  const legacyEntryIdx = src.indexOf('await provisionCheckoutSession({');
+  const stripeIdx = Math.min(directEntryIdx, legacyEntryIdx);
 
   assert.ok(gateIdx > -1, 'route must explicitly gate non-child primary hero orders');
-  assert.ok(stripeIdx > -1, 'route must still create Stripe sessions after validation');
+  assert.ok(directEntryIdx > -1 && legacyEntryIdx > -1, 'route must still create Stripe sessions after validation');
   assert.ok(gateIdx < stripeIdx, 'non-child hero gate must run before Stripe checkout creation');
   assert.match(src, /PRIMARY_HERO_BETA_ENABLED/);
   assert.match(src, /primary_hero_beta_required/);
@@ -90,7 +97,9 @@ test('primary hero beta exposes friend or other family member as a fourth review
 test('supporting photo upload failures fail before Stripe for every error path', () => {
   const src = readFileSync('src/app/api/order/route.ts', 'utf8');
   const supportIdx = src.indexOf('supporting photo persistence failed');
-  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
+  // Supporting photos are a legacy-path concern; the direct branch has already
+  // returned by here, so the boundary is the legacy provisioning entry.
+  const stripeIdx = src.indexOf('await provisionCheckoutSession({');
   assert.ok(supportIdx > -1, 'route must have an explicit supporting-photo failure branch');
   assert.ok(stripeIdx > -1, 'route creates Stripe after validation/persistence');
   assert.ok(supportIdx < stripeIdx, 'supporting photo failure must happen before Stripe');

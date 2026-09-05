@@ -55,15 +55,36 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   assert.match(route, /uploadOrderPhoto\(draftOrder\.id, photo, draftOrder\.checkoutLeaseId/);
   assert.match(route, /uploadOrderSupportingPhoto\([\s\S]*draftOrder\.checkoutLeaseId/);
   assert.match(route, /uploadOrderVoice\([\s\S]*draftOrder\.checkoutLeaseId/);
-  assert.match(route, /await requireActiveLease\(\);\s*const session = await stripe\.checkout\.sessions\.create/);
+  // The lease is still proven immediately before the provider call — that step
+  // simply moved into the shared provisioner, where both paths get it. Assert
+  // the guarantee where it is now enforced, and that it is atomic renewal
+  // rather than a local re-read: renew → create, with nothing awaited between.
+  const provisioner = readFileSync('src/lib/checkout-session-provisioning.ts', 'utf8');
+  const renewAt = provisioner.indexOf('await deps.renewCheckoutLease(');
+  const providerCreateAt = provisioner.indexOf('await deps.createCheckoutSession({');
+  assert.ok(renewAt > -1 && providerCreateAt > renewAt, 'the exact lease is renewed before creating a Session');
+  assert.match(provisioner, /if \(!renewed\) \{[\s\S]{0,400}?checkout_lease_lost/);
+  // Stripe idempotency stays deterministic per order and per provider attempt.
+  assert.match(provisioner, /idempotencyKey = checkoutProviderIdempotencyKey\(orderId, current\.checkoutSessionAttempt\)/);
+  const orderIdempotency = readFileSync('src/lib/orders.ts', 'utf8');
+  assert.match(orderIdempotency, /return n === 0 \? `hsb_checkout_\$\{orderId\}` : `hsb_checkout_\$\{orderId\}_r\$\{n\}`/);
+  // And both paths hand that renewal to the real guarded transaction.
+  assert.equal(route.split('renewCheckoutLease').length - 1 >= 2, true);
   const orders = readFileSync('src/lib/orders.ts', 'utf8');
   assert.match(orders, /checkout-\$\{checkoutLeaseId\}/);
   assert.match(route, /checkout\.sessions\.retrieve\(persistedDraft\.stripeSessionId\)/);
-  assert.match(route, /idempotencyKey: `hsb_checkout_\$\{order\.id\}`/);
-  const createAt = route.indexOf('stripe.checkout.sessions.create');
-  const bindAt = route.indexOf('bindOrderCheckoutSession(order.id, session.id, {');
-  const redirectAt = route.indexOf('redirectTo: session.url');
-  assert.ok(createAt >= 0 && bindAt > createAt && redirectAt > bindAt);
+  // create → durable candidate → bind → release, now enforced once in the
+  // shared provisioner instead of being open-coded per path. The durable
+  // candidate between create and bind is new and strictly stronger: a Session
+  // that is created but not bound is recoverable rather than lost.
+  const createAt = provisioner.indexOf('await deps.createCheckoutSession({');
+  const recordAt = provisioner.indexOf('await deps.recordCheckoutSessionCandidate(');
+  const bindAt = provisioner.indexOf('await deps.bindCheckoutSession(');
+  const redirectAt = provisioner.indexOf("return { status: 'released', url: session.url");
+  assert.ok(createAt >= 0 && recordAt > createAt && bindAt > recordAt && redirectAt > bindAt);
+  // The route releases only what the provisioner returned.
+  assert.match(route, /redirectTo: provisioned\.url/);
+  assert.doesNotMatch(route, /redirectTo: session\.url/);
 });
 
 test('checkout resume rejects active duplicates and payload mismatch, then permits exact expired takeover', async () => {

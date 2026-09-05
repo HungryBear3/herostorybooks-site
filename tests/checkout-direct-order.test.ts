@@ -25,6 +25,7 @@ import {
   readOrderVersioned,
   recordCheckoutSessionCandidate,
   renewCheckoutLease,
+  supersedeExpiredCheckoutSession,
   withOrderTransaction,
   type OrderRecord,
   type OrderStoreAdapter,
@@ -36,6 +37,10 @@ import {
   runDirectIntakeCheckout,
   type DirectIntakeCheckoutDeps,
 } from '../src/lib/checkout-direct-order.ts';
+import {
+  CHECKOUT_PAYMENT_MAY_BE_COMPLETE,
+  CHECKOUT_RECONCILIATION_SUPPORT,
+} from '../src/lib/checkout-session-provisioning.ts';
 import type { DirectIntakeOrderRequest } from '../src/lib/checkout-direct-order-request.ts';
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
 
@@ -261,6 +266,10 @@ function harness(
       calls.push('record-candidate');
       return recordCheckoutSessionCandidate(orderId, sessionId, { ...checkout, now: NOW });
     },
+    async supersedeCheckoutSession(orderId, expiredSessionId, checkout) {
+      calls.push('supersede-session');
+      return supersedeExpiredCheckoutSession(orderId, expiredSessionId, { ...checkout, now: NOW });
+    },
     async bindCheckoutSession(orderId, sessionId, checkout) {
       calls.push('bind-session');
       return bindOrderCheckoutSession(orderId, sessionId, { ...checkout, now: NOW });
@@ -421,8 +430,21 @@ test('a bound-session retry fails closed when Stripe does not return the exact s
   }
 });
 
-test('a non-open Stripe Session is never released on creation or retry', async () => {
-  for (const status of ['complete', 'expired', null] as const) {
+/**
+ * A non-open Session releases no URL — but "non-open" is not one state.
+ *
+ * `complete` may already have been PAID, so it is never retired and never
+ * replaced; recovery is a support conversation. An unrecognised status is
+ * simply unusable. `expired` is different in kind: it is provably dead and
+ * unpayable, and refusing it forever tombstoned the attempt, because the
+ * browser deliberately keeps the same checkoutAttemptId across a failure. That
+ * case is covered by the supersession suite instead.
+ */
+test('a complete or unrecognised Stripe Session is never released on creation or retry', async () => {
+  for (const [status, code] of [
+    ['complete', 'direct_intake_session_complete'],
+    [null, 'direct_intake_session_not_open'],
+  ] as const) {
     __resetOrderStoreAdapterFactoryForTests();
     installMemoryOrderStore();
     const created = await intakeWithMedia();
@@ -433,7 +455,8 @@ test('a non-open Stripe Session is never released on creation or retry', async (
     };
     const result = await runDirectIntakeCheckout(params, initial.deps);
     assert.equal(result.status, 'refused');
-    if (result.status === 'refused') assert.equal(result.code, 'direct_intake_session_not_open');
+    if (result.status === 'refused') assert.equal(result.code, code);
+    assert.equal(JSON.stringify(result).includes('checkout.stripe.test'), false);
 
     __resetOrderStoreAdapterFactoryForTests();
     installMemoryOrderStore();
@@ -449,8 +472,48 @@ test('a non-open Stripe Session is never released on creation or retry', async (
     canonical.status = status;
     const retry = await runDirectIntakeCheckout(retryParams, retryHarness.deps);
     assert.equal(retry.status, 'refused');
-    if (retry.status === 'refused') assert.equal(retry.code, 'direct_intake_session_not_open');
-    assert.equal(retryHarness.sessions.size, 1);
+    if (retry.status === 'refused') assert.equal(retry.code, code);
+    assert.equal(retryHarness.sessions.size, 1, 'nothing is replaced');
+  }
+});
+
+test('a complete Session never tells the buyer no charge was made', async () => {
+  installMemoryOrderStore();
+  const { store, session, assets } = await intakeWithMedia();
+  const h = harness(store, { sessionStatus: 'complete' });
+
+  const result = await runDirectIntakeCheckout({
+    draftOrder: draftOrder(), request: request(session, assets),
+    stripeProductId: 'prod_test', baseUrl: 'https://preview.test', gaClientId: null,
+  }, h.deps);
+
+  assert.equal(result.status, 'refused');
+  if (result.status === 'refused') {
+    assert.equal(result.error, CHECKOUT_PAYMENT_MAY_BE_COMPLETE);
+    assert.doesNotMatch(result.error, /no charge/i);
+    assert.match(result.error, /do not pay again/i);
+  }
+});
+
+test('a bound-session retrieval outage never tells the buyer no charge was made', async () => {
+  installMemoryOrderStore();
+  const { store, session, assets } = await intakeWithMedia();
+  const h = harness(store);
+  const params = {
+    draftOrder: draftOrder(), request: request(session, assets),
+    stripeProductId: 'prod_test', baseUrl: 'https://preview.test', gaClientId: null,
+  };
+  // The first request released a URL, so this buyer may already have paid.
+  assert.equal((await runDirectIntakeCheckout(params, h.deps)).status, 'redirect');
+  h.deps.retrieveCheckoutSession = async () => { throw new Error('provider unavailable'); };
+
+  const retry = await runDirectIntakeCheckout(params, h.deps);
+
+  assert.equal(retry.status, 'refused');
+  if (retry.status === 'refused') {
+    assert.equal(retry.code, 'direct_intake_session_retrieve_failed');
+    assert.equal(retry.error, CHECKOUT_RECONCILIATION_SUPPORT);
+    assert.doesNotMatch(retry.error, /no charge/i);
   }
 });
 
@@ -1089,31 +1152,40 @@ test('a candidate the provider does not answer with exactly fails closed', async
   assert.equal((await storedOrder())?.stripeSessionId ?? null, null);
 });
 
-test('a malformed or foreign durable candidate is a conflict and never reaches the provider', async () => {
+test('a malformed or foreign durable candidate never reaches the provider', async () => {
   for (const candidate of [
-    { sessionId: 'not-a-stripe-session-id' },
-    { sessionId: 'cs_injected', checkoutAttemptId: 'c'.repeat(32), checkoutFingerprint: 'f'.repeat(64), recordedAt: NOW.toISOString() },
+    { stripeSessionId: 'not-a-stripe-session-id', checkoutAttemptId: ATTEMPT, checkoutFingerprint: 'f'.repeat(64), recordedAt: NOW.toISOString() },
+    { stripeSessionId: 'cs_injected', checkoutAttemptId: 'c'.repeat(32), checkoutFingerprint: 'f'.repeat(64), recordedAt: NOW.toISOString() },
+    { stripeSessionId: 'cs_injected' },
     'cs_injected',
   ]) {
     __resetOrderStoreAdapterFactoryForTests();
-    installMemoryOrderStore();
+    const memory = installMemoryOrderStore();
     const { store, session, assets } = await intakeWithMedia();
     const h = harness(store);
     const params = checkoutParams(session, assets);
     assert.equal((await runDirectIntakeCheckout(params, h.deps)).status, 'redirect');
-    // Unbind and plant an unusable candidate, as a corrupted/foreign write would.
-    await mutateStoredOrder((order) => ({
-      ...order,
-      stripeSessionId: null,
-      checkoutSessionCandidate: candidate as never,
-    }));
     const createsBefore = h.calls.filter((call) => call === 'stripe-create').length;
+
+    // Planted in the STORE, not through a writer: the production parser now
+    // refuses to commit an unaccountable candidate at all, so corruption can
+    // only ever arrive underneath us. The record then reads as UNREADABLE
+    // rather than as "no candidate, safe to create" — which is the whole point.
+    const cell = memory.cells.get(`orders/${ORDER_ID}.json`)!;
+    const planted = JSON.parse(cell.body) as Record<string, unknown>;
+    planted.stripeSessionId = null;
+    planted.checkoutSessionCandidate = candidate;
+    memory.cells.set(`orders/${ORDER_ID}.json`, { body: JSON.stringify(planted), version: cell.version + 1 });
+    __resetOrderStoreAdapterFactoryForTests();
+    __setOrderStoreAdapterFactoryForTests(() => memory.adapter);
 
     const retry = await runDirectIntakeCheckout(params, h.deps);
 
     assert.equal(retry.status, 'refused', JSON.stringify(candidate));
-    assert.equal(retry.status === 'refused' && retry.code, 'direct_intake_order_conflict');
-    assert.equal(retry.status === 'refused' && retry.httpStatus, 409);
+    // Uncertainty, not absence: the order cannot be read, so the reservation is
+    // preserved and nothing downstream may act on a guess.
+    assert.equal(retry.status === 'refused' && retry.code, 'direct_intake_order_persist_failed');
+    assert.equal(retry.status === 'refused' && retry.httpStatus, 503);
     assert.equal(
       h.calls.filter((call) => call === 'stripe-create').length,
       createsBefore,

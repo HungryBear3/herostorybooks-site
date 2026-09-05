@@ -12,6 +12,7 @@ import {
   markCheckoutIntakeMediaReclaimed,
   persistNewOrder,
   persistOrResumeCheckoutOrder,
+  recordCheckoutSessionCandidate,
   renewCheckoutLease,
   type OrderRecord,
   type OrderStoreAdapter,
@@ -444,4 +445,146 @@ test('create-only persistence rejects forged immutable order-contract evidence',
 // Boundary sanity: this suite's finalized timestamps are well beyond the required wait.
 test('ten-year test clock exceeds finalization abandonment bound', () => {
   assert.ok(TEN_YEARS_LATER.getTime() - FINALIZED_AT.getTime() >= INTAKE_FINALIZATION_ABANDONMENT_MS);
+});
+
+// ---------------------------------------------------------------------------
+// A durable unbound-Session candidate is deletion-blocking evidence
+//
+// Cleanup's whole premise is "this order can never be paid, so its private
+// media is safe to delete". A `checkoutSessionCandidate` falsifies that
+// premise: a Stripe Checkout Session provably EXISTS for this order and is
+// still reconcilable. Classifying such an order as unpayable — as it did while
+// only `stripeSessionId` was consulted — deletes the buyer's photos out from
+// under a live payable Session.
+// ---------------------------------------------------------------------------
+
+const CANDIDATE = {
+  stripeSessionId: 'cs_candidate',
+  checkoutAttemptId: ATTEMPT,
+  checkoutFingerprint: FINGERPRINT,
+  recordedAt: FINALIZED_AT.toISOString(),
+};
+
+test('an abandoned, lease-expired order carrying a candidate is RETAINED, not claimed', async () => {
+  await installOrder(order({ checkoutSessionCandidate: CANDIDATE }));
+
+  // Every other precondition for deletion is satisfied: pending, no bound
+  // session, abandonment age reached, lease long expired.
+  const claim = await claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER });
+
+  assert.deepEqual(claim, { status: 'retained' });
+  const stored = await storedOrder();
+  assert.equal(stored?.checkoutIntakeMediaRetention?.status, 'active');
+  assert.equal(stored?.checkoutSessionCandidate?.stripeSessionId, 'cs_candidate');
+});
+
+test('the whole cleanup sweep leaves candidate-bearing media in place', async () => {
+  const memory = memoryOrderAdapter();
+  __setOrderStoreAdapterFactoryForTests(() => memory.adapter);
+  await memory.adapter.createIfAbsent(
+    `orders/${ORDER_ID}.json`,
+    JSON.stringify(order({ checkoutSessionCandidate: CANDIDATE })),
+  );
+  const { store, reservation } = await finalizedIntake();
+
+  await runCheckoutIntakeCleanup(cleanupDeps(store), { now: TEN_YEARS_LATER });
+
+  assert.equal(store.assets.has(reservation.pathname), true, 'media backing a live Session must survive');
+  assert.ok(store.records.has(INTAKE_ID));
+});
+
+test('a cleanup claim that wins the race makes candidate persistence fail closed', async () => {
+  await installOrder(order());
+  // Cleanup claims while a provider create is in flight. The claim moves
+  // retention off `active`, which is the same fence candidate persistence and
+  // session binding are already gated on.
+  assert.equal(
+    (await claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER })).status,
+    'claimed',
+  );
+
+  const recorded = await recordCheckoutSessionCandidate(ORDER_ID, 'cs_inflight', {
+    checkoutAttemptId: ATTEMPT,
+    fingerprint: FINGERPRINT,
+    now: TEN_YEARS_LATER,
+  });
+
+  assert.equal(recorded, null, 'a claimed order may not accept new Session evidence');
+  assert.equal(
+    await bindOrderCheckoutSession(ORDER_ID, 'cs_inflight', {
+      leaseId: LEASE_ID, fingerprint: FINGERPRINT, now: TEN_YEARS_LATER,
+    }),
+    null,
+    'and it may certainly not be bound',
+  );
+  const stored = await storedOrder();
+  assert.equal(stored?.checkoutSessionCandidate ?? null, null);
+  assert.equal(stored?.stripeSessionId ?? null, null);
+});
+
+test('candidate persistence and cleanup claim have exactly one atomic winner', async () => {
+  await installOrder(order());
+  const [claim, recorded] = await Promise.all([
+    claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER }),
+    recordCheckoutSessionCandidate(ORDER_ID, 'cs_race', {
+      checkoutAttemptId: ATTEMPT, fingerprint: FINGERPRINT, now: TEN_YEARS_LATER,
+    }),
+  ]);
+
+  assert.equal((claim.status === 'claimed') !== Boolean(recorded), true, 'exactly one may win');
+  const stored = await storedOrder();
+  assert.equal(
+    stored?.checkoutIntakeMediaRetention?.status === 'cleanup_claimed',
+    (stored?.checkoutSessionCandidate ?? null) === null,
+    'a claimed order never carries a candidate, and a candidate-bearing order is never claimed',
+  );
+});
+
+test('a malformed candidate makes the stored record unreadable rather than absent', async () => {
+  const memory = memoryOrderAdapter();
+  __setOrderStoreAdapterFactoryForTests(() => memory.adapter);
+  // Corruption arrives in the STORE, not through a writer, so the parser is
+  // the only thing standing between it and a wrong deletion decision.
+  for (const malformed of [
+    { stripeSessionId: 'not-a-session-id', checkoutAttemptId: ATTEMPT, checkoutFingerprint: FINGERPRINT, recordedAt: FINALIZED_AT.toISOString() },
+    { stripeSessionId: 'cs_x' },
+    { stripeSessionId: 'cs_x', checkoutAttemptId: 'd'.repeat(32), checkoutFingerprint: FINGERPRINT, recordedAt: FINALIZED_AT.toISOString() },
+    'cs_x',
+    42,
+  ]) {
+    memory.cells.set(`orders/${ORDER_ID}.json`, {
+      body: JSON.stringify({ ...order(), checkoutSessionCandidate: malformed }),
+      version: 1,
+    });
+    __resetOrderStoreAdapterFactoryForTests();
+    __setOrderStoreAdapterFactoryForTests(() => memory.adapter);
+
+    await assert.rejects(
+      readOrderVersioned(ORDER_ID),
+      `a malformed candidate must fail closed, not read as absent: ${JSON.stringify(malformed)}`,
+    );
+    // And the unreadable record cannot be used to authorise deletion.
+    await assert.rejects(claimCheckoutIntakeMediaCleanup(ORDER_ID, INTAKE_ID, { now: TEN_YEARS_LATER }));
+  }
+});
+
+test('a record carrying BOTH a bound session and a candidate is unreadable', async () => {
+  const memory = memoryOrderAdapter();
+  __setOrderStoreAdapterFactoryForTests(() => memory.adapter);
+  for (const candidate of [
+    CANDIDATE,
+    { ...CANDIDATE, stripeSessionId: 'cs_bound' },
+  ]) {
+    memory.cells.set(`orders/${ORDER_ID}.json`, {
+      body: JSON.stringify({ ...order(), stripeSessionId: 'cs_bound', checkoutSessionCandidate: candidate }),
+      version: 1,
+    });
+    __resetOrderStoreAdapterFactoryForTests();
+    __setOrderStoreAdapterFactoryForTests(() => memory.adapter);
+
+    await assert.rejects(
+      readOrderVersioned(ORDER_ID),
+      'binding clears the candidate in the same commit, so both together is impossible state',
+    );
+  }
 });
