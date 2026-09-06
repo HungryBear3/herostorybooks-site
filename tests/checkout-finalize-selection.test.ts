@@ -29,6 +29,11 @@ import {
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
 
 const HERO = { category: 'primary_hero_photo' } as const;
+// Every intake API here takes an explicit `now`. The suite drives all of them
+// from this one anchor so the intake is judged against the fixture clock, not
+// the wall clock — left on the wall clock these sessions expire as real time
+// advances and every assertion below collapses into `intake_expired`.
+const AT = new Date('2026-09-02T12:00:05.000Z');
 
 function emptySelection(): CheckoutFinalizeSelection {
   return {
@@ -45,7 +50,7 @@ async function newSession(store: MemoryIntakeStore) {
     mediaAuthorizedAt: '2026-09-02T12:00:00.000Z',
     childVoiceAuthorizedAt: '2026-09-02T12:00:05.000Z',
     voiceSource: 'recorded',
-  }, new Date('2026-09-02T12:00:05.000Z'));
+  }, AT);
 }
 
 async function upload(
@@ -62,13 +67,13 @@ async function upload(
     slot,
     mimeType,
     size,
-  });
+  }, AT);
   const etag = `etag-${reservation.assetId}`;
   store.putAsset({ pathname: reservation.pathname, mimeType, size, etag });
   await completeSlotUpload(store, {
     tokenPayload: reservation.tokenPayload,
     blob: { pathname: reservation.pathname, contentType: mimeType, size, etag },
-  });
+  }, AT);
   return reservation;
 }
 
@@ -96,7 +101,7 @@ test('a valid selection resolves every asset through its slot', async () => {
       guidedStillAssetIds: [still.assetId],
       voiceAssetId: voice.assetId,
     },
-  });
+  }, AT);
 
   assert.equal(resolved.primaryHeroPhoto?.assetId, hero.assetId);
   assert.equal(resolved.primaryHeroPhoto?.pathname, hero.pathname);
@@ -141,7 +146,7 @@ test('a superseded asset id cannot be finalized', async () => {
       capability: session.capability,
       familyCharacterIds: [],
       selection: { ...emptySelection(), primaryHeroPhotoAssetId: first.assetId },
-    }),
+    }, AT),
     (error) => code(error) === 'asset_not_current',
   );
 });
@@ -150,7 +155,7 @@ test('a removed asset cannot be finalized', async () => {
   const store = createMemoryIntakeStore();
   const session = await newSession(store);
   const hero = await upload(store, session, HERO);
-  await releaseSlot(store, { intakeId: session.intakeId, capability: session.capability, slot: HERO });
+  await releaseSlot(store, { intakeId: session.intakeId, capability: session.capability, slot: HERO }, AT);
 
   await assert.rejects(
     validateFinalizeSelection(store, {
@@ -158,7 +163,7 @@ test('a removed asset cannot be finalized', async () => {
       capability: session.capability,
       familyCharacterIds: [],
       selection: { ...emptySelection(), primaryHeroPhotoAssetId: hero.assetId },
-    }),
+    }, AT),
     (error) => code(error) === 'asset_not_current',
   );
 });
@@ -175,7 +180,7 @@ test('an asset from another intake is refused', async () => {
       capability: mine.capability,
       familyCharacterIds: [],
       selection: { ...emptySelection(), primaryHeroPhotoAssetId: foreign.assetId },
-    }),
+    }, AT),
     (error) => code(error) === 'asset_not_current',
   );
 });
@@ -192,7 +197,7 @@ test('an asset cannot be presented in a slot it does not belong to', async () =>
       capability: session.capability,
       familyCharacterIds: ['char-alice'],
       selection: { ...emptySelection(), primaryHeroPhotoAssetId: alice.assetId },
-    }),
+    }, AT),
     (error) => code(error) === 'asset_not_current',
   );
 
@@ -207,7 +212,7 @@ test('an asset cannot be presented in a slot it does not belong to', async () =>
         ...emptySelection(),
         familyCharacterAssets: [{ assetId: alice.assetId, familyCharacterId: 'char-bruno' }],
       },
-    }),
+    }, AT),
     (error) => code(error) === 'asset_not_current',
   );
 });
@@ -230,7 +235,7 @@ test('family indexes come from the current character order, not from upload orde
         { assetId: bruno.assetId, familyCharacterId: 'char-bruno' },
       ],
     },
-  });
+  }, AT);
 
   const byId = new Map(resolved.familyCharacters.map((entry) => [entry.familyCharacterId, entry.familyCharacterIndex]));
   assert.equal(byId.get('char-bruno'), 0);
@@ -251,7 +256,7 @@ test('a family character that is no longer in the form is refused', async () => 
         ...emptySelection(),
         familyCharacterAssets: [{ assetId: alice.assetId, familyCharacterId: 'char-alice' }],
       },
-    }),
+    }, AT),
     (error) => code(error) === 'family_character_unknown',
   );
 });
@@ -272,7 +277,7 @@ test('duplicate references and a duplicated character are refused', async () => 
         primaryHeroPhotoAssetId: hero.assetId,
         guidedStillAssetIds: [hero.assetId],
       },
-    }),
+    }, AT),
     (error) => code(error) === 'asset_reference_duplicate',
   );
 
@@ -288,7 +293,7 @@ test('duplicate references and a duplicated character are refused', async () => 
           { assetId: alice.assetId, familyCharacterId: 'char-alice' },
         ],
       },
-    }),
+    }, AT),
     (error) => code(error) === 'asset_reference_duplicate',
   );
 });
@@ -300,7 +305,7 @@ test('a voice note and an inspiration document cannot both be the story source',
     childVoiceAuthorizedAt: '2026-09-02T12:00:05.000Z',
     voiceSource: 'uploaded',
     documentAuthorizedAt: '2026-09-02T12:00:06.000Z',
-  });
+  }, AT);
   const voice = await upload(store, session, { category: 'voice_inspiration' }, { mimeType: 'audio/mp4', size: 2048 });
   const doc = await upload(store, session, { category: 'document_inspiration' }, { mimeType: 'application/pdf', size: 2048 });
 
@@ -310,7 +315,7 @@ test('a voice note and an inspiration document cannot both be the story source',
       capability: session.capability,
       familyCharacterIds: [],
       selection: { ...emptySelection(), voiceAssetId: voice.assetId, documentAssetId: doc.assetId },
-    }),
+    }, AT),
     (error) => code(error) === 'story_source_conflict',
   );
 });
@@ -328,7 +333,7 @@ test('an object that changed in storage is not bound to an order', async () => {
       capability: session.capability,
       familyCharacterIds: [],
       selection: { ...emptySelection(), primaryHeroPhotoAssetId: hero.assetId },
-    }),
+    }, AT),
     (error) => code(error) === 'asset_metadata_changed',
   );
 });
@@ -345,7 +350,7 @@ test('an object missing from storage is not bound to an order', async () => {
       capability: session.capability,
       familyCharacterIds: [],
       selection: { ...emptySelection(), primaryHeroPhotoAssetId: hero.assetId },
-    }),
+    }, AT),
     (error) => code(error) === 'asset_metadata_changed',
   );
 });
@@ -361,7 +366,7 @@ test('a wrong capability cannot finalize someone else’s intake', async () => {
       capability: 'wrong-capability',
       familyCharacterIds: [],
       selection: { ...emptySelection(), primaryHeroPhotoAssetId: hero.assetId },
-    }),
+    }, AT),
     (error) => code(error) === 'intake_forbidden',
   );
 });
@@ -380,7 +385,7 @@ test('the fingerprint is order-independent but index- and media-sensitive', asyn
     capability: session.capability,
     familyCharacterIds,
     selection: { ...emptySelection(), familyCharacterAssets },
-  })).fingerprint;
+  }, AT)).fingerprint;
 
   const forward = [
     { assetId: alice.assetId, familyCharacterId: 'char-alice' },
@@ -417,9 +422,9 @@ test('an empty selection is valid — media is optional at checkout', async () =
     capability: session.capability,
     familyCharacterIds: [],
     selection: emptySelection(),
-  });
+  }, AT);
   assert.equal(resolved.primaryHeroPhoto, null);
   assert.deepEqual(resolved.familyCharacters, []);
-  const { slots } = await listIntakeSlots(store, session);
+  const { slots } = await listIntakeSlots(store, session, AT);
   assert.deepEqual(slots, []);
 });

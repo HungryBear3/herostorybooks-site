@@ -38,6 +38,11 @@ import {
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
 
 const MEDIA_AUTHORIZED_AT = '2026-09-02T12:00:00.000Z';
+// Every intake API here takes an explicit `now`. The suite drives all of them
+// from this one anchor so intake lifetimes are measured against the fixture
+// clock, not the wall clock — otherwise the records age past NOW/AFTER_EXPIRY
+// as real time advances and the assertions below quietly stop meaning anything.
+const CREATED_AT = new Date(MEDIA_AUTHORIZED_AT);
 const NOW = new Date('2026-09-02T12:30:00.000Z');
 const AFTER_EXPIRY = new Date('2026-09-04T12:30:00.000Z');
 const TOMBSTONE_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -92,6 +97,7 @@ async function upload(
   session: { intakeId: string; capability: string },
   slot: Parameters<typeof reserveSlotUpload>[1]['slot'],
   size = 1024,
+  at = CREATED_AT,
 ) {
   const reservation = await reserveSlotUpload(store, {
     intakeId: session.intakeId,
@@ -99,18 +105,18 @@ async function upload(
     slot,
     mimeType: 'image/jpeg',
     size,
-  });
+  }, at);
   const etag = `etag-${reservation.assetId}`;
   store.putAsset({ pathname: reservation.pathname, mimeType: 'image/jpeg', size, etag });
   await completeSlotUpload(store, {
     tokenPayload: reservation.tokenPayload,
     blob: { pathname: reservation.pathname, contentType: 'image/jpeg', size, etag },
-  });
+  }, at);
   return reservation;
 }
 
 async function intakeWithHero(store: MemoryIntakeStore) {
-  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT });
+  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT }, CREATED_AT);
   const reservation = await upload(store, session, HERO);
   return { session, reservation };
 }
@@ -154,7 +160,7 @@ test('an upload landing after the initial scan does not orphan bytes or poison t
     slot: ALICE,
     mimeType: 'image/jpeg',
     size: 4096,
-  });
+  }, CREATED_AT);
 
   let landed = false;
   const deps = cleanupDeps(store, deleted, {
@@ -231,7 +237,7 @@ test('finalization cannot succeed merely because a cleanup claim lease elapsed m
 
 test('a finalized order keeps exactly its selected media and reclaims the rest', async () => {
   const store = createMemoryIntakeStore();
-  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT });
+  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT }, CREATED_AT);
   const hero = await upload(store, session, HERO);
   // Uploaded but deliberately NOT selected for the order.
   const unselected = await upload(store, session, ALICE, 2048);
@@ -243,12 +249,12 @@ test('a finalized order keeps exactly its selected media and reclaims the rest',
     orderId: testOrderId('8'),
     familyCharacterIds: ['char-alice'],
     selection: heroSelection(hero.assetId),
-  });
+  }, NOW);
   await markIntakeFinalized(store, {
     intakeId: session.intakeId,
     capability: session.capability,
     orderId: testOrderId('8'),
-  });
+  }, NOW);
 
   const deleted: string[] = [];
   const result = await runCheckoutIntakeCleanup(cleanupDeps(store, deleted), { now: AFTER_EXPIRY });
@@ -318,7 +324,7 @@ test('a partial deletion failure keeps the record and is reported', async () => 
 
 test('a failed claim release is surfaced rather than swallowed', async () => {
   const store = createMemoryIntakeStore();
-  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT });
+  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT }, CREATED_AT);
   const first = await upload(store, session, HERO);
   // Replace it so there is an orphan to reclaim on a LIVE intake, which is the
   // path that has to release its claim afterwards.
@@ -354,6 +360,9 @@ test('a live cleanup claim from another runner is not stolen', async () => {
   store.records.set(session.intakeId, {
     record: {
       ...snapshot.record,
+      // A real claim writer touches the record as it CAS-writes the claim, and
+      // the record schema requires claimedAt to sit inside [createdAt, updatedAt].
+      updatedAt: claimedAt.toISOString(),
       cleanupClaim: {
         claimId: 'f'.repeat(32),
         claimedAt: claimedAt.toISOString(),

@@ -37,6 +37,11 @@ import {
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
 
 const MEDIA_AUTHORIZED_AT = '2026-09-02T12:00:00.000Z';
+// Every intake API here takes an explicit `now`. The suite drives all of them
+// from this one anchor so intake lifetimes are measured against the fixture
+// clock, not the wall clock — otherwise the records age past NOW/AFTER_EXPIRY
+// as real time advances and the assertions below quietly stop meaning anything.
+const CREATED_AT = new Date(MEDIA_AUTHORIZED_AT);
 const NOW = new Date('2026-09-02T12:30:00.000Z');
 const AFTER_EXPIRY = new Date('2026-09-04T12:30:00.000Z');
 const HERO = { category: 'primary_hero_photo' } as const;
@@ -74,19 +79,19 @@ function cleanupDeps(store: MemoryIntakeStore, deleted: string[]): CheckoutIntak
 }
 
 async function intakeWithHeroPhoto(store: MemoryIntakeStore) {
-  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT });
+  const session = await createIntake(store, { mediaAuthorizedAt: MEDIA_AUTHORIZED_AT }, CREATED_AT);
   const reservation = await reserveSlotUpload(store, {
     intakeId: session.intakeId,
     capability: session.capability,
     slot: HERO,
     mimeType: 'image/jpeg',
     size: 1024,
-  });
+  }, CREATED_AT);
   store.putAsset({ pathname: reservation.pathname, mimeType: 'image/jpeg', size: 1024, etag: 'etag-a' });
   await completeSlotUpload(store, {
     tokenPayload: reservation.tokenPayload,
     blob: { pathname: reservation.pathname, contentType: 'image/jpeg', size: 1024, etag: 'etag-a' },
-  });
+  }, CREATED_AT);
   return { session, reservation };
 }
 
@@ -114,12 +119,12 @@ test('media belonging to a finalized order is never deleted', async () => {
     orderId: testOrderId('8'),
     familyCharacterIds: [],
     selection: heroSelection(reservation.assetId),
-  });
+  }, NOW);
   await markIntakeFinalized(store, {
     intakeId: session.intakeId,
     capability: session.capability,
     orderId: testOrderId('8'),
-  });
+  }, NOW);
 
   const deleted: string[] = [];
   // Well past expiry: an expired-but-finalized intake is still off limits.
@@ -147,12 +152,12 @@ test('a finalization that lands between the cleanup read and its claim wins', as
       orderId: testOrderId('8'),
       familyCharacterIds: [],
       selection: heroSelection(reservation.assetId),
-    });
+    }, NOW);
     await markIntakeFinalized(store, {
       intakeId: session.intakeId,
       capability: session.capability,
       orderId: testOrderId('8'),
-    });
+    }, NOW);
   });
 
   const result = await runCheckoutIntakeCleanup(cleanupDeps(store, deleted), { now: AFTER_EXPIRY });
@@ -183,7 +188,7 @@ test('finalization is refused while a cleanup claim is live', async () => {
           orderId: testOrderId('a'),
           familyCharacterIds: [],
           selection: heroSelection(reservation.assetId),
-        }).then(() => null, (error) => error);
+        }, NOW).then(() => null, (error) => error);
       }
       return deps.del(pathname);
     },
@@ -222,13 +227,13 @@ test('a live intake keeps its active asset and loses only orphaned bytes', async
     slot: HERO,
     mimeType: 'image/jpeg',
     size: 2048,
-  });
+  }, CREATED_AT);
   store.putAsset({ pathname: orphan.pathname, mimeType: 'image/jpeg', size: 2048, etag: 'etag-b' });
   await releaseSlot(store, {
     intakeId: session.intakeId,
     capability: session.capability,
     slot: HERO,
-  });
+  }, CREATED_AT);
   // Re-add the photo so the slot is occupied again by something current.
   const current = await reserveSlotUpload(store, {
     intakeId: session.intakeId,
@@ -236,12 +241,12 @@ test('a live intake keeps its active asset and loses only orphaned bytes', async
     slot: HERO,
     mimeType: 'image/jpeg',
     size: 4096,
-  });
+  }, CREATED_AT);
   store.putAsset({ pathname: current.pathname, mimeType: 'image/jpeg', size: 4096, etag: 'etag-c' });
   await completeSlotUpload(store, {
     tokenPayload: current.tokenPayload,
     blob: { pathname: current.pathname, contentType: 'image/jpeg', size: 4096, etag: 'etag-c' },
-  });
+  }, CREATED_AT);
 
   const deleted: string[] = [];
   await runCheckoutIntakeCleanup(cleanupDeps(store, deleted), { now: NOW });
@@ -266,7 +271,7 @@ test('a live intake has its cleanup claim released afterwards', async () => {
     orderId: testOrderId('b'),
     familyCharacterIds: [],
     selection: heroSelection(reservation.assetId),
-  }));
+  }, NOW));
 });
 
 test('an intake being finalized is left alone', async () => {
@@ -279,7 +284,7 @@ test('an intake being finalized is left alone', async () => {
     orderId: testOrderId('c'),
     familyCharacterIds: [],
     selection: heroSelection(reservation.assetId),
-  });
+  }, NOW);
 
   const deleted: string[] = [];
   const result = await runCheckoutIntakeCleanup(cleanupDeps(store, deleted), { now: NOW });
