@@ -21,6 +21,7 @@ import { finalizationFingerprint, parseSelectionEntry, type FinalizedSelectionEn
 import { validateOrderPhotoFile } from './photo-file-validation.ts';
 import { PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
 import { classifyStoryAttachment } from './story-attachment.ts';
+import { STORY_MEDIA_MAX_BYTES } from './story-media-size.ts';
 export type { FulfillmentStatus, LayoutVersion, PageTextLayout, VoiceTranscriptMeta };
 export { normalizeEtag, normalizeEtagForIfMatch } from './blob-etag.ts';
 
@@ -1470,7 +1471,7 @@ export interface UploadedPhotoRef {
 }
 
 /** Maximum accepted size for an attached child-voice note, in bytes (15 MB). */
-export const MAX_VOICE_BYTES = 15 * 1024 * 1024;
+export const MAX_VOICE_BYTES = STORY_MEDIA_MAX_BYTES.audio;
 
 /** Result of uploadOrderVoice. Mirrors UploadedPhotoRef. */
 export interface UploadedVoiceRef {
@@ -1565,7 +1566,7 @@ export async function uploadOrderVoice(
 }
 
 /** Maximum accepted size for a written/PDF/Word story attachment (10 MB). */
-export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+export const MAX_DOCUMENT_BYTES = STORY_MEDIA_MAX_BYTES.document;
 
 /** Store a document in a dedicated namespace; never retain its original filename. */
 export async function uploadOrderDocument(

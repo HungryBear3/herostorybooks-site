@@ -64,6 +64,7 @@ import {
   canonicalAllowlistedMime,
   mediaClassForCategory,
 } from './checkout-media-mime.ts';
+import { STORY_MEDIA_MAX_BYTES } from './story-media-size.ts';
 
 /**
  * Dedicated Blob credential for checkout intake. Intentionally NOT
@@ -288,15 +289,18 @@ export const INTAKE_CATEGORY_POLICY: Readonly<Record<IntakeAssetCategory, Catego
   primary_hero_photo: { maxSlots: 1, maxBytes: 15 * 1024 * 1024, allowedMimeTypes: IMAGE_MIME_TYPES },
   family_pet_reference: { maxSlots: 4, maxBytes: 15 * 1024 * 1024, allowedMimeTypes: IMAGE_MIME_TYPES },
   guided_still: { maxSlots: 5, maxBytes: 15 * 1024 * 1024, allowedMimeTypes: IMAGE_MIME_TYPES },
+  // The story-attachment caps live in `story-media-size.ts`, which the browser
+  // imports too, for the same reason the MIME allowlists do: a limit only this
+  // file knows about is a limit the buyer meets at the payment button.
   voice_inspiration: {
     maxSlots: 1,
-    maxBytes: 15 * 1024 * 1024,
+    maxBytes: STORY_MEDIA_MAX_BYTES.audio,
     allowedMimeTypes: AUDIO_MIME_TYPES,
     requiresVoiceConsent: true,
   },
   document_inspiration: {
     maxSlots: 1,
-    maxBytes: 10 * 1024 * 1024,
+    maxBytes: STORY_MEDIA_MAX_BYTES.document,
     allowedMimeTypes: DOCUMENT_MIME_TYPES,
     requiresDocumentConsent: true,
   },

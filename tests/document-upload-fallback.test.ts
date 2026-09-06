@@ -11,6 +11,7 @@ import {
 import {
   createOrderRecord,
   documentExtensionForFile,
+  MAX_DOCUMENT_BYTES,
   OrderPersistenceError,
   uploadOrderDocument,
 } from '../src/lib/orders.ts';
@@ -62,7 +63,11 @@ test('order model and storage helper keep document metadata separate from voice'
   assert.match(orders, /documentBlobPath\?: string \| null/);
   assert.match(orders, /documentBlobUrl\?: string \| null/);
   assert.match(orders, /documentConsentAt\?: string \| null/);
-  assert.match(orders, /export const MAX_DOCUMENT_BYTES = 10 \* 1024 \* 1024/);
+  // The 10 MiB value itself now lives in the browser-safe canonical module so
+  // the client preflight enforces the same number; see
+  // tests/story-media-size-preflight.test.ts.
+  assert.match(orders, /export const MAX_DOCUMENT_BYTES = STORY_MEDIA_MAX_BYTES\.document/);
+  assert.equal(MAX_DOCUMENT_BYTES, 10 * 1024 * 1024);
   assert.match(orders, /export async function uploadOrderDocument/);
   assert.match(orders, /document-\$\{assetId\}/);
 });
