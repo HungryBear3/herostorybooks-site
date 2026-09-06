@@ -7,6 +7,11 @@ import { getOrder } from '@/lib/orders';
 import { buildOrderDiagnostics, formatDiagnosticsSummary } from '@/lib/order-diagnostics';
 import { CUSTOMER_QUEUE_STATUS_LABELS } from '@/lib/order-queue';
 import { proofIsFresh } from '@/lib/page-review';
+import {
+  CHECKOUT_RECONCILIATION_LABEL,
+  CHECKOUT_RECONCILIATION_WARNING,
+  readCheckoutProvisioningEvidence,
+} from '@/lib/checkout-provisioning-evidence';
 
 import OrderDetailActions from './detail-client';
 import PageReviewGrid from './page-review-grid';
@@ -42,6 +47,7 @@ export default async function AdminOrderDetail({ params }: Props) {
   if (!order) notFound();
 
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
+  const checkoutEvidence = readCheckoutProvisioningEvidence(order);
   const diagnostics = buildOrderDiagnostics(order);
   const supportSummary = formatDiagnosticsSummary(diagnostics);
   const familyCharacters = Array.isArray(order.familyCharacters) ? order.familyCharacters : [];
@@ -255,6 +261,21 @@ export default async function AdminOrderDetail({ params }: Props) {
         <Section title="Payment">
           <Row label="Status" value={order.paymentStatus} tone={order.paymentStatus === 'paid' ? 'good' : 'neutral'} />
           <Row label="Stripe session" value={order.stripeSessionId ?? '—'} mono />
+          {checkoutEvidence.status === 'reconciliation_required' && (
+            <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+              <p className="font-semibold">{CHECKOUT_RECONCILIATION_LABEL}</p>
+              <p className="mt-1">
+                A checkout provider call was started for this order at{' '}
+                <span className="font-mono">{checkoutEvidence.startedAt}</span> and its outcome was
+                never recorded, so Stripe may hold a payable Session that this order cannot see.
+              </p>
+              <p className="mt-1">
+                <strong>{CHECKOUT_RECONCILIATION_WARNING}.</strong> Verify in the Stripe Dashboard
+                before telling the customer anything about a charge, then escalate manually. Follow
+                the support stuck-order runbook.
+              </p>
+            </div>
+          )}
         </Section>
 
         <Section title="Fulfillment">
