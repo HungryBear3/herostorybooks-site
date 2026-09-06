@@ -63,7 +63,7 @@ export const PUBLIC_CATALOG_ID = 'hsb-public-catalog';
  * deterministic contract, and a freshness date that advances on its own is a
  * lie about review having happened.
  */
-export const PUBLIC_CATALOG_LAST_REVIEWED = '2026-08-25';
+export const PUBLIC_CATALOG_LAST_REVIEWED = '2026-09-06';
 
 export type PublicProductId = 'digital' | 'classic' | 'premium';
 
@@ -79,6 +79,8 @@ function deepFreeze<T>(value: T): T {
 }
 
 const url = (path: string) => `${PRODUCTION_ORIGIN}${path}`;
+
+const PRODUCT_IMAGE_URL = url('/assets/lukas-watercolor-dino-cover.jpg');
 
 const SOURCES = {
   home: url('/'),
@@ -114,6 +116,7 @@ export const PUBLIC_CATALOG = deepFreeze({
       fulfillmentMode: 'digital-download',
       proofFirst: true,
       canonicalUrl: SOURCES.home,
+      imageUrl: PRODUCT_IMAGE_URL,
       features: [
         '32-page personalized book',
         'Full-color illustrated spreads',
@@ -133,6 +136,7 @@ export const PUBLIC_CATALOG = deepFreeze({
       fulfillmentMode: 'printed-and-shipped',
       proofFirst: true,
       canonicalUrl: SOURCES.home,
+      imageUrl: PRODUCT_IMAGE_URL,
       features: [
         '32-page personalized book',
         'Full-color illustrated spreads',
@@ -152,6 +156,7 @@ export const PUBLIC_CATALOG = deepFreeze({
       fulfillmentMode: 'printed-and-shipped',
       proofFirst: true,
       canonicalUrl: SOURCES.home,
+      imageUrl: PRODUCT_IMAGE_URL,
       features: [
         '32-page personalized book',
         'Full-color illustrated spreads',

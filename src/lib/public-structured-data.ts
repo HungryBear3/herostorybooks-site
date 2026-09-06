@@ -9,7 +9,10 @@
  * and real evidence behind it: aggregateRating, review, sku, gtin/mpn,
  * availability, priceValidUntil, shippingDetails, hasMerchantReturnPolicy, and
  * any guarantee. Each of those is a claim Google surfaces to shoppers as fact,
- * and none of them is backed by a live public page today.
+ * and none of them is backed by a live public page today. availability in
+ * particular cannot be stated from here: HSB_CHECKOUT_PAUSED can close checkout
+ * at any time, and this module is forbidden from reading operational state, so
+ * any hard-coded stock claim would be a claim it cannot keep true.
  */
 import { PUBLIC_CATALOG } from './public-catalog.ts';
 import { PUBLIC_HOME_FAQS } from './public-faqs.ts';
@@ -60,7 +63,11 @@ export function buildPublicStructuredData() {
         '@id': `${brand.url}#product-${product.id}`,
         name: product.name,
         description: product.description,
-        brand: { '@id': organizationId },
+        image: product.imageUrl,
+        brand: {
+          '@type': 'Brand',
+          name: brand.name,
+        },
         url: product.canonicalUrl,
         offers: {
           '@type': 'Offer',
