@@ -1,6 +1,7 @@
 'use client';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { recordedStoryAudioFileName } from '@/lib/story-attachment';
+import { checkRecordedStoryAudioSize, checkStoryMediaFileSize } from '@/lib/story-media-size';
 const VOICE_AUDIO_UPLOAD_ACCEPT_ATTR = [
   '.m4a',
   '.mp3',
@@ -124,6 +125,16 @@ export function VoiceRecorderSection({
           return;
         }
         const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        // Judge the recording before it can replace what is already attached:
+        // no object URL for it, and the existing preview stays valid.
+        const sizeVerdict = checkRecordedStoryAudioSize(blob);
+        if (sizeVerdict.ok === false) {
+          recordedChunksRef.current = [];
+          setRecorderError(sizeVerdict.message);
+          stopStream();
+          setIsRecording(false);
+          return;
+        }
         const file = new File([blob], recordedStoryAudioFileName(blob.type), { type: blob.type });
         const previewUrl = URL.createObjectURL(blob);
         if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
@@ -158,6 +169,16 @@ export function VoiceRecorderSection({
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       if (!file) return;
+      // Refuse an oversize file here, where the customer is still looking at
+      // the picker — not at the payment button. Nothing about the current
+      // attachment, consent, preview URL, or recorder authority changes.
+      const sizeVerdict = checkStoryMediaFileSize(file);
+      if (sizeVerdict.ok === false) {
+        setRecorderError(sizeVerdict.message);
+        // Still clear the input so picking a smaller file re-fires onChange.
+        event.target.value = '';
+        return;
+      }
       mediaOperationRef.current += 1;
       const previewUrl = URL.createObjectURL(file);
       if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
@@ -269,7 +290,11 @@ export function VoiceRecorderSection({
       )}
 
       {recorderError && (
-        <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+        <p
+          role="alert"
+          data-testid="voice-recorder-error"
+          className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2"
+        >
           {recorderError}
         </p>
       )}
