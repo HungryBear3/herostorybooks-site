@@ -92,12 +92,12 @@ test('server contract: print shipping is restricted to US only', () => {
   assert.doesNotMatch(src, /allowed_countries:[^\]]*['"](?:CA|GB|AU|NZ)['"]/);
 });
 
-// P2: the thank-you handoff must name the hero, not assume the legacy
-// childName field. Stripe line items now bind to stable catalog Products so
-// product-scoped promotion codes cannot spill across Digital and Print.
-test('server contract: stable Stripe Product binding preserves personalized success param', () => {
+// Stripe line items bind to stable catalog Products so product-scoped
+// promotion codes cannot spill across Digital and Print. The thank-you handoff
+// used to carry the hero name in the success URL; it now names the hero from
+// the order record instead — see tests/success-url-privacy.test.ts.
+test('server contract: line items bind to stable Stripe Products', () => {
   const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
-  assert.match(src, /childName:\s*order\.heroName\s*\?\?\s*order\.childName/);
   assert.match(src, /product:\s*stripeProductId/);
   assert.doesNotMatch(src, /product_data:\s*\{/);
 });
