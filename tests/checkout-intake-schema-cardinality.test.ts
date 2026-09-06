@@ -40,6 +40,10 @@ import { releaseSlot, reserveSlotUpload } from '../src/lib/checkout-intake-uploa
 import { createMemoryIntakeStore, forceRecord } from './support/checkout-intake-memory-store.ts';
 
 const CONSENT = { mediaAuthorizedAt: '2026-09-02T12:00:00.000Z' };
+// The cardinality tests below build their record at the consent instant, so the
+// reserve/release cycles must run on the same fixture clock. Left on the wall
+// clock they only prove the intake had expired, not that the caps hold.
+const AT = new Date(CONSENT.mediaAuthorizedAt);
 
 function testOrderId(hexDigit: string): string {
   return `ord_${hexDigit.repeat(16)}`;
@@ -51,7 +55,7 @@ function code(error: unknown): string {
 }
 
 function baseRecord(): IntakeRecord {
-  const record = createIntakeRecord(CONSENT, new Date(CONSENT.mediaAuthorizedAt)).record;
+  const record = createIntakeRecord(CONSENT, AT).record;
   return { ...record, updatedAt: '2026-09-02T12:30:00.000Z' };
 }
 
@@ -386,7 +390,7 @@ test('finalized authority is recomputed and cross-validated against current slot
 
 test('100 reserve/release cycles cannot retain 100 slots', async () => {
   const store = createMemoryIntakeStore();
-  const { record, capability } = createIntakeRecord(CONSENT, new Date(CONSENT.mediaAuthorizedAt));
+  const { record, capability } = createIntakeRecord(CONSENT, AT);
   await store.create(record);
 
   let created = 0;
@@ -400,8 +404,8 @@ test('100 reserve/release cycles cannot retain 100 slots', async () => {
         slot,
         mimeType: 'image/jpeg',
         size: 1024,
-      });
-      await releaseSlot(store, { intakeId: record.intakeId, capability, slot });
+      }, AT);
+      await releaseSlot(store, { intakeId: record.intakeId, capability, slot }, AT);
       created += 1;
     } catch (error) {
       refusal = error;
@@ -421,7 +425,7 @@ test('100 reserve/release cycles cannot retain 100 slots', async () => {
 
 test('100 reserve/release cycles on ONE slot cannot produce unbounded generations', async () => {
   const store = createMemoryIntakeStore();
-  const { record, capability } = createIntakeRecord(CONSENT, new Date(CONSENT.mediaAuthorizedAt));
+  const { record, capability } = createIntakeRecord(CONSENT, AT);
   await store.create(record);
   const slot = { category: 'primary_hero_photo' } as const;
 
@@ -434,8 +438,8 @@ test('100 reserve/release cycles on ONE slot cannot produce unbounded generation
         slot,
         mimeType: 'image/jpeg',
         size: 1024,
-      });
-      await releaseSlot(store, { intakeId: record.intakeId, capability, slot });
+      }, AT);
+      await releaseSlot(store, { intakeId: record.intakeId, capability, slot }, AT);
     } catch (error) {
       refusal = error;
       break;
@@ -495,7 +499,7 @@ test('the parsed record enforces every cardinality cap it was written under', ()
 
 test('total churn across all slots is bounded, not just per slot', async () => {
   const store = createMemoryIntakeStore();
-  const { record, capability } = createIntakeRecord(CONSENT, new Date(CONSENT.mediaAuthorizedAt));
+  const { record, capability } = createIntakeRecord(CONSENT, AT);
   await store.create(record);
 
   let refusal: unknown = null;
@@ -509,8 +513,8 @@ test('total churn across all slots is bounded, not just per slot', async () => {
           slot,
           mimeType: 'image/jpeg',
           size: 1024,
-        });
-        await releaseSlot(store, { intakeId: record.intakeId, capability, slot });
+        }, AT);
+        await releaseSlot(store, { intakeId: record.intakeId, capability, slot }, AT);
       } catch (error) {
         refusal = error;
         break outer;
@@ -519,6 +523,9 @@ test('total churn across all slots is bounded, not just per slot', async () => {
   }
 
   assert.ok(refusal, 'churn spread across several slots must still be bounded');
+  // Naming the code keeps this from passing on any refusal at all — an
+  // `intake_expired` here would mean the cap was never exercised.
+  assert.equal(code(refusal), 'intake_churn_exceeded');
   const stored = store.records.get(record.intakeId)!.record;
   const total = Object.values(stored.slots).reduce((sum, slot) => sum + slot.generation, 0);
   assert.ok(total <= INTAKE_MAX_TOTAL_GENERATIONS, `total generations reached ${total}`);
@@ -624,7 +631,7 @@ test('the parser enforces the per-category occupied-slot limit', () => {
 
 test('readIntake binds the lookup key to the embedded intake identity', async () => {
   const store = createMemoryIntakeStore();
-  const { record } = createIntakeRecord(CONSENT);
+  const { record } = createIntakeRecord(CONSENT, AT);
   const lookupId = `intake_${'f'.repeat(32)}`;
   assert.notEqual(lookupId, record.intakeId);
   store.records.set(lookupId, { record, etag: 'e1' });

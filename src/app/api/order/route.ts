@@ -36,6 +36,11 @@ import { getRequiredStripeProductId } from '@/lib/stripe-products';
 import { statusForShape, validateCustomStoryBrief, type CustomStoryBrief, type ValidationResult } from '@/lib/custom-story';
 import { validateOrderPhotoFile } from '@/lib/photo-file-validation';
 import { isDirectUploadServerEnabled } from '@/lib/checkout-direct-flags';
+import {
+  alignFamilyCharacterIdentity,
+  FAMILY_IDENTITY_MISMATCH_CODE,
+  supportingPhotoIndexesForAlignment,
+} from '@/lib/checkout-family-identity';
 import { parseDirectIntakeOrderRequest } from '@/lib/checkout-direct-order-request';
 import {
   buildDirectIntakeBindingDependencies,
@@ -277,11 +282,36 @@ export async function POST(request: Request) {
       }
       supportingPhotoFiles.set(index, { file: candidate, extension: validation.extension });
     }
-    const supportingPhotoIndexes = directRequest.kind === 'direct'
-      ? new Set(directRequest.request.selection.familyCharacterAssets.map((binding) =>
-          directRequest.request.familyCharacterIds.indexOf(binding.familyCharacterId),
-        ).filter((index) => index >= 0))
-      : new Set(supportingPhotoFiles.keys());
+    let supportingPhotoIndexes: ReadonlySet<number>;
+    if (directRequest.kind === 'direct') {
+      // The declared id list has to describe THESE characters, in this order,
+      // or an index-based exemption would credit one person's photo to
+      // another. Refused here — before the order record, any intake
+      // reservation, and Stripe.
+      const alignment = alignFamilyCharacterIdentity({
+        rawFamilyCharacters: familyCharactersRaw,
+        sanitizedCount: familyCharacters.length,
+        declaredIds: directRequest.request.familyCharacterIds,
+      });
+      if (!alignment.ok) {
+        // Named rather than read off `alignment`: this project builds with
+        // `strict: false`, so the ok/!ok discriminant does not narrow the
+        // union here. Same code, same response.
+        return NextResponse.json(
+          {
+            error: 'We could not match your family details to your uploads. No charge was made.',
+            code: FAMILY_IDENTITY_MISMATCH_CODE,
+          },
+          { status: 400 },
+        );
+      }
+      supportingPhotoIndexes = supportingPhotoIndexesForAlignment(
+        alignment.ids,
+        directRequest.request.selection.familyCharacterAssets.map((binding) => binding.familyCharacterId),
+      );
+    } else {
+      supportingPhotoIndexes = new Set(supportingPhotoFiles.keys());
+    }
     const missingSupportingDescriptions = missingSupportingCharacterDescriptionLabels(
       familyCharacters,
       supportingPhotoIndexes,
