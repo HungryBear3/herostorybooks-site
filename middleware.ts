@@ -41,11 +41,26 @@ import {
  *     The CSP allows inline scripts/styles ('unsafe-inline') because the
  *     existing portal uses inline event handlers + style="..." attrs;
  *     tightening that is a separate refactor.
+ *
+ *  4. Referrer containment for the order-bearer customer documents.
+ *     `/thank-you` carries orderId + sessionId in its query string, and
+ *     `/status/<orderId>` treats the orderId in its path as bearer
+ *     authority — holding that URL is enough to see order status, book
+ *     format, delivery expectation, tracking number/link and the
+ *     customer actions. Both already got `X-Robots-Tag: noindex`, but
+ *     noindex only keeps a crawler from listing the URL; it does
+ *     nothing about the browser putting that same URL into the
+ *     `Referer` header of the page's outbound requests, or into
+ *     `document.referrer` for anything the customer clicks through to.
+ *     `Referrer-Policy: no-referrer` is the header that closes that,
+ *     and it is all these two get: caching, framing and CSP behaviour
+ *     are deliberately left exactly as they were.
  */
 
 const FAMILY_REVIEW_PATH = /^\/(?:api\/)?family-review(?:\/|$)/;
 const CUSTOMER_REVIEW_PRIVATE_PATH = /^\/(?:review\/|api\/order\/[^/]+\/(?:review|review-session|review-asset\/))/;
 const OPERATIONAL_NOINDEX_PATH = /^\/(?:admin|api|checkout|order|partner|review|status|thank-you)(?:\/|$)/;
+const ORDER_BEARER_REFERRER_PATH = /^\/(?:status|thank-you)(?:\/|$)/;
 
 const FAMILY_REVIEW_CSP = [
   "default-src 'self'",
@@ -118,6 +133,12 @@ export function middleware(request: NextRequest) {
   }
   if (OPERATIONAL_NOINDEX_PATH.test(pathname)) {
     applyNoIndexHeaders(response);
+  }
+  // Order-bearer documents: contain the referrer, nothing else. The
+  // review paths above already set this to the same value, so the order
+  // of these two blocks does not matter.
+  if (ORDER_BEARER_REFERRER_PATH.test(pathname)) {
+    response.headers.set('Referrer-Policy', 'no-referrer');
   }
 
   // Preserve the sticky public-page cover variant without allowing the
