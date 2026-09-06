@@ -3,6 +3,11 @@ import { isAdminAuthedFromCookie } from '@/lib/admin-auth-server';
 import { listOrders } from '@/lib/orders';
 import type { OrderRecord } from '@/lib/orders';
 import { deriveOrderAttention } from '@/lib/order-stage';
+import {
+  CHECKOUT_RECONCILIATION_LABEL,
+  CHECKOUT_RECONCILIATION_WARNING,
+  readCheckoutProvisioningEvidence,
+} from '@/lib/checkout-provisioning-evidence';
 
 import AdminOrdersClient from './ops-client';
 
@@ -37,6 +42,13 @@ export default async function AdminOrdersPage({ searchParams }: PageProps) {
 
   const stats = summarize(orders);
 
+  // Orders whose checkout entered a provider create that never resolved. These
+  // are typically unpaid, so no paid-order taxonomy or attention filter lists
+  // them — this panel is the only place they can be enumerated.
+  const reconciliation = orders
+    .map((o) => ({ id: o.id, evidence: readCheckoutProvisioningEvidence(o) }))
+    .filter((row) => row.evidence.status === 'reconciliation_required');
+
   return (
     <div className="min-h-screen bg-cream px-4 py-8">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -53,6 +65,33 @@ export default async function AdminOrdersPage({ searchParams }: PageProps) {
             <Stat label="Failed" value={stats.failed} tone="failure" />
           </div>
         </header>
+
+        {reconciliation.length > 0 && (
+          <section className="bg-white border border-amber-300 rounded-xl p-5">
+            <h2 className="text-sm font-semibold text-amber-900">
+              {CHECKOUT_RECONCILIATION_LABEL} · {reconciliation.length}
+            </h2>
+            <p className="text-xs text-amber-900 mt-1">
+              A checkout provider call was started for these orders and its outcome was never
+              recorded, so a payable Stripe Session may exist. <strong>{CHECKOUT_RECONCILIATION_WARNING}</strong>{' '}
+              — verify each order in the Stripe Dashboard and escalate manually. See the support
+              stuck-order runbook.
+            </p>
+            <ul className="mt-3 space-y-1 text-xs">
+              {reconciliation.map((row) => (
+                <li key={row.id} className="flex flex-wrap gap-2">
+                  <a href={`/admin/orders/${row.id}`} className="font-mono underline text-forest">
+                    {row.id}
+                  </a>
+                  <span className="text-gray-500">
+                    started{' '}
+                    {row.evidence.status === 'reconciliation_required' ? row.evidence.startedAt : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <AdminOrdersClient orders={orders} />
       </div>
