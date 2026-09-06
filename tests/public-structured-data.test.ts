@@ -8,13 +8,16 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import {
   buildPublicStructuredData,
   serializeJsonLd,
 } from '../src/lib/public-structured-data.ts';
-import { PUBLIC_CATALOG } from '../src/lib/public-catalog.ts';
+import {
+  PUBLIC_CATALOG,
+  PUBLIC_CATALOG_LAST_REVIEWED,
+} from '../src/lib/public-catalog.ts';
 import { PUBLIC_HOME_FAQS } from '../src/lib/public-faqs.ts';
 import { PRODUCTION_ORIGIN } from '../src/lib/site-url.ts';
 
@@ -45,6 +48,44 @@ test('serialization cannot break out of the script tag', () => {
   );
 });
 
+test('every product exposes a crawlable catalog image', () => {
+  const products = byType('Product');
+  assert.equal(products.length, PUBLIC_CATALOG.products.length);
+
+  for (const [index, product] of products.entries()) {
+    const source = PUBLIC_CATALOG.products[index];
+    assert.equal(product.image, source.imageUrl);
+    assert.ok(product.image.startsWith(PRODUCTION_ORIGIN));
+  }
+});
+
+test('every product image resolves to a file that exists under public/', () => {
+  const products = byType('Product');
+  assert.equal(products.length, PUBLIC_CATALOG.products.length);
+
+  for (const product of products) {
+    const image: string = product.image;
+    assert.ok(
+      image.startsWith(`${PRODUCTION_ORIGIN}/`),
+      `product image is not served from the production origin: ${image}`,
+    );
+    const path = image.slice(PRODUCTION_ORIGIN.length);
+    assert.ok(
+      existsSync(`public${path}`),
+      `product image has no file on disk: public${path}`,
+    );
+  }
+});
+
+test('every product uses an inline Google-supported Brand object', () => {
+  for (const product of byType('Product')) {
+    assert.deepEqual(product.brand, {
+      '@type': 'Brand',
+      name: PUBLIC_CATALOG.brand.name,
+    });
+  }
+});
+
 test('every product offer matches the catalog price and currency', () => {
   const products = byType('Product');
   assert.equal(products.length, PUBLIC_CATALOG.products.length);
@@ -59,6 +100,32 @@ test('every product offer matches the catalog price and currency', () => {
     assert.equal(product.offers.price, (source.priceMinorUnits / 100).toFixed(2));
     assert.match(product.offers.price, /^\d+\.\d{2}$/);
   }
+});
+
+test('no availability claim is stated anywhere in the catalog or the graph', () => {
+  // Availability is a stock claim Google republishes as fact. It cannot be
+  // hard-coded here because HSB_CHECKOUT_PAUSED can close checkout at any time
+  // and this module is forbidden from reading operational state, so the only
+  // truthful markup is silence.
+  assert.ok(
+    !JSON.stringify(PUBLIC_CATALOG).includes('availability'),
+    'public catalog states an availability claim',
+  );
+  assert.ok(
+    !JSON.stringify(graph).includes('availability'),
+    'JSON-LD states an availability claim',
+  );
+  for (const product of byType('Product')) {
+    assert.ok(!('availability' in product.offers));
+  }
+  for (const source of PUBLIC_CATALOG.products) {
+    assert.ok(!('availability' in source));
+  }
+});
+
+test('the catalog review date covers the facts this candidate adds', () => {
+  assert.equal(PUBLIC_CATALOG_LAST_REVIEWED, '2026-09-06');
+  assert.equal(PUBLIC_CATALOG.lastReviewed, PUBLIC_CATALOG_LAST_REVIEWED);
 });
 
 test('every @id and url uses the production apex origin', () => {
