@@ -45,6 +45,7 @@ import {
   type IntakeReservation,
   type IntakeSlot,
   type IntakeStore,
+  type MutateIntakeIo,
   type SlotRef,
 } from './checkout-intake.ts';
 
@@ -359,6 +360,7 @@ async function applyCompletion(
   payload: UploadTokenPayload,
   blob: CompletedBlob,
   now: Date,
+  io: MutateIntakeIo = {},
 ): Promise<SlotCompletionResult> {
   // The destination is derived, never taken from the callback: a completion
   // for one asset id can only ever write that asset id's own path.
@@ -474,16 +476,17 @@ async function applyCompletion(
       if (superseded === record.superseded) return { next: null, result };
       return { next: { ...touch(record, now), superseded }, result };
     }
-  });
+  }, io);
 }
 
 export async function completeSlotUpload(
   store: IntakeStore,
   input: { tokenPayload: unknown; blob: CompletedBlob },
   now = new Date(),
+  io: MutateIntakeIo = {},
 ): Promise<SlotCompletionResult> {
   const payload = parseUploadTokenPayload(input.tokenPayload);
-  return applyCompletion(store, payload, input.blob, now);
+  return applyCompletion(store, payload, input.blob, now, io);
 }
 
 /**
@@ -547,6 +550,7 @@ export async function resolveSlotUpload(
   store: IntakeStore,
   params: { intakeId: string; capability: string; slot: SlotRef; generation: number },
   now = new Date(),
+  io: MutateIntakeIo = {},
 ): Promise<{ status: SlotResolutionStatus; asset: IntakeAsset | null }> {
   const ref = normalizeSlotRef(params.slot);
   const { record } = await readIntake(store, params.intakeId);
@@ -591,6 +595,7 @@ export async function resolveSlotUpload(
       etag: object.etag,
     },
     now,
+    io,
   );
 }
 
