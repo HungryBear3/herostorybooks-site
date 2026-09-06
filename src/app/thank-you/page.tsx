@@ -17,9 +17,6 @@ export const dynamic = 'force-dynamic';
 type ThankYouPageProps = {
   searchParams?: Promise<{
     orderId?: string;
-    childName?: string;
-    format?: string;
-    email?: string;
     sessionId?: string;
   }>;
 };
@@ -27,19 +24,18 @@ type ThankYouPageProps = {
 export default async function ThankYouPage({ searchParams }: ThankYouPageProps) {
   const params = (await searchParams) || {};
   const orderIdParam = params.orderId?.trim();
-  const childNameFallback = params.childName?.trim() || 'Your child';
-  const formatFallback = params.format?.trim() || 'storybook';
-  const emailFallback = params.email?.trim();
   const sessionId = params.sessionId?.trim();
 
   // Server-side load the order. If orderId is missing or unknown, fall
   // through to the neutral processing state — never to the success state.
   const order = orderIdParam ? await getOrder(orderIdParam).catch(() => null) : null;
 
-  // Prefer the persisted record over URL params when we have it.
-  const childName = order?.childName?.trim() || childNameFallback;
-  const format = order?.formatLabel?.trim() || formatFallback;
-  const email = order?.email?.trim() || emailFallback;
+  // Customer details come from the persisted record only. They are deliberately
+  // not accepted from the URL: query strings leak into history and referrers,
+  // and a crafted link could otherwise put arbitrary text in our copy.
+  const childName = order?.childName?.trim() || 'Your child';
+  const format = order?.formatLabel?.trim() || 'storybook';
+  const email = order?.email?.trim();
   const orderId = order?.id ?? orderIdParam;
 
   // Branch on payment state, defaulting to the safer (neutral) view when

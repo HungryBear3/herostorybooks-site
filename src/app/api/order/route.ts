@@ -51,12 +51,10 @@ async function retrieveDirectCheckoutSession(sessionId: string) {
 
 async function createDirectCheckoutSession(request: DirectCheckoutSessionRequest) {
   const { order, stripeProductId, baseUrl, gaClientId, idempotencyKey } = request;
-  const successParams = new URLSearchParams({
-    orderId: order.id,
-    childName: order.heroName ?? order.childName,
-    format: order.formatLabel,
-    email: order.email,
-  });
+  // The success URL lands in browser history, referrer headers, and anything
+  // that records page location. It carries opaque reconciliation ids only —
+  // the thank-you page reads the name, format, and email off the order record.
+  const successParams = new URLSearchParams({ orderId: order.id });
   return getStripe().checkout.sessions.create({
     mode: 'payment',
     allow_promotion_codes: true,
