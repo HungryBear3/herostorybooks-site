@@ -318,6 +318,40 @@ test('server and Clear saved details enforce the same source/reset contract befo
   assert.match(CHECKOUT_FORM_SRC, /classifyStoryAttachment\(form\.voiceFile\)/);
 });
 
+test('payment readiness gates email on the shared validity rule, not mere presence', () => {
+  // A non-empty string is not an email. `Boolean(form.email)` lets a dotless
+  // domain enable Pay, which sends /api/order and — correctly, because the
+  // attempt may already have provider evidence — comes back with generic
+  // reconciliation copy instead of an actionable "fix your email" message.
+  const readiness = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('const isReadyToPay ='),
+    CHECKOUT_FORM_SRC.indexOf('const completedStepCount'),
+  );
+
+  assert.match(readiness, /looksLikeEmail\(form\.email\)/, 'Pay must gate on email validity');
+  assert.doesNotMatch(
+    readiness,
+    /Boolean\(form\.email\)/,
+    'presence alone must not enable Pay for an invalid address',
+  );
+});
+
+test('a dotless-domain email keeps the review step blocking with an email-address blocker', () => {
+  const dotless = makeForm({ email: 'alexy@gmail' });
+  const progress = getCheckoutProgress(dotless);
+
+  assert.deepEqual(progress.currentStep, {
+    id: 'review',
+    title: 'Contact, delivery, and review',
+    missingFields: ['Email address'],
+    firstInvalidField: 'email',
+  });
+  assert.deepEqual(
+    getCheckoutPaymentBlockers(dotless),
+    ['Contact, delivery, and review: Email address'],
+  );
+});
+
 test('optional fields do not block', () => {
   const progress = getCheckoutProgress(makeForm({
     childName: 'Emma',

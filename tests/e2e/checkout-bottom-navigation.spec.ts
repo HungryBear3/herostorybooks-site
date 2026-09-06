@@ -78,6 +78,40 @@ test('linear Continue controls advance every step without covering fields or sub
   expect(harness.orderRequests).toHaveLength(0);
 });
 
+test('a dotless-domain email keeps Pay disabled and never reaches /api/order', async ({ page, baseURL }) => {
+  const harness = await installHandoffHarness(page, baseURL!);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/checkout');
+
+  // Everything else the payment gate needs is valid; only the email is not a
+  // real address. The browser must refuse locally, where it can say WHY,
+  // rather than spending an attempt on a server that can only answer with
+  // reconciliation copy.
+  await page.getByRole('button', { name: /Space Voyager/ }).click();
+  await page.locator('#childName').fill('Testhero');
+  const bottom = page.getByTestId('checkout-bottom-continue');
+  await bottom.click();
+  await page
+    .getByPlaceholder('Example: 6 years old, warm brown skin, short curly dark hair, bright green hoodie')
+    .fill('6 years old, short curly dark hair, bright green hoodie');
+  await bottom.click(); // → Story
+  await bottom.click(); // → People and pets
+  await bottom.click(); // → Contact, delivery, and review
+  await expect(page.getByRole('heading', { level: 1, name: 'Contact, delivery, and review' })).toBeVisible();
+
+  await page.locator('#email').fill('alexy@gmail');
+
+  const pay = page.getByRole('button', { name: /Continue to secure payment/ });
+  await expect(pay).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Email address', exact: true })).toBeVisible();
+  await pay.click({ force: true });
+  expect(harness.orderRequests).toHaveLength(0);
+
+  // And the same form pays once the address is actually valid.
+  await page.locator('#email').fill('alexy@gmail.com');
+  await expect(pay).toBeEnabled();
+});
+
 test('fourth hero type and save-before-next-person guidance are explicit', async ({ page, baseURL }) => {
   const harness = await installHandoffHarness(page, baseURL!);
   await page.setViewportSize({ width: 390, height: 844 });

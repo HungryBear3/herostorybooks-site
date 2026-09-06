@@ -564,6 +564,42 @@ test('an invalid submission is refused before any durable order or media exists'
   assert.equal(await stored(), null);
 });
 
+// A dotless domain is exactly what the client-side Pay gate must stop, because
+// the server cannot answer it actionably: by the time a valid attempt ID exists,
+// a concurrent request on the SAME attempt may already hold provider evidence,
+// so every 4xx under that attempt is reconciliation-safe by policy. This pins
+// that policy for `email_invalid` so a client-side fix is never "helped along"
+// by loosening the server back into actionable local-validation copy.
+test('a dotless-domain email under a valid attempt keeps its code but answers reconciliation-safe', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  const form = new FormData();
+  form.set('checkoutAttemptId', ATTEMPT);
+  form.set('childName', 'Mina');
+  form.set('email', 'alexy@gmail');
+  form.set('bookFormat', 'digital');
+  form.set('theme', 'space-adventure');
+  form.set('characterNotes', 'Curly hair');
+
+  const response = await handleCheckoutOrderPost(
+    new Request('https://preview.test/api/order', { method: 'POST', body: form }),
+    h.deps,
+  );
+
+  assert.equal(response.httpStatus, 400);
+  assert.equal(response.body.code, 'email_invalid');
+  assert.equal(response.body.error, CHECKOUT_RECONCILIATION_SUPPORT);
+  assert.match(String(response.body.error), /do not pay again/i);
+  assert.doesNotMatch(
+    String(response.body.error),
+    /no charge|not been charged|stopped before payment|\b(retry|try again|submit again)\b/i,
+  );
+  assert.deepEqual(h.uploads, [], 'no media is written');
+  assert.deepEqual(h.provider, [], 'the provider is never reached');
+  assert.deepEqual(h.converted, [], 'no recovery lead is converted');
+  assert.equal(await stored(), null, 'nothing durable is created');
+});
+
 test('a valid attempt uses reconciliation-safe copy even when asynchronous photo validation refuses it', async () => {
   installMemoryOrderStore();
   const h = harness();

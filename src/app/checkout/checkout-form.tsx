@@ -850,7 +850,7 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
     Boolean(form.theme) &&
     Boolean(form.childName) &&
     Boolean(form.bookFormat) &&
-    Boolean(form.email) &&
+    looksLikeEmail(form.email) &&
     Boolean(form.photoFile || form.characterNotes.trim()) &&
     (!isCustomStorySelected || hasCustomStoryInput) &&
     (!isCustomStorySelected || !form.voiceFile || customStoryAttachmentIsCoherent) &&
