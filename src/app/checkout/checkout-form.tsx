@@ -1077,6 +1077,11 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
         JSON.stringify(
           familyCharactersForOrder
             .map((character) => ({
+              // The stable id travels WITH the character so the server can
+              // prove `familyCharacterIds` describes this exact list, in this
+              // order. The sanitizer drops it, so the stored order record is
+              // unchanged.
+              id: character.id,
               role: character.role,
               name: character.name,
               relationshipLabel: character.relationshipLabel,
