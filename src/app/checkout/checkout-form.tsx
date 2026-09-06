@@ -37,6 +37,14 @@ import {
   performStripeHandoff,
   type SubmitLock,
 } from "@/lib/checkout-handoff";
+import { upload } from "@vercel/blob/client";
+import { isDirectUploadClientEnabled } from "@/lib/checkout-direct-flags";
+import {
+  applyPrimaryAndSupportingMediaToOrderPayload,
+  prepareOrReuseDirectIntakeSubmission,
+  type DirectIntakeSubmissionCache,
+  type IntakeClientTransport,
+} from "@/lib/checkout-intake-client-flow";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -189,6 +197,32 @@ const RECOVERY_DEBOUNCE_MS = 1500;
 function looksLikeEmail(e: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
+
+const directIntakeTransport: IntakeClientTransport = {
+  async intake(body) {
+    const response = await fetch("/api/checkout/intake", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = await response.json() as Record<string, unknown>;
+    } catch {
+      // A non-JSON response is still a refusal; the orchestrator supplies the
+      // stable fallback code and never advances to the order request.
+    }
+    return { ok: response.ok, status: response.status, body: parsed };
+  },
+  async upload({ pathname, file, contentType, clientPayload }) {
+    await upload(pathname, file, {
+      access: "private",
+      handleUploadUrl: "/api/checkout/intake/upload",
+      clientPayload,
+      contentType,
+    });
+  },
+};
 
 const SAMPLE_IMAGES = CHECKOUT_SAMPLE_IMAGES;
 const CHECKOUT_STEPS = [
@@ -427,6 +461,9 @@ export function CheckoutForm() {
   const [guidedFrames, setGuidedFrames] = useState<GuidedPhotoFile[]>([]);
   const [guidedConsent, setGuidedConsent] = useState(false);
   const [showGuidedPhotos, setShowGuidedPhotos] = useState(false);
+  const directUploadEnabled = isDirectUploadClientEnabled();
+  const [directMediaConsent, setDirectMediaConsent] = useState(false);
+  const intakeSessionRef = useRef<DirectIntakeSubmissionCache | null>(null);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Ref-backed one-shot submit guard. `isSubmitting` alone cannot prevent a
   // double submit: it is React state, so two clicks in the same batch both
@@ -704,6 +741,17 @@ export function CheckoutForm() {
   });
   const missingVoiceConsent =
     STORY_UPLOAD_ENABLED && form.voiceFile != null && !form.voiceConsent;
+  const directMediaFilesPresent = Boolean(
+    form.photoFile ||
+      form.voiceFile ||
+      guidedFrames.length > 0 ||
+      form.familyCharacters.some((character) => character.photoFile),
+  );
+  const directUploadBlockers =
+    directUploadEnabled && directMediaFilesPresent && !directMediaConsent
+      ? ["Permission to save the selected private media"]
+      : [];
+  const directMediaBlockers = directUploadBlockers;
   const isReadyToPay =
     Boolean(form.theme) &&
     Boolean(form.childName) &&
@@ -712,7 +760,8 @@ export function CheckoutForm() {
     Boolean(form.photoFile || form.characterNotes.trim()) &&
     missingSupportingDescriptionLabels.length === 0 &&
     !supportingCharacterDraft &&
-    !missingVoiceConsent;
+    !missingVoiceConsent &&
+    directMediaBlockers.length === 0;
   const completedStepCount = [
     Boolean(form.theme),
     Boolean(form.childName),
@@ -923,6 +972,11 @@ export function CheckoutForm() {
         JSON.stringify(
           familyCharactersForOrder
             .map((character) => ({
+              // The stable id travels WITH the character so the server can
+              // prove `familyCharacterIds` describes this exact list, in this
+              // order. The sanitizer drops it, so the stored order record is
+              // unchanged.
+              id: character.id,
               role: character.role,
               name: character.name,
               relationshipLabel: character.relationshipLabel,
@@ -938,11 +992,7 @@ export function CheckoutForm() {
             })),
         ),
       );
-      familyCharactersForOrder.forEach((character, index) => {
-        if (character.photoFile) {
-          payload.set(`familyCharacterPhoto_${index}`, character.photoFile);
-        }
-      });
+
       payload.set(
         "appearanceOptions",
         JSON.stringify({
@@ -961,17 +1011,52 @@ export function CheckoutForm() {
       if (checkoutTracking?.invite) payload.set("invite", checkoutTracking.invite);
       const gaClientId = currentGaClientId();
       if (gaClientId) payload.set("gaClientId", gaClientId);
-      if (form.photoFile) {
-        payload.set("photo", form.photoFile);
-      }
-      if (STORY_UPLOAD_ENABLED && form.voiceFile) {
-        payload.set("voice", form.voiceFile);
-        payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
-        if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
-      }
-      // Optional guided child stills. Appends only parent-approved still photos; no video.
-      if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
-        appendGuidedCaptureToFormData(payload, guidedFrames);
+      const preparedDirectIntake = await prepareOrReuseDirectIntakeSubmission({
+        enabled: directUploadEnabled && directMediaFilesPresent,
+        transport: directIntakeTransport,
+        heroPhoto: form.photoFile,
+        familyCharacterIds: familyCharactersForOrder.map((character) => character.id),
+        familyPhotos: familyCharactersForOrder.flatMap((character) =>
+          character.photoFile
+            ? [{
+                familyCharacterId: character.id,
+                file: character.photoFile,
+                mimeType: character.photoFile.type,
+              }]
+            : [],
+        ),
+        guidedStills:
+          guidedCaptureEnabled && guidedConsent
+            ? guidedFrames.map((frame) => ({ file: frame.file, mimeType: frame.file.type }))
+            : [],
+        voice:
+          STORY_UPLOAD_ENABLED && form.voiceFile && form.voiceSource
+            ? {
+                file: form.voiceFile,
+                source: form.voiceSource,
+                consent: form.voiceConsent,
+                mimeType: form.voiceFile.type,
+              }
+            : null,
+      }, intakeSessionRef.current);
+      const directIntakeSubmission = preparedDirectIntake?.submission ?? null;
+      applyPrimaryAndSupportingMediaToOrderPayload(payload, {
+        directSubmission: directIntakeSubmission,
+        heroPhoto: form.photoFile,
+        familyPhotos: familyCharactersForOrder.map((character) => character.photoFile),
+      });
+      if (directIntakeSubmission && preparedDirectIntake) {
+        intakeSessionRef.current = preparedDirectIntake.cache;
+      } else {
+        if (STORY_UPLOAD_ENABLED && form.voiceFile) {
+          payload.set("voice", form.voiceFile);
+          payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
+          if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
+        }
+        // Optional guided child stills. Appends only parent-approved still photos; no video.
+        if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
+          appendGuidedCaptureToFormData(payload, guidedFrames);
+        }
       }
 
       const response = await fetch("/api/order", {
@@ -1005,6 +1090,9 @@ export function CheckoutForm() {
           "We couldn't reach secure payment. You have not been charged. Please try again.",
         );
       }
+      // The capability has completed its only job. Drop the in-memory reference
+      // before handing the page to Stripe; it is never persisted or put in a URL.
+      intakeSessionRef.current = null;
       // Hand off to Stripe IMMEDIATELY.
       //
       // This used to be the success state + an unguarded
@@ -2700,6 +2788,20 @@ export function CheckoutForm() {
             </section>
 
             <div className="space-y-3 pb-10">
+              {directUploadEnabled && directMediaFilesPresent && (
+                <label className="flex items-start gap-3 rounded-xl border border-[#d8c6a2] bg-[#fff8ec] px-4 py-3 text-sm text-[#4f463d]">
+                  <input
+                    type="checkbox"
+                    checked={directMediaConsent}
+                    onChange={(event) => setDirectMediaConsent(event.target.checked)}
+                    className="mt-1 h-4 w-4 accent-deep-gold"
+                  />
+                  <span>
+                    I have permission to provide these photos or recordings and authorize
+                    Hero Story Books to save them privately for this order and proof review.
+                  </span>
+                </label>
+              )}
               {/* Disabled-CTA reason. Listed before the button so a screen
                   reader / sighted reviewer immediately knows WHY the button
                   is greyed instead of guessing. Computed from the same
@@ -2710,7 +2812,7 @@ export function CheckoutForm() {
                     Finish these before continuing to payment, including the hero photo or description when it is still missing.
                   </p>
                   <div className="mt-2 flex flex-wrap justify-center gap-2">
-                    {paymentBlockers.map((blocker) => {
+                    {[...paymentBlockers, ...directMediaBlockers].map((blocker) => {
                       const [stepTitle, fieldLabel] = blocker.split(": ");
                       const targetStep = checkoutSteps.find((step) => step.title === stepTitle);
                       return (

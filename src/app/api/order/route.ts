@@ -35,30 +35,23 @@ import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 import { getRequiredStripeProductId } from '@/lib/stripe-products';
 import { statusForShape, validateCustomStoryBrief, type CustomStoryBrief, type ValidationResult } from '@/lib/custom-story';
 import { validateOrderPhotoFile } from '@/lib/photo-file-validation';
+import { isDirectUploadServerEnabled } from '@/lib/checkout-direct-flags';
+import {
+  alignFamilyCharacterIdentity,
+  FAMILY_IDENTITY_MISMATCH_CODE,
+  supportingPhotoIndexesForAlignment,
+} from '@/lib/checkout-family-identity';
+import { parseDirectIntakeOrderRequest } from '@/lib/checkout-direct-order-request';
+import {
+  buildDirectIntakeBindingDependencies,
+  runDirectIntakeCheckout,
+  type DirectCheckoutSessionRequest,
+} from '@/lib/checkout-direct-order';
+import { createVercelIntakeStore } from '@/lib/checkout-intake';
+import { checkoutRequestFingerprint } from '@/lib/checkout-request-fingerprint';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-}
-
-async function checkoutFingerprint(form: FormData): Promise<string> {
-  const entries: string[] = [];
-  for (const [key, value] of form.entries()) {
-    if (value instanceof File) {
-      const bytes = Buffer.from(await value.arrayBuffer());
-      entries.push(JSON.stringify([
-        key,
-        'file',
-        value.name,
-        value.type,
-        value.size,
-        crypto.createHash('sha256').update(bytes).digest('hex'),
-      ]));
-    } else {
-      entries.push(JSON.stringify([key, 'text', value]));
-    }
-  }
-  entries.sort();
-  return crypto.createHash('sha256').update(entries.join('\n')).digest('hex');
 }
 
 function getStripe() {
@@ -137,11 +130,25 @@ export async function POST(request: Request) {
     }
 
     const form = await request.formData();
+    const directRequest = parseDirectIntakeOrderRequest(form);
+    if (directRequest.kind === 'invalid') {
+      return NextResponse.json(
+        { error: 'Direct upload request is incomplete or invalid. No charge was made.', code: directRequest.code },
+        { status: 400 },
+      );
+    }
+    if (directRequest.kind === 'direct' && !isDirectUploadServerEnabled()) {
+      return NextResponse.json(
+        { error: 'Direct upload checkout is not enabled on this deployment. No charge was made.', code: 'direct_upload_disabled' },
+        { status: 503 },
+      );
+    }
+    const directSelection = directRequest.kind === 'direct' ? directRequest.request.selection : null;
     const checkoutAttemptId = String(form.get('checkoutAttemptId') || '').trim();
     if (!/^[a-f0-9]{32}$/i.test(checkoutAttemptId)) {
       return NextResponse.json({ error: 'Invalid checkout attempt. Please reload and try again.' }, { status: 400 });
     }
-    const requestFingerprint = await checkoutFingerprint(form);
+    const requestFingerprint = await checkoutRequestFingerprint(form);
     const checkoutTracking = buildCheckoutTracking({
       cohort: form.get('cohort'),
       invite: form.get('invite'),
@@ -189,7 +196,7 @@ export async function POST(request: Request) {
         { status: tooLarge ? 413 : 400 },
       );
     }
-    const photoReady = photoValidation.ok === true;
+    const photoReady = photoValidation.ok === true || directSelection?.primaryHeroPhotoAssetId != null;
     const normalizedAppearanceRaw = JSON.stringify({
       ...appearance,
       description: appearanceDescription,
@@ -275,9 +282,39 @@ export async function POST(request: Request) {
       }
       supportingPhotoFiles.set(index, { file: candidate, extension: validation.extension });
     }
+    let supportingPhotoIndexes: ReadonlySet<number>;
+    if (directRequest.kind === 'direct') {
+      // The declared id list has to describe THESE characters, in this order,
+      // or an index-based exemption would credit one person's photo to
+      // another. Refused here — before the order record, any intake
+      // reservation, and Stripe.
+      const alignment = alignFamilyCharacterIdentity({
+        rawFamilyCharacters: familyCharactersRaw,
+        sanitizedCount: familyCharacters.length,
+        declaredIds: directRequest.request.familyCharacterIds,
+      });
+      if (!alignment.ok) {
+        // Named rather than read off `alignment`: this project builds with
+        // `strict: false`, so the ok/!ok discriminant does not narrow the
+        // union here. Same code, same response.
+        return NextResponse.json(
+          {
+            error: 'We could not match your family details to your uploads. No charge was made.',
+            code: FAMILY_IDENTITY_MISMATCH_CODE,
+          },
+          { status: 400 },
+        );
+      }
+      supportingPhotoIndexes = supportingPhotoIndexesForAlignment(
+        alignment.ids,
+        directRequest.request.selection.familyCharacterAssets.map((binding) => binding.familyCharacterId),
+      );
+    } else {
+      supportingPhotoIndexes = new Set(supportingPhotoFiles.keys());
+    }
     const missingSupportingDescriptions = missingSupportingCharacterDescriptionLabels(
       familyCharacters,
-      new Set(supportingPhotoFiles.keys()),
+      supportingPhotoIndexes,
     );
     if (missingSupportingDescriptions.length > 0) {
       return NextResponse.json(
@@ -401,6 +438,40 @@ export async function POST(request: Request) {
     // binding, and a missing/malformed live configuration must fail closed
     // without leaving an abandoned order or upload behind.
     const stripeProductId = getRequiredStripeProductId(draftOrder.bookFormat);
+
+    if (directRequest.kind === 'direct') {
+      let intakeStore;
+      try {
+        intakeStore = createVercelIntakeStore();
+      } catch {
+        return NextResponse.json(
+          { error: 'Direct upload storage is unavailable. No charge was made.', code: 'direct_intake_store_unavailable' },
+          { status: 503 },
+        );
+      }
+      const directResult = await runDirectIntakeCheckout({
+        draftOrder,
+        request: directRequest.request,
+        stripeProductId,
+        baseUrl: getReturnBaseUrl(request),
+        gaClientId,
+      }, {
+        binding: buildDirectIntakeBindingDependencies(intakeStore),
+        createCheckoutSession: createDirectCheckoutSession,
+        retrieveCheckoutSession: retrieveDirectCheckoutSession,
+        bindCheckoutSession: (orderId, stripeSessionId, checkout) =>
+          bindOrderCheckoutSession(orderId, stripeSessionId, checkout),
+        markRecoveryLeadConverted,
+        logError: (message, detail) => console.error(message, detail ?? ''),
+      });
+      if (directResult.status === 'refused') {
+        return NextResponse.json(
+          { error: directResult.error, code: directResult.code },
+          { status: directResult.httpStatus },
+        );
+      }
+      return NextResponse.json({ ok: true, redirectTo: directResult.redirectTo });
+    }
 
     // Create the durable owner record before uploading any public customer
     // media. If cleanup itself later fails, the deterministic orders/<id>/
@@ -702,4 +773,44 @@ export async function POST(request: Request) {
     console.error('Order error:', error);
     return NextResponse.json({ error: 'Order submission failed' }, { status: 500 });
   }
+}
+
+async function retrieveDirectCheckoutSession(sessionId: string) {
+  return getStripe().checkout.sessions.retrieve(sessionId);
+}
+
+async function createDirectCheckoutSession(request: DirectCheckoutSessionRequest) {
+  const { order, stripeProductId, baseUrl, gaClientId, idempotencyKey } = request;
+  const successParams = new URLSearchParams({
+    orderId: order.id,
+    childName: order.heroName ?? order.childName,
+    format: order.formatLabel,
+    email: order.email,
+  });
+  return getStripe().checkout.sessions.create({
+    mode: 'payment',
+    allow_promotion_codes: true,
+    customer_email: order.email,
+    client_reference_id: order.id,
+    metadata: {
+      orderId: order.id,
+      ...(gaClientId ? { gaClientId } : {}),
+      ...(order.checkoutTracking?.cohort ? { cohort: order.checkoutTracking.cohort } : {}),
+      ...(order.checkoutTracking?.invite ? { invite: order.checkoutTracking.invite } : {}),
+    },
+    payment_intent_data: { metadata: { orderId: order.id } },
+    line_items: [{
+      price_data: {
+        currency: 'usd',
+        unit_amount: order.priceCents,
+        product: stripeProductId,
+      },
+      quantity: 1,
+    }],
+    ...(isPrintFormat(order.bookFormat)
+      ? { shipping_address_collection: { allowed_countries: ['US'] as const } }
+      : {}),
+    success_url: `${baseUrl}/thank-you?${successParams.toString()}&sessionId={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${baseUrl}/checkout`,
+  }, { idempotencyKey });
 }
