@@ -1,16 +1,23 @@
 /**
- * `@/lib/orders`, journalled.
+ * `src/lib/orders.ts`, journalled.
  *
- * The REAL module runs — this only records that the route reached the durable
- * order surface at all. `createOrderRecord` is pure, but it is the first thing
- * the route does once it has decided a request is acceptable, so seeing it in
- * the journal is how "the refusal came earlier" is proven.
+ * The REAL module runs — this only records that the request reached the
+ * durable order surface at all. `createOrderRecord` is pure, but it is the
+ * first thing the handler does once it has decided a request is acceptable, so
+ * seeing it in the journal is how "the refusal came earlier" is proven.
  *
- * Exactly the names `src/app/api/order/route.ts` imports. A new import there
- * fails loudly here rather than silently escaping the journal.
+ * `export *` carries every other name through untouched, because the resolve
+ * hook now stands in front of the whole checkout graph — the route adapter,
+ * `checkout-order-route-handler.ts`, the session provisioner, the legacy
+ * orchestration — and an enumerated list would turn any unrelated import into
+ * a link error rather than a finding. The names that MATTER are enumerated
+ * below and shadow the star, so a durable call cannot silently escape the
+ * journal; `spy()` fails loudly if one is renamed out from under it.
  */
 import * as real from '../../../src/lib/orders.ts';
 import { record } from './journal.mjs';
+
+export * from '../../../src/lib/orders.ts';
 
 function spy(name) {
   const fn = real[name];
@@ -21,13 +28,10 @@ function spy(name) {
   };
 }
 
-export const MAX_VOICE_BYTES = real.MAX_VOICE_BYTES;
-export const OrderPersistenceError = real.OrderPersistenceError;
-export const isPrintFormat = real.isPrintFormat;
-// Read-only shaping the route does before it can judge a request. Not a
-// durable surface, so not journalled — it must stay callable pre-refusal.
-export const sanitizeFamilyCharacters = real.sanitizeFamilyCharacters;
-
+// Every durable write, plus the reads that only a request past the gates makes.
+// `sanitizeFamilyCharacters` is deliberately NOT here: it is read-only shaping
+// the handler performs before it can judge a request, so it must stay callable
+// pre-refusal without registering as a durable touch.
 export const createOrderRecord = spy('createOrderRecord');
 export const bindOrderCheckoutSession = spy('bindOrderCheckoutSession');
 export const persistOrResumeCheckoutOrder = spy('persistOrResumeCheckoutOrder');
@@ -36,4 +40,8 @@ export const rollbackOrderMediaUploads = spy('rollbackOrderMediaUploads');
 export const uploadOrderPhoto = spy('uploadOrderPhoto');
 export const uploadOrderSupportingPhoto = spy('uploadOrderSupportingPhoto');
 export const uploadOrderVoice = spy('uploadOrderVoice');
+export const uploadOrderDocument = spy('uploadOrderDocument');
 export const withOrderTransaction = spy('withOrderTransaction');
+export const beginCheckoutSessionProvisioning = spy('beginCheckoutSessionProvisioning');
+export const recordCheckoutSessionCandidate = spy('recordCheckoutSessionCandidate');
+export const supersedeExpiredCheckoutSession = spy('supersedeExpiredCheckoutSession');

@@ -74,7 +74,7 @@ test('getOptionalStripeWebhookSecret returns null when env is blank after trimmi
 });
 
 test('stripe callsites use shared sanitized env helpers', () => {
-  const orderRoute = readFileSync('src/app/api/order/route.ts', 'utf8');
+  const orderRoute = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
   const webhookRoute = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
   const adminActions = readFileSync('src/lib/admin-actions.ts', 'utf8');
 

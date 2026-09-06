@@ -7,7 +7,11 @@ import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
 import { ensureRecommendedTextLayout, NEW_PROOF_LAYOUT_VERSION, withRecommendedPageMetadata } from './fulfillment-types.ts';
 import { assertStoryPageSet, validateStoryPageSet } from './story-page-contract.ts';
-import { generateStory, generateStoryWithMeta } from './story-generator.ts';
+import {
+  generateStory,
+  generateStoryWithMeta,
+  hasMediaBackedCustomStorySource,
+} from './story-generator.ts';
 import type { StoryWithMeta } from './story-generator.ts';
 import { generateStoryImageResults, requireCompleteImageResults } from './image-generator.ts';
 import type { GeneratedImageResult } from './image-generator.ts';
@@ -123,6 +127,7 @@ type KickoffClaimResult =
   | { kind: 'skipped_already_complete'; fulfillmentStatus: string }
   | { kind: 'payment_no_longer_paid' }
   | { kind: 'policy_not_auto' }
+  | { kind: 'media_story_manual_review_required' }
   | { kind: 'not_found' };
 
 async function claimFulfillmentKickoff(orderId: string): Promise<KickoffClaimResult> {
@@ -144,6 +149,9 @@ async function claimFulfillmentKickoff(orderId: string): Promise<KickoffClaimRes
       }
       if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {
         return { abort: { kind: 'policy_not_auto' } };
+      }
+      if (hasMediaBackedCustomStorySource(current)) {
+        return { abort: { kind: 'media_story_manual_review_required' } };
       }
 
       const cur = current.fulfillmentStatus;
@@ -203,6 +211,7 @@ async function startClaimedFulfillment(
       if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {
         return { abort: null };
       }
+      if (hasMediaBackedCustomStorySource(current)) return { abort: null };
       const cur = current.fulfillmentStatus;
       if (cur && cur !== 'not_started' && !RECOVERABLE_FULFILLMENT_STATUSES.has(cur)) {
         return { abort: null };
@@ -280,6 +289,7 @@ async function commitProofPatchIfSourceCurrent(
       if (claimId && (current.fulfillmentMode !== 'auto' || current.internalDisposition != null)) {
         return { abort: false };
       }
+      if (hasMediaBackedCustomStorySource(current)) return { abort: false };
       const currentPages = normalizePageArtifactTextLayouts(current.pageArtifacts ?? []);
       const next = applyFulfillmentPatchTo(current, paidFulfillmentPatch(current, {
         ...patch,
@@ -1141,6 +1151,9 @@ export async function buildProofArtifactFromPageArtifacts(
 ): Promise<ProofBuildResult> {
   const order = await getOrder(orderId);
   if (!order) return { ok: false, error: 'order_not_found' };
+  if (hasMediaBackedCustomStorySource(order)) {
+    return { ok: false, error: 'media_story_manual_review_required' };
+  }
   if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
     return { ok: false, error: 'no_page_artifacts' };
   }
@@ -1169,11 +1182,21 @@ export async function buildProofArtifactFromPageArtifacts(
   let candidate: ProofBuildSuccess;
   try {
     const pdfBuffer = await _buildPdf(story, orderForBuild, allUrls);
+    const afterProofRender = await getOrder(order.id);
+    if (!afterProofRender) return { ok: false, error: 'order_not_found' };
+    if (hasMediaBackedCustomStorySource(afterProofRender)) {
+      return { ok: false, error: 'media_story_manual_review_required' };
+    }
     // Immutable, version-keyed path. Never reuses a published proof path.
     const proofUrl = await _upload(order.id, pdfBuffer, proofArtifactPath(proofVersion));
     candidate = { ok: true, proofUrl, sourceFingerprint, proofVersion };
     if (isPrintFormat(order.bookFormat)) {
       const interiorBuffer = await _buildPrintInteriorPdf(story, orderForBuild, allUrls);
+      const afterInteriorRender = await getOrder(order.id);
+      if (!afterInteriorRender) return { ok: false, error: 'order_not_found' };
+      if (hasMediaBackedCustomStorySource(afterInteriorRender)) {
+        return { ok: false, error: 'media_story_manual_review_required' };
+      }
       candidate.printInteriorArtifactUrl = await _upload(
         order.id,
         interiorBuffer,
@@ -1375,6 +1398,13 @@ export async function triggerFulfillment(
     return { status: 'not_paid_yet', attempts: readback.attempts };
   }
   const order = readback.order;
+  if (hasMediaBackedCustomStorySource(order)) {
+    console.warn(`[fulfillment] order ${orderId} has media-backed story source — manual fulfillment required`);
+    return {
+      status: 'skipped_already_running',
+      fulfillmentStatus: 'media_story_manual_review_required',
+    };
+  }
   console.log(
     `[fulfillment] order ${orderId} confirmed paid after ${readback.attempts} readback attempt(s) (stripeSessionId=${order.stripeSessionId ? 'present' : 'absent'}, fulfillmentStatus=${order.fulfillmentStatus ?? 'unset'})`,
   );
@@ -1391,6 +1421,13 @@ export async function triggerFulfillment(
   if (claim.kind === 'policy_not_auto') {
     console.warn(`[fulfillment] order ${orderId} is not explicitly auto-fulfillable — refusing`);
     return { status: 'skipped_already_running', fulfillmentStatus: 'policy_not_auto' };
+  }
+  if (claim.kind === 'media_story_manual_review_required') {
+    console.warn(`[fulfillment] order ${orderId} gained media-backed story source before kickoff claim — refusing`);
+    return {
+      status: 'skipped_already_running',
+      fulfillmentStatus: 'media_story_manual_review_required',
+    };
   }
   if (claim.kind === 'skipped_already_complete') {
     console.warn(`[fulfillment] order ${orderId} already has fulfillmentStatus=${claim.fulfillmentStatus} — skipping (complete)`);

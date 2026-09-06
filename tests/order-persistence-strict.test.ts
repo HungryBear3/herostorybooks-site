@@ -192,7 +192,7 @@ test('uploadOrderPhoto in dev with NO blob token → returns null silently (lega
 
 test('order route contract: persistOrder throws BEFORE any Stripe call would happen', async () => {
   // We can't import the route directly under node:test (it pulls next/server).
-  // The route's contract is: call persistOrder before stripe.checkout.sessions.create().
+  // The route's contract is: call persistOrder before checkout.sessions.create().
   // We assert the contract at the persistence layer: in production-like envs,
   // persistOrder throws OrderPersistenceError synchronously enough that any
   // code after it (including Stripe) cannot run. Combined with the static
@@ -219,27 +219,80 @@ test('order route contract: persistOrder throws BEFORE any Stripe call would hap
   );
 });
 
-test('order route source: atomic create-or-exact-resume persistence and final CAS both precede Stripe', async () => {
-  // Static guard against future regressions that re-order the route.
+test('legacy checkout entrypoint: persistence failure refuses before the provider is ever asked', async () => {
+  // The old version of this test compared source positions against
+  // `checkout.sessions.create`, which lives in a helper declared BELOW the
+  // handler — so it held regardless of control flow. This drives the actual
+  // legacy entrypoint instead: when the durable owner record cannot be written,
+  // no provider dependency may be touched at all.
+  const { resumeOrContinueLegacyCheckout } = await import('../src/lib/checkout-legacy-order.ts');
+  const touched: string[] = [];
+  const forbid = (name: string) => async () => {
+    touched.push(name);
+    throw new Error(`${name} must not be reachable`);
+  };
+
+  const result = await resumeOrContinueLegacyCheckout({
+    draftOrder: createOrderRecord(
+      { childName: 'Mia', bookFormat: 'classic', email: 'a@b.com' },
+      { id: 'ord_route_abort', now: '2026-04-26T10:00:00Z', fulfillmentMode: 'manual_hold' },
+    ),
+    stripeProductId: 'prod_test',
+    baseUrl: 'https://preview.test',
+    gaClientId: null,
+  }, {
+    async persistOrResumeCheckoutOrder() {
+      throw new OrderPersistenceError('ord_route_abort', 'BLOB_READ_WRITE_TOKEN missing');
+    },
+    createCheckoutSession: forbid('createCheckoutSession') as never,
+    retrieveCheckoutSession: forbid('retrieveCheckoutSession') as never,
+    renewCheckoutLease: forbid('renewCheckoutLease') as never,
+    beginCheckoutSessionProvisioning: forbid('beginCheckoutSessionProvisioning') as never,
+    recordCheckoutSessionCandidate: forbid('recordCheckoutSessionCandidate') as never,
+    supersedeCheckoutSession: forbid('supersedeCheckoutSession') as never,
+    bindCheckoutSession: forbid('bindCheckoutSession') as never,
+  });
+
+  assert.equal(result.status, 'refused');
+  assert.equal(result.status === 'refused' && result.httpStatus, 503);
+  assert.deepEqual(touched, [], 'no provider or session dependency may be reached after a persistence failure');
+});
+
+test('order route source: the handler keeps no provider call and no session decision of its own', async () => {
   const { readFile } = await import('node:fs/promises');
-  const src = await readFile('src/app/api/order/route.ts', 'utf8');
-  const createIdx = src.indexOf('await persistOrResumeCheckoutOrder');
-  const casIdx = src.indexOf('await withOrderTransaction');
-  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
-  const orderPersistenceErrorIdx = src.indexOf('OrderPersistenceError');
-  assert.ok(createIdx > -1, 'route must atomically create or resume the exact durable owner record');
-  assert.ok(casIdx > createIdx, 'route must update the draft through versioned CAS');
-  assert.ok(stripeIdx > -1, 'route must call stripe.checkout.sessions.create');
-  assert.ok(casIdx < stripeIdx, 'all durable writes must complete before Stripe');
-  assert.ok(orderPersistenceErrorIdx > -1, 'route must handle OrderPersistenceError');
+  const src = (await readFile('src/lib/checkout-order-route-handler.ts', 'utf8'))
+    + (await readFile('src/app/api/order/route.ts', 'utf8'));
+  const handler = src.slice(0, src.indexOf('async function retrieveDirectCheckoutSession'));
+  assert.ok(handler.length > 0, 'the provider adapters must stay below the request handler');
+  // The durable create-or-resume, and the recovery decision that depends on it,
+  // are delegated to one exported orchestration the tests can execute directly
+  // (tests/checkout-legacy-order-entrypoint.test.ts). The handler supplies its
+  // dependencies and its media continuation, and decides nothing itself.
+  assert.ok(handler.indexOf('await runLegacyCheckoutRoute<NextResponse>') > -1,
+    'route must atomically create or resume the exact durable owner record through the shared entrypoint');
+  const entrypoint = await readFile('src/lib/checkout-legacy-order.ts', 'utf8');
+  assert.ok(entrypoint.indexOf('await deps.persistOrResumeCheckoutOrder(draft)') > -1,
+    'the shared entrypoint owns the durable create-or-resume');
+  assert.ok(
+    handler.indexOf('await withOrderTransaction') > handler.indexOf('await runLegacyCheckoutRoute<NextResponse>'),
+    'route must update the draft through versioned CAS after the durable owner record exists',
+  );
+  assert.ok(
+    handler.indexOf('await provisionCheckoutSession') > handler.indexOf('await withOrderTransaction'),
+    'all durable writes must complete before the provider hand-off',
+  );
+  assert.equal(/checkout\.sessions\.(create|retrieve)/.test(handler), false,
+    'the handler may not reach the provider directly');
+  assert.ok(src.indexOf('OrderPersistenceError') > -1, 'route must handle OrderPersistenceError');
 });
 
 test('order route source: Stripe Checkout enables buyer-entered promotion codes', async () => {
   const { readFile } = await import('node:fs/promises');
-  const src = await readFile('src/app/api/order/route.ts', 'utf8');
-  const stripeIdx = src.indexOf('stripe.checkout.sessions.create');
+  const src = (await readFile('src/lib/checkout-order-route-handler.ts', 'utf8'))
+    + (await readFile('src/app/api/order/route.ts', 'utf8'));
+  const stripeIdx = src.indexOf('checkout.sessions.create');
   const promoIdx = src.indexOf('allow_promotion_codes: true');
-  assert.ok(stripeIdx > -1, 'route must call stripe.checkout.sessions.create');
+  assert.ok(stripeIdx > -1, 'route must call checkout.sessions.create');
   assert.ok(promoIdx > -1, 'Checkout session must allow buyer-entered promotion codes');
   assert.ok(promoIdx > stripeIdx, 'promotion-code setting must be part of session creation');
 });

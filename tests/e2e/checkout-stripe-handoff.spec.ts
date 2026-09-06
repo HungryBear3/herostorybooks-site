@@ -63,6 +63,53 @@ test('clicks batched in one task create only one order/session attempt', async (
   expect(harness.orderRequests, 'one submit, one order').toHaveLength(1);
 });
 
+test('a restricted in-app browser without Web Crypto ID methods can still start one order', async ({ page, baseURL }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(Crypto.prototype, 'randomUUID', {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(Crypto.prototype, 'getRandomValues', {
+      configurable: true,
+      value: undefined,
+    });
+  });
+  const harness = await installHandoffHarness(page, baseURL!, { redirectTo: STRIPE_SESSION_URL });
+  const pay = await fillCheckoutToReview(page);
+  await page.getByRole('button', { name: /People and pets/ }).click();
+  await page.getByRole('button', { name: /Dad/ }).click();
+  await page.getByPlaceholder('e.g., Alexy').fill('Dad');
+  await page.getByPlaceholder(/Hair, skin tone/).fill('Short brown hair and glasses');
+  await page.getByRole('button', { name: 'Save person' }).click();
+  await page.getByTestId('checkout-bottom-continue').click();
+
+  await pay.click();
+
+  await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
+  expect(harness.orderRequests, 'one submit, one order').toHaveLength(1);
+  expect(harness.orderBodies[0]).toMatch(
+    /name="checkoutAttemptId"\r?\n\r?\n[a-f0-9]{32}\r?\n/,
+  );
+});
+
+test('an in-app browser that blocks sessionStorage can still start one order', async ({ page, baseURL }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Storage is unavailable', 'SecurityError');
+      },
+    });
+  });
+  const harness = await installHandoffHarness(page, baseURL!, { redirectTo: STRIPE_SESSION_URL });
+  const pay = await fillCheckoutToReview(page);
+
+  await pay.click();
+
+  await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
+  expect(harness.orderRequests, 'one submit, one order').toHaveLength(1);
+});
+
 test('a dropped hand-off leaves a working manual link to the SAME session', async ({
   page,
   baseURL,
@@ -101,13 +148,42 @@ test('an unapproved redirect target fails closed and keeps the recovery path', a
   const pay = await fillCheckoutToReview(page);
   await pay.click();
 
-  await expect(page.getByTestId('submit-error')).toBeVisible();
-  await expect(page.getByTestId('submit-error')).toContainText(/have not been charged/i);
+  const submitError = page.getByTestId('submit-error');
+  await expect(submitError).toBeVisible();
+  await expect(submitError).toContainText(/do not pay again/i);
+  await expect(submitError).toContainText(/support@herostorybooks\.com/i);
+  await expect(submitError).not.toContainText(/have not been charged/i);
   // Still on checkout: the lookalike host was never navigated to.
   expect(new URL(page.url()).pathname).toBe('/checkout');
   expect(harness.orderRequests).toHaveLength(1);
   // The failed submit is retryable — the lock was released.
   await expect(pay).toBeEnabled();
+});
+
+test('a picker error after an ambiguous hand-off keeps the entire banner reconciliation-safe', async ({
+  page,
+  baseURL,
+}) => {
+  const harness = await installHandoffHarness(page, baseURL!, {
+    redirectTo: 'https://checkout.stripe.com.attacker.invalid/c/pay/cs_x',
+  });
+  const pay = await fillCheckoutToReview(page);
+  await pay.click();
+  await expect(page.getByTestId('submit-error')).toContainText(/do not pay again/i);
+
+  await page.getByRole('button', { name: 'Hero photo or description' }).click();
+  await page.getByLabel('Upload hero photo from your phone').setInputFiles({
+    name: 'not-a-photo.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('not a photo'),
+  });
+
+  const submitError = page.getByTestId('submit-error');
+  await expect(submitError).toContainText('We need to confirm your order status.');
+  await expect(submitError).toContainText(/do not pay again/i);
+  await expect(submitError).not.toContainText("We couldn't start your order.");
+  await expect(submitError).not.toContainText(/have not been charged/i);
+  expect(harness.orderRequests).toHaveLength(1);
 });
 
 test('a response carrying no redirect URL never navigates', async ({ page, baseURL }) => {

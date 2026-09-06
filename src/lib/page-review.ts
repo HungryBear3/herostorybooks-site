@@ -61,6 +61,7 @@ import {
 } from './customer-text-change-request.ts';
 import { pageGenerationSourceFingerprint } from './review-source-identity.ts';
 import { hasAnyReviewCapability, hasReviewCapability } from './review-capability.ts';
+import { hasMediaBackedCustomStorySource } from './story-generator.ts';
 
 // Soft internal thresholds (runbook): warn at 3, manual review at 5.
 export const REGEN_WARNING_THRESHOLD = 3;
@@ -292,6 +293,9 @@ export async function publishProofGuarded(
       (order) => {
         const refusal = evaluateReviewMutationEligibility(order, opts.actor);
         if (refusal) return { abort: { refreshed: false, error: refusal.error } };
+        if (hasMediaBackedCustomStorySource(order)) {
+          return { abort: { refreshed: false, error: 'media_story_manual_review_required' } };
+        }
         // An approved book is frozen: never replace its proof or clear its ack.
         if (order.reviewStatus === 'approved') {
           return { abort: { refreshed: false, error: 'already_approved' } };
@@ -384,6 +388,9 @@ export async function regeneratePage(
   if (!preOrder) return { ok: false, status: 404, error: 'Order not found' };
   const preRefusal = evaluateReviewMutationEligibility(preOrder, input.actor);
   if (preRefusal) return { ok: false, status: preRefusal.status, error: preRefusal.error };
+  if (hasMediaBackedCustomStorySource(preOrder)) {
+    return { ok: false, status: 409, error: 'media_story_manual_review_required' };
+  }
   if (preOrder.reviewStatus === 'approved') {
     return { ok: false, status: 409, error: 'already_approved' };
   }
@@ -444,6 +451,13 @@ export async function regeneratePage(
         const refusal = evaluateReviewMutationEligibility(order, input.actor);
         if (refusal) {
           return { abort: { error: { ok: false, status: refusal.status, error: refusal.error } } };
+        }
+        if (hasMediaBackedCustomStorySource(order)) {
+          return {
+            abort: {
+              error: { ok: false, status: 409, error: 'media_story_manual_review_required' },
+            },
+          };
         }
         if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
           return { abort: { error: { ok: false, status: 409, error: 'Page review not yet ready for this order' } } };
@@ -1057,6 +1071,9 @@ export async function resolveTextChangeRequest(
           reason: 'admin_resolve_text_change',
         });
         if (refusal) return { abort: { ok: false, status: refusal.status, error: refusal.error } };
+        if (hasMediaBackedCustomStorySource(order)) {
+          return { abort: { ok: false, status: 409, error: 'media_story_manual_review_required' } };
+        }
         if (order.reviewStatus === 'approved') {
           return { abort: { ok: false, status: 409, error: 'already_approved' } };
         }

@@ -47,6 +47,7 @@ import {
 } from './orders.ts';
 import {
   generateStoryWithMeta as defaultGenerateStoryWithMeta,
+  hasMediaBackedCustomStorySource,
   type StoryWithMeta,
 } from './story-generator.ts';
 import type { StoryContent } from './fulfillment-types.ts';
@@ -63,6 +64,7 @@ export type RebuildRefusalReason =
   | 'already_in_production'
   | 'already_shipped'
   | 'order_refunded'
+  | 'media_story_manual_review_required'
   | 'order_changed_during_rebuild';
 
 export interface RebuildPlan {
@@ -148,6 +150,13 @@ export function checkRebuildSafety(order: OrderRecord): RebuildRefusal | null {
       ok: false,
       reason: 'already_submitted_to_lulu',
       detail: `printJobId=${order.printJobId ?? 'null'} fulfillmentStatus=${order.fulfillmentStatus ?? 'null'}`,
+    };
+  }
+  if (hasMediaBackedCustomStorySource(order)) {
+    return {
+      ok: false,
+      reason: 'media_story_manual_review_required',
+      detail: 'Audio/document-backed Custom Stories require operator-authored prose; automated rebuild is disabled.',
     };
   }
   return null;

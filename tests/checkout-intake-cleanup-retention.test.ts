@@ -29,8 +29,11 @@ import {
   intakeRecordPath,
   markIntakeFinalized,
 } from '../src/lib/checkout-intake.ts';
-import { completeSlotUpload, reserveSlotUpload } from '../src/lib/checkout-intake-upload.ts';
-import { finalizeIntakeSelection } from '../src/lib/checkout-finalize.ts';
+import {
+  completeSlotUpload as completeSlotUploadAt,
+  reserveSlotUpload as reserveSlotUploadAt,
+} from '../src/lib/checkout-intake-upload.ts';
+import { finalizeIntakeSelection as finalizeIntakeSelectionAt } from '../src/lib/checkout-finalize.ts';
 import {
   runCheckoutIntakeCleanup,
   type CheckoutIntakeCleanupDeps,
@@ -48,6 +51,21 @@ const AFTER_EXPIRY = new Date('2026-09-04T12:30:00.000Z');
 const TOMBSTONE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const HERO = { category: 'primary_hero_photo' } as const;
 const ALICE = { category: 'family_pet_reference', familyCharacterId: 'char-alice' } as const;
+const reserveSlotUpload = (
+  store: Parameters<typeof reserveSlotUploadAt>[0],
+  input: Parameters<typeof reserveSlotUploadAt>[1],
+  now = NOW,
+) => reserveSlotUploadAt(store, input, now);
+const completeSlotUpload = (
+  store: Parameters<typeof completeSlotUploadAt>[0],
+  input: Parameters<typeof completeSlotUploadAt>[1],
+  now = NOW,
+) => completeSlotUploadAt(store, input, now);
+const finalizeIntakeSelection = (
+  store: Parameters<typeof finalizeIntakeSelectionAt>[0],
+  input: Parameters<typeof finalizeIntakeSelectionAt>[1],
+  now = NOW,
+) => finalizeIntakeSelectionAt(store, input, now);
 
 function testOrderId(hexDigit: string): string {
   return `ord_${hexDigit.repeat(16)}`;

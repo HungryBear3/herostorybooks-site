@@ -33,6 +33,45 @@
 export const ALLOWED_STRIPE_CHECKOUT_HOSTS: readonly string[] = ['checkout.stripe.com'];
 
 /**
+ * What the browser may say when a submission does not end at Stripe.
+ *
+ * The browser cannot see the provider. By the time any of these states is
+ * reached the server may already have created and bound a payable Session — a
+ * non-JSON error body, a 200 with no `redirectTo`, and a redirect target the
+ * allowlist rejects are all compatible with that. These paths used to say "You
+ * have not been charged", which is a claim about the buyer's money that nothing
+ * on this side of the network can substantiate.
+ *
+ * So the browser says the one thing it does know: stop, do not pay again, and
+ * let support reconcile it. The server's OWN message is preferred whenever it
+ * sends one, because the server knows which of its failures it hit and is the
+ * only side that can earn a no-charge sentence.
+ */
+export const CHECKOUT_SUBMIT_UNCONFIRMED =
+  'We could not confirm the status of your order. Please do not pay again — contact '
+  + 'support@herostorybooks.com with your order details and we will confirm exactly what '
+  + 'happened and put it right.';
+
+export const CHECKOUT_HANDOFF_UNCONFIRMED =
+  'We could not confirm the status of your payment. Please do not pay again — contact '
+  + 'support@herostorybooks.com with your order details and we will confirm exactly what '
+  + 'happened and put it right.';
+
+/**
+ * The message to show for a failed `/api/order` submission.
+ *
+ * Returns the server's sentence when there is one (it is specific, and it is
+ * the only side that can prove a no-charge outcome), and the ambiguity-safe
+ * reconciliation copy when the response carried none — a non-JSON body, an
+ * empty message, or anything that is not a string.
+ */
+export function checkoutSubmitFailureMessage(serverError: unknown): string {
+  if (typeof serverError !== 'string') return CHECKOUT_SUBMIT_UNCONFIRMED;
+  const trimmed = serverError.trim();
+  return trimmed ? trimmed : CHECKOUT_SUBMIT_UNCONFIRMED;
+}
+
+/**
  * True only for an absolute HTTPS URL on an allowlisted Stripe Checkout host.
  *
  * Rejects, among others: non-strings, empty/whitespace values, relative paths,
@@ -100,8 +139,10 @@ export interface StripeHandoffDeps {
  * Hand off to Stripe immediately, then clean up.
  *
  * Returns without navigating when the URL is not an allowlisted Stripe
- * Checkout URL. Callers must treat `ok: false` as a failed submission and keep
- * their existing "you have not been charged" recovery behaviour.
+ * Checkout URL. Callers must treat `ok: false` as a failed submission and
+ * report it with `CHECKOUT_HANDOFF_UNCONFIRMED`: the server reached this point
+ * by creating and binding a Session, so a rejected target says nothing about
+ * whether the buyer can still be charged on it.
  */
 export function performStripeHandoff(
   redirectTo: unknown,

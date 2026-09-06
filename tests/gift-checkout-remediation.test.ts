@@ -23,7 +23,7 @@ const giftDetail = read('src/app/gifts/[occasion]/page.tsx');
 const checkoutForm = read('src/app/checkout/checkout-form.tsx');
 const sitemap = read('src/app/sitemap.ts');
 const siteUrl = read('src/lib/site-url.ts');
-const orderRoute = read('src/app/api/order/route.ts');
+const orderRoute = read('src/lib/checkout-order-route-handler.ts') + read('src/app/api/order/route.ts');
 
 // ── 1. Shared editorial chrome on gift routes ────────────────────────────────
 test('gift index and detail routes render the shared EditorialPageShell chrome', () => {
@@ -116,7 +116,7 @@ test('turnaround change adds no guaranteed/instant/same-day/holiday-delivery pro
 
 // ── 5. Server-side non-child gate preserved (not weakened by copy changes) ────
 test('server-side non-child primary-hero gate remains intact', () => {
-  assert.match(orderRoute, /PRIMARY_HERO_TYPES = new Set\(\['child', 'parent', 'grandparent'\]\)/);
+  assert.match(orderRoute, /PRIMARY_HERO_TYPES = new Set\(\['child', 'parent', 'grandparent', 'other'\]\)/);
   assert.match(orderRoute, /if \(heroType !== 'child'\)/);
   assert.match(orderRoute, /PRIMARY_HERO_BETA_ENABLED/);
   assert.match(orderRoute, /primary_hero_beta_required/);

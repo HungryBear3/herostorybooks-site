@@ -196,6 +196,37 @@ test('updateFulfillmentState: paid proof release timestamp is allowed and preser
 
 // ── Digital fulfillment ───────────────────────────────────────────────────────
 
+test('triggerFulfillment refuses media-backed stories before claim, retries, providers, or mutation', async () => {
+  const dir = makeTmpDir();
+  try {
+    const order = await makeOrder({
+      paymentStatus: 'paid',
+      bookFormat: 'digital',
+      fulfillmentMode: 'auto',
+      fulfillmentStatus: 'not_started',
+      voiceBlobPath: 'orders/media/story-source/voice.webm',
+      voiceConsentAt: '2026-04-27T09:00:00Z',
+    }, dir);
+    const before = await getOrder(order.id);
+    let storyProviderCalls = 0;
+    const result = await triggerFulfillment(order.id, {
+      ...PASS_DEPS,
+      generateStoryWithMeta: async () => {
+        storyProviderCalls += 1;
+        throw new Error('must not run');
+      },
+      sleep: async () => {},
+    });
+
+    assert.deepEqual(result, {
+      status: 'skipped_already_running',
+      fulfillmentStatus: 'media_story_manual_review_required',
+    });
+    assert.equal(storyProviderCalls, 0);
+    assert.deepEqual(await getOrder(order.id), before);
+  } finally { cleanupTmpDir(dir); }
+});
+
 test('paid digital order preserves artifact and reports delivery_email_failed without provider config', async () => {
   const dir = makeTmpDir();
   try {

@@ -217,7 +217,27 @@ function hasCustomStoryBrief(order: OrderRecord): boolean {
   return Boolean(order.customStoryBrief);
 }
 
+export function hasMediaBackedCustomStorySource(order: OrderRecord): boolean {
+  return Boolean(
+    order.voiceBlobPath
+    || order.voiceBlobUrl
+    || order.voiceConsentAt
+    || order.voiceSource
+    || order.voiceTranscript
+    || order.legacyVoiceUploadPresent
+    || order.documentBlobPath
+    || order.documentBlobUrl
+    || order.documentConsentAt
+    || order.documentSource
+    || order.voiceIntakeMedia
+    || order.documentIntakeMedia
+  );
+}
+
 function customStoryGenerationGate(order: OrderRecord): void {
+  if (hasMediaBackedCustomStorySource(order)) {
+    throw new Error('media-backed custom stories require operator-authored prose; automated generation is disabled');
+  }
   const brief = order.customStoryBrief;
   if (!brief) return;
   const validation = validateCustomStoryBrief(brief);
@@ -229,8 +249,17 @@ function customStoryGenerationGate(order: OrderRecord): void {
 }
 
 function assertTemplateFallbackAllowed(order: OrderRecord): void {
+  if (sanitizeInput(order.customStoryText, 1200)) {
+    throw new Error('template fallback is disabled for typed custom stories; route to manual_queue');
+  }
   if (hasCustomStoryBrief(order)) {
     throw new Error('template fallback is disabled for custom-story briefs; route to manual_queue');
+  }
+  if (
+    sanitizeInput(order.theme, 60) === 'custom-voice-story'
+    || hasMediaBackedCustomStorySource(order)
+  ) {
+    throw new Error('template fallback is disabled for custom stories with voice or document source material; route to manual_queue');
   }
   if (isNonChildPrimaryHero(order)) {
     throw new Error('template fallback is disabled for non-child primary heroes until the per-type QA gate passes');
@@ -586,6 +615,12 @@ export function voiceInspirationBlock(order: OrderRecord): string {
   );
 }
 
+export function customStorySourceBlock(order: OrderRecord): string {
+  const source = sanitizeInput(order.customStoryText, 1200);
+  if (!source) return '';
+  return `CUSTOM STORY SOURCE: ${source}\nUse this source to shape the actual events, relationships, emotional arc, and details on this page. Do not replace it with a generic theme story, and do not invent facts that contradict it.`;
+}
+
 export function familyCharactersBlock(order: OrderRecord): string {
   const characters = Array.isArray(order.familyCharacters)
     ? order.familyCharacters
@@ -714,6 +749,7 @@ function buildPageSpecificInstruction(beat: StoryPlanPage, pageCount: number): s
 }
 
 export function getLockedPageProse(order: OrderRecord, beat: StoryPlanPage, pageCount: number): string | null {
+  if (sanitizeInput(order.customStoryText, 1200)) return null;
   // The locked prose is a child-specific sample ("Lukas ... his family"). Never
   // emit it for a non-child hero — an adult hero would be misframed as a child.
   if (isNonChildPrimaryHero(order)) return null;
@@ -745,6 +781,7 @@ export function buildPageProseUserPrompt(order: OrderRecord, beat: StoryPlanPage
       ? `PROTAGONIST IDENTITY: the hero is a grown adult (${heroDescriptor(order)}); write the hero at their real adult age and do not reduce their apparent age or infantilize them. Any child or grandchild is the audience or a supporting character, not the protagonist.`
       : null,
     special,
+    customStorySourceBlock(order).trim() || null,
     // Additive + bounded: empty string when there's no voice inspiration, so
     // existing prompts are unchanged. filter(Boolean) drops the '' case.
     voiceInspirationBlock(order).trim() || null,
@@ -1059,6 +1096,7 @@ export function buildUserPrompt(order: OrderRecord): string {
   const childName = heroDisplayName(order);
   const giftMessage = sanitizeInput(order.giftMessage, 200);
   const characterNotes = sanitizeInput(order.characterNotes, 200);
+  const customStoryText = sanitizeInput(order.customStoryText, 1200);
   const appearanceOptions = sanitizeInput(order.appearanceOptions, 200);
   const pageCount = getStoryPageCount(order.bookFormat);
   return `Write a ${pageCount}-page personalized children's storybook with the following details:
@@ -1071,6 +1109,7 @@ export function buildUserPrompt(order: OrderRecord): string {
 - Core lesson: ${sanitizeInput(order.lesson, 100) || 'courage and bravery'}
 - Occasion: ${sanitizeInput(order.occasion, 60) || 'general'}
 - Gift message: ${giftMessage || 'none'}
+- Typed story source: ${customStoryText || 'none'}
 - Character notes: ${characterNotes || 'none'}
 - Appearance: ${appearanceOptions || 'not specified'}
 - Format: ${order.bookFormat}

@@ -3,6 +3,7 @@ import test, { afterEach } from 'node:test';
 
 import {
   exactIntakeBoundOrder,
+  exactIntakeBoundSessionOrder,
   runPreparedIntakeOrderBinding,
   type PreparedIntakeOrderBindingDependencies,
   type PreparedIntakeOrderBindingResult,
@@ -16,6 +17,7 @@ import { finalizationFingerprint, intakeAssetPath, type FinalizedSelectionEntry 
 import {
   __resetOrderStoreAdapterFactoryForTests,
   __setOrderStoreAdapterFactoryForTests,
+  checkoutProviderIdempotencyKey,
   createOrderRecord,
   persistNewOrder,
   readOrderVersioned,
@@ -654,5 +656,215 @@ test('immutable order-contract reconciliation permits only enumerated retry life
     const contaminated = structuredClone(committed.order);
     mutate(contaminated);
     assert.equal(exactIntakeBoundOrder(contaminated, committed.order), false);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Direct retry AFTER a supersession
+//
+// A fresh request always builds a pristine prepared draft: it cannot know that
+// the durable order has since retired a dead provider Session and moved on to
+// its replacement. `checkoutSessionAttempt` and `supersededCheckoutSessionIds`
+// are server-owned retry bookkeeping written by that supersession, exactly like
+// the candidate and the lease — so reconciliation has to classify them
+// explicitly. It did not, and the second recovery of any order therefore failed
+// as an "order conflict" and stranded the buyer.
+//
+// Classified, not blanket-exempted: bookkeeping this code cannot account for
+// (a counter that disagrees with its own audit trail, a marker naming another
+// attempt) stays in the comparison and is still reported as a conflict.
+// ---------------------------------------------------------------------------
+
+function supersededOnce(committed: OrderRecord): OrderRecord {
+  const retried = structuredClone(committed);
+  retried.updatedAt = '2026-09-02T12:31:00.000Z';
+  retried.checkoutLeaseId = '22222222-2222-4222-8222-222222222222';
+  retried.checkoutLeaseExpiresAt = '2026-09-02T12:45:00.000Z';
+  retried.checkoutSessionAttempt = 1;
+  retried.supersededCheckoutSessionIds = ['cs_dead'];
+  return retried;
+}
+
+test('a replacement CANDIDATE after one supersession reconciles as the same order', async () => {
+  const h = harness();
+  const committed = await run(h);
+  assert.equal(committed.status, 'committed');
+  if (committed.status !== 'committed') return;
+
+  const retried = supersededOnce(committed.order);
+  retried.checkoutSessionCandidate = {
+    stripeSessionId: 'cs_replacement',
+    checkoutAttemptId: ATTEMPT,
+    checkoutFingerprint: committed.order.checkoutFingerprint!,
+    checkoutSessionAttempt: 1,
+    recordedAt: '2026-09-02T12:31:00.000Z',
+  };
+
+  assert.equal(exactIntakeBoundOrder(retried, committed.order), true);
+
+  // The exemption is for evidence this code can ACCOUNT for. A candidate stuck
+  // on the retired generation, or naming a Session this order already retired,
+  // is not server-written bookkeeping we recognise — it stays in the comparison
+  // and is reported as the conflict it is.
+  for (const unaccountable of [
+    { checkoutSessionAttempt: 0 },
+    { stripeSessionId: 'cs_dead' },
+  ]) {
+    const drifted = structuredClone(retried);
+    drifted.checkoutSessionCandidate = { ...retried.checkoutSessionCandidate!, ...unaccountable };
+    assert.equal(
+      exactIntakeBoundOrder(drifted, committed.order),
+      false,
+      JSON.stringify(unaccountable),
+    );
+  }
+});
+
+test('a replacement BOUND Session after one supersession reconciles as the same order', async () => {
+  const h = harness();
+  const committed = await run(h);
+  assert.equal(committed.status, 'committed');
+  if (committed.status !== 'committed') return;
+
+  const retried = supersededOnce(committed.order);
+  retried.stripeSessionId = 'cs_replacement';
+
+  assert.equal(exactIntakeBoundSessionOrder(retried, committed.order), true);
+  assert.equal(exactIntakeBoundOrder(retried, committed.order), false, 'the unbound predicate still refuses a binding');
+});
+
+test('an in-flight provisioning marker after a supersession reconciles as the same order', async () => {
+  const h = harness();
+  const committed = await run(h);
+  assert.equal(committed.status, 'committed');
+  if (committed.status !== 'committed') return;
+
+  const retried = supersededOnce(committed.order);
+  retried.checkoutSessionProvisioning = {
+    checkoutAttemptId: ATTEMPT,
+    checkoutFingerprint: committed.order.checkoutFingerprint!,
+    checkoutSessionAttempt: 1,
+    idempotencyKey: checkoutProviderIdempotencyKey(committed.order.id, 1),
+    startedAt: '2026-09-02T12:31:00.000Z',
+  };
+
+  assert.equal(exactIntakeBoundOrder(retried, committed.order), true);
+});
+
+test('the saga itself resumes a superseded, candidate-bearing durable order instead of conflicting', async () => {
+  const h = harness();
+  const first = await run(h);
+  assert.equal(first.status, 'committed');
+  if (first.status !== 'committed') return;
+
+  // The durable order moves on exactly as recovery would move it.
+  const durable = supersededOnce(h.orders.get(ORDER_ID)!);
+  durable.checkoutSessionCandidate = {
+    stripeSessionId: 'cs_replacement',
+    checkoutAttemptId: ATTEMPT,
+    checkoutFingerprint: durable.checkoutFingerprint!,
+    checkoutSessionAttempt: 1,
+    recordedAt: '2026-09-02T12:31:00.000Z',
+  };
+  h.orders.set(ORDER_ID, durable);
+
+  const retry = await run(h);
+
+  assert.equal(retry.status, 'committed', JSON.stringify(retry));
+  assert.equal(
+    retry.status === 'committed' && retry.order.checkoutSessionCandidate?.stripeSessionId,
+    'cs_replacement',
+    'the saga hands the durable replacement forward for the shared machine to reconcile',
+  );
+});
+
+test('retry bookkeeping is no cover for a mutated order', async () => {
+  const h = harness();
+  const committed = await run(h);
+  assert.equal(committed.status, 'committed');
+  if (committed.status !== 'committed') return;
+
+  const hostile: Array<[string, (order: OrderRecord) => void]> = [
+    ['customer email', (order) => { order.email = 'attacker@example.com'; }],
+    ['price', (order) => { order.priceCents += 1; }],
+    ['payment status', (order) => { order.paymentStatus = 'paid'; }],
+    ['media pathname', (order) => { order.photoBlobUrl = 'https://public.example/customer-photo.jpg'; }],
+    ['intake media selection', (order) => {
+      order.checkoutIntake = { ...order.checkoutIntake!, selection: [hero] };
+    }],
+    ['media retention', (order) => {
+      order.checkoutIntakeMediaRetention = { ...order.checkoutIntakeMediaRetention!, status: 'cleanup_claimed' };
+    }],
+    ['shipping address', (order) => {
+      order.shippingAddress = { line1: '1 Wrong Way', city: 'Chicago', state: 'IL', zip: '60601', country: 'US' };
+    }],
+    ['fulfillment', (order) => { order.fulfillmentStatus = 'complete'; }],
+    ['refund claim', (order) => { order.refundClaimId = 'refund_foreign'; }],
+    ['story artifact', (order) => { order.storyArtifactUrl = 'https://foreign.example/story.pdf'; }],
+  ];
+  for (const [name, mutate] of hostile) {
+    const changed = supersededOnce(committed.order);
+    changed.checkoutSessionCandidate = {
+      stripeSessionId: 'cs_replacement',
+      checkoutAttemptId: ATTEMPT,
+      checkoutFingerprint: committed.order.checkoutFingerprint!,
+      recordedAt: '2026-09-02T12:31:00.000Z',
+    };
+    mutate(changed);
+    assert.equal(exactIntakeBoundOrder(changed, committed.order), false, name);
+    assert.equal(exactIntakeBoundSessionOrder(changed, committed.order), false, name);
+  }
+});
+
+test('retry bookkeeping this code cannot account for is a conflict, not an exemption', async () => {
+  const h = harness();
+  const committed = await run(h);
+  assert.equal(committed.status, 'committed');
+  if (committed.status !== 'committed') return;
+
+  const unaccountable: Array<[string, (order: OrderRecord) => void]> = [
+    ['counter ahead of its audit trail', (order) => {
+      order.checkoutSessionAttempt = 2;
+      order.supersededCheckoutSessionIds = ['cs_dead'];
+    }],
+    ['audit trail ahead of its counter', (order) => {
+      order.checkoutSessionAttempt = 1;
+      order.supersededCheckoutSessionIds = ['cs_dead', 'cs_deader'];
+    }],
+    ['a superseded id that is not a Session id', (order) => {
+      order.checkoutSessionAttempt = 1;
+      order.supersededCheckoutSessionIds = ['not-a-session'];
+    }],
+    ['a duplicated superseded id', (order) => {
+      order.checkoutSessionAttempt = 2;
+      order.supersededCheckoutSessionIds = ['cs_dead', 'cs_dead'];
+    }],
+    ['a counter past the supersede ceiling', (order) => {
+      order.checkoutSessionAttempt = 99;
+      order.supersededCheckoutSessionIds = ['cs_dead'];
+    }],
+    ['a marker naming a different attempt', (order) => {
+      order.checkoutSessionProvisioning = {
+        checkoutAttemptId: ATTEMPT,
+        checkoutFingerprint: order.checkoutFingerprint!,
+        checkoutSessionAttempt: 0,
+        idempotencyKey: checkoutProviderIdempotencyKey(order.id, 0),
+        startedAt: '2026-09-02T12:31:00.000Z',
+      };
+    }],
+    ['a candidate belonging to another attempt', (order) => {
+      order.checkoutSessionCandidate = {
+        stripeSessionId: 'cs_replacement',
+        checkoutAttemptId: 'f'.repeat(32),
+        checkoutFingerprint: order.checkoutFingerprint!,
+        recordedAt: '2026-09-02T12:31:00.000Z',
+      };
+    }],
+  ];
+  for (const [name, mutate] of unaccountable) {
+    const changed = supersededOnce(committed.order);
+    mutate(changed);
+    assert.equal(exactIntakeBoundOrder(changed, committed.order), false, name);
+    assert.equal(exactIntakeBoundSessionOrder(changed, committed.order), false, name);
   }
 });

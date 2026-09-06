@@ -1,0 +1,529 @@
+/**
+ * The one place a payable provider Checkout Session comes into existence.
+ *
+ * Both checkout paths — the direct private-intake saga and the legacy public
+ * path — route through here, because the invariant they have to hold is the
+ * same one and it was previously implemented once, in only one of them:
+ *
+ *   **At most one PAYABLE Session may exist per order attempt, and a
+ *   replacement may be minted only after the provider itself has proven the
+ *   previous Session dead AND the durable order has atomically retired it.**
+ *
+ * The order of operations is the feature:
+ *
+ *   renew the exact lease  →  resolve what Session (if any) this order already
+ *   has  →  ask the provider  →  [expired? retire it durably, then loop]  →
+ *   record the created id durably  →  bind under the exact lease  →  release
+ *
+ * Three rules that look like details and are not:
+ *
+ *  - The created id is persisted BEFORE anything else may fail. Provider
+ *    idempotency retention is finite; the durable candidate is what makes a
+ *    lost Session recoverable after it lapses, and what stops abandoned-media
+ *    cleanup from deleting the photos under a live Session.
+ *  - A marker with no candidate and no binding is a DEAD END, not a retry. It
+ *    means a create was entered and its outcome is unknown, so the provider may
+ *    already hold a payable Session; re-issuing the same idempotency key is only
+ *    safe for as long as the provider still remembers it, which is exactly what
+ *    an old marker has outlived. That state fails closed for reconciliation.
+ *  - A `complete` Session is NEVER retired and never replaced. It may have
+ *    been paid. Recovery there is a support conversation, not a new Session.
+ *  - A retrieval outage is not proof of anything. It fails closed.
+ *  - Everything a bind consumes is fenced to one exact supersession generation.
+ *    The lease survives supersession; the generation is what does not.
+ *
+ * Customer copy is decided here too, from whether a checkout URL was ever
+ * released to this buyer — see `chargeRisk`. "No charge was made" is a claim
+ * about the buyer's money, and it is only made where it is provable.
+ */
+import {
+  CHECKOUT_SESSION_SUPERSEDE_LIMIT,
+  checkoutProviderIdempotencyKey,
+  hasCheckoutProviderEvidence,
+  readCheckoutSessionCandidate,
+  readCheckoutSessionProvisioning,
+  type CheckoutSessionProvisioningCommit,
+  type OrderRecord,
+} from './orders.ts';
+
+export interface ProviderCheckoutSession {
+  id: string;
+  url: string | null;
+  status: 'open' | 'complete' | 'expired' | null;
+}
+
+export interface ProviderCheckoutSessionRequest {
+  order: OrderRecord;
+  stripeProductId: string;
+  baseUrl: string;
+  gaClientId: string | null;
+  idempotencyKey: string;
+}
+
+export interface CheckoutSessionProvisionDeps {
+  createCheckoutSession(request: ProviderCheckoutSessionRequest): Promise<ProviderCheckoutSession>;
+  retrieveCheckoutSession(stripeSessionId: string): Promise<ProviderCheckoutSession>;
+  /** Atomic proof-of-ownership. Wired to orders.renewCheckoutLease. */
+  renewCheckoutLease(
+    orderId: string,
+    checkoutLeaseId: string,
+    checkoutFingerprint: string,
+  ): Promise<OrderRecord | null>;
+  /**
+   * Commit durable pre-provider evidence for this exact attempt. Wired to
+   * orders.beginCheckoutSessionProvisioning. A create is refused outright if
+   * this does not commit, because without it a create that outlives its lease
+   * has nothing protecting the private media it is about to become payable for.
+   *
+   * Create-only: `already_in_flight` means someone has ALREADY entered a create
+   * for this exact generation, which is a reconciliation state and never an
+   * invitation to issue a second one.
+   */
+  beginCheckoutSessionProvisioning(
+    orderId: string,
+    checkout: { leaseId: string; fingerprint: string; checkoutSessionAttempt: number },
+  ): Promise<CheckoutSessionProvisioningCommit>;
+  /** Create-only durable record of a Session created but not yet bound. */
+  recordCheckoutSessionCandidate(
+    orderId: string,
+    stripeSessionId: string,
+    checkout: { checkoutAttemptId: string; fingerprint: string; checkoutSessionAttempt: number },
+  ): Promise<OrderRecord | null>;
+  /** Atomically retire an exact provider-confirmed expired Session. */
+  supersedeCheckoutSession(
+    orderId: string,
+    expiredStripeSessionId: string,
+    checkout: { leaseId: string; fingerprint: string },
+  ): Promise<OrderRecord | null>;
+  /**
+   * Bind under the exact lease AND the exact supersession generation. The
+   * generation is not decoration: the lease id survives supersession, so it
+   * alone cannot tell a live worker from one whose Session has been retired
+   * underneath it.
+   */
+  bindCheckoutSession(
+    orderId: string,
+    stripeSessionId: string,
+    checkout: { leaseId: string; fingerprint: string; checkoutSessionAttempt: number },
+  ): Promise<OrderRecord | null>;
+  logError?(message: string, detail?: unknown): void;
+}
+
+export interface CheckoutSessionProvisionParams {
+  /** The durable, already-reconciled order. */
+  order: OrderRecord;
+  leaseId: string;
+  fingerprint: string;
+  stripeProductId: string;
+  baseUrl: string;
+  gaClientId: string | null;
+}
+
+/**
+ * Whether this order can still be said, provably, to have cost the buyer
+ * nothing.
+ *
+ * `not_charged` requires that NO provider create was ever entered for this
+ * ORDER — by anyone — not merely that this worker made no call and released no
+ * URL. Once the provider has been asked to mint a Session, a provider object
+ * may exist whatever the local outcome was: a create that threw may have
+ * succeeded server-side, and a local persistence failure after a successful
+ * create says nothing at all about the provider. Categorically denying a charge
+ * there claims more than this code can see, so everything from the create
+ * onwards is `may_be_charged` and gets copy that tells the buyer not to pay
+ * again and to reconcile with support.
+ *
+ * Durable evidence from an EARLIER request counts the same way. A bound
+ * Session, a candidate, or a provisioning marker each mean a create was already
+ * entered on some previous attempt.
+ *
+ * And evidence from a CONCURRENT request counts the same way even though it
+ * cannot be seen. The record handed to this function is a snapshot; another
+ * worker of the same attempt may bind a payable Session at any moment after it
+ * was taken. That is why the two guarded writes below — the lease renewal and
+ * the pre-provider marker — may never report a proven no-charge when they
+ * refuse: refusing is exactly what they do when the durable record has moved
+ * on, and a concurrent bind is the ordinary reason it moved. Absence of local
+ * provider calls is not absence of provider objects.
+ */
+export type CheckoutChargeRisk = 'not_charged' | 'may_be_charged';
+
+export type CheckoutSessionProvisionResult =
+  | { status: 'released'; url: string; order: OrderRecord }
+  | {
+      status: 'refused';
+      httpStatus: number;
+      code: string;
+      message: string;
+      chargeRisk: CheckoutChargeRisk;
+    };
+
+export const CHECKOUT_NO_CHARGE_RETRY =
+  'We could not securely save your order. No charge was made. Please retry in a moment, and contact support@herostorybooks.com if it keeps happening.';
+export const CHECKOUT_RECONCILIATION_NO_CHARGE =
+  'Checkout requires reconciliation. No checkout link was released and no charge was made.';
+export const CHECKOUT_RECONCILIATION_SUPPORT =
+  'We could not confirm the status of this checkout. Please do not pay again — contact support@herostorybooks.com with your order details and we will confirm exactly what happened and put it right.';
+export const CHECKOUT_PAYMENT_MAY_BE_COMPLETE =
+  'This checkout may already be complete. Please do not pay again — contact support@herostorybooks.com with your order details and we will confirm your order.';
+export const CHECKOUT_ATTEMPT_ALREADY_RESOLVED =
+  'This checkout attempt is already in progress or has already reached payment. No new charge was made — reload the page to start a fresh attempt, and contact support@herostorybooks.com if you were charged.';
+
+function refused(
+  httpStatus: number,
+  code: string,
+  message: string,
+  chargeRisk: CheckoutChargeRisk,
+): CheckoutSessionProvisionResult {
+  return { status: 'refused', httpStatus, code, message, chargeRisk };
+}
+
+export async function provisionCheckoutSession(
+  params: CheckoutSessionProvisionParams,
+  deps: CheckoutSessionProvisionDeps,
+): Promise<CheckoutSessionProvisionResult> {
+  const log = deps.logError ?? (() => {});
+  const orderId = params.order.id;
+
+  // Was a checkout URL ever released to this buyer? A bound Session means yes:
+  // the only way `stripeSessionId` gets set is the bind that immediately
+  // precedes releasing the URL.
+  let everExposed = typeof params.order.stripeSessionId === 'string'
+    && params.order.stripeSessionId.length > 0;
+
+  // Has the provider ever been asked to mint a Session for this order? Durable
+  // evidence carried in on the record answers for previous requests; the flag
+  // is raised the instant this request enters `createCheckoutSession`, BEFORE
+  // it is known whether that call succeeded — because a create that throws is
+  // exactly the case where a provider object may exist anyway.
+  //
+  // This is the sole gate on every "no charge was made" sentence below, and it
+  // is only ever an ANSWER where the record it was computed from is authoritative
+  // — see `observe`.
+  let providerAttempted = hasCheckoutProviderEvidence(params.order);
+
+  /**
+   * Fold a record the STORE just committed and handed back into what is known
+   * about this order's exposure.
+   *
+   * The record passed into this function is a snapshot taken before the first
+   * await; a record returned by a guarded transaction is what the store held at
+   * the instant that transaction committed. Only the latter can raise or clear
+   * doubt, and evidence never un-happens, so this only ever adds.
+   */
+  const observe = (record: OrderRecord): OrderRecord => {
+    if (hasCheckoutProviderEvidence(record)) providerAttempted = true;
+    if (typeof record.stripeSessionId === 'string' && record.stripeSessionId.length > 0) {
+      everExposed = true;
+    }
+    return record;
+  };
+
+  const risk = (): CheckoutChargeRisk =>
+    (everExposed || providerAttempted ? 'may_be_charged' : 'not_charged');
+  const reconciliationCopy = () => (risk() === 'may_be_charged'
+    ? CHECKOUT_RECONCILIATION_SUPPORT
+    : CHECKOUT_RECONCILIATION_NO_CHARGE);
+
+  // An order carrying BOTH a binding and a candidate, or a provisioning marker
+  // that does not describe this order's current attempt, is impossible state.
+  // The parser already refuses to read either, so this is the runtime backstop
+  // for a record handed in from memory rather than loaded from the store.
+  //
+  // Either verdict requires one of the three evidence fields to be present, so
+  // `risk()` here is `may_be_charged` by construction — a record cannot be
+  // unreadable about a provider call it never made.
+  if (readCheckoutSessionCandidate(params.order).status === 'invalid'
+    || readCheckoutSessionProvisioning(params.order).status === 'invalid') {
+    log(`[checkout] unusable Session evidence on ${orderId}; refusing before the provider`);
+    return refused(409, 'checkout_session_candidate_invalid', reconciliationCopy(), risk());
+  }
+
+  let current: OrderRecord = params.order;
+
+  // Bounded: each pass either releases, refuses, or retires exactly one dead
+  // Session. Retirement is itself capped, so this cannot spin.
+  for (let pass = 0; pass <= CHECKOUT_SESSION_SUPERSEDE_LIMIT + 1; pass += 1) {
+    const boundSessionId = typeof current.stripeSessionId === 'string' && current.stripeSessionId
+      ? current.stripeSessionId
+      : null;
+    if (boundSessionId) everExposed = true;
+
+    // ── Establish authority immediately before touching the provider ──────
+    // Skipped only for an already-bound Session, whose bind already fenced it
+    // — and which `renewCheckoutLease` refuses by design while it is bound.
+    if (!boundSessionId) {
+      let renewed: OrderRecord | null;
+      try {
+        renewed = await deps.renewCheckoutLease(orderId, params.leaseId, params.fingerprint);
+      } catch (error) {
+        log(`[checkout] lease renewal failed for ${orderId}`, error);
+        renewed = null;
+      }
+      if (!renewed) {
+        // NOT a proof of anything about the buyer's money. `renewCheckoutLease`
+        // refuses whenever the durable record no longer matches what this worker
+        // holds, and the ordinary cause is a CONCURRENT worker of this same
+        // attempt that has just bound a Session — the store refuses a renewal
+        // outright once `stripeSessionId` is set. That Session is payable and it
+        // is invisible from here: this worker's zero provider calls describe this
+        // worker only. A throw is weaker still — it does not even establish that
+        // the refusal happened. Ambiguity-safe copy, unconditionally.
+        log(`[checkout] ABORT BEFORE PROVIDER: lease no longer held for ${orderId}`);
+        return refused(409, 'checkout_lease_lost', CHECKOUT_RECONCILIATION_SUPPORT, 'may_be_charged');
+      }
+      // Committed by the store this instant, so what it says about provider
+      // evidence is authoritative — unlike the snapshot this request carried in.
+      observe(renewed);
+      if (!renewed.checkoutLeaseId || !renewed.checkoutFingerprint || !renewed.checkoutAttemptId) {
+        log(`[checkout] ABORT BEFORE PROVIDER: ${orderId} carries no checkout identity`);
+        return refused(503, 'checkout_session_identity_missing', reconciliationCopy(), risk());
+      }
+      current = renewed;
+    }
+
+    const candidate = readCheckoutSessionCandidate(current);
+    if (candidate.status === 'invalid') {
+      log(`[checkout] unusable Session candidate on ${orderId}`);
+      return refused(409, 'checkout_session_candidate_invalid', reconciliationCopy(), risk());
+    }
+
+    // ── Resolve which Session this order already has, if any ──────────────
+    const existingId = boundSessionId
+      ?? (candidate.status === 'resumable' ? candidate.candidate.stripeSessionId : null);
+    const source: 'bound' | 'candidate' | 'new' = boundSessionId
+      ? 'bound'
+      : candidate.status === 'resumable' ? 'candidate' : 'new';
+
+    // The exact supersession generation the Session about to be bound belongs
+    // to — taken from the candidate that declared it, or from the marker this
+    // pass commits, never re-read later. It is what the bind is fenced on, so
+    // reading it again after an await would defeat the point of the fence.
+    let sessionAttempt: number | null = candidate.status === 'resumable'
+      ? candidate.candidate.checkoutSessionAttempt
+      : null;
+
+    let session: ProviderCheckoutSession;
+    if (existingId) {
+      try {
+        session = await deps.retrieveCheckoutSession(existingId);
+      } catch (error) {
+        // An outage says nothing about whether the Session is alive. Creating
+        // a replacement here is exactly how a duplicate charge happens.
+        log(`[checkout] Session retrieval failed for ${orderId}`, error);
+        return refused(503, 'checkout_session_retrieve_failed', reconciliationCopy(), risk());
+      }
+      if (session.id !== existingId) {
+        log(`[checkout] provider answered ${session.id} for ${existingId} on ${orderId}`);
+        return refused(
+          503,
+          source === 'bound' ? 'checkout_session_reconciliation_failed' : 'checkout_session_candidate_mismatch',
+          reconciliationCopy(),
+          risk(),
+        );
+      }
+    } else {
+      const attempt = current.checkoutSessionAttempt ?? 0;
+      sessionAttempt = attempt;
+      const idempotencyKey = checkoutProviderIdempotencyKey(orderId, attempt);
+
+      // ── The bare marker is a dead end, not a retry ────────────────────────
+      // A marker with no candidate and no binding means a create was ENTERED
+      // for this exact generation and nothing durable knows how it ended. The
+      // provider may be holding a payable Session for this order right now: a
+      // create whose response was lost looks exactly like a create that never
+      // arrived, and nothing local can separate them. Elapsed time cannot
+      // either — and the provider's idempotency retention, which used to be
+      // what made re-issuing the same key "safe", is finite and is precisely
+      // what an old marker has outlived. Reconciling that is a support/provider
+      // task, so this stops here with everything preserved: the marker, the
+      // media it protects, and the generation it belongs to.
+      if (readCheckoutSessionProvisioning(current).status === 'in_flight') {
+        providerAttempted = true;
+        log(`[checkout] unresolved provider create already recorded for ${orderId}; refusing to create another`);
+        return refused(
+          409,
+          'checkout_session_reconciliation_required',
+          CHECKOUT_RECONCILIATION_SUPPORT,
+          'may_be_charged',
+        );
+      }
+
+      // ── The barrier ────────────────────────────────────────────────────
+      // Durable evidence that a create is about to happen, committed under
+      // the exact live lease BEFORE the provider is touched. The candidate
+      // below cannot cover this window — there is nothing to record until the
+      // provider answers — and the provider call is the one step here that can
+      // outlive its own lease. Without this, abandoned-media cleanup can claim
+      // and delete the buyer's private media while the create is in flight,
+      // and the candidate write then fails closed against the claimed
+      // retention, stranding a payable Session with no media behind it.
+      //
+      // This is the last point at which "no charge was made" is provable, so
+      // its own failure keeps that copy and every failure after it does not.
+      let marked: CheckoutSessionProvisioningCommit;
+      try {
+        marked = await deps.beginCheckoutSessionProvisioning(orderId, {
+          leaseId: params.leaseId,
+          fingerprint: params.fingerprint,
+          checkoutSessionAttempt: attempt,
+        });
+      } catch (error) {
+        log(`[checkout] provisioning evidence failed for ${orderId}`, error);
+        marked = { status: 'refused' };
+      }
+      // A marker that appeared between the read above and this commit is the
+      // same ambiguity as one that was already there — a concurrent worker is
+      // inside a create right now — and it is caught here rather than there
+      // because only the store can settle that race.
+      if (marked?.status === 'already_in_flight') {
+        providerAttempted = true;
+        log(`[checkout] a concurrent provider create is already recorded for ${orderId}`);
+        return refused(
+          409,
+          'checkout_session_reconciliation_required',
+          CHECKOUT_RECONCILIATION_SUPPORT,
+          'may_be_charged',
+        );
+      }
+      // Anything that is not an explicit commit carrying the committed record —
+      // a refusal, a malformed answer, nothing at all — leaves this order with
+      // no durable evidence, and a create without that is the one thing this
+      // barrier exists to prevent.
+      //
+      // Same ambiguity as the lost lease above, for the same reason: this CAS
+      // refuses precisely when the durable record has moved on, and a concurrent
+      // worker binding a payable Session between the renewal and this commit is
+      // exactly that. Holding the lease a moment ago proves nothing now.
+      if (marked?.status !== 'committed' || !marked.order) {
+        log(`[checkout] ABORT BEFORE PROVIDER: no durable provisioning evidence for ${orderId}`);
+        return refused(
+          503,
+          'checkout_session_provisioning_failed',
+          CHECKOUT_RECONCILIATION_SUPPORT,
+          'may_be_charged',
+        );
+      }
+      current = observe(marked.order);
+
+      // Everything from here on is ambiguous about the buyer's money.
+      providerAttempted = true;
+      try {
+        session = await deps.createCheckoutSession({
+          order: current,
+          stripeProductId: params.stripeProductId,
+          baseUrl: params.baseUrl,
+          gaClientId: params.gaClientId,
+          idempotencyKey,
+        });
+      } catch (error) {
+        // A throw is NOT proof the provider minted nothing — the request may
+        // have been served and the response lost. The marker stays: it keeps
+        // the buyer's media alive, and it is what makes the next attempt stop
+        // and reconcile instead of issuing a second create against a key whose
+        // retention nobody controls.
+        log(`[checkout] Session creation failed for ${orderId}`, error);
+        return refused(503, 'checkout_session_create_failed', CHECKOUT_RECONCILIATION_SUPPORT, risk());
+      }
+
+      // Durable before anything else may fail. From here the Session exists at
+      // the provider whatever happens next, and only this record lets a later
+      // retry reconcile it by id rather than by a finite idempotency key.
+      //
+      // Deliberately NOT lease-gated: the worker that must record a candidate
+      // is often the one that just lost its lease inside the create above, and
+      // demanding the lease here would throw away the only evidence naming the
+      // Session. Recording exposes nothing; the bind below still fences it.
+      let recorded: OrderRecord | null;
+      try {
+        recorded = await deps.recordCheckoutSessionCandidate(orderId, session.id, {
+          checkoutAttemptId: current.checkoutAttemptId!,
+          fingerprint: params.fingerprint,
+          // The generation this Session was created under. If the attempt was
+          // superseded while the create was open, this write fails closed
+          // rather than filing a retired Session as the current candidate.
+          checkoutSessionAttempt: attempt,
+        });
+      } catch (error) {
+        log(`[checkout] Session candidate persistence failed for ${orderId}`, error);
+        recorded = null;
+      }
+      if (!recorded) {
+        log(`[checkout] Session ${session.id} created but not durably recorded for ${orderId}`);
+        return refused(503, 'checkout_session_candidate_persist_failed', CHECKOUT_RECONCILIATION_SUPPORT, risk());
+      }
+      current = observe(recorded);
+    }
+
+    // ── What did the provider actually say? ───────────────────────────────
+    if (session.status === 'complete') {
+      // Money may already have moved. Never retire, never replace, never deny.
+      log(`[checkout] Session ${session.id} for ${orderId} is complete; refusing to replace it`);
+      return refused(409, 'checkout_session_complete', CHECKOUT_PAYMENT_MAY_BE_COMPLETE, 'may_be_charged');
+    }
+
+    if (session.status === 'expired') {
+      if ((current.checkoutSessionAttempt ?? 0) >= CHECKOUT_SESSION_SUPERSEDE_LIMIT) {
+        log(`[checkout] supersede limit reached for ${orderId}; refusing to mint another Session`);
+        return refused(409, 'checkout_session_supersede_limit', reconciliationCopy(), risk());
+      }
+      let retired: OrderRecord | null;
+      try {
+        retired = await deps.supersedeCheckoutSession(orderId, session.id, {
+          leaseId: params.leaseId,
+          fingerprint: params.fingerprint,
+        });
+      } catch (error) {
+        log(`[checkout] supersession failed for ${orderId}`, error);
+        retired = null;
+      }
+      if (!retired) {
+        // Without a committed retirement there is no authority to create.
+        log(`[checkout] ABORT: could not durably retire expired Session ${session.id} for ${orderId}`);
+        return refused(409, 'checkout_session_supersede_failed', reconciliationCopy(), risk());
+      }
+      current = observe(retired);
+      continue;
+    }
+
+    if (session.status !== 'open') {
+      log(`[checkout] Session ${session.id} for ${orderId} is not open`);
+      return refused(409, 'checkout_session_not_open', reconciliationCopy(), risk());
+    }
+
+    // ── Open. Bind (unless already bound), then release ───────────────────
+    let released: OrderRecord = current;
+    if (source !== 'bound') {
+      if (sessionAttempt === null) {
+        // Unreachable: every non-bound source sets the generation above. Fail
+        // closed rather than bind without one.
+        log(`[checkout] no session generation resolved for ${orderId}; refusing to bind`);
+        return refused(503, 'checkout_session_bind_failed', reconciliationCopy(), risk());
+      }
+      const bound = await deps.bindCheckoutSession(orderId, session.id, {
+        leaseId: params.leaseId,
+        fingerprint: params.fingerprint,
+        checkoutSessionAttempt: sessionAttempt,
+      });
+      if (!bound) {
+        log(`[checkout] Session ${session.id} created but durable binding failed for ${orderId}`);
+        return refused(503, 'checkout_session_bind_failed', reconciliationCopy(), risk());
+      }
+      released = observe(bound);
+    }
+    if (!session.url) {
+      log(`[checkout] Session ${session.id} for ${orderId} carried no checkout URL`);
+      return refused(
+        503,
+        source === 'bound' ? 'checkout_session_reconciliation_failed' : 'checkout_session_url_missing',
+        reconciliationCopy(),
+        risk(),
+      );
+    }
+    return { status: 'released', url: session.url, order: released };
+  }
+
+  // Unreachable while the retirement cap holds; fail closed rather than trust that.
+  log(`[checkout] provisioning did not converge for ${orderId}`);
+  return refused(409, 'checkout_session_supersede_limit', reconciliationCopy(), risk());
+}

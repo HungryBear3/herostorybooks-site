@@ -19,8 +19,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  beginCheckoutSessionProvisioning,
   bindOrderCheckoutSession,
   createOrderRecord,
+  recordCheckoutSessionCandidate,
   getOrder,
   persistOrder,
   recordPaymentSettlementConflict,
@@ -93,11 +95,31 @@ test('webhook source: verifies exact settlement facts and returns retryable conf
 });
 
 test('checkout source binds Stripe Session before releasing redirect URL', () => {
-  const src = readFileSync('src/app/api/order/route.ts', 'utf8');
-  const createAt = src.indexOf('stripe.checkout.sessions.create');
-  const bindAt = src.indexOf('bindOrderCheckoutSession(order.id, session.id, {');
-  const redirectAt = src.indexOf('redirectTo: session.url');
-  assert.ok(createAt > -1 && bindAt > createAt && redirectAt > bindAt);
+  // Both checkout paths now share one provisioner, so this ordering guarantee
+  // lives there rather than being written twice in the route. Assert it at the
+  // place that actually enforces it — and that the route only ever releases a
+  // URL the provisioner returned, never a raw provider Session URL.
+  const provisioner = readFileSync('src/lib/checkout-session-provisioning.ts', 'utf8');
+  const createAt = provisioner.indexOf('await deps.createCheckoutSession({');
+  const recordAt = provisioner.indexOf('await deps.recordCheckoutSessionCandidate(');
+  const bindAt = provisioner.indexOf('await deps.bindCheckoutSession(');
+  const releaseAt = provisioner.indexOf("return { status: 'released', url: session.url");
+  assert.ok(createAt > -1, 'the provisioner creates the Session');
+  assert.ok(
+    recordAt > createAt,
+    'the created Session id must be durably recorded before anything else may fail',
+  );
+  assert.ok(bindAt > recordAt, 'binding happens after the durable candidate exists');
+  assert.ok(releaseAt > bindAt, 'no URL may be released before the Session is bound');
+
+  // A bind that fails releases nothing.
+  assert.match(provisioner, /if \(!bound\) \{[\s\S]{0,400}?checkout_session_bind_failed/);
+
+  const src = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
+  assert.match(src, /redirectTo: provisioned\.url/);
+  assert.doesNotMatch(src, /redirectTo: session\.url/);
+  const handler = src.slice(0, src.indexOf('async function retrieveDirectCheckoutSession'));
+  assert.doesNotMatch(handler, /checkout\.sessions\.create/);
 });
 
 test('webhook source: refuses to resurrect a refunded order on replay', () => {
@@ -196,10 +218,34 @@ test('unbound pending order cannot be claimed by settlement', async () => {
 
 test('checkout binding and conflict ledger are durable and idempotent', async () => {
   const dir = makeTmp();
+  const now = new Date('2026-04-29T00:05:00.000Z');
+  const LEASE = '11111111-1111-4111-8111-111111111111';
+  const ATTEMPT = 'a'.repeat(32);
+  const FINGERPRINT = 'f'.repeat(64);
   try {
-    await seed({ paymentStatus: 'pending', stripeSessionId: null }, 'ord_bind');
-    assert.equal((await bindOrderCheckoutSession('ord_bind', 'cs_bound'))?.stripeSessionId, 'cs_bound');
-    assert.equal(await bindOrderCheckoutSession('ord_bind', 'cs_other'), null);
+    await seed({
+      paymentStatus: 'pending',
+      stripeSessionId: null,
+      checkoutAttemptId: ATTEMPT,
+      checkoutFingerprint: FINGERPRINT,
+      checkoutLeaseId: LEASE,
+      checkoutLeaseExpiresAt: new Date(now.getTime() + 5 * 60_000).toISOString(),
+    }, 'ord_bind');
+    // The bind is the commit that makes a Session payable, so it consumes the
+    // exact evidence the provisioner laid down for it — the marker committed
+    // before the create, and the candidate naming what came back.
+    assert.equal(
+      (await beginCheckoutSessionProvisioning('ord_bind', {
+        leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now,
+      })).status,
+      'committed',
+    );
+    assert.ok(await recordCheckoutSessionCandidate('ord_bind', 'cs_bound', {
+      checkoutAttemptId: ATTEMPT, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now,
+    }));
+    const checkout = { leaseId: LEASE, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now };
+    assert.equal((await bindOrderCheckoutSession('ord_bind', 'cs_bound', checkout))?.stripeSessionId, 'cs_bound');
+    assert.equal(await bindOrderCheckoutSession('ord_bind', 'cs_other', checkout), null);
     const conflict = { stripeSessionId: 'cs_other', amountSubtotalCents: 1900, amountTotalCents: 950, reason: 'stripe_session_binding_mismatch' };
     await recordPaymentSettlementConflict('ord_bind', conflict);
     await recordPaymentSettlementConflict('ord_bind', conflict);

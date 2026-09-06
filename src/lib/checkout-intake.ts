@@ -55,7 +55,15 @@ import crypto from 'node:crypto';
 import { BlobNotFoundError, BlobPreconditionFailedError, get, head, put } from '@vercel/blob';
 
 import { applyBlobNamespace, getBlobNamespace } from './blob-namespace.ts';
+import { normalizeEtagForIfMatch } from './blob-etag.ts';
 import { assertDistinctBlobStores, parseBlobToken } from './checkout-blob-identity.ts';
+import {
+  AUDIO_MIME_TYPES,
+  DOCUMENT_MIME_TYPES,
+  PHOTO_MIME_TYPES,
+  canonicalAllowlistedMime,
+  mediaClassForCategory,
+} from './checkout-media-mime.ts';
 
 /**
  * Dedicated Blob credential for checkout intake. Intentionally NOT
@@ -271,15 +279,10 @@ interface CategoryPolicy {
   requiresVoiceConsent?: boolean;
 }
 
-const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
-const AUDIO_MIME_TYPES = [
-  'audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/ogg',
-  'audio/aac', 'audio/flac', 'audio/x-flac', 'audio/x-caf', 'audio/aiff',
-] as const;
-const DOCUMENT_MIME_TYPES = [
-  'text/plain', 'application/pdf', 'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-] as const;
+// The allowlists live in `checkout-media-mime.ts`, which the browser imports
+// too. This file must never hold a private copy: the 2026-09-04 incident was a
+// client-accepted `audio/x-m4a` refused here by a list the client never saw.
+const IMAGE_MIME_TYPES = PHOTO_MIME_TYPES;
 
 export const INTAKE_CATEGORY_POLICY: Readonly<Record<IntakeAssetCategory, CategoryPolicy>> = {
   primary_hero_photo: { maxSlots: 1, maxBytes: 15 * 1024 * 1024, allowedMimeTypes: IMAGE_MIME_TYPES },
@@ -499,20 +502,31 @@ export function consentTimestampFor(category: IntakeAssetCategory, consent: Inta
   return consent.mediaAuthorizedAt;
 }
 
+/**
+ * Validates a reservation against the category policy and returns the exact
+ * values the reservation must carry.
+ *
+ * The MIME string is CANONICALIZED through the shared contract before it is
+ * judged (lowercased, parameters stripped, known browser aliases resolved) and
+ * the canonical string — never the caller's — is what the reservation stores.
+ * Everything after reservation (token allow-list, Blob head, active asset,
+ * finalization) compares that one string by exact equality.
+ */
 export function assertUploadPolicy(params: {
   category: IntakeAssetCategory;
   mimeType: string;
   size: number;
   consent: IntakeConsent;
-}): string {
+}): { consentAt: string; mimeType: string } {
   const policy = INTAKE_CATEGORY_POLICY[params.category];
   if (!policy) throw new IntakeError('asset_category_invalid');
-  if (typeof params.mimeType !== 'string' || !policy.allowedMimeTypes.includes(params.mimeType)) {
+  const mimeType = canonicalAllowlistedMime(params.mimeType, mediaClassForCategory(params.category));
+  if (!mimeType || !policy.allowedMimeTypes.includes(mimeType)) {
     throw new IntakeError('asset_mime_invalid', 415);
   }
   if (!Number.isSafeInteger(params.size) || params.size <= 0) throw new IntakeError('asset_size_invalid');
   if (params.size > policy.maxBytes) throw new IntakeError('asset_too_large', 413);
-  return consentTimestampFor(params.category, params.consent);
+  return { consentAt: consentTimestampFor(params.category, params.consent), mimeType };
 }
 
 // ---------------------------------------------------------------------------
@@ -1188,6 +1202,35 @@ function defaultMutateWait(delayMs: number): Promise<void> {
 }
 
 /**
+ * Bounded retry for the immediate read that follows a client Blob upload.
+ *
+ * The upload callback can commit the slot before the browser's reconciliation
+ * request reaches another function instance. During that short propagation
+ * window private Blob `get()` may transiently fail even though the committed
+ * record is already durable. Retry only the store-unavailable class; missing,
+ * invalid, expired, or unauthorized records still fail closed immediately.
+ */
+export async function readIntakeWithTransientRetry(
+  store: IntakeStore,
+  intakeId: string,
+  io: MutateIntakeIo = {},
+): Promise<IntakeStoreSnapshot> {
+  const wait = io.wait ?? defaultMutateWait;
+  for (let attempt = 0; attempt < MUTATE_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await wait(MUTATE_RETRY_BACKOFF_MS[attempt - 1]!, attempt);
+    try {
+      return await readIntake(store, intakeId);
+    } catch (error) {
+      const retryable = error instanceof IntakeError
+        && error.code === 'intake_store_unavailable'
+        && attempt < MUTATE_ATTEMPTS - 1;
+      if (!retryable) throw error;
+    }
+  }
+  throw new IntakeError('intake_store_unavailable', 503);
+}
+
+/**
  * Read-modify-CAS with bounded retries.
  *
  * `apply` returns `{ next, result }`; a null `next` means "nothing to write"
@@ -1413,6 +1456,8 @@ export function getRequiredIntakeBlobToken(env: NodeJS.ProcessEnv = process.env)
  * and cannot be produced any other way. Production passes nothing.
  */
 export interface IntakeStoreIo {
+  get?: typeof get;
+  put?: typeof put;
   head?: typeof head;
 }
 
@@ -1435,10 +1480,12 @@ export function createVercelIntakeStore(
   // Resolved once, at construction: a namespace misconfiguration must stop the
   // store from existing, not surface later as a path that silently went flat.
   const namespace = getBlobNamespace(env);
+  const getImpl = io.get ?? get;
+  const putImpl = io.put ?? put;
   return {
     async create(record) {
       assertIntakeRecordWritable(record);
-      await put(intakeRecordPath(record.intakeId, namespace), JSON.stringify(record), {
+      await putImpl(intakeRecordPath(record.intakeId, namespace), JSON.stringify(record), {
         access: 'private',
         token,
         addRandomSuffix: false,
@@ -1450,7 +1497,7 @@ export function createVercelIntakeStore(
     async read(intakeId) {
       // `useCache: false` is required: a cached read would let a stale record
       // win a CAS and silently drop a concurrent write.
-      const result = await get(intakeRecordPath(intakeId, namespace), { access: 'private', token, useCache: false });
+      const result = await getImpl(intakeRecordPath(intakeId, namespace), { access: 'private', token, useCache: false });
       if (!result || !result.stream) return null;
       const text = await readJsonTextWithLimit(result.stream, INTAKE_MAX_RECORD_BYTES);
       let raw: unknown;
@@ -1459,14 +1506,16 @@ export function createVercelIntakeStore(
       } catch {
         throw new IntakeError('intake_record_invalid', 503);
       }
-      return { record: raw as IntakeRecord, etag: result.blob.etag };
+      const etag = normalizeEtagForIfMatch(result.blob.etag);
+      if (!etag) throw new IntakeError('intake_store_unavailable', 503);
+      return { record: raw as IntakeRecord, etag };
     },
 
     async compareAndSwap(intakeId, etag, record) {
       try {
         if (record.intakeId !== intakeId) throw new IntakeError('intake_record_invalid', 503);
         assertIntakeRecordWritable(record);
-        await put(intakeRecordPath(intakeId, namespace), JSON.stringify(record), {
+        await putImpl(intakeRecordPath(intakeId, namespace), JSON.stringify(record), {
           access: 'private',
           token,
           addRandomSuffix: false,

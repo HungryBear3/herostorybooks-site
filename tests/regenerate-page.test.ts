@@ -272,6 +272,47 @@ test('regeneratePage: persists new image, tags, and feedback history; siblings u
   }
 });
 
+test('regeneratePage: media-backed Custom Stories never call an image provider or mutate review state', async () => {
+  const dir = makeTmp();
+  let providerCalls = 0;
+  const provider: ImageProvider = {
+    name: 'openai',
+    async generate({ prompt }) {
+      providerCalls += 1;
+      return {
+        imageUrl: 'https://example.com/must-not-persist.png',
+        provider: 'openai',
+        model: 'gpt-image-1',
+        promptUsed: prompt,
+        latencyMs: 1,
+        error: null,
+      };
+    },
+  };
+  try {
+    const before = await seedOrder({
+      theme: 'custom-voice-story',
+      fulfillmentMode: 'manual_hold',
+      documentBlobPath: 'orders/ord_review_test/story.pdf',
+    });
+    const result = await regeneratePage(
+      { orderId: 'ord_review_test', pageIndex: 0, feedback: 'change the background' },
+      { providers: [provider], skipProofRebuild: true },
+    );
+    assert.deepEqual(result, {
+      ok: false,
+      status: 409,
+      error: 'media_story_manual_review_required',
+    });
+    assert.equal(providerCalls, 0);
+    const after = await getOrder('ord_review_test');
+    assert.deepEqual(after?.pageArtifacts, before.pageArtifacts);
+    assert.equal(after?.reviewStatus, before.reviewStatus);
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test('regeneratePage: emits warning at >=3 regenerations and manual_review at >=5', async () => {
   const dir = makeTmp();
   try {

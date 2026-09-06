@@ -37,7 +37,23 @@ import {
   missingSupportingCharacterDescriptionLabels,
 } from '../src/lib/checkout-photo-policy.ts';
 
-const ROUTE = readFileSync('src/app/api/order/route.ts', 'utf8');
+/**
+ * `POST /api/order` is two files. `src/app/api/order/route.ts` is a thin
+ * adapter that supplies the boundaries the handler cannot construct under
+ * `node:test` — the response constructor, the Stripe provider, the Blob-backed
+ * media writes, the intake store — and `checkout-order-route-handler.ts` holds
+ * the control flow. The gate lives in the handler, so that is where the
+ * lexical checks read; the adapter is read only to confirm it reintroduces
+ * nothing and defers what it injects.
+ *
+ * These are guards against the shape regressing, and nothing more: text
+ * position is not reachability. The runtime proof — that the refusal actually
+ * fires and actually precedes every durable surface — is
+ * checkout-order-route-family-identity.test.ts, which executes the real POST
+ * against a journalled `@vercel/blob`, `stripe` and `src/lib/orders.ts`.
+ */
+const HANDLER = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8');
+const ADAPTER = readFileSync('src/app/api/order/route.ts', 'utf8');
 const FORM = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
 
 /** Nana carries no written description; Uncle Bo does. */
@@ -209,24 +225,28 @@ test('an order with no supporting characters aligns against an empty id list', (
 
 // ── wiring ──────────────────────────────────────────────────────────────────
 
-test('the route derives supporting-photo indexes from the alignment, not from indexOf', () => {
-  assert.equal(
-    ROUTE.includes('familyCharacterIds.indexOf('),
-    false,
-    'positional lookup into the client id array must be gone',
-  );
-  assert.match(ROUTE, /alignFamilyCharacterIdentity\(/);
-  assert.match(ROUTE, /supportingPhotoIndexesForAlignment\(/);
+test('the handler derives supporting-photo indexes from the alignment, not from indexOf', () => {
+  for (const [name, source] of [['handler', HANDLER], ['adapter', ADAPTER]] as const) {
+    assert.equal(
+      source.includes('familyCharacterIds.indexOf('),
+      false,
+      `positional lookup into the client id array must be gone from the ${name}`,
+    );
+  }
+  assert.match(HANDLER, /alignFamilyCharacterIdentity\(/);
+  assert.match(HANDLER, /supportingPhotoIndexesForAlignment\(/);
 });
 
-test('the route refuses a misaligned identity before persistence or Stripe', () => {
-  const refusal = ROUTE.indexOf('alignFamilyCharacterIdentity({');
-  assert.ok(refusal > 0, 'the route must align the family identity');
-  // The refusal is a 400 carrying the alignment's own code, so the buyer is
-  // told nothing was charged and the reason is the shared identity contract.
+test('the handler refuses a misaligned identity before persistence or Stripe', () => {
+  const refusal = HANDLER.indexOf('alignFamilyCharacterIdentity({');
+  assert.ok(refusal > 0, 'the handler must align the family identity');
+  // The refusal is a 400 carrying the alignment's own code. The handler is
+  // generic in its response type and builds every reply through the injected
+  // `json(body, httpStatus)`, so the status is a positional argument rather
+  // than a `status:` property on a NextResponse init.
   assert.match(
-    ROUTE,
-    /if \(!alignment\.ok\) \{[\s\S]{0,500}?code: FAMILY_IDENTITY_MISMATCH_CODE,[\s\S]{0,200}?status: 400/,
+    HANDLER,
+    /if \(!alignment\.ok\) \{[\s\S]{0,500}?code: FAMILY_IDENTITY_MISMATCH_CODE,[\s\S]{0,200}?\n\s*400,\n\s*\);/,
     'a failed alignment must return 400 with the alignment code',
   );
   assert.equal(
@@ -239,13 +259,38 @@ test('the route refuses a misaligned identity before persistence or Stripe', () 
     'createOrderRecord(',
     'persistOrResumeCheckoutOrder(',
     'runDirectIntakeCheckout(',
-    'createVercelIntakeStore(',
     'getRequiredStripeProductId(',
   ]) {
-    const at = ROUTE.indexOf(later);
-    assert.ok(at > 0, `expected the route to still call ${later}`);
+    const at = HANDLER.indexOf(later);
+    assert.ok(at > 0, `expected the handler to still call ${later}`);
     assert.ok(refusal < at, `the identity refusal must come before ${later}`);
   }
+});
+
+test('the private intake store is constructed only after the identity gate', () => {
+  // `createVercelIntakeStore` is NOT in the handler — it is one of the
+  // boundaries the adapter injects, so no single-file ordering claim covers
+  // it. What makes it late is the shape of the injection plus where the
+  // handler calls the dep, and both halves are checked here.
+  assert.equal(
+    HANDLER.includes('createVercelIntakeStore('),
+    false,
+    'the handler must not reach for the concrete store itself',
+  );
+  // Deferred: the adapter hands over a thunk, so importing or invoking the
+  // route cannot reserve anything on its own.
+  assert.match(
+    ADAPTER,
+    /createIntakeStore:\s*\(\)\s*=>\s*createVercelIntakeStore\(\)/,
+    'the adapter must inject the store as a thunk, not an already-built store',
+  );
+  const refusal = HANDLER.indexOf('alignFamilyCharacterIdentity({');
+  const invoked = HANDLER.indexOf('deps.createIntakeStore(');
+  assert.ok(invoked > 0, 'the handler must still build the intake store');
+  assert.ok(
+    refusal < invoked,
+    'the identity refusal must come before the handler invokes the store thunk',
+  );
 });
 
 test('the checkout form sends each supporting character its own stable id', () => {

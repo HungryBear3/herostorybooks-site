@@ -25,17 +25,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 import {
-  bindOrderCheckoutSession,
   createOrderRecord,
   getOrder,
   MAX_VOICE_BYTES,
   OrderPersistenceError,
+  assertPrivateStorySourceStorage,
   updateOrderPayment,
   updateOrderStatus,
   uploadOrderVoice,
 } from '../src/lib/orders.ts';
+import { classifyStoryAttachment } from '../src/lib/story-attachment.ts';
 
 function withEnv<T>(env: Record<string, string | undefined>, fn: () => Promise<T> | T): Promise<T> {
   const previous: Record<string, string | undefined> = {};
@@ -62,6 +64,64 @@ function makeAudioFile(name = 'voice.webm', type = 'audio/webm', size = 32): Fil
     arrayBuffer: async () => new Uint8Array(size).buffer,
   } as unknown as File;
 }
+
+test('legacy story-source storage fails closed unless Blob access is private', async () => {
+  await assert.rejects(
+    () => withEnv({ HSB_BLOB_ACCESS_MODE: undefined }, () => assertPrivateStorySourceStorage('ord_default_public')),
+    /private Blob storage is required/i,
+  );
+  await assert.rejects(
+    () => withEnv({ HSB_BLOB_ACCESS_MODE: 'public' }, () => assertPrivateStorySourceStorage('ord_explicit_public')),
+    /private Blob storage is required/i,
+  );
+  await assert.doesNotReject(
+    () => withEnv({ HSB_BLOB_ACCESS_MODE: 'private' }, () => assertPrivateStorySourceStorage('ord_private')),
+  );
+
+  const ordersSource = readFileSync('src/lib/orders.ts', 'utf8');
+  const functionRanges = [
+    ['uploadOrderVoice', 'export const MAX_DOCUMENT_BYTES'],
+    ['uploadOrderDocument', 'async function uploadOrderPhotoAtPath'],
+  ] as const;
+  for (const [functionName, nextMarker] of functionRanges) {
+    const start = ordersSource.indexOf(`export async function ${functionName}`);
+    const end = ordersSource.indexOf(nextMarker, start);
+    const body = ordersSource.slice(start, end);
+    assert.ok(body.indexOf('assertPrivateStorySourceStorage(orderId)') > 0, `${functionName} must enforce private storage`);
+    assert.ok(
+      body.indexOf('assertPrivateStorySourceStorage(orderId)') < body.indexOf('put(pathname'),
+      `${functionName} must fail before Blob write`,
+    );
+  }
+});
+
+test('legacy story-source uploads use the exact access mode validated before async file reads', () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--experimental-strip-types',
+      '--import',
+      './tests/helpers/blob-fake-register.mjs',
+      './tests/helpers/story-source-access-race-scenario.mjs',
+    ],
+    { cwd: process.cwd(), encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const writes = JSON.parse(result.stdout) as Array<{ pathname: string; access: string }>;
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes.map((write) => write.access), ['private', 'private']);
+  assert.match(writes[0].pathname, /voice-/);
+  assert.match(writes[1].pathname, /document-/);
+});
+
+test('switching away from Custom Story resets every source consent and fences late recorder callbacks', () => {
+  const checkout = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  const recorder = readFileSync('src/components/checkout/VoiceRecorderSection.tsx', 'utf8');
+  assert.match(checkout, /onClick=\{\(\) => \{[\s\S]{0,1200}setDirectMediaConsent\(false\)[\s\S]{0,500}Choose a ready-made adventure instead/);
+  assert.match(recorder, /mountedRef\.current = false/);
+  assert.match(recorder, /mediaOperationRef\.current \+= 1/);
+  assert.match(recorder, /if \(!mountedRef\.current \|\| operationId !== mediaOperationRef\.current\)[\s\S]{0,300}return/);
+});
 
 // ── createOrderRecord persists voice metadata ────────────────────────────────
 
@@ -141,6 +201,9 @@ test('legacy voice filenames are scrubbed whenever an order is re-persisted', as
       { id: 'ord_legacy_voice', now: '2026-05-14T10:00:00.000Z' },
     ),
     voiceFileName: 'Synthetic Legacy Recording 2026.m4a',
+    // A historical order whose bind is already history — the shape every order
+    // written before the generation fence has, and which must stay readable.
+    stripeSessionId: 'cs_legacy_voice',
   };
 
   try {
@@ -158,7 +221,6 @@ test('legacy voice filenames are scrubbed whenever an order is re-persisted', as
         assert.equal((loaded as unknown as Record<string, unknown>).voiceFileName, undefined);
         assert.equal(loaded.legacyVoiceUploadPresent, true);
 
-        await bindOrderCheckoutSession('ord_legacy_voice', 'cs_legacy_voice');
         const paymentResult = await updateOrderPayment('ord_legacy_voice', 'paid', {
           stripeSessionId: 'cs_legacy_voice',
         });
@@ -246,15 +308,16 @@ test('uploadOrderVoice uses a random asset id and never reads file.name', () => 
 });
 
 test('raw AAC uses an .aac extension rather than an M4A container extension', () => {
-  assert.match(
-    stripComments(ORDERS_SRC),
-    /normalized === ['"]audio\/aac['"]\) return ['"]aac['"]/,
-  );
+  assert.deepEqual(classifyStoryAttachment(makeAudioFile('voice.aac', 'audio/aac')), {
+    kind: 'audio',
+    mimeType: 'audio/aac',
+    extension: 'aac',
+  });
 });
 
 // ── /api/order route source contract (static grep) ──────────────────────────
 
-const ROUTE_SRC = readFileSync('src/app/api/order/route.ts', 'utf8');
+const ROUTE_SRC = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
 const ADMIN_ORDER_SRC = readFileSync('src/app/admin/orders/[orderId]/page.tsx', 'utf8');
 
 test('order and admin surfaces do not retain or display customer voice filenames', () => {
@@ -285,12 +348,14 @@ test('order route enforces the 15 MB cap (voice_too_large)', () => {
 
 test('order route uploads voice BEFORE creating the Stripe Checkout Session', () => {
   const voiceUploadIdx = ROUTE_SRC.indexOf('uploadOrderVoice');
-  const stripeIdx = ROUTE_SRC.indexOf('stripe.checkout.sessions.create');
+  // Voice upload is a legacy-path step; the provider Session for that path is
+  // created inside provisionCheckoutSession, so that call is the boundary.
+  const stripeIdx = ROUTE_SRC.indexOf('await provisionCheckoutSession({');
   assert.ok(voiceUploadIdx > -1, 'route must call uploadOrderVoice');
-  assert.ok(stripeIdx > -1, 'route must call stripe.checkout.sessions.create');
+  assert.ok(stripeIdx > -1, 'route must reach provider Session provisioning');
   assert.ok(
     voiceUploadIdx < stripeIdx,
-    'uploadOrderVoice must run before stripe.checkout.sessions.create',
+    'uploadOrderVoice must run before the provider Session is created',
   );
 });
 
@@ -308,42 +373,39 @@ test('order route handles OrderPersistenceError from voice upload (aborts before
   assert.ok(matches.length >= 2, `expected ≥2 OrderPersistenceError usages, got ${matches.length}`);
 });
 
-// ── Checkout client source contract: feature flag + FormData wiring ─────────
+// ── Checkout client source contract: visible Custom Story intake + wiring ───
 
 const CHECKOUT_SRC = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
 
-test('checkout source reads NEXT_PUBLIC_HSB_STORY_UPLOAD feature flag', () => {
-  assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
+test('checkout source mounts VoiceRecorderSection immediately in the Custom Story intake panel', () => {
+  assert.match(CHECKOUT_SRC, /data-testid="custom-story-intake-panel"[\s\S]*?<VoiceRecorderSection/);
+  assert.doesNotMatch(CHECKOUT_SRC, /STORY_UPLOAD_ENABLED|NEXT_PUBLIC_HSB_STORY_UPLOAD/);
 });
 
-test('checkout source mounts VoiceRecorderSection in the Custom Story source section', () => {
-  assert.match(CHECKOUT_SRC, /Tell us the memory in your own words[\s\S]*?STORY_UPLOAD_ENABLED && customStorySourceMode === ["']audio["'] && \(\s*<VoiceRecorderSection/);
-  assert.match(CHECKOUT_SRC, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
+test('Custom Story exposes typing and voice/document controls together without a source-mode chooser', () => {
+  assert.match(CHECKOUT_SRC, /Type the memory or story idea/);
+  assert.match(CHECKOUT_SRC, /Or add audio or a file/);
+  assert.doesNotMatch(CHECKOUT_SRC, /Record or upload a voice note|Prefer typing\?/);
 });
 
-test('Custom Story chooser renders one audio card and one typing card, not two audio cards', () => {
-  // Single combined top-level audio card.
-  assert.match(CHECKOUT_SRC, /Record or upload a voice note/);
-  // Separate written-memory choice remains.
-  assert.match(CHECKOUT_SRC, /Prefer typing\?/);
-  // The old duplicated audio cards must be gone.
-  assert.doesNotMatch(CHECKOUT_SRC, /🎙️ Record a voice note</);
-  assert.doesNotMatch(CHECKOUT_SRC, /⬆️ Upload a voice memo/);
-  // Exactly one top-level card selects the audio source mode; the other selects written.
-  const audioCards = CHECKOUT_SRC.match(/set\(["']customStorySourceMode["'], ["']audio["']\)/g) ?? [];
-  assert.strictEqual(audioCards.length, 1, `expected exactly 1 top-level audio source card, got ${audioCards.length}`);
-  const writtenCards = CHECKOUT_SRC.match(/set\(["']customStorySourceMode["'], ["']written["']\)/g) ?? [];
-  assert.strictEqual(writtenCards.length, 1, `expected exactly 1 top-level typing source card, got ${writtenCards.length}`);
-});
-
-test('checkout source attaches voice fields to FormData only when story upload is on', () => {
-  // The single FormData wiring block must be guarded by STORY_UPLOAD_ENABLED.
+test('checkout source attaches audio as voice and documents through the separate document field', () => {
   assert.match(
     CHECKOUT_SRC,
-    /if \(STORY_UPLOAD_ENABLED && form\.voiceFile\) \{[\s\S]*?payload\.set\(['"]voice['"],/,
+    /if \(attachedStoryFile && attachedStoryFileIsAudio\) \{[\s\S]*?payload\.set\(['"]voice['"], attachedStoryFile\)/,
   );
-  assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceConsent['"]/);
-  assert.match(CHECKOUT_SRC, /payload\.set\(['"]voiceSource['"]/);
+  assert.match(
+    CHECKOUT_SRC,
+    /else if \(attachedStoryFile\) \{[\s\S]*?payload\.set\(['"]document['"], attachedStoryFile\)/,
+  );
+  assert.match(CHECKOUT_SRC, /payload\.set\(['"]documentConsent['"]/);
+});
+
+test('direct intake routes audio and documents to distinct slot parameters', () => {
+  assert.match(CHECKOUT_SRC, /const attachedStoryFile = isCustomStorySelected \? form\.voiceFile : null/);
+  assert.match(CHECKOUT_SRC, /const attachedStoryFileIsAudio = isStoryAudioFile\(attachedStoryFile\)/);
+  assert.match(CHECKOUT_SRC, /voice:\s*attachedStoryFile && attachedStoryFileIsAudio && form\.voiceSource/);
+  assert.match(CHECKOUT_SRC, /document:\s*attachedStoryFile && !attachedStoryFileIsAudio/);
+  assert.match(CHECKOUT_SRC, /document:[\s\S]*?consent: form\.voiceConsent/);
 });
 
 test('checkout source blocks submit when voice attached without consent', () => {
@@ -363,12 +425,13 @@ test('voice section never auto-starts the microphone (only on Record tap)', () =
 });
 
 test('voice section copy explicitly disclaims voice cloning', () => {
-  assert.match(VOICE_UI_SRC, /not.*clone/i);
+  assert.match(VOICE_UI_SRC, /won&apos;t be used for voice cloning/i);
 });
 
 test('voice section avoids beta/data-loss confidence killers', () => {
-  assert.match(VOICE_UI_SRC, /30 seconds is plenty, and up to 3 minutes is supported/);
-  assert.match(VOICE_UI_SRC, /Voice notes stay private/);
+  assert.match(VOICE_UI_SRC, /Up to 3 minutes\. 30 seconds is plenty\./);
+  assert.match(VOICE_UI_SRC, /Our story team reads your file and uses it as inspiration\. Nothing is generated from it automatically\./);
+  assert.doesNotMatch(VOICE_UI_SRC, /deleted on request/i);
   assert.doesNotMatch(VOICE_UI_SRC, /Beta · Optional/i);
   assert.doesNotMatch(VOICE_UI_SRC, /Notes and uploads are in beta/i);
   assert.doesNotMatch(VOICE_UI_SRC, /checkout hits an\s+unexpected error/i);
@@ -379,8 +442,24 @@ test('voice section releases mic tracks on stop AND on unmount', () => {
   assert.match(VOICE_UI_SRC, /getTracks\(\)\.forEach\(\(t\) => t\.stop\(\)\)/);
 });
 
-test('voice section remains the single place offering Record and Upload controls', () => {
+test('attachment section presents separate voice-note and written-file cards', () => {
+  assert.match(VOICE_UI_SRC, />\s*🎙️ Voice note\s*</);
+  assert.match(VOICE_UI_SRC, />\s*📄 Written file\s*</);
   assert.match(VOICE_UI_SRC, />\s*Record audio\s*</);
-  assert.match(VOICE_UI_SRC, />\s*Upload voice memo\s*</);
-  assert.match(VOICE_UI_SRC, />\s*Upload text\/document\s*</);
+  assert.match(VOICE_UI_SRC, /Upload audio file/);
+  assert.match(VOICE_UI_SRC, /Upload document/);
+  assert.match(VOICE_UI_SRC, /TXT, PDF, or Word, up to 10 MB\./);
+});
+
+test('voice and document inputs stay keyboard reachable with visible focus treatment', () => {
+  assert.match(VOICE_UI_SRC, /aria-label="Upload audio file"[\s\S]*?className="sr-only"/);
+  assert.match(VOICE_UI_SRC, /aria-label="Upload document"[\s\S]*?className="sr-only"/);
+  assert.match(VOICE_UI_SRC, /htmlFor="custom-story-audio-upload"[\s\S]*?has-\[:focus-visible\]:ring-2[\s\S]*?custom-story-audio-upload-control/);
+  assert.match(VOICE_UI_SRC, /htmlFor="custom-story-document-upload"[\s\S]*?has-\[:focus-visible\]:ring-2[\s\S]*?custom-story-document-upload-control/);
+});
+
+test('consent wording switches by attached media type', () => {
+  assert.match(VOICE_UI_SRC, /I have the right to share this document/);
+  assert.match(VOICE_UI_SRC, /parent\/guardian or an authorized adult for everyone in this recording/);
+  assert.match(VOICE_UI_SRC, /won&apos;t be used for AI training and won&apos;t be shared/);
 });

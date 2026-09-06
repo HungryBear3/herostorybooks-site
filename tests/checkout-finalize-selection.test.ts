@@ -18,12 +18,16 @@ import test from 'node:test';
 import {
   createIntake,
   IntakeError,
-  listIntakeSlots,
+  listIntakeSlots as listIntakeSlotsAt,
   refreshIntakeConsent,
 } from '../src/lib/checkout-intake.ts';
-import { completeSlotUpload, releaseSlot, reserveSlotUpload } from '../src/lib/checkout-intake-upload.ts';
 import {
-  validateFinalizeSelection,
+  completeSlotUpload as completeSlotUploadAt,
+  releaseSlot as releaseSlotAt,
+  reserveSlotUpload as reserveSlotUploadAt,
+} from '../src/lib/checkout-intake-upload.ts';
+import {
+  validateFinalizeSelection as validateFinalizeSelectionAt,
   type CheckoutFinalizeSelection,
 } from '../src/lib/checkout-finalize.ts';
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
@@ -34,6 +38,34 @@ const HERO = { category: 'primary_hero_photo' } as const;
 // the wall clock — left on the wall clock these sessions expire as real time
 // advances and every assertion below collapses into `intake_expired`.
 const AT = new Date('2026-09-02T12:00:05.000Z');
+// The anchor is also the wrappers' default, so a call site that forgets to
+// pass it cannot silently fall back to the wall clock. Same shape as the two
+// intake-cleanup suites.
+const reserveSlotUpload = (
+  store: Parameters<typeof reserveSlotUploadAt>[0],
+  input: Parameters<typeof reserveSlotUploadAt>[1],
+  now = AT,
+) => reserveSlotUploadAt(store, input, now);
+const completeSlotUpload = (
+  store: Parameters<typeof completeSlotUploadAt>[0],
+  input: Parameters<typeof completeSlotUploadAt>[1],
+  now = AT,
+) => completeSlotUploadAt(store, input, now);
+const releaseSlot = (
+  store: Parameters<typeof releaseSlotAt>[0],
+  input: Parameters<typeof releaseSlotAt>[1],
+  now = AT,
+) => releaseSlotAt(store, input, now);
+const validateFinalizeSelection = (
+  store: Parameters<typeof validateFinalizeSelectionAt>[0],
+  input: Parameters<typeof validateFinalizeSelectionAt>[1],
+  now = AT,
+) => validateFinalizeSelectionAt(store, input, now);
+const listIntakeSlots = (
+  store: Parameters<typeof listIntakeSlotsAt>[0],
+  input: Parameters<typeof listIntakeSlotsAt>[1],
+  now = AT,
+) => listIntakeSlotsAt(store, input, now);
 
 function emptySelection(): CheckoutFinalizeSelection {
   return {

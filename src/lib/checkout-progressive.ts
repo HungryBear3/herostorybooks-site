@@ -1,3 +1,6 @@
+import { classifyStoryAttachment } from "./story-attachment.ts";
+import { browserRandomHex } from "./browser-random-id.ts";
+
 export interface SupportingCharacterRecord {
   id: string;
   role: string;
@@ -32,6 +35,8 @@ export interface CheckoutProgressFormShape {
   email: string;
   voiceFile: File | null;
   voiceConsent: boolean;
+  customStoryMemory: string;
+  directMediaConsent: boolean;
   activeSupportingCharacterDraft?: SupportingCharacterRecord | null;
 }
 
@@ -53,7 +58,7 @@ export interface CheckoutProgressState {
 function nextSupportingCharacterDraftId(existingIds: Set<string>) {
   let id: string;
   do {
-    id = `supporting-character-${crypto.randomUUID()}`;
+    id = `supporting-character-${browserRandomHex(16)}`;
   } while (existingIds.has(id));
   return id;
 }
@@ -232,22 +237,43 @@ function getPeopleStepDetails(form: CheckoutProgressFormShape) {
 }
 
 function getStepBlueprints(form: CheckoutProgressFormShape): CheckoutStepProgress[] {
+  const customStorySelected = form.theme === 'custom-voice-story';
+  const attachment = form.voiceFile ? classifyStoryAttachment(form.voiceFile) : null;
+  const attachmentIsCoherent = attachment?.kind === 'audio' || attachment?.kind === 'document';
+  const attachmentIsInvalid = attachment?.kind === 'invalid';
+  const hasCustomStorySource = Boolean(form.customStoryMemory.trim() || attachmentIsCoherent);
+  const sourceConsentLabel = attachment?.kind === 'document' ? 'Document consent' : 'Voice note consent';
+  const heroMissingFields = [
+    ...(form.theme.trim() ? [] : ['Story direction']),
+    ...(form.childName.trim() ? [] : ["Main hero's name"]),
+    ...(customStorySelected && !hasCustomStorySource ? ['Custom Story source'] : []),
+    ...(customStorySelected && attachmentIsInvalid ? ['Supported story attachment'] : []),
+    ...(customStorySelected && attachmentIsCoherent && !form.voiceConsent ? [sourceConsentLabel] : []),
+  ];
+  const heroFirstInvalidField = !form.theme.trim()
+    ? 'theme'
+    : !form.childName.trim()
+      ? 'childName'
+      : customStorySelected && !hasCustomStorySource
+        ? 'customStoryMemory'
+        : customStorySelected && attachmentIsInvalid
+          ? 'voiceConsent'
+          : customStorySelected && attachmentIsCoherent && !form.voiceConsent
+            ? 'voiceConsent'
+            : null;
   const steps: CheckoutStepProgress[] = [
     {
       id: 'hero-details',
       title: 'Hero details',
       status: 'upcoming',
-      complete: Boolean(form.theme.trim() && form.childName.trim()),
-      summary: form.theme.trim() && form.childName.trim() ? 'Done' : 'Add the hero name and choose a story direction.',
-      missingFields: [
-        ...(form.theme.trim() ? [] : ['Story direction']),
-        ...(form.childName.trim() ? [] : ["Main hero's name"]),
-      ],
-      firstInvalidField: !form.theme.trim() ? 'theme' : !form.childName.trim() ? 'childName' : null,
+      complete: heroMissingFields.length === 0,
+      summary: heroMissingFields.length === 0 ? 'Done' : 'Finish the hero details and Custom Story source.',
+      missingFields: heroMissingFields,
+      firstInvalidField: heroFirstInvalidField,
     },
     {
       id: 'hero-appearance',
-      title: 'Hero appearance/photo',
+      title: 'Hero photo or description',
       status: 'upcoming',
       complete: hasHeroAppearance(form),
       summary: hasHeroAppearance(form) ? 'Done' : 'Add a hero photo or written appearance details.',
@@ -275,21 +301,18 @@ function getStepBlueprints(form: CheckoutProgressFormShape): CheckoutStepProgres
       status: 'upcoming',
       complete: false,
       summary:
-        form.bookFormat.trim() && looksLikeEmail(form.email) && (!form.voiceFile || form.voiceConsent)
+        form.bookFormat.trim() && looksLikeEmail(form.email)
           ? 'Ready for payment review.'
           : 'Add contact and delivery details before payment.',
       missingFields: [
         ...(form.bookFormat.trim() ? [] : ['Book format']),
         ...(looksLikeEmail(form.email) ? [] : ['Email address']),
-        ...(!form.voiceFile || form.voiceConsent ? [] : ['Voice note consent']),
       ],
       firstInvalidField: !form.bookFormat.trim()
         ? 'bookFormat'
         : !looksLikeEmail(form.email)
           ? 'email'
-          : form.voiceFile && !form.voiceConsent
-            ? 'voiceConsent'
-            : null,
+          : null,
     },
   ];
 

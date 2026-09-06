@@ -4,7 +4,20 @@
  * THE ORDER OF OPERATIONS IS THE FEATURE
  * --------------------------------------
  *   finalize the intake  →  create-only persist  →  mark the intake finalized
- *   →  Stripe Checkout Session  →  bind the session under the exact lease
+ *   →  RENEW the exact lease  →  Stripe Checkout Session  →  record the created
+ *   session id durably  →  bind the session under the exact lease
+ *
+ * The renewal is not bookkeeping. Between the durable commit and the provider
+ * call there is at least one await, and the lease can be lost inside it — so
+ * ownership is re-proved ATOMICALLY immediately before an unbound Session is
+ * created, and proved AGAIN by the binder immediately after. A worker that has
+ * lost the lease creates nothing, binds nothing and releases nothing.
+ *
+ * The durable candidate closes the other half. Refusing after a successful
+ * create is safe for the buyer but not free: the provider's idempotency
+ * retention is finite, so a later retry would create a SECOND payable Session.
+ * The created id is therefore persisted create-only before anything else may
+ * fail, and an authoritative retry resumes that exact id.
  *
  * Every earlier step is a commit the buyer can be held to, so each one has to
  * be provably done before the next begins. In particular the Checkout Session
@@ -40,33 +53,29 @@ import {
   type FamilyCharacter,
   type OrderRecord,
 } from './orders.ts';
+import {
+  CHECKOUT_ATTEMPT_ALREADY_RESOLVED,
+  CHECKOUT_NO_CHARGE_RETRY,
+  CHECKOUT_RECONCILIATION_NO_CHARGE,
+  CHECKOUT_RECONCILIATION_SUPPORT,
+  provisionCheckoutSession,
+  type CheckoutSessionProvisionDeps,
+  type ProviderCheckoutSession,
+  type ProviderCheckoutSessionRequest,
+} from './checkout-session-provisioning.ts';
 
-export interface DirectCheckoutSessionRequest {
-  order: OrderRecord;
-  stripeProductId: string;
-  baseUrl: string;
-  gaClientId: string | null;
-  idempotencyKey: string;
-}
+/** Structural aliases; the provider contract now lives with the shared machine. */
+export type DirectCheckoutSessionRequest = ProviderCheckoutSessionRequest;
+export type DirectCheckoutSession = ProviderCheckoutSession;
 
-export interface DirectCheckoutSession {
-  id: string;
-  url: string | null;
-  status: 'open' | 'complete' | 'expired' | null;
-}
+const NO_CHARGE_RETRY = CHECKOUT_NO_CHARGE_RETRY;
+const RECONCILIATION_REQUIRED = CHECKOUT_RECONCILIATION_NO_CHARGE;
+const ATTEMPT_ALREADY_RESOLVED = CHECKOUT_ATTEMPT_ALREADY_RESOLVED;
 
-export interface DirectIntakeCheckoutDeps {
+export interface DirectIntakeCheckoutDeps extends CheckoutSessionProvisionDeps {
   binding: PreparedIntakeOrderBindingDependencies;
-  createCheckoutSession(request: DirectCheckoutSessionRequest): Promise<DirectCheckoutSession>;
-  retrieveCheckoutSession(sessionId: string): Promise<DirectCheckoutSession>;
-  bindCheckoutSession(
-    orderId: string,
-    stripeSessionId: string,
-    checkout: { leaseId: string; fingerprint: string },
-  ): Promise<OrderRecord | null>;
   /** Non-essential. Runs only after the durable commit, and never blocks it. */
   markRecoveryLeadConverted?(email: string, orderId: string): Promise<unknown> | void;
-  logError?(message: string, detail?: unknown): void;
 }
 
 export interface DirectIntakeCheckoutParams {
@@ -82,14 +91,32 @@ export type DirectIntakeCheckoutResult =
   | { status: 'redirect'; redirectTo: string; order: OrderRecord }
   | { status: 'refused'; httpStatus: number; code: string; error: string };
 
-const NO_CHARGE_RETRY =
-  'We could not securely save your order. No charge was made. Please retry in a moment, and contact support@herostorybooks.com if it keeps happening.';
-const MEDIA_MOVED =
-  'Your photos changed while we were starting checkout. No charge was made — please review your photos and try again.';
-const RECONCILIATION_REQUIRED =
-  'Checkout requires reconciliation. No checkout link was released and no charge was made.';
-const ATTEMPT_ALREADY_RESOLVED =
-  'This checkout attempt is already in progress or has already reached payment. No new charge was made — reload the page to start a fresh attempt, and contact support@herostorybooks.com if you were charged.';
+
+/**
+ * The shared provisioning codes, renamed into this path's stable vocabulary.
+ *
+ * The `direct_intake_*` codes are already in customer support runbooks and in
+ * the checkout page's error mapper, so the shared machine reports neutral codes
+ * and they are translated here rather than churning the public surface.
+ */
+const DIRECT_INTAKE_CODE: Readonly<Record<string, string>> = {
+  checkout_lease_lost: 'direct_intake_checkout_lease_lost',
+  checkout_session_identity_missing: 'direct_intake_checkout_lease_missing',
+  checkout_session_candidate_invalid: 'direct_intake_session_candidate_invalid',
+  checkout_session_provisioning_failed: 'direct_intake_session_provisioning_failed',
+  checkout_session_reconciliation_required: 'direct_intake_session_reconciliation_required',
+  checkout_session_create_failed: 'direct_intake_session_create_failed',
+  checkout_session_retrieve_failed: 'direct_intake_session_retrieve_failed',
+  checkout_session_candidate_persist_failed: 'direct_intake_session_candidate_persist_failed',
+  checkout_session_candidate_mismatch: 'direct_intake_session_candidate_mismatch',
+  checkout_session_reconciliation_failed: 'direct_intake_session_reconciliation_failed',
+  checkout_session_complete: 'direct_intake_session_complete',
+  checkout_session_not_open: 'direct_intake_session_not_open',
+  checkout_session_supersede_failed: 'direct_intake_session_supersede_failed',
+  checkout_session_supersede_limit: 'direct_intake_session_supersede_limit',
+  checkout_session_bind_failed: 'direct_intake_session_bind_failed',
+  checkout_session_url_missing: 'direct_intake_session_url_missing',
+};
 
 /**
  * HTTP status for a finalization refusal.
@@ -117,7 +144,15 @@ const FINALIZE_STATUS: Readonly<Record<string, number>> = {
   intake_finalization_unavailable: 503,
 };
 
-function refused(httpStatus: number, code: string, error: string): DirectIntakeCheckoutResult {
+function refused(httpStatus: number, code: string, _error: string): DirectIntakeCheckoutResult {
+  // This saga is entered only after the exported handler has validated the
+  // deterministic attempt ID. Every refusal can therefore overlap another
+  // request for the same attempt; no local snapshot can prove globally that no
+  // payable Session exists or invite another payment safely.
+  const error = /do not pay again/i.test(_error)
+    && !/no charge|not been charged|stopped before payment|\b(retry|try again|submit again)\b|start a fresh attempt/i.test(_error)
+    ? _error
+    : CHECKOUT_RECONCILIATION_SUPPORT;
   return { status: 'refused', httpStatus, code, error };
 }
 
@@ -216,7 +251,16 @@ export async function runDirectIntakeCheckout(
       break;
     case 'intake_finalize_failed':
       log(`[order] ABORT BEFORE STRIPE: intake finalization refused for ${bound.orderId}: ${bound.code}`);
-      return refused(FINALIZE_STATUS[bound.code] ?? 400, bound.code, MEDIA_MOVED);
+      // Finalization is an awaited, shared-state boundary. Even a validation
+      // refusal can race a prior/concurrent request for this same attempt that
+      // has already created or bound a payable Session. A point-in-time order
+      // read cannot prove otherwise, so no finalization failure may claim that
+      // no charge exists or invite the buyer to pay again.
+      return refused(
+        FINALIZE_STATUS[bound.code] ?? 400,
+        bound.code,
+        CHECKOUT_RECONCILIATION_SUPPORT,
+      );
     case 'preparation_failed':
       log(`[order] ABORT BEFORE STRIPE: direct order preparation failed for ${bound.orderId}: ${bound.code}`);
       return refused(400, 'direct_intake_preparation_failed', NO_CHARGE_RETRY);
@@ -232,13 +276,29 @@ export async function runDirectIntakeCheckout(
         `[order] ABORT BEFORE STRIPE: durable order persistence failed for ${bound.orderId} `
         + `(reconciliation=${bound.reconciliation}, reservation=${bound.reservation})`,
       );
-      return refused(503, 'direct_intake_order_persist_failed', NO_CHARGE_RETRY);
+      // `absent` and `unknown` keep distinct operator codes, but neither can
+      // settle customer-facing payment status. An authoritative read is still
+      // only a point-in-time snapshot; another request for the same attempt can
+      // progress immediately afterward. `refused` normalizes both through the
+      // attempt-wide reconciliation policy.
+      return bound.reconciliation === 'unknown'
+        ? refused(503, 'direct_intake_order_persist_unknown', CHECKOUT_RECONCILIATION_SUPPORT)
+        : refused(503, 'direct_intake_order_persist_failed', NO_CHARGE_RETRY);
     case 'intake_mark_pending':
       // The order IS durable. Refusing here leaves it for the authoritative
       // reconciliation sweep rather than charging against an intake that does
       // not yet know which order owns its media.
+      //
+      // A resumed order can arrive here carrying provider evidence from an
+      // earlier request of the same attempt — a candidate or a provisioning
+      // marker are both exempt from the pre-Stripe comparison, by design — and
+      // then a payable Session may already exist.
       log(`[order] ABORT BEFORE STRIPE: intake acknowledgement pending for ${bound.order.id}`);
-      return refused(503, 'direct_intake_mark_pending', NO_CHARGE_RETRY);
+      return refused(
+        503,
+        'direct_intake_mark_pending',
+        NO_CHARGE_RETRY,
+      );
     default:
       return refused(503, 'direct_intake_binding_unrecognised', NO_CHARGE_RETRY);
   }
@@ -246,7 +306,13 @@ export async function runDirectIntakeCheckout(
   const order = bound.order;
   if (!order.checkoutLeaseId || !order.checkoutFingerprint) {
     log(`[order] ABORT BEFORE STRIPE: durable order ${order.id} has no checkout lease to bind against`);
-    return refused(503, 'direct_intake_checkout_lease_missing', RECONCILIATION_REQUIRED);
+    // Nothing was released by THIS request, but a resumed order can already
+    // carry a candidate or a provisioning marker from an earlier one.
+    return refused(
+      503,
+      'direct_intake_checkout_lease_missing',
+      RECONCILIATION_REQUIRED,
+    );
   }
 
   // Non-essential, and strictly after the safety-critical commit.
@@ -259,54 +325,35 @@ export async function runDirectIntakeCheckout(
     // A recovery-lead bookkeeping failure must never affect checkout.
   }
 
-  let session: DirectCheckoutSession;
-  try {
-    session = order.stripeSessionId
-      ? await deps.retrieveCheckoutSession(order.stripeSessionId)
-      : await deps.createCheckoutSession({
-          order,
-          stripeProductId: params.stripeProductId,
-          baseUrl: params.baseUrl,
-          gaClientId: params.gaClientId,
-          idempotencyKey: `hsb_checkout_${order.id}`,
-        });
-  } catch (error) {
-    const action = order.stripeSessionId ? 'retrieval' : 'creation';
-    log(`[order] Stripe Checkout Session ${action} failed for ${order.id}`, error);
-    return refused(
-      503,
-      order.stripeSessionId
-        ? 'direct_intake_session_retrieve_failed'
-        : 'direct_intake_session_create_failed',
-      NO_CHARGE_RETRY,
-    );
-  }
-
-  if (session.status !== 'open') {
-    log(`[order] Stripe Session ${session.id} for ${order.id} is not open`);
-    return refused(409, 'direct_intake_session_not_open', RECONCILIATION_REQUIRED);
-  }
-
-  if (order.stripeSessionId) {
-    if (session.id !== order.stripeSessionId || !session.url) {
-      log(`[order] Existing Stripe Session reconciliation failed for ${order.id}`);
-      return refused(503, 'direct_intake_session_reconciliation_failed', RECONCILIATION_REQUIRED);
-    }
-    return { status: 'redirect', redirectTo: session.url, order };
-  }
-
-  const boundSession = await deps.bindCheckoutSession(order.id, session.id, {
+  // ── Hand off to the shared provider-Session state machine ─────────────
+  // The direct and legacy paths must hold the SAME invariant — at most one
+  // payable Session per attempt, durably recorded before it can be lost, and
+  // replaced only after the provider proves the previous one dead. Keeping two
+  // implementations of that is how the legacy path ended up without it.
+  const provisioned = await provisionCheckoutSession({
+    order,
     leaseId: order.checkoutLeaseId,
     fingerprint: order.checkoutFingerprint,
+    stripeProductId: params.stripeProductId,
+    baseUrl: params.baseUrl,
+    gaClientId: params.gaClientId,
+  }, {
+    createCheckoutSession: deps.createCheckoutSession,
+    retrieveCheckoutSession: deps.retrieveCheckoutSession,
+    renewCheckoutLease: deps.renewCheckoutLease,
+    beginCheckoutSessionProvisioning: deps.beginCheckoutSessionProvisioning,
+    recordCheckoutSessionCandidate: deps.recordCheckoutSessionCandidate,
+    supersedeCheckoutSession: deps.supersedeCheckoutSession,
+    bindCheckoutSession: deps.bindCheckoutSession,
+    logError: deps.logError,
   });
-  if (!boundSession) {
-    log(`[order] Stripe Session ${session.id} created but durable binding failed for ${order.id}`);
-    return refused(503, 'direct_intake_session_bind_failed', RECONCILIATION_REQUIRED);
-  }
-  if (!session.url) {
-    log(`[order] Stripe Session ${session.id} for ${order.id} carried no checkout URL`);
-    return refused(503, 'direct_intake_session_url_missing', RECONCILIATION_REQUIRED);
-  }
 
-  return { status: 'redirect', redirectTo: session.url, order: boundSession };
+  if (provisioned.status === 'refused') {
+    return refused(
+      provisioned.httpStatus,
+      DIRECT_INTAKE_CODE[provisioned.code] ?? provisioned.code,
+      provisioned.message,
+    );
+  }
+  return { status: 'redirect', redirectTo: provisioned.url, order: provisioned.order };
 }

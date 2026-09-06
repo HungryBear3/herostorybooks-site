@@ -36,6 +36,8 @@ export interface HarnessOptions {
 export interface HandoffHarness {
   /** One entry per /api/order request the page made. */
   orderRequests: string[];
+  /** Raw multipart bodies, used to assert client/server field contracts. */
+  orderBodies: string[];
 }
 
 export async function installHandoffHarness(
@@ -43,7 +45,7 @@ export async function installHandoffHarness(
   baseURL: string,
   options: HarnessOptions = {},
 ): Promise<HandoffHarness> {
-  const harness: HandoffHarness = { orderRequests: [] };
+  const harness: HandoffHarness = { orderRequests: [], orderBodies: [] };
   const appOrigin = new URL(baseURL).origin;
   const body = options.redirectTo !== undefined
     ? { ok: true, redirectTo: options.redirectTo }
@@ -56,6 +58,7 @@ export async function installHandoffHarness(
 
     if (url.origin === appOrigin && url.pathname === '/api/order') {
       harness.orderRequests.push(request.method());
+      harness.orderBodies.push(request.postData() ?? '');
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -87,7 +90,7 @@ export async function fillCheckoutToReview(page: Page): Promise<Locator> {
   await page.getByRole('button', { name: /Space Voyager/ }).click();
   await page.locator('#childName').fill('Testhero');
 
-  const continueButton = page.getByRole('button', { name: /^Continue$/ });
+  const continueButton = page.getByTestId('checkout-bottom-continue');
   await continueButton.click(); // Hero details → Hero appearance/photo
   await page
     .getByPlaceholder('Example: 6 years old, warm brown skin, short curly dark hair, bright green hoodie')

@@ -75,6 +75,15 @@ function runScenario(name: string): ScenarioResult {
 const surfaces = (r: ScenarioResult, surface: JournalEntry['surface']) =>
   r.journal.filter((entry) => entry.surface === surface);
 
+/**
+ * Every scenario here posts a well-formed `checkoutAttemptId`, and the handler
+ * answers a known attempt with one attempt-wide payment-safety wording rather
+ * than a per-refusal one. So the prose is deliberately NOT the evidence in this
+ * suite: the stable `code` identifies the refusal, and the journal — not a
+ * sentence — is what proves no charge could have happened.
+ */
+const ATTEMPT_SAFE_COPY = /do not pay again/i;
+
 // ── the defect ──────────────────────────────────────────────────────────────
 
 test('a reordered familyCharacterIds request is refused by POST /api/order with 400', () => {
@@ -82,7 +91,7 @@ test('a reordered familyCharacterIds request is refused by POST /api/order with 
 
   assert.equal(r.status, 400);
   assert.equal(r.body?.code, 'direct_intake_family_identity_mismatch');
-  assert.match(r.body?.error ?? '', /No charge was made/);
+  assert.match(r.body?.error ?? '', ATTEMPT_SAFE_COPY);
 });
 
 test('the reordered request touches no durable order, blob, or Stripe surface', () => {
@@ -124,15 +133,26 @@ test('an identity that names characters this request does not carry is refused',
 // ── what must keep working ──────────────────────────────────────────────────
 
 test('the aligned request still enforces the description the reorder was evading', () => {
-  const r = runScenario('aligned');
+  const aligned = runScenario('aligned');
 
   // Bo owns the photo and wrote a description; Nana has neither. The gate the
-  // reorder was built to slip past fires, and names the right person.
-  assert.equal(r.status, 400);
-  assert.equal(r.body?.code, 'supporting_character_details_required');
-  assert.match(r.body?.error ?? '', /Nana/);
-  assert.equal(r.body?.error?.includes('Uncle Bo'), false, 'Bo is described and must not be named');
-  assert.deepEqual(r.journal, [], 'the description gate also refuses before any external call');
+  // reorder was built to slip past fires.
+  assert.equal(aligned.status, 400);
+  assert.equal(aligned.body?.code, 'supporting_character_details_required');
+  assert.match(aligned.body?.error ?? '', ATTEMPT_SAFE_COPY);
+  assert.deepEqual(aligned.journal, [], 'the description gate also refuses before any external call');
+
+  // The refusal names Nana rather than Bo — but the response no longer carries
+  // either name, so the pairing is what proves the exemption landed on the
+  // right index. Move the photo from Bo to Nana with everything else held
+  // fixed and the SAME gate falls silent. Under a mapping that credited the
+  // photo to the wrong character these two would be exactly inverted.
+  const moved = runScenario('aligned-nana-photo');
+  assert.notEqual(
+    moved.body?.code,
+    'supporting_character_details_required',
+    'moving the photo onto the undescribed character must clear the gate it was blocking',
+  );
 });
 
 test('an aligned request whose characters are all covered proceeds past the gate', () => {

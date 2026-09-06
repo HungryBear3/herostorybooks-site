@@ -34,6 +34,8 @@ import {
   slotTicketIsCurrent,
   type IntakeClientState,
 } from './checkout-intake-client.ts';
+import { canonicalMediaMime, mediaClassForCategory } from './checkout-media-mime.ts';
+import { classifyStoryAttachment } from './story-attachment.ts';
 
 export type DirectIntakeCategory =
   | 'primary_hero_photo'
@@ -282,6 +284,14 @@ export async function uploadSlotFile(
   if (typeof pathname !== 'string' || typeof reservationId !== 'string' || typeof generation !== 'number') {
     return fail('reservation_failed');
   }
+  // The server echoes the exact MIME the reservation holds. The upload below
+  // must be sent with that same string, or the token allow-list, the Blob
+  // head, and the stored asset would disagree. A disagreement here means the
+  // two sides' MIME contracts have drifted, which is a failure, not a retry.
+  const reservedMime = reservation.body.mimeType;
+  if (typeof reservedMime === 'string' && reservedMime !== params.mimeType) {
+    return fail('reservation_failed');
+  }
 
   const superseded = async (): Promise<SlotUploadOutcome> => {
     const current = state.get().slots[slotKey];
@@ -479,19 +489,35 @@ export interface PrepareDirectIntakeSubmissionParams {
   familyPhotos: Array<{ familyCharacterId: string; file: Blob; mimeType?: string }>;
   guidedStills: Array<{ file: Blob; mimeType?: string }>;
   voice: { file: Blob; source: 'recorded' | 'uploaded'; consent: boolean; mimeType?: string } | null;
+  document?: { file: Blob; consent: boolean; mimeType?: string } | null;
 }
 
 export class DirectIntakePreparationError extends Error {
   readonly code: string;
-  constructor(code: string) {
+  /** Buyer-facing name of the asset that failed, when the failure has one. */
+  readonly label: string | null;
+  constructor(code: string, label: string | null = null) {
     super(code);
     this.name = 'DirectIntakePreparationError';
     this.code = code;
+    this.label = label;
   }
 }
 
-function mimeOf(file: Blob, explicit?: string): string {
-  return explicit || file.type || 'application/octet-stream';
+/**
+ * The exact MIME string a file will be reserved, uploaded, and stored as.
+ *
+ * Judged through the shared contract the server uses, so an accepted result is
+ * a string the server will accept byte-for-byte. `explicit` is the type the
+ * page read off the browser `File`; it is normalized here, never trusted raw.
+ */
+function resolveMediaMime(
+  category: DirectIntakeCategory,
+  file: Blob,
+  explicit?: string,
+): ReturnType<typeof canonicalMediaMime> {
+  const name = (file as Blob & { name?: string }).name;
+  return canonicalMediaMime({ type: explicit || file.type, name }, mediaClassForCategory(category));
 }
 
 /**
@@ -508,39 +534,34 @@ export async function prepareDirectIntakeSubmission(
   if (params.voice && !params.voice.consent) {
     throw new DirectIntakePreparationError('voice_consent_required');
   }
-
-  const familyCharacterIds = [...(params.familyCharacterIds
-    ?? params.familyPhotos.map((entry) => entry.familyCharacterId))];
-  const session = await createCheckoutIntakeSession(params.transport, {
-    mediaAuthorized: true,
-    childVoiceAuthorized: Boolean(params.voice),
-    voiceSource: params.voice?.source ?? null,
-  });
-  const state = createSlotStateStore();
-  const expected: ExpectedSlot[] = [];
-
-  const uploadOne = async (slot: DirectSlotRef, file: Blob, label: string, mimeType?: string) => {
-    const slotKey = directSlotKey(slot);
-    expected.push({ slotKey, label });
-    const outcome = await uploadSlotFile(params.transport, state, {
-      session,
-      slot,
-      file,
-      mimeType: mimeOf(file, mimeType),
-      size: file.size,
-    });
-    if (outcome.status !== 'saved') {
-      throw new DirectIntakePreparationError(
-        outcome.status === 'failed' ? outcome.code : 'upload_superseded',
-      );
-    }
-  };
-
-  if (params.heroPhoto) {
-    await uploadOne({ category: 'primary_hero_photo' }, params.heroPhoto, 'hero photo');
+  if (params.document && !params.document.consent) {
+    throw new DirectIntakePreparationError('document_consent_required');
   }
+  const voiceClassification = params.voice
+    ? classifyStoryAttachment(params.voice.file as Blob & { name?: string })
+    : null;
+  if (voiceClassification && voiceClassification.kind !== 'audio') {
+    throw new DirectIntakePreparationError('voice_type_invalid');
+  }
+  const documentClassification = params.document
+    ? classifyStoryAttachment(params.document.file as Blob & { name?: string })
+    : null;
+  if (documentClassification && documentClassification.kind !== 'document') {
+    throw new DirectIntakePreparationError('document_type_invalid');
+  }
+
+  // Decide the exact MIME of EVERY file before any intake exists. A photo the
+  // product cannot accept is refused here, by name, with nothing reserved and
+  // nothing uploaded — not at the fifth upload after four already landed.
+  const plan: Array<{ slot: DirectSlotRef; file: Blob; label: string; mimeType: string }> = [];
+  const planPhoto = (slot: DirectSlotRef, file: Blob, label: string, explicit?: string) => {
+    const resolved = resolveMediaMime(slot.category, file, explicit);
+    if (!resolved.ok) throw new DirectIntakePreparationError('photo_type_unsupported', label);
+    plan.push({ slot, file, label, mimeType: resolved.mimeType });
+  };
+  if (params.heroPhoto) planPhoto({ category: 'primary_hero_photo' }, params.heroPhoto, 'hero photo');
   for (const entry of params.familyPhotos) {
-    await uploadOne(
+    planPhoto(
       { category: 'family_pet_reference', familyCharacterId: entry.familyCharacterId },
       entry.file,
       `photo for ${entry.familyCharacterId}`,
@@ -548,20 +569,56 @@ export async function prepareDirectIntakeSubmission(
     );
   }
   for (const [index, entry] of params.guidedStills.entries()) {
-    await uploadOne(
-      { category: 'guided_still', guidedStillIndex: index },
-      entry.file,
-      `guided still ${index + 1}`,
-      entry.mimeType,
-    );
+    planPhoto({ category: 'guided_still', guidedStillIndex: index }, entry.file, `guided still ${index + 1}`, entry.mimeType);
   }
   if (params.voice) {
-    await uploadOne(
-      { category: 'voice_inspiration' },
+    // The classifier already emits the canonical string; this is the same
+    // contract judging it once more, so the two cannot disagree silently.
+    const resolved = resolveMediaMime(
+      'voice_inspiration',
       params.voice.file,
-      'voice note',
-      params.voice.mimeType,
+      voiceClassification?.kind === 'audio' ? voiceClassification.mimeType : params.voice.mimeType,
     );
+    if (!resolved.ok) throw new DirectIntakePreparationError('voice_type_invalid', 'voice note');
+    plan.push({ slot: { category: 'voice_inspiration' }, file: params.voice.file, label: 'voice note', mimeType: resolved.mimeType });
+  }
+  if (params.document) {
+    const resolved = resolveMediaMime(
+      'document_inspiration',
+      params.document.file,
+      documentClassification?.kind === 'document' ? documentClassification.mimeType : params.document.mimeType,
+    );
+    if (!resolved.ok) throw new DirectIntakePreparationError('document_type_invalid', 'story document');
+    plan.push({ slot: { category: 'document_inspiration' }, file: params.document.file, label: 'story document', mimeType: resolved.mimeType });
+  }
+
+  const familyCharacterIds = [...(params.familyCharacterIds
+    ?? params.familyPhotos.map((entry) => entry.familyCharacterId))];
+  const session = await createCheckoutIntakeSession(params.transport, {
+    mediaAuthorized: true,
+    documentAuthorized: Boolean(params.document),
+    childVoiceAuthorized: Boolean(params.voice),
+    voiceSource: params.voice?.source ?? null,
+  });
+  const state = createSlotStateStore();
+  const expected: ExpectedSlot[] = [];
+
+  for (const { slot, file, label, mimeType } of plan) {
+    const slotKey = directSlotKey(slot);
+    expected.push({ slotKey, label });
+    const outcome = await uploadSlotFile(params.transport, state, {
+      session,
+      slot,
+      file,
+      mimeType,
+      size: file.size,
+    });
+    if (outcome.status !== 'saved') {
+      throw new DirectIntakePreparationError(
+        outcome.status === 'failed' ? outcome.code : 'upload_superseded',
+        label,
+      );
+    }
   }
 
   const blockers = directUploadBlockers(state.get(), expected);
@@ -578,6 +635,7 @@ export interface DirectIntakeSubmissionCache {
   familyPhotos: ReadonlyArray<{ familyCharacterId: string; file: Blob }>;
   guidedStills: readonly Blob[];
   voice: { file: Blob; source: 'recorded' | 'uploaded'; consent: boolean } | null;
+  document: { file: Blob; consent: boolean } | null;
 }
 
 function sameBlobList(left: readonly Blob[], right: readonly Blob[]): boolean {
@@ -603,7 +661,11 @@ function cacheMatches(
       || (cache.voice !== null && params.voice !== null
         && cache.voice.file === params.voice.file
         && cache.voice.source === params.voice.source
-        && cache.voice.consent === params.voice.consent));
+        && cache.voice.consent === params.voice.consent))
+    && ((cache.document === null && !params.document)
+      || (cache.document !== null && params.document != null
+        && cache.document.file === params.document.file
+        && cache.document.consent === params.document.consent));
 }
 
 /**
@@ -636,6 +698,9 @@ export async function prepareOrReuseDirectIntakeSubmission(
     guidedStills: params.guidedStills.map((entry) => entry.file),
     voice: params.voice
       ? { file: params.voice.file, source: params.voice.source, consent: params.voice.consent }
+      : null,
+    document: params.document
+      ? { file: params.document.file, consent: params.document.consent }
       : null,
   };
   return { submission, cache: nextCache };

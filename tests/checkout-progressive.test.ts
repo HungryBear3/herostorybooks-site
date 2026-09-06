@@ -49,6 +49,8 @@ function makeForm(overrides: Partial<CheckoutProgressFormShape> = {}): CheckoutP
     email: 'parent@example.com',
     voiceFile: null,
     voiceConsent: false,
+    customStoryMemory: '',
+    directMediaConsent: false,
     ...overrides,
   };
 }
@@ -62,7 +64,7 @@ test('restored supporting character ids cannot collide with a newly-created draf
   );
   assert.ok(draft);
   assert.notEqual(draft.id, restored.id);
-  assert.match(draft.id, /^supporting-character-[0-9a-f-]{36}$/i);
+  assert.match(draft.id, /^supporting-character-[0-9a-f]{32}$/i);
 });
 
 test('checkout source fences overlapping and reset photo callbacks with operation tokens', () => {
@@ -97,6 +99,16 @@ test('supporting photo completion is draft-only and cancel/remove invalidate pen
   );
   assert.match(removeButton, /supportingPhotoOperationRef\.current \+= 1/);
   assert.match(removeButton, /setSupportingPhotoPendingId\(null\)/);
+});
+
+test('additional-person name is visibly and semantically marked required', () => {
+  const editor = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('{supportingCharacterDraft && ('),
+    CHECKOUT_FORM_SRC.indexOf('Who are they in the story?'),
+  );
+
+  assert.match(editor, /htmlFor="supporting-character-name"[\s\S]*?Name[\s\S]*?aria-hidden="true"[^>]*>\s*\*[\s\S]*?\(required\)/);
+  assert.match(editor, /id="supporting-character-name"[\s\S]*?required/);
 });
 
 test('incomplete human draft cannot save', () => {
@@ -214,7 +226,7 @@ test('first invalid field mapping and focus target are stable for each step', ()
   });
   assert.deepEqual(appearance.currentStep, {
     id: 'hero-appearance',
-    title: 'Hero appearance/photo',
+    title: 'Hero photo or description',
     missingFields: ['Hero appearance details or photo'],
     firstInvalidField: 'characterNotes',
   });
@@ -224,6 +236,120 @@ test('first invalid field mapping and focus target are stable for each step', ()
     missingFields: ['Email address'],
     firstInvalidField: 'email',
   });
+});
+
+test('Custom Story requires one source and returns consent recovery to the correct medium', () => {
+  const noSource = makeForm({ theme: 'custom-voice-story', customStoryMemory: '', voiceFile: null });
+  const noSourceProgress = getCheckoutProgress(noSource);
+  assert.equal(noSourceProgress.steps.find((step) => step.id === 'hero-details')?.complete, false);
+  assert.deepEqual(noSourceProgress.currentStep, {
+    id: 'hero-details',
+    title: 'Hero details',
+    missingFields: ['Custom Story source'],
+    firstInvalidField: 'customStoryMemory',
+  });
+  assert.match(getCheckoutPaymentBlockers(noSource).join(' '), /Custom Story source/);
+
+  const typed = makeForm({ theme: 'custom-voice-story', customStoryMemory: 'A real family memory.' });
+  assert.equal(getCheckoutProgress(typed).steps.find((step) => step.id === 'hero-details')?.complete, true);
+
+  const audio = makeForm({
+    theme: 'custom-voice-story',
+    voiceFile: new File(['audio'], 'memory.mp3', { type: 'audio/mpeg' }),
+    voiceConsent: false,
+  });
+  assert.deepEqual(getCheckoutProgress(audio).currentStep, {
+    id: 'hero-details',
+    title: 'Hero details',
+    missingFields: ['Voice note consent'],
+    firstInvalidField: 'voiceConsent',
+  });
+
+  const document = makeForm({
+    theme: 'custom-voice-story',
+    voiceFile: new File(['notes'], 'memory.pdf', { type: 'application/pdf' }),
+    voiceConsent: false,
+  });
+  assert.deepEqual(getCheckoutProgress(document).currentStep, {
+    id: 'hero-details',
+    title: 'Hero details',
+    missingFields: ['Document consent'],
+    firstInvalidField: 'voiceConsent',
+  });
+
+  const contradictory = makeForm({
+    theme: 'custom-voice-story',
+    voiceFile: new File(['bad'], 'memory.pdf', { type: 'audio/webm' }),
+    voiceConsent: true,
+  });
+  assert.deepEqual(getCheckoutProgress(contradictory).currentStep, {
+    id: 'hero-details',
+    title: 'Hero details',
+    missingFields: ['Custom Story source', 'Supported story attachment'],
+    firstInvalidField: 'customStoryMemory',
+  });
+  assert.match(getCheckoutPaymentBlockers(contradictory).join(' '), /Custom Story source/);
+});
+
+test('server and Clear saved details enforce the same source/reset contract before payment', () => {
+  const route = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
+  const sourceRequired = route.indexOf('custom_story_source_required');
+  // The source/reset contract must hold before EITHER provider path can run.
+  const stripe = Math.min(
+    route.indexOf('await runDirectIntakeCheckout({'),
+    route.indexOf('await provisionCheckoutSession({'),
+  );
+  assert.ok(stripe > 0, 'route must still reach provider provisioning');
+  assert.ok(sourceRequired > 0 && sourceRequired < stripe);
+
+  const clearSavedDetails = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('We saved your progress'),
+    CHECKOUT_FORM_SRC.indexOf('Clear saved details') + 240,
+  );
+  assert.match(clearSavedDetails, /setDirectMediaConsent\(false\)/);
+  assert.match(clearSavedDetails, /intakeSessionRef\.current = null/);
+  assert.match(CHECKOUT_FORM_SRC, /registerFieldRef\("voiceConsent"\)/);
+
+  const readiness = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('const isReadyToPay ='),
+    CHECKOUT_FORM_SRC.indexOf('const completedStepCount'),
+  );
+  assert.match(readiness, /!isCustomStorySelected \|\| hasCustomStoryInput/);
+  assert.match(CHECKOUT_FORM_SRC, /classifyStoryAttachment\(form\.voiceFile\)/);
+});
+
+test('payment readiness gates email on the shared validity rule, not mere presence', () => {
+  // A non-empty string is not an email. `Boolean(form.email)` lets a dotless
+  // domain enable Pay, which sends /api/order and — correctly, because the
+  // attempt may already have provider evidence — comes back with generic
+  // reconciliation copy instead of an actionable "fix your email" message.
+  const readiness = CHECKOUT_FORM_SRC.slice(
+    CHECKOUT_FORM_SRC.indexOf('const isReadyToPay ='),
+    CHECKOUT_FORM_SRC.indexOf('const completedStepCount'),
+  );
+
+  assert.match(readiness, /looksLikeEmail\(form\.email\)/, 'Pay must gate on email validity');
+  assert.doesNotMatch(
+    readiness,
+    /Boolean\(form\.email\)/,
+    'presence alone must not enable Pay for an invalid address',
+  );
+});
+
+test('a dotless-domain email keeps the review step blocking with an email-address blocker', () => {
+  const dotless = makeForm({ email: 'alexy@gmail' });
+  const progress = getCheckoutProgress(dotless);
+
+  assert.deepEqual(progress.currentStep, {
+    id: 'review',
+    title: 'Contact, delivery, and review',
+    missingFields: ['Email address'],
+    firstInvalidField: 'email',
+  });
+  assert.deepEqual(
+    getCheckoutPaymentBlockers(dotless),
+    ['Contact, delivery, and review: Email address'],
+  );
 });
 
 test('optional fields do not block', () => {
@@ -264,6 +390,37 @@ test('forward navigation is locked at the first incomplete step while completed 
   assert.equal(canNavigateToCheckoutStep(appearance.steps, 'story'), false);
 });
 
+test('checkout source includes early and end-of-step next-section actions without an overlay', () => {
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="checkout-header-continue"/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="checkout-primary-continue"/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="checkout-bottom-continue"/);
+  assert.doesNotMatch(CHECKOUT_FORM_SRC, /data-testid="checkout-sticky-continue"/);
+  assert.match(CHECKOUT_FORM_SRC, /Next: Add hero photo or description/);
+  assert.match(CHECKOUT_FORM_SRC, /`Next: \$\{nextStep\.title\}`/);
+  assert.match(CHECKOUT_FORM_SRC, /focus-visible:ring-\[#241914\]/);
+  assert.match(
+    CHECKOUT_FORM_SRC,
+    /id="childName"[\s\S]*?data-testid="checkout-primary-continue"[\s\S]*?id="recipientName"/,
+  );
+  assert.match(
+    CHECKOUT_FORM_SRC,
+    /data-testid="checkout-bottom-continue"[\s\S]*?type="button"[\s\S]*?onClick=\{continueCurrentStep\}/,
+  );
+});
+
+test('checkout makes photo the primary likeness path and description the alternative', () => {
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="checkout-theme-step"[\s\S]*?tabIndex=\{-1\}/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="hero-photo-primary-choice"/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="hero-photo-primary-choice"[\s\S]*?tabIndex=\{-1\}/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="hero-photo-upload-control"/);
+  assert.match(CHECKOUT_FORM_SRC, /aria-label="Upload hero photo from your phone"[\s\S]*?className="peer sr-only"/);
+  assert.match(CHECKOUT_FORM_SRC, /aria-label="Take a new hero photo"[\s\S]*?className="peer sr-only"/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="hero-photo-proof-example"/);
+  assert.match(CHECKOUT_FORM_SRC, /Upload a photo for the best likeness/);
+  assert.match(CHECKOUT_FORM_SRC, /data-testid="hero-description-alternative"/);
+  assert.match(CHECKOUT_FORM_SRC, /Or describe the hero instead/);
+});
+
 test('checkout source includes progressive step UI and sequential person editor affordances', () => {
   assert.match(CHECKOUT_FORM_SRC, /Step \{currentStepIndex \+ 1\} of \{checkoutSteps.length\}/);
   assert.match(CHECKOUT_FORM_SRC, /Save person/);
@@ -278,6 +435,14 @@ test('checkout source includes progressive step UI and sequential person editor 
   assert.match(CHECKOUT_FORM_SRC, /currentStepId !== "review"/);
   assert.match(CHECKOUT_FORM_SRC, /supportingPhotoPendingId === supportingCharacterDraft\.id/);
   assert.match(CHECKOUT_FORM_SRC, /This person is the gift recipient/);
+  assert.match(
+    CHECKOUT_FORM_SRC,
+    /Add one person at a time\. Complete and save their profile before adding the next person\./,
+  );
+  assert.match(
+    CHECKOUT_FORM_SRC,
+    /Select “Save person” below before choosing another person\./,
+  );
   assert.match(CHECKOUT_FORM_SRC, /setGuidedFrames\(\[\]\)/);
   assert.match(
     CHECKOUT_FORM_SRC,

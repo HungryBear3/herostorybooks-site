@@ -22,7 +22,14 @@ import { handleIntakeRequest, type IntakeRouteDeps } from '../src/lib/checkout-i
 import { createMemoryCheckoutGuardStore } from '../src/lib/checkout-request-guard.ts';
 import { slotKeyFor } from '../src/lib/checkout-intake.ts';
 import { authorizeReservedUpload, completeSlotUpload } from '../src/lib/checkout-intake-upload.ts';
-import type { CheckoutFinalizeSelection } from '../src/lib/checkout-finalize.ts';
+import { markIntakeFinalized } from '../src/lib/checkout-intake.ts';
+import {
+  abortIntakeFinalization,
+  finalizeIntakeSelection,
+  type CheckoutFinalizeSelection,
+} from '../src/lib/checkout-finalize.ts';
+import { runPreparedIntakeOrderBinding } from '../src/lib/checkout-intake-order-binding.ts';
+import { createOrderRecord, type OrderRecord } from '../src/lib/orders.ts';
 import { createIntakeClientState } from '../src/lib/checkout-intake-client.ts';
 import {
   buildDirectIntakeSelection,
@@ -53,18 +60,23 @@ interface Rig {
   failNextUpload(error?: Error): void;
   uploads: number;
   reserves: number;
+  /** `create` actions the page issued — a refused file must not cost one. */
+  creates: number;
+  /** The exact `contentType` each Blob upload was sent with, in order. */
+  uploadContentTypes: string[];
 }
 
 function rig(options: { uploadLandsLate?: boolean; uploadNeverLands?: boolean } = {}): Rig {
   const store = createMemoryIntakeStore();
   const deps: IntakeRouteDeps = { store, guardStore: createMemoryCheckoutGuardStore(), env: ENV };
-  const counters = { uploads: 0, reserves: 0 };
+  const counters = { uploads: 0, reserves: 0, creates: 0, uploadContentTypes: [] as string[] };
   let hold: { promise: Promise<void>; release: () => void; started: () => void } | null = null;
   let uploadError: Error | null = null;
 
   const transport: IntakeClientTransport = {
     async intake(body) {
       if ((body as { action?: string }).action === 'reserve-upload') counters.reserves += 1;
+      if ((body as { action?: string }).action === 'create') counters.creates += 1;
       const response = await handleIntakeRequest(new Request(`${ORIGIN}/api/checkout/intake`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', origin: ORIGIN, 'sec-fetch-site': 'same-origin' },
@@ -75,6 +87,7 @@ function rig(options: { uploadLandsLate?: boolean; uploadNeverLands?: boolean } 
 
     async upload({ pathname, clientPayload, contentType, file }) {
       counters.uploads += 1;
+      counters.uploadContentTypes.push(contentType);
       if (hold) {
         const current = hold;
         hold = null;
@@ -125,6 +138,8 @@ function rig(options: { uploadLandsLate?: boolean; uploadNeverLands?: boolean } 
     failNextUpload(error = new Error('network lost')) { uploadError = error; },
     get uploads() { return counters.uploads; },
     get reserves() { return counters.reserves; },
+    get creates() { return counters.creates; },
+    get uploadContentTypes() { return counters.uploadContentTypes; },
   } as Rig;
 }
 
@@ -470,6 +485,95 @@ test('the high-level checkout orchestrator uploads every current file and preser
   assert.equal(r.uploads, 3);
 });
 
+test('a direct document upload uses document consent and the document slot, never the voice slot', async () => {
+  const r = rig();
+  const document = new Blob([new Uint8Array(23)], { type: 'application/pdf' });
+  const result = await prepareDirectIntakeSubmission({
+    enabled: true,
+    transport: r.transport,
+    heroPhoto: null,
+    familyPhotos: [],
+    guidedStills: [],
+    voice: null,
+    document: { file: document, consent: true, mimeType: document.type },
+  });
+
+  assert.ok(result);
+  assert.equal(result.selection.voiceAssetId, null);
+  assert.ok(result.selection.documentAssetId);
+  const record = r.store.records.get(result.session.intakeId)!.record;
+  assert.equal(record.consent.childVoiceAuthorizedAt, null);
+  assert.ok(record.consent.documentAuthorizedAt);
+  assert.equal(record.slots.voice_inspiration, undefined);
+  assert.equal(
+    record.slots.document_inspiration!.active!.assetId,
+    result.selection.documentAssetId,
+  );
+  assert.equal(r.uploads, 1);
+});
+
+test('a direct empty-MIME audio upload derives canonical MIME and completes the voice slot', async () => {
+  const r = rig();
+  const voice = new File([new Uint8Array(23)], 'memory.mp3', { type: '' });
+  const result = await prepareDirectIntakeSubmission({
+    enabled: true,
+    transport: r.transport,
+    heroPhoto: null,
+    familyPhotos: [],
+    guidedStills: [],
+    voice: { file: voice, source: 'uploaded', consent: true, mimeType: voice.type },
+    document: null,
+  });
+
+  assert.ok(result);
+  const record = r.store.records.get(result.session.intakeId)!.record;
+  assert.equal(record.slots.voice_inspiration!.active!.mimeType, 'audio/mpeg');
+  assert.ok(result.selection.voiceAssetId);
+  assert.equal(record.slots.document_inspiration, undefined);
+});
+
+test('a direct empty-MIME document derives canonical MIME and stays in the document slot', async () => {
+  const r = rig();
+  const document = new File([new Uint8Array(23)], 'notes.docx', { type: '' });
+  const result = await prepareDirectIntakeSubmission({
+    enabled: true,
+    transport: r.transport,
+    heroPhoto: null,
+    familyPhotos: [],
+    guidedStills: [],
+    voice: null,
+    document: { file: document, consent: true, mimeType: document.type },
+  });
+
+  assert.ok(result);
+  const record = r.store.records.get(result.session.intakeId)!.record;
+  assert.equal(record.slots.document_inspiration!.active!.mimeType,
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  assert.equal(record.slots.voice_inspiration, undefined);
+});
+
+test('a contradictory direct document MIME and extension fails before reserve or upload', async () => {
+  const r = rig();
+  await assert.rejects(
+    prepareDirectIntakeSubmission({
+      enabled: true,
+      transport: r.transport,
+      heroPhoto: null,
+      familyPhotos: [],
+      guidedStills: [],
+      voice: null,
+      document: {
+        file: new File(['bad'], 'memory.mp3', { type: 'application/pdf' }),
+        consent: true,
+        mimeType: 'application/pdf',
+      },
+    }),
+    /document_type_invalid/,
+  );
+  assert.equal(r.reserves, 0);
+  assert.equal(r.uploads, 0);
+});
+
 test('one failed direct upload aborts preparation while leaving the caller file available for retry', async () => {
   const r = rig();
   const localFile = jpeg(33);
@@ -516,6 +620,22 @@ test('a repeated order attempt reuses the exact prepared intake and changed medi
     /direct_upload_selection_changed_reload_required/,
   );
   assert.equal(r.uploads, 1, 'changed media may not silently replace a frozen checkout attempt');
+
+  const document = new Blob([new Uint8Array(43)], { type: 'application/pdf' });
+  const documentParams = {
+    ...params,
+    heroPhoto: null,
+    document: { file: document, consent: true, mimeType: document.type },
+  };
+  const documentFirst = await prepareOrReuseDirectIntakeSubmission(documentParams, null);
+  assert.ok(documentFirst);
+  await assert.rejects(
+    prepareOrReuseDirectIntakeSubmission(
+      { ...documentParams, document: { ...documentParams.document, file: new Blob([new Uint8Array(44)], { type: 'application/pdf' }) } },
+      documentFirst.cache,
+    ),
+    /direct_upload_selection_changed_reload_required/,
+  );
 });
 
 test('all five guided UI stills upload and map in canonical index order', async () => {
@@ -557,4 +677,194 @@ test('a sparse guided-still state is refused instead of silently renumbering lat
     r.state.get().slots['guided_still:1']!.assetId,
   ]);
   assert.deepEqual(built.unmapped, ['guided_still:3', 'guided_still:4']);
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-04 owner incident: an uploaded iPhone Voice Memo (`.m4a`, reported by
+// Safari as `audio/x-m4a`) was accepted by the browser classifier and refused
+// by `reserve-upload` as `asset_mime_invalid` — the fifth asset of a five-asset
+// submission, after four photos had already uploaded. Nothing reached
+// `/api/order` or Stripe. These tests drive the real handler with that file.
+// ---------------------------------------------------------------------------
+
+const ATTEMPT_ID = 'c'.repeat(32);
+const BOUND_ORDER_ID = `ord_${'d'.repeat(16)}`;
+
+/** The same order the route would build, minus everything media-related. */
+function draftOrderFor(): OrderRecord {
+  const order = createOrderRecord({
+    childName: 'Mina',
+    bookFormat: 'digital',
+    email: 'buyer@example.com',
+    theme: 'custom-voice-story',
+    familyCharacters: [],
+  }, { id: BOUND_ORDER_ID, fulfillmentMode: 'manual_hold' });
+  order.checkoutAttemptId = ATTEMPT_ID;
+  order.checkoutFingerprint = 'e'.repeat(64);
+  order.checkoutLeaseId = '11111111-1111-4111-8111-111111111111';
+  order.checkoutLeaseExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  return order;
+}
+
+/** Binds the prepared submission to an order through the REAL finalizer. */
+async function bindToOrder(r: Rig, submission: NonNullable<Awaited<ReturnType<typeof prepareDirectIntakeSubmission>>>) {
+  const orders = new Map<string, OrderRecord>();
+  return runPreparedIntakeOrderBinding({
+    draftOrder: draftOrderFor(),
+    intakeId: submission.session.intakeId,
+    capability: submission.session.capability,
+    selection: submission.selection,
+    familyCharacterIds: submission.familyCharacterIds,
+  }, {
+    finalizeIntake: (params) => finalizeIntakeSelection(r.store, params),
+    async persistNewOrder(order) {
+      orders.set(order.id, structuredClone(order));
+      return { status: 'created', order: structuredClone(order) };
+    },
+    async readOrder(orderId) {
+      const order = orders.get(orderId);
+      return order ? { status: 'found', order: structuredClone(order) } : { status: 'absent' };
+    },
+    markIntakeFinalized: (params) => markIntakeFinalized(r.store, params),
+    abortIntakeFinalization: (params) => abortIntakeFinalization(r.store, params),
+  });
+}
+
+test('an uploaded iPhone voice memo reported as audio/x-m4a completes with ONE canonical MIME from reservation to bound order', async () => {
+  const r = rig();
+  const memo = new File([new Uint8Array(48)], 'New Recording 3.m4a', { type: 'audio/x-m4a' });
+
+  const result = await prepareDirectIntakeSubmission({
+    enabled: true,
+    transport: r.transport,
+    heroPhoto: null,
+    familyPhotos: [],
+    guidedStills: [],
+    // Exactly what the checkout page passes: the browser's own `File.type`.
+    voice: { file: memo, source: 'uploaded', consent: true, mimeType: memo.type },
+    document: null,
+  });
+
+  assert.ok(result, 'the voice memo must be accepted');
+  assert.ok(result.selection.voiceAssetId);
+  assert.equal(r.uploads, 1);
+
+  const record = r.store.records.get(result.session.intakeId)!.record;
+  const active = record.slots.voice_inspiration!.active!;
+  const canonical = active.mimeType;
+  assert.equal(canonical, 'audio/mp4', 'the stored MIME is the canonical server string, never the Safari alias');
+  assert.deepEqual(r.uploadContentTypes, [canonical], 'the Blob upload was sent with the same string that was reserved');
+  assert.equal(r.store.assets.get(active.pathname)!.mimeType, canonical, 'Blob head agrees');
+
+  const bound = await bindToOrder(r, result);
+  assert.equal(bound.status, 'committed', `binding must commit, got ${bound.status}`);
+  if (bound.status !== 'committed') return;
+  const finalized = r.store.records.get(result.session.intakeId)!.record.finalization!;
+  assert.equal(finalized.selection.length, 1);
+  assert.equal(finalized.selection[0]!.mimeType, canonical, 'finalization selection carries the same string');
+  assert.equal(bound.order.voiceIntakeMedia?.mimeType, canonical, 'the prepared order carries the same string');
+  assert.equal(bound.order.checkoutIntake?.selection[0]?.mimeType, canonical);
+});
+
+test('an uploaded .m4a with an empty browser MIME derives the same canonical audio MIME through the real handler', async () => {
+  const r = rig();
+  const memo = new File([new Uint8Array(40)], 'New Recording 4.m4a', { type: '' });
+
+  const result = await prepareDirectIntakeSubmission({
+    enabled: true,
+    transport: r.transport,
+    heroPhoto: null,
+    familyPhotos: [],
+    guidedStills: [],
+    voice: { file: memo, source: 'uploaded', consent: true, mimeType: memo.type },
+    document: null,
+  });
+
+  assert.ok(result);
+  const record = r.store.records.get(result.session.intakeId)!.record;
+  assert.equal(record.slots.voice_inspiration!.active!.mimeType, 'audio/mp4');
+  assert.deepEqual(r.uploadContentTypes, ['audio/mp4']);
+});
+
+test('an unsupported photo type is refused before any intake exists, with a photo-specific code', async () => {
+  for (const [label, file, mimeType] of [
+    ['heic', new File([new Uint8Array(30)], 'IMG_0421.HEIC', { type: 'image/heic' }), undefined],
+    ['gif', new File([new Uint8Array(30)], 'hero.gif', { type: 'image/gif' }), 'image/gif'],
+    ['unspecified', new File([new Uint8Array(30)], 'hero.jpg', { type: '' }), ''],
+  ] as const) {
+    const r = rig();
+    await assert.rejects(
+      prepareDirectIntakeSubmission({
+        enabled: true,
+        transport: r.transport,
+        heroPhoto: file,
+        familyPhotos: [],
+        guidedStills: [],
+        voice: null,
+        document: null,
+      }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, 'photo_type_unsupported', `${label}: code`);
+        assert.equal((error as { label?: string }).label, 'hero photo', `${label}: the refused asset is named`);
+        return true;
+      },
+    );
+    assert.equal(r.creates, 0, `${label}: no intake may be created for a photo the product cannot accept`);
+    assert.equal(r.reserves, 0, `${label}: no reservation may be attempted`);
+    assert.equal(r.uploads, 0);
+    void mimeType;
+  }
+});
+
+test('an unsupported family photo type is refused before any intake exists and names the character', async () => {
+  const r = rig();
+  const heic = new File([new Uint8Array(30)], 'dad.heic', { type: 'image/heic' });
+  await assert.rejects(
+    prepareDirectIntakeSubmission({
+      enabled: true,
+      transport: r.transport,
+      heroPhoto: jpeg(),
+      familyPhotos: [{ familyCharacterId: FAMILY_ID, file: heic, mimeType: heic.type }],
+      guidedStills: [],
+      voice: null,
+      document: null,
+    }),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, 'photo_type_unsupported');
+      assert.equal((error as { label?: string }).label, `photo for ${FAMILY_ID}`);
+      return true;
+    },
+  );
+  assert.equal(r.creates, 0, 'the hero JPEG must not have been uploaded into an intake that then fails');
+  assert.equal(r.uploads, 0);
+});
+
+test('a refused reservation carries the asset label so the page can say which file failed', async () => {
+  const r = rig();
+  // Bypass the client-side gate deliberately: the server must still refuse a
+  // MIME outside the category policy, and the orchestrator must still label it.
+  const original = r.transport.intake;
+  r.transport.intake = async (body) => {
+    if ((body as { action?: string }).action === 'reserve-upload') {
+      body = { ...body, mimeType: 'image/gif' };
+    }
+    return original(body);
+  };
+  await assert.rejects(
+    prepareDirectIntakeSubmission({
+      enabled: true,
+      transport: r.transport,
+      heroPhoto: jpeg(),
+      familyPhotos: [],
+      guidedStills: [],
+      voice: null,
+      document: null,
+    }),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, 'asset_mime_invalid');
+      assert.equal((error as { label?: string }).label, 'hero photo');
+      return true;
+    },
+  );
+  assert.equal(r.uploads, 0);
 });

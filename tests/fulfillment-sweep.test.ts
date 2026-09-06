@@ -5,7 +5,6 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
-  bindOrderCheckoutSession,
   createOrderRecord,
   getOrderAuthoritative,
   listOrdersAuthoritative,
@@ -156,8 +155,7 @@ test('triggerFulfillment uses a durable claim so concurrent callers do not doubl
       { childName: 'Milo', bookFormat: 'digital', email: 'buyer@example.com' },
       { id: 'ord_claim', fulfillmentMode: 'auto' },
     );
-    await persistOrder(base);
-    await bindOrderCheckoutSession('ord_claim', 'cs_test_claim');
+    await persistOrder({ ...base, stripeSessionId: 'cs_test_claim' });
     await updateOrderPayment('ord_claim', 'paid', { stripeSessionId: 'cs_test_claim' });
 
     let storyCalls = 0;
@@ -205,8 +203,7 @@ test('replacement claim fences the old worker before PDF, upload, email, or stat
       { childName: 'Milo', bookFormat: 'digital', email: 'buyer@example.com' },
       { id: 'ord_takeover', fulfillmentMode: 'auto' },
     );
-    await persistOrder(base);
-    await bindOrderCheckoutSession('ord_takeover', 'cs_test_takeover');
+    await persistOrder({ ...base, stripeSessionId: 'cs_test_takeover' });
     await updateOrderPayment('ord_takeover', 'paid', { stripeSessionId: 'cs_test_takeover' });
 
     let releaseStory: (() => void) | null = null;
@@ -295,9 +292,12 @@ test('claim boundary refuses paid manual-held and internally disposed orders', a
         { childName: 'Milo', bookFormat: 'digital', email: 'buyer@example.com' },
         { id: candidate.id, fulfillmentMode: candidate.fulfillmentMode },
       );
-      await persistOrder({ ...base, internalDisposition: candidate.internalDisposition });
       const sessionId = `cs_${candidate.id}`;
-      await bindOrderCheckoutSession(candidate.id, sessionId);
+      await persistOrder({
+        ...base,
+        internalDisposition: candidate.internalDisposition,
+        stripeSessionId: sessionId,
+      });
       await updateOrderPayment(candidate.id, 'paid', { stripeSessionId: sessionId });
       let storyCalls = 0;
       const result = await triggerFulfillment(candidate.id, {

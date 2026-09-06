@@ -33,13 +33,24 @@ import {
   supportingCharacterDraftMissingFields,
 } from "@/lib/checkout-progressive";
 import {
+  CHECKOUT_HANDOFF_UNCONFIRMED,
+  checkoutSubmitFailureMessage,
   createSubmitLock,
   performStripeHandoff,
   type SubmitLock,
 } from "@/lib/checkout-handoff";
 import { upload } from "@vercel/blob/client";
 import { isDirectUploadClientEnabled } from "@/lib/checkout-direct-flags";
+import { classifyStoryAttachment } from "@/lib/story-attachment";
+import { canonicalMediaMime } from "@/lib/checkout-media-mime";
 import {
+  checkoutSubmitErrorMessageForAttempt,
+  describeCheckoutSubmitError,
+  photoTypeUnsupportedMessage,
+} from "@/lib/checkout-direct-intake-error-copy";
+import { browserRandomHex } from "@/lib/browser-random-id";
+import {
+  DirectIntakePreparationError,
   applyPrimaryAndSupportingMediaToOrderPayload,
   prepareOrReuseDirectIntakeSubmission,
   type DirectIntakeSubmissionCache,
@@ -147,6 +158,7 @@ const PRIMARY_HERO_TYPES = [
   { id: "child", label: "Child", helper: "Available now" },
   { id: "parent", label: "Parent", helper: "Available by review only" },
   { id: "grandparent", label: "Grandparent", helper: "Available by review only" },
+  { id: "other", label: "Friend / other family member", helper: "Available by review only" },
 ] as const;
 const PET_NOTES_PLACEHOLDER = "Breed, color, size, personality, or markings";
 const MUST_INCLUDE_OPTIONS = [
@@ -185,17 +197,42 @@ function missingSupportingCharacterDescriptionLabels(characters: SupportingChara
     .map(supportingCharacterLabel);
 }
 
-// Phase-A story upload visibility. This is intentionally default-OFF and is
-// not tied to NEXT_PUBLIC_HSB_VOICE_BETA. Enable only with
-// NEXT_PUBLIC_HSB_STORY_UPLOAD=true after legal/product QA.
-const STORY_UPLOAD_ENABLED = process.env.NEXT_PUBLIC_HSB_STORY_UPLOAD === "true";
-
 const STORAGE_KEY = "hsb_order_v1";
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
 const RECOVERY_DEBOUNCE_MS = 1500;
+const CHECKOUT_ATTEMPT_STORAGE_KEY = "hsb-checkout-attempt-id";
+const CHECKOUT_ATTEMPT_ID_RE = /^[a-f0-9]{32}$/;
+
+function newCheckoutAttemptId(): string {
+  return browserRandomHex(16);
+}
+
+function readStoredCheckoutAttemptId(): string | null {
+  try {
+    const stored = sessionStorage.getItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+    return stored && CHECKOUT_ATTEMPT_ID_RE.test(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeCheckoutAttemptId(attemptId: string): void {
+  try {
+    sessionStorage.setItem(CHECKOUT_ATTEMPT_STORAGE_KEY, attemptId);
+  } catch {
+    // Some in-app/private browsers deny session storage. The component ref
+    // still preserves one attempt ID for every retry in this mounted form.
+  }
+}
 
 function looksLikeEmail(e: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
+function isStoryAudioFile(file: File | null): boolean {
+  if (!file) return false;
+  return file.type.startsWith("audio/")
+    || /\.(webm|m4a|mp3|wav|ogg|oga|aac|caf|aif|aiff|flac|mp4)$/i.test(file.name);
 }
 
 const directIntakeTransport: IntakeClientTransport = {
@@ -254,7 +291,7 @@ interface FormState {
   giftMessage: string;
   characterNotes: string;
   customStoryMemory: string;
-  customStorySourceMode: "audio" | "written" | "";
+  customStorySourceMode: "audio" | "document" | "written" | "";
   familyCharacters: SupportingCharacter[];
   mustInclude: string[];
   mustIncludeOther: string;
@@ -328,8 +365,10 @@ function saveProgress(form: FormState) {
         occasion: form.occasion,
         giftMessage: form.giftMessage,
         characterNotes: form.characterNotes,
-        customStoryMemory: form.customStoryMemory,
-        customStorySourceMode: form.customStorySourceMode,
+        customStoryMemory:
+          form.theme === CUSTOM_STORY_THEME_ID ? form.customStoryMemory : "",
+        customStorySourceMode:
+          form.theme === CUSTOM_STORY_THEME_ID ? form.customStorySourceMode : "",
         familyCharacters: form.familyCharacters.map((character) => ({
           ...character,
           pronouns: "",
@@ -427,7 +466,7 @@ function checkoutReferralCode(): string {
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export function CheckoutForm() {
+export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?: boolean }) {
   const [form, setForm] = useState<FormState>(emptyForm);
   const [currentStepId, setCurrentStepId] = useState<"hero-details" | "hero-appearance" | "story" | "people" | "review">("hero-details");
   const [supportingCharacterDraft, setSupportingCharacterDraft] = useState<SupportingCharacter | null>(null);
@@ -448,9 +487,40 @@ export function CheckoutForm() {
   const [handoffNavigationFailed, setHandoffNavigationFailed] = useState(false);
   // Specific, inline submit error. We use an in-page banner rather than
   // window.alert so the exact server reason is visible/scrollable (alerts get
-  // dismissed instantly on mobile) and so we can reassure the customer that no
-  // charge was made and nothing was saved when submission fails before Stripe.
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  // dismissed instantly on mobile).
+  const [submitError, setSubmitErrorState] = useState<string | null>(null);
+  const checkoutAttemptIdRef = useRef<string | null>(null);
+  // The recorded-note preservation hint is only true when the failed attempt
+  // held an in-checkout RECORDING; an uploaded memo or a photo failure gets
+  // no such advice. Set together with the message so they cannot drift.
+  const [showRecordedVoiceHint, setShowRecordedVoiceHint] = useState(false);
+  /**
+   * Whether the banner may add its own "You have not been charged" line.
+   *
+   * It used to say that for EVERY submit failure, including ones that happened
+   * after the request reached the server — where a Session may have been
+   * created and bound, and where the message above it now says the opposite.
+   * The browser can prove the negative only for a freshly generated attempt
+   * that has not been sent. A reused ref/session attempt may have reached the
+   * server earlier, so its message must say "do not pay again" even when this
+   * invocation fails locally before fetch.
+   */
+  const [chargeUnconfirmed, setChargeUnconfirmed] = useState(false);
+  const setSubmitError = useCallback((
+    message: string | null,
+    recordedVoiceHint = false,
+    unconfirmedCharge?: boolean,
+  ) => {
+    const retainedAttemptMayHaveReachedServer = Boolean(
+      checkoutAttemptIdRef.current ?? readStoredCheckoutAttemptId(),
+    );
+    const chargeIsUnconfirmed = unconfirmedCharge ?? retainedAttemptMayHaveReachedServer;
+    setSubmitErrorState(
+      message ? checkoutSubmitErrorMessageForAttempt(message, chargeIsUnconfirmed) : null,
+    );
+    setShowRecordedVoiceHint(Boolean(message) && recordedVoiceHint && !chargeIsUnconfirmed);
+    setChargeUnconfirmed(Boolean(message) && chargeIsUnconfirmed);
+  }, []);
   const [photoNotice, setPhotoNotice] = useState<string | null>(null);
   const [showRecovery, setShowRecovery] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -507,7 +577,20 @@ export function CheckoutForm() {
 
     if (savedWithDefaults && (savedWithDefaults.childName || savedWithDefaults.theme)) {
       setShowRecovery(true);
-      setForm((prev) => ({ ...prev, ...savedWithDefaults, ...queryPrefill }));
+      setForm((prev) => {
+        const restored = { ...prev, ...savedWithDefaults, ...queryPrefill };
+        return restored.theme === CUSTOM_STORY_THEME_ID
+          ? restored
+          : {
+              ...restored,
+              customStoryMemory: "",
+              customStorySourceMode: "",
+              voiceFile: null,
+              voicePreviewUrl: null,
+              voiceSource: null,
+              voiceConsent: false,
+            };
+      });
     } else if (nextFormat || childNamePrefill || themeFromDirection || occasionFromUrl) {
       setForm((prev) => ({ ...prev, ...queryPrefill }));
     }
@@ -707,8 +790,10 @@ export function CheckoutForm() {
   const isCustomStorySelected = form.theme === CUSTOM_STORY_THEME_ID;
   const customStoryTheme = THEMES.find((theme) => theme.id === CUSTOM_STORY_THEME_ID) ?? null;
   const templateThemes = THEMES.filter((theme) => theme.id !== CUSTOM_STORY_THEME_ID);
-  const hasCustomStoryInput = Boolean(form.voiceFile || form.customStoryMemory.trim());
-  const customStorySourceMode = form.customStorySourceMode || (form.voiceFile ? "audio" : form.customStoryMemory.trim() ? "written" : "");
+  const customStoryAttachment = form.voiceFile ? classifyStoryAttachment(form.voiceFile) : null;
+  const customStoryAttachmentIsCoherent = customStoryAttachment?.kind === "audio" || customStoryAttachment?.kind === "document";
+  const hasCustomStoryInput = Boolean(customStoryAttachmentIsCoherent || form.customStoryMemory.trim());
+
   const guidedPhotoSummary = guidedFrames.length > 0
     ? `${guidedFrames.length} guided photo${guidedFrames.length === 1 ? "" : "s"} added`
     : "5 quick angles, about a minute (optional).";
@@ -722,11 +807,19 @@ export function CheckoutForm() {
     email: form.email,
     voiceFile: form.voiceFile,
     voiceConsent: form.voiceConsent,
+    customStoryMemory: form.customStoryMemory,
+    directMediaConsent,
     activeSupportingCharacterDraft: supportingCharacterDraft,
   });
   const checkoutSteps = checkoutProgress.steps;
   const currentStep = checkoutSteps.find((step) => step.id === currentStepId) ?? checkoutSteps[0];
   const currentStepIndex = checkoutSteps.findIndex((step) => step.id === currentStep.id);
+  const nextStep = checkoutSteps[currentStepIndex + 1];
+  const nextStepActionLabel = nextStep
+    ? currentStep.id === "hero-details"
+      ? "Next: Add hero photo or description"
+      : `Next: ${nextStep.title}`
+    : null;
   const paymentBlockers = getCheckoutPaymentBlockers({
     theme: form.theme,
     childName: form.childName,
@@ -737,10 +830,11 @@ export function CheckoutForm() {
     email: form.email,
     voiceFile: form.voiceFile,
     voiceConsent: form.voiceConsent,
+    customStoryMemory: form.customStoryMemory,
+    directMediaConsent,
     activeSupportingCharacterDraft: supportingCharacterDraft,
   });
-  const missingVoiceConsent =
-    STORY_UPLOAD_ENABLED && form.voiceFile != null && !form.voiceConsent;
+  const missingVoiceConsent = form.voiceFile != null && !form.voiceConsent;
   const directMediaFilesPresent = Boolean(
     form.photoFile ||
       form.voiceFile ||
@@ -756,8 +850,10 @@ export function CheckoutForm() {
     Boolean(form.theme) &&
     Boolean(form.childName) &&
     Boolean(form.bookFormat) &&
-    Boolean(form.email) &&
+    looksLikeEmail(form.email) &&
     Boolean(form.photoFile || form.characterNotes.trim()) &&
+    (!isCustomStorySelected || hasCustomStoryInput) &&
+    (!isCustomStorySelected || !form.voiceFile || customStoryAttachmentIsCoherent) &&
     missingSupportingDescriptionLabels.length === 0 &&
     !supportingCharacterDraft &&
     !missingVoiceConsent &&
@@ -787,9 +883,9 @@ export function CheckoutForm() {
     requestAnimationFrame(() => {
       const target = (fieldName ? fieldRefs.current[fieldName] : null) ?? (stepId ? stepRefs.current[stepId] : null);
       if (target) {
-        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.scrollIntoView({ behavior: "smooth", block: fieldName ? "center" : "start" });
         if ("focus" in target) {
-          (target as HTMLElement).focus();
+          (target as HTMLElement).focus({ preventScroll: true });
         }
       }
     });
@@ -807,15 +903,20 @@ export function CheckoutForm() {
 
     setStepError(null);
     setFieldErrors({});
-    const nextStep = checkoutSteps[currentStepIndex + 1];
     if (nextStep) {
       setCurrentStepId(nextStep.id);
       scrollToField(null, nextStep.id);
     }
-  }, [checkoutSteps, currentStep, currentStepIndex, scrollToField]);
+  }, [currentStep, nextStep, scrollToField]);
 
   const processPhoto = useCallback(async (file: File) => {
     const operation = ++heroPhotoOperationRef.current;
+    // Refuse an unsupported still format at the picker, with photo-specific
+    // copy, instead of discovering it at the payment button.
+    if (!canonicalMediaMime(file, "photo").ok) {
+      setSubmitError(photoTypeUnsupportedMessage("hero photo"));
+      return;
+    }
     try {
       const uploadFile = await shrinkPhotoForUpload(file, CHECKOUT_PHOTO_MAX_BYTES);
       if (operation !== heroPhotoOperationRef.current) return;
@@ -838,10 +939,14 @@ export function CheckoutForm() {
         "That photo is too large for checkout on this device. Please choose a smaller JPG/PNG, screenshot/crop it, or continue without the child photo and add it later.",
       );
     }
-  }, []);
+  }, [setSubmitError]);
 
   const processSupportingCharacterPhoto = useCallback(async (id: string, file: File) => {
     const operation = ++supportingPhotoOperationRef.current;
+    if (!canonicalMediaMime(file, "photo").ok) {
+      setSubmitError(photoTypeUnsupportedMessage("family or pet photo"));
+      return;
+    }
     setSupportingPhotoPendingId(id);
     try {
       const uploadFile = await shrinkPhotoForUpload(file, CHECKOUT_PHOTO_MAX_BYTES);
@@ -873,7 +978,7 @@ export function CheckoutForm() {
         "That family/pet photo is too large for checkout on this device. Please choose a smaller JPG/PNG or crop/screenshot it before retrying.",
       );
     }
-  }, []);
+  }, [setSubmitError]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -916,14 +1021,21 @@ export function CheckoutForm() {
       recoveryTimerRef.current = null;
     }
 
+    // A local failure is provably chargeless only when this invocation created
+    // a brand-new attempt and never sent it. An attempt already held in the ref
+    // or session storage may have reached the server during an earlier submit.
+    let requestSent = false;
+    let attemptWasReused = false;
+
     try {
       const payload = new FormData();
-      const attemptStorageKey = "hsb-checkout-attempt-id";
-      let checkoutAttemptId = sessionStorage.getItem(attemptStorageKey);
+      let checkoutAttemptId = checkoutAttemptIdRef.current ?? readStoredCheckoutAttemptId();
+      attemptWasReused = Boolean(checkoutAttemptId);
       if (!checkoutAttemptId) {
-        checkoutAttemptId = crypto.randomUUID().replace(/-/g, "");
-        sessionStorage.setItem(attemptStorageKey, checkoutAttemptId);
+        checkoutAttemptId = newCheckoutAttemptId();
+        storeCheckoutAttemptId(checkoutAttemptId);
       }
+      checkoutAttemptIdRef.current = checkoutAttemptId;
       payload.set("checkoutAttemptId", checkoutAttemptId);
       const familyCharactersForOrder = form.familyCharacters
         .filter((character) =>
@@ -956,17 +1068,10 @@ export function CheckoutForm() {
       payload.set("lesson", form.lesson);
       payload.set("occasion", form.occasion);
       payload.set("giftMessage", form.giftMessage);
-      payload.set(
-        "characterNotes",
-        [
-          form.characterNotes.trim(),
-          form.customStoryMemory.trim()
-            ? `Custom story memory / typed fallback: ${form.customStoryMemory.trim()}`
-            : "",
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-      );
+      payload.set("characterNotes", form.characterNotes.trim());
+      if (isCustomStorySelected && form.customStoryMemory.trim()) {
+        payload.set("customStoryText", form.customStoryMemory.trim());
+      }
       payload.set(
         "familyCharacters",
         JSON.stringify(
@@ -1011,6 +1116,8 @@ export function CheckoutForm() {
       if (checkoutTracking?.invite) payload.set("invite", checkoutTracking.invite);
       const gaClientId = currentGaClientId();
       if (gaClientId) payload.set("gaClientId", gaClientId);
+      const attachedStoryFile = isCustomStorySelected ? form.voiceFile : null;
+      const attachedStoryFileIsAudio = isStoryAudioFile(attachedStoryFile);
       const preparedDirectIntake = await prepareOrReuseDirectIntakeSubmission({
         enabled: directUploadEnabled && directMediaFilesPresent,
         transport: directIntakeTransport,
@@ -1030,12 +1137,20 @@ export function CheckoutForm() {
             ? guidedFrames.map((frame) => ({ file: frame.file, mimeType: frame.file.type }))
             : [],
         voice:
-          STORY_UPLOAD_ENABLED && form.voiceFile && form.voiceSource
+          attachedStoryFile && attachedStoryFileIsAudio && form.voiceSource
             ? {
-                file: form.voiceFile,
+                file: attachedStoryFile,
                 source: form.voiceSource,
                 consent: form.voiceConsent,
-                mimeType: form.voiceFile.type,
+                mimeType: attachedStoryFile.type,
+              }
+            : null,
+        document:
+          attachedStoryFile && !attachedStoryFileIsAudio
+            ? {
+                file: attachedStoryFile,
+                consent: form.voiceConsent,
+                mimeType: attachedStoryFile.type,
               }
             : null,
       }, intakeSessionRef.current);
@@ -1048,10 +1163,13 @@ export function CheckoutForm() {
       if (directIntakeSubmission && preparedDirectIntake) {
         intakeSessionRef.current = preparedDirectIntake.cache;
       } else {
-        if (STORY_UPLOAD_ENABLED && form.voiceFile) {
-          payload.set("voice", form.voiceFile);
+        if (attachedStoryFile && attachedStoryFileIsAudio) {
+          payload.set("voice", attachedStoryFile);
           payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
           if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
+        } else if (attachedStoryFile) {
+          payload.set("document", attachedStoryFile);
+          payload.set("documentConsent", form.voiceConsent ? "true" : "false");
         }
         // Optional guided child stills. Appends only parent-approved still photos; no video.
         if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
@@ -1059,6 +1177,7 @@ export function CheckoutForm() {
         }
       }
 
+      requestSent = true;
       const response = await fetch("/api/order", {
         method: "POST",
         body: payload,
@@ -1067,28 +1186,30 @@ export function CheckoutForm() {
       if (!response.ok) {
         // Surface the server's SPECIFIC reason (e.g. the voice-save abort)
         // rather than a generic message, so the customer knows exactly what
-        // failed and — critically — that nothing was saved or charged.
-        let message =
-          "We couldn't start your order. You have not been charged. Please try again.";
+        // failed. When the body carries no message — it was not JSON, or the
+        // failure happened somewhere that could not describe itself — we fall
+        // back to reconciliation copy rather than to a charge claim: this
+        // response can arrive after the server created and bound a payable
+        // Session, and the browser can never see that.
+        let serverMessage: unknown = null;
         try {
-          const body = await response.json();
-          if (typeof body?.error === "string" && body.error.trim()) {
-            message = body.error;
-          }
+          serverMessage = (await response.json())?.error;
         } catch {
-          /* non-JSON response — keep the safe default */
+          /* non-JSON response — the shared fallback is the safe default */
         }
-        throw new Error(message);
+        throw new Error(checkoutSubmitFailureMessage(serverMessage));
       }
 
       const result = await response.json();
       // Only reached when the order was durably persisted AND a Stripe session
       // was created. We are about to redirect to PAYMENT — do not claim the
       // order/recording is finished here (see the interstitial copy below).
+      //
+      // A 2xx with no redirect target means the Session almost certainly EXISTS
+      // and we simply cannot see where to send the buyer. Denying a charge was
+      // exactly the wrong thing to say about that.
       if (!result?.redirectTo) {
-        throw new Error(
-          "We couldn't reach secure payment. You have not been charged. Please try again.",
-        );
+        throw new Error(CHECKOUT_HANDOFF_UNCONFIRMED);
       }
       // The capability has completed its only job. Drop the in-memory reference
       // before handing the page to Stripe; it is never persisted or put in a URL.
@@ -1113,15 +1234,15 @@ export function CheckoutForm() {
         // resubmission would be rejected as an in-flight attempt.
         navigate: (url) => window.location.replace(url),
         clearSavedDraft: () => localStorage.removeItem(STORAGE_KEY),
-        clearAttemptId: () => sessionStorage.removeItem(attemptStorageKey),
+        clearAttemptId: () => sessionStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY),
       });
 
       if (handoff.reason === "invalid_url") {
         // Fail closed: an unexpected redirect target is a failed hand-off, not
-        // something to navigate to.
-        throw new Error(
-          "We couldn't reach secure payment. You have not been charged. Please try again.",
-        );
+        // something to navigate to. The server still got far enough to hand us
+        // a target, so the Session behind it may well be payable — refusing to
+        // navigate is not evidence that nothing was charged.
+        throw new Error(CHECKOUT_HANDOFF_UNCONFIRMED);
       }
 
       // Navigation is already under way (or was refused). Only presentational
@@ -1137,11 +1258,19 @@ export function CheckoutForm() {
       // checkoutAttemptId, so a retry cannot create a second order or charge.
       submitLockRef.current?.release();
       // Inline banner instead of window.alert — see submitError declaration.
-      setSubmitError(
-        error instanceof Error
-          ? error.message
-          : "We couldn't start your order. You have not been charged. Please try again.",
-      );
+      // A direct-intake refusal arrives as a stable code plus the label of the
+      // asset that failed; the mapper turns that into a sentence and decides
+      // whether a recorded note is at risk. A legacy server sentence is kept.
+      const described = describeCheckoutSubmitError({
+        voiceSource: form.voiceSource,
+        code: error instanceof DirectIntakePreparationError ? error.code : "order_request_failed",
+        label: error instanceof DirectIntakePreparationError ? error.label : null,
+        attemptMayHaveReachedServer: requestSent || attemptWasReused,
+        serverMessage: error instanceof DirectIntakePreparationError
+          ? null
+          : error instanceof Error ? error.message : null,
+      });
+      setSubmitError(described.message, described.showRecordedVoiceHint, requestSent || attemptWasReused);
     } finally {
       setIsSubmitting(false);
     }
@@ -1231,13 +1360,16 @@ export function CheckoutForm() {
                   {currentStep.title}
                 </h1>
               </div>
-              <button
-                type="button"
-                onClick={continueCurrentStep}
-                className="rounded-full border border-[#cbbda4] bg-[#fff8ec] px-4 py-2 text-sm font-semibold text-[#241914] transition hover:border-deep-gold"
-              >
-                Continue
-              </button>
+              {nextStep && (
+                <button
+                  data-testid="checkout-header-continue"
+                  type="button"
+                  onClick={continueCurrentStep}
+                  className="hidden rounded-full border border-[#cbbda4] bg-[#fff8ec] px-4 py-2 text-sm font-semibold text-[#241914] transition hover:border-deep-gold sm:inline-flex"
+                >
+                  {nextStepActionLabel}
+                </button>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c7b68]">
               {checkoutSteps.map((step, index) => (
@@ -1302,6 +1434,8 @@ export function CheckoutForm() {
                   setSupportingPhotoPendingId(null);
                   setGuidedFrames([]);
                   setGuidedConsent(false);
+                  setDirectMediaConsent(false);
+                  intakeSessionRef.current = null;
                   setShowGuidedPhotos(false);
                   setStepError(null);
                   setFieldErrors({});
@@ -1313,7 +1447,7 @@ export function CheckoutForm() {
                 }}
                 className="text-xs text-[#6e6154] underline hover:text-[#241914]"
               >
-                Start fresh
+                Clear saved details
               </button>
             </motion.div>
           )}
@@ -1329,17 +1463,20 @@ export function CheckoutForm() {
           onSubmit={handleSubmit}
           className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_340px]"
         >
-          <div className="space-y-5">
+          <div className="flex flex-col gap-5">
             {/* ── 1. Theme ── */}
             <section
               ref={(node) => {
                 registerStepRef("hero-details")(node);
                 registerFieldRef("theme")(node);
               }}
-              className={`${currentStepId !== "hero-details" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
+              data-testid="checkout-theme-step"
+              tabIndex={-1}
+              aria-labelledby="checkout-story-direction-heading"
+              className={`${currentStepId !== "hero-details" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#241914] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fff8ec]`}
             >
               <div>
-                <h2 className="font-serif text-2xl text-[#1f1a16]">
+                <h2 id="checkout-story-direction-heading" className="font-serif text-2xl text-[#1f1a16]">
                   Choose a story direction
                 </h2>
                 <p className="mt-1 text-sm leading-6 text-[#695f54]">
@@ -1376,7 +1513,7 @@ export function CheckoutForm() {
                         Custom Story
                       </span>
                       <span className="mt-1 block text-sm leading-6 text-[#695f54]">
-                        Built from your written memory, optional voice note, family details, and story ideas.
+                        Built from your written memory, voice note, or document, plus family details.
                       </span>
                     </span>
                     {form.theme === customStoryTheme.id && (
@@ -1388,7 +1525,93 @@ export function CheckoutForm() {
                 </button>
               )}
 
-              <div className="space-y-2">
+              {isCustomStorySelected && (
+                <div
+                  data-testid="custom-story-intake-panel"
+                  className="space-y-4 rounded-[1.5rem] border-2 border-[#241914] bg-white p-4 shadow-md sm:p-5"
+                >
+                  <div>
+                    <h3 className="font-serif text-xl font-semibold text-[#1f1a16]">
+                      Tell us your story
+                    </h3>
+                    <p className="mt-1 text-sm leading-6 text-[#695f54]">
+                      Type it, say it, or attach a file. One is enough.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label htmlFor="customStoryMemory" className="block text-sm font-bold text-[#1f1a16]">
+                      Type the memory or story idea
+                    </label>
+                    <textarea
+                      id="customStoryMemory"
+                      value={form.customStoryMemory}
+                      onChange={(e) => {
+                        const value = e.target.value.slice(0, 1200);
+                        setForm((prev) => ({
+                          ...prev,
+                          customStoryMemory: value,
+                          customStorySourceMode: value.trim() ? "written" : prev.voiceFile ? "audio" : "",
+                        }));
+                      }}
+                      placeholder="Paste a memory, funny quote, family moment, or the story idea you want us to build from..."
+                      rows={5}
+                      className="mt-2 w-full resize-y rounded-2xl border-2 border-[#b8aa90] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] placeholder:text-[#8a7b6a] focus:border-[#241914] focus:outline-none focus:ring-2 focus:ring-[#241914]/30"
+                    />
+                    <div className="mt-2 flex items-center justify-between gap-2 text-xs text-[#695f54]">
+                      <span>{form.customStoryMemory.trim() ? "✓ Written story added" : "You can type as much or as little as you have."}</span>
+                      <span>{form.customStoryMemory.length}/1200</span>
+                    </div>
+                  </div>
+
+                  {storyMediaEnabled && (
+                    <>
+                      <div className="flex items-center gap-3 text-xs font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                        <span className="h-px flex-1 bg-[#d8c6a2]" />
+                        Or add audio or a file
+                        <span className="h-px flex-1 bg-[#d8c6a2]" />
+                      </div>
+
+                      <div
+                        ref={registerFieldRef("voiceConsent")}
+                        tabIndex={-1}
+                        aria-label="Custom Story source and consent"
+                      >
+                        <VoiceRecorderSection
+                          voiceFile={form.voiceFile}
+                          voicePreviewUrl={form.voicePreviewUrl}
+                          voiceSource={form.voiceSource}
+                          voiceConsent={form.voiceConsent}
+                          onVoiceChange={(file, previewUrl, source) =>
+                            setForm((prev) => ({
+                              ...prev,
+                              customStorySourceMode: file
+                                ? isStoryAudioFile(file) ? "audio" : "document"
+                                : prev.customStoryMemory.trim() ? "written" : "",
+                              voiceFile: file,
+                              voicePreviewUrl: previewUrl,
+                              voiceSource: source,
+                              voiceConsent: file ? prev.voiceConsent : false,
+                            }))
+                          }
+                          onConsentChange={(consent) =>
+                            setForm((prev) => ({ ...prev, voiceConsent: consent }))
+                          }
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  <p className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-4 py-3 text-xs leading-5 text-[#695f54]">
+                    {storyMediaEnabled
+                      ? "Your typed story, voice note, and files are read by our team and used only to write this book. Never used for voice cloning or AI training."
+                      : "Your typed story is read by our team and used only to write this book. Never used for AI training."}
+                  </p>
+                </div>
+              )}
+
+              {!isCustomStorySelected ? (
+                <div className="space-y-2">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#8a7663]">
                   Or pick a ready adventure template
                 </p>
@@ -1426,6 +1649,37 @@ export function CheckoutForm() {
                   ))}
                 </div>
               </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (form.voicePreviewUrl?.startsWith("blob:")) {
+                      URL.revokeObjectURL(form.voicePreviewUrl);
+                    }
+                    intakeSessionRef.current = null;
+                    if (recoveryTimerRef.current) {
+                      clearTimeout(recoveryTimerRef.current);
+                      recoveryTimerRef.current = null;
+                    }
+                    const clearedForm: FormState = {
+                      ...form,
+                      theme: "",
+                      customStoryMemory: "",
+                      customStorySourceMode: "",
+                      voiceFile: null,
+                      voicePreviewUrl: null,
+                      voiceSource: null,
+                      voiceConsent: false,
+                    };
+                    setDirectMediaConsent(false);
+                    saveProgress(clearedForm);
+                    setForm(clearedForm);
+                  }}
+                  className="w-full rounded-2xl border border-[#b8aa90] bg-[#fffaf1] px-4 py-3 text-sm font-semibold text-[#241914] underline decoration-[#a64c4c]/50 underline-offset-4"
+                >
+                  Choose a ready-made adventure instead
+                </button>
+              )}
             </section>
 
             {isCustomStorySelected && (
@@ -1435,98 +1689,14 @@ export function CheckoutForm() {
               >
                 <div>
                   <h2 className="font-serif text-2xl text-[#1f1a16]">
-                    Tell us the memory in your own words
+                    Custom Story source
                   </h2>
                   <p className="mt-1 text-sm leading-6 text-[#695f54]">
-                    Rambling is perfect. We turn it into the story. Choose the easiest way to send it now.
+                    {hasCustomStoryInput
+                      ? "✓ Your story source is added. Return to Hero details anytime to edit it."
+                      : "Add your written memory, voice note, or document in Hero details before checkout."}
                   </p>
                 </div>
-
-                <div className="grid gap-3 md:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => set("customStorySourceMode", "audio")}
-                    className={`rounded-2xl border-2 p-4 text-left transition ${
-                      customStorySourceMode === "audio"
-                        ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30"
-                        : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2]"
-                    }`}
-                  >
-                    <span className="block text-sm font-bold text-[#1f1a16]">🎙️ Record or upload a voice note</span>
-                    <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
-                      Record up to 3 minutes, or upload a voice memo or audio file.
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => set("customStorySourceMode", "written")}
-                    className={`rounded-2xl border-2 p-4 text-left transition ${
-                      customStorySourceMode === "written"
-                        ? "border-deep-gold bg-deep-gold/15 ring-2 ring-deep-gold/30"
-                        : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2]"
-                    }`}
-                  >
-                    <span className="block text-sm font-bold text-[#1f1a16]">✍️ Prefer typing?</span>
-                    <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
-                      Write the memory instead.
-                    </span>
-                  </button>
-                </div>
-
-                {STORY_UPLOAD_ENABLED && customStorySourceMode === "audio" && (
-                  <VoiceRecorderSection
-                    voiceFile={form.voiceFile}
-                    voicePreviewUrl={form.voicePreviewUrl}
-                    voiceSource={form.voiceSource}
-                    voiceConsent={form.voiceConsent}
-                    onVoiceChange={(file, previewUrl, source) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        theme: file && !prev.theme ? CUSTOM_STORY_THEME_ID : prev.theme,
-                        customStorySourceMode: "audio",
-                        voiceFile: file,
-                        voicePreviewUrl: previewUrl,
-                        voiceSource: source,
-                        voiceConsent: file ? prev.voiceConsent : false,
-                      }))
-                    }
-                    onConsentChange={(consent) =>
-                      setForm((prev) => ({ ...prev, voiceConsent: consent }))
-                    }
-                  />
-                )}
-
-                {customStorySourceMode === "written" && (
-                  <div className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] p-4">
-                    <label
-                      htmlFor="customStoryMemory"
-                      className="block text-sm font-semibold text-[#1f1a16]"
-                    >
-                      Tell us the memory in your own words
-                    </label>
-                    <p className="mt-1 text-xs leading-5 text-[#8a7b6a]">
-                      Rambling is perfect. Type the story idea, funny quote, family moment, or scene you want us to build from.
-                    </p>
-                    <textarea
-                      id="customStoryMemory"
-                      value={form.customStoryMemory}
-                      onChange={(e) => set("customStoryMemory", e.target.value.slice(0, 1200))}
-                      placeholder="e.g. Lukas and Dad found a tiny dinosaur footprint at the park, then Brody helped track it through the woods..."
-                      rows={4}
-                      className="mt-3 w-full resize-none rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] px-4 py-3 text-sm text-[#1f1a16] transition placeholder:text-[#9a8b7a] focus:border-[#a64c4c] focus:outline-none focus:ring-2 focus:ring-[#a64c4c]/30"
-                    />
-                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[#8a7b6a]">
-                      <span>{hasCustomStoryInput ? "✓ Custom Story source added" : "Add the memory before checkout feels complete."}</span>
-                      <span>{form.customStoryMemory.length}/1200</span>
-                    </div>
-                  </div>
-                )}
-
-                {!customStorySourceMode && (
-                  <p className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-4 py-3 text-xs leading-5 text-[#8a7b6a]">
-                    Voice notes stay private — used only to write your book, never to train anything, deleted on request. Written memories stay private to this order.
-                  </p>
-                )}
               </section>
             )}
 
@@ -1645,6 +1815,22 @@ export function CheckoutForm() {
                   )}
                 </div>
               </div>
+
+              {nextStep && (
+                <div className="rounded-2xl border border-[#d8c6a2] bg-[#f8f0dd] p-3">
+                  <button
+                    data-testid="checkout-primary-continue"
+                    type="button"
+                    onClick={continueCurrentStep}
+                    className="w-full rounded-2xl bg-[#241914] px-5 py-4 text-base font-bold text-[#fff8ec] shadow-md transition hover:bg-[#3a2b23] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#241914] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fff8ec]"
+                  >
+                    {nextStepActionLabel}
+                  </button>
+                  <p className="mt-2 text-center text-xs leading-5 text-[#695f54]">
+                    The details below are optional. You can return to add them later.
+                  </p>
+                </div>
+              )}
 
               {/* Book recipient / audience — optional fully-custom context */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1818,17 +2004,20 @@ export function CheckoutForm() {
 
             {/* ── 2.5 Hero appearance ── */}
             <section
-              ref={registerStepRef("hero-appearance")}
-              className={`${currentStepId !== "hero-appearance" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
+              data-testid="hero-description-alternative"
+              className={`${currentStepId !== "hero-appearance" ? "hidden" : ""} order-2 rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
             >
               <div>
+                <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.18em] text-[#a64c4c]">
+                  Option 2 · No photo
+                </p>
                 <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
-                  How should the hero look?
+                  Or describe the hero instead
                 </h2>
                 <p className="text-sm text-[#695f54]">
                   {form.photoFile
-                    ? "We'll use the uploaded photo as the hero's visual reference."
-                    : "No photo is required. Describe the hero and we'll draw them as a storybook character."}
+                    ? "Your photo is the main visual reference. Add written details only if the photo does not show something important."
+                    : "Prefer not to upload a photo? Describe the hero and we'll do our best to represent them as a storybook character."}
                 </p>
               </div>
 
@@ -1854,11 +2043,12 @@ export function CheckoutForm() {
                 </details>
               ) : (
                 <div>
-                  <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
+                  <label htmlFor="hero-description" className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
                     Describe the hero <span className="text-[#a64c4c]">(required without a photo)</span>
                   </label>
                   <textarea
                     ref={registerFieldRef("characterNotes")}
+                    id="hero-description"
                     value={form.characterNotes}
                     onChange={(e) => set("characterNotes", e.target.value)}
                     placeholder="Example: 6 years old, warm brown skin, short curly dark hair, bright green hoodie"
@@ -1933,6 +2123,9 @@ export function CheckoutForm() {
                   appearance details or a reference photo before they can be saved.
                   Pets still need a name, but photo and notes stay optional.
                 </p>
+                <p className="mt-3 rounded-2xl border border-[#d8c6a2] bg-[#f8f0dd] px-4 py-3 text-sm font-semibold leading-6 text-[#1f1a16]">
+                  Add one person at a time. Complete and save their profile before adding the next person.
+                </p>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -1957,7 +2150,7 @@ export function CheckoutForm() {
                         {editingSupportingCharacterId ? "Edit person" : "Add person"}
                       </p>
                       <p className="text-xs leading-5 text-[#8a7b6a]">
-                        Save or cancel this draft before adding another person.
+                        Select “Save person” below before choosing another person.
                       </p>
                     </div>
                     <span className="rounded-full border border-[#dfd2b8] bg-[#f8f0dd] px-3 py-1 text-xs font-semibold text-[#695f54]">
@@ -1967,12 +2160,19 @@ export function CheckoutForm() {
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div>
-                      <label className="mb-1.5 block text-sm font-semibold text-[#1f1a16]">
-                        Name
+                      <label
+                        htmlFor="supporting-character-name"
+                        className="mb-1.5 block text-sm font-semibold text-[#1f1a16]"
+                      >
+                        Name <span aria-hidden="true" className="text-[#a64c4c]">*</span>
+                        <span className="sr-only"> (required)</span>
                       </label>
                       <input
+                        id="supporting-character-name"
                         ref={registerFieldRef("supportingCharacter.name")}
                         type="text"
+                        required
+                        aria-required="true"
                         value={supportingCharacterDraft.name}
                         onChange={(e) => updateSupportingCharacter(supportingCharacterDraft.id, { name: e.target.value })}
                         placeholder={supportingCharacterDraft.role === "pet" ? "e.g., Brody" : "e.g., Alexy"}
@@ -2257,58 +2457,31 @@ export function CheckoutForm() {
             </section>
 
             {/* ── 3. Hero photo ── */}
-            <section className={`${currentStepId !== "hero-appearance" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}>
+            <section
+              ref={registerStepRef("hero-appearance")}
+              data-testid="hero-photo-primary-choice"
+              tabIndex={-1}
+              aria-labelledby="hero-photo-heading"
+              className={`${currentStepId !== "hero-appearance" ? "hidden" : ""} order-1 flex flex-col gap-4 rounded-[1.75rem] border-2 border-[#a64c4c]/55 bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#241914] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fff8ec]`}
+            >
               <div>
-                <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
-                  Add one clear photo for the main character
+                <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.18em] text-[#a64c4c]">
+                  Option 1 · Recommended
+                </p>
+                <h2 id="hero-photo-heading" className="font-serif text-2xl text-[#1f1a16] mb-1">
+                  Upload a photo for the best likeness
                 </h2>
                 <p className="text-sm leading-6 text-[#695f54]">
-                  Optional, but best for the closest hero likeness. If you skip it, we&apos;ll build the hero from the written description above, and you review the proof before anything prints.
+                  Choose one clear, front-facing photo of the hero. We&apos;ll use it as the visual reference for the closest likeness, and you&apos;ll review the proof before anything prints.
                 </p>
               </div>
               <div className="inline-flex w-fit rounded-full border border-[#d8c6a2] bg-[#fffaf1] px-3 py-1 text-xs font-semibold text-[#695f54]">
-                {form.photoFile ? "Main character photo added" : "No hero photo required"}
+                {form.photoFile ? "✓ Hero photo added" : "Best choice for a recognizable hero"}
               </div>
-
-              {/* Sample teaser — shown before upload */}
-              {!form.photoDataUrl && (
-                <div className="space-y-2">
-                  <p className="text-xs font-semibold text-[#8a7b6a] uppercase tracking-widest text-center">
-                    What your proof includes
-                  </p>
-                  <div className="grid gap-2 sm:grid-cols-[0.85fr_1.15fr]">
-                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src="/assets/real-photo-demo.png"
-                        alt="Example reference photo used for a personalized book"
-                        className="h-40 w-full object-cover sm:h-full"
-                      />
-                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
-                        Uploaded photo
-                      </div>
-                    </div>
-                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src="/assets/storybook-transform-demo.png"
-                        alt="Example storybook illustration created from the uploaded photo"
-                        className="h-40 w-full object-cover sm:h-full"
-                      />
-                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
-                        Illustration proof
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-xs text-center text-[#8a7b6a]">
-                    Uploaded photo → storybook illustration · you approve before print
-                  </p>
-                </div>
-              )}
 
               {/* Upload zone / preview */}
               {form.photoDataUrl ? (
-                <div className="space-y-3">
+                <div className="order-1 space-y-3">
                   <div className="relative rounded-2xl overflow-hidden border-2 border-[#a64c4c] shadow-md">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
@@ -2381,26 +2554,29 @@ export function CheckoutForm() {
                   </div>
                 </div>
               ) : (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div
+                <div className="order-1 grid gap-3 sm:grid-cols-2">
+                  <label
+                    htmlFor="hero-photo-upload"
+                    data-testid="hero-photo-upload-control"
                     onDragOver={(e) => {
                       e.preventDefault();
                       setDragOver(true);
                     }}
                     onDragLeave={() => setDragOver(false)}
                     onDrop={handleDrop}
-                    onClick={() => photoInputRef.current?.click()}
-                    className={`flex cursor-pointer items-start gap-3 rounded-2xl border-2 p-4 text-left transition-all ${
+                    className={`flex cursor-pointer items-start gap-3 rounded-2xl border-2 p-4 text-left transition-all has-[:focus-visible]:outline-none has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#241914] has-[:focus-visible]:ring-offset-2 ${
                       dragOver
                         ? "border-[#a64c4c] bg-[#a64c4c]/10 scale-[1.01]"
-                        : "border-[#dfd2b8] bg-[#fffaf1] hover:border-[#d8c6a2] hover:bg-[#f8f0dd]"
+                        : "border-[#a64c4c] bg-[#fffaf1] shadow-sm hover:bg-[#f8f0dd]"
                     }`}
                   >
                     <input
                       ref={photoInputRef}
+                      id="hero-photo-upload"
                       type="file"
+                      aria-label="Upload hero photo from your phone"
                       accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
-                      className="hidden"
+                      className="peer sr-only"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) processPhoto(f);
@@ -2412,15 +2588,15 @@ export function CheckoutForm() {
                     </span>
                     <span className="min-w-0">
                       <span className="block text-sm font-bold text-[#1f1a16]">
-                        {dragOver ? "Drop it here" : "Use camera roll"}
+                        {dragOver ? "Drop it here" : "Upload from your phone"}
                       </span>
                       <span className="mt-1 block text-xs leading-5 text-[#8a7b6a]">
-                        Choose an existing photo from your phone.
+                        Choose an existing JPG, PNG, or WebP photo.
                       </span>
                     </span>
-                  </div>
+                  </label>
 
-                  <label className="flex cursor-pointer items-start gap-3 rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] p-4 text-left transition hover:border-[#d8c6a2] hover:bg-[#f8f0dd]">
+                  <label htmlFor="hero-photo-camera" className="flex cursor-pointer items-start gap-3 rounded-2xl border-2 border-[#dfd2b8] bg-[#fffaf1] p-4 text-left transition hover:border-[#d8c6a2] hover:bg-[#f8f0dd] has-[:focus-visible]:outline-none has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#241914] has-[:focus-visible]:ring-offset-2">
                     <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-[#d8c6a2] bg-[#f8f0dd] text-2xl">🤳</span>
                     <span className="min-w-0">
                       <span className="block text-sm font-bold text-[#1f1a16]">Take a new picture</span>
@@ -2429,10 +2605,12 @@ export function CheckoutForm() {
                       </span>
                     </span>
                     <input
+                      id="hero-photo-camera"
                       type="file"
+                      aria-label="Take a new hero photo"
                       accept={CHECKOUT_PHOTO_ACCEPT_ATTR}
                       capture="user"
-                      className="hidden"
+                      className="peer sr-only"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) processPhoto(f);
@@ -2443,12 +2621,48 @@ export function CheckoutForm() {
                 </div>
               )}
 
-              <p className="text-xs text-center leading-5 text-[#8a7b6a]">
+              {/* Proof example follows the upload controls in both DOM and visual order. */}
+              {!form.photoDataUrl && (
+                <div data-testid="hero-photo-proof-example" className="order-2 space-y-2">
+                  <p className="text-xs font-semibold text-[#8a7b6a] uppercase tracking-widest text-center">
+                    What your proof includes
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-[0.85fr_1.15fr]">
+                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src="/assets/real-photo-demo.png"
+                        alt="Example reference photo used for a personalized book"
+                        className="h-40 w-full object-cover sm:h-full"
+                      />
+                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                        Uploaded photo
+                      </div>
+                    </div>
+                    <div className="overflow-hidden rounded-2xl border border-[#dfd2b8] bg-[#f5ead2]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src="/assets/storybook-transform-demo.png"
+                        alt="Example storybook illustration created from the uploaded photo"
+                        className="h-40 w-full object-cover sm:h-full"
+                      />
+                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#695f54]">
+                        Illustration proof
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-xs text-center text-[#8a7b6a]">
+                    Uploaded photo → storybook illustration · you approve before print
+                  </p>
+                </div>
+              )}
+
+              <p className="order-3 text-center text-xs leading-5 text-[#8a7b6a]">
                 🔒 Photos stay private — used only to illustrate your book, never to train AI. You can review before print.
               </p>
 
               {guidedCaptureEnabled && (
-                <div className="space-y-3">
+                <div className="order-4 space-y-3">
                   <button
                     type="button"
                     onClick={() => setShowGuidedPhotos((open) => !open)}
@@ -2591,6 +2805,19 @@ export function CheckoutForm() {
               )}
 
             </section>
+
+            {nextStep && (
+              <div className="order-[100] rounded-[1.5rem] border border-[#d8c6a2] bg-[#fff8ec] p-4 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)]">
+                <button
+                  data-testid="checkout-bottom-continue"
+                  type="button"
+                  onClick={continueCurrentStep}
+                  className="w-full rounded-2xl bg-[#241914] px-5 py-4 text-base font-bold text-[#fff8ec] shadow-md transition hover:bg-[#3a2b23] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#241914] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fff8ec]"
+                >
+                  {nextStepActionLabel}
+                </button>
+              </div>
+            )}
 
           </div>
 
@@ -2797,7 +3024,7 @@ export function CheckoutForm() {
                     className="mt-1 h-4 w-4 accent-deep-gold"
                   />
                   <span>
-                    I have permission to provide these photos or recordings and authorize
+                    I have permission to provide these photos, recordings, or documents and authorize
                     Hero Story Books to save them privately for this order and proof review.
                   </span>
                 </label>
@@ -2834,10 +3061,12 @@ export function CheckoutForm() {
                   </div>
                 </div>
               )}
-              {/* Inline submit error. Shows the SPECIFIC server reason and
-                  reassures the customer nothing was saved or charged — so a
+              {/* Inline submit error. Shows the SPECIFIC server reason, so a
                   failed submission (e.g. a voice-save abort) never looks like
-                  it went through. */}
+                  it went through. The blanket reassurance below it is limited
+                  to failures that happened BEFORE the request left the browser:
+                  after that, only the message itself may speak about the
+                  buyer's money, because only the server can see the provider. */}
               {submitError && (
                 <div
                   role="alert"
@@ -2845,12 +3074,21 @@ export function CheckoutForm() {
                   data-testid="submit-error"
                   className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700"
                 >
-                  <p className="font-semibold">We couldn&apos;t start your order.</p>
+                  <p className="font-semibold">
+                    {chargeUnconfirmed
+                      ? "We need to confirm your order status."
+                      : "We couldn't start your order."}
+                  </p>
                   <p className="mt-1">{submitError}</p>
                   <p className="mt-1 text-xs text-red-600">
-                    You have not been charged. If you recorded a voice note,
-                    download it from the section above before retrying so it
-                    isn&apos;t lost.
+                    {!chargeUnconfirmed && "You have not been charged. "}
+                    {showRecordedVoiceHint && (
+                      <>
+                        If you recorded a voice note,
+                        download it from the section above before retrying so it
+                        isn&apos;t lost.
+                      </>
+                    )}
                   </p>
                   <p className="mt-2 text-xs font-medium text-red-700">
                     If the issue continues, email{" "}

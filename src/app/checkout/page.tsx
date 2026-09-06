@@ -1,6 +1,7 @@
 import Link from 'next/link';
 
 import { CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
+import { isCheckoutStoryMediaEnabled } from '@/lib/checkout-direct-flags';
 import { CheckoutForm } from './checkout-form';
 
 export const dynamic = 'force-dynamic';
@@ -56,5 +57,5 @@ export default function CheckoutPage() {
     return <CheckoutPaused />;
   }
 
-  return <CheckoutForm />;
+  return <CheckoutForm storyMediaEnabled={isCheckoutStoryMediaEnabled()} />;
 }

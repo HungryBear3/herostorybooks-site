@@ -161,6 +161,39 @@ test('proof publication refuses a partial authoritative book', async () => {
   }
 });
 
+test('proof publication refuses when authoritative order becomes media-backed', async () => {
+  const dir = makeTmp();
+  try {
+    const order = printOrder('ord_synthetic_media_publish', {
+      reviewStatus: 'in_review',
+      storyArtifactUrl: null,
+      proofVersion: null,
+      proofSourceFingerprint: null,
+      proofReviewedAt: null,
+      proofReviewedVersion: null,
+      voiceBlobPath: 'orders/ord_synthetic_media_publish/story-source.webm',
+    });
+    await persistOrder(order);
+    const before = await getOrder(order.id);
+    const result = await publishProofGuarded(order.id, {
+      ok: true,
+      proofUrl: 'https://example.invalid/must-not-publish.pdf',
+      sourceFingerprint: proofSourceFingerprint(order),
+      proofVersion: 'proof-media-race',
+      printInteriorArtifactUrl: 'https://example.invalid/must-not-publish-interior.pdf',
+      printInteriorMd5: '0123456789abcdef0123456789abcdef',
+      printInteriorPageCount: 24,
+      printInteriorProofVersion: 'proof-media-race',
+      printTitle: 'Must not publish',
+    });
+    assert.equal(result.refreshed, false);
+    assert.equal(result.error, 'media_story_manual_review_required');
+    assert.deepEqual(await getOrder(order.id), before);
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test('rebuilt print proof renders and persists a same-revision print interior', async () => {
   const dir = makeTmp();
   let renderedLayout: OrderRecord['layoutVersion'];

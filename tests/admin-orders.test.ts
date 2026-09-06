@@ -4,7 +4,13 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createOrderRecord, persistOrder, listOrders } from '../src/lib/orders.ts';
+import {
+  createOrderRecord,
+  getOrder,
+  listOrders,
+  persistOrder,
+  prepareOrderForAdminFulfillmentRetry,
+} from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 import { isAdminAuthedFromRequest } from '../src/lib/admin-auth.ts';
 
@@ -152,12 +158,65 @@ test('retryOrderFulfillment: unpaid order → 400, no state change', async () =>
   } finally { cleanup(dir); }
 });
 
+test('retryOrderFulfillment refuses media-backed Custom Stories before provider calls or state changes', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      paymentStatus: 'paid',
+      theme: 'custom-voice-story',
+      fulfillmentMode: 'manual_hold',
+      fulfillmentStatus: 'failed_manual_review',
+      fulfillmentAttempts: 3,
+      fulfillmentLastError: 'media_story_manual_review_required',
+      documentBlobPath: 'orders/ord_retry_media/story-source/document.pdf',
+      documentConsentAt: '2026-04-23T10:00:00Z',
+    }, 'ord_retry_media');
+   const { getOrder } = await import('../src/lib/orders.ts');
+   const before = await getOrder('ord_retry_media');
+   let storyProviderCalls = 0;
+   const { retryOrderFulfillment } = await import('../src/lib/admin-actions.ts');
+   const result = await retryOrderFulfillment('ord_retry_media', {
+     generateStoryWithMeta: async () => {
+       storyProviderCalls += 1;
+       throw new Error('must not run');
+     },
+     sleep: async () => {},
+   });
+
+   assert.deepEqual(result, {
+     ok: false,
+     status: 409,
+     error: 'Media-backed Custom Stories require manual fulfillment',
+   });
+   assert.equal(storyProviderCalls, 0);
+   assert.deepEqual(await getOrder('ord_retry_media'), before);
+ } finally { cleanup(dir); }
+});
+
+test('retry preparation without an explicit eligibility policy fails closed', async () => {
+  const dir = makeTmp();
+  try {
+    await seed({
+      paymentStatus: 'paid',
+      fulfillmentMode: 'manual_hold',
+      fulfillmentStatus: 'failed_manual_review',
+      fulfillmentAttempts: 2,
+      fulfillmentLastError: 'manual only',
+      voiceBlobPath: 'orders/ord_retry_direct/story-source.webm',
+    }, 'ord_retry_direct');
+    const before = await getOrder('ord_retry_direct');
+    const prepared = await prepareOrderForAdminFulfillmentRetry('ord_retry_direct');
+    assert.equal(prepared, null);
+    assert.deepEqual(await getOrder('ord_retry_direct'), before);
+  } finally { cleanup(dir); }
+});
+
 test('retryOrderFulfillment uses the transactional retry preparation helper instead of a blind state reset', () => {
   const source = readFileSync(
     new URL('../src/lib/admin-actions.ts', import.meta.url),
     'utf8',
   );
-  assert.match(source, /await prepareOrderForAdminFulfillmentRetry\(orderId\)/);
+  assert.match(source, /await prepareOrderForAdminFulfillmentRetry\([\s\S]{0,180}!hasMediaBackedCustomStorySource\(current\)/);
   assert.doesNotMatch(source, /await updateFulfillmentState\(orderId,\s*\{\s*fulfillmentStatus:\s*['"]not_started['"]/);
 });
 

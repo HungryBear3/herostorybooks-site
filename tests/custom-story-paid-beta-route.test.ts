@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const page = () => readFileSync('src/app/create/your-memory/page.tsx', 'utf8');
 const form = () => readFileSync('src/app/create/your-memory/paid-memory-beta-form.tsx', 'utf8');
-const orderRoute = () => readFileSync('src/app/api/order/route.ts', 'utf8');
+const orderRoute = () => readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8') + readFileSync('src/app/api/order/route.ts', 'utf8');
 
 test('friends/family paid custom-memory route is private and noindexed', () => {
   const source = page();

@@ -26,7 +26,9 @@ test('recovery workflow produces manual_hold', () => {
 
 test('every authorized creation caller explicitly passes manual_hold', () => {
   const callers = {
-    'production checkout (POST /api/order)': '../src/app/api/order/route.ts',
+    // The handler POST /api/order is a thin instantiation of; it owns the
+    // createOrderRecord call this asserts on.
+    'production checkout (POST /api/order)': '../src/lib/checkout-order-route-handler.ts',
 
     'order recovery': '../src/lib/order-recovery.ts',
   };

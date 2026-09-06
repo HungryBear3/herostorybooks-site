@@ -322,6 +322,44 @@ test('REQ15: production wording workflow reaches fresh proof, acknowledgment, an
   }
 });
 
+test('REQ15: media-backed wording resolution refuses before staging or proof build', async () => {
+  const dir = makeTmp();
+  let buildCalls = 0;
+  try {
+    const orderId = 'ord_synthetic_media_wording';
+    await persistOrder(makeOrder(orderId, {
+      voiceBlobPath: 'orders/ord_synthetic_media_wording/story-source.webm',
+      pageArtifacts: padPageSet([
+        page(0, {
+          accepted: false,
+          customerReviewStatus: 'changes_requested',
+          customerRequestedChange: {
+            note: 'Revise this sentence',
+            requestedAt: NOW,
+            lifecycleStatus: 'triage',
+          },
+        }),
+        page(1),
+      ]),
+    }));
+    const before = await getOrder(orderId);
+    const resolved = await resolveTextChangeRequest(
+      { orderId, pageIndex: 0, storyText: 'Must not be staged.' },
+      { buildProof: async () => {
+        buildCalls += 1;
+        return { ok: false as const, error: 'must_not_build' };
+      } },
+    );
+    assert.equal(resolved.ok, false);
+    assert.equal(resolved.status, 409);
+    assert.equal(resolved.error, 'media_story_manual_review_required');
+    assert.equal(buildCalls, 0);
+    assert.deepEqual(await getOrder(orderId), before);
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test('REQ15: failed wording proof build returns fresh state after a concurrent mutation', async () => {
   const dir = makeTmp();
   try {

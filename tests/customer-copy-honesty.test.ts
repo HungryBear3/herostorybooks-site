@@ -412,7 +412,7 @@ test('the threshold allowance is earned — the regen escalation really exists',
 });
 
 test('the concierge-beta exemption still has its enforced gate', () => {
-  const route = read('src/app/api/order/route.ts');
+  const route = read('src/lib/checkout-order-route-handler.ts') + read('src/app/api/order/route.ts');
   assert.match(route, /custom_story_manual_review_required/,
     'the concierge manual-review refusal must still exist, or its human-review copy stops being accurate');
   assert.match(route, /conciergeAllowed/, 'checkout must still gate on concierge allowance');

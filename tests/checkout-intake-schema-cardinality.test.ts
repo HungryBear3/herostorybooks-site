@@ -388,6 +388,8 @@ test('finalized authority is recomputed and cross-validated against current slot
 // Cardinality
 // ---------------------------------------------------------------------------
 
+const CARDINALITY_NOW = new Date('2026-09-02T12:01:00.000Z');
+
 test('100 reserve/release cycles cannot retain 100 slots', async () => {
   const store = createMemoryIntakeStore();
   const { record, capability } = createIntakeRecord(CONSENT, AT);
@@ -404,8 +406,8 @@ test('100 reserve/release cycles cannot retain 100 slots', async () => {
         slot,
         mimeType: 'image/jpeg',
         size: 1024,
-      }, AT);
-      await releaseSlot(store, { intakeId: record.intakeId, capability, slot }, AT);
+      }, CARDINALITY_NOW);
+      await releaseSlot(store, { intakeId: record.intakeId, capability, slot }, CARDINALITY_NOW);
       created += 1;
     } catch (error) {
       refusal = error;
@@ -438,8 +440,8 @@ test('100 reserve/release cycles on ONE slot cannot produce unbounded generation
         slot,
         mimeType: 'image/jpeg',
         size: 1024,
-      }, AT);
-      await releaseSlot(store, { intakeId: record.intakeId, capability, slot }, AT);
+      }, CARDINALITY_NOW);
+      await releaseSlot(store, { intakeId: record.intakeId, capability, slot }, CARDINALITY_NOW);
     } catch (error) {
       refusal = error;
       break;
@@ -503,18 +505,24 @@ test('total churn across all slots is bounded, not just per slot', async () => {
   await store.create(record);
 
   let refusal: unknown = null;
+  let accepted = 0;
   outer: for (let round = 0; round < 40; round += 1) {
     for (let i = 0; i < 4; i += 1) {
       const slot = { category: 'family_pet_reference', familyCharacterId: `char-${i}` } as const;
       try {
+        // The clock is an EXPLICIT input. Without it the intake is long expired
+        // by the time this suite runs, every cycle is refused as
+        // `intake_expired`, and a bare "some error was thrown" assertion passes
+        // while proving nothing about the aggregate churn bound at all.
         await reserveSlotUpload(store, {
           intakeId: record.intakeId,
           capability,
           slot,
           mimeType: 'image/jpeg',
           size: 1024,
-        }, AT);
-        await releaseSlot(store, { intakeId: record.intakeId, capability, slot }, AT);
+        }, CARDINALITY_NOW);
+        await releaseSlot(store, { intakeId: record.intakeId, capability, slot }, CARDINALITY_NOW);
+        accepted += 1;
       } catch (error) {
         refusal = error;
         break outer;
@@ -523,12 +531,23 @@ test('total churn across all slots is bounded, not just per slot', async () => {
   }
 
   assert.ok(refusal, 'churn spread across several slots must still be bounded');
-  // Naming the code keeps this from passing on any refusal at all — an
+  // The refusal must be the AGGREGATE guard. Four slots stay under
+  // INTAKE_MAX_SLOTS and round-robin churn reaches the total cap long before
+  // any single slot reaches INTAKE_MAX_SLOT_GENERATION, so neither the slot
+  // limit nor the per-slot churn guard may be what stopped the run. Naming the
+  // code also keeps this from passing on any refusal at all — an
   // `intake_expired` here would mean the cap was never exercised.
   assert.equal(code(refusal), 'intake_churn_exceeded');
   const stored = store.records.get(record.intakeId)!.record;
-  const total = Object.values(stored.slots).reduce((sum, slot) => sum + slot.generation, 0);
-  assert.ok(total <= INTAKE_MAX_TOTAL_GENERATIONS, `total generations reached ${total}`);
+  const generations = Object.values(stored.slots).map((slot) => slot.generation);
+  const total = generations.reduce((sum, generation) => sum + generation, 0);
+  assert.ok(accepted > 0, 'the run must perform real churn before it is refused');
+  assert.equal(total, INTAKE_MAX_TOTAL_GENERATIONS, `total generations reached ${total}`);
+  assert.ok(
+    Math.max(...generations) < INTAKE_MAX_SLOT_GENERATION,
+    'no single slot may have reached the per-slot cap first',
+  );
+  assert.ok(Object.keys(stored.slots).length <= INTAKE_MAX_SLOTS);
 });
 
 // ---------------------------------------------------------------------------

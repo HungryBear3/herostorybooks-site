@@ -33,7 +33,9 @@ import test from 'node:test';
 
 import {
   createIntake,
+  IntakeError,
   refreshIntakeConsent,
+  type IntakeStore,
   type IntakeStoreSnapshot,
 } from '../src/lib/checkout-intake.ts';
 import { completeSlotUpload, reserveSlotUpload, resolveSlotUpload } from '../src/lib/checkout-intake-upload.ts';
@@ -215,4 +217,46 @@ test('a lagging read that never converges is still a conflict, never a blind ove
   const record = store.records.get(session.intakeId)!.record;
   assert.equal(record.slots[HERO.category]!.active?.assetId, reservation.assetId);
   assert.equal(record.superseded.length, 0);
+});
+
+test('resolve retries a transient intake-store read outage after the upload callback already activated the asset', async () => {
+  const store = createMemoryIntakeStore();
+  const session = await newIntake(store);
+  const reservation = await reserveSlotUpload(store, {
+    intakeId: session.intakeId,
+    capability: session.capability,
+    slot: HERO,
+    mimeType: 'image/jpeg',
+    size: 1024,
+  });
+  const etag = `etag-${reservation.assetId}`;
+  store.putAsset({ pathname: reservation.pathname, mimeType: 'image/jpeg', size: 1024, etag });
+  await completeSlotUpload(store, {
+    tokenPayload: reservation.tokenPayload,
+    blob: { pathname: reservation.pathname, contentType: 'image/jpeg', size: 1024, etag },
+  });
+
+  const read = store.read.bind(store);
+  let readAttempts = 0;
+  const flakyStore: IntakeStore = {
+    ...store,
+    async read(intakeId) {
+      readAttempts += 1;
+      if (readAttempts === 1) throw new IntakeError('intake_store_unavailable', 503);
+      return read(intakeId);
+    },
+  };
+  const delays: number[] = [];
+
+  const resolved = await resolveSlotUpload(
+    flakyStore,
+    { intakeId: session.intakeId, capability: session.capability, slot: HERO, generation: reservation.generation },
+    undefined,
+    { wait: async (delayMs) => { delays.push(delayMs); } },
+  );
+
+  assert.equal(resolved.status, 'idempotent');
+  assert.equal(resolved.asset?.assetId, reservation.assetId);
+  assert.equal(readAttempts, 2);
+  assert.deepEqual(delays, [20]);
 });
