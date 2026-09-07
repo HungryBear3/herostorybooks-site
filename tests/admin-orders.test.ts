@@ -131,6 +131,60 @@ test('admin auth: no header and no cookie → false', () => {
   } finally { delete process.env.HSB_ORDER_ADMIN_KEY; }
 });
 
+test('admin auth: a look-alike cookie name must not shadow the real session', () => {
+  // Anyone able to write a cookie on the site domain could otherwise park
+  // `ahsb-ops-key=junk` ahead of the real one and lock operators out.
+  process.env.HSB_ORDER_ADMIN_KEY = 'secret-key-abc';
+  try {
+    const req = new Request('https://example.com', {
+      headers: { cookie: 'ahsb-ops-key=junk; hsb-ops-key=secret-key-abc' },
+    });
+    assert.equal(isAdminAuthedFromRequest(req), true);
+  } finally { delete process.env.HSB_ORDER_ADMIN_KEY; }
+});
+
+test('admin auth: a cookie whose name merely ends in the admin name is not the admin cookie', () => {
+  process.env.HSB_ORDER_ADMIN_KEY = 'secret-key-abc';
+  try {
+    const req = new Request('https://example.com', {
+      headers: { cookie: 'Xhsb-ops-key=secret-key-abc' },
+    });
+    assert.equal(isAdminAuthedFromRequest(req), false);
+  } finally { delete process.env.HSB_ORDER_ADMIN_KEY; }
+});
+
+test('admin auth: a configured key with stray whitespace still authenticates', () => {
+  process.env.HSB_ORDER_ADMIN_KEY = ' secret-key-abc ';
+  try {
+    const req = new Request('https://example.com', {
+      headers: { 'x-hsb-order-admin-key': 'secret-key-abc' },
+    });
+    assert.equal(isAdminAuthedFromRequest(req), true);
+  } finally { delete process.env.HSB_ORDER_ADMIN_KEY; }
+});
+
+test('ops admin auth compares keys in constant time', () => {
+  for (const rel of ['../src/lib/admin-auth.ts', '../src/lib/admin-auth-server.ts']) {
+    const src = readFileSync(new URL(rel, import.meta.url), 'utf8');
+    assert.match(src, /timingSafeEqualStr/, `${rel} must compare via timingSafeEqualStr`);
+    assert.doesNotMatch(
+      src,
+      /[!=]==\s*configured/,
+      `${rel} must not compare directly against the configured key`,
+    );
+  }
+});
+
+test('ops login route compares the submitted key in constant time', () => {
+  const src = readFileSync(new URL('../src/app/api/admin/login/route.ts', import.meta.url), 'utf8');
+  assert.match(src, /timingSafeEqualStr/, 'login route must compare via timingSafeEqualStr');
+  assert.doesNotMatch(
+    src,
+    /[!=]==\s*configured/,
+    'login route must not compare directly against the configured key',
+  );
+});
+
 // ── retryOrderFulfillment ─────────────────────────────────────────────────────
 
 test('retryOrderFulfillment: unknown order → 404', async () => {

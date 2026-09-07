@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { ADMIN_COOKIE, getConfiguredAdminKey } from '@/lib/admin-auth';
+import { timingSafeEqualStr } from '@/lib/cron-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +13,7 @@ export async function POST(request: Request) {
 
   const form = await request.formData();
   const key = String(form.get('key') ?? '');
-  if (key !== configured) {
+  if (!timingSafeEqualStr(key, configured)) {
     const url = new URL('/admin/orders?err=1', request.url);
     return NextResponse.redirect(url, { status: 303 });
   }
@@ -22,7 +23,7 @@ export async function POST(request: Request) {
   res.cookies.set(ADMIN_COOKIE, configured, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL),
     path: '/',
     maxAge: 60 * 60 * 12,
   });
