@@ -12,7 +12,7 @@ import {
   prepareOrderForAdminFulfillmentRetry,
 } from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
-import { isAdminAuthedFromRequest } from '../src/lib/admin-auth.ts';
+import { isAdminAuthedFromRequest, readAdminSessionCookie } from '../src/lib/admin-auth.ts';
 
 function makeTmp() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-admin-'));
@@ -153,6 +153,43 @@ test('admin auth: a cookie whose name merely ends in the admin name is not the a
   } finally { delete process.env.HSB_ORDER_ADMIN_KEY; }
 });
 
+test('admin auth: a duplicate admin cookie is rejected when the real value comes first', () => {
+  // Two entries with the *same* name are ambiguous: Next's RequestCookies keeps
+  // the last one, a first-match scan keeps the first, so the API reader and the
+  // ops page reader would reach opposite verdicts on the same header. Anyone who
+  // can write a cookie on the apex could then lock operators out of every
+  // mutation route while the dashboard still renders. Both readers fail closed.
+  process.env.HSB_ORDER_ADMIN_KEY = 'secret-key-abc';
+  try {
+    const req = new Request('https://example.com', {
+      headers: { cookie: 'hsb-ops-key=secret-key-abc; hsb-ops-key=attacker-junk' },
+    });
+    assert.equal(isAdminAuthedFromRequest(req), false);
+  } finally { delete process.env.HSB_ORDER_ADMIN_KEY; }
+});
+
+test('admin auth: a duplicate admin cookie is rejected when the real value comes last', () => {
+  process.env.HSB_ORDER_ADMIN_KEY = 'secret-key-abc';
+  try {
+    const req = new Request('https://example.com', {
+      headers: { cookie: 'hsb-ops-key=attacker-junk; hsb-ops-key=secret-key-abc' },
+    });
+    assert.equal(isAdminAuthedFromRequest(req), false);
+  } finally { delete process.env.HSB_ORDER_ADMIN_KEY; }
+});
+
+test('admin auth: two identical valid admin cookies are still ambiguous', () => {
+  // Not "accept if any copy matches" — a stale or injected duplicate must not be
+  // rendered harmless just because a valid credential also appears.
+  process.env.HSB_ORDER_ADMIN_KEY = 'secret-key-abc';
+  try {
+    const req = new Request('https://example.com', {
+      headers: { cookie: 'hsb-ops-key=secret-key-abc; hsb-ops-key=secret-key-abc' },
+    });
+    assert.equal(isAdminAuthedFromRequest(req), false);
+  } finally { delete process.env.HSB_ORDER_ADMIN_KEY; }
+});
+
 test('admin auth: a configured key with stray whitespace still authenticates', () => {
   process.env.HSB_ORDER_ADMIN_KEY = ' secret-key-abc ';
   try {
@@ -161,6 +198,92 @@ test('admin auth: a configured key with stray whitespace still authenticates', (
     });
     assert.equal(isAdminAuthedFromRequest(req), true);
   } finally { delete process.env.HSB_ORDER_ADMIN_KEY; }
+});
+
+// ── readAdminSessionCookie (the parser both readers share) ────────────────────
+
+test('readAdminSessionCookie: returns the lone admin cookie value', () => {
+  assert.equal(readAdminSessionCookie('other=1; hsb-ops-key=secret-key-abc; foo=bar'), 'secret-key-abc');
+});
+
+test('readAdminSessionCookie: absent, empty and null headers → null', () => {
+  assert.equal(readAdminSessionCookie(null), null);
+  assert.equal(readAdminSessionCookie(undefined), null);
+  assert.equal(readAdminSessionCookie(''), null);
+  assert.equal(readAdminSessionCookie('other=1; foo=bar'), null);
+});
+
+test('readAdminSessionCookie: look-alike names are not the admin cookie', () => {
+  assert.equal(readAdminSessionCookie('ahsb-ops-key=junk; hsb-ops-key=real'), 'real');
+  assert.equal(readAdminSessionCookie('Xhsb-ops-key=real'), null);
+  assert.equal(readAdminSessionCookie('hsb-ops-key-extra=real'), null);
+});
+
+test('readAdminSessionCookie: duplicate entries are ambiguous in either order', () => {
+  assert.equal(readAdminSessionCookie('hsb-ops-key=real; hsb-ops-key=junk'), null);
+  assert.equal(readAdminSessionCookie('hsb-ops-key=junk; hsb-ops-key=real'), null);
+  assert.equal(readAdminSessionCookie('hsb-ops-key=real; hsb-ops-key=real'), null);
+  assert.equal(readAdminSessionCookie('hsb-ops-key=a;hsb-ops-key=b'), null);
+  assert.equal(readAdminSessionCookie('hsb-ops-key=real; other=1; hsb-ops-key=junk'), null);
+  // A look-alike alongside the real one is still a single admin cookie.
+  assert.equal(readAdminSessionCookie('ahsb-ops-key=junk; hsb-ops-key=real; Xhsb-ops-key=junk'), 'real');
+});
+
+test('readAdminSessionCookie: an empty admin cookie is a value, not an absence', () => {
+  // `hsb-ops-key=` must not be skipped in favour of a later entry — that would
+  // reintroduce the shadowing this parser exists to close.
+  assert.equal(readAdminSessionCookie('hsb-ops-key='), '');
+  assert.equal(readAdminSessionCookie('hsb-ops-key=; hsb-ops-key=real'), null);
+});
+
+test('readAdminSessionCookie: percent-encoded values round-trip', () => {
+  assert.equal(readAdminSessionCookie('hsb-ops-key=secret%20key'), 'secret key');
+  assert.equal(readAdminSessionCookie('hsb-ops-key=a%2Bb%2Fc%3D'), 'a+b/c=');
+});
+
+test('readAdminSessionCookie: a malformed escape falls back to the raw value', () => {
+  // Can only ever match if the configured key *is* that literal string.
+  assert.equal(readAdminSessionCookie('hsb-ops-key=%zz'), '%zz');
+});
+
+test('both admin cookie readers reach the same verdict for every cookie shape', () => {
+  // The ops page reader (`isAdminAuthedFromCookie`) cannot be imported here —
+  // `next/headers` does not resolve outside the Next build — so pin the shared
+  // parser it consumes against the same hand-written table the request reader
+  // is held to. Divergence between the two readers now requires changing this
+  // table, not merely one of the two call sites.
+  const cases: Array<[string, boolean]> = [
+    ['hsb-ops-key=secret-key-abc', true],
+    ['other=1; hsb-ops-key=secret-key-abc; foo=bar', true],
+    ['ahsb-ops-key=junk; hsb-ops-key=secret-key-abc', true],
+    ['hsb-ops-key=wrong-key', false],
+    ['Xhsb-ops-key=secret-key-abc', false],
+    ['', false],
+    ['hsb-ops-key=secret-key-abc; hsb-ops-key=attacker-junk', false],
+    ['hsb-ops-key=attacker-junk; hsb-ops-key=secret-key-abc', false],
+    ['hsb-ops-key=secret-key-abc; hsb-ops-key=secret-key-abc', false],
+  ];
+  process.env.HSB_ORDER_ADMIN_KEY = 'secret-key-abc';
+  try {
+    for (const [cookie, expected] of cases) {
+      const req = new Request('https://example.com', { headers: { cookie } });
+      assert.equal(isAdminAuthedFromRequest(req), expected, `request reader: ${cookie}`);
+      const parsed = readAdminSessionCookie(cookie);
+      assert.equal(parsed !== null && parsed === 'secret-key-abc', expected, `page reader: ${cookie}`);
+    }
+  } finally { delete process.env.HSB_ORDER_ADMIN_KEY; }
+});
+
+test('the ops page reader parses the raw Cookie header with the shared parser', () => {
+  const src = readFileSync(new URL('../src/lib/admin-auth-server.ts', import.meta.url), 'utf8');
+  assert.match(src, /readAdminSessionCookie\(/, 'must delegate parsing to the shared parser');
+  assert.match(src, /await headers\(\)\)\.get\('cookie'\)/, 'must read the raw Cookie header');
+  const bindings = src.match(/import\s*\{([^}]*)\}\s*from\s*'next\/headers'/)?.[1] ?? '';
+  assert.doesNotMatch(
+    bindings,
+    /\bcookies\b/,
+    'must not import next/headers cookies(): RequestCookies collapses duplicate hsb-ops-key entries (last wins) so this reader could not see the ambiguity the request reader sees',
+  );
 });
 
 test('ops admin auth compares keys in constant time', () => {
