@@ -1,6 +1,7 @@
 'use client';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { recordedStoryAudioFileName } from '@/lib/story-attachment';
+import { recordedStoryAudioFileName, type StoryAttachmentKind } from '@/lib/story-attachment';
+import { STORY_MEDIA_RECORDING_REFUSAL_MESSAGE, checkStoryMediaLane } from '@/lib/story-media-lane';
 import { checkRecordedStoryAudioSize, checkStoryMediaFileSize } from '@/lib/story-media-size';
 const VOICE_AUDIO_UPLOAD_ACCEPT_ATTR = [
   '.m4a',
@@ -136,6 +137,19 @@ export function VoiceRecorderSection({
           return;
         }
         const file = new File([blob], recordedStoryAudioFileName(blob.type), { type: blob.type });
+        // The recorded file goes through the SAME verdict a picked one does. A
+        // container this browser reports that the policy cannot map would mint a
+        // file the classifier calls invalid — and the recorder names it for the
+        // customer, so it would fail at the payment button with nothing they
+        // could have done differently.
+        const recordedVerdict = checkStoryMediaLane(file, 'audio');
+        if (recordedVerdict.ok === false) {
+          recordedChunksRef.current = [];
+          setRecorderError(STORY_MEDIA_RECORDING_REFUSAL_MESSAGE);
+          stopStream();
+          setIsRecording(false);
+          return;
+        }
         const previewUrl = URL.createObjectURL(blob);
         if (voicePreviewUrl) URL.revokeObjectURL(voicePreviewUrl);
         onVoiceChange(file, previewUrl, 'recorded');
@@ -166,12 +180,22 @@ export function VoiceRecorderSection({
   }, [stopStream]);
 
   const handleUpload = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
+    (event: React.ChangeEvent<HTMLInputElement>, lane: StoryAttachmentKind) => {
       const file = event.target.files?.[0];
       if (!file) return;
-      // Refuse an oversize file here, where the customer is still looking at
-      // the picker — not at the payment button. Nothing about the current
-      // attachment, consent, preview URL, or recorder authority changes.
+      // Judge type FIRST, against the one authoritative classifier, and against
+      // the lane this picker owns — `accept` is a hint the OS may ignore, and
+      // the size preflight says nothing at all about an unsupported file. Both
+      // refusals happen here, where the customer is still looking at the picker
+      // rather than at the payment button, and neither one touches the current
+      // attachment, preview URL, consent, or recorder authority.
+      const laneVerdict = checkStoryMediaLane(file, lane);
+      if (laneVerdict.ok === false) {
+        setRecorderError(laneVerdict.message);
+        // Clear only the input that was just refused, so picking again re-fires.
+        event.target.value = '';
+        return;
+      }
       const sizeVerdict = checkStoryMediaFileSize(file);
       if (sizeVerdict.ok === false) {
         setRecorderError(sizeVerdict.message);
@@ -188,6 +212,17 @@ export function VoiceRecorderSection({
       event.target.value = '';
     },
     [onVoiceChange, voicePreviewUrl],
+  );
+
+  // One handler per picker. The lane is bound here, at the input, so it can
+  // never be inferred from the event, the markup, or ambient state.
+  const handleAudioUpload = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => handleUpload(event, 'audio'),
+    [handleUpload],
+  );
+  const handleDocumentUpload = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => handleUpload(event, 'document'),
+    [handleUpload],
   );
 
   const handleRemove = useCallback(() => {
@@ -245,7 +280,7 @@ export function VoiceRecorderSection({
                     type="file"
                     accept={VOICE_AUDIO_UPLOAD_ACCEPT_ATTR}
                     className="sr-only"
-                    onChange={handleUpload}
+                    onChange={handleAudioUpload}
                   />
                 </label>
               )}
@@ -271,7 +306,7 @@ export function VoiceRecorderSection({
                   type="file"
                   accept={VOICE_DOCUMENT_UPLOAD_ACCEPT_ATTR}
                   className="sr-only"
-                  onChange={handleUpload}
+                  onChange={handleDocumentUpload}
                 />
               </label>
             </div>
