@@ -75,7 +75,9 @@ test('HSB mounts privacy-sanitized Vercel Analytics and forwards campaign params
   assert.match(layoutSource, /<SafeVercelAnalytics \/>/);
   assert.match(safeVercelAnalyticsSource, /from ["']@vercel\/analytics\/next["']/);
   assert.match(safeVercelAnalyticsSource, /beforeSend=/);
-  assert.match(safeVercelAnalyticsSource, /`\$\{url\.origin\}\$\{url\.pathname\}`/);
+  // Redaction moved into the shared sanitizer: the raw-pathname form this used
+  // to assert leaked bearer segments. See analytics-status-url-privacy.test.ts.
+  assert.match(safeVercelAnalyticsSource, /sanitizeVercelAnalyticsUrl\(/);
   assert.match(analyticsSource, /utm_source/);
   assert.match(analyticsSource, /utm_campaign/);
   assert.match(analyticsSource, /event !== ['"]page_view['"]/);

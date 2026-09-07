@@ -2,6 +2,7 @@
 // Also forwards to Vercel Analytics if available, so the A/B test isn't dark
 // when GA isn't wired yet.
 import type { CoverVariant } from './cover-variant';
+import { sanitizeAnalyticsPath, sanitizeAnalyticsUrl } from './analytics-path.ts';
 import { track as trackVercelEvent } from '@vercel/analytics';
 
 type GtagFn = {
@@ -184,7 +185,7 @@ function vercelSafeProps(input: Record<string, unknown>): VercelAnalyticsProps {
 
 function sanitizedPageLocation(): string | undefined {
   if (typeof window === 'undefined' || typeof window.location === 'undefined') return undefined;
-  return `${window.location.origin ?? ''}${window.location.pathname ?? ''}`;
+  return `${window.location.origin ?? ''}${sanitizeAnalyticsPath(window.location.pathname ?? '')}`;
 }
 
 const unwantedReferralHosts = new Set(['checkout.stripe.com']);
@@ -215,7 +216,7 @@ function sanitizedPageReferrer(): string {
   try {
     const referrer = new URL(document.referrer);
     if (isUnwantedReferral(referrer.href)) return '';
-    return `${referrer.origin}${referrer.pathname}`;
+    return `${referrer.origin}${sanitizeAnalyticsPath(referrer.pathname)}`;
   } catch {
     return '';
   }
@@ -248,7 +249,9 @@ export function track(
 ): HsbEventRecord | null {
   if (typeof window === 'undefined') return null;
   const pathname =
-    typeof window.location !== 'undefined' ? window.location.pathname : undefined;
+    typeof window.location !== 'undefined'
+      ? sanitizeAnalyticsPath(window.location.pathname ?? '')
+      : undefined;
   const campaignParams = currentCampaignParams();
   const record: HsbEventRecord = {
     event,
@@ -261,6 +264,15 @@ export function track(
     ...campaignParams,
     ...props,
   };
+  // A caller-supplied pathname (AnalyticsPageView forwards usePathname()) lands
+  // after the spread, so the merged values get sanitized rather than only the
+  // defaults above.
+  if (typeof record.pathname === 'string') {
+    record.pathname = sanitizeAnalyticsPath(record.pathname);
+  }
+  if (typeof record.href === 'string') {
+    record.href = sanitizeAnalyticsUrl(record.href);
+  }
   try {
     window.hsbEvents = window.hsbEvents ?? [];
     window.hsbEvents.push(record);
