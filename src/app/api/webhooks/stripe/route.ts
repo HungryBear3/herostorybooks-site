@@ -30,7 +30,6 @@ interface StripeCheckoutSession {
   mode?: string | null;
   payment_status?: string | null;
   payment_intent?: string | { id?: string | null } | null;
-  customer_email?: string | null;
   shipping_details?: {
     address?: {
       line1?: string | null;
@@ -172,7 +171,7 @@ export async function POST(request: Request) {
         if (!updated) {
           console.error(
             `[webhook] CRITICAL: print upgrade order ${upgradeOrderId} not found after paid Stripe session ${session.id} ` +
-              `(amount=${session.amount_total ?? '?'}, customer_email=${session.customer_email ?? '?'}).`,
+              `(amount=${session.amount_total ?? '?'}).`,
           );
           return NextResponse.json(
             { error: `Order ${upgradeOrderId} not found in durable store` },
@@ -366,9 +365,12 @@ export async function POST(request: Request) {
         // infra bug — investigate blob token + region). Both are losses.
         // Return 500 so Stripe retries delivery; if it's still missing on
         // retry, ops has a clear log line to act on.
+        // Carries opaque handles only: this lands in the shared runtime log,
+        // which is retained and searchable long after the order record is.
+        // Recovery keys off the order and session ids, never the buyer.
         console.error(
           `[webhook] CRITICAL: order ${orderId} not found in durable store after paid Stripe session ${session.id} ` +
-            `(amount=${(session as { amount_total?: number }).amount_total ?? '?'}, customer_email=${(session as { customer_email?: string }).customer_email ?? '?'}). ` +
+            `(amount=${(session as { amount_total?: number }).amount_total ?? '?'}). ` +
             `This customer paid but their order is missing. Recovery via scripts/recover-orders.ts may be required.`,
         );
         return NextResponse.json(
