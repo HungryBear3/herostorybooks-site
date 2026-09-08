@@ -135,7 +135,7 @@ exported. It returns `true` if **any** of these twelve fields is truthy:
 | `order.voiceBlobUrl` | audio | direct-upload URL |
 | `order.voiceConsentAt` | audio | consent timestamp alone is sufficient |
 | `order.voiceSource` | audio | `'recorded' \| 'uploaded'` |
-| `order.voiceTranscript` | audio | `VoiceTranscriptMeta`; see §13 — nothing writes this today |
+| `order.voiceTranscript` | audio | `VoiceTranscriptMeta`; see §12 — nothing writes this today |
 | `order.legacyVoiceUploadPresent` | audio | **legacy marker**, see below |
 | `order.documentBlobPath` | document | |
 | `order.documentBlobUrl` | document | |
@@ -163,7 +163,7 @@ marker. An old order can therefore be media-backed with **no** blob path and
 > So an order whose only audio evidence is a private-intake asset can render
 > **"Voice upload present: no"** while `hasMediaBackedCustomStorySource` returns
 > `true` and every production path refuses it. Do not use the panel row as the
-> classification. Read the fields. This is a known gap (§14).
+> classification. Read the fields. This is a known gap (§15, gap 3).
 
 ### 3.2 Hold #1 — `fulfillmentMode`
 
@@ -246,10 +246,10 @@ Do all of §4 **before** opening, downloading, playing, or transcribing anything
 The consent the customer actually gave is the checkbox copy in
 `src/components/checkout/VoiceRecorderSection.tsx`:
 
-- Audio (`:343`) — "I'm the parent/guardian or an authorized adult for everyone
+- Audio (`:378`) — "I'm the parent/guardian or an authorized adult for everyone
   in this recording. Hero Story Books may use it only to write this book. It
   won't be used for voice cloning or AI training, and won't be shared."
-- Document (`:347`) — "I have the right to share this document. Hero Story Books
+- Document (`:382`) — "I have the right to share this document. Hero Story Books
   may use it only to write this book. It won't be used for AI training and won't
   be shared."
 
@@ -311,7 +311,7 @@ Therefore:
 - Record the storage path and the consent evidence in the ticket, and
   **escalate to engineering** for an authorized, logged retrieval.
 - Any actual transcription this release is a human listening to media obtained
-  through that escalated path. There is no automated transcription (§13).
+  through that escalated path. There is no automated transcription (§12).
 
 ---
 
@@ -475,7 +475,7 @@ Never say, imply, or let stand:
 | Do not say | Why |
 | --- | --- |
 | Anything about voice cloning, voice synthesis, generated speech, published audio, or "training" on the recording | The consent copy explicitly excludes cloning and AI training. The product does none of it. |
-| "Your recording is deleted automatically" / "deleted after your book ships" | There is no deletion sweep in the codebase. The `HSB_VOICE_DELETE_ON_SHIP`-style sweep described in the superseded beta runbook was never implemented. Manual deletion on request is the only honest offer, and executing it is **not implemented; escalate** (§14). |
+| "Your recording is deleted automatically" / "deleted after your book ships" | There is no deletion sweep in the codebase. The `HSB_VOICE_DELETE_ON_SHIP`-style sweep described in the superseded beta runbook was never implemented. Manual deletion on request is the only honest offer, and executing it is **not implemented; escalate** (§15, gap 8). |
 | Any date or turnaround for the proof, the print, or delivery | Media-backed orders are hand-authored with no committed SLA. Give the customer the next step, not a date. |
 | "You've paid, so it's in production" / "it's generating now" | Payment does not start production. Every current order is `manual_hold` and media-backed orders are additionally refused by every automated path. |
 | "It failed" / "there was an error", when you are looking at `media_story_manual_review_required` | That refusal is the design. Describe it as human review, not failure. |
@@ -584,7 +584,7 @@ ticket:**
 > production is refused upstream. If a media-backed order is nonetheless sitting
 > in one of those states, something put it there out of band: **stop and
 > escalate (§7.11)** rather than approving, shipping, or emailing. Tracked as a
-> gap in §14.
+> gap in §15 (gap 6).
 
 Separately approvable, never bundled: **(a)** brief approval, **(b)** proof
 approval, **(c)** any public/marketing use of the story or media, **(d)** print
@@ -603,7 +603,7 @@ one is never approval for another. Proof always precedes print.
 | "Manually approve proof — bypasses the customer ack. Only with explicit customer consent" | same doc | Still current. §10 adds: for a media-backed order in `proof_ready`, stop and escalate first (§7.11). |
 | The Father's Day voice-note beta runbook in its entirety | `docs/runbooks/voice-note-transcription.md` (absent here; `ef89371` on `backup/hsb-dev-stuff-clean-20260624`) | **Superseded.** See §12. |
 | "Do not enable story upload broadly in production until legal/owner approval confirms retention/deletion and provider-use copy" | `docs/qa/fully-custom-checkout-qa.md` | Still current and still open. |
-| "Do not simply flip `NEXT_PUBLIC_HSB_VOICE_BETA` in production" | `docs/plans/2026-07-06-fully-custom-checkout.md` | Stale but harmless: that flag no longer gates checkout media (§13). It still gates the family-review portal recorder (`src/app/family-review/review/[reviewToken]/review-portal.tsx:612`). |
+| "Do not simply flip `NEXT_PUBLIC_HSB_VOICE_BETA` in production" | `docs/plans/2026-07-06-fully-custom-checkout.md` | Stale but harmless: that flag no longer gates checkout media (§12). It still gates the family-review portal recorder (`src/app/family-review/review/[reviewToken]/review-portal.tsx:612`). |
 
 ---
 
@@ -670,6 +670,10 @@ Walk this before you consider a media-backed order handled.
 This runbook cites source. Source moves. Re-run these before trusting it, and
 after any change to checkout, intake, fulfillment, or the custom-story modules.
 
+Last re-run in full against `ca6f34f` (2026-09-07). D1–D20 all matched
+**Expected today**; only D20's citation needed correcting, because PR #174
+shifted the consent copy without changing a byte of it.
+
 | # | Check | Command / location | Expected today |
 | --- | --- | --- | --- |
 | D1 | The predicate still exists and still lists twelve fields | `grep -n "export function hasMediaBackedCustomStorySource" -A 18 src/lib/story-generator.ts` | 12 fields, matching §3.1 |
@@ -691,7 +695,7 @@ after any change to checkout, intake, fulfillment, or the custom-story modules.
 | D17 | Consent refusal codes unchanged | `grep -n "voice_consent_required\|document_consent_required" src/lib/checkout-order-route-handler.ts` | both |
 | D18 | Story-media UI gate unchanged | `grep -n "isCheckoutStoryMediaEnabled" -A 8 src/lib/checkout-direct-flags.ts` | private Blob + token |
 | D19 | Shape lanes unchanged | `src/lib/custom-story/shapes.ts` `STORY_SHAPE_STATUS` | `dual-parent\|memory\|audience` still `concierge` |
-| D20 | Consent copy unchanged | `src/components/checkout/VoiceRecorderSection.tsx:343`, `:347` | no cloning / no AI training / not shared |
+| D20 | Consent copy unchanged | `grep -n "voice cloning or AI training\|right to share this document" src/components/checkout/VoiceRecorderSection.tsx` | two hits (`:378`, `:382` at `ca6f34f`) — no cloning / no AI training / not shared |
 
 If **D9** or **D11** changes, stop using this runbook and get it rewritten: an
 automated transcription path or an operator media route would move the safety
