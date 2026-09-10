@@ -14,8 +14,9 @@
  *
  * The contract now
  * ----------------
- *   - Visibility and storage depend on a DEDICATED private credential,
- *     `HSB_PRIVATE_READ_WRITE_TOKEN`, and on nothing global.
+ *   - Visibility follows the browser-selected lane: the dedicated legacy
+ *     `HSB_PRIVATE_READ_WRITE_TOKEN`, or the direct-intake credential when the
+ *     public direct-upload flag is enabled.
  *   - Voice/document bytes are written to that store with `access: 'private'`.
  *   - Order JSON and photos keep using `BLOB_READ_WRITE_TOKEN` and its current
  *     public behaviour, untouched.
@@ -45,8 +46,11 @@ import {
 /** Synthetic, parseable, obviously fake. */
 const PUBLIC_TOKEN = 'vercel_blob_rw_pubORDERS0000_publicsecret';
 const PRIVATE_TOKEN = 'vercel_blob_rw_privSTORY0000_privatesecret';
+const INTAKE_TOKEN = 'vercel_blob_rw_privINTAKE000_intakesecret';
+const GUARD_TOKEN = 'vercel_blob_rw_privGUARD0000_guardsecret';
 /** Same store as PUBLIC_TOKEN, different secret — one keyspace, two strings. */
 const PUBLIC_ALIAS_TOKEN = 'vercel_blob_rw_pubORDERS0000_othersecret';
+const MALFORMED_TOKEN = 'not-a-vercel-token';
 
 const env = (values: Record<string, string | undefined>) => values as unknown as NodeJS.ProcessEnv;
 
@@ -85,6 +89,11 @@ test('the private story-media credential must be present and name its own store'
     null,
     'the public token is optional; only its COLLISION with the private one is a fault',
   );
+  assert.match(
+    storyMediaPrivateTokenProblem(env({ HSB_PRIVATE_READ_WRITE_TOKEN: MALFORMED_TOKEN })) ?? '',
+    /valid Vercel Blob credential/,
+    'a non-empty credential whose store identity cannot be parsed is unusable',
+  );
 });
 
 test('the credential validator never puts a token value in its problem message', () => {
@@ -107,6 +116,7 @@ test('storyMediaPrivateToken returns the trimmed credential, or null as a hard s
     PRIVATE_TOKEN,
   );
   assert.equal(storyMediaPrivateToken(env({})), null);
+  assert.equal(storyMediaPrivateToken(env({ HSB_PRIVATE_READ_WRITE_TOKEN: MALFORMED_TOKEN })), null);
   assert.equal(
     storyMediaPrivateToken(env({
       BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
@@ -149,6 +159,42 @@ test('story media visibility depends on the private credential, never on the glo
     false,
     'the same store under two names is not a private lane',
   );
+});
+
+test('checkout media availability follows the browser-selected legacy or direct upload path', () => {
+  const legacyReady = {
+    BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
+    HSB_PRIVATE_READ_WRITE_TOKEN: PRIVATE_TOKEN,
+  };
+  assert.equal(isCheckoutStoryMediaEnabled(env(legacyReady)), true);
+  assert.equal(isCheckoutStoryMediaEnabled(env({
+    ...legacyReady,
+    HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'false',
+  })), true, 'server pre-enable does not change the browser-selected legacy path');
+
+  const directReady = {
+    BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
+    HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
+    HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+  };
+  assert.equal(
+    isCheckoutStoryMediaEnabled(env(directReady)),
+    true,
+    'the direct path uses its intake store and does not require the legacy private token',
+  );
+
+  for (const broken of [
+    { ...directReady, HSB_CHECKOUT_DIRECT_UPLOAD: 'false' },
+    { ...directReady, HSB_INTAKE_BLOB_READ_WRITE_TOKEN: undefined },
+    { ...directReady, HSB_INTAKE_BLOB_READ_WRITE_TOKEN: MALFORMED_TOKEN },
+    { ...directReady, HSB_INTAKE_BLOB_READ_WRITE_TOKEN: PUBLIC_ALIAS_TOKEN },
+    { ...directReady, HSB_INTAKE_BLOB_READ_WRITE_TOKEN: 'vercel_blob_rw_privGUARD0000_othersecret' },
+  ]) {
+    assert.equal(isCheckoutStoryMediaEnabled(env(broken)), false, JSON.stringify(broken));
+  }
 });
 
 test('the hermetic browser-QA branch still enables the controls without Blob credentials', () => {
@@ -221,6 +267,10 @@ test('a Vercel Production build fails when the private story-media credential is
   assert.match(production({}) ?? '', new RegExp(STORY_MEDIA_PRIVATE_TOKEN_ENV));
   assert.match(production({ HSB_PRIVATE_READ_WRITE_TOKEN: '  ' }) ?? '', /is not set/);
   assert.match(
+    production({ HSB_PRIVATE_READ_WRITE_TOKEN: MALFORMED_TOKEN }) ?? '',
+    /valid Vercel Blob credential/,
+  );
+  assert.match(
     production({
       BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
       HSB_PRIVATE_READ_WRITE_TOKEN: PUBLIC_ALIAS_TOKEN,
@@ -234,6 +284,32 @@ test('a Vercel Production build fails when the private story-media credential is
     }),
     null,
   );
+
+  assert.equal(
+    production({
+      BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
+      HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
+      HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+    }),
+    null,
+    'a browser-selected direct path validates the intake lane, not the legacy private lane',
+  );
+  for (const broken of [
+    {
+      HSB_CHECKOUT_DIRECT_UPLOAD: 'false',
+      NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+    },
+    {
+      HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      HSB_INTAKE_BLOB_READ_WRITE_TOKEN: MALFORMED_TOKEN,
+    },
+  ]) {
+    assert.match(production(broken) ?? '', /direct|intake|credential/i);
+  }
 });
 
 test('a Vercel Production build can be released from the contract only by an explicit opt-out', () => {
@@ -344,6 +420,7 @@ test('voice and document bytes are written privately to the dedicated store', ()
     assert.equal(entry.storeId, PRIVATE_STORE, `${entry.pathname} landed in the wrong store`);
     assert.equal(entry.access, 'private');
     assert.equal(entry.hasExplicitToken, true, 'story media must never ride the ambient credential');
+    assert.match(entry.pathname ?? '', /\/checkout-12345678-1234-4123-8123-123456789abc\//);
   }
   assert.match(storyPuts[0].pathname ?? '', /voice-/);
   assert.match(storyPuts[1].pathname ?? '', /document-/);

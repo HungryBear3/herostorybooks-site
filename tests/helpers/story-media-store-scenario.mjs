@@ -37,6 +37,7 @@ export const PUBLIC_STORE = 'pubstoretest';
 export const PRIVATE_STORE = 'privstoretest';
 
 const ORDER_ID = 'ord_store_routing';
+const CHECKOUT_LEASE_ID = '12345678-1234-4123-8123-123456789abc';
 
 function fileFrom(bytes, name, type) {
   return {
@@ -69,10 +70,10 @@ async function step(name, fn) {
 
 resetJournal();
 
-const voice = await uploadOrderVoice(ORDER_ID, fileFrom(new Uint8Array([1, 2, 3, 4]), 'voice.webm', 'audio/webm'));
-const document = await uploadOrderDocument(ORDER_ID, fileFrom(new Uint8Array([5, 6, 7, 8]), 'notes.pdf', 'application/pdf'));
-const photo = await uploadOrderPhoto(ORDER_ID, await jpegFile());
-const supporting = await uploadOrderSupportingPhoto(ORDER_ID, 0, await jpegFile());
+const voice = await uploadOrderVoice(ORDER_ID, fileFrom(new Uint8Array([1, 2, 3, 4]), 'voice.webm', 'audio/webm'), CHECKOUT_LEASE_ID);
+const document = await uploadOrderDocument(ORDER_ID, fileFrom(new Uint8Array([5, 6, 7, 8]), 'notes.pdf', 'application/pdf'), CHECKOUT_LEASE_ID);
+const photo = await uploadOrderPhoto(ORDER_ID, await jpegFile(), CHECKOUT_LEASE_ID);
+const supporting = await uploadOrderSupportingPhoto(ORDER_ID, 0, await jpegFile(), CHECKOUT_LEASE_ID);
 
 if (!voice || !document || !photo || !supporting) {
   throw new Error('every upload must return a durable reference in this scenario');
@@ -89,11 +90,11 @@ await step('rollbackMixed', () =>
     supporting.pathname,
     voice.pathname,
     document.pathname,
-  ]),
+  ], CHECKOUT_LEASE_ID),
 );
 
 await step('rollbackUnclassifiable', () =>
-  rollbackOrderMediaUploads(ORDER_ID, [`orders/${ORDER_ID}/mystery-object.bin`]),
+  rollbackOrderMediaUploads(ORDER_ID, [`orders/${ORDER_ID}/checkout-${CHECKOUT_LEASE_ID}/mystery-object.bin`], CHECKOUT_LEASE_ID),
 );
 
 out.journal = journal;

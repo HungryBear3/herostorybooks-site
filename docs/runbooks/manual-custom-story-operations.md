@@ -285,11 +285,16 @@ fails checkout closed **before** Stripe rather than storing media publicly.
 Order JSON and hero/supporting photos remain in the legacy public store named
 by `BLOB_READ_WRITE_TOKEN`; `getBlobAccessMode()` still defaults that lane to
 `'public'`. Do **not** set global `HSB_BLOB_ACCESS_MODE=private` to enable story
-media: the public order store rejects private writes. The checkout UI uses the
-same dedicated-store readiness check through `isCheckoutStoryMediaEnabled()`
-and `/checkout` passes the result into `CheckoutForm` as `storyMediaEnabled`.
-Vercel Production builds also run `scripts/check-story-media-env.ts`, which
-refuses a missing/blank/colliding private credential unless an operator
+media: the public order store rejects private writes. Checkout validates the
+path the browser will actually submit through. With direct upload off,
+`isCheckoutStoryMediaEnabled()` requires a valid, dedicated
+`HSB_PRIVATE_READ_WRITE_TOKEN`. With
+`NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD=true`, it instead requires the matching
+`HSB_CHECKOUT_DIRECT_UPLOAD=true` server flag and a valid, dedicated
+`HSB_INTAKE_BLOB_READ_WRITE_TOKEN`. `/checkout` passes that path-aware result
+into `CheckoutForm` as `storyMediaEnabled`. Vercel Production builds also run
+`scripts/check-story-media-env.ts`, which refuses a missing, malformed, or
+colliding selected credential unless an operator
 deliberately sets `HSB_STORY_MEDIA_INTENT=disabled`.
 
 ### 4.4 Opening the media — not implemented; escalate

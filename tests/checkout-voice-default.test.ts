@@ -8,6 +8,9 @@ const checkoutFormSource = readFileSync('src/app/checkout/checkout-form.tsx', 'u
 const checkoutPageSource = readFileSync('src/app/checkout/page.tsx', 'utf8');
 const playwrightSource = readFileSync('playwright.config.ts', 'utf8');
 const env = (values: Record<string, string | undefined>) => values as unknown as NodeJS.ProcessEnv;
+const ORDER_TOKEN = 'vercel_blob_rw_orderstore01_ordersecret';
+const PRIVATE_TOKEN = 'vercel_blob_rw_privstore001_privsecret';
+const INTAKE_TOKEN = 'vercel_blob_rw_intakestore01_intakesecret';
 
 test('Custom Story text stays available while audio/document controls require server persistence capability', () => {
   assert.doesNotMatch(checkoutFormSource, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
@@ -22,28 +25,28 @@ test('story media capability fails closed unless persistence is configured', () 
   assert.equal(isCheckoutStoryMediaEnabled(env({})), false);
   assert.equal(isCheckoutStoryMediaEnabled(env({
     HSB_BLOB_ACCESS_MODE: 'public',
-    BLOB_READ_WRITE_TOKEN: 'public-token',
+    BLOB_READ_WRITE_TOKEN: ORDER_TOKEN,
   })), false);
   assert.equal(isCheckoutStoryMediaEnabled(env({
     HSB_BLOB_ACCESS_MODE: 'private',
-    BLOB_READ_WRITE_TOKEN: 'public-token',
+    BLOB_READ_WRITE_TOKEN: ORDER_TOKEN,
   })), false);
   assert.equal(isCheckoutStoryMediaEnabled(env({
     HSB_PRIVATE_READ_WRITE_TOKEN: '',
   })), false);
   assert.equal(isCheckoutStoryMediaEnabled(env({
-    BLOB_READ_WRITE_TOKEN: 'public-token',
-    HSB_PRIVATE_READ_WRITE_TOKEN: 'private-token',
+    BLOB_READ_WRITE_TOKEN: ORDER_TOKEN,
+    HSB_PRIVATE_READ_WRITE_TOKEN: PRIVATE_TOKEN,
   })), true);
   assert.equal(isCheckoutStoryMediaEnabled(env({
     HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
     NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
   })), false);
   assert.equal(isCheckoutStoryMediaEnabled(env({
-    BLOB_READ_WRITE_TOKEN: 'public-token',
-    HSB_PRIVATE_READ_WRITE_TOKEN: 'private-token',
+    BLOB_READ_WRITE_TOKEN: ORDER_TOKEN,
     HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
     NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
   })), true);
   assert.equal(isCheckoutStoryMediaEnabled(env({
     HSB_CHECKOUT_DIRECT_UPLOAD: 'true',

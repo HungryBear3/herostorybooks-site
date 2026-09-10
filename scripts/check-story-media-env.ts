@@ -3,8 +3,8 @@
  *
  * Runs as the first step of `npm run build`, which is the command Vercel
  * invokes for this project. On a Vercel PRODUCTION build it fails the build —
- * before deploy, loudly — when the private story-media Blob credential is
- * missing, blank, or names the same store as the public order credential.
+ * before deploy, loudly — when the browser-selected legacy or direct upload
+ * path lacks its matching server flag or dedicated private credential.
  *
  * Why a build gate and not a runtime check: the regression this prevents was
  * silent. The code required an environment variable Production did not have,
@@ -32,7 +32,7 @@ const problem = storyMediaBuildContractProblem(process.env);
 
 if (!problem) {
   if (isVercelProductionBuild(process.env)) {
-    console.log('[story-media] Production build contract satisfied: private Blob store configured.');
+    console.log('[story-media] Production build contract satisfied: selected private upload path configured.');
   }
   process.exit(0);
 }
@@ -48,8 +48,8 @@ console.error(
     '    private Vercel Blob store. The public order store named by',
     '    BLOB_READ_WRITE_TOKEN rejects private writes and must not be reused.',
     '',
-    '    Fix: set HSB_PRIVATE_READ_WRITE_TOKEN on the Production environment to a',
-    '    read-write token for the private store.',
+    '    Fix the flag or credential named above for the browser-selected upload',
+    '    path. The credential must identify a valid, dedicated private store.',
     '',
     `    To ship Production WITHOUT the Custom Story media lane, set ${STORY_MEDIA_INTENT_ENV}=disabled.`,
     '',

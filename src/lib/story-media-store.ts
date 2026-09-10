@@ -27,10 +27,10 @@
  *
  * Which variable
  * --------------
- * `HSB_PRIVATE_READ_WRITE_TOKEN` — already provisioned, already the name the
- * incident-scan cooldown lane uses for "the private store". Reusing it means
- * the two lanes cannot disagree about which store that is, and no new
- * Production variable is introduced.
+ * Legacy multipart checkout uses `HSB_PRIVATE_READ_WRITE_TOKEN`, already
+ * provisioned for a private store. If the browser direct-upload flag is on,
+ * the UI and build contract instead validate the direct-intake server flag and
+ * `HSB_INTAKE_BLOB_READ_WRITE_TOKEN`, matching the route that receives bytes.
  *
  * Fail closed
  * -----------
@@ -44,62 +44,46 @@
  * likely to be pasted into an incident channel.
  */
 
-import { parseBlobToken } from './checkout-blob-identity.ts';
+import { assertDistinctBlobStores, parseBlobToken } from './checkout-blob-identity.ts';
 
 /** The single environment variable that names the private story-media store. */
 export const STORY_MEDIA_PRIVATE_TOKEN_ENV = 'HSB_PRIVATE_READ_WRITE_TOKEN';
 
 /** The legacy, public order/photo store. Preserved exactly as it is. */
 export const ORDER_PUBLIC_TOKEN_ENV = 'BLOB_READ_WRITE_TOKEN';
-
-/**
- * The Blob store a credential addresses, or null when its shape cannot be
- * parsed.
- *
- * Non-throwing wrapper over the shared grammar in `checkout-blob-identity.ts`
- * so the runtime and the checkout intake lane cannot disagree about what a
- * well-formed token looks like.
- */
-function storeIdOrNull(token: string | undefined): string | null {
-  try {
-    return parseBlobToken(token, 'story-media').storeId;
-  } catch {
-    return null;
-  }
-}
+export const INTAKE_PRIVATE_TOKEN_ENV = 'HSB_INTAKE_BLOB_READ_WRITE_TOKEN';
+export const DIRECT_UPLOAD_SERVER_ENV = 'HSB_CHECKOUT_DIRECT_UPLOAD';
+export const DIRECT_UPLOAD_CLIENT_ENV = 'NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD';
 
 /**
  * What is wrong with the private story-media credential, or null when it is
- * usable.
- *
- * Two credentials issued for the SAME store are two strings addressing one
- * keyspace, which is precisely the misconfiguration "these must be separate
- * stores" is meant to catch — so identity is compared by store id whenever
- * both credentials parse, and by exact string otherwise.
- *
- * Shape is deliberately NOT required beyond that. The owner-verified
- * Production value is already provisioned and in use; refusing it here over a
- * grammar this module cannot confirm from outside Production would re-create
- * the very outage being fixed.
- *
- * The returned message is safe to log: it names the variable and the fault,
- * never the value.
+ * usable. Credential shape and store identity use the same parser as the
+ * direct-intake route. Error strings never contain token bytes.
  */
 export function storyMediaPrivateTokenProblem(
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  const raw = env[STORY_MEDIA_PRIVATE_TOKEN_ENV];
-  const privateToken = typeof raw === 'string' ? raw.trim() : '';
+  const privateToken = env[STORY_MEDIA_PRIVATE_TOKEN_ENV]?.trim() ?? '';
   if (!privateToken) return `${STORY_MEDIA_PRIVATE_TOKEN_ENV} is not set`;
+
+  let privateStoreId: string;
+  try {
+    privateStoreId = parseBlobToken(privateToken, 'story-media').storeId;
+  } catch {
+    return `${STORY_MEDIA_PRIVATE_TOKEN_ENV} must be a valid Vercel Blob credential`;
+  }
 
   const publicToken = env[ORDER_PUBLIC_TOKEN_ENV]?.trim() ?? '';
   if (!publicToken) return null;
 
-  const collides = privateToken === publicToken
-    || (storeIdOrNull(privateToken) !== null
-      && storeIdOrNull(privateToken) === storeIdOrNull(publicToken));
+  let publicStoreId: string;
+  try {
+    publicStoreId = parseBlobToken(publicToken, 'order').storeId;
+  } catch {
+    return `${ORDER_PUBLIC_TOKEN_ENV} must be a valid Vercel Blob credential`;
+  }
 
-  return collides
+  return privateStoreId === publicStoreId
     ? `${STORY_MEDIA_PRIVATE_TOKEN_ENV} must name a different Blob store than ${ORDER_PUBLIC_TOKEN_ENV}`
     : null;
 }
@@ -114,6 +98,42 @@ export function storyMediaPrivateTokenProblem(
 export function storyMediaPrivateToken(env: NodeJS.ProcessEnv = process.env): string | null {
   if (storyMediaPrivateTokenProblem(env) !== null) return null;
   return (env[STORY_MEDIA_PRIVATE_TOKEN_ENV] as string).trim();
+}
+
+/**
+ * Validate the media lane the browser will actually use.
+ *
+ * When the public client flag is on, checkout sends selected media through the
+ * direct-intake routes. That requires the matching server flag and the
+ * dedicated intake credential. Otherwise voice/documents stay on the legacy
+ * multipart route and require the legacy story-media credential.
+ */
+export function checkoutStoryMediaConfigurationProblem(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (env[DIRECT_UPLOAD_CLIENT_ENV] !== 'true') {
+    return storyMediaPrivateTokenProblem(env);
+  }
+
+  if (env[DIRECT_UPLOAD_SERVER_ENV] !== 'true') {
+    return `${DIRECT_UPLOAD_SERVER_ENV} must be true when ${DIRECT_UPLOAD_CLIENT_ENV} is true`;
+  }
+
+  const intakeToken = env[INTAKE_PRIVATE_TOKEN_ENV]?.trim() ?? '';
+  if (!intakeToken) return `${INTAKE_PRIVATE_TOKEN_ENV} is not set for direct upload`;
+
+  try {
+    parseBlobToken(intakeToken, 'intake');
+    assertDistinctBlobStores([
+      { label: 'intake', token: intakeToken },
+      { label: 'order', token: env[ORDER_PUBLIC_TOKEN_ENV]?.trim() },
+      { label: 'guard', token: env.HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN?.trim() },
+    ]);
+  } catch {
+    return `${INTAKE_PRIVATE_TOKEN_ENV} must be a valid, dedicated Vercel Blob credential`;
+  }
+
+  return null;
 }
 
 /**
@@ -187,5 +207,5 @@ export function storyMediaBuildContractProblem(
 ): string | null {
   if (!isVercelProductionBuild(env)) return null;
   if (env[STORY_MEDIA_INTENT_ENV] === STORY_MEDIA_DISABLED) return null;
-  return storyMediaPrivateTokenProblem(env);
+  return checkoutStoryMediaConfigurationProblem(env);
 }
