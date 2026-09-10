@@ -83,6 +83,10 @@ export type HsbEventName =
   // Aliased name kept for the brief's "purchase_intent" terminology;
   // emitted alongside order_submit_attempt for downstream flexibility.
   | 'purchase_intent'
+  // Five-step checkout funnel (src/lib/checkout-step-telemetry.ts).
+  | 'checkout_step_view'
+  | 'checkout_step_complete'
+  | 'checkout_step_blocked'
   | 'proof_approved';
 
 export interface HsbEventRecord {
