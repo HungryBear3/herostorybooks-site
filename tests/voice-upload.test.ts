@@ -65,17 +65,41 @@ function makeAudioFile(name = 'voice.webm', type = 'audio/webm', size = 32): Fil
   } as unknown as File;
 }
 
-test('legacy story-source storage fails closed unless Blob access is private', async () => {
+const PUBLIC_STORE_TOKEN = 'vercel_blob_rw_pubstoretest_secretBBBBBBBB';
+const PRIVATE_STORE_TOKEN = 'vercel_blob_rw_privstoretest_secretAAAAAAAA';
+
+test('legacy story-source storage fails closed unless the private store is configured', async () => {
   await assert.rejects(
-    () => withEnv({ HSB_BLOB_ACCESS_MODE: undefined }, () => assertPrivateStorySourceStorage('ord_default_public')),
+    () => withEnv(
+      { HSB_PRIVATE_READ_WRITE_TOKEN: undefined, BLOB_READ_WRITE_TOKEN: PUBLIC_STORE_TOKEN },
+      () => assertPrivateStorySourceStorage('ord_no_private_store'),
+    ),
     /private Blob storage is required/i,
   );
   await assert.rejects(
-    () => withEnv({ HSB_BLOB_ACCESS_MODE: 'public' }, () => assertPrivateStorySourceStorage('ord_explicit_public')),
+    () => withEnv(
+      { HSB_PRIVATE_READ_WRITE_TOKEN: PUBLIC_STORE_TOKEN, BLOB_READ_WRITE_TOKEN: PUBLIC_STORE_TOKEN },
+      () => assertPrivateStorySourceStorage('ord_same_store'),
+    ),
+    /private Blob storage is required/i,
+  );
+  // The global access mode is not consulted in either direction.
+  await assert.rejects(
+    () => withEnv(
+      { HSB_BLOB_ACCESS_MODE: 'private', HSB_PRIVATE_READ_WRITE_TOKEN: undefined },
+      () => assertPrivateStorySourceStorage('ord_global_mode_is_not_enough'),
+    ),
     /private Blob storage is required/i,
   );
   await assert.doesNotReject(
-    () => withEnv({ HSB_BLOB_ACCESS_MODE: 'private' }, () => assertPrivateStorySourceStorage('ord_private')),
+    () => withEnv(
+      {
+        HSB_BLOB_ACCESS_MODE: undefined,
+        BLOB_READ_WRITE_TOKEN: PUBLIC_STORE_TOKEN,
+        HSB_PRIVATE_READ_WRITE_TOKEN: PRIVATE_STORE_TOKEN,
+      },
+      () => assertPrivateStorySourceStorage('ord_private'),
+    ),
   );
 
   const ordersSource = readFileSync('src/lib/orders.ts', 'utf8');
@@ -95,7 +119,7 @@ test('legacy story-source storage fails closed unless Blob access is private', a
   }
 });
 
-test('legacy story-source uploads use the exact access mode validated before async file reads', () => {
+test('legacy story-source uploads use the exact credential validated before async file reads', () => {
   const result = spawnSync(
     process.execPath,
     [
@@ -107,9 +131,18 @@ test('legacy story-source uploads use the exact access mode validated before asy
     { cwd: process.cwd(), encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr);
-  const writes = JSON.parse(result.stdout) as Array<{ pathname: string; access: string }>;
+  const writes = JSON.parse(result.stdout) as Array<{
+    pathname: string;
+    access: string;
+    storeId: string;
+  }>;
   assert.equal(writes.length, 2);
   assert.deepEqual(writes.map((write) => write.access), ['private', 'private']);
+  assert.deepEqual(
+    writes.map((write) => write.storeId),
+    ['privstoretest', 'privstoretest'],
+    'a credential that drifts during the file read must not redirect the write',
+  );
   assert.match(writes[0].pathname, /voice-/);
   assert.match(writes[1].pathname, /document-/);
 });
@@ -248,6 +281,7 @@ test('uploadOrderVoice in production-like env with NO blob token → throws Orde
     {
       HSB_REQUIRE_DURABLE_PERSISTENCE: 'true',
       BLOB_READ_WRITE_TOKEN: undefined,
+      HSB_PRIVATE_READ_WRITE_TOKEN: undefined,
     },
     async () => {
       await assert.rejects(
@@ -265,6 +299,7 @@ test('uploadOrderVoice in dev with NO blob token → returns null silently', asy
       VERCEL: undefined,
       NODE_ENV: 'development',
       BLOB_READ_WRITE_TOKEN: undefined,
+      HSB_PRIVATE_READ_WRITE_TOKEN: undefined,
     },
     async () => {
       const result = await uploadOrderVoice('ord_voice_dev', makeAudioFile());

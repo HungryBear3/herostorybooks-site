@@ -17,26 +17,31 @@ test('Custom Story text stays available while audio/document controls require se
 });
 
 test('story media capability fails closed unless persistence is configured', () => {
+  // The capability is the DEDICATED private store, never the global access
+  // mode — see tests/story-media-private-store.test.ts for the full contract.
   assert.equal(isCheckoutStoryMediaEnabled(env({})), false);
   assert.equal(isCheckoutStoryMediaEnabled(env({
     HSB_BLOB_ACCESS_MODE: 'public',
-    BLOB_READ_WRITE_TOKEN: 'token',
+    BLOB_READ_WRITE_TOKEN: 'public-token',
   })), false);
   assert.equal(isCheckoutStoryMediaEnabled(env({
     HSB_BLOB_ACCESS_MODE: 'private',
-    BLOB_READ_WRITE_TOKEN: '',
+    BLOB_READ_WRITE_TOKEN: 'public-token',
   })), false);
   assert.equal(isCheckoutStoryMediaEnabled(env({
-    HSB_BLOB_ACCESS_MODE: 'private',
-    BLOB_READ_WRITE_TOKEN: 'token',
+    HSB_PRIVATE_READ_WRITE_TOKEN: '',
+  })), false);
+  assert.equal(isCheckoutStoryMediaEnabled(env({
+    BLOB_READ_WRITE_TOKEN: 'public-token',
+    HSB_PRIVATE_READ_WRITE_TOKEN: 'private-token',
   })), true);
   assert.equal(isCheckoutStoryMediaEnabled(env({
     HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
     NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
   })), false);
   assert.equal(isCheckoutStoryMediaEnabled(env({
-    HSB_BLOB_ACCESS_MODE: 'private',
-    BLOB_READ_WRITE_TOKEN: 'token',
+    BLOB_READ_WRITE_TOKEN: 'public-token',
+    HSB_PRIVATE_READ_WRITE_TOKEN: 'private-token',
     HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
     NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
   })), true);

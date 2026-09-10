@@ -78,6 +78,9 @@ env:
   FAL_KEY: ''
   GOOGLE_GEMINI_API_KEY: ''
   HSB_ORDER_ADMIN_KEY: ''
+  # Dedicated private customer-story/review store. Keep it blank in CI even
+  # though Vercel Production requires it through the build contract.
+  HSB_PRIVATE_READ_WRITE_TOKEN: ''
   # Read FIRST, before RESEND_API_KEY (src/lib/order-email.ts) — blanking only
   # the fallback would have left the primary live.
   HSB_RESEND_API_KEY: ''
@@ -103,10 +106,11 @@ env:
   # getBlobAccessMode() defaults to 'public'; '' would fall through to that
   # default and change nothing, so 'private' is used to actually force the
   # unauthenticated public-CDN read path off.
-  # This is a DELIBERATE divergence from production, which runs 'public' by
-  # design (the prod token rejects private writes). With BLOB_READ_WRITE_TOKEN
-  # blank no blob path is reachable either way, so it changes no result — it is
-  # defence in depth, not fidelity.
+  # This is a DELIBERATE divergence from Production's legacy ORDER store, which
+  # runs 'public' by design (that token rejects private writes). Customer voice
+  # and document media uses the separate HSB_PRIVATE_READ_WRITE_TOKEN store and
+  # does not consult this global. With both tokens blank no Blob path is
+  # reachable here, so this remains defence in depth, not fidelity.
   HSB_BLOB_ACCESS_MODE: 'private'
   NEXT_TELEMETRY_DISABLED: '1'
   #

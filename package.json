@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "next build",
+    "build": "node --experimental-strip-types scripts/check-story-media-env.ts && next build",
     "dev": "next dev",
     "launch:hygiene": "node scripts/launch-hygiene-check.mjs",
     "lint": "eslint .",

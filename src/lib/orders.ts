@@ -22,6 +22,12 @@ import { validateOrderPhotoFile } from './photo-file-validation.ts';
 import { PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
 import { classifyStoryAttachment } from './story-attachment.ts';
 import { STORY_MEDIA_MAX_BYTES } from './story-media-size.ts';
+import {
+  classifyOrderMediaLane,
+  storyMediaPrivateToken,
+  storyMediaPrivateTokenProblem,
+  type OrderMediaLane,
+} from './story-media-store.ts';
 export type { FulfillmentStatus, LayoutVersion, PageTextLayout, VoiceTranscriptMeta };
 export { normalizeEtag, normalizeEtagForIfMatch } from './blob-etag.ts';
 
@@ -1489,18 +1495,30 @@ export function documentExtensionForFile(file: Pick<File, 'type' | 'name'>): 'tx
 }
 
 /**
- * Upload an attached child-voice audio file to durable blob storage. Mirrors
- * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
+ * Resolve the credential customer story media must be written with.
+ *
+ * Story media lives in its OWN private Blob store, addressed by an explicit
+ * `HSB_PRIVATE_READ_WRITE_TOKEN`. It is NOT the ambient order/photo store and
+ * NOT governed by `HSB_BLOB_ACCESS_MODE`: that global also governs order JSON
+ * and hero photos, and the Production order store is public and rejects a
+ * private write. See `./story-media-store.ts`.
+ *
+ * Throws before any SDK call when the private credential is missing or names
+ * the same store as the public one — so a misconfiguration fails checkout
+ * closed BEFORE Stripe rather than putting consented child audio in a public
+ * store. The message never contains a token value.
  */
-export function assertPrivateStorySourceStorage(orderId: string): 'private' {
-  const access = getBlobAccessMode();
-  if (access !== 'private') {
+export function assertPrivateStorySourceStorage(
+  orderId: string,
+): { access: 'private'; token: string } {
+  const token = storyMediaPrivateToken();
+  if (!token) {
     throw new OrderPersistenceError(
       orderId,
-      'Private Blob storage is required for customer voice notes and story documents.',
+      `Private Blob storage is required for customer voice notes and story documents: ${storyMediaPrivateTokenProblem()}`,
     );
   }
-  return access;
+  return { access: 'private', token };
 }
 
 export async function uploadOrderVoice(
@@ -1512,26 +1530,17 @@ export async function uploadOrderVoice(
   if (classification.kind !== 'audio') {
     throw new OrderPersistenceError(orderId, 'Unsupported or contradictory customer voice upload type');
   }
-  const token = getBlobToken();
-
   if (typeof file.arrayBuffer !== 'function') {
     return null;
   }
 
-  if (!token) {
-    if (requiresDurablePersistence()) {
-      console.error(
-        `[orders] uploadOrderVoice: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=${orderId}). Refusing to drop customer voice note silently.`,
-      );
-      throw new OrderPersistenceError(
-        orderId,
-        'BLOB_READ_WRITE_TOKEN missing in production — cannot durably store customer voice note',
-      );
-    }
+  // Local dev with no private story-media store: explicit, expected behavior.
+  // Production-like envs fall through to the assertion below, which throws.
+  if (!storyMediaPrivateToken() && !requiresDurablePersistence()) {
     return null;
   }
 
-  const access = assertPrivateStorySourceStorage(orderId);
+  const { access, token } = assertPrivateStorySourceStorage(orderId);
 
   // Never derive durable identifiers from the caller-controlled filename.
   const assetId = crypto.randomBytes(12).toString('base64url');
@@ -1582,23 +1591,13 @@ export async function uploadOrderDocument(
     throw new OrderPersistenceError(orderId, 'Customer document upload exceeds the size limit');
   }
 
-  const token = getBlobToken();
-
   if (typeof file.arrayBuffer !== 'function') return null;
-  if (!token) {
-    if (requiresDurablePersistence()) {
-      console.error(
-        `[orders] uploadOrderDocument: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=${orderId}). Refusing to drop customer document silently.`,
-      );
-      throw new OrderPersistenceError(
-        orderId,
-        'BLOB_READ_WRITE_TOKEN missing in production — cannot durably store customer document',
-      );
-    }
-    return null;
-  }
 
-  const access = assertPrivateStorySourceStorage(orderId);
+  // Same contract as uploadOrderVoice: dev without the private store is a
+  // silent no-op, production-like is a hard stop before Stripe.
+  if (!storyMediaPrivateToken() && !requiresDurablePersistence()) return null;
+
+  const { access, token } = assertPrivateStorySourceStorage(orderId);
 
   const assetId = crypto.randomBytes(12).toString('base64url');
   const scope = checkoutMediaScope(checkoutLeaseId);
@@ -1729,14 +1728,27 @@ export async function uploadOrderSupportingPhoto(
 }
 
 export interface OrderMediaRollbackDeps {
-  deleteBlob?: (pathname: string) => Promise<void>;
+  deleteBlob?: (pathname: string, lane: OrderMediaLane) => Promise<void>;
 }
 
 /**
  * Delete media uploaded during a checkout that failed before its final order
- * record was persisted. Paths are constrained to the deterministic namespace
- * for this order so a caller can never turn cleanup into arbitrary Blob
- * deletion. Each object gets one retry before the failure is surfaced.
+ * record was persisted. Each object gets one retry before the failure is
+ * surfaced.
+ *
+ * A single failed checkout can straddle BOTH stores — hero and supporting
+ * photos in the public order store, voice and document in the private
+ * story-media store — and a Blob token can only delete from the store it is
+ * scoped to. So each path is classified into its lane and deleted with that
+ * lane's credential.
+ *
+ * Classification is fail-closed and namespace-constrained: a path must sit
+ * directly under this order's `orders/<id>/[checkout-<lease>/]` prefix AND
+ * match one of the exact names the uploaders produce
+ * (`classifyOrderMediaLane`). Anything else is refused before a single delete
+ * — otherwise a caller could choose both the object AND the credential it is
+ * deleted with, which is a strictly worse primitive than the arbitrary-path
+ * deletion the prefix check already prevented.
  */
 export async function rollbackOrderMediaUploads(
   orderId: string,
@@ -1749,39 +1761,48 @@ export async function rollbackOrderMediaUploads(
 
   const scope = checkoutMediaScope(checkoutLeaseId);
   const expectedPrefix = withBlobNamespace(`orders/${orderId}/${scope}`);
+  const laneByPath = new Map<string, OrderMediaLane>();
   for (const pathname of uniquePaths) {
-    const relative = pathname.slice(expectedPrefix.length);
-    if (!pathname.startsWith(expectedPrefix)
-      || !relative
-      || relative.split('/').some((segment) => segment === '.' || segment === '..')) {
+    const lane = pathname.startsWith(expectedPrefix)
+      ? classifyOrderMediaLane(pathname.slice(expectedPrefix.length))
+      : null;
+    if (!lane) {
       throw new OrderPersistenceError(
         orderId,
         `Refusing checkout-media rollback outside the order namespace: ${pathname}`,
       );
     }
+    laneByPath.set(pathname, lane);
   }
 
-  const token = getBlobToken();
-  const deleteBlob = deps.deleteBlob ?? (token
-    ? async (pathname: string) => { await del(pathname, { token }); }
-    : null);
+  const tokenForLane: Record<OrderMediaLane, string | undefined> = {
+    public: getBlobToken(),
+    private: storyMediaPrivateToken() ?? undefined,
+  };
+  let deleteBlob = deps.deleteBlob;
   if (!deleteBlob) {
-    if (requiresDurablePersistence()) {
-      throw new OrderPersistenceError(
-        orderId,
-        'BLOB_READ_WRITE_TOKEN missing in production — cannot roll back uploaded customer media',
-      );
+    const missing = [...new Set(laneByPath.values())].filter((lane) => !tokenForLane[lane]);
+    if (missing.length > 0) {
+      if (requiresDurablePersistence()) {
+        throw new OrderPersistenceError(
+          orderId,
+          `Blob credential missing in production — cannot roll back uploaded customer media (${missing.sort().join(', ')} store)`,
+        );
+      }
+      return 0;
     }
-    return 0;
+    deleteBlob = async (pathname: string, lane: OrderMediaLane) => {
+      await del(pathname, { token: tokenForLane[lane]! });
+    };
   }
 
   const failures: Array<{ pathname: string; cause: unknown }> = [];
-  for (const pathname of uniquePaths) {
+  for (const [pathname, lane] of laneByPath) {
     let deleted = false;
     let lastError: unknown;
     for (let attempt = 0; attempt < 2 && !deleted; attempt += 1) {
       try {
-        await deleteBlob(pathname);
+        await deleteBlob(pathname, lane);
         deleted = true;
       } catch (error) {
         lastError = error;

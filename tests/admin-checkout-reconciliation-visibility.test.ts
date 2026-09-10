@@ -27,12 +27,21 @@ const LIST_PAGE = 'src/app/admin/orders/page.tsx';
 const DETAIL_PAGE = 'src/app/admin/orders/[orderId]/page.tsx';
 
 /**
- * The one sanctioned change to `orders.ts` since the base commit.
+ * The sanctioned changes to `orders.ts` since the base commit.
  *
- * The browser-side media size preflight moved the two story-attachment caps
- * into the browser-safe `story-media-size.ts` so the checkout page refuses an
- * oversize file using the exact number this server boundary enforces. That
- * extraction touches `orders.ts` in three places and nowhere else.
+ * Two of them, in order:
+ *
+ *  1. The browser-side media size preflight moved the two story-attachment
+ *     caps into the browser-safe `story-media-size.ts` so the checkout page
+ *     refuses an oversize file using the exact number this server boundary
+ *     enforces. That extraction touches `orders.ts` in three places.
+ *
+ *  2. The story-media private-store fix. Customer voice notes and story
+ *     documents moved off the ambient order credential and the global
+ *     `HSB_BLOB_ACCESS_MODE` onto a dedicated private store addressed by
+ *     `HSB_PRIVATE_READ_WRITE_TOKEN`, and checkout-media rollback learned to
+ *     delete each object through the credential for ITS store. That touches
+ *     `orders.ts` in six places. See `src/lib/story-media-store.ts`.
  *
  * Each rule rewrites exactly one of those places back to its base form. A rule
  * that does not apply exactly once fails, and the whole-file equality check
@@ -58,6 +67,233 @@ const ORDERS_SANCTIONED_TRANSFORMS: ReadonlyArray<{
     description: 'MAX_DOCUMENT_BYTES reading the canonical document cap',
     candidate: 'export const MAX_DOCUMENT_BYTES = STORY_MEDIA_MAX_BYTES.document;',
     base: 'export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;',
+  },
+  {
+    description: 'import of the private story-media store policy',
+    candidate: `import {
+  classifyOrderMediaLane,
+  storyMediaPrivateToken,
+  storyMediaPrivateTokenProblem,
+  type OrderMediaLane,
+} from './story-media-store.ts';
+`,
+    base: '',
+  },
+  {
+    description: 'story-media credential resolver replacing the global access-mode assertion',
+    candidate: `/**
+ * Resolve the credential customer story media must be written with.
+ *
+ * Story media lives in its OWN private Blob store, addressed by an explicit
+ * \`HSB_PRIVATE_READ_WRITE_TOKEN\`. It is NOT the ambient order/photo store and
+ * NOT governed by \`HSB_BLOB_ACCESS_MODE\`: that global also governs order JSON
+ * and hero photos, and the Production order store is public and rejects a
+ * private write. See \`./story-media-store.ts\`.
+ *
+ * Throws before any SDK call when the private credential is missing or names
+ * the same store as the public one — so a misconfiguration fails checkout
+ * closed BEFORE Stripe rather than putting consented child audio in a public
+ * store. The message never contains a token value.
+ */
+export function assertPrivateStorySourceStorage(
+  orderId: string,
+): { access: 'private'; token: string } {
+  const token = storyMediaPrivateToken();
+  if (!token) {
+    throw new OrderPersistenceError(
+      orderId,
+      \`Private Blob storage is required for customer voice notes and story documents: \${storyMediaPrivateTokenProblem()}\`,
+    );
+  }
+  return { access: 'private', token };
+}`,
+    base: `/**
+ * Upload an attached child-voice audio file to durable blob storage. Mirrors
+ * uploadOrderPhoto's fail-before-Stripe contract in production-like envs.
+ */
+export function assertPrivateStorySourceStorage(orderId: string): 'private' {
+  const access = getBlobAccessMode();
+  if (access !== 'private') {
+    throw new OrderPersistenceError(
+      orderId,
+      'Private Blob storage is required for customer voice notes and story documents.',
+    );
+  }
+  return access;
+}`,
+  },
+  {
+    description: 'uploadOrderVoice resolving the private credential',
+    candidate: `  if (typeof file.arrayBuffer !== 'function') {
+    return null;
+  }
+
+  // Local dev with no private story-media store: explicit, expected behavior.
+  // Production-like envs fall through to the assertion below, which throws.
+  if (!storyMediaPrivateToken() && !requiresDurablePersistence()) {
+    return null;
+  }
+
+  const { access, token } = assertPrivateStorySourceStorage(orderId);`,
+    base: `  const token = getBlobToken();
+
+  if (typeof file.arrayBuffer !== 'function') {
+    return null;
+  }
+
+  if (!token) {
+    if (requiresDurablePersistence()) {
+      console.error(
+        \`[orders] uploadOrderVoice: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=\${orderId}). Refusing to drop customer voice note silently.\`,
+      );
+      throw new OrderPersistenceError(
+        orderId,
+        'BLOB_READ_WRITE_TOKEN missing in production — cannot durably store customer voice note',
+      );
+    }
+    return null;
+  }
+
+  const access = assertPrivateStorySourceStorage(orderId);`,
+  },
+  {
+    description: 'uploadOrderDocument resolving the private credential',
+    candidate: `  if (typeof file.arrayBuffer !== 'function') return null;
+
+  // Same contract as uploadOrderVoice: dev without the private store is a
+  // silent no-op, production-like is a hard stop before Stripe.
+  if (!storyMediaPrivateToken() && !requiresDurablePersistence()) return null;
+
+  const { access, token } = assertPrivateStorySourceStorage(orderId);`,
+    base: `  const token = getBlobToken();
+
+  if (typeof file.arrayBuffer !== 'function') return null;
+  if (!token) {
+    if (requiresDurablePersistence()) {
+      console.error(
+        \`[orders] uploadOrderDocument: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=\${orderId}). Refusing to drop customer document silently.\`,
+      );
+      throw new OrderPersistenceError(
+        orderId,
+        'BLOB_READ_WRITE_TOKEN missing in production — cannot durably store customer document',
+      );
+    }
+    return null;
+  }
+
+  const access = assertPrivateStorySourceStorage(orderId);`,
+  },
+  {
+    description: 'lane-aware rollback dependency and its contract',
+    candidate: `  deleteBlob?: (pathname: string, lane: OrderMediaLane) => Promise<void>;
+}
+
+/**
+ * Delete media uploaded during a checkout that failed before its final order
+ * record was persisted. Each object gets one retry before the failure is
+ * surfaced.
+ *
+ * A single failed checkout can straddle BOTH stores — hero and supporting
+ * photos in the public order store, voice and document in the private
+ * story-media store — and a Blob token can only delete from the store it is
+ * scoped to. So each path is classified into its lane and deleted with that
+ * lane's credential.
+ *
+ * Classification is fail-closed and namespace-constrained: a path must sit
+ * directly under this order's \`orders/<id>/[checkout-<lease>/]\` prefix AND
+ * match one of the exact names the uploaders produce
+ * (\`classifyOrderMediaLane\`). Anything else is refused before a single delete
+ * — otherwise a caller could choose both the object AND the credential it is
+ * deleted with, which is a strictly worse primitive than the arbitrary-path
+ * deletion the prefix check already prevented.
+ */`,
+    base: `  deleteBlob?: (pathname: string) => Promise<void>;
+}
+
+/**
+ * Delete media uploaded during a checkout that failed before its final order
+ * record was persisted. Paths are constrained to the deterministic namespace
+ * for this order so a caller can never turn cleanup into arbitrary Blob
+ * deletion. Each object gets one retry before the failure is surfaced.
+ */`,
+  },
+  {
+    description: 'rollback routing each object to the credential for its own store',
+    candidate: `  const laneByPath = new Map<string, OrderMediaLane>();
+  for (const pathname of uniquePaths) {
+    const lane = pathname.startsWith(expectedPrefix)
+      ? classifyOrderMediaLane(pathname.slice(expectedPrefix.length))
+      : null;
+    if (!lane) {
+      throw new OrderPersistenceError(
+        orderId,
+        \`Refusing checkout-media rollback outside the order namespace: \${pathname}\`,
+      );
+    }
+    laneByPath.set(pathname, lane);
+  }
+
+  const tokenForLane: Record<OrderMediaLane, string | undefined> = {
+    public: getBlobToken(),
+    private: storyMediaPrivateToken() ?? undefined,
+  };
+  let deleteBlob = deps.deleteBlob;
+  if (!deleteBlob) {
+    const missing = [...new Set(laneByPath.values())].filter((lane) => !tokenForLane[lane]);
+    if (missing.length > 0) {
+      if (requiresDurablePersistence()) {
+        throw new OrderPersistenceError(
+          orderId,
+          \`Blob credential missing in production — cannot roll back uploaded customer media (\${missing.sort().join(', ')} store)\`,
+        );
+      }
+      return 0;
+    }
+    deleteBlob = async (pathname: string, lane: OrderMediaLane) => {
+      await del(pathname, { token: tokenForLane[lane]! });
+    };
+  }
+
+  const failures: Array<{ pathname: string; cause: unknown }> = [];
+  for (const [pathname, lane] of laneByPath) {
+    let deleted = false;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2 && !deleted; attempt += 1) {
+      try {
+        await deleteBlob(pathname, lane);`,
+    base: `  for (const pathname of uniquePaths) {
+    const relative = pathname.slice(expectedPrefix.length);
+    if (!pathname.startsWith(expectedPrefix)
+      || !relative
+      || relative.split('/').some((segment) => segment === '.' || segment === '..')) {
+      throw new OrderPersistenceError(
+        orderId,
+        \`Refusing checkout-media rollback outside the order namespace: \${pathname}\`,
+      );
+    }
+  }
+
+  const token = getBlobToken();
+  const deleteBlob = deps.deleteBlob ?? (token
+    ? async (pathname: string) => { await del(pathname, { token }); }
+    : null);
+  if (!deleteBlob) {
+    if (requiresDurablePersistence()) {
+      throw new OrderPersistenceError(
+        orderId,
+        'BLOB_READ_WRITE_TOKEN missing in production — cannot roll back uploaded customer media',
+      );
+    }
+    return 0;
+  }
+
+  const failures: Array<{ pathname: string; cause: unknown }> = [];
+  for (const pathname of uniquePaths) {
+    let deleted = false;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2 && !deleted; attempt += 1) {
+      try {
+        await deleteBlob(pathname);`,
   },
 ];
 
