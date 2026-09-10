@@ -85,6 +85,7 @@ import { runLegacyCheckoutRoute } from './checkout-legacy-order.ts';
 import { type IntakeStore } from './checkout-intake.ts';
 import { checkoutRequestFingerprint } from './checkout-request-fingerprint.ts';
 import { classifyStoryAttachment } from './story-attachment.ts';
+import { isStoryMediaExplicitlyDisabled } from './story-media-store.ts';
 
 /**
  * Everything the handler cannot construct for itself under `node:test`.
@@ -309,6 +310,15 @@ export async function handleCheckoutOrderPost<TResponse>(
         : null;
     const hasVoiceUpload = voiceRaw instanceof File && voiceRaw.size > 0;
     const hasDocumentUpload = documentRaw instanceof File && documentRaw.size > 0;
+    if (isStoryMediaExplicitlyDisabled() && (hasVoiceUpload || hasDocumentUpload)) {
+      return json(
+        {
+          error: 'Story media intake is not enabled on this deployment. No charge was made.',
+          code: 'story_media_disabled',
+        },
+        404,
+      );
+    }
     const hasCustomStorySource = Boolean(
       customStoryText
       || hasVoiceUpload

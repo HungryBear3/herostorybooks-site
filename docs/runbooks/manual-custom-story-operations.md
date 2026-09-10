@@ -301,9 +301,12 @@ the direct transport on from its public flag. Vercel Production builds also run
 `scripts/check-story-media-env.ts`, which refuses a missing, malformed, or
 colliding selected credential unless an operator deliberately sets
 `HSB_STORY_MEDIA_INTENT=disabled`. That exact opt-out also suppresses the
-runtime media controls and refuses creation of a new direct intake even if
-credentials or QA variables remain. It does not tear down server routes or
-capability-bound actions needed to reconcile an already-issued direct intake.
+runtime media controls, refuses creation of a new direct intake, and rejects
+stale-checkout legacy multipart voice/document ingestion before durable order
+creation even if credentials or QA variables remain. It does not tear down
+server routes or capability-bound actions needed to reconcile an already-issued
+direct intake. Typed Custom Story text and ordinary hero/family photos remain
+available.
 
 ### 4.4 Opening the media — not implemented; escalate
 
