@@ -175,6 +175,7 @@ test('checkout media availability follows the browser-selected legacy or direct 
 
   const directReady = {
     BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
+    HSB_CHECKOUT_GUARD_MODE: 'durable',
     HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
     HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
     NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
@@ -188,6 +189,12 @@ test('checkout media availability follows the browser-selected legacy or direct 
 
   for (const broken of [
     { ...directReady, HSB_CHECKOUT_DIRECT_UPLOAD: 'false' },
+    { ...directReady, HSB_CHECKOUT_GUARD_MODE: undefined },
+    { ...directReady, HSB_CHECKOUT_GUARD_MODE: 'process-local' },
+    { ...directReady, HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: undefined },
+    { ...directReady, HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: MALFORMED_TOKEN },
+    { ...directReady, HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: PUBLIC_ALIAS_TOKEN },
+    { ...directReady, HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: 'vercel_blob_rw_privINTAKE000_othersecret' },
     { ...directReady, HSB_INTAKE_BLOB_READ_WRITE_TOKEN: undefined },
     { ...directReady, HSB_INTAKE_BLOB_READ_WRITE_TOKEN: MALFORMED_TOKEN },
     { ...directReady, HSB_INTAKE_BLOB_READ_WRITE_TOKEN: PUBLIC_ALIAS_TOKEN },
@@ -288,6 +295,7 @@ test('a Vercel Production build fails when the private story-media credential is
   assert.equal(
     production({
       BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
+      HSB_CHECKOUT_GUARD_MODE: 'durable',
       HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
       HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
       NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
@@ -301,6 +309,18 @@ test('a Vercel Production build fails when the private story-media credential is
       HSB_CHECKOUT_DIRECT_UPLOAD: 'false',
       NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
       HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+    },
+    {
+      HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+      HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
+    },
+    {
+      HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+      HSB_CHECKOUT_GUARD_MODE: 'durable',
     },
     {
       HSB_CHECKOUT_DIRECT_UPLOAD: 'true',

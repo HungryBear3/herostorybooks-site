@@ -16,12 +16,17 @@ import test from 'node:test';
 
 import { createIntake } from '../src/lib/checkout-intake.ts';
 import { handleIntakeRequest, type IntakeRouteDeps } from '../src/lib/checkout-intake-route.ts';
+import { isCheckoutStoryMediaEnabled } from '../src/lib/checkout-direct-flags.ts';
 import { createMemoryCheckoutGuardStore, guardBucketPath } from '../src/lib/checkout-request-guard.ts';
+import { storyMediaBuildContractProblem } from '../src/lib/story-media-store.ts';
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
 
 const ORIGIN = 'https://herostorybooks.com';
 const URL_ = `${ORIGIN}/api/checkout/intake`;
 const ENV = { HSB_CHECKOUT_DIRECT_UPLOAD: 'true' } as NodeJS.ProcessEnv;
+const ORDER_TOKEN = 'vercel_blob_rw_orderstore02_ordersecret';
+const INTAKE_TOKEN = 'vercel_blob_rw_intakestore02_intakesecret';
+const GUARD_TOKEN = 'vercel_blob_rw_guardstore02_guardsecret';
 
 function deps(store: MemoryIntakeStore, env: NodeJS.ProcessEnv = ENV): IntakeRouteDeps {
   return { store, guardStore: createMemoryCheckoutGuardStore(), env };
@@ -65,6 +70,42 @@ test('the route does not exist unless the direct-upload flag is on', async () =>
     deps(store, {} as NodeJS.ProcessEnv),
   );
   assert.equal(response.status, 404);
+});
+
+test('the direct-upload UI/build contract includes every durable guard prerequisite used by the route', async () => {
+  const ready = {
+    VERCEL: '1',
+    VERCEL_ENV: 'production',
+    BLOB_READ_WRITE_TOKEN: ORDER_TOKEN,
+    HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+    HSB_CHECKOUT_GUARD_MODE: 'durable',
+    HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
+  } as unknown as NodeJS.ProcessEnv;
+
+  assert.equal(isCheckoutStoryMediaEnabled(ready), true);
+  assert.equal(storyMediaBuildContractProblem(ready), null);
+  const accepted = await handleIntakeRequest(
+    post({ action: 'create', consent: { mediaAuthorized: true } }),
+    deps(createMemoryIntakeStore(), ready),
+  );
+  assert.equal(accepted.status, 200, await accepted.text());
+
+  for (const broken of [
+    { ...ready, HSB_CHECKOUT_GUARD_MODE: undefined },
+    { ...ready, HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: undefined },
+  ]) {
+    const brokenEnv = broken as NodeJS.ProcessEnv;
+    assert.equal(isCheckoutStoryMediaEnabled(brokenEnv), false);
+    assert.match(storyMediaBuildContractProblem(brokenEnv) ?? '', /guard|durable/i);
+    const refused = await handleIntakeRequest(
+      post({ action: 'create', consent: { mediaAuthorized: true } }),
+      { store: createMemoryIntakeStore(), env: brokenEnv },
+    );
+    assert.equal(refused.status, 503);
+    assert.equal((await json(refused)).error, 'abuse_guard_unavailable');
+  }
 });
 
 test('every action is guarded as a browser mutation', async () => {

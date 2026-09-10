@@ -11,6 +11,7 @@ const env = (values: Record<string, string | undefined>) => values as unknown as
 const ORDER_TOKEN = 'vercel_blob_rw_orderstore01_ordersecret';
 const PRIVATE_TOKEN = 'vercel_blob_rw_privstore001_privsecret';
 const INTAKE_TOKEN = 'vercel_blob_rw_intakestore01_intakesecret';
+const GUARD_TOKEN = 'vercel_blob_rw_guardstore01_guardsecret';
 
 test('Custom Story text stays available while audio/document controls require server persistence capability', () => {
   assert.doesNotMatch(checkoutFormSource, /NEXT_PUBLIC_HSB_STORY_UPLOAD/);
@@ -47,6 +48,8 @@ test('story media capability fails closed unless persistence is configured', () 
     HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
     NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
     HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+    HSB_CHECKOUT_GUARD_MODE: 'durable',
+    HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
   })), true);
   assert.equal(isCheckoutStoryMediaEnabled(env({
     HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
