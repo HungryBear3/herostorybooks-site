@@ -12,7 +12,10 @@
  * turning the client flag off has to be enough to stop new direct uploads
  * without tearing down the server that is still reconciling in-flight ones.
  */
-import { checkoutStoryMediaConfigurationProblem } from './story-media-store.ts';
+import {
+  checkoutStoryMediaConfigurationProblem,
+  isStoryMediaExplicitlyDisabled,
+} from './story-media-store.ts';
 
 export function isDirectUploadServerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.HSB_CHECKOUT_DIRECT_UPLOAD === 'true';
@@ -32,9 +35,12 @@ export function isDirectUploadClientEnabled(): boolean {
  * governs order JSON and hero photos, and gating on it caused the regression.
  */
 export function isCheckoutStoryMediaEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (isStoryMediaExplicitlyDisabled(env)) return false;
+
   const selectedUploadPathReady = checkoutStoryMediaConfigurationProblem(env) === null;
   const hermeticBrowserQa = env.HSB_E2E_STORY_MEDIA_ENABLED === 'true'
     && env.HSB_REQUIRE_DURABLE_PERSISTENCE === 'false'
-    && env.HSB_ORDER_STORE_DIR?.endsWith('/.e2e-store') === true;
+    && env.HSB_ORDER_STORE_DIR?.endsWith('/.e2e-store') === true
+    && env.NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD !== 'true';
   return selectedUploadPathReady || hermeticBrowserQa;
 }

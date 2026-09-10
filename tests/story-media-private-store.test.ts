@@ -222,15 +222,48 @@ test('checkout media availability follows the browser-selected legacy or direct 
   })), true, 'every runtime parser accepts the same explicit configuration as the UI gate');
 });
 
-test('the hermetic browser-QA branch still enables the controls without Blob credentials', () => {
+test('the hermetic browser-QA branch enables only the legacy controls without Blob credentials', () => {
+  const hermeticQa = {
+    HSB_E2E_STORY_MEDIA_ENABLED: 'true',
+    HSB_ORDER_STORE_DIR: '/tmp/project/.e2e-store',
+    HSB_REQUIRE_DURABLE_PERSISTENCE: 'false',
+  };
+
+  assert.equal(isCheckoutStoryMediaEnabled(env(hermeticQa)), true);
   assert.equal(
     isCheckoutStoryMediaEnabled(env({
-      HSB_E2E_STORY_MEDIA_ENABLED: 'true',
-      HSB_ORDER_STORE_DIR: '/tmp/project/.e2e-store',
-      HSB_REQUIRE_DURABLE_PERSISTENCE: 'false',
+      ...hermeticQa,
+      NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
     })),
-    true,
+    false,
+    'QA may not expose a browser-selected direct lane rejected by the shared configuration contract',
   );
+});
+
+test('the explicit story-media opt-out disables runtime controls even when a path is otherwise ready', () => {
+  const validLegacy = {
+    HSB_PRIVATE_READ_WRITE_TOKEN: PRIVATE_TOKEN,
+    HSB_STORY_MEDIA_INTENT: 'disabled',
+  };
+  const validDirect = {
+    BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
+    HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+    HSB_CHECKOUT_GUARD_MODE: 'durable',
+    HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
+    HSB_STORY_MEDIA_INTENT: 'disabled',
+  };
+  const hermeticQa = {
+    HSB_E2E_STORY_MEDIA_ENABLED: 'true',
+    HSB_ORDER_STORE_DIR: '/tmp/project/.e2e-store',
+    HSB_REQUIRE_DURABLE_PERSISTENCE: 'false',
+    HSB_STORY_MEDIA_INTENT: 'disabled',
+  };
+
+  assert.equal(isCheckoutStoryMediaEnabled(env(validLegacy)), false);
+  assert.equal(isCheckoutStoryMediaEnabled(env(validDirect)), false);
+  assert.equal(isCheckoutStoryMediaEnabled(env(hermeticQa)), false);
 });
 
 test('the story-media gate no longer reads HSB_BLOB_ACCESS_MODE at all', () => {

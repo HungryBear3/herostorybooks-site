@@ -297,8 +297,11 @@ and valid non-negative integer values for every optional `HSB_CHECKOUT_GUARD_MAX
 limit. `/checkout` passes that path-aware result
 into `CheckoutForm` as `storyMediaEnabled`. Vercel Production builds also run
 `scripts/check-story-media-env.ts`, which refuses a missing, malformed, or
-colliding selected credential unless an operator
-deliberately sets `HSB_STORY_MEDIA_INTENT=disabled`.
+colliding selected credential unless an operator deliberately sets
+`HSB_STORY_MEDIA_INTENT=disabled`. That exact opt-out also suppresses the
+runtime audio/document controls even if credentials or QA variables remain;
+it does not tear down server routes needed to reconcile in-flight direct
+uploads.
 
 ### 4.4 Opening the media — not implemented; escalate
 

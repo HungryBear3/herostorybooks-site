@@ -190,6 +190,12 @@ export function isVercelProductionBuild(env: NodeJS.ProcessEnv = process.env): b
 export const STORY_MEDIA_INTENT_ENV = 'HSB_STORY_MEDIA_INTENT';
 const STORY_MEDIA_DISABLED = 'disabled';
 
+export function isStoryMediaExplicitlyDisabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env[STORY_MEDIA_INTENT_ENV] === STORY_MEDIA_DISABLED;
+}
+
 /**
  * The deploy-time contract that makes this regression un-shippable.
  *
@@ -205,6 +211,6 @@ export function storyMediaBuildContractProblem(
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
   if (!isVercelProductionBuild(env)) return null;
-  if (env[STORY_MEDIA_INTENT_ENV] === STORY_MEDIA_DISABLED) return null;
+  if (isStoryMediaExplicitlyDisabled(env)) return null;
   return checkoutStoryMediaConfigurationProblem(env);
 }
