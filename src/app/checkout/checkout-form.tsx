@@ -24,6 +24,12 @@ import {
 } from "@/lib/story-catalog";
 import { getFathersDayCountdown } from "@/lib/fathers-day";
 import { currentGaClientId, track } from "@/lib/analytics";
+import {
+  checkoutStepBlockedReason,
+  checkoutStepEventProps,
+  checkoutSubmitBlockedReason,
+  createCheckoutStepViewDeduper,
+} from "@/lib/checkout-step-telemetry";
 import { buildAutoShrinkNotice, shrinkPhotoForUpload } from "@/lib/photo-upload";
 import {
   createSupportingCharacterDraft,
@@ -541,6 +547,10 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
   // reallocated on every one.
   const submitLockRef = useRef<SubmitLock | null>(null);
   if (!submitLockRef.current) submitLockRef.current = createSubmitLock();
+  // One checkout_step_view per step per mount; survives re-renders and
+  // StrictMode effect replays the same way the submit lock does.
+  const stepViewDeduperRef = useRef<ReturnType<typeof createCheckoutStepViewDeduper> | null>(null);
+  if (!stepViewDeduperRef.current) stepViewDeduperRef.current = createCheckoutStepViewDeduper();
 
   // Restore saved progress on mount + honor checkout entry context.
   // NamePreview carries typed names through sessionStorage so a child's name
@@ -876,6 +886,14 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
     }
   }, [checkoutProgress.currentStep.id, checkoutSteps, currentStepId]);
 
+  // Step-funnel telemetry: the active step became visible. Payload is step
+  // identity plus the selected format identifier only
+  // (src/lib/checkout-step-telemetry.ts); never buyer-entered content.
+  useEffect(() => {
+    if (!stepViewDeduperRef.current?.shouldEmit(currentStepId)) return;
+    track("checkout_step_view", checkoutStepEventProps(currentStepId, form.bookFormat));
+  }, [currentStepId, form.bookFormat]);
+
   const scrollToField = useCallback((fieldName: string | null, stepId?: string) => {
     if (stepId) {
       setCurrentStepId(stepId as typeof currentStepId);
@@ -892,7 +910,12 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
   }, [currentStepId]);
 
   const continueCurrentStep = useCallback(() => {
+    const stepEventProps = checkoutStepEventProps(currentStep.id, form.bookFormat);
     if (currentStep.missingFields.length > 0 || currentStep.status === "needs_attention") {
+      track("checkout_step_blocked", {
+        ...stepEventProps,
+        reason: checkoutStepBlockedReason(currentStep) ?? "other",
+      });
       setStepError(`Missing: ${currentStep.missingFields.join(", ")}`);
       if (currentStep.firstInvalidField) {
         setFieldErrors({ [currentStep.firstInvalidField]: true });
@@ -904,10 +927,11 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
     setStepError(null);
     setFieldErrors({});
     if (nextStep) {
+      track("checkout_step_complete", stepEventProps);
       setCurrentStepId(nextStep.id);
       scrollToField(null, nextStep.id);
     }
-  }, [currentStep, nextStep, scrollToField]);
+  }, [currentStep, nextStep, scrollToField, form.bookFormat]);
 
   const processPhoto = useCallback(async (file: File) => {
     const operation = ++heroPhotoOperationRef.current;
@@ -993,6 +1017,14 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (currentStepId !== "review" || !isReadyToPay) {
+      track("checkout_step_blocked", {
+        ...checkoutStepEventProps(currentStepId, form.bookFormat),
+        reason: checkoutSubmitBlockedReason({
+          currentStepId,
+          blockingStep: checkoutProgress.currentStep,
+          mediaConsentMissing: directMediaBlockers.length > 0,
+        }),
+      });
       setStepError("Finish the checkout steps before continuing to payment.");
       return;
     }
@@ -1003,6 +1035,9 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
     if (!submitLockRef.current?.acquire()) return;
     setIsSubmitting(true);
     setSubmitError(null);
+    // The review step is the fifth funnel step: it completes when a validated
+    // submit passes the lock, so a double click cannot count it twice.
+    track("checkout_step_complete", checkoutStepEventProps("review", form.bookFormat));
     // Fire BOTH the brief's "purchase_intent" alias and the more literal
     // "order_submit_attempt" so downstream funnels can use either name.
     // Network round-trip + payment success/failure live further along the
