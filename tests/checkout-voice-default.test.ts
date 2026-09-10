@@ -18,6 +18,8 @@ test('Custom Story text stays available while audio/document controls require se
   assert.match(checkoutFormSource, /isCustomStorySelected && \([\s\S]*?data-testid="custom-story-intake-panel"/);
   assert.match(checkoutFormSource, /data-testid="custom-story-intake-panel"[\s\S]*?storyMediaEnabled && \([\s\S]*?<VoiceRecorderSection/);
   assert.match(checkoutPageSource, /storyMediaEnabled=\{isCheckoutStoryMediaEnabled\(\)\}/);
+  assert.match(checkoutPageSource, /directUploadEnabled=\{isCheckoutDirectUploadEnabled\(\)\}/);
+  assert.doesNotMatch(checkoutFormSource, /isDirectUploadClientEnabled/);
 });
 
 test('story media capability fails closed unless persistence is configured', () => {

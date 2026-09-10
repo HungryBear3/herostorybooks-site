@@ -25,6 +25,7 @@
  * check and must not be able to forge a match against).
  */
 import { isDirectUploadServerEnabled } from './checkout-direct-flags.ts';
+import { isStoryMediaExplicitlyDisabled } from './story-media-store.ts';
 import {
   createIntake,
   INTAKE_CATEGORY_POLICY,
@@ -184,6 +185,9 @@ export async function handleIntakeRequest(request: Request, deps: IntakeRouteDep
 
   const action = body?.action as IntakeAction;
   if (!ACTIONS.includes(action)) return errorResponse(new IntakeError('intake_action_invalid'));
+  if (action === 'create' && isStoryMediaExplicitlyDisabled(deps.env)) {
+    return Response.json({ error: 'not_found' }, { status: 404 });
+  }
 
   try {
     if (action === 'reserve-upload') {

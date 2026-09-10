@@ -223,7 +223,8 @@ test('order route: no uploaded media is handed to generation, proof, print, or e
 });
 
 test('checkout form delegates mutually-exclusive direct and legacy media shape to the tested helper', () => {
-  assert.match(FORM, /isDirectUploadClientEnabled/);
+  assert.match(FORM, /directUploadEnabled/);
+  assert.doesNotMatch(FORM, /isDirectUploadClientEnabled/);
   const prepared = FORM.indexOf('const directIntakeSubmission = preparedDirectIntake?.submission ?? null');
   const applied = FORM.indexOf('applyPrimaryAndSupportingMediaToOrderPayload(payload, {', prepared);
   const fetchOrder = FORM.indexOf('fetch("/api/order"', applied);

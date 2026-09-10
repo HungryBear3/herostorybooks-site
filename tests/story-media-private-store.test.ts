@@ -34,7 +34,10 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { isCheckoutStoryMediaEnabled } from '../src/lib/checkout-direct-flags.ts';
+import {
+  isCheckoutDirectUploadEnabled,
+  isCheckoutStoryMediaEnabled,
+} from '../src/lib/checkout-direct-flags.ts';
 import {
   STORY_MEDIA_PRIVATE_TOKEN_ENV,
   classifyOrderMediaLane,
@@ -222,6 +225,41 @@ test('checkout media availability follows the browser-selected legacy or direct 
   })), true, 'every runtime parser accepts the same explicit configuration as the UI gate');
 });
 
+test('browser direct transport is server-computed from the full shared contract', () => {
+  const directReady = {
+    BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
+    HSB_CHECKOUT_GUARD_MODE: 'durable',
+    HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
+    HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+  };
+
+  assert.equal(isCheckoutDirectUploadEnabled(env(directReady)), true);
+  assert.equal(
+    isCheckoutDirectUploadEnabled(env({ ...directReady, HSB_STORY_MEDIA_INTENT: 'disabled' })),
+    false,
+  );
+  assert.equal(
+    isCheckoutDirectUploadEnabled(env({ ...directReady, HSB_CHECKOUT_GUARD_MODE: undefined })),
+    false,
+  );
+  assert.equal(
+    isCheckoutDirectUploadEnabled(env({
+      NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      HSB_E2E_STORY_MEDIA_ENABLED: 'true',
+      HSB_ORDER_STORE_DIR: '/tmp/project/.e2e-store',
+      HSB_REQUIRE_DURABLE_PERSISTENCE: 'false',
+    })),
+    false,
+    'hermetic QA cannot bypass direct transport configuration',
+  );
+  assert.equal(
+    isCheckoutDirectUploadEnabled(env({ ...directReady, NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'false' })),
+    false,
+  );
+});
+
 test('the hermetic browser-QA branch enables only the legacy controls without Blob credentials', () => {
   const hermeticQa = {
     HSB_E2E_STORY_MEDIA_ENABLED: 'true',
@@ -230,6 +268,11 @@ test('the hermetic browser-QA branch enables only the legacy controls without Bl
   };
 
   assert.equal(isCheckoutStoryMediaEnabled(env(hermeticQa)), true);
+  assert.equal(
+    isCheckoutStoryMediaEnabled(env({ ...hermeticQa, NODE_ENV: 'production' })),
+    false,
+    'the hermetic QA bypass is forbidden in every production runtime',
+  );
   assert.equal(
     isCheckoutStoryMediaEnabled(env({
       ...hermeticQa,

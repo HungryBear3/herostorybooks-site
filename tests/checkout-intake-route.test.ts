@@ -72,6 +72,30 @@ test('the route does not exist unless the direct-upload flag is on', async () =>
   assert.equal(response.status, 404);
 });
 
+test('explicit disable refuses new intakes but preserves existing-intake reconciliation', async () => {
+  const store = createMemoryIntakeStore();
+  const disabledEnv = {
+    ...ENV,
+    HSB_STORY_MEDIA_INTENT: 'disabled',
+  } as NodeJS.ProcessEnv;
+
+  const refused = await handleIntakeRequest(
+    post({ action: 'create', consent: { mediaAuthorized: true } }),
+    deps(store, disabledEnv),
+  );
+  assert.equal(refused.status, 404);
+  assert.equal((await json(refused)).error, 'not_found');
+  assert.equal(store.records.size, 0, 'disabled mode cannot create a new intake owner');
+
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  const seeded = await createIntake(store, { mediaAuthorizedAt: now.toISOString() }, now);
+  const reconciled = await handleIntakeRequest(
+    post({ action: 'list', intakeId: seeded.intakeId, capability: seeded.capability }),
+    deps(store, disabledEnv),
+  );
+  assert.equal(reconciled.status, 200, await reconciled.text());
+});
+
 test('the direct-upload UI/build contract includes every durable guard prerequisite used by the route', async () => {
   const ready = {
     VERCEL: '1',

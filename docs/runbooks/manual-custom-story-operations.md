@@ -294,14 +294,16 @@ path the browser will actually submit through. With direct upload off,
 `HSB_INTAKE_BLOB_READ_WRITE_TOKEN`, `HSB_CHECKOUT_GUARD_MODE=durable`, a valid
 dedicated `HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN`, a valid Blob namespace,
 and valid non-negative integer values for every optional `HSB_CHECKOUT_GUARD_MAX_*`
-limit. `/checkout` passes that path-aware result
-into `CheckoutForm` as `storyMediaEnabled`. Vercel Production builds also run
+limit. `/checkout` computes both `storyMediaEnabled` and
+`directUploadEnabled` on the server from that same contract and passes only
+those booleans into `CheckoutForm`; the browser does not independently turn
+the direct transport on from its public flag. Vercel Production builds also run
 `scripts/check-story-media-env.ts`, which refuses a missing, malformed, or
 colliding selected credential unless an operator deliberately sets
 `HSB_STORY_MEDIA_INTENT=disabled`. That exact opt-out also suppresses the
-runtime audio/document controls even if credentials or QA variables remain;
-it does not tear down server routes needed to reconcile in-flight direct
-uploads.
+runtime media controls and refuses creation of a new direct intake even if
+credentials or QA variables remain. It does not tear down server routes or
+capability-bound actions needed to reconcile an already-issued direct intake.
 
 ### 4.4 Opening the media — not implemented; escalate
 

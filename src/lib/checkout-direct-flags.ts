@@ -21,8 +21,13 @@ export function isDirectUploadServerEnabled(env: NodeJS.ProcessEnv = process.env
   return env.HSB_CHECKOUT_DIRECT_UPLOAD === 'true';
 }
 
-export function isDirectUploadClientEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD === 'true';
+/** Whether a new browser session may use the direct-upload transport. */
+export function isCheckoutDirectUploadEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (isStoryMediaExplicitlyDisabled(env)) return false;
+  if (env.NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD !== 'true') return false;
+  return checkoutStoryMediaConfigurationProblem(env) === null;
 }
 
 /**
@@ -38,7 +43,8 @@ export function isCheckoutStoryMediaEnabled(env: NodeJS.ProcessEnv = process.env
   if (isStoryMediaExplicitlyDisabled(env)) return false;
 
   const selectedUploadPathReady = checkoutStoryMediaConfigurationProblem(env) === null;
-  const hermeticBrowserQa = env.HSB_E2E_STORY_MEDIA_ENABLED === 'true'
+  const hermeticBrowserQa = env.NODE_ENV !== 'production'
+    && env.HSB_E2E_STORY_MEDIA_ENABLED === 'true'
     && env.HSB_REQUIRE_DURABLE_PERSISTENCE === 'false'
     && env.HSB_ORDER_STORE_DIR?.endsWith('/.e2e-store') === true
     && env.NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD !== 'true';
