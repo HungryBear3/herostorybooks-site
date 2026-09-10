@@ -199,9 +199,27 @@ test('checkout media availability follows the browser-selected legacy or direct 
     { ...directReady, HSB_INTAKE_BLOB_READ_WRITE_TOKEN: MALFORMED_TOKEN },
     { ...directReady, HSB_INTAKE_BLOB_READ_WRITE_TOKEN: PUBLIC_ALIAS_TOKEN },
     { ...directReady, HSB_INTAKE_BLOB_READ_WRITE_TOKEN: 'vercel_blob_rw_privGUARD0000_othersecret' },
+    { ...directReady, HSB_BLOB_NAMESPACE: 'bad/namespace' },
+    { ...directReady, HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE: 'not-a-number' },
+    { ...directReady, HSB_CHECKOUT_GUARD_MAX_UPLOADS_PER_MINUTE: '-1' },
+    { ...directReady, HSB_CHECKOUT_GUARD_MAX_UPLOAD_BYTES_PER_MINUTE: '1e6' },
+    { ...directReady, HSB_CHECKOUT_GUARD_MAX_FINALIZATIONS_PER_MINUTE: '2.5' },
+    { ...directReady, HSB_CHECKOUT_GUARD_MAX_REPLACEMENTS_PER_MINUTE: 'many' },
+    { ...directReady, HSB_CHECKOUT_GUARD_MAX_CALLBACKS_PER_MINUTE: '0x10' },
   ]) {
     assert.equal(isCheckoutStoryMediaEnabled(env(broken)), false, JSON.stringify(broken));
   }
+
+  assert.equal(isCheckoutStoryMediaEnabled(env({
+    ...directReady,
+    HSB_BLOB_NAMESPACE: 'production_checkout',
+    HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE: '0',
+    HSB_CHECKOUT_GUARD_MAX_UPLOADS_PER_MINUTE: '1',
+    HSB_CHECKOUT_GUARD_MAX_UPLOAD_BYTES_PER_MINUTE: '1048576',
+    HSB_CHECKOUT_GUARD_MAX_FINALIZATIONS_PER_MINUTE: '2',
+    HSB_CHECKOUT_GUARD_MAX_REPLACEMENTS_PER_MINUTE: '3',
+    HSB_CHECKOUT_GUARD_MAX_CALLBACKS_PER_MINUTE: '4',
+  })), true, 'every runtime parser accepts the same explicit configuration as the UI gate');
 });
 
 test('the hermetic browser-QA branch still enables the controls without Blob credentials', () => {
@@ -292,15 +310,16 @@ test('a Vercel Production build fails when the private story-media credential is
     null,
   );
 
+  const directBuildReady = {
+    BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
+    HSB_CHECKOUT_GUARD_MODE: 'durable',
+    HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
+    HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+  };
   assert.equal(
-    production({
-      BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
-      HSB_CHECKOUT_GUARD_MODE: 'durable',
-      HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
-      HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
-      NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
-      HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
-    }),
+    production(directBuildReady),
     null,
     'a browser-selected direct path validates the intake lane, not the legacy private lane',
   );
@@ -323,12 +342,18 @@ test('a Vercel Production build fails when the private story-media credential is
       HSB_CHECKOUT_GUARD_MODE: 'durable',
     },
     {
-      HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
-      NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      ...directBuildReady,
       HSB_INTAKE_BLOB_READ_WRITE_TOKEN: MALFORMED_TOKEN,
     },
+    { ...directBuildReady, HSB_BLOB_NAMESPACE: 'bad/namespace' },
+    { ...directBuildReady, HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE: 'not-a-number' },
+    { ...directBuildReady, HSB_CHECKOUT_GUARD_MAX_UPLOADS_PER_MINUTE: '-1' },
+    { ...directBuildReady, HSB_CHECKOUT_GUARD_MAX_UPLOAD_BYTES_PER_MINUTE: '1e6' },
+    { ...directBuildReady, HSB_CHECKOUT_GUARD_MAX_FINALIZATIONS_PER_MINUTE: '2.5' },
+    { ...directBuildReady, HSB_CHECKOUT_GUARD_MAX_REPLACEMENTS_PER_MINUTE: 'many' },
+    { ...directBuildReady, HSB_CHECKOUT_GUARD_MAX_CALLBACKS_PER_MINUTE: '0x10' },
   ]) {
-    assert.match(production(broken) ?? '', /direct|intake|credential/i);
+    assert.match(production(broken) ?? '', /direct|intake|credential|guard|durable|namespace|minute|integer/i);
   }
 });
 
@@ -363,11 +388,14 @@ test('a Vercel Production build can be released from the contract only by an exp
 test('the build contract runs before next build and never prints a token value', () => {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { scripts: Record<string, string> };
   const buildScript = pkg.scripts.build;
+  const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.match(buildScript, /story-media/, 'the contract must be wired into the build lifecycle');
   assert.ok(
     buildScript.indexOf('story-media') < buildScript.indexOf('next build'),
     'the contract must run BEFORE next build',
   );
+  assert.match(ciWorkflow, /run:\s*npm run build/, 'CI must execute the package-level build contract');
+  assert.doesNotMatch(ciWorkflow, /run:\s*npx next build/, 'CI must not bypass the package-level build contract');
 
   const run = (extra: Record<string, string>) =>
     spawnSync(process.execPath, ['--experimental-strip-types', 'scripts/check-story-media-env.ts'], {

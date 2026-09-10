@@ -45,17 +45,24 @@
  */
 
 import { assertDistinctBlobStores, parseBlobToken } from './checkout-blob-identity.ts';
+import {
+  assertDirectUploadConfiguration,
+  DIRECT_UPLOAD_CLIENT_ENV,
+  DIRECT_UPLOAD_SERVER_ENV,
+  INTAKE_PRIVATE_TOKEN_ENV,
+  ORDER_PUBLIC_TOKEN_ENV,
+} from './checkout-direct-config.ts';
+
+export {
+  DIRECT_UPLOAD_CLIENT_ENV,
+  DIRECT_UPLOAD_SERVER_ENV,
+  INTAKE_PRIVATE_TOKEN_ENV,
+  ORDER_PUBLIC_TOKEN_ENV,
+} from './checkout-direct-config.ts';
 
 /** The single environment variable that names the private story-media store. */
 export const STORY_MEDIA_PRIVATE_TOKEN_ENV = 'HSB_PRIVATE_READ_WRITE_TOKEN';
 
-/** The legacy, public order/photo store. Preserved exactly as it is. */
-export const ORDER_PUBLIC_TOKEN_ENV = 'BLOB_READ_WRITE_TOKEN';
-export const INTAKE_PRIVATE_TOKEN_ENV = 'HSB_INTAKE_BLOB_READ_WRITE_TOKEN';
-export const DIRECT_UPLOAD_SERVER_ENV = 'HSB_CHECKOUT_DIRECT_UPLOAD';
-export const DIRECT_UPLOAD_CLIENT_ENV = 'NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD';
-export const CHECKOUT_GUARD_MODE_ENV = 'HSB_CHECKOUT_GUARD_MODE';
-export const CHECKOUT_GUARD_TOKEN_ENV = 'HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN';
 
 /**
  * What is wrong with the private story-media credential, or null when it is
@@ -117,40 +124,12 @@ export function checkoutStoryMediaConfigurationProblem(
     return storyMediaPrivateTokenProblem(env);
   }
 
-  if (env[DIRECT_UPLOAD_SERVER_ENV] !== 'true') {
-    return `${DIRECT_UPLOAD_SERVER_ENV} must be true when ${DIRECT_UPLOAD_CLIENT_ENV} is true`;
-  }
-
-  if (env[CHECKOUT_GUARD_MODE_ENV] !== 'durable') {
-    return `${CHECKOUT_GUARD_MODE_ENV} must be durable for direct upload`;
-  }
-
-  const intakeToken = env[INTAKE_PRIVATE_TOKEN_ENV]?.trim() ?? '';
-  if (!intakeToken) return `${INTAKE_PRIVATE_TOKEN_ENV} is not set for direct upload`;
-
-  const guardToken = env[CHECKOUT_GUARD_TOKEN_ENV]?.trim() ?? '';
-  if (!guardToken) return `${CHECKOUT_GUARD_TOKEN_ENV} is not set for direct upload`;
-
   try {
-    parseBlobToken(intakeToken, 'intake');
-  } catch {
-    return `${INTAKE_PRIVATE_TOKEN_ENV} must be a valid Vercel Blob credential`;
-  }
-
-  try {
-    parseBlobToken(guardToken, 'guard');
-  } catch {
-    return `${CHECKOUT_GUARD_TOKEN_ENV} must be a valid Vercel Blob credential`;
-  }
-
-  try {
-    assertDistinctBlobStores([
-      { label: 'intake', token: intakeToken },
-      { label: 'order', token: env[ORDER_PUBLIC_TOKEN_ENV]?.trim() },
-      { label: 'guard', token: guardToken },
-    ]);
-  } catch {
-    return `Direct upload requires dedicated intake, order, and abuse-guard Blob credentials`;
+    assertDirectUploadConfiguration(env);
+  } catch (error) {
+    return error instanceof Error
+      ? error.message
+      : 'Direct upload configuration is invalid';
   }
 
   return null;

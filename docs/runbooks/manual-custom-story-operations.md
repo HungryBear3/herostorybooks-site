@@ -291,7 +291,10 @@ path the browser will actually submit through. With direct upload off,
 `HSB_PRIVATE_READ_WRITE_TOKEN`. With
 `NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD=true`, it instead requires the matching
 `HSB_CHECKOUT_DIRECT_UPLOAD=true` server flag and a valid, dedicated
-`HSB_INTAKE_BLOB_READ_WRITE_TOKEN`. `/checkout` passes that path-aware result
+`HSB_INTAKE_BLOB_READ_WRITE_TOKEN`, `HSB_CHECKOUT_GUARD_MODE=durable`, a valid
+dedicated `HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN`, a valid Blob namespace,
+and valid non-negative integer values for every optional `HSB_CHECKOUT_GUARD_MAX_*`
+limit. `/checkout` passes that path-aware result
 into `CheckoutForm` as `storyMediaEnabled`. Vercel Production builds also run
 `scripts/check-story-media-env.ts`, which refuses a missing, malformed, or
 colliding selected credential unless an operator

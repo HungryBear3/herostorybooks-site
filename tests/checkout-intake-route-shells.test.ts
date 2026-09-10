@@ -28,6 +28,8 @@ import { createMemoryIntakeStore } from './support/checkout-intake-memory-store.
 
 const ORIGIN = 'https://herostorybooks.com';
 const INTAKE_TOKEN = 'vercel_blob_rw_IntakeStore01_intakesecret01';
+const ORDER_TOKEN = 'vercel_blob_rw_OrderStore001_ordersecret01';
+const GUARD_TOKEN = 'vercel_blob_rw_GuardStore001_guardsecret01';
 
 function withEnv<T>(overrides: Record<string, string | undefined>, run: () => T): T {
   const previous: Record<string, string | undefined> = {};
@@ -100,6 +102,29 @@ test('the upload route shell answers 404 while the flag is off, and 503 without 
   );
   assert.equal(unconfigured.status, 503);
   assert.equal((await unconfigured.json()).error, 'intake_store_unavailable');
+});
+
+test('both direct-upload route shells reject malformed shared guard configuration before provider I/O', async () => {
+  const broken = {
+    HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    BLOB_READ_WRITE_TOKEN: ORDER_TOKEN,
+    HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+    HSB_CHECKOUT_GUARD_MODE: 'durable',
+    HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
+    HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE: 'not-a-number',
+  };
+
+  const intake = await withEnv(broken, () => intakePost(
+    post('/api/checkout/intake', { action: 'create', consent: { mediaAuthorized: true } }),
+  ));
+  assert.equal(intake.status, 503);
+  assert.equal((await intake.json()).error, 'intake_store_unavailable');
+
+  const upload = await withEnv(broken, () => uploadPost(
+    post('/api/checkout/intake/upload', { type: 'blob.generate-client-token', payload: {} }),
+  ));
+  assert.equal(upload.status, 503);
+  assert.equal((await upload.json()).error, 'intake_store_unavailable');
 });
 
 test('the cleanup cron shell fails closed without a configured secret', async () => {

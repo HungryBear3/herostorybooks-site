@@ -3,7 +3,7 @@ name: CI
 # Reproduces the merge gates used to verify pull requests locally:
 #   1. npm test          — Node test suite
 #   2. npm run test:e2e  — Playwright Chromium suite
-#   3. npx next build    — production build + TypeScript gate
+#   3. npm run build     — story-media contract + production build + TypeScript gate
 #
 # NOTE: reporting these checks does NOT enforce them. Until branch protection
 # is configured, a red run does not block a merge. Register these two check
@@ -117,7 +117,7 @@ env:
   # HSB_REQUIRE_DURABLE_PERSISTENCE is deliberately NOT set at workflow level.
   # The unit tests set and delete it themselves, and playwright.config.ts sets
   # it for the server it starts. Setting it here would also apply to
-  # `npx next build`, making the build gate LESS production-like than the real
+  # `npm run build`, making the build gate LESS production-like than the real
   # Vercel build it is meant to approximate.
 
 jobs:
@@ -177,7 +177,7 @@ jobs:
           HSB_ORDER_STORE_DIR: ${{ runner.temp }}/hsb-order-store-unit
 
       - name: Production build + TypeScript gate
-        run: npx next build
+        run: npm run build
         env:
           HSB_ORDER_STORE_DIR: ${{ runner.temp }}/hsb-order-store-build
 

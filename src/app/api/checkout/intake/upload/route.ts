@@ -16,6 +16,7 @@ import {
   createVercelIntakeStore,
   getRequiredIntakeBlobToken,
 } from '../../../../../lib/checkout-intake.ts';
+import { assertDirectUploadConfiguration } from '../../../../../lib/checkout-direct-config.ts';
 import { isDirectUploadServerEnabled } from '../../../../../lib/checkout-direct-flags.ts';
 
 export const runtime = 'nodejs';
@@ -27,6 +28,7 @@ export async function POST(request: Request): Promise<Response> {
   }
   let deps: IntakeUploadRouteDeps;
   try {
+    assertDirectUploadConfiguration(process.env);
     const blobToken = getRequiredIntakeBlobToken();
     deps = {
       handleUpload,
