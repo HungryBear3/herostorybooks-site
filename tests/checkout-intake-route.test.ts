@@ -139,7 +139,7 @@ test('explicit disable blocks new story-media ingestion but preserves photo and 
 
   const reconciled = await handleIntakeRequest(
     post({ action: 'list', intakeId: seeded.intakeId, capability: seeded.capability }),
-    deps(photoStore, disabledEnv),
+    { ...deps(photoStore, disabledEnv), now: () => now },
   );
   assert.equal(reconciled.status, 200, await reconciled.text());
 });
