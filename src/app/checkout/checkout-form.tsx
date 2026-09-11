@@ -66,6 +66,7 @@ import {
   forgetCheckoutAttemptSent,
   reconcileCheckoutAttemptIdentity,
   readCheckoutAttemptStorageSnapshot,
+  repairCheckoutAttemptStorageToRiskIdentity,
   recordCheckoutAttemptReserved,
   recordCheckoutAttemptSent,
   savedFamilyCharactersForStorage,
@@ -1124,11 +1125,26 @@ export function CheckoutForm({
 
     try {
       const payload = new FormData();
-      const storedAttempt = readStoredCheckoutAttempt();
-      const reconciledAttempt = reconcileCheckoutAttemptIdentity(
+      let storedAttempt = readStoredCheckoutAttempt();
+      let reconciledAttempt = reconcileCheckoutAttemptIdentity(
         storedAttempt,
         checkoutAttemptIdRef.current,
       );
+      if (!reconciledAttempt.reliable
+        && repairCheckoutAttemptStorageToRiskIdentity(checkoutAttemptStorage())) {
+        // A single sent/cleanup identity is the conservative owner. Align only
+        // lower-risk browser markers to it, then reuse that exact order attempt.
+        // Never clear evidence or mint a new identity during recovery.
+        storedAttempt = readStoredCheckoutAttempt();
+        if (storedAttempt.reliable && storedAttempt.attemptId) {
+          checkoutAttemptIdRef.current = storedAttempt.attemptId;
+          checkoutAttemptSentRef.current = storedAttempt.attemptId;
+          reconciledAttempt = reconcileCheckoutAttemptIdentity(
+            storedAttempt,
+            storedAttempt.attemptId,
+          );
+        }
+      }
       if (!reconciledAttempt.reliable) {
         attemptWasPreviouslySent = true;
         throw new Error(
@@ -2883,47 +2899,6 @@ export function CheckoutForm({
               </div>
             </section>
 
-            {/* ── 5. Email + Preview Promise ── */}
-            <section className={`${currentStepId !== "review" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}>
-              <div>
-                <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
-                  Where should we send everything?
-                </h2>
-                <p className="text-sm text-[#695f54]">
-                  We&apos;ll send your confirmation, delivery updates, and any
-                  preview approval steps here.
-                </p>
-              </div>
-              <label htmlFor="email" className="block text-sm font-semibold text-[#1f1a16]">
-                Email address
-                <span className="mt-1 block text-xs font-normal leading-5 text-[#8a7b6a]">
-                  Required for your receipt and private proof link
-                </span>
-              </label>
-              <input
-                ref={registerFieldRef("email")}
-                id="email"
-                type="email"
-                autoComplete="email"
-                value={form.email}
-                onChange={(e) => set("email", e.target.value)}
-                placeholder="your@email.com"
-                required
-                className={`w-full px-4 py-3 border-2 rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1] ${
-                  fieldErrors.email ? "border-[#a64c4c]" : "border-[#dfd2b8]"
-                }`}
-              />
-              <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm text-[#35564d]">
-                ✨ {PRINT_PREVIEW_PROMISE}
-              </div>
-              {missingSupportingDescriptionLabels.length > 0 && (
-                <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
-                  Add a few written details for {missingSupportingDescriptionLabels.join(", ")} before payment if you aren&apos;t uploading a supporting photo.
-                </div>
-              )}
-
-            </section>
-
             {nextStep && (
               <div className="order-[100] rounded-[1.5rem] border border-[#d8c6a2] bg-[#fff8ec] p-4 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)]">
                 <button
@@ -3084,55 +3059,46 @@ export function CheckoutForm({
               </div>
             </section>
 
-            <section className="rounded-[1.5rem] border border-[#d8c6a2] bg-[#ead8b8] p-5 text-[#241914]">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#a64c4c]">
-                What happens next
-              </p>
-              <h2 className="mt-2 font-serif text-2xl font-semibold leading-tight">
-                Nothing prints until <em className="text-[#a64c4c]">you</em> say
-                so.
-              </h2>
-              <ol className="mt-5 space-y-4 text-sm leading-6 text-[#4f4035]">
-                <li className="flex gap-3">
-                  <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">
-                    1
-                  </span>
-                  <span>
-                    <strong className="block text-[#241914]">
-                      We send a digital proof
-                    </strong>
-                    Usually in {PROOF_TURNAROUND_WINDOW}, you get a private link to review every page before anything prints.{" "}
-                    {PROOF_REVIEW_ASSURANCE} {PROOF_VOLUME_NOTE}
-                  </span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">
-                    2
-                  </span>
-                  <span>
-                    <strong className="block text-[#241914]">
-                      You review and reply
-                    </strong>
-                    Approve it as-is or ask us to revise wording, photo
-                    placement, or art.
-                  </span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">
-                    3
-                  </span>
-                  <span>
-                    <strong className="block text-[#241914]">
-                      Then we print or deliver
-                    </strong>
-                    Print books ship after approval; digital books are delivered
-                    right away.
-                  </span>
-                </li>
-              </ol>
-            </section>
-
             <div className="space-y-3 pb-10">
+              {currentStepId === "review" && (
+                <section className="rounded-[1.5rem] border border-[#d8c6a2] bg-[#fff8ec] p-5 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
+                  <div>
+                    <h2 className="font-serif text-2xl text-[#1f1a16] mb-1">
+                      Where should we send everything?
+                    </h2>
+                    <p className="text-sm text-[#695f54]">
+                      Enter your email here, then continue directly to secure payment.
+                    </p>
+                  </div>
+                  <label htmlFor="email" className="block text-sm font-semibold text-[#1f1a16]">
+                    Email address
+                    <span className="mt-1 block text-xs font-normal leading-5 text-[#8a7b6a]">
+                      Required for your receipt and private proof link
+                    </span>
+                  </label>
+                  <input
+                    ref={registerFieldRef("email")}
+                    id="email"
+                    type="email"
+                    autoComplete="email"
+                    value={form.email}
+                    onChange={(e) => set("email", e.target.value)}
+                    placeholder="your@email.com"
+                    required
+                    className={`w-full px-4 py-3 border-2 rounded-2xl focus:outline-none focus:border-[#a64c4c] focus:ring-2 focus:ring-[#a64c4c]/30 transition text-[#1f1a16] bg-[#fffaf1] ${
+                      fieldErrors.email ? "border-[#a64c4c]" : "border-[#dfd2b8]"
+                    }`}
+                  />
+                  <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm text-[#35564d]">
+                    ✨ {PRINT_PREVIEW_PROMISE}
+                  </div>
+                  {missingSupportingDescriptionLabels.length > 0 && (
+                    <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
+                      Add a few written details for {missingSupportingDescriptionLabels.join(", ")} before payment if you aren&apos;t uploading a supporting photo.
+                    </div>
+                  )}
+                </section>
+              )}
               {directUploadEnabled && directMediaFilesPresent && (
                 <label className="flex items-start gap-3 rounded-xl border border-[#d8c6a2] bg-[#fff8ec] px-4 py-3 text-sm text-[#4f463d]">
                   <input
@@ -3234,6 +3200,39 @@ export function CheckoutForm({
                 is never shared
               </p>
             </div>
+
+            <section className="rounded-[1.5rem] border border-[#d8c6a2] bg-[#ead8b8] p-5 text-[#241914]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#a64c4c]">
+                What happens next
+              </p>
+              <h2 className="mt-2 font-serif text-2xl font-semibold leading-tight">
+                Nothing prints until <em className="text-[#a64c4c]">you</em> say so.
+              </h2>
+              <ol className="mt-5 space-y-4 text-sm leading-6 text-[#4f4035]">
+                <li className="flex gap-3">
+                  <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">1</span>
+                  <span>
+                    <strong className="block text-[#241914]">We send a digital proof</strong>
+                    Usually in {PROOF_TURNAROUND_WINDOW}, you get a private link to review every page before anything prints.{" "}
+                    {PROOF_REVIEW_ASSURANCE} {PROOF_VOLUME_NOTE}
+                  </span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">2</span>
+                  <span>
+                    <strong className="block text-[#241914]">You review and reply</strong>
+                    Approve it as-is or ask us to revise wording, photo placement, or art.
+                  </span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">3</span>
+                  <span>
+                    <strong className="block text-[#241914]">Then we print or deliver</strong>
+                    Print books ship after approval; digital books are delivered right away.
+                  </span>
+                </li>
+              </ol>
+            </section>
           </aside>
         </form>
       </div>

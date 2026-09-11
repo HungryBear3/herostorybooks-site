@@ -112,6 +112,29 @@ test('an in-app browser that blocks sessionStorage fails closed before starting 
   expect(harness.orderRequests, 'storage ambiguity must block order creation').toHaveLength(0);
 });
 
+test('conflicting lower-risk markers converge to the already-sent attempt without a recovery API', async ({ page, baseURL }) => {
+  const stalePrimary = '1'.repeat(32);
+  const sentAttempt = '2'.repeat(32);
+  await page.addInitScript(({ stalePrimary, sentAttempt }) => {
+    sessionStorage.setItem('hsb-checkout-attempt-id', stalePrimary);
+    sessionStorage.setItem('hsb-checkout-attempt-reserved', stalePrimary);
+    sessionStorage.setItem('hsb-checkout-attempt-sent', sentAttempt);
+  }, { stalePrimary, sentAttempt });
+  const harness = await installHandoffHarness(page, baseURL!, {
+    redirectTo: STRIPE_SESSION_URL,
+  });
+  const pay = await fillCheckoutToReview(page);
+
+  await pay.click();
+
+  await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
+  expect(harness.attemptStatusRequests, 'local convergence must not enumerate orders').toHaveLength(0);
+  expect(harness.orderRequests, 'recovery reuses exactly one order attempt').toHaveLength(1);
+  expect(harness.orderBodies[0]).toMatch(
+    new RegExp(`name="checkoutAttemptId"\\r?\\n\\r?\\n${sentAttempt}\\r?\\n`),
+  );
+});
+
 test('a dropped hand-off leaves a working manual link to the SAME session', async ({
   page,
   baseURL,

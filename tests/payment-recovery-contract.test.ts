@@ -32,7 +32,18 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   const fingerprint = readFileSync('src/lib/checkout-request-fingerprint.ts', 'utf8');
   const browserRandomId = readFileSync('src/lib/browser-random-id.ts', 'utf8');
   assert.match(client, /checkoutAttemptIdRef\.current \?\? storedAttempt\.attemptId/);
-  assert.match(client, /const storedAttempt = readStoredCheckoutAttempt\(\);[\s\S]{0,240}reconcileCheckoutAttemptIdentity\([\s\S]{0,180}if \(!reconciledAttempt\.reliable\)/);
+  const attemptReadAt = client.indexOf('let storedAttempt = readStoredCheckoutAttempt();');
+  const attemptReconcileAt = client.indexOf('let reconciledAttempt = reconcileCheckoutAttemptIdentity(', attemptReadAt);
+  const attemptRepairAt = client.indexOf('repairCheckoutAttemptStorageToRiskIdentity(', attemptReconcileAt);
+  const attemptFailClosedAt = client.indexOf('if (!reconciledAttempt.reliable) {', attemptRepairAt);
+  assert.ok(
+    attemptReadAt >= 0
+      && attemptReadAt < attemptReconcileAt
+      && attemptReconcileAt < attemptRepairAt
+      && attemptRepairAt < attemptFailClosedAt,
+    'attempt identity must be reconciled, repaired only toward the sent/cleanup identity, then unresolved state fails closed',
+  );
+  assert.doesNotMatch(client, /\/api\/checkout\/attempt-status|clearAbsentCheckoutAttemptMarkers/);
   assert.match(client, /browserRandomHex\(16\)/);
   assert.match(browserRandomId, /crypto\.getRandomValues\(bytes\)/);
   assert.match(client, /checkoutAttemptIdRef\.current = checkoutAttemptId/);

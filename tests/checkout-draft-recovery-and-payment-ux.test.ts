@@ -15,6 +15,7 @@ import {
   confirmedCheckoutCleanupAttemptId,
   reconcileCheckoutAttemptIdentity,
   readCheckoutAttemptStorageSnapshot,
+  repairCheckoutAttemptStorageToRiskIdentity,
   recordCheckoutAttemptReserved,
   recordCheckoutAttemptSent,
   savedFamilyCharactersForStorage,
@@ -42,6 +43,15 @@ const confirmedCleanupPath = path.join(root, 'src/app/thank-you/confirmed-checko
 const confirmedCleanupSource = fs.existsSync(confirmedCleanupPath)
   ? fs.readFileSync(confirmedCleanupPath, 'utf8')
   : '';
+
+test('email is adjacent to payment and the long explainer follows the payment action', () => {
+  const emailAt = formSource.indexOf('Where should we send everything?');
+  const paymentAt = formSource.indexOf('Continue to secure payment${selectedFormat');
+  const explainerAt = formSource.indexOf('What happens next');
+  assert.ok(emailAt >= 0 && paymentAt >= 0 && explainerAt >= 0);
+  assert.ok(emailAt < paymentAt, 'email must be entered before payment');
+  assert.ok(paymentAt < explainerAt, 'the long explainer must not separate email from payment');
+});
 
 test('restored checkout drafts discard browser-only media objects but preserve entered details', () => {
   const restored = sanitizeSavedCheckoutDraft({
@@ -248,6 +258,72 @@ test('mismatched durable attempt identities are classified as unreliable', () =>
     attemptId: '1'.repeat(32),
     reliable: false,
   });
+});
+
+test('a single sent identity safely repairs conflicting lower-risk browser markers', () => {
+  const sentId = '1'.repeat(32);
+  const staleId = '2'.repeat(32);
+  const values = new Map<string, string>([
+    [CHECKOUT_ATTEMPT_ID_STORAGE_KEY, staleId],
+    [CHECKOUT_ATTEMPT_SENT_STORAGE_KEY, sentId],
+    [CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY, staleId],
+  ]);
+  const storage = {
+    getItem(key: string) { return values.get(key) ?? null; },
+    setItem(key: string, value: string) { values.set(key, value); },
+    removeItem(key: string) { values.delete(key); },
+  };
+
+  assert.equal(repairCheckoutAttemptStorageToRiskIdentity(storage), true);
+  assert.deepEqual(readCheckoutAttemptStorageSnapshot(storage), {
+    attemptId: sentId,
+    reliable: true,
+  });
+  assert.equal(values.get(CHECKOUT_ATTEMPT_ID_STORAGE_KEY), sentId);
+  assert.equal(values.get(CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY), sentId);
+  assert.equal(values.get(CHECKOUT_ATTEMPT_SENT_STORAGE_KEY), sentId);
+});
+
+test('conflicting sent and cleanup identities remain blocked without mutation', () => {
+  const sentId = '3'.repeat(32);
+  const cleanupId = '4'.repeat(32);
+  const values = new Map<string, string>([
+    [CHECKOUT_ATTEMPT_ID_STORAGE_KEY, sentId],
+    [CHECKOUT_ATTEMPT_SENT_STORAGE_KEY, sentId],
+    [CHECKOUT_ATTEMPT_CLEANUP_STORAGE_KEY, cleanupId],
+  ]);
+  const before = [...values.entries()];
+  const storage = {
+    getItem(key: string) { return values.get(key) ?? null; },
+    setItem(key: string, value: string) { values.set(key, value); },
+    removeItem(key: string) { values.delete(key); },
+  };
+
+  assert.equal(repairCheckoutAttemptStorageToRiskIdentity(storage), false);
+  assert.deepEqual([...values.entries()], before);
+});
+
+test('marker repair fails closed when any write or readback is unavailable', () => {
+  const sentId = '5'.repeat(32);
+  const staleId = '6'.repeat(32);
+  for (const failingKey of [CHECKOUT_ATTEMPT_ID_STORAGE_KEY, CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY]) {
+    const values = new Map<string, string>([
+      [CHECKOUT_ATTEMPT_ID_STORAGE_KEY, staleId],
+      [CHECKOUT_ATTEMPT_SENT_STORAGE_KEY, sentId],
+      [CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY, staleId],
+    ]);
+    const storage = {
+      getItem(key: string) { return values.get(key) ?? null; },
+      setItem(key: string, value: string) {
+        if (key === failingKey) throw new Error('write failed');
+        values.set(key, value);
+      },
+      removeItem(key: string) { values.delete(key); },
+    };
+
+    assert.equal(repairCheckoutAttemptStorageToRiskIdentity(storage), false);
+    assert.notEqual(readCheckoutAttemptStorageSnapshot(storage).reliable, true);
+  }
 });
 
 test('partial accepted-handoff cleanup stays known-sent after remount', () => {
@@ -494,18 +570,20 @@ test('server-confirmed cleanup deletes the draft and sent marker last', () => {
   assert.equal(readCheckoutAttemptStorageSnapshot(attemptStorage).attemptId, null);
 });
 
-test('checkout rejects identity conflict and verifies reservation before private intake', () => {
-  const snapshotRead = formSource.indexOf('const storedAttempt = readStoredCheckoutAttempt()');
+test('checkout repairs only toward one sent identity before private intake and otherwise fails closed', () => {
+  const snapshotRead = formSource.indexOf('let storedAttempt = readStoredCheckoutAttempt()');
   const identityReconcile = formSource.indexOf('reconcileCheckoutAttemptIdentity(', snapshotRead);
-  const conflictGuard = formSource.indexOf('if (!reconciledAttempt.reliable)', identityReconcile);
+  const riskRepair = formSource.indexOf('repairCheckoutAttemptStorageToRiskIdentity(', identityReconcile);
+  const conflictGuard = formSource.indexOf('if (!reconciledAttempt.reliable)', riskRepair);
   const reservation = formSource.indexOf('markCheckoutAttemptReserved(checkoutAttemptId)', conflictGuard);
   const reservedReadback = formSource.indexOf('const reservedAttempt = readStoredCheckoutAttempt()', reservation);
   const reservedGuard = formSource.indexOf('if (!reservedAttempt.reliable || reservedAttempt.attemptId !== checkoutAttemptId)', reservedReadback);
   const intake = formSource.indexOf('prepareOrReuseDirectIntakeSubmission(', reservedGuard);
   assert.ok(snapshotRead > -1 && identityReconcile > snapshotRead);
-  assert.ok(conflictGuard > identityReconcile);
+  assert.ok(riskRepair > identityReconcile && conflictGuard > riskRepair);
   assert.ok(reservation > conflictGuard && reservedReadback > reservation && reservedGuard > reservedReadback);
   assert.ok(intake > reservedGuard, 'all identity and reservation guards must precede private intake');
+  assert.doesNotMatch(formSource, /\/api\/checkout\/attempt-status|clearAbsentCheckoutAttemptMarkers/);
 });
 
 test('checkout wiring marks an attempt sent only immediately before the order request', () => {
