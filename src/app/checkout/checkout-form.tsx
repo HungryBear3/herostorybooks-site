@@ -55,6 +55,7 @@ import {
   photoTypeUnsupportedMessage,
 } from "@/lib/checkout-direct-intake-error-copy";
 import { browserRandomHex } from "@/lib/browser-random-id";
+import { resolveStoredCheckoutAttemptForNewPurchase } from "@/lib/checkout-attempt-restart-client";
 import {
   CHECKOUT_ATTEMPT_ID_STORAGE_KEY,
   CHECKOUT_DRAFT_STORAGE_KEY,
@@ -62,6 +63,7 @@ import {
   CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY,
   checkoutAttemptMayHaveReachedServer,
   checkoutAttemptWasSent,
+  clearCheckoutAttemptStorage,
   checkoutDraftHasDirectMediaFiles,
   forgetCheckoutAttemptSent,
   reconcileCheckoutAttemptIdentity,
@@ -1167,6 +1169,31 @@ export function CheckoutForm({
           );
         }
         checkoutAttemptSentRef.current = null;
+      }
+      if (checkoutAttemptId && attemptWasPreviouslySent) {
+        const restartStatus = await resolveStoredCheckoutAttemptForNewPurchase(checkoutAttemptId);
+        if (restartStatus === "restart_allowed") {
+          // The server has authoritatively proved that the durable attempt is
+          // absent, terminal+unpaid, or already completed+paid. Only then may a
+          // repeat buyer rotate to a new purchase identity. This fixes the case
+          // where an expired Session from an old checkout otherwise owns every
+          // future submission in the same browser forever.
+          if (!clearCheckoutAttemptStorage(checkoutAttemptStorage(), checkoutAttemptId)) {
+            throw new Error(
+              "This browser could not safely close your previous checkout attempt. No new order request was sent. Please reload this page and try again.",
+            );
+          }
+          checkoutAttemptIdRef.current = null;
+          checkoutAttemptSentRef.current = null;
+          checkoutAttemptId = newCheckoutAttemptId();
+          storeCheckoutAttemptId(checkoutAttemptId);
+          if (!markCheckoutAttemptReserved(checkoutAttemptId)) {
+            throw new Error(
+              "This browser could not safely reserve a new checkout attempt. No private files or order request were sent. Please reload this page and try again.",
+            );
+          }
+          attemptWasPreviouslySent = false;
+        }
       }
       const reservedAttempt = readStoredCheckoutAttempt();
       if (!reservedAttempt.reliable || reservedAttempt.attemptId !== checkoutAttemptId) {
