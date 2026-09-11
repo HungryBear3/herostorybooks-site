@@ -95,7 +95,7 @@ test('the checkout form uses the shared reconciliation copy on every unconfirmed
   );
 });
 
-test('the error banner denies a charge only for a fresh attempt that never left the browser', () => {
+test('the error banner denies a charge only until the order request is actually sent', () => {
   // The banner used to append "You have not been charged." to EVERY submit
   // failure, including ones that happened after this or an earlier invocation
   // could have reached the server.
@@ -106,12 +106,17 @@ test('the error banner denies a charge only for a fresh attempt that never left 
   );
   assert.match(FORM, /\{!chargeUnconfirmed && "You have not been charged\. "\}/);
   assert.match(FORM, /let requestSent = false;/);
-  assert.match(FORM, /let attemptWasReused = false;/);
-  assert.match(FORM, /attemptWasReused = Boolean\(checkoutAttemptId\);[\s\S]{0,180}if \(!checkoutAttemptId\)/);
+  assert.match(FORM, /let attemptWasPreviouslySent = false;/);
+  assert.match(
+    FORM,
+    /attemptWasPreviouslySent = readStoredCheckoutAttemptSent\(\s*checkoutAttemptId,\s*checkoutAttemptSentRef\.current,?\s*\)/,
+  );
+  assert.match(FORM, /if \(!markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new Error/);
+  assert.match(FORM, /checkoutAttemptSentRef\.current = checkoutAttemptId;\s*\n\s*requestSent = true;/);
   assert.match(FORM, /requestSent = true;\s*\n\s*const response = await fetch\("\/api\/order"/);
-  assert.match(FORM, /attemptMayHaveReachedServer:\s*requestSent \|\| attemptWasReused/);
-  assert.match(FORM, /setSubmitError\(described\.message, described\.showRecordedVoiceHint, requestSent \|\| attemptWasReused\)/);
-  assert.match(FORM, /const retainedAttemptMayHaveReachedServer = Boolean\([\s\S]{0,140}checkoutAttemptIdRef\.current[\s\S]{0,140}readStoredCheckoutAttemptId\(\)/);
+  assert.match(FORM, /checkoutAttemptMayHaveReachedServer\(\{[\s\S]{0,120}requestSent,[\s\S]{0,120}previouslySent: attemptWasPreviouslySent/);
+  assert.match(FORM, /setSubmitError\(described\.message, described\.showRecordedVoiceHint, attemptMayHaveReachedServer\)/);
+  assert.match(FORM, /const storedAttempt = readStoredCheckoutAttempt\(\);[\s\S]{0,240}const retainedAttemptMayHaveReachedServer = !storedAttempt\.reliable[\s\S]{0,240}checkoutAttemptIdRef\.current \?\? storedAttempt\.attemptId/);
   assert.match(FORM, /const chargeIsUnconfirmed = unconfirmedCharge \?\? retainedAttemptMayHaveReachedServer/);
   assert.match(
     FORM,

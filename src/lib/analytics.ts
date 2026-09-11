@@ -203,6 +203,23 @@ export function isUnwantedReferral(referrer: string): boolean {
   }
 }
 
+/**
+ * Cookie values are browser- and third-party-controlled. A truncated or
+ * otherwise malformed percent escape makes `decodeURIComponent` throw
+ * `URIError`. Checkout reads cookies while building the order payload, so an
+ * uncaught throw here aborts the submit before any request leaves the browser
+ * and the customer sees a failure with no server-side trace. An undecodable
+ * cookie is treated as absent.
+ */
+export function safeDecodeCookieValue(raw: string | null | undefined): string {
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return '';
+  }
+}
+
 export function currentGaClientId(): string | null {
   if (typeof document === 'undefined') return null;
   const gaCookie = document.cookie
@@ -210,7 +227,7 @@ export function currentGaClientId(): string | null {
     .map((part) => part.trim())
     .find((part) => part.startsWith('_ga='));
   if (!gaCookie) return null;
-  const value = decodeURIComponent(gaCookie.slice(4));
+  const value = safeDecodeCookieValue(gaCookie.slice(4));
   const match = value.match(/^GA\d+\.\d+\.(\d+\.\d+)$/);
   return match?.[1] ?? null;
 }

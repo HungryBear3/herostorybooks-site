@@ -6,6 +6,8 @@ import {
   PROOF_VOLUME_NOTE,
 } from '@/lib/proof-turnaround';
 import { PendingConfirmation } from './pending-confirmation';
+import { ConfirmedCheckoutCleanup } from './confirmed-checkout-cleanup';
+import { confirmedCheckoutCleanupAttemptId } from '@/lib/checkout-saved-draft';
 
 // This page MUST be honest about payment state. Do not show success copy
 // based on URL params alone — Stripe redirects here on completion AND a
@@ -41,10 +43,11 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
   // Branch on payment state, defaulting to the safer (neutral) view when
   // we can't confirm 'paid'.
   const paymentStatus = order?.paymentStatus;
+  const cleanupAttemptId = confirmedCheckoutCleanupAttemptId(order, sessionId);
 
   if (paymentStatus === 'paid') {
     return (
-      <SuccessView childName={childName} format={format} email={email} orderId={orderId} />
+      <SuccessView childName={childName} format={format} email={email} orderId={orderId} cleanupAttemptId={cleanupAttemptId} />
     );
   }
 
@@ -65,14 +68,17 @@ function SuccessView({
   format,
   email,
   orderId,
+  cleanupAttemptId,
 }: {
   childName: string;
   format: string;
   email: string | undefined;
   orderId: string | undefined;
+  cleanupAttemptId: string | null;
 }) {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--cream)] px-4 py-16 space-y-8">
+      {cleanupAttemptId ? <ConfirmedCheckoutCleanup attemptId={cleanupAttemptId} /> : null}
       <div className="text-center">
         <span className="text-7xl">✨</span>
         <h1 className="text-4xl font-bold text-[var(--forest)] mt-4 mb-2">

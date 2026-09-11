@@ -131,7 +131,7 @@ test('fourth hero type and save-before-next-person guidance are explicit', async
   await expect(page.getByText('Select “Save person” below before choosing another person.')).toBeVisible();
   await page.getByPlaceholder('e.g., Alexy').fill('Dad');
   await page.getByPlaceholder(/Hair, skin tone/).fill('Short brown hair and glasses');
-  await page.getByRole('button', { name: 'Save person' }).click();
+  await page.getByRole('button', { name: 'Save Dad' }).click();
   await expect(momButton).toBeEnabled();
   expect(harness.orderRequests).toHaveLength(0);
 });

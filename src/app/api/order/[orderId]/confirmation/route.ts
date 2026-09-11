@@ -6,6 +6,7 @@ import {
   type CheckoutSessionForConfirmation,
 } from '@/lib/checkout-session-confirmation';
 import { getOrder } from '@/lib/orders';
+import { confirmedCheckoutCleanupAttemptId } from '@/lib/checkout-saved-draft';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 
 const NO_STORE_HEADERS = { 'Cache-Control': 'no-store' };
@@ -39,6 +40,7 @@ export async function GET(
         status: result.status,
         orderId,
         verifiedViaStripe: result.verifiedViaStripe,
+        cleanupAttemptId: confirmedCheckoutCleanupAttemptId(result.order, sessionId),
       },
       { status: statusCode, headers: NO_STORE_HEADERS },
     );

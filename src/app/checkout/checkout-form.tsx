@@ -23,7 +23,7 @@ import {
   STORY_THEMES,
 } from "@/lib/story-catalog";
 import { getFathersDayCountdown } from "@/lib/fathers-day";
-import { currentGaClientId, track } from "@/lib/analytics";
+import { currentGaClientId, safeDecodeCookieValue, track } from "@/lib/analytics";
 import {
   checkoutStepBlockedReason,
   checkoutStepEventProps,
@@ -55,6 +55,23 @@ import {
   photoTypeUnsupportedMessage,
 } from "@/lib/checkout-direct-intake-error-copy";
 import { browserRandomHex } from "@/lib/browser-random-id";
+import {
+  CHECKOUT_ATTEMPT_ID_STORAGE_KEY,
+  CHECKOUT_DRAFT_STORAGE_KEY,
+  CHECKOUT_ATTEMPT_SENT_STORAGE_KEY,
+  CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY,
+  checkoutAttemptMayHaveReachedServer,
+  checkoutAttemptWasSent,
+  checkoutDraftHasDirectMediaFiles,
+  forgetCheckoutAttemptSent,
+  reconcileCheckoutAttemptIdentity,
+  readCheckoutAttemptStorageSnapshot,
+  recordCheckoutAttemptReserved,
+  recordCheckoutAttemptSent,
+  savedFamilyCharactersForStorage,
+  sanitizeSavedCheckoutDraft,
+  type MinimalWebStorage,
+} from "@/lib/checkout-saved-draft";
 import {
   DirectIntakePreparationError,
   applyPrimaryAndSupportingMediaToOrderPayload,
@@ -203,32 +220,56 @@ function missingSupportingCharacterDescriptionLabels(characters: SupportingChara
     .map(supportingCharacterLabel);
 }
 
-const STORAGE_KEY = "hsb_order_v1";
+const STORAGE_KEY = CHECKOUT_DRAFT_STORAGE_KEY;
 const STORAGE_TTL = 7 * 24 * 60 * 60 * 1000;
 const RECOVERY_DEBOUNCE_MS = 1500;
-const CHECKOUT_ATTEMPT_STORAGE_KEY = "hsb-checkout-attempt-id";
-const CHECKOUT_ATTEMPT_ID_RE = /^[a-f0-9]{32}$/;
 
 function newCheckoutAttemptId(): string {
   return browserRandomHex(16);
 }
 
-function readStoredCheckoutAttemptId(): string | null {
-  try {
-    const stored = sessionStorage.getItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
-    return stored && CHECKOUT_ATTEMPT_ID_RE.test(stored) ? stored : null;
-  } catch {
-    return null;
-  }
+function readStoredCheckoutAttempt() {
+  return readCheckoutAttemptStorageSnapshot(checkoutAttemptStorage());
 }
 
 function storeCheckoutAttemptId(attemptId: string): void {
   try {
-    sessionStorage.setItem(CHECKOUT_ATTEMPT_STORAGE_KEY, attemptId);
+    sessionStorage.setItem(CHECKOUT_ATTEMPT_ID_STORAGE_KEY, attemptId);
   } catch {
     // Some in-app/private browsers deny session storage. The component ref
     // still preserves one attempt ID for every retry in this mounted form.
   }
+}
+
+function checkoutAttemptStorage(): MinimalWebStorage | null {
+  try {
+    return typeof sessionStorage === "undefined" ? null : sessionStorage;
+  } catch {
+    // Some in-app/private browsers throw on the property access itself.
+    return null;
+  }
+}
+
+function readStoredCheckoutAttemptSent(
+  attemptId: string | null,
+  inMemorySentAttemptId?: string | null,
+): boolean {
+  return checkoutAttemptWasSent(checkoutAttemptStorage(), attemptId, inMemorySentAttemptId);
+}
+
+function markCheckoutAttemptReserved(attemptId: string): boolean {
+  return recordCheckoutAttemptReserved(checkoutAttemptStorage(), attemptId);
+}
+
+function markCheckoutAttemptSent(attemptId: string): boolean {
+  const storage = checkoutAttemptStorage();
+  if (!recordCheckoutAttemptSent(storage, attemptId)) return false;
+  const snapshot = readCheckoutAttemptStorageSnapshot(storage);
+  return snapshot.reliable && snapshot.attemptId === attemptId;
+}
+
+function clearCheckoutAttemptSent(): void {
+  forgetCheckoutAttemptSent(checkoutAttemptStorage());
 }
 
 function looksLikeEmail(e: string) {
@@ -375,10 +416,9 @@ function saveProgress(form: FormState) {
           form.theme === CUSTOM_STORY_THEME_ID ? form.customStoryMemory : "",
         customStorySourceMode:
           form.theme === CUSTOM_STORY_THEME_ID ? form.customStorySourceMode : "",
-        familyCharacters: form.familyCharacters.map((character) => ({
-          ...character,
-          pronouns: "",
-        })),
+        familyCharacters: savedFamilyCharactersForStorage(
+          form.familyCharacters.map((character) => ({ ...character, pronouns: "" })),
+        ),
         mustInclude: form.mustInclude,
         mustIncludeOther: form.mustIncludeOther,
         bookFormat: form.bookFormat,
@@ -395,8 +435,8 @@ function loadProgress(): Partial<FormState> | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (Date.now() - (data.savedAt ?? 0) > STORAGE_TTL) {
+    const data = sanitizeSavedCheckoutDraft(JSON.parse(raw));
+    if (Date.now() - (typeof data.savedAt === "number" ? data.savedAt : 0) > STORAGE_TTL) {
       localStorage.removeItem(STORAGE_KEY);
       return null;
     }
@@ -465,7 +505,8 @@ function checkoutReferralCode(): string {
     .split("; ")
     .find((row) => row.startsWith("hsb_ref="))
     ?.split("=")[1];
-  const raw = fromUrl || (fromCookie ? decodeURIComponent(fromCookie) : "");
+  // A malformed `hsb_ref` cookie must not abort the submit it is read during.
+  const raw = fromUrl || safeDecodeCookieValue(fromCookie);
   const code = raw.trim().toLowerCase();
   return /^[a-z0-9][a-z0-9_-]{1,63}$/.test(code) ? code : "";
 }
@@ -502,6 +543,7 @@ export function CheckoutForm({
   // dismissed instantly on mobile).
   const [submitError, setSubmitErrorState] = useState<string | null>(null);
   const checkoutAttemptIdRef = useRef<string | null>(null);
+  const checkoutAttemptSentRef = useRef<string | null>(null);
   // The recorded-note preservation hint is only true when the failed attempt
   // held an in-checkout RECORDING; an uploaded memo or a photo failure gets
   // no such advice. Set together with the message so they cannot drift.
@@ -512,20 +554,24 @@ export function CheckoutForm({
    * It used to say that for EVERY submit failure, including ones that happened
    * after the request reached the server — where a Session may have been
    * created and bound, and where the message above it now says the opposite.
-   * The browser can prove the negative only for a freshly generated attempt
-   * that has not been sent. A reused ref/session attempt may have reached the
-   * server earlier, so its message must say "do not pay again" even when this
-   * invocation fails locally before fetch.
+   * The browser can prove the negative until `/api/order` is actually sent.
+   * Reserving an attempt ID for direct-upload work is not server exposure; a
+   * separate sent marker preserves the conservative warning only after order
+   * submission begins.
    */
   const [chargeUnconfirmed, setChargeUnconfirmed] = useState(false);
+  const [peopleNotice, setPeopleNotice] = useState<string | null>(null);
   const setSubmitError = useCallback((
     message: string | null,
     recordedVoiceHint = false,
     unconfirmedCharge?: boolean,
   ) => {
-    const retainedAttemptMayHaveReachedServer = Boolean(
-      checkoutAttemptIdRef.current ?? readStoredCheckoutAttemptId(),
-    );
+    const storedAttempt = readStoredCheckoutAttempt();
+    const retainedAttemptMayHaveReachedServer = !storedAttempt.reliable
+      || readStoredCheckoutAttemptSent(
+        checkoutAttemptIdRef.current ?? storedAttempt.attemptId,
+        checkoutAttemptSentRef.current,
+      );
     const chargeIsUnconfirmed = unconfirmedCharge ?? retainedAttemptMayHaveReachedServer;
     setSubmitErrorState(
       message ? checkoutSubmitErrorMessageForAttempt(message, chargeIsUnconfirmed) : null,
@@ -695,6 +741,7 @@ export function CheckoutForm({
     setEditingSupportingCharacterId(null);
     setCurrentStepId("people");
     setStepError(null);
+    setPeopleNotice(null);
   };
 
   const updateSupportingCharacter = (
@@ -758,6 +805,7 @@ export function CheckoutForm({
       return;
     }
 
+    const savedName = supportingCharacterDraft.name.trim() || "Person";
     setForm((prev) => {
       const existingIndex = prev.familyCharacters.findIndex((character) => character.id === supportingCharacterDraft.id);
       if (existingIndex >= 0) {
@@ -779,6 +827,10 @@ export function CheckoutForm({
     setEditingSupportingCharacterId(null);
     setStepError(null);
     setFieldErrors({});
+    setPeopleNotice(`${savedName} saved. Add another person or pet, or continue.`);
+    requestAnimationFrame(() => {
+      stepRefs.current.people?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   };
 
   const selectedFormat =
@@ -850,12 +902,15 @@ export function CheckoutForm({
     activeSupportingCharacterDraft: supportingCharacterDraft,
   });
   const missingVoiceConsent = form.voiceFile != null && !form.voiceConsent;
-  const directMediaFilesPresent = Boolean(
-    form.photoFile ||
-      form.voiceFile ||
-      guidedFrames.length > 0 ||
-      form.familyCharacters.some((character) => character.photoFile),
-  );
+  // A restored draft can carry `{}` where a `File` used to be. The shared
+  // predicate requires real file metadata so a stale placeholder can never
+  // open the direct-upload lane and fail its MIME preflight before intake.
+  const directMediaFilesPresent = checkoutDraftHasDirectMediaFiles({
+    photoFile: form.photoFile,
+    voiceFile: form.voiceFile,
+    guidedFrameCount: guidedFrames.length,
+    familyCharacters: form.familyCharacters,
+  });
   const directUploadBlockers =
     directUploadEnabled && directMediaFilesPresent && !directMediaConsent
       ? ["Permission to save the selected private media"]
@@ -1061,19 +1116,48 @@ export function CheckoutForm({
       recoveryTimerRef.current = null;
     }
 
-    // A local failure is provably chargeless only when this invocation created
-    // a brand-new attempt and never sent it. An attempt already held in the ref
-    // or session storage may have reached the server during an earlier submit.
+    // Reserving an attempt ID happens before direct uploads, but only a sent
+    // `/api/order` request can create an order or Stripe Session. Track those
+    // states separately so a retry after a local upload failure stays honest.
     let requestSent = false;
-    let attemptWasReused = false;
+    let attemptWasPreviouslySent = false;
 
     try {
       const payload = new FormData();
-      let checkoutAttemptId = checkoutAttemptIdRef.current ?? readStoredCheckoutAttemptId();
-      attemptWasReused = Boolean(checkoutAttemptId);
-      if (!checkoutAttemptId) {
+      const storedAttempt = readStoredCheckoutAttempt();
+      const reconciledAttempt = reconcileCheckoutAttemptIdentity(
+        storedAttempt,
+        checkoutAttemptIdRef.current,
+      );
+      if (!reconciledAttempt.reliable) {
+        attemptWasPreviouslySent = true;
+        throw new Error(
+          "We couldn't safely verify your previous checkout attempt in this browser. Please do not pay again — contact support@herostorybooks.com so we can confirm what happened.",
+        );
+      }
+      let checkoutAttemptId = reconciledAttempt.attemptId;
+      if (checkoutAttemptId) {
+        attemptWasPreviouslySent = readStoredCheckoutAttemptSent(
+          checkoutAttemptId,
+          checkoutAttemptSentRef.current,
+        );
+      } else {
         checkoutAttemptId = newCheckoutAttemptId();
+        clearCheckoutAttemptSent();
         storeCheckoutAttemptId(checkoutAttemptId);
+        if (!markCheckoutAttemptReserved(checkoutAttemptId)) {
+          throw new Error(
+            "This browser could not safely reserve your checkout attempt. No private files or order request were sent. Please open this page in Safari or Chrome with private browsing off, then try again.",
+          );
+        }
+        checkoutAttemptSentRef.current = null;
+      }
+      const reservedAttempt = readStoredCheckoutAttempt();
+      if (!reservedAttempt.reliable || reservedAttempt.attemptId !== checkoutAttemptId) {
+        attemptWasPreviouslySent = true;
+        throw new Error(
+          "We couldn't safely verify your checkout attempt before uploading. No private files or order request were sent. Please do not pay again — contact support@herostorybooks.com.",
+        );
       }
       checkoutAttemptIdRef.current = checkoutAttemptId;
       payload.set("checkoutAttemptId", checkoutAttemptId);
@@ -1217,6 +1301,12 @@ export function CheckoutForm({
         }
       }
 
+      if (!markCheckoutAttemptSent(checkoutAttemptId)) {
+        throw new Error(
+          "This browser could not safely preserve your checkout attempt. No order request was sent. Please open this page in Safari or Chrome with private browsing off, then try again.",
+        );
+      }
+      checkoutAttemptSentRef.current = checkoutAttemptId;
       requestSent = true;
       const response = await fetch("/api/order", {
         method: "POST",
@@ -1273,8 +1363,6 @@ export function CheckoutForm({
         // to the page BEFORE checkout, not to an already-submitted form whose
         // resubmission would be rejected as an in-flight attempt.
         navigate: (url) => window.location.replace(url),
-        clearSavedDraft: () => localStorage.removeItem(STORAGE_KEY),
-        clearAttemptId: () => sessionStorage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY),
       });
 
       if (handoff.reason === "invalid_url") {
@@ -1301,16 +1389,20 @@ export function CheckoutForm({
       // A direct-intake refusal arrives as a stable code plus the label of the
       // asset that failed; the mapper turns that into a sentence and decides
       // whether a recorded note is at risk. A legacy server sentence is kept.
+      const attemptMayHaveReachedServer = checkoutAttemptMayHaveReachedServer({
+        requestSent,
+        previouslySent: attemptWasPreviouslySent,
+      });
       const described = describeCheckoutSubmitError({
         voiceSource: form.voiceSource,
         code: error instanceof DirectIntakePreparationError ? error.code : "order_request_failed",
         label: error instanceof DirectIntakePreparationError ? error.label : null,
-        attemptMayHaveReachedServer: requestSent || attemptWasReused,
+        attemptMayHaveReachedServer,
         serverMessage: error instanceof DirectIntakePreparationError
           ? null
           : error instanceof Error ? error.message : null,
       });
-      setSubmitError(described.message, described.showRecordedVoiceHint, requestSent || attemptWasReused);
+      setSubmitError(described.message, described.showRecordedVoiceHint, attemptMayHaveReachedServer);
     } finally {
       setIsSubmitting(false);
     }
@@ -2149,6 +2241,15 @@ export function CheckoutForm({
                 ))}
               </div>
 
+              {peopleNotice && !supportingCharacterDraft && (
+                <div
+                  role="status"
+                  className="rounded-2xl border border-[#8fb7a8] bg-[#eef4f1] px-4 py-3 text-sm font-semibold leading-6 text-[#35564d]"
+                >
+                  ✓ {peopleNotice}
+                </div>
+              )}
+
               {supportingCharacterDraft && (
                 <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#fffaf1] p-4">
                   <div className="mb-3 flex items-start justify-between gap-3">
@@ -2388,19 +2489,22 @@ export function CheckoutForm({
                     )}
                   </div>
 
-                  <div className="mt-4 flex flex-wrap gap-2">
+                  <div className="mt-4 space-y-2">
                     <button
+                      data-testid="save-supporting-character"
                       type="button"
                       onClick={saveSupportingCharacter}
                       disabled={supportingPhotoPendingId === supportingCharacterDraft.id}
-                      className="rounded-full bg-deep-gold px-4 py-2 text-sm font-bold text-navy disabled:cursor-wait disabled:opacity-50"
+                      className="w-full rounded-2xl bg-deep-gold px-5 py-3 text-base font-bold text-navy shadow-sm disabled:cursor-wait disabled:opacity-50"
                     >
-                      {supportingPhotoPendingId === supportingCharacterDraft.id ? "Processing photo…" : "Save person"}
+                      {supportingPhotoPendingId === supportingCharacterDraft.id
+                        ? "Processing photo…"
+                        : `Save ${supportingCharacterDraft.name.trim() || "person"}`}
                     </button>
                     <button
                       type="button"
                       onClick={cancelSupportingCharacter}
-                      className="rounded-full border border-[#dfd2b8] px-4 py-2 text-sm font-semibold text-[#695f54]"
+                      className="w-full rounded-2xl border border-[#dfd2b8] px-4 py-2 text-sm font-semibold text-[#695f54]"
                     >
                       {editingSupportingCharacterId ? "Cancel edit" : "Cancel"}
                     </button>
@@ -2790,10 +2894,17 @@ export function CheckoutForm({
                   preview approval steps here.
                 </p>
               </div>
+              <label htmlFor="email" className="block text-sm font-semibold text-[#1f1a16]">
+                Email address
+                <span className="mt-1 block text-xs font-normal leading-5 text-[#8a7b6a]">
+                  Required for your receipt and private proof link
+                </span>
+              </label>
               <input
                 ref={registerFieldRef("email")}
                 id="email"
                 type="email"
+                autoComplete="email"
                 value={form.email}
                 onChange={(e) => set("email", e.target.value)}
                 placeholder="your@email.com"

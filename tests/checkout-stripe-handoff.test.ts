@@ -80,8 +80,6 @@ function spyDeps(overrides: Record<string, unknown> = {}) {
         calls.push('navigate');
         navigated.push(url);
       },
-      clearSavedDraft: () => void calls.push('clearSavedDraft'),
-      clearAttemptId: () => void calls.push('clearAttemptId'),
       ...overrides,
     },
   };
@@ -96,22 +94,24 @@ test('a valid URL navigates exactly once, in the same tick, with no timer', () =
   assert.equal(result.ok, true);
   assert.equal(result.url, VALID);
   assert.equal(result.reason, null);
-  // Navigation strictly precedes every cleanup step.
-  assert.deepEqual(calls, ['navigate', 'clearSavedDraft', 'clearAttemptId']);
+  assert.deepEqual(calls, ['navigate']);
 });
 
-test('cleanup cannot delay, block, or undo a started hand-off', () => {
-  const { navigated, deps } = spyDeps({
+test('legacy cleanup properties never run at hand-off', () => {
+  const { calls, navigated, deps } = spyDeps({
     clearSavedDraft: () => {
+      calls.push('clearSavedDraft');
       throw new Error('localStorage unavailable');
     },
     clearAttemptId: () => {
+      calls.push('clearAttemptId');
       throw new Error('sessionStorage unavailable');
     },
   });
   const result = performStripeHandoff(VALID, deps);
   assert.equal(navigated.length, 1);
-  assert.equal(result.ok, true, 'a throwing storage cleanup must not fail the hand-off');
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, ['navigate'], 'payment recovery evidence must survive Stripe hand-off');
 });
 
 test('the hand-off works with no cleanup hooks at all', () => {
@@ -121,7 +121,7 @@ test('the hand-off works with no cleanup hooks at all', () => {
   assert.equal(result.ok, true);
 });
 
-test('an unapproved URL never navigates and never clears state', () => {
+test('an unapproved URL never navigates', () => {
   for (const bad of [undefined, '', 'http://checkout.stripe.com/x', 'https://attacker.example/x']) {
     const { calls, deps } = spyDeps();
     const result = performStripeHandoff(bad, deps);
@@ -139,8 +139,6 @@ test('a refused navigation keeps the attempt id so a retry reuses the session', 
       calls.push('navigate');
       throw new Error('navigation blocked');
     },
-    clearSavedDraft: () => void calls.push('clearSavedDraft'),
-    clearAttemptId: () => void calls.push('clearAttemptId'),
   });
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'navigation_failed');

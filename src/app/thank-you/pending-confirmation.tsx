@@ -7,6 +7,10 @@ import {
   CONFIRMATION_POLL_INTERVAL_MS,
   getConfirmationPollDecision,
 } from '@/lib/confirmation-poll';
+import {
+  CHECKOUT_DRAFT_STORAGE_KEY,
+  clearCheckoutAfterConfirmedPayment,
+} from '@/lib/checkout-saved-draft';
 
 export function PendingConfirmation({
   orderId,
@@ -52,10 +56,23 @@ export function PendingConfirmation({
         const body = await response.json() as {
           status?: string;
           verifiedViaStripe?: boolean;
+          cleanupAttemptId?: string | null;
         };
         if (!stopped && body.status === 'paid') {
           stopped = true;
           if (timer) clearInterval(timer);
+          if (body.cleanupAttemptId) {
+            try {
+              clearCheckoutAfterConfirmedPayment(
+                sessionStorage,
+                localStorage,
+                body.cleanupAttemptId,
+                CHECKOUT_DRAFT_STORAGE_KEY,
+              );
+            } catch {
+              // Retain any surviving recovery evidence on storage failure.
+            }
+          }
           if (body.verifiedViaStripe) {
             setStripeConfirmed(true);
           } else {
