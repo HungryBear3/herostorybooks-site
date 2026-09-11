@@ -192,6 +192,67 @@ export function repairCheckoutAttemptStorageToRiskIdentity(
   return repaired.reliable && repaired.attemptId === riskIdentity;
 }
 
+/**
+ * Recover a readable private-browser store containing more than one attempt.
+ * Every identity that may have reached the server is confirmed terminal before
+ * any marker is removed. A matching primary+reserved identity is locally
+ * proven unsent and may be discarded without a server lookup.
+ */
+export async function recoverConflictingCheckoutAttemptStorage(
+  storage: MinimalWebStorage | null | undefined,
+  resolveAttempt: (attemptId: string) => Promise<'restart_allowed' | 'resume_required' | 'unknown'>,
+): Promise<boolean> {
+  if (!storage) return false;
+  const values = new Map<(typeof CHECKOUT_ATTEMPT_STORAGE_KEYS)[number], string | null>();
+  try {
+    for (const key of CHECKOUT_ATTEMPT_STORAGE_KEYS) {
+      const value = storage.getItem(key);
+      if (value !== null && !CHECKOUT_ATTEMPT_ID_RE.test(value)) return false;
+      values.set(key, value);
+    }
+  } catch {
+    return false;
+  }
+
+  const identities = new Set(
+    [...values.values()].filter((value): value is string => Boolean(value)),
+  );
+  if (identities.size <= 1) return false;
+
+  const primary = values.get(CHECKOUT_ATTEMPT_ID_STORAGE_KEY) ?? null;
+  const cleanup = values.get(CHECKOUT_ATTEMPT_CLEANUP_STORAGE_KEY) ?? null;
+  const sent = values.get(CHECKOUT_ATTEMPT_SENT_STORAGE_KEY) ?? null;
+  const reserved = values.get(CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY) ?? null;
+  const needsServerConfirmation = new Set<string>();
+  if (cleanup) needsServerConfirmation.add(cleanup);
+  if (sent) needsServerConfirmation.add(sent);
+  // Current builds persist primary+reserved before dispatch. A primary without
+  // its matching reserved marker can be legacy/sent and must be reconciled.
+  if (primary && primary !== reserved) needsServerConfirmation.add(primary);
+  if (needsServerConfirmation.size === 0) return false;
+
+  for (const attemptId of needsServerConfirmation) {
+    if (await resolveAttempt(attemptId) !== 'restart_allowed') return false;
+  }
+
+  // Remove low-risk primary/reserved markers first. Sent/cleanup evidence stays
+  // until last, so an interrupted cleanup remains conservative on remount.
+  for (const key of [
+    CHECKOUT_ATTEMPT_ID_STORAGE_KEY,
+    CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY,
+    CHECKOUT_ATTEMPT_SENT_STORAGE_KEY,
+    CHECKOUT_ATTEMPT_CLEANUP_STORAGE_KEY,
+  ]) {
+    try {
+      storage.removeItem(key);
+      if (storage.getItem(key) !== null) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function confirmedCheckoutCleanupAttemptId(
   order: {
     paymentStatus?: unknown;

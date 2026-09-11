@@ -35,6 +35,18 @@ test('allows a new attempt only after Stripe proves the old session expired unpa
   assert.deepEqual(result, { status: 'restart_allowed', reason: 'expired_unpaid' });
 });
 
+test('already-retired expired attempts remain restartable after a partial browser cleanup', async () => {
+  const result = await resolveCheckoutAttemptRestart(ATTEMPT, {
+    getOrder: async () => order({
+      paymentStatus: 'failed',
+      fulfillmentLastError: 'stripe_session_expired_unpaid',
+    }),
+    retrieveSession: async () => ({ status: 'expired', payment_status: 'unpaid', payment_intent: null }),
+    retireExpiredAttempt: async () => { throw new Error('already retired must not mutate again'); },
+  });
+  assert.deepEqual(result, { status: 'restart_allowed', reason: 'expired_unpaid' });
+});
+
 test('allows a new attempt after a completed paid session because the old session cannot be paid again', async () => {
   const result = await resolveCheckoutAttemptRestart(ATTEMPT, {
     getOrder: async () => order({ paymentStatus: 'paid' }),
