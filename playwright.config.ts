@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { WEBSERVER_HOST, resolveWebServerTimeoutMs } from './tests/e2e/webserver-env.ts';
@@ -32,9 +33,30 @@ const KNOWN_CREDENTIAL_BLANKS = Object.fromEntries([
   'RESEND_API_KEY', 'HSB_RESEND_API_KEY',
   'OPENAI_API_KEY', 'FAL_KEY', 'GEMINI_API_KEY', 'GOOGLE_GEMINI_API_KEY',
   'LULU_CLIENT_KEY', 'LULU_CLIENT_SECRET',
+  'LULU_WEBHOOK_SECRET',
   'STRIPE_SECRET_KEY', 'HSB_STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET',
   'CRON_SECRET', 'HSB_ORDER_ADMIN_KEY',
 ].map((name) => [name, '']));
+const DOTENV_ASSIGNMENT = /(?:^|^)\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(?:\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?(?:$|$)/gm;
+
+/**
+ * Enumerate names only. Values never enter the Playwright config or logs.
+ * This mirrors dotenv's accepted assignment grammar, including multiline
+ * quoted values, so every key Next could load is already defined as blank.
+ */
+export function dotenvDeclaredNames(directory: string): string[] {
+  const names = new Set<string>();
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isFile() || (entry.name !== '.env' && !entry.name.startsWith('.env.'))) continue;
+    const contents = readFileSync(path.join(directory, entry.name), 'utf8');
+    for (const match of contents.matchAll(new RegExp(DOTENV_ASSIGNMENT))) names.add(match[1]);
+  }
+  return [...names];
+}
+
+const DOTENV_ENV_BLANKS = Object.fromEntries(
+  dotenvDeclaredNames(process.cwd()).map((name) => [name, '']),
+);
 const SAFE_PARENT_ENV = Object.fromEntries(
   ['PATH', 'HOME', 'TMPDIR', 'CI']
     .filter((name) => process.env[name] !== undefined)
@@ -43,6 +65,7 @@ const SAFE_PARENT_ENV = Object.fromEntries(
 const HERMETIC_BASE_ENV = {
   ...INHERITED_ENV_BLANKS,
   ...KNOWN_CREDENTIAL_BLANKS,
+  ...DOTENV_ENV_BLANKS,
   ...SAFE_PARENT_ENV,
 };
 

@@ -58,6 +58,16 @@ function resolveUnderEnv(overrides: Record<string, string>): ResolvedConfig {
   return JSON.parse(out) as ResolvedConfig;
 }
 
+function rehydratedNamesAfterNextDotenv(): string[] {
+  const out = execFileSync(
+    process.execPath,
+    ['--experimental-strip-types', '--no-warnings',
+      path.join(process.cwd(), 'tests', 'e2e', 'check-hermetic-env-after-next-dotenv.ts')],
+    { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env } },
+  );
+  return JSON.parse(out) as string[];
+}
+
 // ── loopback binding ─────────────────────────────────────────────────────────
 
 test('the webServer command binds the server to loopback with -H', () => {
@@ -239,4 +249,8 @@ test('the resolved QA server environment blanks every inherited variable outside
   }
   assert.equal(poisoned.env.HSB_ORDER_STORE_DIR, path.join(process.cwd(), '.e2e-store'));
   assert.equal(poisoned.env.HSB_E2E_STORY_MEDIA_ENABLED, 'true');
+});
+
+test('Next dotenv loading cannot rehydrate any variable declared by repository env files', () => {
+  assert.deepEqual(rehydratedNamesAfterNextDotenv(), []);
 });
