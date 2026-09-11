@@ -64,6 +64,13 @@ export async function resolveCheckoutAttemptRestart(
   if (session.status === 'expired'
     && session.payment_status === 'unpaid'
     && !session.payment_intent) {
+    if (order.paymentStatus === 'failed'
+      && order.fulfillmentLastError === 'stripe_session_expired_unpaid') {
+      return { status: 'restart_allowed', reason: 'expired_unpaid' };
+    }
+    if (order.paymentStatus !== 'pending') {
+      return { status: 'unknown', reason: 'provider_ambiguous' };
+    }
     // Close the exact old attempt atomically. A racing retry that already
     // superseded the Session makes this fail, and browser rotation stays
     // blocked instead of creating two payable Sessions.

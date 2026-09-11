@@ -9,6 +9,7 @@ import {
   CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY,
   CHECKOUT_ATTEMPT_SENT_STORAGE_KEY,
   clearCheckoutAttemptStorage,
+  recoverConflictingCheckoutAttemptStorage,
   clearCheckoutAfterConfirmedPayment,
   checkoutAttemptMayHaveReachedServer,
   checkoutAttemptWasSent,
@@ -300,6 +301,51 @@ test('conflicting sent and cleanup identities remain blocked without mutation', 
   };
 
   assert.equal(repairCheckoutAttemptStorageToRiskIdentity(storage), false);
+  assert.deepEqual([...values.entries()], before);
+});
+
+test('private-mode marker conflicts clear only after every server-risk identity is terminal', async () => {
+  const cleanupId = '7'.repeat(32);
+  const unsentReservedId = '8'.repeat(32);
+  const values = new Map<string, string>([
+    [CHECKOUT_ATTEMPT_ID_STORAGE_KEY, unsentReservedId],
+    [CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY, unsentReservedId],
+    [CHECKOUT_ATTEMPT_CLEANUP_STORAGE_KEY, cleanupId],
+  ]);
+  const storage = {
+    getItem(key: string) { return values.get(key) ?? null; },
+    setItem(key: string, value: string) { values.set(key, value); },
+    removeItem(key: string) { values.delete(key); },
+  };
+  const confirmed: string[] = [];
+
+  assert.equal(await recoverConflictingCheckoutAttemptStorage(storage, async (attemptId) => {
+    confirmed.push(attemptId);
+    return 'restart_allowed';
+  }), true);
+  assert.deepEqual(confirmed, [cleanupId]);
+  assert.deepEqual([...values.entries()], []);
+  assert.deepEqual(readCheckoutAttemptStorageSnapshot(storage), { attemptId: null, reliable: true });
+});
+
+test('private-mode marker conflict recovery preserves all evidence when any risky identity is unresolved', async () => {
+  const cleanupId = '9'.repeat(32);
+  const sentId = 'a'.repeat(32);
+  const values = new Map<string, string>([
+    [CHECKOUT_ATTEMPT_ID_STORAGE_KEY, sentId],
+    [CHECKOUT_ATTEMPT_SENT_STORAGE_KEY, sentId],
+    [CHECKOUT_ATTEMPT_CLEANUP_STORAGE_KEY, cleanupId],
+  ]);
+  const before = [...values.entries()];
+  const storage = {
+    getItem(key: string) { return values.get(key) ?? null; },
+    setItem(key: string, value: string) { values.set(key, value); },
+    removeItem(key: string) { values.delete(key); },
+  };
+
+  assert.equal(await recoverConflictingCheckoutAttemptStorage(storage, async (attemptId) => (
+    attemptId === cleanupId ? 'restart_allowed' : 'unknown'
+  )), false);
   assert.deepEqual([...values.entries()], before);
 });
 

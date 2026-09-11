@@ -64,6 +64,7 @@ import {
   checkoutAttemptMayHaveReachedServer,
   checkoutAttemptWasSent,
   clearCheckoutAttemptStorage,
+  recoverConflictingCheckoutAttemptStorage,
   checkoutDraftHasDirectMediaFiles,
   forgetCheckoutAttemptSent,
   reconcileCheckoutAttemptIdentity,
@@ -1132,6 +1133,16 @@ export function CheckoutForm({
         storedAttempt,
         checkoutAttemptIdRef.current,
       );
+      if (!reconciledAttempt.reliable
+        && await recoverConflictingCheckoutAttemptStorage(
+          checkoutAttemptStorage(),
+          resolveStoredCheckoutAttemptForNewPurchase,
+        )) {
+        checkoutAttemptIdRef.current = null;
+        checkoutAttemptSentRef.current = null;
+        storedAttempt = readStoredCheckoutAttempt();
+        reconciledAttempt = reconcileCheckoutAttemptIdentity(storedAttempt, null);
+      }
       if (!reconciledAttempt.reliable
         && repairCheckoutAttemptStorageToRiskIdentity(checkoutAttemptStorage())) {
         // A single sent/cleanup identity is the conservative owner. Align only
