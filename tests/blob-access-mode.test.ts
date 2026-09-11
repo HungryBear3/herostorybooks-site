@@ -58,6 +58,19 @@ test('getBlobAccessMode: ignores garbage values, falls back to public default', 
 
 // ── Static guard: no callsite hardcodes 'private' anymore ───────────────────
 
+/**
+ * The story-media lane is the one sanctioned exception, and it is exempted by
+ * NAME rather than by loosening the pattern.
+ *
+ * Order JSON, hero photos and recovery records live in the public order store
+ * and must follow `getBlobAccessMode()`. Customer voice notes and story
+ * documents do not live there at all: they go to a separate private store
+ * addressed by `HSB_PRIVATE_READ_WRITE_TOKEN`, so their access is a constant,
+ * not a mode. `assertPrivateStorySourceStorage` is where that constant lives —
+ * every other hardcoded `access: 'private'` in these files is still a failure.
+ */
+const STORY_MEDIA_CREDENTIAL_RESOLVER = /export function assertPrivateStorySourceStorage[\s\S]*?\n}\n/;
+
 test('source-level: no remaining hardcoded private access in order/recovery code', async () => {
   const files = [
     'src/lib/orders.ts',
@@ -65,7 +78,8 @@ test('source-level: no remaining hardcoded private access in order/recovery code
     'src/lib/recovery.ts',
   ];
   for (const f of files) {
-    const src = await readFile(f, 'utf8');
+    const whole = await readFile(f, 'utf8');
+    const src = whole.replace(STORY_MEDIA_CREDENTIAL_RESOLVER, '');
     assert.equal(
       /access:\s*['"]private['"]/i.test(src),
       false,

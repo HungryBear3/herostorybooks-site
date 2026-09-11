@@ -13,13 +13,40 @@ import { WEBSERVER_HOST, resolveWebServerTimeoutMs } from './tests/e2e/webserver
  */
 const PORT = Number(process.env.HSB_E2E_PORT ?? 3178);
 export const E2E_STORE_DIR = path.join(process.cwd(), '.e2e-store');
+const NEXT_BIN = path.join(process.cwd(), 'node_modules', 'next', 'dist', 'bin', 'next');
+const DOTENV_PRELOAD = path.join(process.cwd(), 'tests', 'e2e', 'disable-next-dotenv.cjs');
 
-/** Credentials that must never be present in an e2e server process. */
-const STRIPPED = Object.fromEntries([
-  'BLOB_READ_WRITE_TOKEN', 'HSB_REQUIRE_DURABLE_PERSISTENCE', 'RESEND_API_KEY',
-  'OPENAI_API_KEY', 'FAL_KEY', 'GEMINI_API_KEY', 'LULU_CLIENT_KEY',
-  'LULU_CLIENT_SECRET', 'STRIPE_SECRET_KEY', 'HSB_STRIPE_SECRET_KEY',
-].map((k) => [k, '']));
+/**
+ * Start from an empty view of the launching process. Playwright merges its
+ * webServer.env over process.env, so a fixed secret blacklist cannot prevent a
+ * newly named or unrelated live credential from reaching the QA server.
+ *
+ * The QA-only Next preload disables dotenv entirely. Explicit credential names
+ * remain blank here as defense in depth and executable documentation.
+ */
+const INHERITED_ENV_BLANKS = Object.fromEntries(
+  Object.keys(process.env).map((name) => [name, '']),
+);
+const KNOWN_CREDENTIAL_BLANKS = Object.fromEntries([
+  'BLOB_READ_WRITE_TOKEN', 'HSB_PRIVATE_READ_WRITE_TOKEN',
+  'HSB_INTAKE_BLOB_READ_WRITE_TOKEN', 'HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN',
+  'RESEND_API_KEY', 'HSB_RESEND_API_KEY',
+  'OPENAI_API_KEY', 'FAL_KEY', 'GEMINI_API_KEY', 'GOOGLE_GEMINI_API_KEY',
+  'LULU_CLIENT_KEY', 'LULU_CLIENT_SECRET',
+  'LULU_WEBHOOK_SECRET',
+  'STRIPE_SECRET_KEY', 'HSB_STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET',
+  'CRON_SECRET', 'HSB_ORDER_ADMIN_KEY',
+].map((name) => [name, '']));
+const SAFE_PARENT_ENV = Object.fromEntries(
+  ['PATH', 'HOME', 'TMPDIR', 'CI']
+    .filter((name) => process.env[name] !== undefined)
+    .map((name) => [name, process.env[name] as string]),
+);
+const HERMETIC_BASE_ENV = {
+  ...INHERITED_ENV_BLANKS,
+  ...KNOWN_CREDENTIAL_BLANKS,
+  ...SAFE_PARENT_ENV,
+};
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -61,7 +88,8 @@ export default defineConfig({
     // -H binds the listening socket to loopback. Without it Next defaults to
     // 0.0.0.0, and the 127.0.0.1 below would only be the address Playwright
     // dials — not a restriction on who else can reach the server.
-    command: `npx next build && npx next start -H ${WEBSERVER_HOST} -p ${PORT}`,
+    command: `"${process.execPath}" --require "${DOTENV_PRELOAD}" "${NEXT_BIN}" build && `
+      + `"${process.execPath}" --require "${DOTENV_PRELOAD}" "${NEXT_BIN}" start -H ${WEBSERVER_HOST} -p ${PORT}`,
     // No dedicated health route in this app — the landing page is the readiness probe.
     url: `http://${WEBSERVER_HOST}:${PORT}/`,
     reuseExistingServer: !process.env.CI,
@@ -71,11 +99,18 @@ export default defineConfig({
     stdout: 'pipe',
     stderr: 'pipe',
     env: {
-      ...STRIPPED,
+      ...HERMETIC_BASE_ENV,
       HSB_ORDER_STORE_DIR: E2E_STORE_DIR,
       // Enable media UI only inside this credential-free, disposable sandbox.
       // Checkout navigation tests intercept/forbid order and payment requests.
       HSB_E2E_STORY_MEDIA_ENABLED: 'true',
+      // Never inherit a direct-upload rollout from .env.local. These tests use
+      // the bounded legacy-only QA exception and mock/forbid checkout requests.
+      HSB_STORY_MEDIA_INTENT: 'enabled',
+      HSB_CHECKOUT_DIRECT_UPLOAD: '',
+      NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: '',
+      VERCEL: '',
+      VERCEL_ENV: '',
       // This sandbox exercises the Preview-only primary-hero selector on both
       // the browser and server sides without changing either production default.
       NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA: 'true',

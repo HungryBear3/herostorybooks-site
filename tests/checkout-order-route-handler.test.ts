@@ -55,7 +55,7 @@ const savedEnv: Record<string, string | undefined> = {};
 before(() => {
   for (const key of [
     'BLOB_READ_WRITE_TOKEN', 'HSB_BLOB_ACCESS_MODE', 'HSB_REQUIRE_DURABLE_PERSISTENCE',
-    'HSB_CHECKOUT_PAUSED', 'STRIPE_PRODUCT_DIGITAL_ID', 'VERCEL_ENV', 'NEXT_PUBLIC_URL',
+    'HSB_CHECKOUT_PAUSED', 'HSB_STORY_MEDIA_INTENT', 'STRIPE_PRODUCT_DIGITAL_ID', 'VERCEL_ENV', 'NEXT_PUBLIC_URL',
   ]) {
     savedEnv[key] = process.env[key];
   }
@@ -63,6 +63,7 @@ before(() => {
   process.env.HSB_BLOB_ACCESS_MODE = 'private';
   process.env.HSB_REQUIRE_DURABLE_PERSISTENCE = 'true';
   delete process.env.HSB_CHECKOUT_PAUSED;
+  delete process.env.HSB_STORY_MEDIA_INTENT;
   delete process.env.VERCEL_ENV;
   process.env.STRIPE_PRODUCT_DIGITAL_ID = 'prod_testdigital';
 });
@@ -194,8 +195,7 @@ before(async () => {
   }).png().toBuffer();
 });
 
-/** The exact multipart body the checkout form posts on the legacy path. */
-function legacyRequest(): Request {
+function legacyForm(): FormData {
   const form = new FormData();
   form.set('checkoutAttemptId', ATTEMPT);
   form.set('childName', 'Mina');
@@ -204,6 +204,28 @@ function legacyRequest(): Request {
   form.set('theme', 'space-adventure');
   form.set('characterNotes', 'Curly hair, always wearing a red cape');
   form.set('photo', new File([new Uint8Array(heroPhotoBytes)], 'hero.png', { type: 'image/png' }));
+  return form;
+}
+
+/** The exact multipart body the checkout form posts on the legacy path. */
+function legacyRequest(): Request {
+  return new Request('https://preview.test/api/order', { method: 'POST', body: legacyForm() });
+}
+
+function legacyStoryMediaRequest(kind: 'voice' | 'document'): Request {
+  const form = legacyForm();
+  if (kind === 'voice') {
+    form.set('voice', new File([new Uint8Array([1, 2, 3])], 'memory.m4a', { type: 'audio/mp4' }));
+  } else {
+    form.set('document', new File([new TextEncoder().encode('A family memory')], 'memory.txt', { type: 'text/plain' }));
+  }
+  return new Request('https://preview.test/api/order', { method: 'POST', body: form });
+}
+
+function typedCustomStoryRequest(): Request {
+  const form = legacyForm();
+  form.set('theme', 'custom-voice-story');
+  form.set('customStoryText', 'A typed family memory with no attached media.');
   return new Request('https://preview.test/api/order', { method: 'POST', body: form });
 }
 
@@ -212,6 +234,53 @@ async function stored(): Promise<OrderRecord | null> {
 }
 
 const creates = (h: Harness) => h.provider.filter((call) => call.startsWith('create:'));
+
+for (const kind of ['voice', 'document'] as const) {
+  test(`explicit story-media disable rejects a new legacy ${kind} before persistence`, async () => {
+    installMemoryOrderStore();
+    const h = harness();
+    process.env.HSB_STORY_MEDIA_INTENT = 'disabled';
+    try {
+      const response = await handleCheckoutOrderPost(legacyStoryMediaRequest(kind), h.deps);
+
+      assert.equal(response.httpStatus, 404, JSON.stringify(response));
+      assert.equal(response.body.code, 'story_media_disabled');
+      assert.deepEqual(h.uploads, [], 'disabled media must not reach any upload adapter');
+      assert.deepEqual(h.provider, [], 'disabled media must not reach Stripe');
+      assert.equal(await stored(), null, 'disabled media must not create a durable order owner');
+    } finally {
+      delete process.env.HSB_STORY_MEDIA_INTENT;
+    }
+  });
+}
+
+test('explicit story-media disable preserves ordinary text-free legacy checkout', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  process.env.HSB_STORY_MEDIA_INTENT = 'disabled';
+  try {
+    const response = await handleCheckoutOrderPost(legacyRequest(), h.deps);
+    assert.equal(response.httpStatus, 200, JSON.stringify(response));
+    assert.deepEqual(h.uploads, ['photo']);
+    assert.equal(creates(h).length, 1);
+  } finally {
+    delete process.env.HSB_STORY_MEDIA_INTENT;
+  }
+});
+
+test('explicit story-media disable does not classify typed Custom Story text as disabled media', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  process.env.HSB_STORY_MEDIA_INTENT = 'disabled';
+  try {
+    const response = await handleCheckoutOrderPost(typedCustomStoryRequest(), h.deps);
+    assert.equal(response.httpStatus, 200, JSON.stringify(response));
+    assert.notEqual(response.body.code, 'story_media_disabled');
+    assert.deepEqual(h.uploads, ['photo'], 'typed text must not invoke a voice or document adapter');
+  } finally {
+    delete process.env.HSB_STORY_MEDIA_INTENT;
+  }
+});
 
 // ---------------------------------------------------------------------------
 // A first request: media, then the durable CAS, then the shared provisioner

@@ -45,6 +45,11 @@ import { BlobPreconditionFailedError, get, put } from '@vercel/blob';
 import { applyBlobNamespace, getBlobNamespace } from './blob-namespace.ts';
 import { normalizeEtagForIfMatch } from './blob-etag.ts';
 import { assertDistinctBlobStores, parseBlobToken } from './checkout-blob-identity.ts';
+import {
+  CHECKOUT_GUARD_LIMIT_DEFAULTS,
+  parseCheckoutGuardLimit,
+  type CheckoutGuardLimitEnv,
+} from './checkout-direct-config.ts';
 import { IntakeError } from './checkout-intake.ts';
 
 export const CHECKOUT_GUARD_TOKEN_ENV = 'HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN';
@@ -350,7 +355,6 @@ export async function refundCheckoutBudget(
 // ---------------------------------------------------------------------------
 
 const DEFAULT_REQUEST_LIMIT = 45;
-const DEFAULT_CALLBACK_REQUEST_LIMIT = 120;
 
 /**
  * How many authenticated upload completions we will service per minute.
@@ -363,7 +367,7 @@ export function resolveCallbackRequestLimit(env: NodeJS.ProcessEnv): number {
   return readConfiguredLimit(
     env,
     'HSB_CHECKOUT_GUARD_MAX_CALLBACKS_PER_MINUTE',
-    DEFAULT_CALLBACK_REQUEST_LIMIT,
+    CHECKOUT_GUARD_LIMIT_DEFAULTS.HSB_CHECKOUT_GUARD_MAX_CALLBACKS_PER_MINUTE,
   );
 }
 
@@ -378,20 +382,14 @@ export function resolveCallbackRequestLimit(env: NodeJS.ProcessEnv): number {
  */
 export function readConfiguredLimit(
   env: NodeJS.ProcessEnv,
-  name: string,
+  name: CheckoutGuardLimitEnv,
   fallback: number,
 ): number {
-  const raw = env[name];
-  if (raw === undefined || raw === null || raw === '') return fallback;
-  const trimmed = String(raw).trim();
-  // Plain decimal digits only. `Number()` would also accept '0x10' (16) and
-  // '1e3' (1000), so what is configured would not be what is read.
-  if (!/^\d+$/.test(trimmed)) throw new IntakeError('abuse_guard_config_invalid', 503);
-  const parsed = Number(trimmed);
-  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+  try {
+    return parseCheckoutGuardLimit(env, name, fallback);
+  } catch {
     throw new IntakeError('abuse_guard_config_invalid', 503);
   }
-  return parsed;
 }
 
 export function resolveGuardLimits(
@@ -400,11 +398,11 @@ export function resolveGuardLimits(
 ): CheckoutGuardLimits {
   return {
     requestLimit,
-    intakeCreationLimit: readConfiguredLimit(env, 'HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE', 12),
-    uploadReservationLimit: readConfiguredLimit(env, 'HSB_CHECKOUT_GUARD_MAX_UPLOADS_PER_MINUTE', 24),
-    uploadByteLimit: readConfiguredLimit(env, 'HSB_CHECKOUT_GUARD_MAX_UPLOAD_BYTES_PER_MINUTE', 120 * 1024 * 1024),
-    finalizationLimit: readConfiguredLimit(env, 'HSB_CHECKOUT_GUARD_MAX_FINALIZATIONS_PER_MINUTE', 12),
-    replacementLimit: readConfiguredLimit(env, 'HSB_CHECKOUT_GUARD_MAX_REPLACEMENTS_PER_MINUTE', 32),
+    intakeCreationLimit: readConfiguredLimit(env, 'HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE', CHECKOUT_GUARD_LIMIT_DEFAULTS.HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE),
+    uploadReservationLimit: readConfiguredLimit(env, 'HSB_CHECKOUT_GUARD_MAX_UPLOADS_PER_MINUTE', CHECKOUT_GUARD_LIMIT_DEFAULTS.HSB_CHECKOUT_GUARD_MAX_UPLOADS_PER_MINUTE),
+    uploadByteLimit: readConfiguredLimit(env, 'HSB_CHECKOUT_GUARD_MAX_UPLOAD_BYTES_PER_MINUTE', CHECKOUT_GUARD_LIMIT_DEFAULTS.HSB_CHECKOUT_GUARD_MAX_UPLOAD_BYTES_PER_MINUTE),
+    finalizationLimit: readConfiguredLimit(env, 'HSB_CHECKOUT_GUARD_MAX_FINALIZATIONS_PER_MINUTE', CHECKOUT_GUARD_LIMIT_DEFAULTS.HSB_CHECKOUT_GUARD_MAX_FINALIZATIONS_PER_MINUTE),
+    replacementLimit: readConfiguredLimit(env, 'HSB_CHECKOUT_GUARD_MAX_REPLACEMENTS_PER_MINUTE', CHECKOUT_GUARD_LIMIT_DEFAULTS.HSB_CHECKOUT_GUARD_MAX_REPLACEMENTS_PER_MINUTE),
   };
 }
 

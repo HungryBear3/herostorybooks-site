@@ -274,23 +274,49 @@ If consent timestamp, source, and asset do not agree — or if the only marker i
 
 ### 4.3 Storage must be private
 
-Customer story media may only be stored in a private Blob store.
-`assertPrivateStorySourceStorage(orderId)` (`src/lib/orders.ts:1495`) throws
-`OrderPersistenceError` — "Private Blob storage is required for customer voice
-notes and story documents." — unless `getBlobAccessMode() === 'private'`, i.e.
-`HSB_BLOB_ACCESS_MODE=private`. Both `uploadOrderVoice` and
-`uploadOrderDocument` call it before writing, so in a production-like
-environment a public store fails checkout closed **before** Stripe rather than
-storing media publicly.
+Customer story media may only be stored in the separate private Blob store.
+`assertPrivateStorySourceStorage(orderId)` (`src/lib/orders.ts`) throws
+`OrderPersistenceError` unless `HSB_PRIVATE_READ_WRITE_TOKEN` is non-empty and
+names a different Blob store from `BLOB_READ_WRITE_TOKEN`. Both
+`uploadOrderVoice` and `uploadOrderDocument` resolve that dedicated credential
+before writing with `access: 'private'`, so a missing or colliding credential
+fails checkout closed **before** Stripe rather than storing media publicly.
 
-Note `getBlobAccessMode()` defaults to `'public'` (`src/lib/orders.ts:1081`),
-which is the mode order JSON and hero photos use. The story-media lane is the
-exception that requires `private`. The checkout media UI is gated on the same
-condition: `isCheckoutStoryMediaEnabled()`
-(`src/lib/checkout-direct-flags.ts:23`) requires
-`HSB_BLOB_ACCESS_MODE === 'private'` **and** a non-empty `BLOB_READ_WRITE_TOKEN`
-(or a hermetic-E2E-only branch), and `/checkout` passes the result into
-`CheckoutForm` as `storyMediaEnabled` (`src/app/checkout/page.tsx:60`).
+Order JSON and hero/supporting photos remain in the legacy public store named
+by `BLOB_READ_WRITE_TOKEN`; `getBlobAccessMode()` still defaults that lane to
+`'public'`. Do **not** set global `HSB_BLOB_ACCESS_MODE=private` to enable story
+media: the public order store rejects private writes. Checkout validates the
+path the browser will actually submit through. With direct upload off,
+`isCheckoutStoryMediaEnabled()` requires a valid, dedicated
+`HSB_PRIVATE_READ_WRITE_TOKEN`. With
+`NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD=true`, it instead requires the matching
+`HSB_CHECKOUT_DIRECT_UPLOAD=true` server flag, the durable order-store
+`BLOB_READ_WRITE_TOKEN`, a valid dedicated
+`HSB_INTAKE_BLOB_READ_WRITE_TOKEN`, `HSB_CHECKOUT_GUARD_MODE=durable`, a valid
+dedicated `HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN`, a valid Blob namespace,
+and valid non-negative integer values for every optional `HSB_CHECKOUT_GUARD_MAX_*`
+limit. `/checkout` computes both `storyMediaEnabled` and
+`directUploadEnabled` on the server from that same contract and passes only
+those booleans into `CheckoutForm`; the browser does not independently turn
+the direct transport on from its public flag. Vercel Production builds also run
+`scripts/check-story-media-env.ts`, which refuses a missing, malformed, or
+colliding selected credential. Setting `HSB_STORY_MEDIA_INTENT=disabled`
+suppresses runtime media controls, refuses creation of a new direct intake,
+rejects new voice/document reservations and client-token issuance before
+guard, store, or provider effects, and rejects stale-checkout legacy multipart
+voice/document ingestion before durable order creation even if credentials or
+QA variables remain. It does not tear down completion callbacks,
+resolve/list/release, or final order binding needed to reconcile media
+reservations or tokens already issued before the opt-out.
+
+During a direct-upload shutdown, leave `HSB_CHECKOUT_DIRECT_UPLOAD=true` and all
+direct order/intake/guard credentials configured while the disabled intent
+drains issued capabilities. The Production build validates that drain lane.
+Only after a separately verified zero-in-flight check may an operator remove
+the direct server flag or credentials, and that deployment must explicitly set
+`HSB_STORY_MEDIA_DIRECT_RETIREMENT_CONFIRMED=true`. The retirement attestation
+cannot bypass validation while the direct server remains enabled. Typed Custom
+Story text and ordinary hero/family photos remain available.
 
 ### 4.4 Opening the media — not implemented; escalate
 
@@ -627,7 +653,7 @@ summary into the prose prompt.
 | `HSB_VOICE_TRANSCRIPTION_ENABLED` turns transcription on | **No code reads it.** It survives only in a doc comment (`src/lib/orders.ts:369`) and a `TODO(voice-beta)` (`src/lib/fulfillment.ts:422`). Setting it does nothing. |
 | `voiceTranscript` is populated at checkout | **Nothing writes it.** `createOrderRecord` passes `input.voiceTranscript ?? null` through, and no caller supplies one. The field, the admin "Transcript status/model/preview" rows, and `voiceInspirationBlock` are all inert for orders created today. Legacy records may still carry one. |
 | The transcript feeds the prose prompt | `voiceInspirationBlock` (`src/lib/story-generator.ts:606`) still exists inside the pure `buildUserPrompt`, but it returns `''` with no `voiceTranscript`, and `customStoryGenerationGate` throws at the top of `generateStoryWithMeta` before generation for any media-backed order. |
-| `NEXT_PUBLIC_HSB_VOICE_BETA` gates the checkout recorder | **No longer.** The gate is `isCheckoutStoryMediaEnabled()` (`src/lib/checkout-direct-flags.ts:23`), which requires private Blob + a token. The old flag now gates only the family-review portal recorder. |
+| `NEXT_PUBLIC_HSB_VOICE_BETA` gates the checkout recorder | **No longer.** The gate is `isCheckoutStoryMediaEnabled()` (`src/lib/checkout-direct-flags.ts`). The legacy multipart path requires a usable `HSB_PRIVATE_READ_WRITE_TOKEN` distinct from `BLOB_READ_WRITE_TOKEN`; the direct path instead requires matching client/server flags, a dedicated intake token, and a durable abuse guard with its own dedicated token. The old flag now gates only the family-review portal recorder. |
 | Audio stored at `orders/<orderId>/voice-<name>` | Path now includes a random asset id and a lease scope: `orders/<orderId>/<scope>voice-<assetId>.<ext>`, namespaced by `withBlobNamespace`. Documents mirror it with `document-<assetId>`. Original filenames are never retained. |
 | "Deleted after your book ships" | Removed from customer copy in the beta era and **still** unbacked. No deletion sweep exists. |
 
@@ -693,7 +719,7 @@ shifted the consent copy without changing a byte of it.
 | D15 | `order:status` still wired | `grep -n '"order:status"' package.json` | one hit |
 | D16 | Media size caps unchanged | `grep -n "STORY_MEDIA_MAX_BYTES" -A 4 src/lib/story-media-size.ts` | audio 15 MB, document 10 MB |
 | D17 | Consent refusal codes unchanged | `grep -n "voice_consent_required\|document_consent_required" src/lib/checkout-order-route-handler.ts` | both |
-| D18 | Story-media UI gate unchanged | `grep -n "isCheckoutStoryMediaEnabled" -A 8 src/lib/checkout-direct-flags.ts` | private Blob + token |
+| D18 | Story-media UI gate unchanged | `grep -n "isCheckoutStoryMediaEnabled" -A 12 src/lib/checkout-direct-flags.ts` | dedicated private token present and distinct from public order-store token |
 | D19 | Shape lanes unchanged | `src/lib/custom-story/shapes.ts` `STORY_SHAPE_STATUS` | `dual-parent\|memory\|audience` still `concierge` |
 | D20 | Consent copy unchanged | `grep -n "voice cloning or AI training\|right to share this document" src/components/checkout/VoiceRecorderSection.tsx` | two hits (`:378`, `:382` at `ca6f34f`) — no cloning / no AI training / not shared |
 

@@ -3,7 +3,7 @@ name: CI
 # Reproduces the merge gates used to verify pull requests locally:
 #   1. npm test          — Node test suite
 #   2. npm run test:e2e  — Playwright Chromium suite
-#   3. npx next build    — production build + TypeScript gate
+#   3. npm run build     — story-media contract + production build + TypeScript gate
 #
 # NOTE: reporting these checks does NOT enforce them. Until branch protection
 # is configured, a red run does not block a merge. Register these two check
@@ -78,6 +78,11 @@ env:
   FAL_KEY: ''
   GOOGLE_GEMINI_API_KEY: ''
   HSB_ORDER_ADMIN_KEY: ''
+  # Dedicated private customer-story/review store. Keep it blank in CI even
+  # though Vercel Production requires it through the build contract.
+  HSB_PRIVATE_READ_WRITE_TOKEN: ''
+  HSB_INTAKE_BLOB_READ_WRITE_TOKEN: ''
+  HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: ''
   # Read FIRST, before RESEND_API_KEY (src/lib/order-email.ts) — blanking only
   # the fallback would have left the primary live.
   HSB_RESEND_API_KEY: ''
@@ -103,17 +108,18 @@ env:
   # getBlobAccessMode() defaults to 'public'; '' would fall through to that
   # default and change nothing, so 'private' is used to actually force the
   # unauthenticated public-CDN read path off.
-  # This is a DELIBERATE divergence from production, which runs 'public' by
-  # design (the prod token rejects private writes). With BLOB_READ_WRITE_TOKEN
-  # blank no blob path is reachable either way, so it changes no result — it is
-  # defence in depth, not fidelity.
+  # This is a DELIBERATE divergence from Production's legacy ORDER store, which
+  # runs 'public' by design (that token rejects private writes). Customer voice
+  # and document media uses the separate HSB_PRIVATE_READ_WRITE_TOKEN store and
+  # does not consult this global. With both tokens blank no Blob path is
+  # reachable here, so this remains defence in depth, not fidelity.
   HSB_BLOB_ACCESS_MODE: 'private'
   NEXT_TELEMETRY_DISABLED: '1'
   #
   # HSB_REQUIRE_DURABLE_PERSISTENCE is deliberately NOT set at workflow level.
   # The unit tests set and delete it themselves, and playwright.config.ts sets
   # it for the server it starts. Setting it here would also apply to
-  # `npx next build`, making the build gate LESS production-like than the real
+  # `npm run build`, making the build gate LESS production-like than the real
   # Vercel build it is meant to approximate.
 
 jobs:
@@ -173,7 +179,7 @@ jobs:
           HSB_ORDER_STORE_DIR: ${{ runner.temp }}/hsb-order-store-unit
 
       - name: Production build + TypeScript gate
-        run: npx next build
+        run: npm run build
         env:
           HSB_ORDER_STORE_DIR: ${{ runner.temp }}/hsb-order-store-build
 

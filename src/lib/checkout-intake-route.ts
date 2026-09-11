@@ -25,6 +25,7 @@
  * check and must not be able to forge a match against).
  */
 import { isDirectUploadServerEnabled } from './checkout-direct-flags.ts';
+import { isStoryMediaExplicitlyDisabled } from './story-media-store.ts';
 import {
   createIntake,
   INTAKE_CATEGORY_POLICY,
@@ -184,9 +185,17 @@ export async function handleIntakeRequest(request: Request, deps: IntakeRouteDep
 
   const action = body?.action as IntakeAction;
   if (!ACTIONS.includes(action)) return errorResponse(new IntakeError('intake_action_invalid'));
+  if (action === 'create' && isStoryMediaExplicitlyDisabled(deps.env)) {
+    return Response.json({ error: 'not_found' }, { status: 404 });
+  }
 
   try {
     if (action === 'reserve-upload') {
+      const slot = readSlotRef(body.slot);
+      if (isStoryMediaExplicitlyDisabled(deps.env)
+        && (slot.category === 'voice_inspiration' || slot.category === 'document_inspiration')) {
+        return Response.json({ error: 'not_found' }, { status: 404 });
+      }
       // Production does not inject a guard store. Resolve it once so failure
       // compensation targets the exact store that accepted the scarce spend.
       const guardStore = deps.guardStore ?? resolveCheckoutGuardStore(deps.env);
@@ -203,7 +212,7 @@ export async function handleIntakeRequest(request: Request, deps: IntakeRouteDep
       const input = {
         intakeId: readString(body.intakeId, 'intake_id_invalid'),
         capability: readString(body.capability, 'intake_forbidden'),
-        slot: readSlotRef(body.slot),
+        slot,
         mimeType: readString(body.mimeType, 'asset_mime_invalid', 128),
         size,
       };

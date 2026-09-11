@@ -27,7 +27,7 @@ import {
   handleIntakeUploadRequest,
   type IntakeUploadRouteDeps,
 } from '../src/lib/checkout-intake-upload-route.ts';
-import { createMemoryCheckoutGuardStore } from '../src/lib/checkout-request-guard.ts';
+import { createMemoryCheckoutGuardStore, guardBucketPath } from '../src/lib/checkout-request-guard.ts';
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
 
 const ORIGIN = 'https://herostorybooks.com';
@@ -105,6 +105,27 @@ async function seedReservation(store: MemoryIntakeStore) {
   return { session, reservation };
 }
 
+async function seedStoryMediaReservation(
+  store: MemoryIntakeStore,
+  category: 'voice_inspiration' | 'document_inspiration',
+) {
+  const consentAt = '2026-09-02T12:00:00.000Z';
+  const session = await createIntake(store, {
+    mediaAuthorizedAt: consentAt,
+    documentAuthorizedAt: consentAt,
+    childVoiceAuthorizedAt: consentAt,
+    voiceSource: 'recorded',
+  });
+  const reservation = await reserveSlotUpload(store, {
+    intakeId: session.intakeId,
+    capability: session.capability,
+    slot: { category },
+    mimeType: category === 'voice_inspiration' ? 'audio/webm' : 'application/pdf',
+    size: 2048,
+  });
+  return { session, reservation };
+}
+
 function clientPayloadFor(
   session: { intakeId: string; capability: string },
   reservation: { slotKey: string; generation: number; reservationId: string },
@@ -140,6 +161,123 @@ test('a Vercel completion callback is NOT rejected for having no browser origin'
 
   const { slots } = await listIntakeSlots(store, session);
   assert.equal(slots[0]?.asset?.assetId, reservation.assetId, 'the completion actually activated the slot');
+});
+
+test('explicit disable blocks new story-media tokens before guard or provider while preserving photo tokens', async () => {
+  const disabledEnv = { ...ENV, HSB_STORY_MEDIA_INTENT: 'disabled' } as NodeJS.ProcessEnv;
+  const now = new Date('2026-09-10T12:00:00.000Z');
+
+  for (const category of ['voice_inspiration', 'document_inspiration'] as const) {
+    const store = createMemoryIntakeStore();
+    const { session, reservation } = await seedStoryMediaReservation(store, category);
+    const calls: { reached?: string[] } = {};
+    const guardStore = createMemoryCheckoutGuardStore();
+    const response = await handleIntakeUploadRequest(
+      tokenRequest({
+        type: 'blob.generate-client-token',
+        payload: {
+          pathname: reservation.pathname,
+          callbackUrl: UPLOAD_URL,
+          clientPayload: clientPayloadFor(session, reservation),
+          multipart: false,
+        },
+      }),
+      { ...deps(store, calls), env: disabledEnv, guardStore, now: () => now },
+    );
+    assert.equal(response.status, 404, category);
+    assert.equal((await response.json()).error, 'not_found');
+    assert.equal(calls.reached, undefined, 'handleUpload/provider boundary was never reached');
+    assert.equal(
+      await guardStore.read(guardBucketPath('intake-upload', now.getTime())),
+      null,
+      'no guard spend before refusal',
+    );
+
+    const tamperedCalls: { reached?: string[] } = {};
+    const tamperedGuardStore = createMemoryCheckoutGuardStore();
+    const tamperedPayload = JSON.parse(clientPayloadFor(session, reservation)) as Record<string, unknown>;
+    tamperedPayload.slotKey = 'primary_hero_photo';
+    const tampered = await handleIntakeUploadRequest(
+      tokenRequest({
+        type: 'blob.generate-client-token',
+        payload: {
+          pathname: reservation.pathname,
+          callbackUrl: UPLOAD_URL,
+          clientPayload: JSON.stringify(tamperedPayload),
+          multipart: false,
+        },
+      }),
+      {
+        ...deps(store, tamperedCalls),
+        env: disabledEnv,
+        guardStore: tamperedGuardStore,
+        now: () => now,
+      },
+    );
+    assert.equal(tampered.status, 409, `${category} tamper`);
+    assert.equal((await tampered.json()).error, 'upload_reservation_missing');
+    assert.equal(tamperedCalls.reached, undefined, 'tampering cannot reach handleUpload/provider');
+    assert.equal(
+      await tamperedGuardStore.read(guardBucketPath('intake-upload', now.getTime())),
+      null,
+      'tampering cannot spend guard capacity',
+    );
+  }
+
+  const photoStore = createMemoryIntakeStore();
+  const { session, reservation } = await seedReservation(photoStore);
+  const photoCalls: { reached?: string[] } = {};
+  const photo = await handleIntakeUploadRequest(
+    tokenRequest({
+      type: 'blob.generate-client-token',
+      payload: {
+        pathname: reservation.pathname,
+        callbackUrl: UPLOAD_URL,
+        clientPayload: clientPayloadFor(session, reservation),
+        multipart: false,
+      },
+    }),
+    { ...deps(photoStore, photoCalls), env: disabledEnv, now: () => now },
+  );
+  assert.equal(photo.status, 200, await photo.text());
+  assert.deepEqual(photoCalls.reached, ['token']);
+});
+
+test('explicit disable preserves completion of a story-media token issued before disablement', async () => {
+  const store = createMemoryIntakeStore();
+  const { session, reservation } = await seedStoryMediaReservation(store, 'voice_inspiration');
+  store.putAsset({
+    pathname: reservation.pathname,
+    mimeType: 'audio/webm',
+    size: 2048,
+    etag: 'etag-voice',
+  });
+  const calls: { reached?: string[] } = {};
+  const response = await handleIntakeUploadRequest(
+    callbackRequest({
+      type: 'blob.upload-completed',
+      payload: {
+        blob: {
+          pathname: reservation.pathname,
+          contentType: 'audio/webm',
+          etag: 'etag-voice',
+          url: 'https://blob/voice',
+          downloadUrl: 'https://blob/voice',
+          contentDisposition: 'inline',
+        },
+        tokenPayload: reservation.tokenPayload,
+      },
+    }),
+    {
+      ...deps(store, calls),
+      env: { ...ENV, HSB_STORY_MEDIA_INTENT: 'disabled' } as NodeJS.ProcessEnv,
+    },
+  );
+
+  assert.equal(response.status, 200, await response.text());
+  assert.deepEqual(calls.reached, ['completed']);
+  const { slots } = await listIntakeSlots(store, session);
+  assert.equal(slots[0]?.asset?.assetId, reservation.assetId);
 });
 
 test('a browser token request without a same-origin header is still rejected', async () => {

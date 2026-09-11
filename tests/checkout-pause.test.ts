@@ -20,7 +20,8 @@ test('checkout page gates the active form behind the pause flag', () => {
   const src = readFileSync('src/app/checkout/page.tsx', 'utf8');
   assert.match(src, /isCheckoutPaused\(\)/);
   assert.match(src, /<CheckoutPaused \/>/);
-  assert.match(src, /return <CheckoutForm storyMediaEnabled=\{isCheckoutStoryMediaEnabled\(\)\} \/>/);
+  assert.match(src, /storyMediaEnabled=\{isCheckoutStoryMediaEnabled\(\)\}/);
+  assert.match(src, /directUploadEnabled=\{isCheckoutDirectUploadEnabled\(\)\}/);
   assert.match(src, /No orders or payments can be started while checkout is paused/);
   assert.match(src, /export const dynamic = 'force-dynamic'/, 'checkout must read pause flag at request time, not static build time');
 });

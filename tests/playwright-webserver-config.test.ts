@@ -17,6 +17,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   WEBSERVER_HOST,
@@ -37,6 +39,7 @@ const { command, url, timeout, env } = CONFIG.webServer;
 
 interface ResolvedConfig {
   command: string; url: string; timeout: number; baseURL: string; storeDir: string;
+  env: Record<string, string>;
 }
 
 /**
@@ -63,7 +66,7 @@ test('the webServer command binds the server to loopback with -H', () => {
   assert.equal(WEBSERVER_HOST, '127.0.0.1');
   assert.match(
     command,
-    /\bnext start\b.*\s-H\s+127\.0\.0\.1(\s|$)/,
+    /\bnext"?\s+start\b.*\s-H\s+127\.0\.0\.1(\s|$)/,
     'next start must pass -H; without it Next binds 0.0.0.0 and the server is '
     + 'reachable off-machine even though Playwright dials 127.0.0.1',
   );
@@ -86,8 +89,20 @@ test('the port is still supplied explicitly and remains overridable', () => {
 });
 
 test('the server is built before it is started', () => {
-  assert.match(command, /^npx next build && npx next start\b/,
-    'the e2e target is a production build; dropping it would test a stale .next');
+  const phases = command.split(' && ');
+  assert.equal(phases.length, 2, 'the managed server must have exactly build and start phases');
+  const preload = path.join(process.cwd(), 'tests', 'e2e', 'disable-next-dotenv.cjs');
+  const nextBin = path.join(process.cwd(), 'node_modules', 'next', 'dist', 'bin', 'next');
+  assert.equal(
+    phases[0],
+    `"${process.execPath}" --require "${preload}" "${nextBin}" build`,
+    'build must pass the dotenv preload to Node before the Next executable',
+  );
+  assert.equal(
+    phases[1],
+    `"${process.execPath}" --require "${preload}" "${nextBin}" start -H 127.0.0.1 -p 3178`,
+    'start must pass the dotenv preload to Node before the Next executable',
+  );
 });
 
 test('every address Playwright dials is loopback', () => {
@@ -218,4 +233,58 @@ test('credential blanking, store isolation, and the durable opt-out are intact',
   // the workspace.
   assert.equal(env.HSB_ORDER_STORE_DIR, path.join(process.cwd(), '.e2e-store'));
   assert.equal(env.HSB_REQUIRE_DURABLE_PERSISTENCE, 'false');
+});
+
+test('the resolved QA server environment blanks every inherited variable outside its allowlist', () => {
+  const poisoned = resolveUnderEnv({
+    GOOGLE_GEMINI_API_KEY: 'live-gemini-sentinel',
+    HSB_RESEND_API_KEY: 'live-resend-sentinel',
+    STRIPE_WEBHOOK_SECRET: 'live-stripe-sentinel',
+    CRON_SECRET: 'live-cron-sentinel',
+    HSB_ORDER_ADMIN_KEY: 'live-admin-sentinel',
+    UNRECOGNIZED_FUTURE_SECRET: 'live-future-sentinel',
+  });
+
+  for (const name of [
+    'GOOGLE_GEMINI_API_KEY', 'HSB_RESEND_API_KEY', 'STRIPE_WEBHOOK_SECRET',
+    'CRON_SECRET', 'HSB_ORDER_ADMIN_KEY', 'UNRECOGNIZED_FUTURE_SECRET',
+  ]) {
+    assert.equal(poisoned.env[name], '', `${name} must be blanked for the QA server`);
+  }
+  assert.equal(poisoned.env.HSB_ORDER_STORE_DIR, path.join(process.cwd(), '.e2e-store'));
+  assert.equal(poisoned.env.HSB_E2E_STORY_MEDIA_ENABLED, 'true');
+});
+
+test('the QA preload disables Next dotenv loading against a synthetic env file', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'hsb-e2e-dotenv-'));
+  try {
+    writeFileSync(path.join(directory, '.env.local'), 'SYNTHETIC_LIVE_SECRET=must-not-load\n');
+    const script = [
+      "const nextEnv = require('@next/env')",
+      'const result = nextEnv.loadEnvConfig(process.argv[1], false)',
+      "process.stdout.write(JSON.stringify({ loaded: result.loadedEnvFiles.length, secret: process.env.SYNTHETIC_LIVE_SECRET || '' }))",
+    ].join(';');
+    const baseArgs = ['-e', script, directory];
+    const childEnv = { PATH: process.env.PATH ?? '', NODE_ENV: 'production' as const };
+    const unprotectedOutput = execFileSync(
+      process.execPath,
+      baseArgs,
+      { cwd: process.cwd(), encoding: 'utf8', env: childEnv },
+    );
+    assert.deepEqual(
+      JSON.parse(unprotectedOutput),
+      { loaded: 1, secret: 'must-not-load' },
+      'negative control must prove production-mode Next would load the synthetic secret',
+    );
+
+    const protectedOutput = execFileSync(
+      process.execPath,
+      ['--require', path.join(process.cwd(), 'tests', 'e2e', 'disable-next-dotenv.cjs'),
+        ...baseArgs],
+      { cwd: process.cwd(), encoding: 'utf8', env: childEnv },
+    );
+    assert.deepEqual(JSON.parse(protectedOutput), { loaded: 0, secret: '' });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

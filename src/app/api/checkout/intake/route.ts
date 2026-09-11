@@ -10,6 +10,7 @@ import {
   type IntakeRouteDeps,
 } from '../../../../lib/checkout-intake-route.ts';
 import { createVercelIntakeStore } from '../../../../lib/checkout-intake.ts';
+import { assertDirectUploadConfiguration } from '../../../../lib/checkout-direct-config.ts';
 import { isDirectUploadServerEnabled } from '../../../../lib/checkout-direct-flags.ts';
 
 export const runtime = 'nodejs';
@@ -21,6 +22,7 @@ export async function POST(request: Request): Promise<Response> {
   }
   let deps: IntakeRouteDeps;
   try {
+    assertDirectUploadConfiguration(process.env);
     // Resolving the store can fail closed (503) when the dedicated intake
     // credential is missing or shares a value with the order store.
     deps = { store: createVercelIntakeStore(), env: process.env };

@@ -46,7 +46,6 @@ import {
   type SubmitLock,
 } from "@/lib/checkout-handoff";
 import { upload } from "@vercel/blob/client";
-import { isDirectUploadClientEnabled } from "@/lib/checkout-direct-flags";
 import { classifyStoryAttachment } from "@/lib/story-attachment";
 import { canonicalMediaMime } from "@/lib/checkout-media-mime";
 import {
@@ -472,7 +471,13 @@ function checkoutReferralCode(): string {
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?: boolean }) {
+export function CheckoutForm({
+  storyMediaEnabled = false,
+  directUploadEnabled = false,
+}: {
+  storyMediaEnabled?: boolean;
+  directUploadEnabled?: boolean;
+}) {
   const [form, setForm] = useState<FormState>(emptyForm);
   const [currentStepId, setCurrentStepId] = useState<"hero-details" | "hero-appearance" | "story" | "people" | "review">("hero-details");
   const [supportingCharacterDraft, setSupportingCharacterDraft] = useState<SupportingCharacter | null>(null);
@@ -537,7 +542,6 @@ export function CheckoutForm({ storyMediaEnabled = false }: { storyMediaEnabled?
   const [guidedFrames, setGuidedFrames] = useState<GuidedPhotoFile[]>([]);
   const [guidedConsent, setGuidedConsent] = useState(false);
   const [showGuidedPhotos, setShowGuidedPhotos] = useState(false);
-  const directUploadEnabled = isDirectUploadClientEnabled();
   const [directMediaConsent, setDirectMediaConsent] = useState(false);
   const intakeSessionRef = useRef<DirectIntakeSubmissionCache | null>(null);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

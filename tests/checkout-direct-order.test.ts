@@ -346,6 +346,39 @@ test('the safety-critical order is exact: finalize, create-only persist, mark, T
   ]);
 });
 
+test('explicit story-media disable preserves finalization of an already-issued direct intake', async () => {
+  installMemoryOrderStore();
+  const { store, session, assets } = await intakeWithMedia({ voice: 'recorded' });
+  const h = harness(store);
+  const previous = process.env.HSB_STORY_MEDIA_INTENT;
+  process.env.HSB_STORY_MEDIA_INTENT = 'disabled';
+  try {
+    const result = await runDirectIntakeCheckout({
+      draftOrder: draftOrder(),
+      request: request(session, assets, {
+        selection: {
+          primaryHeroPhotoAssetId: assets.hero,
+          familyCharacterAssets: [],
+          guidedStillAssetIds: [],
+          voiceAssetId: assets.voice,
+          documentAssetId: null,
+        },
+      }),
+      stripeProductId: 'prod_test',
+      baseUrl: 'https://preview.test',
+      gaClientId: null,
+    }, h.deps);
+
+    assert.equal(result.status, 'redirect', JSON.stringify(result));
+    assert.ok(h.calls.includes('finalize'));
+    assert.ok(h.calls.includes('mark-finalized'));
+    assert.equal(h.calls.filter((call) => call === 'stripe-create').length, 1);
+  } finally {
+    if (previous === undefined) delete process.env.HSB_STORY_MEDIA_INTENT;
+    else process.env.HSB_STORY_MEDIA_INTENT = previous;
+  }
+});
+
 test('a retry after a lost successful HTTP response returns the same open Stripe session', async () => {
   installMemoryOrderStore();
   const { store, session, assets } = await intakeWithMedia();

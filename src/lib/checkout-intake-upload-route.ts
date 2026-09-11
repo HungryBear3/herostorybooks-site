@@ -30,6 +30,7 @@ import type { handleUpload as vercelHandleUpload } from '@vercel/blob/client';
 
 import { isDirectUploadServerEnabled } from './checkout-direct-flags.ts';
 import { INTAKE_UPLOAD_TOKEN_TTL_MS, IntakeError, type IntakeStore } from './checkout-intake.ts';
+import { isStoryMediaExplicitlyDisabled } from './story-media-store.ts';
 import {
   authorizeReservedUpload,
   completeSlotUpload,
@@ -125,6 +126,23 @@ export async function handleIntakeUploadRequest(
     if (eventType === 'blob.generate-client-token') {
       // Browser half only.
       assertBrowserMutationRequest(request);
+      if (isStoryMediaExplicitlyDisabled(deps.env)) {
+        const uploadPayload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload)
+          ? body.payload as Record<string, unknown>
+          : null;
+        if (!uploadPayload || typeof uploadPayload.pathname !== 'string') {
+          throw new IntakeError('upload_payload_invalid');
+        }
+        const payload = parseUploadClientPayload(uploadPayload.clientPayload);
+        await authorizeReservedUpload(
+          deps.store,
+          { ...payload, pathname: uploadPayload.pathname },
+          now(),
+        );
+        if (payload.slotKey === 'voice_inspiration' || payload.slotKey === 'document_inspiration') {
+          return Response.json({ error: 'not_found' }, { status: 404 });
+        }
+      }
       // Request count only. The reservation and its bytes were charged when
       // the browser reserved the slot; charging again here would double-count
       // the same upload and make the ceiling arbitrary.
