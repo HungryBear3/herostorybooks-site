@@ -91,23 +91,18 @@ test('the port is still supplied explicitly and remains overridable', () => {
 test('the server is built before it is started', () => {
   const phases = command.split(' && ');
   assert.equal(phases.length, 2, 'the managed server must have exactly build and start phases');
-  assert.match(phases[0], /\bnext(?:\.js)?"? build$/,
-    'the e2e target is a production build; dropping it would test a stale .next');
-  assert.match(phases[1], /\bnext(?:\.js)?"? start\b/);
-});
-
-test('both Next CLI processes preload the module that disables dotenv', () => {
   const preload = path.join(process.cwd(), 'tests', 'e2e', 'disable-next-dotenv.cjs');
-  const escaped = preload.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const phases = command.split(' && ');
-  assert.equal(phases.length, 2);
-  for (const [name, phase] of [['build', phases[0]], ['start', phases[1]]] as const) {
-    assert.equal(
-      [...phase.matchAll(new RegExp(`--require "${escaped}"`, 'g'))].length,
-      1,
-      `${name} must preload dotenv isolation exactly once`,
-    );
-  }
+  const nextBin = path.join(process.cwd(), 'node_modules', 'next', 'dist', 'bin', 'next');
+  assert.equal(
+    phases[0],
+    `"${process.execPath}" --require "${preload}" "${nextBin}" build`,
+    'build must pass the dotenv preload to Node before the Next executable',
+  );
+  assert.equal(
+    phases[1],
+    `"${process.execPath}" --require "${preload}" "${nextBin}" start -H 127.0.0.1 -p 3178`,
+    'start must pass the dotenv preload to Node before the Next executable',
+  );
 });
 
 test('every address Playwright dials is loopback', () => {
