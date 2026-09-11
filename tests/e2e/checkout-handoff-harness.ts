@@ -95,7 +95,6 @@ export async function fillCheckoutToReview(page: Page): Promise<Locator> {
   await page
     .getByPlaceholder('Example: 6 years old, warm brown skin, short curly dark hair, bright green hoodie')
     .fill('6 years old, short curly dark hair, bright green hoodie');
-  await continueButton.click(); // → Story
   await continueButton.click(); // → People and pets
   await continueButton.click(); // → Contact, delivery, and review
   await page.locator('#email').fill('e2e-buyer@example.invalid');

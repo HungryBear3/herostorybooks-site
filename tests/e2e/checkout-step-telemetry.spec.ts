@@ -45,7 +45,7 @@ test('step view is deduplicated, complete/blocked follow validation, attribution
   expect(firstView).toMatchObject({
     step_id: 'hero-details',
     step_number: 1,
-    total_steps: 5,
+    total_steps: 4,
     selected_format: 'digital',
     utm_source: 'founder',
     utm_medium: 'warm-intro',
@@ -92,8 +92,6 @@ test('step view is deduplicated, complete/blocked follow validation, attribution
   await expect(page.getByText(/^Missing: Hero appearance/)).toBeVisible();
   await page.getByLabel('Describe the hero').fill(PII.appearance);
   await continueButton.click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Story' })).toBeVisible();
-  await continueButton.click();
   await expect(page.getByRole('heading', { level: 1, name: 'People and pets' })).toBeVisible();
   await continueButton.click();
   await expect(page.getByRole('heading', { level: 1, name: 'Contact, delivery, and review' })).toBeVisible();
@@ -107,8 +105,6 @@ test('step view is deduplicated, complete/blocked follow validation, attribution
     ['checkout_step_complete', 'hero-details', null],
     ['checkout_step_blocked', 'hero-appearance', 'hero_appearance_required'],
     ['checkout_step_complete', 'hero-appearance', null],
-    ['checkout_step_view', 'story', null],
-    ['checkout_step_complete', 'story', null],
     ['checkout_step_view', 'people', null],
     ['checkout_step_complete', 'people', null],
     ['checkout_step_view', 'review', null],
@@ -125,7 +121,7 @@ test('step view is deduplicated, complete/blocked follow validation, attribution
     for (const key of Object.keys(event)) expect(allowed, `field ${key} on ${event.event}`).toContain(key);
     expect(event.utm_source).toBe('founder');
     expect(event.ref).toBe('e2efounder');
-    expect(event.total_steps).toBe(5);
+    expect(event.total_steps).toBe(4);
   }
 
   // The fake PII typed into the form never reached the event buffer at all —

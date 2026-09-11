@@ -27,7 +27,7 @@ test('linear Continue controls advance every step without covering fields or sub
   await expect
     .poll(async () => (await page.getByTestId('hero-photo-primary-choice').boundingBox())?.y ?? -9999)
     .toBeGreaterThanOrEqual(0);
-  await expect(bottom).toHaveText('Next: Story');
+  await expect(bottom).toHaveText('Next: People and pets');
   await expect(page.getByRole('heading', { name: 'Upload a photo for the best likeness' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Or describe the hero instead' })).toBeVisible();
   const photoBox = await page.getByTestId('hero-photo-primary-choice').boundingBox();
@@ -65,10 +65,6 @@ test('linear Continue controls advance every step without covering fields or sub
     .getByLabel('Describe the hero')
     .fill('6 years old, short curly dark hair, bright green hoodie');
   await bottom.click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Story' })).toBeVisible();
-  await expect(bottom).toHaveText('Next: People and pets');
-
-  await bottom.click();
   await expect(page.getByRole('heading', { level: 1, name: 'People and pets' })).toBeVisible();
   await expect(bottom).toHaveText('Next: Contact, delivery, and review');
 
@@ -94,7 +90,6 @@ test('a dotless-domain email keeps Pay disabled and never reaches /api/order', a
   await page
     .getByPlaceholder('Example: 6 years old, warm brown skin, short curly dark hair, bright green hoodie')
     .fill('6 years old, short curly dark hair, bright green hoodie');
-  await bottom.click(); // → Story
   await bottom.click(); // → People and pets
   await bottom.click(); // → Contact, delivery, and review
   await expect(page.getByRole('heading', { level: 1, name: 'Contact, delivery, and review' })).toBeVisible();
@@ -126,7 +121,6 @@ test('fourth hero type and save-before-next-person guidance are explicit', async
   await page.locator('#childName').fill('Testhero');
   await page.getByTestId('checkout-primary-continue').click();
   await page.getByLabel('Describe the hero').fill('Short dark hair and a bright green hoodie');
-  await page.getByTestId('checkout-bottom-continue').click();
   await page.getByTestId('checkout-bottom-continue').click();
 
   await expect(page.getByText('Add one person at a time. Complete and save their profile before adding the next person.')).toBeVisible();

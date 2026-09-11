@@ -37,6 +37,7 @@ import {
   getCheckoutPaymentBlockers,
   getCheckoutProgress,
   supportingCharacterDraftMissingFields,
+  type CheckoutStepProgress,
 } from "@/lib/checkout-progressive";
 import {
   CHECKOUT_HANDOFF_UNCONFIRMED,
@@ -479,7 +480,7 @@ export function CheckoutForm({
   directUploadEnabled?: boolean;
 }) {
   const [form, setForm] = useState<FormState>(emptyForm);
-  const [currentStepId, setCurrentStepId] = useState<"hero-details" | "hero-appearance" | "story" | "people" | "review">("hero-details");
+  const [currentStepId, setCurrentStepId] = useState<CheckoutStepProgress["id"]>("hero-details");
   const [supportingCharacterDraft, setSupportingCharacterDraft] = useState<SupportingCharacter | null>(null);
   const [editingSupportingCharacterId, setEditingSupportingCharacterId] = useState<string | null>(null);
   const [supportingPhotoPendingId, setSupportingPhotoPendingId] = useState<string | null>(null);
@@ -1720,39 +1721,6 @@ export function CheckoutForm({
                 </button>
               )}
             </section>
-
-            {isCustomStorySelected && (
-              <section
-                ref={registerStepRef("story")}
-                className={`${currentStepId !== "story" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
-              >
-                <div>
-                  <h2 className="font-serif text-2xl text-[#1f1a16]">
-                    Custom Story source
-                  </h2>
-                  <p className="mt-1 text-sm leading-6 text-[#695f54]">
-                    {hasCustomStoryInput
-                      ? "✓ Your story source is added. Return to Hero details anytime to edit it."
-                      : "Add your written memory, voice note, or document in Hero details before checkout."}
-                  </p>
-                </div>
-              </section>
-            )}
-
-            {!isCustomStorySelected && (
-              <section
-                ref={registerStepRef("story")}
-                className={`${currentStepId !== "story" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4`}
-              >
-                <h2 className="font-serif text-2xl text-[#1f1a16]">Story details</h2>
-                <p className="text-sm leading-6 text-[#695f54]">
-                  Your selected adventure is ready. Extra lesson, occasion, and dedication details are optional and can be reviewed by going back to Hero details.
-                </p>
-                <div className="rounded-2xl border border-[#cfe0d8] bg-[#eef4f1] px-4 py-3 text-sm font-semibold text-[#35564d]">
-                  ✓ No additional story information is required.
-                </div>
-              </section>
-            )}
 
             {/* ── 2. Hero / main character details ── */}
             <section className={`${currentStepId !== "hero-details" ? "hidden" : ""} rounded-[1.75rem] border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-5`}>

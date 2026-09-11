@@ -23,14 +23,16 @@ test('Custom Story selection immediately reveals all source inputs before templa
   assert.doesNotMatch(checkoutFormSource, /STORY_UPLOAD_ENABLED|NEXT_PUBLIC_HSB_STORY_UPLOAD/);
 });
 
-test('Custom Story editor is not duplicated on the Story step', () => {
+test('story direction has one editor and no separate confirmation step', () => {
   const panelCount = checkoutFormSource.match(/data-testid="custom-story-intake-panel"/g) ?? [];
   const textareaCount = checkoutFormSource.match(/id="customStoryMemory"/g) ?? [];
   const recorderCount = checkoutFormSource.match(/<VoiceRecorderSection/g) ?? [];
   assert.equal(panelCount.length, 1);
   assert.equal(textareaCount.length, 1);
   assert.equal(recorderCount.length, 1);
-  assert.match(checkoutFormSource, /Custom Story source[\s\S]*?Return to Hero details anytime to edit it/);
+  assert.doesNotMatch(checkoutFormSource, /registerStepRef\("story"\)/);
+  assert.doesNotMatch(checkoutFormSource, /currentStepId !== "story"/);
+  assert.doesNotMatch(checkoutFormSource, /Your selected adventure is ready/);
 });
 
 test('main photo intake leads with recommended upload and keeps description as the alternative', () => {
