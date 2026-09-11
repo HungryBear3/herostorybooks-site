@@ -89,14 +89,25 @@ test('the port is still supplied explicitly and remains overridable', () => {
 });
 
 test('the server is built before it is started', () => {
-  assert.match(command, /\bnext(?:\.js)?"? build && /,
+  const phases = command.split(' && ');
+  assert.equal(phases.length, 2, 'the managed server must have exactly build and start phases');
+  assert.match(phases[0], /\bnext(?:\.js)?"? build$/,
     'the e2e target is a production build; dropping it would test a stale .next');
+  assert.match(phases[1], /\bnext(?:\.js)?"? start\b/);
 });
 
 test('both Next CLI processes preload the module that disables dotenv', () => {
   const preload = path.join(process.cwd(), 'tests', 'e2e', 'disable-next-dotenv.cjs');
   const escaped = preload.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  assert.equal([...command.matchAll(new RegExp(`--require "${escaped}"`, 'g'))].length, 2);
+  const phases = command.split(' && ');
+  assert.equal(phases.length, 2);
+  for (const [name, phase] of [['build', phases[0]], ['start', phases[1]]] as const) {
+    assert.equal(
+      [...phase.matchAll(new RegExp(`--require "${escaped}"`, 'g'))].length,
+      1,
+      `${name} must preload dotenv isolation exactly once`,
+    );
+  }
 });
 
 test('every address Playwright dials is loopback', () => {
@@ -258,13 +269,26 @@ test('the QA preload disables Next dotenv loading against a synthetic env file',
       'const result = nextEnv.loadEnvConfig(process.argv[1], false)',
       "process.stdout.write(JSON.stringify({ loaded: result.loadedEnvFiles.length, secret: process.env.SYNTHETIC_LIVE_SECRET || '' }))",
     ].join(';');
-    const output = execFileSync(
+    const baseArgs = ['-e', script, directory];
+    const childEnv = { PATH: process.env.PATH ?? '', NODE_ENV: 'production' as const };
+    const unprotectedOutput = execFileSync(
+      process.execPath,
+      baseArgs,
+      { cwd: process.cwd(), encoding: 'utf8', env: childEnv },
+    );
+    assert.deepEqual(
+      JSON.parse(unprotectedOutput),
+      { loaded: 1, secret: 'must-not-load' },
+      'negative control must prove production-mode Next would load the synthetic secret',
+    );
+
+    const protectedOutput = execFileSync(
       process.execPath,
       ['--require', path.join(process.cwd(), 'tests', 'e2e', 'disable-next-dotenv.cjs'),
-        '-e', script, directory],
-      { cwd: process.cwd(), encoding: 'utf8', env: { PATH: process.env.PATH ?? '', NODE_ENV: 'test' } },
+        ...baseArgs],
+      { cwd: process.cwd(), encoding: 'utf8', env: childEnv },
     );
-    assert.deepEqual(JSON.parse(output), { loaded: 0, secret: '' });
+    assert.deepEqual(JSON.parse(protectedOutput), { loaded: 0, secret: '' });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
