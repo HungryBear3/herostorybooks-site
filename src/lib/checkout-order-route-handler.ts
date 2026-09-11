@@ -83,6 +83,11 @@ import {
 } from './checkout-session-provisioning.ts';
 import { runLegacyCheckoutRoute } from './checkout-legacy-order.ts';
 import { type IntakeStore } from './checkout-intake.ts';
+import {
+  CHECKOUT_ATTEMPT_LEASE_HEADER,
+  checkoutAttemptLeaseCookieFromHeader,
+  checkoutAttemptLeaseHeaderMatchesCookie,
+} from './checkout-attempt-lease.ts';
 import { checkoutRequestFingerprint } from './checkout-request-fingerprint.ts';
 import { classifyStoryAttachment } from './story-attachment.ts';
 import { isStoryMediaExplicitlyDisabled } from './story-media-store.ts';
@@ -180,6 +185,16 @@ export async function handleCheckoutOrderPost<TResponse>(
   request: Request,
   deps: CheckoutOrderRouteDeps<TResponse>,
 ): Promise<TResponse> {
+  const leaseHeader = request.headers.get(CHECKOUT_ATTEMPT_LEASE_HEADER);
+  if (!checkoutAttemptLeaseHeaderMatchesCookie(
+    checkoutAttemptLeaseCookieFromHeader(request.headers.get('cookie')),
+    leaseHeader,
+  )) {
+    return deps.json(
+      { error: 'This checkout attempt is no longer current. Please retry once.' },
+      409,
+    );
+  }
   let checkoutAttemptKnown = false;
   const json = (body: Record<string, unknown>, httpStatus: number): TResponse => deps.json(
     checkoutAttemptKnown && httpStatus >= 400

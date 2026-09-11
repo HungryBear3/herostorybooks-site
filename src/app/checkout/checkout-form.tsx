@@ -55,13 +55,17 @@ import {
   photoTypeUnsupportedMessage,
 } from "@/lib/checkout-direct-intake-error-copy";
 import { browserRandomHex } from "@/lib/browser-random-id";
-import { resolveStoredCheckoutAttemptForNewPurchase } from "@/lib/checkout-attempt-restart-client";
+import {
+  resolveServerCheckoutAttemptLease,
+  resolveStoredCheckoutAttemptForNewPurchase,
+} from "@/lib/checkout-attempt-restart-client";
 import {
   CHECKOUT_ATTEMPT_ID_STORAGE_KEY,
   CHECKOUT_DRAFT_STORAGE_KEY,
   CHECKOUT_ATTEMPT_SENT_STORAGE_KEY,
   CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY,
   checkoutAttemptMayHaveReachedServer,
+  checkoutAttemptStorageUnavailable,
   checkoutAttemptWasSent,
   clearCheckoutAttemptStorage,
   recoverConflictingCheckoutAttemptStorage,
@@ -232,8 +236,8 @@ function newCheckoutAttemptId(): string {
   return browserRandomHex(16);
 }
 
-function readStoredCheckoutAttempt() {
-  return readCheckoutAttemptStorageSnapshot(checkoutAttemptStorage());
+function readStoredCheckoutAttempt(storage = checkoutAttemptStorage()) {
+  return readCheckoutAttemptStorageSnapshot(storage);
 }
 
 function storeCheckoutAttemptId(attemptId: string): void {
@@ -1125,30 +1129,32 @@ export function CheckoutForm({
     // states separately so a retry after a local upload failure stays honest.
     let requestSent = false;
     let attemptWasPreviouslySent = false;
+    let serverLeaseBacked = false;
 
     try {
       const payload = new FormData();
-      let storedAttempt = readStoredCheckoutAttempt();
+      const attemptStorage = checkoutAttemptStorage();
+      let storedAttempt = readStoredCheckoutAttempt(attemptStorage);
       let reconciledAttempt = reconcileCheckoutAttemptIdentity(
         storedAttempt,
         checkoutAttemptIdRef.current,
       );
       if (!reconciledAttempt.reliable
         && await recoverConflictingCheckoutAttemptStorage(
-          checkoutAttemptStorage(),
+          attemptStorage,
           resolveStoredCheckoutAttemptForNewPurchase,
         )) {
         checkoutAttemptIdRef.current = null;
         checkoutAttemptSentRef.current = null;
-        storedAttempt = readStoredCheckoutAttempt();
+        storedAttempt = readStoredCheckoutAttempt(attemptStorage);
         reconciledAttempt = reconcileCheckoutAttemptIdentity(storedAttempt, null);
       }
       if (!reconciledAttempt.reliable
-        && repairCheckoutAttemptStorageToRiskIdentity(checkoutAttemptStorage())) {
+        && repairCheckoutAttemptStorageToRiskIdentity(attemptStorage)) {
         // A single sent/cleanup identity is the conservative owner. Align only
         // lower-risk browser markers to it, then reuse that exact order attempt.
         // Never clear evidence or mint a new identity during recovery.
-        storedAttempt = readStoredCheckoutAttempt();
+        storedAttempt = readStoredCheckoutAttempt(attemptStorage);
         if (storedAttempt.reliable && storedAttempt.attemptId) {
           checkoutAttemptIdRef.current = storedAttempt.attemptId;
           checkoutAttemptSentRef.current = storedAttempt.attemptId;
@@ -1156,6 +1162,21 @@ export function CheckoutForm({
             storedAttempt,
             storedAttempt.attemptId,
           );
+        }
+      }
+      const browserAttemptStorageUnavailable = checkoutAttemptStorageUnavailable(
+        attemptStorage,
+        storedAttempt,
+      );
+      if (browserAttemptStorageUnavailable) {
+        const leasedAttemptId = await resolveServerCheckoutAttemptLease();
+        if (leasedAttemptId) {
+          // Safari Private and restricted in-app browsers can deny all access
+          // to sessionStorage. A secure same-site HttpOnly cookie then owns the
+          // stable attempt identity, preserving one click / one order without
+          // exposing customer data or relying on browser storage APIs.
+          serverLeaseBacked = true;
+          reconciledAttempt = { attemptId: leasedAttemptId, reliable: true };
         }
       }
       if (!reconciledAttempt.reliable) {
@@ -1166,10 +1187,12 @@ export function CheckoutForm({
       }
       let checkoutAttemptId = reconciledAttempt.attemptId;
       if (checkoutAttemptId) {
-        attemptWasPreviouslySent = readStoredCheckoutAttemptSent(
-          checkoutAttemptId,
-          checkoutAttemptSentRef.current,
-        );
+        if (!serverLeaseBacked) {
+          attemptWasPreviouslySent = readStoredCheckoutAttemptSent(
+            checkoutAttemptId,
+            checkoutAttemptSentRef.current,
+          );
+        }
       } else {
         checkoutAttemptId = newCheckoutAttemptId();
         clearCheckoutAttemptSent();
@@ -1181,7 +1204,7 @@ export function CheckoutForm({
         }
         checkoutAttemptSentRef.current = null;
       }
-      if (checkoutAttemptId && attemptWasPreviouslySent) {
+      if (checkoutAttemptId && attemptWasPreviouslySent && !serverLeaseBacked) {
         const restartStatus = await resolveStoredCheckoutAttemptForNewPurchase(checkoutAttemptId);
         if (restartStatus === "restart_allowed") {
           // The server has authoritatively proved that the durable attempt is
@@ -1206,8 +1229,9 @@ export function CheckoutForm({
           attemptWasPreviouslySent = false;
         }
       }
-      const reservedAttempt = readStoredCheckoutAttempt();
-      if (!reservedAttempt.reliable || reservedAttempt.attemptId !== checkoutAttemptId) {
+      const reservedAttempt = serverLeaseBacked ? null : readStoredCheckoutAttempt();
+      if (!serverLeaseBacked
+        && (!reservedAttempt?.reliable || reservedAttempt.attemptId !== checkoutAttemptId)) {
         attemptWasPreviouslySent = true;
         throw new Error(
           "We couldn't safely verify your checkout attempt before uploading. No private files or order request were sent. Please do not pay again — contact support@herostorybooks.com.",
@@ -1355,15 +1379,18 @@ export function CheckoutForm({
         }
       }
 
-      if (!markCheckoutAttemptSent(checkoutAttemptId)) {
+      if (!serverLeaseBacked && !markCheckoutAttemptSent(checkoutAttemptId)) {
         throw new Error(
           "This browser could not safely preserve your checkout attempt. No order request was sent. Please open this page in Safari or Chrome with private browsing off, then try again.",
         );
       }
-      checkoutAttemptSentRef.current = checkoutAttemptId;
+      if (!serverLeaseBacked) checkoutAttemptSentRef.current = checkoutAttemptId;
       requestSent = true;
       const response = await fetch("/api/order", {
         method: "POST",
+        headers: serverLeaseBacked
+          ? { "x-hsb-checkout-attempt": checkoutAttemptId }
+          : undefined,
         body: payload,
       });
 

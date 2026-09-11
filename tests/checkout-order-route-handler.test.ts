@@ -235,6 +235,25 @@ async function stored(): Promise<OrderRecord | null> {
 
 const creates = (h: Harness) => h.provider.filter((call) => call.startsWith('create:'));
 
+test('a stale server-lease header is rejected before order, media, or provider work', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  const request = new Request('https://preview.test/api/order', {
+    method: 'POST',
+    headers: {
+      cookie: `__Host-hsb-checkout-attempt=${ATTEMPT}`,
+      'x-hsb-checkout-attempt': 'b'.repeat(32),
+    },
+    body: legacyForm(),
+  });
+
+  const response = await handleCheckoutOrderPost(request, h.deps);
+  assert.equal(response.httpStatus, 409);
+  assert.deepEqual(h.uploads, []);
+  assert.deepEqual(h.provider, []);
+  assert.equal(await stored(), null);
+});
+
 for (const kind of ['voice', 'document'] as const) {
   test(`explicit story-media disable rejects a new legacy ${kind} before persistence`, async () => {
     installMemoryOrderStore();

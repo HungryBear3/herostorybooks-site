@@ -92,7 +92,7 @@ test('a restricted in-app browser without Web Crypto ID methods can still start 
   );
 });
 
-test('an in-app browser that blocks sessionStorage fails closed before starting an order', async ({ page, baseURL }) => {
+test('a private browser that blocks sessionStorage uses one server lease and starts one order', async ({ page, baseURL }) => {
   await page.addInitScript(() => {
     Object.defineProperty(window, 'sessionStorage', {
       configurable: true,
@@ -106,10 +106,29 @@ test('an in-app browser that blocks sessionStorage fails closed before starting 
 
   await pay.click();
 
-  await expect(page.getByTestId('submit-error')).toContainText(/couldn't safely verify/i);
-  await expect(page.getByTestId('submit-error')).toContainText(/do not pay again/i);
-  await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toHaveCount(0);
-  expect(harness.orderRequests, 'storage ambiguity must block order creation').toHaveLength(0);
+  await expect.poll(() => harness.attemptLeaseRequests).toEqual(['POST']);
+  await expect.poll(() => harness.orderRequests).toHaveLength(1);
+  await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
+  expect(harness.orderBodies[0]).toMatch(
+    new RegExp(`name="checkoutAttemptId"\\r?\\n\\r?\\n${'e'.repeat(32)}\\r?\\n`),
+  );
+});
+
+test('a private browser whose sessionStorage methods throw still reaches one Stripe handoff', async ({ page, baseURL }) => {
+  await page.addInitScript(() => {
+    const denied = () => { throw new DOMException('Storage is unavailable', 'SecurityError'); };
+    Object.defineProperty(window, 'sessionStorage', {
+      configurable: true,
+      value: { getItem: denied, setItem: denied, removeItem: denied, clear: denied, key: denied, length: 0 },
+    });
+  });
+  const harness = await installHandoffHarness(page, baseURL!, { redirectTo: STRIPE_SESSION_URL });
+  const pay = await fillCheckoutToReview(page);
+  await pay.click();
+
+  await expect.poll(() => harness.attemptLeaseRequests).toEqual(['POST']);
+  await expect.poll(() => harness.orderRequests).toHaveLength(1);
+  await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
 });
 
 test('conflicting lower-risk markers converge to the already-sent attempt without a recovery API', async ({ page, baseURL }) => {
@@ -128,6 +147,7 @@ test('conflicting lower-risk markers converge to the already-sent attempt withou
   await pay.click();
 
   await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
+  expect(harness.attemptLeaseRequests, 'readable browser storage must not be bypassed by a server lease').toHaveLength(0);
   expect(harness.attemptStatusRequests, 'local convergence must not enumerate orders').toHaveLength(0);
   expect(harness.orderRequests, 'recovery reuses exactly one order attempt').toHaveLength(1);
   expect(harness.orderBodies[0]).toMatch(

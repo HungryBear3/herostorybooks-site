@@ -32,7 +32,7 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   const fingerprint = readFileSync('src/lib/checkout-request-fingerprint.ts', 'utf8');
   const browserRandomId = readFileSync('src/lib/browser-random-id.ts', 'utf8');
   assert.match(client, /checkoutAttemptIdRef\.current \?\? storedAttempt\.attemptId/);
-  const attemptReadAt = client.indexOf('let storedAttempt = readStoredCheckoutAttempt();');
+  const attemptReadAt = client.indexOf('let storedAttempt = readStoredCheckoutAttempt(attemptStorage);');
   const attemptReconcileAt = client.indexOf('let reconciledAttempt = reconcileCheckoutAttemptIdentity(', attemptReadAt);
   const attemptRepairAt = client.indexOf('repairCheckoutAttemptStorageToRiskIdentity(', attemptReconcileAt);
   const attemptFailClosedAt = client.indexOf('if (!reconciledAttempt.reliable) {', attemptRepairAt);
