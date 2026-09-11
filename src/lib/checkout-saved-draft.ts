@@ -147,6 +147,51 @@ export interface CheckoutAttemptStorageSnapshot {
   reliable: boolean;
 }
 
+const CHECKOUT_ATTEMPT_STORAGE_KEYS = [
+  CHECKOUT_ATTEMPT_ID_STORAGE_KEY,
+  CHECKOUT_ATTEMPT_CLEANUP_STORAGE_KEY,
+  CHECKOUT_ATTEMPT_SENT_STORAGE_KEY,
+  CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY,
+] as const;
+
+/**
+ * Repair only toward one unambiguous high-risk identity. A `sent` or `cleanup`
+ * marker means that exact attempt may already own an order/provider Session, so
+ * lower-risk primary/reserved drift may be rewritten to that identity. This
+ * never clears evidence, never chooses between conflicting high-risk markers,
+ * and never mints a new attempt.
+ */
+export function repairCheckoutAttemptStorageToRiskIdentity(
+  storage: MinimalWebStorage | null | undefined,
+): boolean {
+  if (!storage) return false;
+  const values = new Map<(typeof CHECKOUT_ATTEMPT_STORAGE_KEYS)[number], string | null>();
+  try {
+    for (const key of CHECKOUT_ATTEMPT_STORAGE_KEYS) {
+      const value = storage.getItem(key);
+      if (value !== null && !CHECKOUT_ATTEMPT_ID_RE.test(value)) return false;
+      values.set(key, value);
+    }
+  } catch {
+    return false;
+  }
+
+  const cleanup = values.get(CHECKOUT_ATTEMPT_CLEANUP_STORAGE_KEY) ?? null;
+  const sent = values.get(CHECKOUT_ATTEMPT_SENT_STORAGE_KEY) ?? null;
+  if (cleanup && sent && cleanup !== sent) return false;
+  const riskIdentity = cleanup ?? sent;
+  if (!riskIdentity) return false;
+
+  try {
+    storage.setItem(CHECKOUT_ATTEMPT_ID_STORAGE_KEY, riskIdentity);
+    storage.setItem(CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY, riskIdentity);
+  } catch {
+    return false;
+  }
+  const repaired = readCheckoutAttemptStorageSnapshot(storage);
+  return repaired.reliable && repaired.attemptId === riskIdentity;
+}
+
 export function confirmedCheckoutCleanupAttemptId(
   order: {
     paymentStatus?: unknown;

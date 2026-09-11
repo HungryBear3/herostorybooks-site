@@ -38,6 +38,10 @@ export interface HandoffHarness {
   orderRequests: string[];
   /** Raw multipart bodies, used to assert client/server field contracts. */
   orderBodies: string[];
+  /** Attempt-status probes made before recovering conflicting browser markers. */
+  attemptStatusRequests: string[][];
+  /** Milliseconds from mocked order response dispatch to Stripe navigation. */
+  stripeNavigationDelayMs: number | null;
 }
 
 export async function installHandoffHarness(
@@ -45,12 +49,18 @@ export async function installHandoffHarness(
   baseURL: string,
   options: HarnessOptions = {},
 ): Promise<HandoffHarness> {
-  const harness: HandoffHarness = { orderRequests: [], orderBodies: [] };
+  const harness: HandoffHarness = {
+    orderRequests: [],
+    orderBodies: [],
+    attemptStatusRequests: [],
+    stripeNavigationDelayMs: null,
+  };
   const appOrigin = new URL(baseURL).origin;
   const body = options.redirectTo !== undefined
     ? { ok: true, redirectTo: options.redirectTo }
     : { ok: true };
   let stripeNavigations = 0;
+  let orderResponseStartedAt: number | null = null;
 
   await page.route('**/*', async (route: Route) => {
     const request = route.request();
@@ -59,15 +69,24 @@ export async function installHandoffHarness(
     if (url.origin === appOrigin && url.pathname === '/api/order') {
       harness.orderRequests.push(request.method());
       harness.orderBodies.push(request.postData() ?? '');
+      orderResponseStartedAt = Date.now();
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(body),
       });
     }
+    if (url.origin === appOrigin && url.pathname === '/api/checkout/attempt-status') {
+      const parsed = JSON.parse(request.postData() ?? '{}') as { checkoutAttemptIds?: string[] };
+      harness.attemptStatusRequests.push(parsed.checkoutAttemptIds ?? []);
+      return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+    }
     if (url.origin === appOrigin) return route.continue();
     if (url.hostname === 'checkout.stripe.com') {
       stripeNavigations += 1;
+      if (orderResponseStartedAt !== null) {
+        harness.stripeNavigationDelayMs = Date.now() - orderResponseStartedAt;
+      }
       if (options.dropFirstStripeNavigation && stripeNavigations === 1) {
         return route.fulfill({ status: 204 });
       }

@@ -32,14 +32,14 @@ test('mobile hands off to Stripe immediately on tap, with no timer', async ({ pa
   const harness = await installHandoffHarness(page, baseURL!, { redirectTo: STRIPE_SESSION_URL });
   const pay = await fillCheckoutToReview(page);
 
-  const startedAt = Date.now();
   await pay.tap();
   await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
-  const elapsed = Date.now() - startedAt;
 
   expect(page.url()).toBe(STRIPE_SESSION_URL);
   expect(harness.orderRequests).toHaveLength(1);
-  expect(elapsed, 'hand-off must not be gated behind a timer').toBeLessThan(1000);
+  expect(harness.attemptStatusRequests, 'clean checkout must not run stale-attempt recovery').toHaveLength(0);
+  expect(harness.stripeNavigationDelayMs).not.toBeNull();
+  expect(harness.stripeNavigationDelayMs!, 'hand-off must not be gated behind a timer').toBeLessThan(1000);
 });
 
 test('a double tap creates only one order/session attempt on mobile', async ({ page, baseURL }) => {
