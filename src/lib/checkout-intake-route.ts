@@ -191,6 +191,11 @@ export async function handleIntakeRequest(request: Request, deps: IntakeRouteDep
 
   try {
     if (action === 'reserve-upload') {
+      const slot = readSlotRef(body.slot);
+      if (isStoryMediaExplicitlyDisabled(deps.env)
+        && (slot.category === 'voice_inspiration' || slot.category === 'document_inspiration')) {
+        return Response.json({ error: 'not_found' }, { status: 404 });
+      }
       // Production does not inject a guard store. Resolve it once so failure
       // compensation targets the exact store that accepted the scarce spend.
       const guardStore = deps.guardStore ?? resolveCheckoutGuardStore(deps.env);
@@ -207,7 +212,7 @@ export async function handleIntakeRequest(request: Request, deps: IntakeRouteDep
       const input = {
         intakeId: readString(body.intakeId, 'intake_id_invalid'),
         capability: readString(body.capability, 'intake_forbidden'),
-        slot: readSlotRef(body.slot),
+        slot,
         mimeType: readString(body.mimeType, 'asset_mime_invalid', 128),
         size,
       };

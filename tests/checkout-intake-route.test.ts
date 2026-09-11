@@ -72,26 +72,74 @@ test('the route does not exist unless the direct-upload flag is on', async () =>
   assert.equal(response.status, 404);
 });
 
-test('explicit disable refuses new intakes but preserves existing-intake reconciliation', async () => {
-  const store = createMemoryIntakeStore();
+test('explicit disable blocks new story-media ingestion but preserves photo and existing-intake reconciliation', async () => {
   const disabledEnv = {
     ...ENV,
     HSB_STORY_MEDIA_INTENT: 'disabled',
   } as NodeJS.ProcessEnv;
 
+  const refusedStore = createMemoryIntakeStore();
   const refused = await handleIntakeRequest(
     post({ action: 'create', consent: { mediaAuthorized: true } }),
-    deps(store, disabledEnv),
+    deps(refusedStore, disabledEnv),
   );
   assert.equal(refused.status, 404);
   assert.equal((await json(refused)).error, 'not_found');
-  assert.equal(store.records.size, 0, 'disabled mode cannot create a new intake owner');
+  assert.equal(refusedStore.records.size, 0, 'disabled mode cannot create a new intake owner');
 
   const now = new Date('2026-09-10T12:00:00.000Z');
-  const seeded = await createIntake(store, { mediaAuthorizedAt: now.toISOString() }, now);
+  for (const storyMedia of [
+    { slot: { category: 'voice_inspiration' }, mimeType: 'audio/webm' },
+    { slot: { category: 'document_inspiration' }, mimeType: 'application/pdf' },
+  ] as const) {
+    const store = createMemoryIntakeStore();
+    const seeded = await createIntake(store, {
+      mediaAuthorizedAt: now.toISOString(),
+      documentAuthorizedAt: now.toISOString(),
+      childVoiceAuthorizedAt: now.toISOString(),
+      voiceSource: 'recorded',
+    }, now);
+    const guardStore = createMemoryCheckoutGuardStore();
+    const before = structuredClone(store.records.get(seeded.intakeId));
+    const blocked = await handleIntakeRequest(
+      post({
+        action: 'reserve-upload',
+        intakeId: seeded.intakeId,
+        capability: seeded.capability,
+        slot: storyMedia.slot,
+        mimeType: storyMedia.mimeType,
+        size: 1024,
+      }),
+      { store, guardStore, env: disabledEnv, now: () => now },
+    );
+    assert.equal(blocked.status, 404, storyMedia.slot.category);
+    assert.equal((await json(blocked)).error, 'not_found');
+    assert.deepEqual(store.records.get(seeded.intakeId), before, 'no intake mutation before refusal');
+    assert.equal(
+      await guardStore.read(guardBucketPath('intake', now.getTime())),
+      null,
+      'no guard spend before refusal',
+    );
+  }
+
+  const photoStore = createMemoryIntakeStore();
+  const seeded = await createIntake(photoStore, { mediaAuthorizedAt: now.toISOString() }, now);
+  const photo = await handleIntakeRequest(
+    post({
+      action: 'reserve-upload',
+      intakeId: seeded.intakeId,
+      capability: seeded.capability,
+      slot: { category: 'primary_hero_photo' },
+      mimeType: 'image/jpeg',
+      size: 1024,
+    }),
+    { ...deps(photoStore, disabledEnv), now: () => now },
+  );
+  assert.equal(photo.status, 200, await photo.text());
+
   const reconciled = await handleIntakeRequest(
     post({ action: 'list', intakeId: seeded.intakeId, capability: seeded.capability }),
-    deps(store, disabledEnv),
+    deps(photoStore, disabledEnv),
   );
   assert.equal(reconciled.status, 200, await reconciled.text());
 });
