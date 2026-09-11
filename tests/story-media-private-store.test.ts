@@ -192,6 +192,7 @@ test('checkout media availability follows the browser-selected legacy or direct 
 
   for (const broken of [
     { ...directReady, HSB_CHECKOUT_DIRECT_UPLOAD: 'false' },
+    { ...directReady, BLOB_READ_WRITE_TOKEN: undefined },
     { ...directReady, HSB_CHECKOUT_GUARD_MODE: undefined },
     { ...directReady, HSB_CHECKOUT_GUARD_MODE: 'process-local' },
     { ...directReady, HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: undefined },
@@ -410,6 +411,7 @@ test('a Vercel Production build fails when the private story-media credential is
     'a browser-selected direct path validates the intake lane, not the legacy private lane',
   );
   for (const broken of [
+    { ...directBuildReady, BLOB_READ_WRITE_TOKEN: undefined },
     {
       HSB_CHECKOUT_DIRECT_UPLOAD: 'false',
       NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
@@ -439,7 +441,7 @@ test('a Vercel Production build fails when the private story-media credential is
     { ...directBuildReady, HSB_CHECKOUT_GUARD_MAX_REPLACEMENTS_PER_MINUTE: 'many' },
     { ...directBuildReady, HSB_CHECKOUT_GUARD_MAX_CALLBACKS_PER_MINUTE: '0x10' },
   ]) {
-    assert.match(production(broken) ?? '', /direct|intake|credential|guard|durable|namespace|minute|integer/i);
+    assert.match(production(broken) ?? '', /direct|intake|order|token|credential|guard|durable|namespace|minute|integer/i);
   }
 });
 

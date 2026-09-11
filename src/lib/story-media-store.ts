@@ -83,7 +83,9 @@ export function storyMediaPrivateTokenProblem(
   }
 
   const publicToken = env[ORDER_PUBLIC_TOKEN_ENV]?.trim() ?? '';
-  if (!publicToken) return null;
+  if (!publicToken) {
+    return env.VERCEL ? `${ORDER_PUBLIC_TOKEN_ENV} is not set` : null;
+  }
 
   let publicStoreId: string;
   try {

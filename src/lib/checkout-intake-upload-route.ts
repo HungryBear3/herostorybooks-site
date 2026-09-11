@@ -127,12 +127,19 @@ export async function handleIntakeUploadRequest(
       // Browser half only.
       assertBrowserMutationRequest(request);
       if (isStoryMediaExplicitlyDisabled(deps.env)) {
-        const payload = body.payload;
-        const clientPayload = payload && typeof payload === 'object' && !Array.isArray(payload)
-          ? (payload as Record<string, unknown>).clientPayload
+        const uploadPayload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload)
+          ? body.payload as Record<string, unknown>
           : null;
-        const slotKey = parseUploadClientPayload(clientPayload).slotKey;
-        if (slotKey === 'voice_inspiration' || slotKey === 'document_inspiration') {
+        if (!uploadPayload || typeof uploadPayload.pathname !== 'string') {
+          throw new IntakeError('upload_payload_invalid');
+        }
+        const payload = parseUploadClientPayload(uploadPayload.clientPayload);
+        await authorizeReservedUpload(
+          deps.store,
+          { ...payload, pathname: uploadPayload.pathname },
+          now(),
+        );
+        if (payload.slotKey === 'voice_inspiration' || payload.slotKey === 'document_inspiration') {
           return Response.json({ error: 'not_found' }, { status: 404 });
         }
       }

@@ -75,6 +75,10 @@ export function assertDirectUploadConfiguration(
   if (!guardToken) {
     throw new DirectUploadConfigurationError(`${CHECKOUT_GUARD_TOKEN_ENV} is not set`);
   }
+  const orderToken = env[ORDER_PUBLIC_TOKEN_ENV]?.trim() ?? '';
+  if (!orderToken) {
+    throw new DirectUploadConfigurationError(`${ORDER_PUBLIC_TOKEN_ENV} is not set`);
+  }
 
   try {
     parseBlobToken(intakeToken, 'intake');
@@ -86,10 +90,17 @@ export function assertDirectUploadConfiguration(
   } catch {
     throw new DirectUploadConfigurationError(`${CHECKOUT_GUARD_TOKEN_ENV} is invalid`);
   }
+  if (orderToken) {
+    try {
+      parseBlobToken(orderToken, 'order');
+    } catch {
+      throw new DirectUploadConfigurationError(`${ORDER_PUBLIC_TOKEN_ENV} is invalid`);
+    }
+  }
   try {
     assertDistinctBlobStores([
       { label: 'intake', token: intakeToken },
-      { label: 'order', token: env[ORDER_PUBLIC_TOKEN_ENV]?.trim() },
+      { label: 'order', token: orderToken },
       { label: 'guard', token: guardToken },
     ]);
   } catch {

@@ -192,6 +192,36 @@ test('explicit disable blocks new story-media tokens before guard or provider wh
       null,
       'no guard spend before refusal',
     );
+
+    const tamperedCalls: { reached?: string[] } = {};
+    const tamperedGuardStore = createMemoryCheckoutGuardStore();
+    const tamperedPayload = JSON.parse(clientPayloadFor(session, reservation)) as Record<string, unknown>;
+    tamperedPayload.slotKey = 'primary_hero_photo';
+    const tampered = await handleIntakeUploadRequest(
+      tokenRequest({
+        type: 'blob.generate-client-token',
+        payload: {
+          pathname: reservation.pathname,
+          callbackUrl: UPLOAD_URL,
+          clientPayload: JSON.stringify(tamperedPayload),
+          multipart: false,
+        },
+      }),
+      {
+        ...deps(store, tamperedCalls),
+        env: disabledEnv,
+        guardStore: tamperedGuardStore,
+        now: () => now,
+      },
+    );
+    assert.equal(tampered.status, 409, `${category} tamper`);
+    assert.equal((await tampered.json()).error, 'upload_reservation_missing');
+    assert.equal(tamperedCalls.reached, undefined, 'tampering cannot reach handleUpload/provider');
+    assert.equal(
+      await tamperedGuardStore.read(guardBucketPath('intake-upload', now.getTime())),
+      null,
+      'tampering cannot spend guard capacity',
+    );
   }
 
   const photoStore = createMemoryIntakeStore();

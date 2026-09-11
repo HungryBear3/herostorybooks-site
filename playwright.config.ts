@@ -16,7 +16,9 @@ export const E2E_STORE_DIR = path.join(process.cwd(), '.e2e-store');
 
 /** Credentials that must never be present in an e2e server process. */
 const STRIPPED = Object.fromEntries([
-  'BLOB_READ_WRITE_TOKEN', 'HSB_REQUIRE_DURABLE_PERSISTENCE', 'RESEND_API_KEY',
+  'BLOB_READ_WRITE_TOKEN', 'HSB_PRIVATE_READ_WRITE_TOKEN',
+  'HSB_INTAKE_BLOB_READ_WRITE_TOKEN', 'HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN',
+  'HSB_REQUIRE_DURABLE_PERSISTENCE', 'RESEND_API_KEY',
   'OPENAI_API_KEY', 'FAL_KEY', 'GEMINI_API_KEY', 'LULU_CLIENT_KEY',
   'LULU_CLIENT_SECRET', 'STRIPE_SECRET_KEY', 'HSB_STRIPE_SECRET_KEY',
 ].map((k) => [k, '']));
@@ -76,6 +78,13 @@ export default defineConfig({
       // Enable media UI only inside this credential-free, disposable sandbox.
       // Checkout navigation tests intercept/forbid order and payment requests.
       HSB_E2E_STORY_MEDIA_ENABLED: 'true',
+      // Never inherit a direct-upload rollout from .env.local. These tests use
+      // the bounded legacy-only QA exception and mock/forbid checkout requests.
+      HSB_STORY_MEDIA_INTENT: 'enabled',
+      HSB_CHECKOUT_DIRECT_UPLOAD: '',
+      NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD: '',
+      VERCEL: '',
+      VERCEL_ENV: '',
       // This sandbox exercises the Preview-only primary-hero selector on both
       // the browser and server sides without changing either production default.
       NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA: 'true',
