@@ -270,8 +270,18 @@ test('the hermetic browser-QA branch enables only the legacy controls without Bl
   assert.equal(isCheckoutStoryMediaEnabled(env(hermeticQa)), true);
   assert.equal(
     isCheckoutStoryMediaEnabled(env({ ...hermeticQa, NODE_ENV: 'production' })),
+    true,
+    'next build + next start sets NODE_ENV=production in the local Playwright sandbox',
+  );
+  assert.equal(
+    isCheckoutStoryMediaEnabled(env({ ...hermeticQa, NODE_ENV: 'production', VERCEL: '1' })),
     false,
-    'the hermetic QA bypass is forbidden in every production runtime',
+    'the hermetic QA bypass is forbidden on Vercel even with the test flag present',
+  );
+  assert.equal(
+    isCheckoutStoryMediaEnabled(env({ ...hermeticQa, NODE_ENV: 'production', VERCEL_ENV: 'production' })),
+    false,
+    'the hermetic QA bypass is forbidden in a declared Vercel environment',
   );
   assert.equal(
     isCheckoutStoryMediaEnabled(env({
