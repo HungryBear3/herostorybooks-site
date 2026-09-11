@@ -3373,6 +3373,40 @@ export async function withOrderTransaction<T>(
   throw new OrderVersionConflictError(orderId, maxAttempts);
 }
 
+/**
+ * Atomically retire an exact expired+unpaid checkout attempt after Stripe has
+ * already proven its bound Session terminal. The caller supplies the
+ * authoritative snapshot used for that provider lookup; any concurrent lease,
+ * generation, candidate, provisioning, Session, fingerprint, or payment change
+ * aborts the retirement so a browser cannot rotate into a second payable path.
+ */
+export async function retireExpiredCheckoutAttempt(observed: OrderRecord): Promise<boolean> {
+  if (!observed.checkoutAttemptId || !observed.stripeSessionId) return false;
+  const retired = await withOrderTransaction<boolean>(observed.id, (current) => {
+    if (current.paymentStatus !== 'pending'
+      || current.checkoutAttemptId !== observed.checkoutAttemptId
+      || current.checkoutFingerprint !== observed.checkoutFingerprint
+      || current.stripeSessionId !== observed.stripeSessionId
+      || current.checkoutSessionAttempt !== observed.checkoutSessionAttempt
+      || current.checkoutLeaseId !== observed.checkoutLeaseId
+      || current.checkoutLeaseExpiresAt !== observed.checkoutLeaseExpiresAt
+      || current.checkoutSessionCandidate
+      || current.checkoutSessionProvisioning) {
+      return { abort: false };
+    }
+    const updated: OrderRecord = {
+      ...current,
+      paymentStatus: 'failed',
+      fulfillmentLastError: 'stripe_session_expired_unpaid',
+      checkoutLeaseId: null,
+      checkoutLeaseExpiresAt: null,
+      updatedAt: new Date().toISOString(),
+    };
+    return { commit: updated, result: true };
+  });
+  return retired;
+}
+
 export async function updateOrderPayment(
   orderId: string,
   paymentStatus: PaymentStatus,

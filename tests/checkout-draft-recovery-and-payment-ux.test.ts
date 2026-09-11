@@ -463,8 +463,13 @@ test('failed verified draft deletion preserves all attempt evidence behind the t
   assert.equal(checkoutAttemptWasSent(storage, attemptId), true);
 });
 
-test('paid cleanup is authorized server-side and never runs at Stripe handoff', () => {
-  assert.doesNotMatch(formSource, /clearCheckoutAttemptStorage\s*\(/);
+test('paid cleanup is authorized server-side and attempt rotation cleanup never runs at Stripe handoff', () => {
+  const restartAuthorizationAt = formSource.indexOf('restartStatus === "restart_allowed"');
+  const restartCleanupAt = formSource.indexOf('clearCheckoutAttemptStorage(', restartAuthorizationAt);
+  const handoffAt = formSource.indexOf('performStripeHandoff(');
+  assert.ok(restartAuthorizationAt >= 0 && restartCleanupAt > restartAuthorizationAt);
+  assert.ok(handoffAt > restartCleanupAt);
+  assert.doesNotMatch(formSource.slice(handoffAt), /clearCheckoutAttemptStorage\s*\(/);
   assert.match(confirmationRouteSource, /confirmedCheckoutCleanupAttemptId\s*\(/);
   assert.match(confirmationRouteSource, /cleanupAttemptId/);
   assert.match(thankYouPageSource, /confirmedCheckoutCleanupAttemptId\s*\(/);

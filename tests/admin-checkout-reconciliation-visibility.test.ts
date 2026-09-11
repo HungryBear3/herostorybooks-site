@@ -29,7 +29,7 @@ const DETAIL_PAGE = 'src/app/admin/orders/[orderId]/page.tsx';
 /**
  * The sanctioned changes to `orders.ts` since the base commit.
  *
- * Two of them, in order:
+ * Three groups, in order:
  *
  *  1. The browser-side media size preflight moved the two story-attachment
  *     caps into the browser-safe `story-media-size.ts` so the checkout page
@@ -42,6 +42,10 @@ const DETAIL_PAGE = 'src/app/admin/orders/[orderId]/page.tsx';
  *     `HSB_PRIVATE_READ_WRITE_TOKEN`, and checkout-media rollback learned to
  *     delete each object through the credential for ITS store. That touches
  *     `orders.ts` in six places. See `src/lib/story-media-store.ts`.
+ *
+ *  3. The repeat-purchase recovery fix adds one atomic checkout-attempt
+ *     retirement helper. The helper is separately exercised against the real
+ *     CAS store; this normalizer declares that intentional write-surface change.
  *
  * Each rule rewrites exactly one of those places back to its base form. A rule
  * that does not apply exactly once fails, and the whole-file equality check
@@ -294,6 +298,45 @@ export function assertPrivateStorySourceStorage(orderId: string): 'private' {
     for (let attempt = 0; attempt < 2 && !deleted; attempt += 1) {
       try {
         await deleteBlob(pathname);`,
+  },
+  {
+    description: 'atomic retirement of an exact expired unpaid checkout attempt',
+    candidate: `/**
+ * Atomically retire an exact expired+unpaid checkout attempt after Stripe has
+ * already proven its bound Session terminal. The caller supplies the
+ * authoritative snapshot used for that provider lookup; any concurrent lease,
+ * generation, candidate, provisioning, Session, fingerprint, or payment change
+ * aborts the retirement so a browser cannot rotate into a second payable path.
+ */
+export async function retireExpiredCheckoutAttempt(observed: OrderRecord): Promise<boolean> {
+  if (!observed.checkoutAttemptId || !observed.stripeSessionId) return false;
+  const retired = await withOrderTransaction<boolean>(observed.id, (current) => {
+    if (current.paymentStatus !== 'pending'
+      || current.checkoutAttemptId !== observed.checkoutAttemptId
+      || current.checkoutFingerprint !== observed.checkoutFingerprint
+      || current.stripeSessionId !== observed.stripeSessionId
+      || current.checkoutSessionAttempt !== observed.checkoutSessionAttempt
+      || current.checkoutLeaseId !== observed.checkoutLeaseId
+      || current.checkoutLeaseExpiresAt !== observed.checkoutLeaseExpiresAt
+      || current.checkoutSessionCandidate
+      || current.checkoutSessionProvisioning) {
+      return { abort: false };
+    }
+    const updated: OrderRecord = {
+      ...current,
+      paymentStatus: 'failed',
+      fulfillmentLastError: 'stripe_session_expired_unpaid',
+      checkoutLeaseId: null,
+      checkoutLeaseExpiresAt: null,
+      updatedAt: new Date().toISOString(),
+    };
+    return { commit: updated, result: true };
+  });
+  return retired;
+}
+
+`,
+    base: '',
   },
 ];
 

@@ -39,6 +39,7 @@ import {
   persistNewOrder,
   readOrderVersioned,
   recordCheckoutSessionCandidate,
+  retireExpiredCheckoutAttempt,
   renewCheckoutLease,
   supersedeExpiredCheckoutSession,
   type OrderRecord,
@@ -1411,4 +1412,29 @@ test('copy: a bound-Session reconciliation mismatch does not deny a charge', asy
   assert.equal(result.status === 'refused' && result.code, 'checkout_session_reconciliation_failed');
   assert.equal(result.status === 'refused' && result.chargeRisk, 'may_be_charged');
   assert.equal(result.status === 'refused' && result.message, CHECKOUT_RECONCILIATION_SUPPORT);
+});
+
+test('expired checkout retirement atomically closes only the exact observed attempt', async () => {
+  installMemoryOrderStore();
+  const observed = legacyOrder({ stripeSessionId: 'cs_expired' });
+  await persistNewOrder(observed);
+
+  assert.equal(await retireExpiredCheckoutAttempt(observed), true);
+  const retired = (await readOrderVersioned(ORDER_ID))!.order;
+  assert.equal(retired.paymentStatus, 'failed');
+  assert.equal(retired.fulfillmentLastError, 'stripe_session_expired_unpaid');
+  assert.equal(retired.checkoutLeaseId, null);
+  assert.equal(retired.checkoutLeaseExpiresAt, null);
+  assert.equal(retired.stripeSessionId, 'cs_expired');
+});
+
+test('expired checkout retirement loses safely when concurrent durable identity changed', async () => {
+  installMemoryOrderStore();
+  const observed = legacyOrder({ stripeSessionId: 'cs_expired' });
+  await persistNewOrder(legacyOrder({ stripeSessionId: 'cs_expired', checkoutLeaseId: FOREIGN_LEASE }));
+
+  assert.equal(await retireExpiredCheckoutAttempt(observed), false);
+  const current = (await readOrderVersioned(ORDER_ID))!.order;
+  assert.equal(current.paymentStatus, 'pending');
+  assert.equal(current.checkoutLeaseId, FOREIGN_LEASE);
 });
