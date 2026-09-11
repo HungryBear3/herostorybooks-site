@@ -121,22 +121,12 @@ export interface StripeHandoffResult {
 }
 
 export interface StripeHandoffDeps {
-  /** Same-tab hard navigation. Called at most once, and before any cleanup. */
+  /** Same-tab hard navigation. Called at most once. */
   navigate: (url: string) => void;
-  /** Best-effort: drop the saved checkout draft. May throw; ignored. */
-  clearSavedDraft?: () => void;
-  /**
-   * Best-effort: drop the checkout attempt id. May throw; ignored.
-   * Only called when navigation was accepted — if the hand-off failed, the
-   * attempt id must survive so a retry resumes the SAME order and Stripe
-   * Session (src/app/api/order/route.ts returns the existing open session for
-   * a repeated checkoutAttemptId) instead of creating a second one.
-   */
-  clearAttemptId?: () => void;
 }
 
 /**
- * Hand off to Stripe immediately, then clean up.
+ * Hand off to Stripe without clearing browser recovery evidence.
  *
  * Returns without navigating when the URL is not an allowlisted Stripe
  * Checkout URL. Callers must treat `ok: false` as a failed submission and
@@ -159,22 +149,6 @@ export function performStripeHandoff(
     // The browser refused the navigation. Leave the attempt id in place and
     // let the caller offer the already-created URL as a manual link.
     return { ok: false, reason: 'navigation_failed', url };
-  }
-
-  // Everything below is post-hand-off housekeeping. Each call is isolated so a
-  // throwing storage implementation (Safari private mode, storage disabled,
-  // quota) cannot turn a successful hand-off into a failure — the exact shape
-  // of the original bug, where an unguarded localStorage.removeItem sat
-  // between the success state and the navigation timer.
-  try {
-    deps.clearSavedDraft?.();
-  } catch {
-    /* storage unavailable — the hand-off already started */
-  }
-  try {
-    deps.clearAttemptId?.();
-  } catch {
-    /* storage unavailable — the hand-off already started */
   }
 
   return { ok: true, url, reason: null };

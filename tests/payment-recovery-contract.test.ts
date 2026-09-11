@@ -31,24 +31,24 @@ test('checkout source uses stable attempt identity and Stripe idempotency before
   const client = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
   const fingerprint = readFileSync('src/lib/checkout-request-fingerprint.ts', 'utf8');
   const browserRandomId = readFileSync('src/lib/browser-random-id.ts', 'utf8');
-  assert.match(client, /checkoutAttemptIdRef\.current \?\? readStoredCheckoutAttemptId\(\)/);
-  assert.match(client, /sessionStorage\.getItem\(CHECKOUT_ATTEMPT_STORAGE_KEY\)/);
+  assert.match(client, /checkoutAttemptIdRef\.current \?\? storedAttempt\.attemptId/);
+  assert.match(client, /const storedAttempt = readStoredCheckoutAttempt\(\);[\s\S]{0,240}reconcileCheckoutAttemptIdentity\([\s\S]{0,180}if \(!reconciledAttempt\.reliable\)/);
   assert.match(client, /browserRandomHex\(16\)/);
   assert.match(browserRandomId, /crypto\.getRandomValues\(bytes\)/);
   assert.match(client, /checkoutAttemptIdRef\.current = checkoutAttemptId/);
   assert.match(client, /payload\.set\("checkoutAttemptId", checkoutAttemptId\)/);
-  // The hand-off itself moved out of an inline `setTimeout` and into
-  // performStripeHandoff (src/lib/checkout-handoff.ts). The attempt-identity
-  // contract asserted here is unchanged, only relocated: the attempt id is
-  // cleared as part of the redirect, strictly AFTER the navigation, and is
-  // left in place when the navigation was refused so a retry resumes the same
-  // order and Stripe Session instead of creating a second one.
+  // Stripe hand-off never clears browser recovery state. Cleanup is authorized
+  // later by the exact persisted paid order/session/attempt tuple.
   assert.match(client, /performStripeHandoff\(result\.redirectTo/);
-  assert.match(client, /clearAttemptId:\s*\(\)\s*=>\s*sessionStorage\.removeItem\(CHECKOUT_ATTEMPT_STORAGE_KEY\)/);
+  const acceptedCleanup = client.slice(
+    client.indexOf('const handoff = performStripeHandoff(result.redirectTo'),
+    client.indexOf('if (handoff.reason === "invalid_url")'),
+  );
+  assert.doesNotMatch(acceptedCleanup, /clearAttemptId|clearSavedDraft|removeItem|clearCheckoutAttemptStorage/);
   const handoff = readFileSync('src/lib/checkout-handoff.ts', 'utf8');
   const navigateAt = handoff.indexOf('deps.navigate(url)');
-  const clearAttemptAt = handoff.indexOf('deps.clearAttemptId?.()');
-  assert.ok(navigateAt >= 0 && clearAttemptAt > navigateAt);
+  assert.ok(navigateAt >= 0);
+  assert.doesNotMatch(handoff, /clearAttemptId|clearSavedDraft/);
   assert.match(route, /createHash\('sha256'\)\.update\(checkoutAttemptId\)/);
   // The durable create-or-exact-resume of the owner record still happens
   // before any media and any provider call — it simply moved into the shared

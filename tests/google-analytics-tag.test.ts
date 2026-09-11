@@ -39,6 +39,13 @@ test('shared analytics layer forwards HSB funnel events to gtag once when availa
   assert.match(analyticsSource, /trackVercelEvent\(event/);
 });
 
+test('malformed analytics cookies cannot abort checkout payload construction', async () => {
+  const { safeDecodeCookieValue } = await import('../src/lib/analytics.ts');
+  assert.equal(safeDecodeCookieValue('GA1.1.123.456'), 'GA1.1.123.456');
+  assert.equal(safeDecodeCookieValue('broken%cookie'), '');
+  assert.match(analyticsSource, /safeDecodeCookieValue\(gaCookie\.slice\(4\)\)/);
+});
+
 test('global page views track pathname changes without query strings', () => {
   assert.match(pageViewSource, /usePathname\(\)/);
   assert.match(pageViewSource, /trackPageView\(pathname\)/);
