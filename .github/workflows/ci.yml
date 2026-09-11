@@ -81,6 +81,8 @@ env:
   # Dedicated private customer-story/review store. Keep it blank in CI even
   # though Vercel Production requires it through the build contract.
   HSB_PRIVATE_READ_WRITE_TOKEN: ''
+  HSB_INTAKE_BLOB_READ_WRITE_TOKEN: ''
+  HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: ''
   # Read FIRST, before RESEND_API_KEY (src/lib/order-email.ts) — blanking only
   # the fallback would have left the primary live.
   HSB_RESEND_API_KEY: ''

@@ -445,14 +445,45 @@ test('a Vercel Production build fails when the private story-media credential is
   }
 });
 
-test('a Vercel Production build can be released from the contract only by an explicit opt-out', () => {
+test('a Vercel Production opt-out requires a valid drain lane or explicit no-in-flight retirement', () => {
+  const disabledProduction = {
+    VERCEL: '1',
+    VERCEL_ENV: 'production',
+    HSB_STORY_MEDIA_INTENT: 'disabled',
+  };
+  assert.match(
+    storyMediaBuildContractProblem(env(disabledProduction)) ?? '',
+    /HSB_STORY_MEDIA_DIRECT_RETIREMENT_CONFIRMED|direct|drain/i,
+    'a bare opt-out must not authorize removal of the direct drain lane',
+  );
   assert.equal(
     storyMediaBuildContractProblem(env({
-      VERCEL: '1',
-      VERCEL_ENV: 'production',
-      HSB_STORY_MEDIA_INTENT: 'disabled',
+      ...disabledProduction,
+      BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN,
+      HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+      HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
+      HSB_CHECKOUT_GUARD_MODE: 'durable',
+      HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
     })),
     null,
+    'disabled mode may deploy with the direct server and credentials retained for drain/reconciliation',
+  );
+  assert.equal(
+    storyMediaBuildContractProblem(env({
+      ...disabledProduction,
+      HSB_STORY_MEDIA_DIRECT_RETIREMENT_CONFIRMED: 'true',
+    })),
+    null,
+    'server shutdown requires an explicit no-in-flight retirement attestation',
+  );
+  assert.match(
+    storyMediaBuildContractProblem(env({
+      ...disabledProduction,
+      HSB_STORY_MEDIA_DIRECT_RETIREMENT_CONFIRMED: 'true',
+      HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
+    })) ?? '',
+    /intake|credential|guard|order|token/i,
+    'retirement cannot bypass a server lane that remains reachable',
   );
   assert.match(
     storyMediaBuildContractProblem(env({
@@ -484,6 +515,8 @@ test('the build contract runs before next build and never prints a token value',
   );
   assert.match(ciWorkflow, /run:\s*npm run build/, 'CI must execute the package-level build contract');
   assert.doesNotMatch(ciWorkflow, /run:\s*npx next build/, 'CI must not bypass the package-level build contract');
+  assert.match(ciWorkflow, /HSB_INTAKE_BLOB_READ_WRITE_TOKEN:\s*''/, 'CI must blank the intake credential');
+  assert.match(ciWorkflow, /HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN:\s*''/, 'CI must blank the guard credential');
 
   const run = (extra: Record<string, string>) =>
     spawnSync(process.execPath, ['--experimental-strip-types', 'scripts/check-story-media-env.ts'], {
@@ -498,6 +531,21 @@ test('the build contract runs before next build and never prints a token value',
 
   const ok = run({});
   assert.equal(ok.status, 0, `${ok.stdout}${ok.stderr}`);
+
+  const unsafeRetirement = run({
+    VERCEL: '1',
+    VERCEL_ENV: 'production',
+    HSB_STORY_MEDIA_INTENT: 'disabled',
+  });
+  assert.equal(unsafeRetirement.status, 1, `${unsafeRetirement.stdout}${unsafeRetirement.stderr}`);
+
+  const confirmedRetirement = run({
+    VERCEL: '1',
+    VERCEL_ENV: 'production',
+    HSB_STORY_MEDIA_INTENT: 'disabled',
+    HSB_STORY_MEDIA_DIRECT_RETIREMENT_CONFIRMED: 'true',
+  });
+  assert.equal(confirmedRetirement.status, 0, `${confirmedRetirement.stdout}${confirmedRetirement.stderr}`);
 
   const failed = run({ VERCEL: '1', VERCEL_ENV: 'production', BLOB_READ_WRITE_TOKEN: PUBLIC_TOKEN });
   assert.equal(failed.status, 1);

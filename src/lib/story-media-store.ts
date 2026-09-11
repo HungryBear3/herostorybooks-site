@@ -190,6 +190,7 @@ export function isVercelProductionBuild(env: NodeJS.ProcessEnv = process.env): b
  * the contract armed.
  */
 export const STORY_MEDIA_INTENT_ENV = 'HSB_STORY_MEDIA_INTENT';
+export const STORY_MEDIA_DIRECT_RETIREMENT_ENV = 'HSB_STORY_MEDIA_DIRECT_RETIREMENT_CONFIRMED';
 const STORY_MEDIA_DISABLED = 'disabled';
 
 export function isStoryMediaExplicitlyDisabled(
@@ -213,6 +214,17 @@ export function storyMediaBuildContractProblem(
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
   if (!isVercelProductionBuild(env)) return null;
-  if (isStoryMediaExplicitlyDisabled(env)) return null;
+  if (isStoryMediaExplicitlyDisabled(env)) {
+    if (env[DIRECT_UPLOAD_SERVER_ENV] === 'true') {
+      try {
+        assertDirectUploadConfiguration(env);
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : 'direct upload drain configuration is invalid';
+      }
+    }
+    if (env[STORY_MEDIA_DIRECT_RETIREMENT_ENV] === 'true') return null;
+    return `${STORY_MEDIA_DIRECT_RETIREMENT_ENV} must be true when the direct upload server is retired`;
+  }
   return checkoutStoryMediaConfigurationProblem(env);
 }

@@ -290,7 +290,8 @@ path the browser will actually submit through. With direct upload off,
 `isCheckoutStoryMediaEnabled()` requires a valid, dedicated
 `HSB_PRIVATE_READ_WRITE_TOKEN`. With
 `NEXT_PUBLIC_HSB_CHECKOUT_DIRECT_UPLOAD=true`, it instead requires the matching
-`HSB_CHECKOUT_DIRECT_UPLOAD=true` server flag and a valid, dedicated
+`HSB_CHECKOUT_DIRECT_UPLOAD=true` server flag, the durable order-store
+`BLOB_READ_WRITE_TOKEN`, a valid dedicated
 `HSB_INTAKE_BLOB_READ_WRITE_TOKEN`, `HSB_CHECKOUT_GUARD_MODE=durable`, a valid
 dedicated `HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN`, a valid Blob namespace,
 and valid non-negative integer values for every optional `HSB_CHECKOUT_GUARD_MAX_*`
@@ -299,16 +300,23 @@ limit. `/checkout` computes both `storyMediaEnabled` and
 those booleans into `CheckoutForm`; the browser does not independently turn
 the direct transport on from its public flag. Vercel Production builds also run
 `scripts/check-story-media-env.ts`, which refuses a missing, malformed, or
-colliding selected credential unless an operator deliberately sets
-`HSB_STORY_MEDIA_INTENT=disabled`. That exact opt-out also suppresses the
-runtime media controls, refuses creation of a new direct intake, rejects new
-voice/document reservations and client-token issuance before guard, store, or
-provider effects, and rejects stale-checkout legacy multipart voice/document
-ingestion before durable order creation even if credentials or QA variables
-remain. It does not tear down completion callbacks, resolve/list/release, or
-final order binding needed to reconcile media reservations or tokens that were
-already issued before the opt-out. Typed Custom Story text and ordinary
-hero/family photos remain available.
+colliding selected credential. Setting `HSB_STORY_MEDIA_INTENT=disabled`
+suppresses runtime media controls, refuses creation of a new direct intake,
+rejects new voice/document reservations and client-token issuance before
+guard, store, or provider effects, and rejects stale-checkout legacy multipart
+voice/document ingestion before durable order creation even if credentials or
+QA variables remain. It does not tear down completion callbacks,
+resolve/list/release, or final order binding needed to reconcile media
+reservations or tokens already issued before the opt-out.
+
+During a direct-upload shutdown, leave `HSB_CHECKOUT_DIRECT_UPLOAD=true` and all
+direct order/intake/guard credentials configured while the disabled intent
+drains issued capabilities. The Production build validates that drain lane.
+Only after a separately verified zero-in-flight check may an operator remove
+the direct server flag or credentials, and that deployment must explicitly set
+`HSB_STORY_MEDIA_DIRECT_RETIREMENT_CONFIRMED=true`. The retirement attestation
+cannot bypass validation while the direct server remains enabled. Typed Custom
+Story text and ordinary hero/family photos remain available.
 
 ### 4.4 Opening the media — not implemented; escalate
 
