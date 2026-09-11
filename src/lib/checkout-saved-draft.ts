@@ -147,6 +147,45 @@ export interface CheckoutAttemptStorageSnapshot {
   reliable: boolean;
 }
 
+/**
+ * Prove that attempt storage is wholly unavailable before using the cookie
+ * lease fallback. Partial reads or any readable risk identity stay fail-closed.
+ */
+export function checkoutAttemptStorageUnavailable(
+  storage: MinimalWebStorage | null | undefined,
+  snapshot: CheckoutAttemptStorageSnapshot,
+): boolean {
+  if (!storage) return true;
+
+  let successfulReads = 0;
+  let failedReads = 0;
+  let readableIdentity = false;
+  for (const key of CHECKOUT_ATTEMPT_STORAGE_KEYS) {
+    try {
+      const value = storage.getItem(key);
+      successfulReads += 1;
+      if (value !== null) readableIdentity = true;
+    } catch {
+      failedReads += 1;
+    }
+  }
+  if (failedReads === CHECKOUT_ATTEMPT_STORAGE_KEYS.length) return true;
+  if (failedReads > 0 || successfulReads !== CHECKOUT_ATTEMPT_STORAGE_KEYS.length) return false;
+  if (readableIdentity || snapshot.attemptId || !snapshot.reliable) return false;
+
+  const probeKey = 'hsb-checkout-attempt-storage-probe';
+  const probeValue = '1';
+  try {
+    storage.setItem(probeKey, probeValue);
+    if (storage.getItem(probeKey) !== probeValue) return true;
+    storage.removeItem(probeKey);
+    return storage.getItem(probeKey) !== null;
+  } catch {
+    try { storage.removeItem(probeKey); } catch { /* storage is unavailable */ }
+    return true;
+  }
+}
+
 const CHECKOUT_ATTEMPT_STORAGE_KEYS = [
   CHECKOUT_ATTEMPT_ID_STORAGE_KEY,
   CHECKOUT_ATTEMPT_CLEANUP_STORAGE_KEY,

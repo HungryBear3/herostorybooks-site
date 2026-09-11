@@ -40,6 +40,8 @@ export interface HandoffHarness {
   orderBodies: string[];
   /** Attempt-status probes made before recovering conflicting browser markers. */
   attemptStatusRequests: string[][];
+  /** Server-backed attempt lease requests for storage-restricted browsers. */
+  attemptLeaseRequests: string[];
   /** Milliseconds from mocked order response dispatch to Stripe navigation. */
   stripeNavigationDelayMs: number | null;
 }
@@ -53,6 +55,7 @@ export async function installHandoffHarness(
     orderRequests: [],
     orderBodies: [],
     attemptStatusRequests: [],
+    attemptLeaseRequests: [],
     stripeNavigationDelayMs: null,
   };
   const appOrigin = new URL(baseURL).origin;
@@ -74,6 +77,14 @@ export async function installHandoffHarness(
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(body),
+      });
+    }
+    if (url.origin === appOrigin && url.pathname === '/api/order/attempt-lease') {
+      harness.attemptLeaseRequests.push(request.method());
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'ready', attemptId: 'e'.repeat(32) }),
       });
     }
     if (url.origin === appOrigin && url.pathname === '/api/checkout/attempt-status') {

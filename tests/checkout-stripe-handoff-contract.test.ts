@@ -111,8 +111,8 @@ test('the error banner denies a charge only until the order request is actually 
     FORM,
     /attemptWasPreviouslySent = readStoredCheckoutAttemptSent\(\s*checkoutAttemptId,\s*checkoutAttemptSentRef\.current,?\s*\)/,
   );
-  assert.match(FORM, /if \(!markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new Error/);
-  assert.match(FORM, /checkoutAttemptSentRef\.current = checkoutAttemptId;\s*\n\s*requestSent = true;/);
+  assert.match(FORM, /if \(!serverLeaseBacked && !markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new Error/);
+  assert.match(FORM, /if \(!serverLeaseBacked\) checkoutAttemptSentRef\.current = checkoutAttemptId;\s*\n\s*requestSent = true;/);
   assert.match(FORM, /requestSent = true;\s*\n\s*const response = await fetch\("\/api\/order"/);
   assert.match(FORM, /checkoutAttemptMayHaveReachedServer\(\{[\s\S]{0,120}requestSent,[\s\S]{0,120}previouslySent: attemptWasPreviouslySent/);
   assert.match(FORM, /setSubmitError\(described\.message, described\.showRecordedVoiceHint, attemptMayHaveReachedServer\)/);

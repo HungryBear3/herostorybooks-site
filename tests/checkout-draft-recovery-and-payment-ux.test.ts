@@ -12,6 +12,7 @@ import {
   recoverConflictingCheckoutAttemptStorage,
   clearCheckoutAfterConfirmedPayment,
   checkoutAttemptMayHaveReachedServer,
+  checkoutAttemptStorageUnavailable,
   checkoutAttemptWasSent,
   confirmedCheckoutCleanupAttemptId,
   reconcileCheckoutAttemptIdentity,
@@ -44,6 +45,38 @@ const confirmedCleanupPath = path.join(root, 'src/app/thank-you/confirmed-checko
 const confirmedCleanupSource = fs.existsSync(confirmedCleanupPath)
   ? fs.readFileSync(confirmedCleanupPath, 'utf8')
   : '';
+
+test('storage denial is distinguished from readable conflicting risk evidence', () => {
+  const deniedReads = {
+    getItem() { throw new DOMException('denied', 'SecurityError'); },
+    setItem() { throw new DOMException('denied', 'SecurityError'); },
+    removeItem() { throw new DOMException('denied', 'SecurityError'); },
+  };
+  const deniedSnapshot = readCheckoutAttemptStorageSnapshot(deniedReads);
+  assert.equal(checkoutAttemptStorageUnavailable(deniedReads, deniedSnapshot), true);
+
+  const setDenied = {
+    getItem() { return null; },
+    setItem() { throw new DOMException('denied', 'SecurityError'); },
+    removeItem() {},
+  };
+  const emptyReadableSnapshot = readCheckoutAttemptStorageSnapshot(setDenied);
+  assert.equal(checkoutAttemptStorageUnavailable(setDenied, emptyReadableSnapshot), true);
+
+  const sent = 'a'.repeat(32);
+  const conflictingReadable = {
+    getItem(key: string) {
+      if (key === CHECKOUT_ATTEMPT_SENT_STORAGE_KEY) return sent;
+      if (key === CHECKOUT_ATTEMPT_ID_STORAGE_KEY) return 'b'.repeat(32);
+      return null;
+    },
+    setItem() { throw new DOMException('denied', 'SecurityError'); },
+    removeItem() {},
+  };
+  const conflictSnapshot = readCheckoutAttemptStorageSnapshot(conflictingReadable);
+  assert.equal(checkoutAttemptStorageUnavailable(conflictingReadable, conflictSnapshot), false);
+  assert.equal(conflictSnapshot.reliable, false);
+});
 
 test('email is adjacent to payment and the long explainer follows the payment action', () => {
   const emailAt = formSource.indexOf('Where should we send everything?');
@@ -621,17 +654,21 @@ test('server-confirmed cleanup deletes the draft and sent marker last', () => {
   assert.equal(readCheckoutAttemptStorageSnapshot(attemptStorage).attemptId, null);
 });
 
-test('checkout repairs only toward one sent identity before private intake and otherwise fails closed', () => {
-  const snapshotRead = formSource.indexOf('let storedAttempt = readStoredCheckoutAttempt()');
+test('checkout resolves local conflicts or a server lease before private intake and otherwise fails closed', () => {
+  const snapshotRead = formSource.indexOf('let storedAttempt = readStoredCheckoutAttempt(attemptStorage)');
   const identityReconcile = formSource.indexOf('reconcileCheckoutAttemptIdentity(', snapshotRead);
   const riskRepair = formSource.indexOf('repairCheckoutAttemptStorageToRiskIdentity(', identityReconcile);
-  const conflictGuard = formSource.indexOf('if (!reconciledAttempt.reliable)', riskRepair);
+  const storageUnavailable = formSource.indexOf('const browserAttemptStorageUnavailable', riskRepair);
+  const serverLease = formSource.indexOf('resolveServerCheckoutAttemptLease()', storageUnavailable);
+  const conflictGuard = formSource.indexOf('if (!reconciledAttempt.reliable)', serverLease);
   const reservation = formSource.indexOf('markCheckoutAttemptReserved(checkoutAttemptId)', conflictGuard);
-  const reservedReadback = formSource.indexOf('const reservedAttempt = readStoredCheckoutAttempt()', reservation);
-  const reservedGuard = formSource.indexOf('if (!reservedAttempt.reliable || reservedAttempt.attemptId !== checkoutAttemptId)', reservedReadback);
+  const reservedReadback = formSource.indexOf('const reservedAttempt = serverLeaseBacked ? null : readStoredCheckoutAttempt()', reservation);
+  const reservedGuard = formSource.indexOf('if (!serverLeaseBacked', reservedReadback);
   const intake = formSource.indexOf('prepareOrReuseDirectIntakeSubmission(', reservedGuard);
   assert.ok(snapshotRead > -1 && identityReconcile > snapshotRead);
-  assert.ok(riskRepair > identityReconcile && conflictGuard > riskRepair);
+  assert.ok(riskRepair > identityReconcile && storageUnavailable > riskRepair && serverLease > storageUnavailable);
+  assert.match(formSource.slice(storageUnavailable, serverLease), /if \(browserAttemptStorageUnavailable\)/);
+  assert.ok(conflictGuard > serverLease, 'lease failure must still stop before checkout work');
   assert.ok(reservation > conflictGuard && reservedReadback > reservation && reservedGuard > reservedReadback);
   assert.ok(intake > reservedGuard, 'all identity and reservation guards must precede private intake');
   assert.doesNotMatch(formSource, /\/api\/checkout\/attempt-status|clearAbsentCheckoutAttemptMarkers/);
@@ -644,11 +681,11 @@ test('checkout wiring marks an attempt sent only immediately before the order re
   assert.ok(marker > -1, 'missing sent-attempt marker');
   assert.ok(requestFlag > marker, 'requestSent must follow the durable marker');
   assert.ok(orderFetch > requestFlag, 'the marker and request flag must precede /api/order');
-  assert.match(formSource, /if \(!markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new Error[\s\S]{0,300}checkoutAttemptSentRef\.current = checkoutAttemptId/);
+  assert.match(formSource, /if \(!serverLeaseBacked && !markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new Error[\s\S]{0,300}if \(!serverLeaseBacked\) checkoutAttemptSentRef\.current = checkoutAttemptId/);
   assert.match(formSource, /readStoredCheckoutAttemptSent\(\s*checkoutAttemptId,\s*checkoutAttemptSentRef\.current,?\s*\)/);
-  assert.match(formSource, /if \(!markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new Error/);
+  assert.match(formSource, /if \(!serverLeaseBacked && !markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new Error/);
   assert.ok(
-    formSource.indexOf('if (!markCheckoutAttemptSent(checkoutAttemptId))')
+    formSource.indexOf('if (!serverLeaseBacked && !markCheckoutAttemptSent(checkoutAttemptId))')
       < formSource.indexOf('fetch("/api/order"'),
     'an unpersisted sent marker must abort before /api/order',
   );
