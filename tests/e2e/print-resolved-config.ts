@@ -22,4 +22,5 @@ process.stdout.write(JSON.stringify({
   timeout: resolved.webServer.timeout,
   baseURL: resolved.use.baseURL,
   storeDir: resolved.webServer.env.HSB_ORDER_STORE_DIR,
+  env: resolved.webServer.env,
 }));

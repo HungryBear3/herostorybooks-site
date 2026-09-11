@@ -14,14 +14,37 @@ import { WEBSERVER_HOST, resolveWebServerTimeoutMs } from './tests/e2e/webserver
 const PORT = Number(process.env.HSB_E2E_PORT ?? 3178);
 export const E2E_STORE_DIR = path.join(process.cwd(), '.e2e-store');
 
-/** Credentials that must never be present in an e2e server process. */
-const STRIPPED = Object.fromEntries([
+/**
+ * Start from an empty view of the launching process. Playwright merges its
+ * webServer.env over process.env, so a fixed secret blacklist cannot prevent a
+ * newly named or unrelated live credential from reaching the QA server.
+ *
+ * The explicit credential names also remain present when they were absent from
+ * the parent process so Next's dotenv loader cannot fill those known provider
+ * variables from a local env file.
+ */
+const INHERITED_ENV_BLANKS = Object.fromEntries(
+  Object.keys(process.env).map((name) => [name, '']),
+);
+const KNOWN_CREDENTIAL_BLANKS = Object.fromEntries([
   'BLOB_READ_WRITE_TOKEN', 'HSB_PRIVATE_READ_WRITE_TOKEN',
   'HSB_INTAKE_BLOB_READ_WRITE_TOKEN', 'HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN',
-  'HSB_REQUIRE_DURABLE_PERSISTENCE', 'RESEND_API_KEY',
-  'OPENAI_API_KEY', 'FAL_KEY', 'GEMINI_API_KEY', 'LULU_CLIENT_KEY',
-  'LULU_CLIENT_SECRET', 'STRIPE_SECRET_KEY', 'HSB_STRIPE_SECRET_KEY',
-].map((k) => [k, '']));
+  'RESEND_API_KEY', 'HSB_RESEND_API_KEY',
+  'OPENAI_API_KEY', 'FAL_KEY', 'GEMINI_API_KEY', 'GOOGLE_GEMINI_API_KEY',
+  'LULU_CLIENT_KEY', 'LULU_CLIENT_SECRET',
+  'STRIPE_SECRET_KEY', 'HSB_STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET',
+  'CRON_SECRET', 'HSB_ORDER_ADMIN_KEY',
+].map((name) => [name, '']));
+const SAFE_PARENT_ENV = Object.fromEntries(
+  ['PATH', 'HOME', 'TMPDIR', 'CI']
+    .filter((name) => process.env[name] !== undefined)
+    .map((name) => [name, process.env[name] as string]),
+);
+const HERMETIC_BASE_ENV = {
+  ...INHERITED_ENV_BLANKS,
+  ...KNOWN_CREDENTIAL_BLANKS,
+  ...SAFE_PARENT_ENV,
+};
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -73,7 +96,7 @@ export default defineConfig({
     stdout: 'pipe',
     stderr: 'pipe',
     env: {
-      ...STRIPPED,
+      ...HERMETIC_BASE_ENV,
       HSB_ORDER_STORE_DIR: E2E_STORE_DIR,
       // Enable media UI only inside this credential-free, disposable sandbox.
       // Checkout navigation tests intercept/forbid order and payment requests.

@@ -37,6 +37,7 @@ const { command, url, timeout, env } = CONFIG.webServer;
 
 interface ResolvedConfig {
   command: string; url: string; timeout: number; baseURL: string; storeDir: string;
+  env: Record<string, string>;
 }
 
 /**
@@ -218,4 +219,24 @@ test('credential blanking, store isolation, and the durable opt-out are intact',
   // the workspace.
   assert.equal(env.HSB_ORDER_STORE_DIR, path.join(process.cwd(), '.e2e-store'));
   assert.equal(env.HSB_REQUIRE_DURABLE_PERSISTENCE, 'false');
+});
+
+test('the resolved QA server environment blanks every inherited variable outside its allowlist', () => {
+  const poisoned = resolveUnderEnv({
+    GOOGLE_GEMINI_API_KEY: 'live-gemini-sentinel',
+    HSB_RESEND_API_KEY: 'live-resend-sentinel',
+    STRIPE_WEBHOOK_SECRET: 'live-stripe-sentinel',
+    CRON_SECRET: 'live-cron-sentinel',
+    HSB_ORDER_ADMIN_KEY: 'live-admin-sentinel',
+    UNRECOGNIZED_FUTURE_SECRET: 'live-future-sentinel',
+  });
+
+  for (const name of [
+    'GOOGLE_GEMINI_API_KEY', 'HSB_RESEND_API_KEY', 'STRIPE_WEBHOOK_SECRET',
+    'CRON_SECRET', 'HSB_ORDER_ADMIN_KEY', 'UNRECOGNIZED_FUTURE_SECRET',
+  ]) {
+    assert.equal(poisoned.env[name], '', `${name} must be blanked for the QA server`);
+  }
+  assert.equal(poisoned.env.HSB_ORDER_STORE_DIR, path.join(process.cwd(), '.e2e-store'));
+  assert.equal(poisoned.env.HSB_E2E_STORY_MEDIA_ENABLED, 'true');
 });
