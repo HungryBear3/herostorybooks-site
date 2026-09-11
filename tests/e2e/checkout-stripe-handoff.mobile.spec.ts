@@ -19,6 +19,15 @@ import {
   installHandoffHarness,
 } from './checkout-handoff-harness.ts';
 
+test('mobile checkout has four real steps and no redundant Story step', async ({ page, baseURL }) => {
+  await installHandoffHarness(page, baseURL!);
+  await fillCheckoutToReview(page);
+
+  await expect(page.getByText('Step 4 of 4')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Story', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { level: 1, name: 'Contact, delivery, and review' })).toBeVisible();
+});
+
 test('mobile hands off to Stripe immediately on tap, with no timer', async ({ page, baseURL }) => {
   const harness = await installHandoffHarness(page, baseURL!, { redirectTo: STRIPE_SESSION_URL });
   const pay = await fillCheckoutToReview(page);

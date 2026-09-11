@@ -352,14 +352,16 @@ test('a dotless-domain email keeps the review step blocking with an email-addres
   );
 });
 
-test('optional fields do not block', () => {
+test('story direction is collected in Hero details and does not create a redundant step', () => {
   const progress = getCheckoutProgress(makeForm({
     childName: 'Emma',
     characterNotes: 'warm brown skin and short curly dark hair',
   }));
 
-  assert.equal(progress.steps.find((step) => step.id === 'story')?.complete, true);
-  assert.notEqual(progress.steps.find((step) => step.id === 'story')?.status, 'needs_attention');
+  assert.deepEqual(
+    progress.steps.map((step) => step.id),
+    ['hero-details', 'hero-appearance', 'people', 'review'],
+  );
 });
 
 test('completed step checkmarks/state are exposed in order', () => {
@@ -372,7 +374,6 @@ test('completed step checkmarks/state are exposed in order', () => {
   })), [
     { id: 'hero-details', status: 'complete', complete: true },
     { id: 'hero-appearance', status: 'complete', complete: true },
-    { id: 'story', status: 'complete', complete: true },
     { id: 'people', status: 'complete', complete: true },
     { id: 'review', status: 'current', complete: false },
   ]);
@@ -387,7 +388,7 @@ test('forward navigation is locked at the first incomplete step while completed 
   const appearance = getCheckoutProgress(makeForm({ characterNotes: '' }));
   assert.equal(canNavigateToCheckoutStep(appearance.steps, 'hero-details'), true);
   assert.equal(canNavigateToCheckoutStep(appearance.steps, 'hero-appearance'), true);
-  assert.equal(canNavigateToCheckoutStep(appearance.steps, 'story'), false);
+  assert.equal(canNavigateToCheckoutStep(appearance.steps, 'people'), false);
 });
 
 test('checkout source includes early and end-of-step next-section actions without an overlay', () => {
@@ -428,7 +429,8 @@ test('checkout source includes progressive step UI and sequential person editor 
   assert.match(CHECKOUT_FORM_SRC, /Needs attention/);
   assert.match(CHECKOUT_FORM_SRC, /currentStepId !== "hero-details" \? "hidden"/);
   assert.match(CHECKOUT_FORM_SRC, /currentStepId !== "hero-appearance" \? "hidden"/);
-  assert.match(CHECKOUT_FORM_SRC, /currentStepId !== "story" \? "hidden"/);
+  assert.doesNotMatch(CHECKOUT_FORM_SRC, /currentStepId !== "story" \? "hidden"/);
+  assert.doesNotMatch(CHECKOUT_FORM_SRC, /Your story direction is saved/);
   assert.match(CHECKOUT_FORM_SRC, /currentStepId !== "people" \? "hidden"/);
   assert.match(CHECKOUT_FORM_SRC, /currentStepId !== "review" \? "hidden"/);
   assert.match(CHECKOUT_FORM_SRC, /canNavigateToCheckoutStep/);

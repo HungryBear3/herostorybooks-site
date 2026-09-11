@@ -1,5 +1,5 @@
 // Privacy-safe checkout step telemetry: checkout_step_view / _complete /
-// _blocked. These events exist to make the five-step checkout measurable
+// _blocked. These events exist to make the four-step checkout measurable
 // before any mobile redesign, so they must be (a) deduplicated per step per
 // mount, (b) emitted only on the real validation outcome, and (c) free of any
 // buyer- or child-authored content. The adversarial test below plants a
@@ -75,7 +75,7 @@ function stepOf(form: CheckoutProgressFormShape, id: string) {
 test('telemetry step ordinals follow the progressive checkout step order exactly', () => {
   const machineOrder = getCheckoutProgress(makeForm()).steps.map((step) => step.id);
   assert.deepEqual([...CHECKOUT_TELEMETRY_STEP_IDS], machineOrder);
-  assert.equal(CHECKOUT_TELEMETRY_TOTAL_STEPS, 5);
+  assert.equal(CHECKOUT_TELEMETRY_TOTAL_STEPS, 4);
   assert.equal(CHECKOUT_TELEMETRY_TOTAL_STEPS, machineOrder.length);
 });
 
@@ -83,23 +83,23 @@ test('checkoutStepEventProps emits only step_id, step_number, total_steps and se
   assert.deepEqual(checkoutStepEventProps('hero-appearance', 'classic'), {
     step_id: 'hero-appearance',
     step_number: 2,
-    total_steps: 5,
+    total_steps: 4,
     selected_format: 'classic',
   });
   assert.deepEqual(checkoutStepEventProps('review', 'premium'), {
     step_id: 'review',
-    step_number: 5,
-    total_steps: 5,
+    step_number: 4,
+    total_steps: 4,
     selected_format: 'premium',
   });
 });
 
 test('selected_format is a whitelisted identifier, never a free-form value', () => {
-  assert.equal(checkoutStepEventProps('story', 'digital').selected_format, 'digital');
-  assert.equal(checkoutStepEventProps('story', '').selected_format, null);
-  assert.equal(checkoutStepEventProps('story', null).selected_format, null);
-  assert.equal(checkoutStepEventProps('story', 'ZQX-FORMAT-INJECTED').selected_format, null);
-  assert.equal(checkoutStepEventProps('story', 'Digital').selected_format, null);
+  assert.equal(checkoutStepEventProps('hero-details', 'digital').selected_format, 'digital');
+  assert.equal(checkoutStepEventProps('hero-details', '').selected_format, null);
+  assert.equal(checkoutStepEventProps('hero-details', null).selected_format, null);
+  assert.equal(checkoutStepEventProps('hero-details', 'ZQX-FORMAT-INJECTED').selected_format, null);
+  assert.equal(checkoutStepEventProps('hero-details', 'Digital').selected_format, null);
 });
 
 // ── View deduplication ──────────────────────────────────────────────────────
@@ -116,9 +116,9 @@ test('view deduper emits once per step per page flow, including on revisits', ()
 
 test('a fresh deduper (new mount) starts over', () => {
   const first = createCheckoutStepViewDeduper();
-  first.shouldEmit('story');
+  first.shouldEmit('people');
   const second = createCheckoutStepViewDeduper();
-  assert.equal(second.shouldEmit('story'), true);
+  assert.equal(second.shouldEmit('people'), true);
 });
 
 // ── Blocked reason codes ────────────────────────────────────────────────────
@@ -133,7 +133,6 @@ test('blocked reason is a bounded code from the source-maintained enum', () => {
 
 test('a step with nothing missing has no blocked reason', () => {
   assert.equal(checkoutStepBlockedReason(stepOf(makeForm(), 'hero-details')), null);
-  assert.equal(checkoutStepBlockedReason(stepOf(makeForm(), 'story')), null);
   assert.equal(checkoutStepBlockedReason(stepOf(makeForm(), 'people')), null);
   assert.equal(checkoutStepBlockedReason(stepOf(makeForm(), 'review')), null);
 });
@@ -241,7 +240,7 @@ test('every label the step machine can produce maps to a specific code (not the 
 test('submit blocked reason distinguishes wrong step, step validation and media consent', () => {
   const blockedReview = getCheckoutProgress(makeForm({ email: '' })).currentStep;
   assert.equal(
-    checkoutSubmitBlockedReason({ currentStepId: 'story', blockingStep: blockedReview, mediaConsentMissing: false }),
+    checkoutSubmitBlockedReason({ currentStepId: 'hero-details', blockingStep: blockedReview, mediaConsentMissing: false }),
     'not_on_review_step',
   );
   assert.equal(
@@ -435,7 +434,7 @@ test('adversarial: fake PII in every free-form field never reaches any emitted s
     const events = mockWindow.hsbEvents ?? [];
     assert.ok(events.length >= 6, `expected a full step sweep, got ${events.length} events`);
     const views = events.filter((e) => e.event === 'checkout_step_view');
-    assert.equal(views.length, 5, 'one view per step, duplicates suppressed');
+    assert.equal(views.length, 4, 'one view per step, duplicates suppressed');
 
     const serialized = JSON.stringify({ events, gtagCalls });
     for (const token of PII_TOKENS) {
@@ -449,7 +448,7 @@ test('adversarial: fake PII in every free-form field never reaches any emitted s
       assert.equal(event.utm_medium, 'warm-intro');
       assert.equal(event.ref, 'zqxfounder');
       assert.equal(event.pathname, '/checkout');
-      assert.equal(event.total_steps, 5);
+      assert.equal(event.total_steps, 4);
       assert.equal(event.selected_format, 'premium');
     }
     const blocked = events.filter((e) => e.event === 'checkout_step_blocked');

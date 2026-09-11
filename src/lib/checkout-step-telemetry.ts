@@ -1,4 +1,4 @@
-// Privacy-safe step telemetry for the five-step checkout.
+// Privacy-safe step telemetry for the four-step checkout.
 //
 // Three events make the funnel measurable before any mobile redesign:
 //   checkout_step_view      a step became active (deduplicated per step per mount)
@@ -16,7 +16,6 @@ import type { CheckoutStepProgress } from './checkout-progressive.ts';
 export const CHECKOUT_TELEMETRY_STEP_IDS = [
   'hero-details',
   'hero-appearance',
-  'story',
   'people',
   'review',
 ] as const satisfies readonly CheckoutStepProgress['id'][];

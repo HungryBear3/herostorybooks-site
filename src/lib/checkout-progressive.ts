@@ -41,7 +41,7 @@ export interface CheckoutProgressFormShape {
 }
 
 export interface CheckoutStepProgress {
-  id: 'hero-details' | 'hero-appearance' | 'story' | 'people' | 'review';
+  id: 'hero-details' | 'hero-appearance' | 'people' | 'review';
   title: string;
   status: 'complete' | 'current' | 'upcoming' | 'needs_attention';
   complete: boolean;
@@ -279,15 +279,6 @@ function getStepBlueprints(form: CheckoutProgressFormShape): CheckoutStepProgres
       summary: hasHeroAppearance(form) ? 'Done' : 'Add a hero photo or written appearance details.',
       missingFields: hasHeroAppearance(form) ? [] : ['Hero appearance details or photo'],
       firstInvalidField: hasHeroAppearance(form) ? null : 'characterNotes',
-    },
-    {
-      id: 'story',
-      title: 'Story',
-      status: 'upcoming',
-      complete: true,
-      summary: 'Optional story details are ready for review.',
-      missingFields: [],
-      firstInvalidField: null,
     },
     {
       id: 'people',
