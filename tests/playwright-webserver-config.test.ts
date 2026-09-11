@@ -17,6 +17,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   WEBSERVER_HOST,
@@ -58,23 +60,13 @@ function resolveUnderEnv(overrides: Record<string, string>): ResolvedConfig {
   return JSON.parse(out) as ResolvedConfig;
 }
 
-function rehydratedNamesAfterNextDotenv(): string[] {
-  const out = execFileSync(
-    process.execPath,
-    ['--experimental-strip-types', '--no-warnings',
-      path.join(process.cwd(), 'tests', 'e2e', 'check-hermetic-env-after-next-dotenv.ts')],
-    { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env } },
-  );
-  return JSON.parse(out) as string[];
-}
-
 // ── loopback binding ─────────────────────────────────────────────────────────
 
 test('the webServer command binds the server to loopback with -H', () => {
   assert.equal(WEBSERVER_HOST, '127.0.0.1');
   assert.match(
     command,
-    /\bnext start\b.*\s-H\s+127\.0\.0\.1(\s|$)/,
+    /\bnext"?\s+start\b.*\s-H\s+127\.0\.0\.1(\s|$)/,
     'next start must pass -H; without it Next binds 0.0.0.0 and the server is '
     + 'reachable off-machine even though Playwright dials 127.0.0.1',
   );
@@ -97,8 +89,14 @@ test('the port is still supplied explicitly and remains overridable', () => {
 });
 
 test('the server is built before it is started', () => {
-  assert.match(command, /^npx next build && npx next start\b/,
+  assert.match(command, /\bnext(?:\.js)?"? build && /,
     'the e2e target is a production build; dropping it would test a stale .next');
+});
+
+test('both Next CLI processes preload the module that disables dotenv', () => {
+  const preload = path.join(process.cwd(), 'tests', 'e2e', 'disable-next-dotenv.cjs');
+  const escaped = preload.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  assert.equal([...command.matchAll(new RegExp(`--require "${escaped}"`, 'g'))].length, 2);
 });
 
 test('every address Playwright dials is loopback', () => {
@@ -251,6 +249,23 @@ test('the resolved QA server environment blanks every inherited variable outside
   assert.equal(poisoned.env.HSB_E2E_STORY_MEDIA_ENABLED, 'true');
 });
 
-test('Next dotenv loading cannot rehydrate any variable declared by repository env files', () => {
-  assert.deepEqual(rehydratedNamesAfterNextDotenv(), []);
+test('the QA preload disables Next dotenv loading against a synthetic env file', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'hsb-e2e-dotenv-'));
+  try {
+    writeFileSync(path.join(directory, '.env.local'), 'SYNTHETIC_LIVE_SECRET=must-not-load\n');
+    const script = [
+      "const nextEnv = require('@next/env')",
+      'const result = nextEnv.loadEnvConfig(process.argv[1], false)',
+      "process.stdout.write(JSON.stringify({ loaded: result.loadedEnvFiles.length, secret: process.env.SYNTHETIC_LIVE_SECRET || '' }))",
+    ].join(';');
+    const output = execFileSync(
+      process.execPath,
+      ['--require', path.join(process.cwd(), 'tests', 'e2e', 'disable-next-dotenv.cjs'),
+        '-e', script, directory],
+      { cwd: process.cwd(), encoding: 'utf8', env: { PATH: process.env.PATH ?? '', NODE_ENV: 'test' } },
+    );
+    assert.deepEqual(JSON.parse(output), { loaded: 0, secret: '' });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

@@ -1,5 +1,4 @@
 import { defineConfig, devices } from '@playwright/test';
-import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { WEBSERVER_HOST, resolveWebServerTimeoutMs } from './tests/e2e/webserver-env.ts';
@@ -14,15 +13,16 @@ import { WEBSERVER_HOST, resolveWebServerTimeoutMs } from './tests/e2e/webserver
  */
 const PORT = Number(process.env.HSB_E2E_PORT ?? 3178);
 export const E2E_STORE_DIR = path.join(process.cwd(), '.e2e-store');
+const NEXT_BIN = path.join(process.cwd(), 'node_modules', 'next', 'dist', 'bin', 'next');
+const DOTENV_PRELOAD = path.join(process.cwd(), 'tests', 'e2e', 'disable-next-dotenv.cjs');
 
 /**
  * Start from an empty view of the launching process. Playwright merges its
  * webServer.env over process.env, so a fixed secret blacklist cannot prevent a
  * newly named or unrelated live credential from reaching the QA server.
  *
- * The explicit credential names also remain present when they were absent from
- * the parent process so Next's dotenv loader cannot fill those known provider
- * variables from a local env file.
+ * The QA-only Next preload disables dotenv entirely. Explicit credential names
+ * remain blank here as defense in depth and executable documentation.
  */
 const INHERITED_ENV_BLANKS = Object.fromEntries(
   Object.keys(process.env).map((name) => [name, '']),
@@ -37,26 +37,6 @@ const KNOWN_CREDENTIAL_BLANKS = Object.fromEntries([
   'STRIPE_SECRET_KEY', 'HSB_STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET',
   'CRON_SECRET', 'HSB_ORDER_ADMIN_KEY',
 ].map((name) => [name, '']));
-const DOTENV_ASSIGNMENT = /(?:^|^)\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(?:\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?(?:$|$)/gm;
-
-/**
- * Enumerate names only. Values never enter the Playwright config or logs.
- * This mirrors dotenv's accepted assignment grammar, including multiline
- * quoted values, so every key Next could load is already defined as blank.
- */
-export function dotenvDeclaredNames(directory: string): string[] {
-  const names = new Set<string>();
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (!entry.isFile() || (entry.name !== '.env' && !entry.name.startsWith('.env.'))) continue;
-    const contents = readFileSync(path.join(directory, entry.name), 'utf8');
-    for (const match of contents.matchAll(new RegExp(DOTENV_ASSIGNMENT))) names.add(match[1]);
-  }
-  return [...names];
-}
-
-const DOTENV_ENV_BLANKS = Object.fromEntries(
-  dotenvDeclaredNames(process.cwd()).map((name) => [name, '']),
-);
 const SAFE_PARENT_ENV = Object.fromEntries(
   ['PATH', 'HOME', 'TMPDIR', 'CI']
     .filter((name) => process.env[name] !== undefined)
@@ -65,7 +45,6 @@ const SAFE_PARENT_ENV = Object.fromEntries(
 const HERMETIC_BASE_ENV = {
   ...INHERITED_ENV_BLANKS,
   ...KNOWN_CREDENTIAL_BLANKS,
-  ...DOTENV_ENV_BLANKS,
   ...SAFE_PARENT_ENV,
 };
 
@@ -109,7 +88,8 @@ export default defineConfig({
     // -H binds the listening socket to loopback. Without it Next defaults to
     // 0.0.0.0, and the 127.0.0.1 below would only be the address Playwright
     // dials — not a restriction on who else can reach the server.
-    command: `npx next build && npx next start -H ${WEBSERVER_HOST} -p ${PORT}`,
+    command: `"${process.execPath}" --require "${DOTENV_PRELOAD}" "${NEXT_BIN}" build && `
+      + `"${process.execPath}" --require "${DOTENV_PRELOAD}" "${NEXT_BIN}" start -H ${WEBSERVER_HOST} -p ${PORT}`,
     // No dedicated health route in this app — the landing page is the readiness probe.
     url: `http://${WEBSERVER_HOST}:${PORT}/`,
     reuseExistingServer: !process.env.CI,
