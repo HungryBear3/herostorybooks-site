@@ -80,7 +80,7 @@ test('a restricted in-app browser without Web Crypto ID methods can still start 
   await page.getByRole('button', { name: /Dad/ }).click();
   await page.getByPlaceholder('e.g., Alexy').fill('Dad');
   await page.getByPlaceholder(/Hair, skin tone/).fill('Short brown hair and glasses');
-  await page.getByRole('button', { name: 'Save person' }).click();
+  await page.getByRole('button', { name: 'Save Dad' }).click();
   await page.getByTestId('checkout-bottom-continue').click();
 
   await pay.click();
@@ -92,7 +92,7 @@ test('a restricted in-app browser without Web Crypto ID methods can still start 
   );
 });
 
-test('an in-app browser that blocks sessionStorage can still start one order', async ({ page, baseURL }) => {
+test('an in-app browser that blocks sessionStorage fails closed before starting an order', async ({ page, baseURL }) => {
   await page.addInitScript(() => {
     Object.defineProperty(window, 'sessionStorage', {
       configurable: true,
@@ -106,8 +106,10 @@ test('an in-app browser that blocks sessionStorage can still start one order', a
 
   await pay.click();
 
-  await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
-  expect(harness.orderRequests, 'one submit, one order').toHaveLength(1);
+  await expect(page.getByTestId('submit-error')).toContainText(/couldn't safely verify/i);
+  await expect(page.getByTestId('submit-error')).toContainText(/do not pay again/i);
+  await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toHaveCount(0);
+  expect(harness.orderRequests, 'storage ambiguity must block order creation').toHaveLength(0);
 });
 
 test('a dropped hand-off leaves a working manual link to the SAME session', async ({
