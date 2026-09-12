@@ -45,6 +45,7 @@ import {
   storyMediaPrivateToken,
   storyMediaPrivateTokenProblem,
 } from '../src/lib/story-media-store.ts';
+import { processEnv } from './support/process-env.ts';
 
 /** Synthetic, parseable, obviously fake. */
 const PUBLIC_TOKEN = 'vercel_blob_rw_pubORDERS0000_publicsecret';
@@ -522,11 +523,11 @@ test('the build contract runs before next build and never prints a token value',
     spawnSync(process.execPath, ['--experimental-strip-types', 'scripts/check-story-media-env.ts'], {
       cwd: process.cwd(),
       encoding: 'utf8',
-      env: {
+      env: processEnv({
         PATH: process.env.PATH ?? '',
         HOME: process.env.HOME ?? '',
         ...extra,
-      },
+      }),
     });
 
   const ok = run({});

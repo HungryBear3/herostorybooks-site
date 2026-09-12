@@ -43,10 +43,10 @@ test('gift routes do not ship a second header/footer implementation', () => {
 });
 
 test('gift routes preserve their titles, canonicals, cards, and occasion handoff', () => {
-  assert.match(giftIndex, /alternates:\s*\{\s*canonical:\s*['"]\/gifts['"]/s);
+  assert.match(giftIndex, /alternates:\s*\{\s*canonical:\s*['"]\/gifts['"]/);
   assert.match(giftIndex, /Personalized Storybook Gift Ideas \| HeroStoryBooks/);
   assert.match(giftIndex, /GIFT_OCCASIONS\.map/);
-  assert.match(giftDetail, /alternates:\s*\{\s*canonical:\s*`\/gifts\/\$\{occasion\.id\}`/s);
+  assert.match(giftDetail, /alternates:\s*\{\s*canonical:\s*`\/gifts\/\$\{occasion\.id\}`/);
   assert.match(giftDetail, /\| HeroStoryBooks/);
   assert.match(giftDetail, /giftCheckoutHref\(occasion\)/);
 });

@@ -7,13 +7,15 @@ const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.ur
 const sitemapSource = read('src/app/sitemap.ts');
 const middlewareSource = read('middleware.ts');
 
+// No dot-any in these patterns, so the dotAll flag never affected them; the
+// whitespace they cross is matched by \s*, which spans newlines already.
 const canonicalPages: Array<[string, RegExp]> = [
-  ['src/app/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/['"]/s],
-  ['src/app/samples/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/samples['"]/s],
-  ['src/app/about/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/about['"]/s],
-  ['src/app/privacy/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/privacy['"]/s],
-  ['src/app/terms/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/terms['"]/s],
-  ['src/app/gifts/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/gifts['"]/s],
+  ['src/app/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/['"]/],
+  ['src/app/samples/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/samples['"]/],
+  ['src/app/about/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/about['"]/],
+  ['src/app/privacy/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/privacy['"]/],
+  ['src/app/terms/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/terms['"]/],
+  ['src/app/gifts/page.tsx', /alternates:\s*{\s*canonical:\s*['"]\/gifts['"]/],
 ];
 
 test('about route uses the existing editorial About page and has unique index metadata', () => {
@@ -22,7 +24,7 @@ test('about route uses the existing editorial About page and has unique index me
   const source = readFileSync(path, 'utf8');
   assert.match(source, /EditorialAboutPage/);
   assert.match(source, /About HeroStoryBooks \| Personalized Books Made With Care/);
-  assert.match(source, /alternates:\s*{\s*canonical:\s*['"]\/about['"]/s);
+  assert.match(source, /alternates:\s*{\s*canonical:\s*['"]\/about['"]/);
 });
 
 test('sitemap lists every intentional public index route and excludes operational routes', () => {
@@ -43,7 +45,7 @@ test('every public index page declares a self-canonical and unique legal titles'
   }
 
   const giftDetailSource = read('src/app/gifts/[occasion]/page.tsx');
-  assert.match(giftDetailSource, /alternates:\s*{\s*canonical:\s*`\/gifts\/\$\{occasion\.id\}`/s);
+  assert.match(giftDetailSource, /alternates:\s*{\s*canonical:\s*`\/gifts\/\$\{occasion\.id\}`/);
   assert.match(read('src/app/privacy/page.tsx'), /Privacy Policy \| HeroStoryBooks/);
   assert.match(read('src/app/terms/page.tsx'), /Terms of Service \| HeroStoryBooks/);
 });

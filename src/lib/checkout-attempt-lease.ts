@@ -39,6 +39,7 @@ export function checkoutAttemptLeaseCookieFromHeader(
 
 export interface CheckoutAttemptLeaseDependencies {
   mintAttemptId(): string;
+  resolveOrderId?(attemptId: string): Promise<string | null>;
   getOrder(orderId: string): Promise<OrderRecord | null>;
   resolveExistingAttempt(attemptId: string): Promise<CheckoutAttemptRestartStatus>;
 }
@@ -68,11 +69,12 @@ export async function resolveCheckoutAttemptLease(
       : { status: 'blocked' };
   }
 
-  const order = await deps.getOrder(checkoutOrderIdForAttempt(cookieValue));
+  const indexedOrderId = await deps.resolveOrderId?.(cookieValue);
+  const order = await deps.getOrder(indexedOrderId ?? checkoutOrderIdForAttempt(cookieValue));
   // No durable order may mean the first request is still in flight. Reusing the
   // exact identity is safe; rotating based on absence would create a race.
   if (!order) return { status: 'ready', attemptId: cookieValue, setCookie: false };
-  if (order.checkoutAttemptId !== cookieValue) return { status: 'blocked' };
+  if (!indexedOrderId && order.checkoutAttemptId !== cookieValue) return { status: 'blocked' };
 
   const decision = await deps.resolveExistingAttempt(cookieValue);
   if (decision !== 'restart_allowed') {

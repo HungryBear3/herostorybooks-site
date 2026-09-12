@@ -33,7 +33,9 @@ import {
   parseIntakeRecord,
   readIntake,
   readJsonTextWithLimit,
+  type FinalizedSelectionEntry,
   type IntakeRecord,
+  type IntakeSlot,
 } from '../src/lib/checkout-intake.ts';
 import { finalizationFingerprint } from '../src/lib/checkout-finalize.ts';
 import { releaseSlot, reserveSlotUpload } from '../src/lib/checkout-intake-upload.ts';
@@ -96,6 +98,28 @@ function heroSlot(record: IntakeRecord, overrides: Record<string, unknown> = {})
     },
     ...overrides,
   };
+}
+
+/**
+ * The same hero fixture, as the durable schema sees it.
+ *
+ * `heroSlot` stays deliberately loose because most callers feed it deformed
+ * values the parser must reject. A caller that hands the slot back to code
+ * typed on `IntakeRecord` needs a real `IntakeSlot`, so this one gets it from
+ * the real parser: the fixture is validated, never asserted into shape.
+ */
+function parsedHeroSlot(record: IntakeRecord): IntakeSlot {
+  // The fixture asset completes at 12:01, and the schema refuses a record whose
+  // own updatedAt predates its contents — so validate against a record advanced
+  // past the upload, exactly as baseRecord() does. Only the slot is returned;
+  // the caller's record is untouched.
+  const slot = parseIntakeRecord({
+    ...record,
+    updatedAt: '2026-09-02T12:30:00.000Z',
+    slots: { primary_hero_photo: heroSlot(record) },
+  }).slots.primary_hero_photo;
+  assert.ok(slot, 'the hero fixture must parse as a canonical slot');
+  return slot;
 }
 
 // ---------------------------------------------------------------------------
@@ -594,10 +618,13 @@ test('durable identity fields are canonical, bounded, and explicitly present', (
     assert.throws(() => parseIntakeRecord(malformed), (error) => code(error) === 'intake_record_invalid');
   }
   const slot = heroSlot(record);
-  const entry = {
+  const entry: FinalizedSelectionEntry = {
     slotKey: 'primary_hero_photo', category: 'primary_hero_photo', familyCharacterId: null,
     familyCharacterIndex: null, guidedStillIndex: null, assetId: slot.active.assetId,
     pathname: slot.active.pathname, mimeType: 'image/jpeg', size: 1024, etag: 'e1', generation: 1,
+    // A selection entry carries the consent it was captured under; the schema
+    // requires both, and the fingerprint below covers them.
+    consentAt: CONSENT.mediaAuthorizedAt, voiceSource: null,
   };
   const finalization = {
     checkoutAttemptId: 'a'.repeat(32), orderId: `ord_${'1'.repeat(16)}`,
@@ -726,10 +753,12 @@ test('release remains available when the superseded audit list is full', async (
   const store = createMemoryIntakeStore();
   const created = createIntakeRecord(CONSENT, new Date('2026-09-02T12:00:00.000Z'));
   await store.create(created.record);
-  const activeSlot = heroSlot(created.record);
+  const activeSlot = parsedHeroSlot(created.record);
+  const activeAsset = activeSlot.active;
+  assert.ok(activeAsset, 'the fixture slot must be occupied before anything is superseded');
   const superseded = Array.from({ length: INTAKE_MAX_SUPERSEDED }, (_, index) => {
     const assetId = `asset_${index.toString(16).padStart(32, '0')}`;
-    return { ...activeSlot.active, assetId, pathname: intakeAssetPath(created.record.intakeId, assetId),
+    return { ...activeAsset, assetId, pathname: intakeAssetPath(created.record.intakeId, assetId),
       supersededAt: '2026-09-02T12:02:00.000Z', supersededReason: 'replaced' as const };
   });
   forceRecord(store, { ...created.record, updatedAt: '2026-09-02T12:02:00.000Z',

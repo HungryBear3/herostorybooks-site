@@ -272,7 +272,14 @@ test('maps all five categories losslessly, preserving family reorder and guided 
   const voiceOrder = voiceResult.order;
 
   assert.deepEqual(voiceOrder.primaryHeroIntakeMedia, hero);
-  assert.deepEqual((voiceOrder.familyCharacters as NonNullable<OrderRecord['familyCharacters']>)[1]?.checkoutIntakeMedia, family);
+  // familyCharacters can hold bare names as well as structured entries; only a
+  // structured one carries intake media, so prove it is one before reading it.
+  const reorderedFamilyCharacter = voiceOrder.familyCharacters?.[1];
+  assert.ok(
+    reorderedFamilyCharacter && typeof reorderedFamilyCharacter !== 'string',
+    'the reordered family character must survive as a structured entry',
+  );
+  assert.deepEqual(reorderedFamilyCharacter.checkoutIntakeMedia, family);
   assert.deepEqual(voiceOrder.guidedStillIntakeMedia, [guided]);
   assert.deepEqual(voiceOrder.voiceIntakeMedia, voice);
   assert.equal(voiceOrder.documentIntakeMedia, null);
@@ -808,6 +815,9 @@ test('retry bookkeeping is no cover for a mutated order', async () => {
       stripeSessionId: 'cs_replacement',
       checkoutAttemptId: ATTEMPT,
       checkoutFingerprint: committed.order.checkoutFingerprint!,
+      // The candidate names the generation supersededOnce() moved this order
+      // to, so the ONLY unaccountable difference is the hostile mutation below.
+      checkoutSessionAttempt: 1,
       recordedAt: '2026-09-02T12:31:00.000Z',
     };
     mutate(changed);
@@ -857,6 +867,8 @@ test('retry bookkeeping this code cannot account for is a conflict, not an exemp
         stripeSessionId: 'cs_replacement',
         checkoutAttemptId: 'f'.repeat(32),
         checkoutFingerprint: order.checkoutFingerprint!,
+        // Current generation: the foreign attempt id is the defect under test.
+        checkoutSessionAttempt: 1,
         recordedAt: '2026-09-02T12:31:00.000Z',
       };
     }],

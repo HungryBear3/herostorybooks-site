@@ -41,6 +41,7 @@ import {
 import {
   CHECKOUT_PAYMENT_MAY_BE_COMPLETE,
   CHECKOUT_RECONCILIATION_SUPPORT,
+  type ProviderCheckoutSession,
 } from '../src/lib/checkout-session-provisioning.ts';
 import type { DirectIntakeOrderRequest } from '../src/lib/checkout-direct-order-request.ts';
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
@@ -120,7 +121,7 @@ function installUnavailableOrderStore(read: 'absent' | 'throws'): void {
       if (read === 'throws') throw new Error('order store unavailable');
       return null;
     },
-    async createIfAbsent() { return { ok: false, reason: 'unavailable' }; },
+    async createIfAbsent() { throw new Error('order store unavailable'); },
     async replaceIfVersion() { return { ok: false, reason: 'version_conflict' }; },
   };
   __setOrderStoreAdapterFactoryForTests(() => adapter);
@@ -215,8 +216,8 @@ const restoreLease = () => mutateStoredOrder((order) => ({
 interface Harness {
   deps: DirectIntakeCheckoutDeps;
   calls: string[];
-  sessions: Map<string, { id: string; url: string | null; status: 'open' | 'complete' | 'expired' | null }>;
-  sessionsById: Map<string, { id: string; url: string | null; status: 'open' | 'complete' | 'expired' | null }>;
+  sessions: Map<string, ProviderCheckoutSession>;
+  sessionsById: Map<string, ProviderCheckoutSession>;
 }
 
 function harness(
@@ -227,8 +228,8 @@ function harness(
   } = {},
 ): Harness {
   const calls: string[] = [];
-  const sessions = new Map<string, { id: string; url: string | null; status: 'open' | 'complete' | 'expired' | null }>();
-  const sessionsById = new Map<string, { id: string; url: string | null; status: 'open' | 'complete' | 'expired' | null }>();
+  const sessions = new Map<string, ProviderCheckoutSession>();
+  const sessionsById = new Map<string, ProviderCheckoutSession>();
   let nextSessionNumber = 1;
   const binding = buildDirectIntakeBindingDependencies(store, () => NOW);
   const traced: typeof binding = {
@@ -248,6 +249,8 @@ function harness(
         id: `cs_${nextSessionNumber++}`,
         url: overrides.sessionUrl === undefined ? `https://checkout.stripe.test/${order.id}` : overrides.sessionUrl,
         status: overrides.sessionStatus === undefined ? 'open' as const : overrides.sessionStatus,
+        payment_status: 'unpaid',
+        payment_intent: null,
       };
       sessions.set(idempotencyKey, created);
       sessionsById.set(created.id, created);
@@ -571,7 +574,10 @@ test('the durable order is present, reconciled, and the intake already marked be
         durable: await storedOrder(),
         intakeFinalizedFor: store.records.get(session.intakeId)?.record.finalizedOrderId ?? null,
       };
-      return { id: 'cs_ordering', url: `https://checkout.stripe.test/${order.id}`, status: 'open' };
+      return {
+        id: 'cs_ordering', url: `https://checkout.stripe.test/${order.id}`, status: 'open',
+        payment_status: 'unpaid', payment_intent: null,
+      };
     },
   });
 
@@ -644,9 +650,11 @@ test('supporting photos stay bound to their stable id when the family list is re
     }, h.deps);
     assert.equal(result.status, 'redirect');
     const durable = (await storedOrder())!;
+    assert.ok(Array.isArray(durable.familyCharacters));
+    const durableFamilyCharacters = durable.familyCharacters;
     return {
-      perIndex: durable.familyCharacters.map((character) => character.checkoutIntakeMedia?.familyCharacterId ?? null),
-      likeness: durable.familyCharacters.map((character) => character.likenessIntent),
+      perIndex: durableFamilyCharacters.map((character) => character.checkoutIntakeMedia?.familyCharacterId ?? null),
+      likeness: durableFamilyCharacters.map((character) => character.likenessIntent),
       fingerprint: durable.checkoutIntake!.fingerprint,
       assets,
     };
@@ -1004,7 +1012,10 @@ test('a finalization conflict on an attempt that already has a payable Session n
   const winner = harness(store, {
     async createCheckoutSession({ order }) {
       created += 1;
-      return { id: 'cs_payable_existing', url: `https://checkout.stripe.test/${order.id}`, status: 'open' };
+      return {
+        id: 'cs_payable_existing', url: `https://checkout.stripe.test/${order.id}`, status: 'open',
+        payment_status: 'unpaid', payment_intent: null,
+      };
     },
   });
 
@@ -1324,7 +1335,10 @@ test('a candidate the provider does not answer with exactly fails closed', async
   assert.equal(result.status, 'refused');
   await restoreLease();
   // The provider answers the retrieval with a DIFFERENT session.
-  h.sessionsById.set('cs_1', { id: 'cs_rotated', url: 'https://checkout.stripe.test/rotated', status: 'open' });
+  h.sessionsById.set('cs_1', {
+    id: 'cs_rotated', url: 'https://checkout.stripe.test/rotated', status: 'open',
+    payment_status: 'unpaid', payment_intent: null,
+  });
 
   const retry = await runDirectIntakeCheckout(params, h.deps);
 

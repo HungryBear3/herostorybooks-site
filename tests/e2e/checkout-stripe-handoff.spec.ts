@@ -131,6 +131,32 @@ test('a private browser whose sessionStorage methods throw still reaches one Str
   await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
 });
 
+test('a private browser whose storage and Web Locks are denied still reaches one Stripe handoff', async ({ page, baseURL }) => {
+  await page.addInitScript(() => {
+    const denied = () => { throw new DOMException('Storage is unavailable', 'SecurityError'); };
+    Object.defineProperty(window, 'sessionStorage', {
+      configurable: true,
+      value: { getItem: denied, setItem: denied, removeItem: denied, clear: denied, key: denied, length: 0 },
+    });
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        async request() {
+          throw new DOMException('Web Locks are unavailable', 'SecurityError');
+        },
+      },
+    });
+  });
+  const harness = await installHandoffHarness(page, baseURL!, { redirectTo: STRIPE_SESSION_URL });
+  const pay = await fillCheckoutToReview(page);
+
+  await pay.click();
+
+  await expect.poll(() => harness.attemptLeaseRequests).toEqual(['POST']);
+  await expect.poll(() => harness.orderRequests).toHaveLength(1);
+  await expect(page.locator(`#${STRIPE_STUB_MARKER}`)).toBeVisible();
+});
+
 test('conflicting lower-risk markers converge to the already-sent attempt without a recovery API', async ({ page, baseURL }) => {
   const stalePrimary = '1'.repeat(32);
   const sentAttempt = '2'.repeat(32);
@@ -229,6 +255,57 @@ test('a picker error after an ambiguous hand-off keeps the entire banner reconci
   await expect(submitError).not.toContainText("We couldn't start your order.");
   await expect(submitError).not.toContainText(/have not been charged/i);
   expect(harness.orderRequests).toHaveLength(1);
+});
+
+const RECONCILIATION_SENTENCE =
+  'We could not confirm the status of this checkout. Please do not pay again — contact '
+  + 'support@herostorybooks.com with your order details and we will confirm exactly what '
+  + 'happened and put it right.';
+
+test('a reconciliation refusal offers one bounded fresh attempt and never retries itself', async ({
+  page,
+  baseURL,
+}) => {
+  const harness = await installHandoffHarness(page, baseURL!, {
+    orderRefusal: {
+      status: 409,
+      body: { error: RECONCILIATION_SENTENCE, code: 'checkout_intent_order_ownership_conflict' },
+    },
+  });
+  const pay = await fillCheckoutToReview(page);
+  await pay.click();
+
+  const submitError = page.getByTestId('submit-error');
+  await expect(submitError).toBeVisible();
+  // The server's own sentence still leads, unchanged.
+  await expect(submitError).toContainText(/do not pay again/i);
+  await expect(submitError).toContainText(/support@herostorybooks\.com/i);
+  // Plus the bounded recovery the buyer can act on, which promises nothing.
+  await expect(submitError).toContainText(/submit this form once more/i);
+  await expect(submitError).toContainText(/will not send a new order while that attempt is still open/i);
+  await expect(submitError).not.toContainText(/have not been charged/i);
+  await expect(submitError).not.toContainText(/no charge/i);
+  await expect(submitError).not.toContainText(/stopped before payment/i);
+
+  expect(new URL(page.url()).pathname).toBe('/checkout');
+  // Bounded means the BUYER decides: the page must not have resubmitted itself.
+  await expect(pay).toBeEnabled();
+  expect(harness.orderRequests, 'a refusal may never auto-retry the order').toHaveLength(1);
+});
+
+test('an unrecognised refusal keeps the plain reconciliation answer', async ({ page, baseURL }) => {
+  await installHandoffHarness(page, baseURL!, {
+    orderRefusal: {
+      status: 503,
+      body: { error: RECONCILIATION_SENTENCE, code: 'checkout_unconfirmed' },
+    },
+  });
+  const pay = await fillCheckoutToReview(page);
+  await pay.click();
+
+  const submitError = page.getByTestId('submit-error');
+  await expect(submitError).toContainText(/do not pay again/i);
+  await expect(submitError).not.toContainText(/submit this form once more/i);
 });
 
 test('a response carrying no redirect URL never navigates', async ({ page, baseURL }) => {

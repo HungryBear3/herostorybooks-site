@@ -190,7 +190,9 @@ test('buildPagePrompt: layout hint adds zone-specific text-safe guidance on top 
     storyText: STORY_TEXT,
     order: ORDER,
     characterAnchor: 'A six-year-old boy with short dark hair.',
-    textLayout: { zone: 'bottom_band', alignment: 'center' },
+    // PageTextLayout is zone/colorMode/panelStyle; the hint under test is the
+    // zone, and these are the values Release-1 story pages resolve to.
+    textLayout: { zone: 'bottom_band', colorMode: 'dark', panelStyle: 'translucent_cream' },
   });
 
   // Always-on still present:

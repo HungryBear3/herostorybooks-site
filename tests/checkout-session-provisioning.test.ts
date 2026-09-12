@@ -63,6 +63,11 @@ const FINGERPRINT = 'c'.repeat(64);
 const LEASE = '11111111-1111-4111-8111-111111111111';
 const FOREIGN_LEASE = '22222222-2222-4222-8222-222222222222';
 const NOW = new Date('2026-03-01T12:00:00.000Z');
+const EXPIRED_UNPAID_PROVIDER_EVIDENCE = {
+  providerStatus: 'expired' as const,
+  providerPaymentStatus: 'unpaid' as const,
+  providerPaymentIntent: null,
+};
 
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -181,6 +186,8 @@ function provider(
         id: `cs_${next++}`,
         url: `https://checkout.stripe.test/${order.id}/${next - 1}`,
         status: createStatuses.shift() ?? 'open',
+        payment_status: 'unpaid',
+        payment_intent: null,
       };
       byKey.set(idempotencyKey, session);
       minted.set(session.id, session);
@@ -190,7 +197,13 @@ function provider(
       calls.push(`retrieve:${sessionId}`);
       const found = minted.get(sessionId);
       if (!found) throw new Error('session unavailable');
-      return found;
+      return found.status === 'open' || found.status === 'expired'
+        ? {
+          ...found,
+          payment_status: found.payment_status ?? 'unpaid',
+          payment_intent: found.payment_intent ?? null,
+        }
+        : found;
     },
     async renewCheckoutLease(orderId, leaseId, fingerprint) {
       calls.push('renew');
@@ -386,6 +399,29 @@ test('an expired BOUND Session is recovered the same way, and the binding is cle
   assert.equal(durable?.checkoutSessionAttempt, 1);
 });
 
+test('an expired unpaid Session with omitted payment_intent is never superseded', async () => {
+  installMemoryOrderStore();
+  await seedBoundOrder('cs_ambiguous');
+  const p = provider({
+    async retrieveCheckoutSession() {
+      return {
+        id: 'cs_ambiguous',
+        url: 'https://checkout.stripe.test/ambiguous',
+        status: 'expired',
+        payment_status: 'unpaid',
+      };
+    },
+  });
+
+  const result = await provision((await stored())!, p.deps);
+
+  assert.equal(result.status, 'refused');
+  assert.equal(result.status === 'refused' && result.code, 'checkout_session_payment_ambiguous');
+  assert.equal(creates(p).length, 0);
+  assert.equal(p.calls.some((call) => call.startsWith('supersede:')), false);
+  assert.equal((await stored())?.stripeSessionId, 'cs_ambiguous');
+});
+
 test('concurrent retries against one expired Session converge on ONE replacement', async () => {
   installMemoryOrderStore();
   await persistNewOrder(intakeOrder());
@@ -562,20 +598,20 @@ test('a foreign lease cannot supersede another attempt Session', async () => {
 
   assert.equal(
     await supersedeExpiredCheckoutSession(ORDER_ID, 'cs_stale', {
-      leaseId: FOREIGN_LEASE, fingerprint: FINGERPRINT, now: NOW,
+      leaseId: FOREIGN_LEASE, fingerprint: FINGERPRINT, now: NOW, ...EXPIRED_UNPAID_PROVIDER_EVIDENCE,
     }),
     null,
   );
   assert.equal(
     await supersedeExpiredCheckoutSession(ORDER_ID, 'cs_stale', {
-      leaseId: LEASE, fingerprint: 'd'.repeat(64), now: NOW,
+      leaseId: LEASE, fingerprint: 'd'.repeat(64), now: NOW, ...EXPIRED_UNPAID_PROVIDER_EVIDENCE,
     }),
     null,
   );
   // And an id that is not the one durably recorded is never superseded.
   assert.equal(
     await supersedeExpiredCheckoutSession(ORDER_ID, 'cs_not_ours', {
-      leaseId: LEASE, fingerprint: FINGERPRINT, now: NOW,
+      leaseId: LEASE, fingerprint: FINGERPRINT, now: NOW, ...EXPIRED_UNPAID_PROVIDER_EVIDENCE,
     }),
     null,
   );
@@ -589,7 +625,7 @@ test('a settled payment is never superseded', async () => {
 
   assert.equal(
     await supersedeExpiredCheckoutSession(ORDER_ID, 'cs_paid', {
-      leaseId: LEASE, fingerprint: FINGERPRINT, now: NOW,
+      leaseId: LEASE, fingerprint: FINGERPRINT, now: NOW, ...EXPIRED_UNPAID_PROVIDER_EVIDENCE,
     }),
     null,
   );
@@ -710,6 +746,7 @@ test('a bound order that also carries a candidate never has its URL released', a
         stripeSessionId: candidateSessionId,
         checkoutAttemptId: ATTEMPT,
         checkoutFingerprint: FINGERPRINT,
+        checkoutSessionAttempt: 0,
         recordedAt: NOW.toISOString(),
       },
     });
@@ -882,7 +919,10 @@ test('copy: a URL-less created Session is ambiguous too, and says so', async () 
   await persistNewOrder(intakeOrder());
   const p = provider({
     async createCheckoutSession() {
-      return { id: 'cs_nourl', url: null, status: 'open' as const };
+      return {
+        id: 'cs_nourl', url: null, status: 'open' as const,
+        payment_status: 'unpaid', payment_intent: null,
+      };
     },
   });
 
@@ -978,6 +1018,8 @@ test('a provider create in flight across lease expiry: media retained, exact Ses
         id: 'cs_inflight',
         url: `https://checkout.stripe.test/${order.id}/${idempotencyKey}`,
         status: 'open' as const,
+        payment_status: 'unpaid',
+        payment_intent: null,
       };
       // The Session now exists AT THE PROVIDER, whatever this worker manages to
       // do with it — which is the entire premise of the window under test.
@@ -1131,7 +1173,7 @@ test('a stale attempt-0 worker cannot bind its superseded Session into attempt 1
 
   // 3. cs_old is proven dead and retired; the order advances to attempt 1.
   assert.ok(await supersedeExpiredCheckoutSession(ORDER_ID, 'cs_old', {
-    leaseId: LEASE, fingerprint: FINGERPRINT, now: NOW,
+    leaseId: LEASE, fingerprint: FINGERPRINT, now: NOW, ...EXPIRED_UNPAID_PROVIDER_EVIDENCE,
   }));
   // 4. the replacement worker commits ITS marker under the new generation.
   assert.equal(
@@ -1181,7 +1223,13 @@ test('the barrier: a stale in-flight worker resumed after supersession releases 
       p.calls.push(`create:${idempotencyKey}`);
       createEntered.resolve();
       await created;
-      const session = { id: 'cs_old', url: 'https://checkout.stripe.test/old', status: 'open' as const };
+      const session = {
+        id: 'cs_old',
+        url: 'https://checkout.stripe.test/old',
+        status: 'open' as const,
+        payment_status: 'unpaid',
+        payment_intent: null,
+      };
       p.minted.set(session.id, session);
       p.byKey.set(idempotencyKey, session);
       return session;
@@ -1197,7 +1245,7 @@ test('the barrier: a stale in-flight worker resumed after supersession releases 
     checkoutAttemptId: ATTEMPT, fingerprint: FINGERPRINT, checkoutSessionAttempt: 0, now: NOW,
   }));
   assert.ok(await supersedeExpiredCheckoutSession(ORDER_ID, 'cs_dead', {
-    leaseId: LEASE, fingerprint: FINGERPRINT, now: NOW,
+    leaseId: LEASE, fingerprint: FINGERPRINT, now: NOW, ...EXPIRED_UNPAID_PROVIDER_EVIDENCE,
   }));
   assert.equal(
     (await orders.beginCheckoutSessionProvisioning(ORDER_ID, {
@@ -1401,7 +1449,10 @@ test('copy: a bound-Session reconciliation mismatch does not deny a charge', asy
   installMemoryOrderStore();
   const p = provider({
     async retrieveCheckoutSession() {
-      return { id: 'cs_exposed', url: null, status: 'open' };
+      return {
+        id: 'cs_exposed', url: null, status: 'open',
+        payment_status: 'unpaid', payment_intent: null,
+      };
     },
   });
   await seedBoundOrder('cs_exposed');

@@ -31,7 +31,12 @@ import sharp from 'sharp';
 import {
   __resetOrderStoreAdapterFactoryForTests,
   __setOrderStoreAdapterFactoryForTests,
+  claimCheckoutIntentOrderId,
+  getOrderAuthoritative,
   readOrderVersioned,
+  releaseCheckoutIntentOrderId,
+  resolveCheckoutOrderIdForAttempt,
+  retireExpiredCheckoutAttempt,
   withOrderTransaction,
   type OrderRecord,
   type OrderStoreAdapter,
@@ -42,6 +47,15 @@ import {
   handleCheckoutOrderPost,
   type CheckoutOrderRouteDeps,
 } from '../src/lib/checkout-order-route-handler.ts';
+import { checkoutIntentFingerprint } from '../src/lib/checkout-request-fingerprint.ts';
+import {
+  checkoutAttemptRestartDependencies,
+  resolveCheckoutAttemptRestart,
+  type CheckoutAttemptProviderSession,
+} from '../src/lib/checkout-attempt-restart.ts';
+import { createIntake } from '../src/lib/checkout-intake.ts';
+import { completeSlotUpload, reserveSlotUpload } from '../src/lib/checkout-intake-upload.ts';
+import { createMemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
 import {
   CHECKOUT_RECONCILIATION_SUPPORT,
   type ProviderCheckoutSession,
@@ -55,7 +69,9 @@ const savedEnv: Record<string, string | undefined> = {};
 before(() => {
   for (const key of [
     'BLOB_READ_WRITE_TOKEN', 'HSB_BLOB_ACCESS_MODE', 'HSB_REQUIRE_DURABLE_PERSISTENCE',
-    'HSB_CHECKOUT_PAUSED', 'HSB_STORY_MEDIA_INTENT', 'STRIPE_PRODUCT_DIGITAL_ID', 'VERCEL_ENV', 'NEXT_PUBLIC_URL',
+    'HSB_CHECKOUT_PAUSED', 'HSB_STORY_MEDIA_INTENT', 'STRIPE_PRODUCT_DIGITAL_ID',
+    'STRIPE_PRODUCT_CLASSIC_ID', 'VERCEL_ENV', 'NEXT_PUBLIC_URL',
+    'HSB_CHECKOUT_DIRECT_UPLOAD',
   ]) {
     savedEnv[key] = process.env[key];
   }
@@ -66,6 +82,7 @@ before(() => {
   delete process.env.HSB_STORY_MEDIA_INTENT;
   delete process.env.VERCEL_ENV;
   process.env.STRIPE_PRODUCT_DIGITAL_ID = 'prod_testdigital';
+  process.env.STRIPE_PRODUCT_CLASSIC_ID = 'prod_testclassic';
 });
 
 after(() => {
@@ -84,6 +101,8 @@ function installMemoryOrderStore(
      * concurrent mutation happen underneath a specific write, deterministically.
      */
     rejectReplaceWhen?: (body: string) => boolean;
+    /** Make the durable store unavailable for the writes this predicate selects. */
+    rejectCreateWhen?: (pathname: string) => boolean;
   } = {},
 ) {
   const cells = new Map<string, { body: string; version: number }>();
@@ -94,6 +113,7 @@ function installMemoryOrderStore(
       return cell ? { body: cell.body, version: String(cell.version) } : null;
     },
     async createIfAbsent(pathname, body) {
+      if (opts.rejectCreateWhen?.(pathname)) throw new Error('durable store unavailable');
       if (cells.has(pathname)) return { ok: false, reason: 'exists' };
       cells.set(pathname, { body, version: 1 });
       return { ok: true, version: '1' };
@@ -144,6 +164,8 @@ function harness(overrides: Partial<CheckoutOrderRouteDeps<RouteResponse>> = {})
         id: `cs_${next++}`,
         url: `https://checkout.stripe.test/${order.id}/${next - 1}`,
         status: 'open',
+        payment_status: 'unpaid',
+        payment_intent: null,
       };
       minted.set(session.id, session);
       return session;
@@ -195,9 +217,9 @@ before(async () => {
   }).png().toBuffer();
 });
 
-function legacyForm(): FormData {
+function legacyForm(attemptId = ATTEMPT): FormData {
   const form = new FormData();
-  form.set('checkoutAttemptId', ATTEMPT);
+  form.set('checkoutAttemptId', attemptId);
   form.set('childName', 'Mina');
   form.set('email', 'buyer@example.com');
   form.set('bookFormat', 'digital');
@@ -252,6 +274,278 @@ test('a stale server-lease header is rejected before order, media, or provider w
   assert.deepEqual(h.uploads, []);
   assert.deepEqual(h.provider, []);
   assert.equal(await stored(), null);
+});
+
+test('different Safari leases can refuse an early loser, whose retry resumes the one provider Session', async () => {
+  const cells = installMemoryOrderStore();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const h = harness({
+    async uploadOrderPhoto(orderId) {
+      h.uploads.push('photo');
+      entered.resolve();
+      await release.promise;
+      return {
+        pathname: `orders/${orderId}/photo-hero.jpg`,
+        url: `https://blob.test/orders/${orderId}/photo-hero.jpg`,
+      } as UploadedPhotoRef;
+    },
+  });
+  const attemptA = 'a'.repeat(32);
+  const attemptB = 'b'.repeat(32);
+  const requestFor = (attemptId: string) => new Request('https://preview.test/api/order', {
+    method: 'POST',
+    headers: {
+      cookie: `__Host-hsb-checkout-attempt=${attemptId}`,
+      'x-hsb-checkout-attempt': attemptId,
+    },
+    body: legacyForm(attemptId),
+  });
+
+  const pendingWinner = handleCheckoutOrderPost(requestFor(attemptA), h.deps);
+  await entered.promise;
+  const earlyLoser = await handleCheckoutOrderPost(requestFor(attemptB), h.deps);
+  assert.ok(earlyLoser.httpStatus >= 400, JSON.stringify(earlyLoser));
+  assert.equal(creates(h).length, 0, 'the winner is still pre-provider');
+
+  release.resolve();
+  const winner = await pendingWinner;
+  assert.equal(winner.httpStatus, 200, JSON.stringify(winner));
+  const retry = await handleCheckoutOrderPost(requestFor(attemptB), h.deps);
+  assert.equal(retry.httpStatus, 200, JSON.stringify(retry));
+  assert.equal(retry.body.redirectTo, winner.body.redirectTo);
+  assert.equal(creates(h).length, 1, 'retrying the loser must resume, never mint again');
+  assert.equal(await resolveCheckoutOrderIdForAttempt(attemptB), await resolveCheckoutOrderIdForAttempt(attemptA));
+  assert.equal(
+    [...cells.keys()].filter((pathname) => /(^|\/)orders\/ord_[a-f0-9]{16}\.json$/.test(pathname)).length,
+    1,
+  );
+});
+
+test('a delayed different Safari lease resumes the canonical open Session for identical content', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  const attemptA = 'a'.repeat(32);
+  const attemptB = 'b'.repeat(32);
+  const requestFor = (attemptId: string) => new Request('https://preview.test/api/order', {
+    method: 'POST',
+    headers: {
+      cookie: `__Host-hsb-checkout-attempt=${attemptId}`,
+      'x-hsb-checkout-attempt': attemptId,
+    },
+    body: legacyForm(attemptId),
+  });
+
+  const first = await handleCheckoutOrderPost(requestFor(attemptA), h.deps);
+  const second = await handleCheckoutOrderPost(requestFor(attemptB), h.deps);
+
+  assert.equal(first.httpStatus, 200);
+  assert.equal(second.httpStatus, 200, JSON.stringify(second));
+  assert.equal(second.body.redirectTo, first.body.redirectTo);
+  assert.equal(creates(h).length, 1);
+  assert.equal(await resolveCheckoutOrderIdForAttempt(attemptB), await resolveCheckoutOrderIdForAttempt(attemptA));
+});
+
+test('normalized payable-equivalent requests converge before provider creation', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  const attemptA = 'a'.repeat(32);
+  const attemptB = 'b'.repeat(32);
+  const requestFor = (attemptId: string, variant: 'explicit' | 'normalized') => {
+    const form = legacyForm(attemptId);
+    form.set('bookFormat', 'classic');
+    if (variant === 'normalized') {
+      form.set('childName', '  Mina  ');
+      form.set('email', '  buyer@example.com  ');
+      form.delete('bookFormat');
+    }
+    return new Request('https://preview.test/api/order', {
+      method: 'POST',
+      headers: {
+        cookie: `__Host-hsb-checkout-attempt=${attemptId}`,
+        'x-hsb-checkout-attempt': attemptId,
+      },
+      body: form,
+    });
+  };
+
+  const first = await handleCheckoutOrderPost(requestFor(attemptA, 'explicit'), h.deps);
+  const second = await handleCheckoutOrderPost(requestFor(attemptB, 'normalized'), h.deps);
+
+  assert.equal(first.httpStatus, 200, JSON.stringify(first));
+  assert.equal(second.httpStatus, 200, JSON.stringify(second));
+  assert.equal(second.body.redirectTo, first.body.redirectTo);
+  assert.equal(creates(h).length, 1, 'payable-equivalent requests must share one semantic claim');
+});
+
+test('a losing Safari lease fails closed on canonical expired evidence with omitted payment_intent', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  const attemptA = 'a'.repeat(32);
+  const attemptB = 'b'.repeat(32);
+  const requestFor = (attemptId: string) => new Request('https://preview.test/api/order', {
+    method: 'POST',
+    headers: {
+      cookie: `__Host-hsb-checkout-attempt=${attemptId}`,
+      'x-hsb-checkout-attempt': attemptId,
+    },
+    body: legacyForm(attemptId),
+  });
+
+  const first = await handleCheckoutOrderPost(requestFor(attemptA), h.deps);
+  assert.equal(first.httpStatus, 200, JSON.stringify(first));
+  const canonical = h.minted.get('cs_1')!;
+  canonical.status = 'expired';
+  canonical.payment_status = 'unpaid';
+  delete canonical.payment_intent;
+
+  const second = await handleCheckoutOrderPost(requestFor(attemptB), h.deps);
+  assert.equal(second.httpStatus, 409, JSON.stringify(second));
+  assert.equal(second.body.code, 'checkout_session_payment_ambiguous');
+  assert.equal(second.body.error, CHECKOUT_RECONCILIATION_SUPPORT);
+  assert.equal(creates(h).length, 1, 'ambiguous canonical evidence must never mint a replacement');
+});
+
+async function directIntakeWithEquivalentHero(store: ReturnType<typeof createMemoryIntakeStore>, etag: string) {
+  const now = new Date();
+  const session = await createIntake(store, { mediaAuthorizedAt: now.toISOString() }, now);
+  const reservation = await reserveSlotUpload(store, {
+    intakeId: session.intakeId,
+    capability: session.capability,
+    slot: { category: 'primary_hero_photo' },
+    mimeType: 'image/jpeg',
+    size: 4096,
+  }, now);
+  store.putAsset({ pathname: reservation.pathname, mimeType: 'image/jpeg', size: 4096, etag });
+  await completeSlotUpload(store, {
+    tokenPayload: reservation.tokenPayload,
+    blob: { pathname: reservation.pathname, contentType: 'image/jpeg', size: 4096, etag },
+  }, now);
+  return { session, assetId: reservation.assetId };
+}
+
+function directRequestFor(
+  attemptId: string,
+  intake: Awaited<ReturnType<typeof directIntakeWithEquivalentHero>>,
+): Request {
+  const form = legacyForm(attemptId);
+  form.delete('photo');
+  form.set('checkoutIntakeCapability', intake.session.capability);
+  form.set('checkoutIntake', JSON.stringify({
+    intakeId: intake.session.intakeId,
+    familyCharacterIds: [],
+    selection: {
+      primaryHeroPhotoAssetId: intake.assetId,
+      familyCharacterAssets: [],
+      guidedStillAssetIds: [],
+      voiceAssetId: null,
+      documentAssetId: null,
+    },
+  }));
+  return new Request('https://preview.test/api/order', {
+    method: 'POST',
+    headers: {
+      cookie: `__Host-hsb-checkout-attempt=${attemptId}`,
+      'x-hsb-checkout-attempt': attemptId,
+    },
+    body: form,
+  });
+}
+
+test('a losing direct intake resumes the canonical URL without finalizing its distinct intake', async () => {
+  installMemoryOrderStore();
+  const store = createMemoryIntakeStore();
+  const intakeA = await directIntakeWithEquivalentHero(store, 'sha256:same-validated-bytes');
+  const intakeB = await directIntakeWithEquivalentHero(store, 'sha256:same-validated-bytes');
+  const h = harness({ createIntakeStore: () => store });
+  process.env.HSB_CHECKOUT_DIRECT_UPLOAD = 'true';
+  try {
+    const first = await handleCheckoutOrderPost(directRequestFor('a'.repeat(32), intakeA), h.deps);
+    assert.equal(first.httpStatus, 200, JSON.stringify(first));
+    assert.equal(store.records.get(intakeA.session.intakeId)?.record.finalizedOrderId != null, true);
+
+    const second = await handleCheckoutOrderPost(directRequestFor('b'.repeat(32), intakeB), h.deps);
+    assert.equal(second.httpStatus, 200, JSON.stringify(second));
+    assert.equal(second.body.redirectTo, first.body.redirectTo);
+    assert.equal(creates(h).length, 1);
+    assert.equal(
+      store.records.get(intakeB.session.intakeId)?.record.finalization,
+      null,
+      'the losing direct intake must not even reserve finalization',
+    );
+    assert.equal(store.records.get(intakeB.session.intakeId)?.record.finalizedOrderId, null);
+  } finally {
+    delete process.env.HSB_CHECKOUT_DIRECT_UPLOAD;
+  }
+});
+
+test('malformed canonical provider identity fails closed before touching a losing direct intake', async () => {
+  installMemoryOrderStore();
+  const store = createMemoryIntakeStore();
+  const intakeA = await directIntakeWithEquivalentHero(store, 'sha256:same-validated-bytes');
+  const intakeB = await directIntakeWithEquivalentHero(store, 'sha256:same-validated-bytes');
+  const h = harness({ createIntakeStore: () => store });
+  process.env.HSB_CHECKOUT_DIRECT_UPLOAD = 'true';
+  try {
+    const first = await handleCheckoutOrderPost(directRequestFor('a'.repeat(32), intakeA), h.deps);
+    assert.equal(first.httpStatus, 200, JSON.stringify(first));
+    const canonicalOrderId = await resolveCheckoutOrderIdForAttempt('a'.repeat(32));
+    assert.ok(canonicalOrderId);
+    await withOrderTransaction<null>(canonicalOrderId, (current) => ({
+      commit: { ...current, checkoutIntentFingerprint: 'f'.repeat(64) },
+      result: null,
+    }));
+    const intakeCasBefore = store.casAttempts;
+
+    const second = await handleCheckoutOrderPost(directRequestFor('b'.repeat(32), intakeB), h.deps);
+    assert.ok(second.httpStatus >= 400, JSON.stringify(second));
+    assert.equal(second.body.error, CHECKOUT_RECONCILIATION_SUPPORT);
+    assert.equal(creates(h).length, 1);
+    assert.equal(store.casAttempts, intakeCasBefore, 'malformed canonical evidence must stop before direct finalization');
+    assert.equal(store.records.get(intakeB.session.intakeId)?.record.finalization, null);
+    assert.equal(store.records.get(intakeB.session.intakeId)?.record.finalizedOrderId, null);
+  } finally {
+    delete process.env.HSB_CHECKOUT_DIRECT_UPLOAD;
+  }
+});
+
+test('an attempt that persists another attempt claim winner remains restart-addressable', async () => {
+  installMemoryOrderStore();
+  const attemptA = 'a'.repeat(32);
+  const attemptB = 'b'.repeat(32);
+  const canonicalOrderId = `ord_${crypto.createHash('sha256').update(attemptA).digest('hex').slice(0, 16)}`;
+  const calibration = harness();
+  assert.equal((await handleCheckoutOrderPost(new Request('https://preview.test/api/order', {
+    method: 'POST',
+    headers: {
+      cookie: `__Host-hsb-checkout-attempt=${attemptA}`,
+      'x-hsb-checkout-attempt': attemptA,
+    },
+    body: legacyForm(attemptA),
+  }), calibration.deps)).httpStatus, 200);
+  const intentFingerprint = (await readOrderVersioned(canonicalOrderId))?.order.checkoutIntentFingerprint;
+  assert.match(intentFingerprint ?? '', /^[a-f0-9]{64}$/);
+
+  installMemoryOrderStore();
+  const h = harness();
+  assert.deepEqual(
+    await claimCheckoutIntentOrderId(intentFingerprint!, canonicalOrderId),
+    { orderId: canonicalOrderId, generation: 0 },
+  );
+
+  const response = await handleCheckoutOrderPost(new Request('https://preview.test/api/order', {
+    method: 'POST',
+    headers: {
+      cookie: `__Host-hsb-checkout-attempt=${attemptB}`,
+      'x-hsb-checkout-attempt': attemptB,
+    },
+    body: legacyForm(attemptB),
+  }), h.deps);
+
+  assert.equal(response.httpStatus, 200);
+  assert.equal(await resolveCheckoutOrderIdForAttempt(attemptB), canonicalOrderId);
+  assert.equal((await readOrderVersioned(canonicalOrderId))?.order.checkoutAttemptId, attemptB);
+  assert.equal(creates(h).length, 1);
 });
 
 for (const kind of ['voice', 'document'] as const) {
@@ -347,6 +641,30 @@ test('a retry of the same attempt resumes the bound Session and never re-enters 
   assert.deepEqual(retry.provider, ['retrieve:cs_1'], 'the bound Session is reconciled at the provider');
   assert.equal(response.httpStatus, 200);
   assert.equal(response.body.redirectTo, first.minted.get('cs_1')!.url);
+  assert.equal((await stored())?.stripeSessionId, 'cs_1');
+});
+
+test('legacy production handler never replaces an expired Session that has a PaymentIntent', async () => {
+  installMemoryOrderStore();
+  const first = harness();
+  const opened = await handleCheckoutOrderPost(legacyRequest(), first.deps);
+  assert.equal(opened.httpStatus, 200);
+
+  const oldSession = first.minted.get('cs_1')! as ProviderCheckoutSession & {
+    payment_status: string;
+    payment_intent: string | null;
+  };
+  oldSession.status = 'expired';
+  oldSession.payment_status = 'unpaid';
+  oldSession.payment_intent = 'pi_may_still_settle';
+
+  const retry = harness();
+  retry.minted.set('cs_1', oldSession);
+  const response = await handleCheckoutOrderPost(legacyRequest(), retry.deps);
+
+  assert.equal(response.httpStatus, 409);
+  assert.equal(response.body.code, 'checkout_session_payment_ambiguous');
+  assert.deepEqual(creates(retry), [], 'a Session with any PaymentIntent must never be replaced');
   assert.equal((await stored())?.stripeSessionId, 'cs_1');
 });
 
@@ -450,6 +768,8 @@ async function raceStaleMediaWorker(
         id: 'cs_concurrent',
         url: `https://checkout.stripe.test/${order.id}/concurrent`,
         status: 'open',
+        payment_status: 'unpaid',
+        payment_intent: null,
       };
       b.minted.set(session.id, session);
       return session;
@@ -713,4 +1033,382 @@ test('a valid attempt uses reconciliation-safe copy even when asynchronous photo
   assert.deepEqual(h.uploads, []);
   assert.deepEqual(h.provider, []);
   assert.equal(await stored(), null);
+});
+
+// ---------------------------------------------------------------------------
+// R2: an attempt that EDITS its purchased content
+// ---------------------------------------------------------------------------
+// The deterministic order id is derived from the browser attempt, so one attempt
+// proposes the SAME order id for two different semantic intents. The second
+// intent must never be bound to the first intent's provider-backed order: that
+// binding is durable, so it would keep answering 409 forever — for this attempt
+// AND for every later attempt that submits the edited content. Refusing the edit
+// is correct; poisoning the edited content is not.
+
+function attemptRequest(attemptId: string, mutate: (form: FormData) => void = () => {}): Request {
+  const form = legacyForm(attemptId);
+  mutate(form);
+  return new Request('https://preview.test/api/order', {
+    method: 'POST',
+    headers: {
+      cookie: `__Host-hsb-checkout-attempt=${attemptId}`,
+      'x-hsb-checkout-attempt': attemptId,
+    },
+    body: form,
+  });
+}
+
+/** A different book: a different semantic intent, and a different purchase. */
+const editedContent = (form: FormData) => { form.set('childName', 'Nora'); };
+const originalContent = () => {};
+
+const orderIdFor = (attemptId: string) =>
+  `ord_${crypto.createHash('sha256').update(attemptId).digest('hex').slice(0, 16)}`;
+
+type MemoryCells = ReturnType<typeof installMemoryOrderStore>;
+
+const claimPaths = (cells: MemoryCells) =>
+  [...cells.keys()].filter((pathname) => /(^|\/)checkout-intent-claims\/[a-f0-9]{64}\.json$/.test(pathname));
+
+const claimedOrderIds = (cells: MemoryCells) =>
+  claimPaths(cells).map((pathname) => JSON.parse(cells.get(pathname)!.body).orderId as string | null);
+
+async function orderRecord(orderId: string): Promise<OrderRecord | null> {
+  return (await readOrderVersioned(orderId, { preferRecentCommit: true }))?.order ?? null;
+}
+
+/** The semantic fingerprint a given content produces, measured in its own store. */
+async function intentFingerprintOf(mutate: (form: FormData) => void): Promise<string> {
+  installMemoryOrderStore();
+  const calibration = harness();
+  const attemptId = 'c'.repeat(32);
+  const response = await handleCheckoutOrderPost(attemptRequest(attemptId, mutate), calibration.deps);
+  assert.equal(response.httpStatus, 200, JSON.stringify(response));
+  const fingerprint = (await orderRecord(orderIdFor(attemptId)))?.checkoutIntentFingerprint;
+  assert.match(fingerprint ?? '', /^[a-f0-9]{64}$/);
+  return fingerprint!;
+}
+
+/** Seed the exact durable damage an earlier release could leave behind. */
+function seedClaim(cells: MemoryCells, canonicalOrderId: string, fingerprint: string): string {
+  const orderPath = [...cells.keys()].find((pathname) => pathname.endsWith(`orders/${canonicalOrderId}.json`))!;
+  const namespace = orderPath.slice(0, orderPath.length - `orders/${canonicalOrderId}.json`.length);
+  const pathname = `${namespace}checkout-intent-claims/${fingerprint}.json`;
+  cells.set(pathname, {
+    body: JSON.stringify({
+      fingerprint,
+      orderId: canonicalOrderId,
+      previousOrderId: null,
+      retiredOrderIds: [],
+      generation: 0,
+      updatedAt: '2026-09-12T00:00:00.000Z',
+    }),
+    version: 1,
+  });
+  return pathname;
+}
+
+test('an edited attempt is refused without binding the edited content to the old order', async () => {
+  const cells = installMemoryOrderStore();
+  const h = harness();
+  const attemptId = 'a'.repeat(32);
+  const canonicalOrderId = orderIdFor(attemptId);
+
+  const first = await handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), h.deps);
+  assert.equal(first.httpStatus, 200, JSON.stringify(first));
+
+  const edited = await handleCheckoutOrderPost(attemptRequest(attemptId, editedContent), h.deps);
+
+  assert.ok(edited.httpStatus >= 400, JSON.stringify(edited));
+  const copy = String(edited.body.error);
+  assert.match(copy, /do not pay again/i, 'the open attempt may already be payable');
+  assert.match(copy, /support@herostorybooks\.com/);
+  assert.doesNotMatch(copy, /no charge|not been charged|stopped before payment/i);
+  assert.equal(creates(h).length, 1, 'a refused edit may never mint a second payable Session');
+  assert.deepEqual(h.uploads, ['photo'], 'a refused edit never reaches the media stage');
+  assert.equal((await orderRecord(canonicalOrderId))?.childName, 'Mina', 'the open order keeps its own content');
+  assert.deepEqual(
+    claimedOrderIds(cells).filter((orderId) => orderId === canonicalOrderId),
+    [canonicalOrderId],
+    'exactly one semantic intent may ever own the provider-backed order',
+  );
+});
+
+test('a fresh attempt can still buy the edited content after the edit was refused', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  const attemptId = 'a'.repeat(32);
+  const freshAttemptId = 'b'.repeat(32);
+
+  assert.equal(
+    (await handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), h.deps)).httpStatus,
+    200,
+  );
+  assert.ok((await handleCheckoutOrderPost(attemptRequest(attemptId, editedContent), h.deps)).httpStatus >= 400);
+
+  const fresh = await handleCheckoutOrderPost(attemptRequest(freshAttemptId, editedContent), h.deps);
+
+  assert.equal(fresh.httpStatus, 200, JSON.stringify(fresh));
+  assert.equal(await resolveCheckoutOrderIdForAttempt(freshAttemptId), orderIdFor(freshAttemptId));
+  assert.equal(creates(h).length, 2, 'the edited book is a different purchase and needs its own Session');
+  assert.equal((await orderRecord(orderIdFor(freshAttemptId)))?.childName, 'Nora');
+  assert.equal(
+    (await orderRecord(orderIdFor(attemptId)))?.childName,
+    'Mina',
+    'and the original open order is untouched by it',
+  );
+});
+
+test('the original content still resumes its one Session after an edit was refused', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  const attemptId = 'a'.repeat(32);
+
+  const first = await handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), h.deps);
+  assert.ok((await handleCheckoutOrderPost(attemptRequest(attemptId, editedContent), h.deps)).httpStatus >= 400);
+
+  const resumed = await handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), h.deps);
+
+  assert.equal(resumed.httpStatus, 200, JSON.stringify(resumed));
+  assert.equal(resumed.body.redirectTo, first.body.redirectTo, 'the buyer returns to the one open Session');
+  assert.equal(creates(h).length, 1);
+});
+
+test('concurrent edits of one attempt settle on a single order and leave the loser buyable', async () => {
+  installMemoryOrderStore();
+  const h = harness();
+  const attemptId = 'a'.repeat(32);
+
+  const [original, edited] = await Promise.all([
+    handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), h.deps),
+    handleCheckoutOrderPost(attemptRequest(attemptId, editedContent), h.deps),
+  ]);
+
+  const settled = [original, edited].filter((response) => response.httpStatus === 200);
+  assert.equal(settled.length, 1, `exactly one intent may win: ${JSON.stringify([original, edited])}`);
+  assert.equal(creates(h).length, 1);
+  const loser = original.httpStatus === 200 ? editedContent : originalContent;
+  const loserName = original.httpStatus === 200 ? 'Nora' : 'Mina';
+
+  const freshAttemptId = 'b'.repeat(32);
+  const retry = await handleCheckoutOrderPost(attemptRequest(freshAttemptId, loser), h.deps);
+
+  assert.equal(retry.httpStatus, 200, JSON.stringify(retry));
+  assert.equal((await orderRecord(orderIdFor(freshAttemptId)))?.childName, loserName);
+  assert.equal(creates(h).length, 2);
+});
+
+test('a mis-bound claim written by an earlier release is repaired for the next fresh attempt', async () => {
+  const editedFingerprint = await intentFingerprintOf(editedContent);
+  const cells = installMemoryOrderStore();
+  const h = harness();
+  const attemptId = 'a'.repeat(32);
+  const canonicalOrderId = orderIdFor(attemptId);
+
+  assert.equal(
+    (await handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), h.deps)).httpStatus,
+    200,
+  );
+  const poisonedPath = seedClaim(cells, canonicalOrderId, editedFingerprint);
+
+  const freshAttemptId = 'b'.repeat(32);
+  const fresh = await handleCheckoutOrderPost(attemptRequest(freshAttemptId, editedContent), h.deps);
+
+  assert.equal(fresh.httpStatus, 200, `a mis-bound claim may not wedge content forever: ${JSON.stringify(fresh)}`);
+  assert.equal(await resolveCheckoutOrderIdForAttempt(freshAttemptId), orderIdFor(freshAttemptId));
+  const repaired = JSON.parse(cells.get(poisonedPath)!.body);
+  assert.equal(repaired.orderId, orderIdFor(freshAttemptId));
+  assert.deepEqual(repaired.retiredOrderIds, [canonicalOrderId], 'the mis-bound order is retired, never reusable');
+  assert.equal((await orderRecord(canonicalOrderId))?.childName, 'Mina', 'the other intent keeps its own order');
+  assert.equal(creates(h).length, 2);
+});
+
+test('a claim pointing at an order with no proven semantic owner is never repaired', async () => {
+  const editedFingerprint = await intentFingerprintOf(editedContent);
+  const cells = installMemoryOrderStore();
+  const h = harness();
+  const attemptId = 'a'.repeat(32);
+  const canonicalOrderId = orderIdFor(attemptId);
+
+  assert.equal(
+    (await handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), h.deps)).httpStatus,
+    200,
+  );
+  // No semantic owner on the record: this store cannot prove the claim is wrong.
+  await withOrderTransaction<null>(canonicalOrderId, (current) => ({
+    commit: { ...current, checkoutIntentFingerprint: null },
+    result: null,
+  }));
+  const poisonedPath = seedClaim(cells, canonicalOrderId, editedFingerprint);
+  const orderPaths = () => [...cells.keys()].filter((pathname) => /orders\/ord_[a-f0-9]{16}\.json$/.test(pathname));
+  const ordersBefore = orderPaths();
+
+  const freshAttemptId = 'b'.repeat(32);
+  const fresh = await handleCheckoutOrderPost(attemptRequest(freshAttemptId, editedContent), h.deps);
+
+  assert.ok(fresh.httpStatus >= 400, JSON.stringify(fresh));
+  assert.match(String(fresh.body.error), /do not pay again/i);
+  assert.equal(creates(h).length, 1, 'unprovable ownership may not mint a second Session');
+  assert.equal(
+    JSON.parse(cells.get(poisonedPath)!.body).orderId,
+    canonicalOrderId,
+    'an unprovable claim is left exactly as found',
+  );
+  assert.deepEqual(orderPaths(), ordersBefore, 'and no second durable order is created behind it');
+  assert.equal(
+    await resolveCheckoutOrderIdForAttempt(freshAttemptId),
+    canonicalOrderId,
+    'the attempt stays addressable through the canonical order it reconciled against',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The whole recovery path: open → protected, terminal → restart → fresh buy
+// ---------------------------------------------------------------------------
+// The restart decision runs on the SAME durable primitives the two attempt
+// routes hand it (`checkoutAttemptRestartDependencies`), against the same order
+// store this handler just wrote — only the provider read is a double, because
+// only Stripe can say what a Session became.
+
+async function restartDecision(
+  attemptId: string,
+  session: CheckoutAttemptProviderSession,
+) {
+  return resolveCheckoutAttemptRestart(attemptId, checkoutAttemptRestartDependencies({
+    resolveOrderId: resolveCheckoutOrderIdForAttempt,
+    getOrder: getOrderAuthoritative,
+    retrieveSession: async () => session,
+    retireExpiredAttempt: retireExpiredCheckoutAttempt,
+    releaseIntentClaim: releaseCheckoutIntentOrderId,
+  }));
+}
+
+const PROVIDER_SESSION = {
+  open: { status: 'open', payment_status: 'unpaid', payment_intent: null },
+  paid: { status: 'complete', payment_status: 'paid', payment_intent: 'pi_test_1' },
+  expired: { status: 'expired', payment_status: 'unpaid', payment_intent: null },
+} satisfies Record<string, CheckoutAttemptProviderSession>;
+
+test('an open attempt is protected: no restart, no release, and no second Session', async () => {
+  const cells = installMemoryOrderStore();
+  const h = harness();
+  const attemptId = 'a'.repeat(32);
+  const canonicalOrderId = orderIdFor(attemptId);
+
+  const first = await handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), h.deps);
+  assert.equal(first.httpStatus, 200, JSON.stringify(first));
+  const claimBefore = structuredClone(claimPaths(cells).map((pathname) => cells.get(pathname)!.body));
+
+  assert.deepEqual(
+    await restartDecision(attemptId, PROVIDER_SESSION.open),
+    { status: 'resume_required', reason: 'session_open' },
+  );
+  assert.deepEqual(
+    claimPaths(cells).map((pathname) => cells.get(pathname)!.body),
+    claimBefore,
+    'an open Session may never have its semantic claim released',
+  );
+
+  // And the identical purchase from any other attempt still resumes the one
+  // Session rather than minting a second payable one behind it.
+  const resumed = await handleCheckoutOrderPost(attemptRequest('b'.repeat(32), originalContent), h.deps);
+  assert.equal(resumed.httpStatus, 200, JSON.stringify(resumed));
+  assert.equal(resumed.body.redirectTo, first.body.redirectTo);
+  assert.equal(creates(h).length, 1);
+  assert.equal((await orderRecord(canonicalOrderId))?.paymentStatus, 'pending');
+});
+
+for (const terminal of ['paid', 'expired'] as const) {
+  test(`a ${terminal} attempt restarts authoritatively and the edited content then buys`, async () => {
+    installMemoryOrderStore();
+    const h = harness();
+    const attemptId = 'a'.repeat(32);
+    const canonicalOrderId = orderIdFor(attemptId);
+
+    const first = await handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), h.deps);
+    assert.equal(first.httpStatus, 200, JSON.stringify(first));
+    // The edit that was refused while the attempt was live: still no claim.
+    assert.ok((await handleCheckoutOrderPost(attemptRequest(attemptId, editedContent), h.deps)).httpStatus >= 400);
+
+    if (terminal === 'paid') {
+      await withOrderTransaction<null>(canonicalOrderId, (current) => ({
+        commit: { ...current, paymentStatus: 'paid', paidAt: new Date().toISOString() },
+        result: null,
+      }));
+    }
+    assert.deepEqual(
+      await restartDecision(attemptId, PROVIDER_SESSION[terminal]),
+      { status: 'restart_allowed', reason: terminal === 'paid' ? 'completed_paid' : 'expired_unpaid' },
+    );
+
+    // Only now may the browser rotate. The edited book is a different purchase,
+    // and the restarted original content is buyable again as a repeat purchase.
+    const editedAttemptId = 'b'.repeat(32);
+    const repeatAttemptId = 'c'.repeat(32);
+    const edited = await handleCheckoutOrderPost(attemptRequest(editedAttemptId, editedContent), h.deps);
+    const repeat = await handleCheckoutOrderPost(attemptRequest(repeatAttemptId, originalContent), h.deps);
+
+    assert.equal(edited.httpStatus, 200, JSON.stringify(edited));
+    assert.equal(repeat.httpStatus, 200, JSON.stringify(repeat));
+    assert.equal((await orderRecord(orderIdFor(editedAttemptId)))?.childName, 'Nora');
+    assert.equal((await orderRecord(orderIdFor(repeatAttemptId)))?.childName, 'Mina');
+    assert.equal(creates(h).length, 3, 'each settled purchase gets exactly one Session');
+    assert.notEqual(repeat.body.redirectTo, first.body.redirectTo);
+    const settledOriginal = await orderRecord(canonicalOrderId);
+    assert.equal(settledOriginal?.childName, 'Mina');
+    assert.equal(
+      settledOriginal?.paymentStatus,
+      terminal === 'paid' ? 'paid' : 'failed',
+      'the restarted order keeps its own settled payment state',
+    );
+  });
+}
+
+test('a restart is refused while the provider answer stays ambiguous', async () => {
+  const cells = installMemoryOrderStore();
+  const h = harness();
+  const attemptId = 'a'.repeat(32);
+
+  assert.equal(
+    (await handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), h.deps)).httpStatus,
+    200,
+  );
+  const claimBefore = structuredClone(claimPaths(cells).map((pathname) => cells.get(pathname)!.body));
+
+  for (const session of [
+    { status: 'expired', payment_status: 'unpaid' },
+    { status: 'expired', payment_status: 'unpaid', payment_intent: 'pi_test_1' },
+    { status: 'complete', payment_status: 'unpaid', payment_intent: 'pi_test_1' },
+  ] satisfies CheckoutAttemptProviderSession[]) {
+    assert.deepEqual(
+      await restartDecision(attemptId, session),
+      { status: 'unknown', reason: 'provider_ambiguous' },
+      JSON.stringify(session),
+    );
+  }
+  assert.deepEqual(
+    claimPaths(cells).map((pathname) => cells.get(pathname)!.body),
+    claimBefore,
+    'an ambiguous provider answer may never release a semantic claim',
+  );
+});
+
+test('an ownership proof that cannot be written fails closed and replays cleanly', async () => {
+  const cells = installMemoryOrderStore({
+    rejectCreateWhen: (pathname) => /checkout-order-intent-owners\//.test(pathname),
+  });
+  const h = harness();
+  const attemptId = 'a'.repeat(32);
+
+  const refused = await handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), h.deps);
+
+  assert.ok(refused.httpStatus >= 400, JSON.stringify(refused));
+  assert.deepEqual(h.provider, [], 'an unproven order id may never reach the provider');
+  assert.deepEqual(h.uploads, [], 'nor the media stage');
+  assert.deepEqual(claimPaths(cells), [], 'nor leave a claim behind');
+
+  installMemoryOrderStore();
+  const replay = harness();
+  const replayed = await handleCheckoutOrderPost(attemptRequest(attemptId, originalContent), replay.deps);
+  assert.equal(replayed.httpStatus, 200, JSON.stringify(replayed));
 });

@@ -37,6 +37,7 @@ import { parseDirectIntakeOrderRequest } from '../src/lib/checkout-direct-order-
 
 const ROUTE_FILE = readFileSync('src/app/api/order/route.ts', 'utf8');
 const HANDLER_FILE = readFileSync('src/lib/checkout-order-route-handler.ts', 'utf8');
+const CANONICAL_RESUME = readFileSync('src/lib/checkout-canonical-resume.ts', 'utf8');
 /**
  * The production POST path is these two files, in the order they run: the
  * handler that owns every decision, then the route file whose only content is
@@ -196,14 +197,17 @@ test('order route: the direct branch returns before any legacy public upload hel
   }
 });
 
-test('order route: legacy ordering guarantees are untouched', () => {
+test('order route: legacy media ordering remains behind the canonical resume boundary', () => {
   const resumeIdx = HANDLER.indexOf('await runLegacyCheckoutRoute<TResponse>');
   const casIdx = HANDLER.indexOf('await withOrderTransaction');
-  const provisionIdx = HANDLER.indexOf('await provisionCheckoutSession');
+  const canonicalResumeIdx = HANDLER.indexOf('await resumeCanonicalCheckoutSession');
+  const mediaProvisionIdx = HANDLER.indexOf('await provisionCheckoutSession');
   const promoIdx = ROUTE.indexOf('allow_promotion_codes: true');
   const createIdx = ROUTE.indexOf('checkout.sessions.create');
-  assert.ok(resumeIdx > -1 && casIdx > resumeIdx && provisionIdx > casIdx,
-    'the durable owner record and the final order CAS both precede the provider hand-off');
+  assert.ok(canonicalResumeIdx > -1 && canonicalResumeIdx < resumeIdx,
+    'canonical provider recovery must precede the legacy transport');
+  assert.ok(resumeIdx > -1 && casIdx > resumeIdx && mediaProvisionIdx > casIdx,
+    'the durable owner record and final media CAS still precede fresh provider creation');
   assert.ok(promoIdx > createIdx, 'promotion codes remain part of session creation');
   assert.match(ROUTE, /const photoReady = photoValidation\.ok === true/);
   assert.match(ROUTE, /likenessIntent: likenessIntentForPhoto\(photoReady\)/);
@@ -303,34 +307,30 @@ test('order route: the legacy bound-Session fast path cannot come back', () => {
   assert.doesNotMatch(HANDLER, /\.checkoutSessionProvisioning/);
 });
 
-test('order route: every legacy exit to the provider goes through a shared entrypoint', () => {
-  // Exactly two hand-offs exist on the legacy path: the orchestration that owns
-  // the resume/recovery decision before media, and the shared machine after the
-  // final order CAS. The first one is a function the tests can actually EXECUTE
-  // (checkout-legacy-order-entrypoint.test.ts drives it with injected
-  // dependencies), because a decision made inline in an un-importable handler
-  // could be removed without a single test noticing — it was.
+test('order route: canonical recovery and fresh legacy creation use the shared provisioner', () => {
   assert.match(HANDLER, /await runLegacyCheckoutRoute<TResponse>\(/);
   assert.match(HANDLER, /continueWithMedia: async \(persisted\) => \{/);
   assert.match(HANDLER, /await provisionCheckoutSession\(/);
   assert.match(HANDLER_FILE, /from '\.\/checkout-legacy-order\.ts'/);
+  assert.match(HANDLER_FILE, /from '\.\/checkout-canonical-resume\.ts'/);
   assert.match(HANDLER_FILE, /from '\.\/checkout-session-provisioning\.ts'/);
-  // The resume decision itself lives in the shared entrypoint, and the media
-  // continuation is reachable only through it.
+  assert.match(CANONICAL_RESUME, /await provisionCheckoutSession\(/);
+  assert.doesNotMatch(CANONICAL_RESUME, /checkout\.sessions\.(create|retrieve)/);
   const entrypoint = readFileSync('src/lib/checkout-legacy-order.ts', 'utf8');
   assert.match(entrypoint, /await resumeOrContinueLegacyCheckout\(params, deps\)/);
   assert.match(entrypoint, /return deps\.continueWithMedia\(resumed\.order\)/);
   assert.doesNotMatch(HANDLER, /resumeOrContinueLegacyCheckout/);
-  // Media, pause, and order persistence all precede BOTH of them.
   const resumeIdx = HANDLER.indexOf('await runLegacyCheckoutRoute<TResponse>(');
+  const canonicalResumeIdx = HANDLER.indexOf('await resumeCanonicalCheckoutSession(');
   const provisionIdx = HANDLER.indexOf('await provisionCheckoutSession(');
+  assert.ok(canonicalResumeIdx > -1 && canonicalResumeIdx < resumeIdx,
+    'canonical recovery must run before legacy media');
   for (const [label, marker] of [
     ['checkout pause', 'isCheckoutPaused()'],
     ['request parse', 'parseDirectIntakeOrderRequest(form)'],
-    ['durable owner record', 'await runLegacyCheckoutRoute<TResponse>('],
   ] as const) {
     const idx = HANDLER.indexOf(marker);
-    assert.ok(idx > -1 && idx <= resumeIdx, `${label} must precede the legacy resume entrypoint`);
+    assert.ok(idx > -1 && idx < canonicalResumeIdx, `${label} must precede canonical recovery`);
   }
   for (const [label, marker] of [
     ['hero photo upload', 'await deps.uploadOrderPhoto'],
@@ -340,11 +340,11 @@ test('order route: every legacy exit to the provider goes through a shared entry
     ['final order CAS', 'await withOrderTransaction'],
   ] as const) {
     const idx = HANDLER.indexOf(marker);
-    assert.ok(idx > -1 && idx < provisionIdx, `${label} must precede the shared provisioning hand-off`);
+    assert.ok(idx > resumeIdx && idx < provisionIdx, `${label} must remain inside legacy media before fresh provisioning`);
   }
 });
 
-test('order route: both paths inject the same durable order primitives', () => {
+test('order route: both paths share one durable provisioning dependency adapter', () => {
   for (const primitive of [
     'renewCheckoutLease',
     'beginCheckoutSessionProvisioning',
@@ -352,13 +352,13 @@ test('order route: both paths inject the same durable order primitives', () => {
     'supersedeExpiredCheckoutSession',
     'bindOrderCheckoutSession',
   ]) {
-    assert.ok(
-      HANDLER.split(primitive).length - 1 >= 2,
-      `${primitive} must be wired on both the direct and the legacy path`,
-    );
+    assert.ok(HANDLER.includes(primitive), `${primitive} must be wired into the shared adapter`);
     const imports = HANDLER_FILE.slice(0, HANDLER_FILE.indexOf("} from './orders.ts';"));
     assert.ok(imports.includes(primitive), `${primitive} must be imported from lib/orders`);
   }
+  assert.match(HANDLER, /const checkoutProvisionDeps: CheckoutSessionProvisionDeps = \{/);
+  assert.match(HANDLER, /binding: buildDirectIntakeBindingDependencies\(intakeStore\),\s*\.\.\.checkoutProvisionDeps/);
+  assert.match(HANDLER, /const legacyCheckoutDeps = checkoutProvisionDeps/);
 });
 
 test('order route: the route file is a thin instantiation with nothing left to decide', () => {
@@ -376,17 +376,19 @@ test('order route: the route file is a thin instantiation with nothing left to d
   ]) {
     assert.doesNotMatch(THIN_POST, forbidden, `the route file may not decide anything: ${forbidden}`);
   }
-  // And there is exactly one of each hand-off in the whole production path, so
-  // no second, unprovisioned legacy exit can exist beside the tested one.
-  for (const [label, marker] of [
-    ['legacy orchestration', 'runLegacyCheckoutRoute<TResponse>('],
-    ['direct saga', 'runDirectIntakeCheckout('],
-    ['shared provisioner', 'provisionCheckoutSession('],
+  // Each transport and each orchestration has one hand-off. The handler calls
+  // the provisioner only for fresh legacy post-media creation; canonical
+  // recovery delegates its own single provisioner call to the helper.
+  for (const [label, marker, count] of [
+    ['legacy orchestration', 'runLegacyCheckoutRoute<TResponse>(', 1],
+    ['direct saga', 'runDirectIntakeCheckout(', 1],
+    ['canonical recovery orchestration', 'resumeCanonicalCheckoutSession(', 1],
+    ['fresh legacy provisioner', 'provisionCheckoutSession(', 1],
   ] as const) {
     assert.equal(
       HANDLER.split(`await ${marker}`).length - 1,
-      1,
-      `exactly one ${label} hand-off may exist on the production path`,
+      count,
+      `expected ${count} ${label} hand-off(s) on the production path`,
     );
   }
 });
@@ -397,8 +399,10 @@ test('order route: the legacy branch releases only a provisioner-approved URL', 
   for (const release of releases) {
     assert.match(
       release!,
-      /^(directResult\.redirectTo|provisioned\.url|resumed\.url)$/,
+      /^(canonicalResume\.url|directResult\.redirectTo|provisioned\.url|resumed\.url)$/,
       `a checkout URL may only come from a shared machine result, not ${release}`,
     );
   }
+  assert.match(CANONICAL_RESUME, /return \{ status: 'resumed', url: result\.url \}/,
+    'canonical recovery may release only the shared provisioner result');
 });
