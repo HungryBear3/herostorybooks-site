@@ -137,8 +137,26 @@ test('gift-detail template renders no APPROVED_SAMPLE and no occasion illustrati
 
 test('no gift page references a caution / private-name / occasion image asset', () => {
   for (const [label, source] of [['index', giftIndex], ['detail', giftDetail]] as const) {
-    assert.doesNotMatch(source, /\/assets\//, `${label} must not reference any /assets/ image`);
     assert.doesNotMatch(source, /<img[\s>]/i, `${label} must not render an <img>`);
+    // The only /assets/ reference allowed is the approved generic OG/Twitter
+    // social-share card used in route metadata, never a body illustration.
+    const assetRefs = source.match(/\/assets\/[^'"`\s]+/g) ?? [];
+    for (const ref of assetRefs) {
+      assert.equal(ref, '/assets/og-social-share.png', `${label} must not reference any occasion-specific /assets/ image: ${ref}`);
+    }
+  }
+});
+
+// ── 7. Route-owned OG/Twitter metadata uses only the approved generic card ────
+test('gift OG/Twitter metadata uses only the approved 1200x630 social-share card, no occasion art', () => {
+  for (const [label, source] of [['index', giftIndex], ['detail', giftDetail]] as const) {
+    assert.match(source, /openGraph:\s*\{/, `${label} must declare route-owned openGraph metadata`);
+    assert.match(source, /twitter:\s*\{/, `${label} must declare route-owned twitter metadata`);
+    assert.doesNotMatch(source, /APPROVED_SAMPLE/, `${label} OG metadata must not use APPROVED_SAMPLE`);
+    const ogImageMatches = source.match(/url:\s*['"]\/assets\/[^'"]+['"]/g) ?? [];
+    for (const match of ogImageMatches) {
+      assert.match(match, /og-social-share\.png/, `${label} OG image must be the approved generic card: ${match}`);
+    }
   }
 });
 
