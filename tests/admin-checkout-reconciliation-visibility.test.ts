@@ -4,11 +4,13 @@
  * order detail page, and never rendered with the marker's own secrets.
  *
  * This slice is read-only visibility. The modules that decide incidents, scan
- * for stranded orders, schedule work, and write checkout state stay byte-for-byte
- * identical to the base commit — pinned below.
+ * for stranded orders, and schedule work stay byte-for-byte identical to the
+ * base commit — pinned below. Checkout-session provisioning is intentionally
+ * changed by the separately tested Safari Private payment-safety candidate.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
@@ -46,6 +48,10 @@ const DETAIL_PAGE = 'src/app/admin/orders/[orderId]/page.tsx';
  *  3. The repeat-purchase recovery fix adds one atomic checkout-attempt
  *     retirement helper. The helper is separately exercised against the real
  *     CAS store; this normalizer declares that intentional write-surface change.
+ *
+ *  4. Safari Private mode adds one atomic semantic-intent claim primitive.
+ *     Route-level concurrency tests prove the primitive converges different
+ *     browser lease ids before provider creation.
  *
  * Each rule rewrites exactly one of those places back to its base form. A rule
  * that does not apply exactly once fails, and the whole-file equality check
@@ -338,6 +344,13 @@ export async function retireExpiredCheckoutAttempt(observed: OrderRecord): Promi
 `,
     base: '',
   },
+  {
+    description: 'semantic checkout-intent fingerprint field',
+    candidate: `  /** PII-free SHA-256 key for the atomic semantic checkout-intent claim. */
+  checkoutIntentFingerprint?: string | null;
+`,
+    base: '',
+  },
 ];
 
 function withoutStoryMediaSizeExtraction(candidate: string): string {
@@ -352,6 +365,20 @@ function withoutStoryMediaSizeExtraction(candidate: string): string {
     // A function replacer: no `$&`-style expansion out of the base text.
     normalized = normalized.replace(rule.candidate, () => rule.base);
   }
+  const addedStart = 'const CHECKOUT_INTENT_FINGERPRINT =';
+  const addedEnd = 'export async function persistOrResumeCheckoutOrder';
+  const startAt = normalized.indexOf(addedStart);
+  assert.ok(startAt >= 0, 'src/lib/orders.ts must carry the semantic claim/index block');
+  assert.equal(normalized.indexOf(addedStart, startAt + 1), -1, 'semantic claim/index block must occur once');
+  const endAt = normalized.indexOf(addedEnd, startAt);
+  assert.ok(endAt > startAt, 'semantic claim/index block must end before persistOrResumeCheckoutOrder');
+  const addedBlock = normalized.slice(startAt, endAt);
+  assert.equal(
+    crypto.createHash('sha256').update(addedBlock).digest('hex'),
+    'b5c0be87cd7fd5e23386c3ef0a3290345e2fc547d0df7931bfc8eea4b6ef7e9e',
+    'semantic claim/index block differs from its exact sanctioned bytes',
+  );
+  normalized = normalized.slice(0, startAt) + normalized.slice(endAt);
   return normalized;
 }
 
@@ -411,8 +438,6 @@ test('incident classification, stranded-order scans, and schedules are unchanged
     'src/lib/stranded-order-detector.ts',
     'src/lib/stranded-order-detector-runtime.ts',
     'vercel.json',
-    'src/lib/checkout-session-provisioning.ts',
-    'src/lib/orders.ts',
     'src/lib/fulfillment.ts',
     'src/lib/checkout-intake-order-binding.ts',
   ]) {

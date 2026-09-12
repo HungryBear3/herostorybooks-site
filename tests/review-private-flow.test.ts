@@ -155,6 +155,9 @@ test('fragment session bootstrap contract: session endpoint sets HttpOnly Secure
     });
     const res = await handlePrivateReviewSessionRequest(request, ORDER, { now: () => new Date(NOW) });
     assert.equal(res.status, 200);
+    // The handler can answer with raw bytes as well as JSON; the session
+    // bootstrap must answer JSON, so prove that before reading a field off it.
+    assert.ok(!(res.body instanceof Uint8Array), 'the session response must be a JSON body');
     assert.equal(res.body.ok, true);
     assert.doesNotMatch(JSON.stringify(res.body), new RegExp(TOKEN));
     const setCookie = String(res.headers['Set-Cookie'] ?? '');

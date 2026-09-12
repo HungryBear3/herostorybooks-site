@@ -58,17 +58,49 @@ export const CHECKOUT_HANDOFF_UNCONFIRMED =
   + 'happened and put it right.';
 
 /**
+ * Refusals whose next safe step is a FRESH attempt, decided by the server.
+ *
+ * These are the reconciliation answers a buyer can reach without anything being
+ * wrong with their book: a repeat purchase of content that already has an order,
+ * or an attempt whose content changed after it was sent. In both, the durable
+ * state is fine and one more submission is all the recovery that is needed —
+ * but only the server can decide whether the previous attempt may be rotated,
+ * so the guidance never promises an outcome and never retries by itself.
+ */
+const CHECKOUT_FRESH_ATTEMPT_REFUSAL_CODES: readonly string[] = [
+  'checkout_canonical_reconciliation_required',
+  'checkout_intent_order_ownership_conflict',
+];
+
+/**
+ * Bounded recovery, added to — never replacing — the reconciliation sentence.
+ *
+ * It may not say "no charge", may not claim the request stopped before payment,
+ * and may not invite a second PAYMENT. It offers exactly one thing: submitting
+ * this form again, whose first act is a server-side check of the previous
+ * attempt that fails closed while that attempt is still open.
+ */
+export const CHECKOUT_FRESH_ATTEMPT_GUIDANCE =
+  'If you were buying a second or different book, you can submit this form once more — '
+  + 'your browser re-checks the previous attempt with us first, and will not send a new '
+  + 'order while that attempt is still open.';
+
+/**
  * The message to show for a failed `/api/order` submission.
  *
  * Returns the server's sentence when there is one (it is specific, and it is
  * the only side that can prove a no-charge outcome), and the ambiguity-safe
  * reconciliation copy when the response carried none — a non-JSON body, an
- * empty message, or anything that is not a string.
+ * empty message, or anything that is not a string. A recognised reconciliation
+ * CODE additionally earns the bounded fresh-attempt guidance above.
  */
-export function checkoutSubmitFailureMessage(serverError: unknown): string {
-  if (typeof serverError !== 'string') return CHECKOUT_SUBMIT_UNCONFIRMED;
-  const trimmed = serverError.trim();
-  return trimmed ? trimmed : CHECKOUT_SUBMIT_UNCONFIRMED;
+export function checkoutSubmitFailureMessage(serverError: unknown, serverCode?: unknown): string {
+  const base = typeof serverError === 'string' && serverError.trim()
+    ? serverError.trim()
+    : CHECKOUT_SUBMIT_UNCONFIRMED;
+  return typeof serverCode === 'string' && CHECKOUT_FRESH_ATTEMPT_REFUSAL_CODES.includes(serverCode)
+    ? `${base} ${CHECKOUT_FRESH_ATTEMPT_GUIDANCE}`
+    : base;
 }
 
 /**

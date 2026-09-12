@@ -27,6 +27,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { IntakeError } from '../src/lib/checkout-intake.ts';
+import { processEnv } from './support/process-env.ts';
 import {
   assertBrowserMutationRequest,
   CHECKOUT_GUARD_TOKEN_ENV,
@@ -345,7 +346,7 @@ test('production without a durable guard configured fails closed', async () => {
     enforceCheckoutBudget({
       scope: 'intake-create',
       now: NOW,
-      env: { VERCEL_ENV: 'production', HSB_CHECKOUT_ALLOW_PROCESS_LOCAL_GUARD: 'true' } as NodeJS.ProcessEnv,
+      env: processEnv({ VERCEL_ENV: 'production', HSB_CHECKOUT_ALLOW_PROCESS_LOCAL_GUARD: 'true' }),
     }),
     (error) => code(error) === 'abuse_guard_unavailable',
   );
@@ -356,12 +357,12 @@ test('the durable guard refuses to share a credential with orders or intake', as
     enforceCheckoutBudget({
       scope: 'intake-create',
       now: NOW,
-      env: {
+      env: processEnv({
         VERCEL_ENV: 'production',
         HSB_CHECKOUT_GUARD_MODE: 'durable',
         [CHECKOUT_GUARD_TOKEN_ENV]: 'shared-token',
         BLOB_READ_WRITE_TOKEN: 'shared-token',
-      } as NodeJS.ProcessEnv,
+      }),
     }),
     (error) => code(error) === 'abuse_guard_unavailable',
   );

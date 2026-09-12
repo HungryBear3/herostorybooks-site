@@ -37,6 +37,7 @@ import {
   resolveCheckoutGuardStore,
 } from '../src/lib/checkout-request-guard.ts';
 import { getBlobNamespace } from '../src/lib/blob-namespace.ts';
+import { processEnv } from './support/process-env.ts';
 
 const STORE_A = 'AbCd1234EfGh5678';
 const STORE_B = 'ZzZz9999YyYy8888';
@@ -106,25 +107,25 @@ test('distinct stores are accepted', () => {
 test('the intake credential is refused when it shares a store with orders or the guard', () => {
   const shared = tokenFor(STORE_A, 'anotherSecretEntirely00001');
   assert.throws(
-    () => getRequiredIntakeBlobToken({
+    () => getRequiredIntakeBlobToken(processEnv({
       HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
       BLOB_READ_WRITE_TOKEN: shared,
-    } as NodeJS.ProcessEnv),
+    })),
     (error) => code(error) === 'intake_store_must_be_dedicated',
   );
   assert.throws(
-    () => getRequiredIntakeBlobToken({
+    () => getRequiredIntakeBlobToken(processEnv({
       HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
       HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: shared,
-    } as NodeJS.ProcessEnv),
+    })),
     (error) => code(error) === 'intake_store_must_be_dedicated',
   );
   assert.equal(
-    getRequiredIntakeBlobToken({
+    getRequiredIntakeBlobToken(processEnv({
       HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
       BLOB_READ_WRITE_TOKEN: ORDER_TOKEN,
       HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
-    } as NodeJS.ProcessEnv),
+    })),
     INTAKE_TOKEN,
   );
 });
@@ -147,16 +148,16 @@ test('every intake and guard path is namespaced', () => {
 });
 
 test('Preview without an explicit namespace fails closed', () => {
-  const previewEnv = { VERCEL_ENV: 'preview' } as NodeJS.ProcessEnv;
+  const previewEnv = processEnv({ VERCEL_ENV: 'preview' });
   assert.throws(() => getBlobNamespace(previewEnv), /HSB_BLOB_NAMESPACE/);
 
   // ...and that failure reaches store construction rather than defaulting to
   // the flat production keyspace.
   assert.throws(
-    () => createVercelIntakeStore(INTAKE_TOKEN, {
+    () => createVercelIntakeStore(INTAKE_TOKEN, processEnv({
       ...previewEnv,
       HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
-    } as NodeJS.ProcessEnv),
+    })),
     /HSB_BLOB_NAMESPACE/,
   );
   assert.throws(
@@ -166,7 +167,7 @@ test('Preview without an explicit namespace fails closed', () => {
 });
 
 test('Preview naming itself "production" is refused', () => {
-  const env = { VERCEL_ENV: 'preview', HSB_BLOB_NAMESPACE: 'production' } as NodeJS.ProcessEnv;
+  const env = processEnv({ VERCEL_ENV: 'preview', HSB_BLOB_NAMESPACE: 'production' });
   assert.throws(() => getBlobNamespace(env), /production/);
   assert.throws(() => createBlobCheckoutGuardStore(GUARD_TOKEN, env), /production/);
 });
@@ -174,26 +175,26 @@ test('Preview naming itself "production" is refused', () => {
 test('namespaces that normalize or escape path segments fail closed', () => {
   for (const namespace of ['.', '..', './preview', 'preview/..', 'preview/x', 'preview\\x', ' preview ', 'preview\n', 'a'.repeat(65)]) {
     assert.throws(
-      () => getBlobNamespace({ VERCEL_ENV: 'preview', HSB_BLOB_NAMESPACE: namespace } as NodeJS.ProcessEnv),
+      () => getBlobNamespace(processEnv({ VERCEL_ENV: 'preview', HSB_BLOB_NAMESPACE: namespace })),
       /namespace/i,
       namespace,
     );
   }
   assert.equal(
-    getBlobNamespace({ VERCEL_ENV: 'preview', HSB_BLOB_NAMESPACE: 'preview-pr-154' } as NodeJS.ProcessEnv),
+    getBlobNamespace(processEnv({ VERCEL_ENV: 'preview', HSB_BLOB_NAMESPACE: 'preview-pr-154' })),
     'preview-pr-154',
   );
 });
 
 test('an explicit Preview namespace is honoured end to end', () => {
-  const env = {
+  const env = processEnv({
     VERCEL_ENV: 'preview',
     HSB_BLOB_NAMESPACE: 'preview',
     HSB_CHECKOUT_GUARD_MODE: 'durable',
     HSB_CHECKOUT_GUARD_BLOB_READ_WRITE_TOKEN: GUARD_TOKEN,
     HSB_INTAKE_BLOB_READ_WRITE_TOKEN: INTAKE_TOKEN,
     BLOB_READ_WRITE_TOKEN: ORDER_TOKEN,
-  } as NodeJS.ProcessEnv;
+  });
 
   assert.equal(getBlobNamespace(env), 'preview');
   assert.doesNotThrow(() => createVercelIntakeStore(INTAKE_TOKEN, env));

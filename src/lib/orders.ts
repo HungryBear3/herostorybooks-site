@@ -582,6 +582,10 @@ export interface OrderRecord extends OrderInput {
   id: string;
   checkoutAttemptId?: string | null;
   checkoutFingerprint?: string | null;
+  /** PII-free SHA-256 key for the atomic semantic checkout-intent claim. */
+  checkoutIntentFingerprint?: string | null;
+  /** Exact claim generation required to release this order's semantic intent. */
+  checkoutIntentClaimGeneration?: number | null;
   checkoutLeaseId?: string | null;
   checkoutLeaseExpiresAt?: string | null;
   /** Bounded retention lifecycle for media referenced by checkoutIntake. */
@@ -2261,11 +2265,28 @@ export async function listOrders(): Promise<OrderRecord[]> {
   }
 }
 
+/** The slice of a Blob listing this enumeration actually consumes: one page of
+ *  pathnames plus its pagination cursor.
+ *
+ *  Declared as `typeof list` this injection point asked for the SDK's generic
+ *  folded/expanded result, which no concrete object can inhabit — a caller
+ *  could only satisfy it by asserting its way past the compiler. The real
+ *  `list` still satisfies this narrower shape, so the default is unchanged. */
+export type OrderBlobListPage = {
+  blobs: Array<{ pathname: string }>;
+  hasMore: boolean;
+  cursor?: string;
+};
+
+export type OrderBlobListImpl = (
+  options: { prefix: string; token: string; cursor?: string },
+) => Promise<OrderBlobListPage>;
+
 /** Strict durable enumeration for recovery/cron paths.
  * Never falls back to ephemeral storage in production-like environments and
  * re-reads every listed order through the authoritative version-bound path. */
 export async function listOrdersAuthoritative(deps: {
-  listImpl?: typeof list;
+  listImpl?: OrderBlobListImpl;
   getOrderImpl?: typeof getOrderAuthoritative;
 } = {}): Promise<OrderRecord[]> {
   const token = getBlobToken();
@@ -3164,6 +3185,413 @@ export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> 
   }
 }
 
+const CHECKOUT_INTENT_FINGERPRINT = /^[a-f0-9]{64}$/;
+const CHECKOUT_ORDER_ID = /^ord_[a-f0-9]{16}$/;
+const CHECKOUT_ATTEMPT_ID = /^[a-f0-9]{32}$/i;
+
+interface CheckoutAttemptOrderIndex {
+  attemptId: string;
+  orderId: string;
+  createdAt: string;
+}
+
+function checkoutAttemptOrderIndexPath(attemptId: string): string {
+  return withBlobNamespace(`checkout-attempt-index/${attemptId.toLowerCase()}.json`);
+}
+
+function parseCheckoutAttemptOrderIndex(raw: string, attemptId: string): CheckoutAttemptOrderIndex {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new OrderPersistenceError('unknown', 'Invalid checkout attempt index JSON', error);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new OrderPersistenceError('unknown', 'Invalid checkout attempt index');
+  }
+  const value = parsed as Record<string, unknown>;
+  if (Object.keys(value).sort().join(',') !== 'attemptId,createdAt,orderId'
+    || value.attemptId !== attemptId.toLowerCase()
+    || typeof value.orderId !== 'string'
+    || !CHECKOUT_ORDER_ID.test(value.orderId)
+    || typeof value.createdAt !== 'string'
+    || !Number.isFinite(Date.parse(value.createdAt))) {
+    throw new OrderPersistenceError('unknown', 'Invalid checkout attempt index');
+  }
+  return value as unknown as CheckoutAttemptOrderIndex;
+}
+
+/** Bind one browser attempt permanently to the canonical semantic order id. */
+export async function bindCheckoutAttemptToOrderId(
+  attemptId: string,
+  orderId: string,
+  opts: { store?: OrderStoreAdapter; now?: Date } = {},
+): Promise<boolean> {
+  if (!CHECKOUT_ATTEMPT_ID.test(attemptId) || !CHECKOUT_ORDER_ID.test(orderId)) return false;
+  const normalizedAttemptId = attemptId.toLowerCase();
+  const store = opts.store ?? resolveOrderStoreAdapter();
+  const pathname = checkoutAttemptOrderIndexPath(normalizedAttemptId);
+  const record: CheckoutAttemptOrderIndex = {
+    attemptId: normalizedAttemptId,
+    orderId,
+    createdAt: (opts.now ?? new Date()).toISOString(),
+  };
+  const created = await store.createIfAbsent(pathname, JSON.stringify(record));
+  if (created.ok) return true;
+  if (!('reason' in created) || created.reason !== 'exists') return false;
+  const existing = await store.readVersioned(pathname);
+  if (!existing) return false;
+  return parseCheckoutAttemptOrderIndex(existing.body, normalizedAttemptId).orderId === orderId;
+}
+
+/** Resolve a new indexed attempt; null lets legacy callers use the old derivation. */
+export async function resolveCheckoutOrderIdForAttempt(
+  attemptId: string,
+  opts: { store?: OrderStoreAdapter } = {},
+): Promise<string | null> {
+  if (!CHECKOUT_ATTEMPT_ID.test(attemptId)) return null;
+  const normalizedAttemptId = attemptId.toLowerCase();
+  const store = opts.store ?? resolveOrderStoreAdapter();
+  const existing = await store.readVersioned(checkoutAttemptOrderIndexPath(normalizedAttemptId));
+  return existing ? parseCheckoutAttemptOrderIndex(existing.body, normalizedAttemptId).orderId : null;
+}
+
+/**
+ * The proposed order id is derived from a browser attempt, so ONE attempt
+ * proposes the same id for whatever content it currently holds. This refusal is
+ * what stops a second semantic intent from being bound to an order that already
+ * belongs to another one: that binding is durable, so it would answer 409 for
+ * the refused content forever — in this attempt and in every later one.
+ */
+export class CheckoutIntentOwnershipError extends OrderPersistenceError {
+  constructor(orderId: string, message: string, cause?: unknown) {
+    super(orderId, message, cause);
+    this.name = 'CheckoutIntentOwnershipError';
+  }
+}
+
+interface CheckoutOrderIntentOwner {
+  orderId: string;
+  fingerprint: string;
+  createdAt: string;
+}
+
+function checkoutOrderIntentOwnerPath(orderId: string): string {
+  return withBlobNamespace(`checkout-order-intent-owners/${orderId}.json`);
+}
+
+function parseCheckoutOrderIntentOwner(raw: string, orderId: string): CheckoutOrderIntentOwner {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new OrderPersistenceError(orderId, 'Invalid checkout order ownership JSON', error);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new OrderPersistenceError(orderId, 'Invalid checkout order ownership record');
+  }
+  const value = parsed as Record<string, unknown>;
+  if (Object.keys(value).sort().join(',') !== 'createdAt,fingerprint,orderId'
+    || value.orderId !== orderId
+    || typeof value.fingerprint !== 'string'
+    || !CHECKOUT_INTENT_FINGERPRINT.test(value.fingerprint)
+    || typeof value.createdAt !== 'string'
+    || !Number.isFinite(Date.parse(value.createdAt))) {
+    throw new OrderPersistenceError(orderId, 'Invalid checkout order ownership record');
+  }
+  return value as unknown as CheckoutOrderIntentOwner;
+}
+
+type CheckoutOrderReader = (orderId: string) => Promise<OrderRecord | null>;
+
+interface CheckoutIntentClaimOptions {
+  store?: OrderStoreAdapter;
+  now?: Date;
+  /** The authoritative order read, injectable so tests can drive it directly. */
+  readOrder?: CheckoutOrderReader;
+}
+
+/**
+ * Prove — durably, before any claim exists — that this semantic intent may use
+ * this order id. Ownership is create-if-absent and permanent: a released or
+ * retired order id stays owned by the intent that held it, so no later intent
+ * can inherit its provider history.
+ *
+ * A missing ownership record is not consent. Orders written before this index
+ * existed carry their owner on the record itself, and an order that already has
+ * provider evidence without a recorded owner can never be proven compatible, so
+ * both fail closed rather than adopting somebody else's payable Session.
+ */
+async function reserveCheckoutOrderIdForIntent(
+  fingerprint: string,
+  orderId: string,
+  opts: CheckoutIntentClaimOptions,
+): Promise<void> {
+  const store = opts.store ?? resolveOrderStoreAdapter();
+  const pathname = checkoutOrderIntentOwnerPath(orderId);
+  const existing = await store.readVersioned(pathname);
+  if (existing) {
+    const owner = parseCheckoutOrderIntentOwner(existing.body, orderId);
+    if (owner.fingerprint === fingerprint) return;
+    throw new CheckoutIntentOwnershipError(orderId, 'Checkout order id belongs to a different checkout intent');
+  }
+
+  const readOrder = opts.readOrder ?? ((id: string) => getOrderAuthoritative(id));
+  const order = await readOrder(orderId);
+  if (order) {
+    const recordedOwner = order.checkoutIntentFingerprint;
+    if (typeof recordedOwner === 'string' && CHECKOUT_INTENT_FINGERPRINT.test(recordedOwner)) {
+      if (recordedOwner !== fingerprint) {
+        // Heal the index from the record that already settled this, so the next
+        // request refuses without another authoritative order read.
+        await store.createIfAbsent(pathname, JSON.stringify({
+          orderId,
+          fingerprint: recordedOwner,
+          createdAt: (opts.now ?? new Date()).toISOString(),
+        } satisfies CheckoutOrderIntentOwner));
+        throw new CheckoutIntentOwnershipError(orderId, 'Checkout order id belongs to a different checkout intent');
+      }
+    } else if (hasCheckoutProviderEvidence(order)) {
+      throw new CheckoutIntentOwnershipError(
+        orderId,
+        'Checkout order id has provider evidence with no provable semantic owner',
+      );
+    }
+  }
+
+  const record: CheckoutOrderIntentOwner = {
+    orderId,
+    fingerprint,
+    createdAt: (opts.now ?? new Date()).toISOString(),
+  };
+  const created = await store.createIfAbsent(pathname, JSON.stringify(record));
+  if (created.ok) return;
+  if (!('reason' in created) || created.reason !== 'exists') {
+    throw new OrderPersistenceError(orderId, 'Checkout order ownership write was not authoritative');
+  }
+  // Lost the create race: the winner decides, and only an exact match proceeds.
+  const settled = await store.readVersioned(pathname);
+  if (!settled) throw new OrderPersistenceError(orderId, 'Checkout order ownership exists but cannot be read');
+  if (parseCheckoutOrderIntentOwner(settled.body, orderId).fingerprint !== fingerprint) {
+    throw new CheckoutIntentOwnershipError(orderId, 'Checkout order id belongs to a different checkout intent');
+  }
+}
+
+/**
+ * Is this claim's order id provably NOT this intent's order — i.e. is another
+ * intent provably holding it?
+ *
+ * Two independent records must agree: the order carries a different semantic
+ * owner, AND that owner's own claim points back at this order. One of them
+ * alone is not proof. An order record can be rewritten to a fingerprint nobody
+ * claims, and that is an unexplained state to reconcile, not a licence to walk
+ * away from a payable Session this intent may still own. Absence proves nothing
+ * either: a concurrent request may be about to create exactly that record.
+ */
+async function claimIsProvablyMisbound(
+  fingerprint: string,
+  orderId: string,
+  opts: CheckoutIntentClaimOptions,
+): Promise<boolean> {
+  const readOrder = opts.readOrder ?? ((id: string) => getOrderAuthoritative(id));
+  const order = await readOrder(orderId);
+  if (!order) return false;
+  const recordedOwner = order.checkoutIntentFingerprint;
+  if (typeof recordedOwner !== 'string'
+    || !CHECKOUT_INTENT_FINGERPRINT.test(recordedOwner)
+    || recordedOwner === fingerprint) return false;
+  const store = opts.store ?? resolveOrderStoreAdapter();
+  const ownerClaim = await store.readVersioned(checkoutIntentClaimPath(recordedOwner));
+  if (!ownerClaim) return false;
+  try {
+    return parseCheckoutIntentClaim(ownerClaim.body, recordedOwner).orderId === orderId;
+  } catch {
+    // An unreadable claim for the recorded owner is not proof of anything.
+    return false;
+  }
+}
+
+interface CheckoutIntentClaim {
+  fingerprint: string;
+  orderId: string | null;
+  previousOrderId: string | null;
+  retiredOrderIds: readonly string[];
+  generation: number;
+  updatedAt: string;
+}
+
+function checkoutIntentClaimPath(fingerprint: string): string {
+  return withBlobNamespace(`checkout-intent-claims/${fingerprint}.json`);
+}
+
+function parseCheckoutIntentClaim(raw: string, fingerprint: string): CheckoutIntentClaim {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new OrderPersistenceError('unknown', 'Invalid checkout intent claim JSON', error);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new OrderPersistenceError('unknown', 'Invalid checkout intent claim');
+  }
+  const value = parsed as Record<string, unknown>;
+  const hasHistory = Object.prototype.hasOwnProperty.call(value, 'retiredOrderIds');
+  const expectedKeys = hasHistory
+    ? 'fingerprint,generation,orderId,previousOrderId,retiredOrderIds,updatedAt'
+    : 'fingerprint,generation,orderId,previousOrderId,updatedAt';
+  if (Object.keys(value).sort().join(',') !== expectedKeys
+    || value.fingerprint !== fingerprint
+    || (value.orderId !== null && (typeof value.orderId !== 'string' || !CHECKOUT_ORDER_ID.test(value.orderId)))
+    || (value.previousOrderId !== null
+      && (typeof value.previousOrderId !== 'string' || !CHECKOUT_ORDER_ID.test(value.previousOrderId)))
+    || !Number.isSafeInteger(value.generation)
+    || (value.generation as number) < 0
+    || typeof value.updatedAt !== 'string'
+    || !Number.isFinite(Date.parse(value.updatedAt))
+    || (value.orderId === null && value.previousOrderId === null)) {
+    throw new OrderPersistenceError('unknown', 'Invalid checkout intent claim');
+  }
+  // Legacy records can prove complete history only before the second release.
+  // Never reconstruct a multigeneration history from just its latest owner.
+  if (!hasHistory && (value.generation as number) > 1) {
+    throw new OrderPersistenceError('unknown', 'Invalid checkout intent claim: incomplete retirement history');
+  }
+  const retiredOrderIds = hasHistory
+    ? value.retiredOrderIds
+    : value.previousOrderId === null ? [] : [value.previousOrderId];
+  if (!Array.isArray(retiredOrderIds)
+    || retiredOrderIds.some((id) => typeof id !== 'string' || !CHECKOUT_ORDER_ID.test(id))
+    || retiredOrderIds.length !== value.generation
+    || new Set(retiredOrderIds).size !== retiredOrderIds.length
+    || (retiredOrderIds[retiredOrderIds.length - 1] ?? null) !== value.previousOrderId
+    || (value.orderId !== null && retiredOrderIds.includes(value.orderId))) {
+    throw new OrderPersistenceError('unknown', 'Invalid checkout intent claim: invalid retirement history');
+  }
+  return { ...value, retiredOrderIds } as unknown as CheckoutIntentClaim;
+}
+
+/**
+ * Atomically choose one durable order id for byte-identical purchased content.
+ *
+ * Browser attempt ids remain lease capabilities, not payment identities. Two
+ * Private tabs may carry different attempts, but create-if-absent/CAS on this
+ * claim path gives both requests one canonical order path before either can
+ * touch a provider. A released generation permits one replacement only after
+ * the old provider state was independently proven terminal.
+ */
+export async function claimCheckoutIntentOrderId(
+  fingerprint: string,
+  proposedOrderId: string,
+  opts: CheckoutIntentClaimOptions = {},
+): Promise<{ orderId: string; generation: number }> {
+  if (!CHECKOUT_INTENT_FINGERPRINT.test(fingerprint) || !CHECKOUT_ORDER_ID.test(proposedOrderId)) {
+    throw new OrderPersistenceError(proposedOrderId, 'Invalid checkout intent claim input');
+  }
+  const store = opts.store ?? resolveOrderStoreAdapter();
+  const now = () => (opts.now ?? new Date()).toISOString();
+  const pathname = checkoutIntentClaimPath(fingerprint);
+
+  // Nothing claims an order id it has not been proven to own. The ownership
+  // record is written FIRST and only for a genuinely new proposal, so a refused
+  // intent leaves no claim behind to poison its own content later.
+  if (!await store.readVersioned(pathname)) {
+    await reserveCheckoutOrderIdForIntent(fingerprint, proposedOrderId, opts);
+    const initial: CheckoutIntentClaim = {
+      fingerprint,
+      orderId: proposedOrderId,
+      previousOrderId: null,
+      retiredOrderIds: [],
+      generation: 0,
+      updatedAt: now(),
+    };
+    const created = await store.createIfAbsent(pathname, JSON.stringify(initial));
+    if (created.ok) return { orderId: proposedOrderId, generation: 0 };
+    if (!('reason' in created) || created.reason !== 'exists') {
+      throw new OrderPersistenceError(proposedOrderId, 'Checkout intent claim write was not authoritative');
+    }
+  }
+
+  for (let attempt = 0; attempt < ORDER_TRANSACTION_MAX_ATTEMPTS; attempt += 1) {
+    const existing = await store.readVersioned(pathname);
+    if (!existing) {
+      throw new OrderPersistenceError(proposedOrderId, 'Checkout intent claim exists but cannot be read');
+    }
+    const claim = parseCheckoutIntentClaim(existing.body, fingerprint);
+    if (claim.orderId) {
+      if (claim.orderId === proposedOrderId
+        || !await claimIsProvablyMisbound(fingerprint, claim.orderId, opts)) {
+        return { orderId: claim.orderId, generation: claim.generation };
+      }
+      // A claim written before order ids were owned, pointing at an order that
+      // provably belongs to another intent. It can never be honoured — every
+      // request for this content would reconcile forever — so retire that id
+      // and let this generation converge somewhere payable. No provider state
+      // is touched: the mis-bound order keeps its own owner, Session and lease.
+      const repaired: CheckoutIntentClaim = {
+        ...claim,
+        orderId: null,
+        previousOrderId: claim.orderId,
+        retiredOrderIds: [...claim.retiredOrderIds, claim.orderId],
+        generation: claim.generation + 1,
+        updatedAt: now(),
+      };
+      await store.replaceIfVersion(pathname, JSON.stringify(repaired), existing.version);
+      continue;
+    }
+    if (claim.retiredOrderIds.includes(proposedOrderId)) {
+      throw new OrderPersistenceError(proposedOrderId, 'Retired checkout intent order cannot reacquire its released generation');
+    }
+    await reserveCheckoutOrderIdForIntent(fingerprint, proposedOrderId, opts);
+    const replacement: CheckoutIntentClaim = {
+      ...claim,
+      orderId: proposedOrderId,
+      updatedAt: now(),
+    };
+    const replaced = await store.replaceIfVersion(pathname, JSON.stringify(replacement), existing.version);
+    if (replaced.ok) return { orderId: proposedOrderId, generation: replacement.generation };
+  }
+  throw new OrderPersistenceError(proposedOrderId, 'Checkout intent claim remained contended');
+}
+
+/**
+ * Release one exact terminal order generation. A stale caller may acknowledge
+ * its own previous release, but can never clear a newer active order id.
+ */
+export async function releaseCheckoutIntentOrderId(
+  fingerprint: string,
+  retiredOrderId: string,
+  observedGeneration: number,
+  opts: { store?: OrderStoreAdapter; now?: Date } = {},
+): Promise<boolean> {
+  if (!CHECKOUT_INTENT_FINGERPRINT.test(fingerprint)
+    || !CHECKOUT_ORDER_ID.test(retiredOrderId)
+    || !Number.isInteger(observedGeneration)
+    || observedGeneration < 0) return false;
+  const store = opts.store ?? resolveOrderStoreAdapter();
+  const pathname = checkoutIntentClaimPath(fingerprint);
+  for (let attempt = 0; attempt < ORDER_TRANSACTION_MAX_ATTEMPTS; attempt += 1) {
+    const existing = await store.readVersioned(pathname);
+    if (!existing) return false;
+    const claim = parseCheckoutIntentClaim(existing.body, fingerprint);
+    if (claim.orderId !== retiredOrderId || claim.generation !== observedGeneration) {
+      return claim.orderId === null
+        && claim.previousOrderId === retiredOrderId
+        && claim.generation === observedGeneration + 1;
+    }
+    const released: CheckoutIntentClaim = {
+      ...claim,
+      orderId: null,
+      previousOrderId: retiredOrderId,
+      retiredOrderIds: [...claim.retiredOrderIds, retiredOrderId],
+      generation: claim.generation + 1,
+      updatedAt: (opts.now ?? new Date()).toISOString(),
+    };
+    const replaced = await store.replaceIfVersion(pathname, JSON.stringify(released), existing.version);
+    if (replaced.ok) return true;
+  }
+  return false;
+}
+
 export async function persistOrResumeCheckoutOrder(
   order: OrderRecord,
   opts: { now?: Date } = {},
@@ -3904,9 +4332,20 @@ export async function recordCheckoutSessionCandidate(
 export async function supersedeExpiredCheckoutSession(
   orderId: string,
   expiredStripeSessionId: string,
-  checkout: { leaseId: string; fingerprint: string; now?: Date; leaseMs?: number },
+  checkout: {
+    leaseId: string;
+    fingerprint: string;
+    providerStatus: 'expired';
+    providerPaymentStatus: 'unpaid';
+    providerPaymentIntent: null;
+    now?: Date;
+    leaseMs?: number;
+  },
 ): Promise<OrderRecord | null> {
-  if (!CHECKOUT_SESSION_ID.test(expiredStripeSessionId)) return null;
+  if (!CHECKOUT_SESSION_ID.test(expiredStripeSessionId)
+    || checkout.providerStatus !== 'expired'
+    || checkout.providerPaymentStatus !== 'unpaid'
+    || checkout.providerPaymentIntent !== null) return null;
   const now = checkout.now ?? new Date();
   const leaseMs = checkout.leaseMs ?? 5 * 60_000;
   return withOrderTransaction<OrderRecord | null>(

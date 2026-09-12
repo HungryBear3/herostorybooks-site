@@ -46,9 +46,10 @@ import {
   type SlotStateStore,
 } from '../src/lib/checkout-intake-client-flow.ts';
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
+import { processEnv } from './support/process-env.ts';
 
 const ORIGIN = 'https://preview.herostorybooks.test';
-const ENV = { HSB_CHECKOUT_DIRECT_UPLOAD: 'true' } as NodeJS.ProcessEnv;
+const ENV = processEnv({ HSB_CHECKOUT_DIRECT_UPLOAD: 'true' });
 const FAMILY_ID = 'supporting-character-abc123';
 
 interface Rig {
@@ -273,10 +274,10 @@ test('a replacement chosen mid-upload wins; the superseded upload cannot enter t
   const saved = r.state.get().slots.primary_hero_photo!;
   assert.equal(saved.state, 'saved');
   assert.equal(saved.assetId, secondOutcome.status === 'saved' ? secondOutcome.assetId : null);
-  assert.notEqual(
-    saved.assetId,
-    firstOutcome.status === 'saved' ? (firstOutcome as { assetId: string }).assetId : '—',
-  );
+  // A superseded upload carries no asset id at all — there is nothing for the
+  // selection to pick up, and the saved slot holds the replacement's id.
+  assert.deepEqual(Object.keys(firstOutcome), ['status']);
+  assert.notEqual(saved.assetId, null);
   assert.equal(buildDirectIntakeSelection(r.state.get(), []).selection.primaryHeroPhotoAssetId, saved.assetId);
 });
 

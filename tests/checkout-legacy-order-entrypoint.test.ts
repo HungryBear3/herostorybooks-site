@@ -150,6 +150,8 @@ function harness(overrides: Partial<CheckoutSessionProvisionDeps> = {}): Harness
           id: `cs_${next++}`,
           url: `https://checkout.stripe.test/${order.id}/${next - 1}`,
           status: 'open',
+          payment_status: 'unpaid',
+          payment_intent: null,
         };
         byKey.set(idempotencyKey, session);
         minted.set(session.id, session);
@@ -159,7 +161,13 @@ function harness(overrides: Partial<CheckoutSessionProvisionDeps> = {}): Harness
         calls.push(`retrieve:${sessionId}`);
         const found = minted.get(sessionId);
         if (!found) throw new Error('session unavailable');
-        return found;
+        return found.status === 'open' || found.status === 'expired'
+          ? {
+            ...found,
+            payment_status: found.payment_status ?? 'unpaid',
+            payment_intent: found.payment_intent ?? null,
+          }
+          : found;
       },
       async renewCheckoutLease(orderId, leaseId, fingerprint) {
         calls.push('renew');

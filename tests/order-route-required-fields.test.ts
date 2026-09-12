@@ -79,7 +79,9 @@ test('server contract: /api/order POST imports + calls missingRequiredField', ()
   assert.match(src, /from\s+['"](?:@\/lib|\.)\/checkout-flow(?:\.ts)?['"]/);
   assert.match(src, /missingRequiredField\(/);
   assert.match(src, /missingFieldErrorCode\(/);
-  assert.doesNotMatch(src, /missingRequiredField\(\{[^}]*childPronouns/s);
+  // [^}] already spans newlines and there is no dot-any here, so dropping the
+  // ES2018-only dotAll flag leaves the negative assertion identical.
+  assert.doesNotMatch(src, /missingRequiredField\(\{[^}]*childPronouns/);
 });
 
 // P1: Stripe shipping must match the site's US-only fulfillment copy
