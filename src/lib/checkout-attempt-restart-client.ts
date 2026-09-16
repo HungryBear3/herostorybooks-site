@@ -9,8 +9,7 @@ export interface CheckoutAttemptLockManager {
 /** Same-origin fallback for browsers that deny access to sessionStorage. */
 export async function resolveServerCheckoutAttemptLease(
   fetchImpl: typeof fetch = fetch,
-  lockManager: CheckoutAttemptLockManager | null | undefined =
-    typeof navigator === 'undefined' ? null : navigator.locks,
+  lockManager?: CheckoutAttemptLockManager | null,
 ): Promise<string | null> {
   const requestLease = async (): Promise<string | null> => {
     const response = await fetchImpl('/api/order/attempt-lease', {
@@ -25,11 +24,30 @@ export async function resolveServerCheckoutAttemptLease(
       : null;
   };
   try {
-    // Web Locks are origin-wide. Serializing here lets a cookie set by the first
-    // Private tab become visible before a second tab begins its lease request.
-    return lockManager
-      ? await lockManager.request('hsb-checkout-attempt-lease', requestLease)
-      : await requestLease();
+    let availableLockManager = lockManager;
+    if (availableLockManager === undefined) {
+      try {
+        availableLockManager = typeof navigator === 'undefined' ? null : navigator.locks;
+      } catch {
+        availableLockManager = null;
+      }
+    }
+    if (!availableLockManager) return await requestLease();
+
+    // Web Locks remain a best-effort convergence optimization. Correctness is
+    // enforced server-side by the atomic semantic-intent claim before any order
+    // or provider work. Retry lock ACQUISITION only when Safari rejected before
+    // the callback began; once a fetch starts, a lost response is ambiguous and
+    // must never be reissued by this invocation.
+    let callbackStarted = false;
+    try {
+      return await availableLockManager.request('hsb-checkout-attempt-lease', async () => {
+        callbackStarted = true;
+        return requestLease();
+      });
+    } catch {
+      return callbackStarted ? null : await requestLease();
+    }
   } catch {
     return null;
   }

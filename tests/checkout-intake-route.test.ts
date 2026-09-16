@@ -20,10 +20,11 @@ import { isCheckoutStoryMediaEnabled } from '../src/lib/checkout-direct-flags.ts
 import { createMemoryCheckoutGuardStore, guardBucketPath } from '../src/lib/checkout-request-guard.ts';
 import { storyMediaBuildContractProblem } from '../src/lib/story-media-store.ts';
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
+import { processEnv } from './support/process-env.ts';
 
 const ORIGIN = 'https://herostorybooks.com';
 const URL_ = `${ORIGIN}/api/checkout/intake`;
-const ENV = { HSB_CHECKOUT_DIRECT_UPLOAD: 'true' } as NodeJS.ProcessEnv;
+const ENV = processEnv({ HSB_CHECKOUT_DIRECT_UPLOAD: 'true' });
 const ORDER_TOKEN = 'vercel_blob_rw_orderstore02_ordersecret';
 const INTAKE_TOKEN = 'vercel_blob_rw_intakestore02_intakesecret';
 const GUARD_TOKEN = 'vercel_blob_rw_guardstore02_guardsecret';

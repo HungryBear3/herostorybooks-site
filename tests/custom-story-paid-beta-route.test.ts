@@ -8,7 +8,9 @@ const orderRoute = () => readFileSync('src/lib/checkout-order-route-handler.ts',
 
 test('friends/family paid custom-memory route is private and noindexed', () => {
   const source = page();
-  assert.match(source, /robots:\s*{\s*index:\s*false,\s*follow:\s*false/s);
+  // \s* already crosses newlines and the pattern has no dot-any, so the dotAll
+  // flag (ES2018) never changed what this matched.
+  assert.match(source, /robots:\s*{\s*index:\s*false,\s*follow:\s*false/);
   assert.match(source, /HSB_CUSTOM_STORY_PAID_BETA/);
   assert.match(source, /PaidMemoryBetaForm paidBetaEnabled/);
 });

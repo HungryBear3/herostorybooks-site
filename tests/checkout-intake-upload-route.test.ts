@@ -29,14 +29,13 @@ import {
 } from '../src/lib/checkout-intake-upload-route.ts';
 import { createMemoryCheckoutGuardStore, guardBucketPath } from '../src/lib/checkout-request-guard.ts';
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
+import { processEnv } from './support/process-env.ts';
 
 const ORIGIN = 'https://herostorybooks.com';
 const UPLOAD_URL = `${ORIGIN}/api/checkout/intake/upload`;
 const HERO = { category: 'primary_hero_photo' } as const;
 
-const ENV = {
-  HSB_CHECKOUT_DIRECT_UPLOAD: 'true',
-} as NodeJS.ProcessEnv;
+const ENV = processEnv({ HSB_CHECKOUT_DIRECT_UPLOAD: 'true' });
 
 /**
  * Stands in for `@vercel/blob/client`'s `handleUpload`, reproducing only its

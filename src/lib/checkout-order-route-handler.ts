@@ -35,7 +35,10 @@ import crypto from 'node:crypto';
 
 import {
   beginCheckoutSessionProvisioning,
+  bindCheckoutAttemptToOrderId,
   bindOrderCheckoutSession,
+  CheckoutIntentOwnershipError,
+  claimCheckoutIntentOrderId,
   createOrderRecord,
   MAX_DOCUMENT_BYTES,
   MAX_VOICE_BYTES,
@@ -76,19 +79,26 @@ import {
   buildDirectIntakeBindingDependencies,
   runDirectIntakeCheckout,
 } from './checkout-direct-order.ts';
+import { validateFinalizeSelection } from './checkout-finalize.ts';
 import {
   CHECKOUT_RECONCILIATION_SUPPORT,
   provisionCheckoutSession,
   type CheckoutSessionProvisionDeps,
 } from './checkout-session-provisioning.ts';
 import { runLegacyCheckoutRoute } from './checkout-legacy-order.ts';
+import { resumeCanonicalCheckoutSession } from './checkout-canonical-resume.ts';
 import { type IntakeStore } from './checkout-intake.ts';
 import {
   CHECKOUT_ATTEMPT_LEASE_HEADER,
   checkoutAttemptLeaseCookieFromHeader,
   checkoutAttemptLeaseHeaderMatchesCookie,
 } from './checkout-attempt-lease.ts';
-import { checkoutRequestFingerprint } from './checkout-request-fingerprint.ts';
+import {
+  checkoutIntentFingerprint,
+  checkoutRequestFingerprint,
+  type CheckoutIntentMediaEntry,
+  type DirectMediaSemanticEntry,
+} from './checkout-request-fingerprint.ts';
 import { classifyStoryAttachment } from './story-attachment.ts';
 import { isStoryMediaExplicitlyDisabled } from './story-media-store.ts';
 
@@ -235,6 +245,7 @@ export async function handleCheckoutOrderPost<TResponse>(
       return json({ error: 'Invalid checkout attempt. Please reload and try again.' }, 400);
     }
     const requestFingerprint = await checkoutRequestFingerprint(form);
+
     const checkoutTracking = buildCheckoutTracking({
       cohort: form.get('cohort'),
       invite: form.get('invite'),
@@ -602,6 +613,8 @@ export async function handleCheckoutOrderPost<TResponse>(
       bookFormat,
       email,
       photoFileName: photoValidation.ok ? `hero.${photoValidation.extension}` : null,
+      voiceSource: hasVoiceUpload ? voiceSource : null,
+      documentSource: hasDocumentUpload ? 'uploaded' : null,
       customStoryBrief,
       customStoryValidation,
       checkoutTracking,
@@ -614,6 +627,7 @@ export async function handleCheckoutOrderPost<TResponse>(
     });
     draftOrder.checkoutAttemptId = checkoutAttemptId;
     draftOrder.checkoutFingerprint = requestFingerprint;
+
     draftOrder.checkoutLeaseId = crypto.randomUUID();
     draftOrder.checkoutLeaseExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
 
@@ -623,16 +637,113 @@ export async function handleCheckoutOrderPost<TResponse>(
     // without leaving an abandoned order or upload behind.
     const stripeProductId = getRequiredStripeProductId(draftOrder.bookFormat);
 
+    let intakeStore: IntakeStore | null = null;
+    let directMedia: readonly DirectMediaSemanticEntry[] | undefined;
     if (directRequest.kind === 'direct') {
-      let intakeStore;
       try {
         intakeStore = deps.createIntakeStore();
-      } catch {
-        return json(
-          { error: 'Direct upload storage is unavailable. No charge was made.', code: 'direct_intake_store_unavailable' },
-          503,
-        );
+        const validated = await validateFinalizeSelection(intakeStore, {
+          intakeId: directRequest.request.intakeId,
+          capability: directRequest.request.capability,
+          selection: directRequest.request.selection,
+          familyCharacterIds: directRequest.request.familyCharacterIds,
+          expectedOrderId: draftOrder.id,
+        });
+        directMedia = validated.entries;
+      } catch (error) {
+        logError('[order] direct intake semantic identity could not be verified', error);
+        return json({
+          error: CHECKOUT_RECONCILIATION_SUPPORT,
+          code: 'direct_intake_semantic_identity_unavailable',
+        }, 409);
       }
+    }
+    const intentMedia: CheckoutIntentMediaEntry[] = [];
+    if (hasPhotoUpload) intentMedia.push({ category: 'primary_hero_photo', file: photo as File });
+    for (const [index, value] of supportingPhotoFiles) {
+      intentMedia.push({ category: `family_character_photo:${index}`, file: value.file });
+    }
+    if (hasVoiceUpload) intentMedia.push({ category: 'voice', file: voiceRaw as File });
+    if (hasDocumentUpload) intentMedia.push({ category: 'document', file: documentRaw as File });
+    const intentFingerprint = await checkoutIntentFingerprint(draftOrder, {
+      media: intentMedia,
+      directMedia,
+    });
+    draftOrder.checkoutIntentFingerprint = intentFingerprint;
+
+    // Browser attempts are lease capabilities, not payment identities. Private
+    // tabs may legitimately carry different attempts when storage/Web Locks are
+    // unavailable. The semantic intent claim is the durable single-writer:
+    // byte-identical purchased content converges on one canonical order path
+    // before media persistence or provider creation can begin.
+    const proposedOrderId = draftOrder.id;
+    let intentClaim: { orderId: string; generation: number };
+    try {
+      intentClaim = await claimCheckoutIntentOrderId(intentFingerprint, proposedOrderId);
+    } catch (error) {
+      if (!(error instanceof CheckoutIntentOwnershipError)) throw error;
+      // This browser attempt already owns a DIFFERENT purchase: its content was
+      // edited after it was sent. The edited content is refused here — before
+      // any durable claim, media or provider work — precisely so it is never
+      // bound to the open order and stays buyable from a fresh attempt.
+      logError(
+        `[order] ABORT BEFORE MEDIA/PROVIDER: ${proposedOrderId} is owned by a different checkout intent`,
+        error,
+      );
+      return json(
+        {
+          error: CHECKOUT_RECONCILIATION_SUPPORT,
+          code: 'checkout_intent_order_ownership_conflict',
+        },
+        409,
+      );
+    }
+    draftOrder.id = intentClaim.orderId;
+    draftOrder.checkoutIntentClaimGeneration = intentClaim.generation;
+    if (!await bindCheckoutAttemptToOrderId(checkoutAttemptId, draftOrder.id)) {
+      throw new OrderPersistenceError(draftOrder.id, 'Checkout attempt index was not authoritative');
+    }
+
+    const checkoutProvisionDeps: CheckoutSessionProvisionDeps = {
+      createCheckoutSession: deps.createCheckoutSession,
+      retrieveCheckoutSession: deps.retrieveCheckoutSession,
+      renewCheckoutLease: (orderId, leaseId, fingerprint) =>
+        renewCheckoutLease(orderId, leaseId, fingerprint),
+      beginCheckoutSessionProvisioning: (orderId, checkout) =>
+        beginCheckoutSessionProvisioning(orderId, checkout),
+      recordCheckoutSessionCandidate: (orderId, stripeSessionId, checkout) =>
+        recordCheckoutSessionCandidate(orderId, stripeSessionId, checkout),
+      supersedeCheckoutSession: (orderId, expiredStripeSessionId, checkout) =>
+        supersedeExpiredCheckoutSession(orderId, expiredStripeSessionId, checkout),
+      bindCheckoutSession: (orderId, stripeSessionId, checkout) =>
+        bindOrderCheckoutSession(orderId, stripeSessionId, checkout),
+      logError,
+    };
+
+    // One shared losing-lease recovery boundary, before either transport can
+    // finalize or upload this request's media. The canonical record is the only
+    // authority here: browser attempts, intake capabilities and asset ids are
+    // deliberately absent from provider identity.
+    const canonicalResume = await resumeCanonicalCheckoutSession({
+      orderId: intentClaim.orderId,
+      checkoutAttemptId,
+      intentFingerprint,
+      stripeProductId,
+      baseUrl: getReturnBaseUrl(request),
+      gaClientId,
+    }, checkoutProvisionDeps);
+    if (canonicalResume.status === 'refused') {
+      return json(
+        { error: canonicalResume.message, code: canonicalResume.code },
+        canonicalResume.httpStatus,
+      );
+    }
+    if (canonicalResume.status === 'resumed') {
+      return json({ ok: true, redirectTo: canonicalResume.url }, 200);
+    }
+
+    if (directRequest.kind === 'direct') {
+      if (!intakeStore) throw new OrderPersistenceError(draftOrder.id, 'Direct intake store was not resolved');
       const directResult = await runDirectIntakeCheckout({
         draftOrder,
         request: directRequest.request,
@@ -641,22 +752,8 @@ export async function handleCheckoutOrderPost<TResponse>(
         gaClientId,
       }, {
         binding: buildDirectIntakeBindingDependencies(intakeStore),
-        createCheckoutSession: deps.createCheckoutSession,
-        retrieveCheckoutSession: deps.retrieveCheckoutSession,
-        // The real guarded transactions. The saga must never re-implement
-        // either check locally: only the store can settle who holds the lease.
-        renewCheckoutLease: (orderId, leaseId, fingerprint) =>
-          renewCheckoutLease(orderId, leaseId, fingerprint),
-        beginCheckoutSessionProvisioning: (orderId, checkout) =>
-          beginCheckoutSessionProvisioning(orderId, checkout),
-        recordCheckoutSessionCandidate: (orderId, stripeSessionId, checkout) =>
-          recordCheckoutSessionCandidate(orderId, stripeSessionId, checkout),
-        supersedeCheckoutSession: (orderId, expiredStripeSessionId, checkout) =>
-          supersedeExpiredCheckoutSession(orderId, expiredStripeSessionId, checkout),
-        bindCheckoutSession: (orderId, stripeSessionId, checkout) =>
-          bindOrderCheckoutSession(orderId, stripeSessionId, checkout),
+        ...checkoutProvisionDeps,
         markRecoveryLeadConverted: deps.markRecoveryLeadConverted,
-        logError,
       });
       if (directResult.status === 'refused') {
         return json(
@@ -671,32 +768,7 @@ export async function handleCheckoutOrderPost<TResponse>(
     // never re-implement any of these checks locally: only the store can settle
     // who holds the lease, and only the shared machine may decide what an
     // existing provider Session means.
-    const legacyCheckoutDeps = {
-      createCheckoutSession: deps.createCheckoutSession,
-      retrieveCheckoutSession: deps.retrieveCheckoutSession,
-      renewCheckoutLease: (orderId: string, leaseId: string, fingerprint: string) =>
-        renewCheckoutLease(orderId, leaseId, fingerprint),
-      beginCheckoutSessionProvisioning: (
-        orderId: string,
-        checkout: { leaseId: string; fingerprint: string; checkoutSessionAttempt: number },
-      ) => beginCheckoutSessionProvisioning(orderId, checkout),
-      recordCheckoutSessionCandidate: (
-        orderId: string,
-        stripeSessionId: string,
-        checkout: { checkoutAttemptId: string; fingerprint: string; checkoutSessionAttempt: number },
-      ) => recordCheckoutSessionCandidate(orderId, stripeSessionId, checkout),
-      supersedeCheckoutSession: (
-        orderId: string,
-        expiredStripeSessionId: string,
-        checkout: { leaseId: string; fingerprint: string },
-      ) => supersedeExpiredCheckoutSession(orderId, expiredStripeSessionId, checkout),
-      bindCheckoutSession: (
-        orderId: string,
-        stripeSessionId: string,
-        checkout: { leaseId: string; fingerprint: string; checkoutSessionAttempt: number },
-      ) => bindOrderCheckoutSession(orderId, stripeSessionId, checkout),
-      logError,
-    };
+    const legacyCheckoutDeps = checkoutProvisionDeps;
 
     // Create the durable owner record before uploading any public customer
     // media. If cleanup itself later fails, the deterministic orders/<id>/

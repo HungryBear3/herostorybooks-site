@@ -1403,12 +1403,18 @@ export function CheckoutForm({
         // response can arrive after the server created and bound a payable
         // Session, and the browser can never see that.
         let serverMessage: unknown = null;
+        let serverCode: unknown = null;
         try {
-          serverMessage = (await response.json())?.error;
+          // The stable code is what distinguishes "this needs a fresh attempt"
+          // from every other refusal. It only ever ADDS bounded guidance: the
+          // server's own sentence still leads, and nothing retries itself here.
+          const refusal = await response.json();
+          serverMessage = refusal?.error;
+          serverCode = refusal?.code;
         } catch {
           /* non-JSON response — the shared fallback is the safe default */
         }
-        throw new Error(checkoutSubmitFailureMessage(serverMessage));
+        throw new Error(checkoutSubmitFailureMessage(serverMessage, serverCode));
       }
 
       const result = await response.json();

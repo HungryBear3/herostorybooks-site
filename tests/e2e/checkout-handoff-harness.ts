@@ -31,6 +31,11 @@ export interface HarnessOptions {
    * the fallback link can be followed for real.
    */
   dropFirstStripeNavigation?: boolean;
+  /**
+   * Answer `/api/order` with a server REFUSAL instead of a hand-off, so the
+   * banner the buyer actually reads can be asserted in a real browser.
+   */
+  orderRefusal?: { status: number; body: Record<string, unknown> };
 }
 
 export interface HandoffHarness {
@@ -74,9 +79,9 @@ export async function installHandoffHarness(
       harness.orderBodies.push(request.postData() ?? '');
       orderResponseStartedAt = Date.now();
       return route.fulfill({
-        status: 200,
+        status: options.orderRefusal?.status ?? 200,
         contentType: 'application/json',
-        body: JSON.stringify(body),
+        body: JSON.stringify(options.orderRefusal?.body ?? body),
       });
     }
     if (url.origin === appOrigin && url.pathname === '/api/order/attempt-lease') {

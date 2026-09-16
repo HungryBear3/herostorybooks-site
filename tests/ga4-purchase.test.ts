@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { sanitizeGaClientId, scheduleGa4Purchase, sendGa4Purchase } from '../src/lib/ga4-purchase.ts';
+import { processEnv } from './support/process-env.ts';
 
-const configuredEnv = {
+const configuredEnv = processEnv({
   GA4_MEASUREMENT_ID: 'G-TEST123',
   GA4_API_SECRET: 'secret',
-} as NodeJS.ProcessEnv;
+});
 
 test('sends a recommended purchase event using trusted cents and no PII', async () => {
   let request: { url: string; body: string } | undefined;
@@ -55,7 +56,7 @@ test('unpaid sessions and missing configuration are no-ops', async () => {
   assert.equal(await sendGa4Purchase({
     transactionId: 'cs_paid', amountCents: 1900, itemId: 'book_digital',
     itemName: 'HeroStoryBooks digital', paymentStatus: 'paid',
-  }, { env: {}, fetchImpl }), 'skipped');
+  }, { env: processEnv(), fetchImpl }), 'skipped');
   assert.equal(calls, 0);
 });
 
@@ -91,7 +92,9 @@ test('scheduled network failures are swallowed and never escape into payment flo
     fetchImpl: async () => { throw new Error('network down'); },
     log: { warn: (...args: unknown[]) => { warnings.push(args); } },
   });
-  await assert.doesNotReject(() => callback!());
+  // The scheduled callback is declared `() => void | Promise<void>`; awaiting it
+  // inside an async wrapper is what assert.doesNotReject can actually observe.
+  await assert.doesNotReject(async () => { await callback!(); });
   assert.equal(warnings.length, 1);
 });
 

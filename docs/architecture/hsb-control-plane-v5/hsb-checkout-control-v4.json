@@ -1,0 +1,4320 @@
+{
+  "contract_id": "hsb-checkout-control-v4",
+  "contract_version": 4,
+  "provider_qualification": "HOLD_UNQUALIFIED",
+  "authority": "documentation_and_offline_proof_only",
+  "registries": {
+    "containment_projection": {
+      "name": "containment_projection",
+      "mapping": {
+        "draft": "draft",
+        "provisioning": "ambiguous",
+        "payable": "ambiguous",
+        "ambiguous": "ambiguous",
+        "blocked": "blocked",
+        "abandoned": "abandoned",
+        "paid": "paid",
+        "reversed": "reversed"
+      },
+      "sets_risk_hold": true,
+      "sets_fulfillment_hold": true,
+      "preserves_independent_holds": true,
+      "preserves_blocked_from": true
+    },
+    "dispute_states": {
+      "name": "dispute_states",
+      "values": [
+        "none",
+        "open",
+        "won",
+        "lost",
+        "conflict"
+      ]
+    },
+    "dispute_edges_with_guards": {
+      "name": "dispute_edges_with_guards",
+      "edges": [
+        {
+          "from": "none",
+          "incoming": "open",
+          "to": "open",
+          "guard": "first_open_evidence"
+        },
+        {
+          "from": "none",
+          "incoming": "won",
+          "to": "won",
+          "guard": "first_won_evidence"
+        },
+        {
+          "from": "none",
+          "incoming": "lost",
+          "to": "lost",
+          "guard": "first_lost_evidence"
+        },
+        {
+          "from": "open",
+          "incoming": "open",
+          "to": "open",
+          "guard": "compatible_open_evidence"
+        },
+        {
+          "from": "open",
+          "incoming": "won",
+          "to": "won",
+          "guard": "won_evidence"
+        },
+        {
+          "from": "open",
+          "incoming": "lost",
+          "to": "lost",
+          "guard": "lost_evidence"
+        },
+        {
+          "from": "won",
+          "incoming": "open",
+          "to": "won",
+          "guard": "stale_open_preserves_terminal"
+        },
+        {
+          "from": "won",
+          "incoming": "won",
+          "to": "won",
+          "guard": "compatible_won_evidence"
+        },
+        {
+          "from": "won",
+          "incoming": "lost",
+          "to": "conflict",
+          "guard": "opposite_lost_evidence"
+        },
+        {
+          "from": "lost",
+          "incoming": "open",
+          "to": "lost",
+          "guard": "stale_open_preserves_terminal"
+        },
+        {
+          "from": "lost",
+          "incoming": "won",
+          "to": "conflict",
+          "guard": "opposite_won_evidence"
+        },
+        {
+          "from": "lost",
+          "incoming": "lost",
+          "to": "lost",
+          "guard": "compatible_lost_evidence"
+        },
+        {
+          "from": "conflict",
+          "incoming": "open",
+          "to": "conflict",
+          "guard": "all_later_evidence"
+        },
+        {
+          "from": "conflict",
+          "incoming": "won",
+          "to": "conflict",
+          "guard": "all_later_evidence"
+        },
+        {
+          "from": "conflict",
+          "incoming": "lost",
+          "to": "conflict",
+          "guard": "all_later_evidence"
+        }
+      ],
+      "all_unlisted_rejected": true
+    },
+    "dispute_transition_function": {
+      "name": "dispute_transition_function",
+      "mapping": {
+        "none|open": "open",
+        "none|won": "won",
+        "none|lost": "lost",
+        "open|open": "open",
+        "open|won": "won",
+        "open|lost": "lost",
+        "won|open": "won",
+        "won|won": "won",
+        "won|lost": "conflict",
+        "lost|open": "lost",
+        "lost|won": "conflict",
+        "lost|lost": "lost",
+        "conflict|open": "conflict",
+        "conflict|won": "conflict",
+        "conflict|lost": "conflict"
+      },
+      "stale_open_after_terminal": true,
+      "opposite_terminal_asserts_holds": true,
+      "won_releases_only_dispute_hold": true
+    },
+    "payment_identity_lock_protocol": {
+      "name": "payment_identity_lock_protocol",
+      "global_lock_name": "hsb-provider-payment-identity-v1",
+      "global_lock_kind": "pg_advisory_xact_lock",
+      "identity_order": [
+        "identity_kind",
+        "identity_id"
+      ],
+      "alias_rule": "charge_to_payment_intent_immutable_insert_once",
+      "evidence_rule": "append_only_with_separate_unique_consumption",
+      "steps": [
+        "acquire_global_transaction_advisory_lock",
+        "materialize_presented_identities",
+        "lock_identity_rows_in_kind_id_order",
+        "validate_immutable_aliases",
+        "insert_alias_once_or_quarantine_repoint",
+        "recompute_complete_alias_closure_post_lock",
+        "read_unconsumed_reversals_across_closure",
+        "lock_order_after_closure",
+        "consume_and_update_atomically",
+        "refuse_fulfillment_until_complete"
+      ]
+    },
+    "exposed_order_classes": {
+      "name": "exposed_order_classes",
+      "values": [
+        "marker",
+        "candidate",
+        "session",
+        "payment_intent",
+        "unknown_provider_outcome",
+        "payable",
+        "ambiguous",
+        "paid",
+        "reversed_financial_evidence"
+      ]
+    },
+    "duplicate_detector_rules": {
+      "name": "duplicate_detector_rules",
+      "detector_version": "duplicate-canonical-order-v1",
+      "case_kind": "duplicate_canonical_order",
+      "case_unique_key": [
+        "scope_id",
+        "case_kind",
+        "detector_version"
+      ],
+      "deduplicate_input_by": "canonical_order_id",
+      "outcomes": {
+        "one_order_only": "no_case",
+        "one_paid_one_open": "scope_case_preserve_paid_hold_open",
+        "multiple_open_exposed": "scope_case_hold_all",
+        "multiple_paid_reversed": "scope_case_preserve_accounting_hold_fulfillment",
+        "same_order_through_aliases": "no_case",
+        "identity_or_mapping_conflict": "scope_case_plus_identity_conflict_evidence"
+      },
+      "open_order_provider_create_allowed_after_case": false,
+      "rerun_mutates_accounting": false
+    },
+    "legacy_source_classes": {
+      "name": "legacy_source_classes",
+      "values": [
+        "pending_no_provider",
+        "marker_only",
+        "candidate_unbound",
+        "session_bound_unpaid",
+        "payment_intent_unsettled",
+        "paid",
+        "reversed",
+        "terminal_charge_free",
+        "unknown",
+        "conflict"
+      ],
+      "source_versioned": true,
+      "canonical_adoption_domain": [
+        "none"
+      ]
+    },
+    "legacy_source_facts": {
+      "name": "legacy_source_facts",
+      "exact_fields": [
+        "source_identity",
+        "source_version",
+        "source_digest",
+        "source_era",
+        "canonical_adoption",
+        "marker",
+        "candidate",
+        "session",
+        "payment_intent",
+        "reversal",
+        "identity_conflict",
+        "mapping_conflict",
+        "terminal_charge_free_proven",
+        "drained",
+        "zero_provider_identity_proven",
+        "open_unmapped_exposure"
+      ],
+      "string_bounds": {
+        "source_identity": [
+          1,
+          256
+        ],
+        "source_version": [
+          1,
+          128
+        ]
+      },
+      "digest_pattern": "^[0-9a-f]{64}$",
+      "enums": {
+        "source_era": [
+          "parent",
+          "current"
+        ],
+        "canonical_adoption": [
+          "none"
+        ],
+        "marker": [
+          "absent",
+          "present"
+        ],
+        "candidate": [
+          "absent",
+          "unbound",
+          "bound"
+        ],
+        "session": [
+          "absent",
+          "unpaid",
+          "paid",
+          "unknown"
+        ],
+        "payment_intent": [
+          "absent",
+          "unsettled",
+          "succeeded",
+          "failed",
+          "reversed",
+          "unknown"
+        ],
+        "reversal": [
+          "absent",
+          "partial",
+          "full",
+          "dispute_lost",
+          "unknown"
+        ]
+      },
+      "strict_booleans": [
+        "identity_conflict",
+        "mapping_conflict",
+        "terminal_charge_free_proven",
+        "drained",
+        "zero_provider_identity_proven",
+        "open_unmapped_exposure"
+      ],
+      "caller_authoritative_fields": []
+    },
+    "legacy_classification_rules": {
+      "name": "legacy_classification_rules",
+      "match_cardinality": "exactly_one_declared_predicate",
+      "unknown_semantics": "explicit_complement_of_all_other_class_predicates",
+      "predicate_language": [
+        "always",
+        "all",
+        "any",
+        "not",
+        "eq",
+        "in",
+        "true"
+      ],
+      "rules": [
+        {
+          "class": "conflict",
+          "predicate": {
+            "any": [
+              {
+                "true": "identity_conflict"
+              },
+              {
+                "true": "mapping_conflict"
+              },
+              {
+                "all": [
+                  {
+                    "true": "terminal_charge_free_proven"
+                  },
+                  {
+                    "any": [
+                      {
+                        "not": {
+                          "eq": [
+                            "marker",
+                            "absent"
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "eq": [
+                            "candidate",
+                            "absent"
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "eq": [
+                            "session",
+                            "absent"
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "eq": [
+                            "payment_intent",
+                            "absent"
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "eq": [
+                            "reversal",
+                            "absent"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "all": [
+                  {
+                    "eq": [
+                      "candidate",
+                      "absent"
+                    ]
+                  },
+                  {
+                    "in": [
+                      "session",
+                      [
+                        "unpaid",
+                        "paid"
+                      ]
+                    ]
+                  }
+                ]
+              },
+              {
+                "all": [
+                  {
+                    "eq": [
+                      "session",
+                      "paid"
+                    ]
+                  },
+                  {
+                    "in": [
+                      "payment_intent",
+                      [
+                        "unsettled",
+                        "failed",
+                        "reversed"
+                      ]
+                    ]
+                  }
+                ]
+              },
+              {
+                "all": [
+                  {
+                    "eq": [
+                      "session",
+                      "unpaid"
+                    ]
+                  },
+                  {
+                    "in": [
+                      "payment_intent",
+                      [
+                        "succeeded",
+                        "reversed"
+                      ]
+                    ]
+                  }
+                ]
+              },
+              {
+                "all": [
+                  {
+                    "in": [
+                      "reversal",
+                      [
+                        "full",
+                        "dispute_lost"
+                      ]
+                    ]
+                  },
+                  {
+                    "in": [
+                      "payment_intent",
+                      [
+                        "absent",
+                        "unsettled",
+                        "failed",
+                        "unknown"
+                      ]
+                    ]
+                  }
+                ]
+              },
+              {
+                "all": [
+                  {
+                    "eq": [
+                      "reversal",
+                      "partial"
+                    ]
+                  },
+                  {
+                    "in": [
+                      "payment_intent",
+                      [
+                        "absent",
+                        "unsettled",
+                        "failed",
+                        "reversed"
+                      ]
+                    ]
+                  },
+                  {
+                    "not": {
+                      "eq": [
+                        "session",
+                        "paid"
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "all": [
+                  {
+                    "eq": [
+                      "payment_intent",
+                      "reversed"
+                    ]
+                  },
+                  {
+                    "eq": [
+                      "reversal",
+                      "partial"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "class": "reversed",
+          "predicate": {
+            "all": [
+              {
+                "not": {
+                  "any": [
+                    {
+                      "true": "identity_conflict"
+                    },
+                    {
+                      "true": "mapping_conflict"
+                    },
+                    {
+                      "all": [
+                        {
+                          "true": "terminal_charge_free_proven"
+                        },
+                        {
+                          "any": [
+                            {
+                              "not": {
+                                "eq": [
+                                  "marker",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "candidate",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "session",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "payment_intent",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "reversal",
+                                  "absent"
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "candidate",
+                            "absent"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "session",
+                            [
+                              "unpaid",
+                              "paid"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "paid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "unpaid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "succeeded",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "in": [
+                            "reversal",
+                            [
+                              "full",
+                              "dispute_lost"
+                            ]
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "unknown"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        },
+                        {
+                          "not": {
+                            "eq": [
+                              "session",
+                              "paid"
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "payment_intent",
+                            "reversed"
+                          ]
+                        },
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "session",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "unknown"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "any": [
+                  {
+                    "eq": [
+                      "payment_intent",
+                      "reversed"
+                    ]
+                  },
+                  {
+                    "in": [
+                      "reversal",
+                      [
+                        "full",
+                        "dispute_lost"
+                      ]
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "class": "paid",
+          "predicate": {
+            "all": [
+              {
+                "not": {
+                  "any": [
+                    {
+                      "true": "identity_conflict"
+                    },
+                    {
+                      "true": "mapping_conflict"
+                    },
+                    {
+                      "all": [
+                        {
+                          "true": "terminal_charge_free_proven"
+                        },
+                        {
+                          "any": [
+                            {
+                              "not": {
+                                "eq": [
+                                  "marker",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "candidate",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "session",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "payment_intent",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "reversal",
+                                  "absent"
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "candidate",
+                            "absent"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "session",
+                            [
+                              "unpaid",
+                              "paid"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "paid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "unpaid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "succeeded",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "in": [
+                            "reversal",
+                            [
+                              "full",
+                              "dispute_lost"
+                            ]
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "unknown"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        },
+                        {
+                          "not": {
+                            "eq": [
+                              "session",
+                              "paid"
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "payment_intent",
+                            "reversed"
+                          ]
+                        },
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "session",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "unknown"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "reversed"
+                      ]
+                    },
+                    {
+                      "in": [
+                        "reversal",
+                        [
+                          "full",
+                          "dispute_lost"
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "any": [
+                  {
+                    "eq": [
+                      "payment_intent",
+                      "succeeded"
+                    ]
+                  },
+                  {
+                    "eq": [
+                      "session",
+                      "paid"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "class": "terminal_charge_free",
+          "predicate": {
+            "all": [
+              {
+                "not": {
+                  "any": [
+                    {
+                      "true": "identity_conflict"
+                    },
+                    {
+                      "true": "mapping_conflict"
+                    },
+                    {
+                      "all": [
+                        {
+                          "true": "terminal_charge_free_proven"
+                        },
+                        {
+                          "any": [
+                            {
+                              "not": {
+                                "eq": [
+                                  "marker",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "candidate",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "session",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "payment_intent",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "reversal",
+                                  "absent"
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "candidate",
+                            "absent"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "session",
+                            [
+                              "unpaid",
+                              "paid"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "paid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "unpaid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "succeeded",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "in": [
+                            "reversal",
+                            [
+                              "full",
+                              "dispute_lost"
+                            ]
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "unknown"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        },
+                        {
+                          "not": {
+                            "eq": [
+                              "session",
+                              "paid"
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "payment_intent",
+                            "reversed"
+                          ]
+                        },
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "session",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "unknown"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "reversed"
+                      ]
+                    },
+                    {
+                      "in": [
+                        "reversal",
+                        [
+                          "full",
+                          "dispute_lost"
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "succeeded"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "session",
+                        "paid"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "all": [
+                  {
+                    "true": "terminal_charge_free_proven"
+                  },
+                  {
+                    "eq": [
+                      "marker",
+                      "absent"
+                    ]
+                  },
+                  {
+                    "eq": [
+                      "candidate",
+                      "absent"
+                    ]
+                  },
+                  {
+                    "eq": [
+                      "session",
+                      "absent"
+                    ]
+                  },
+                  {
+                    "eq": [
+                      "payment_intent",
+                      "absent"
+                    ]
+                  },
+                  {
+                    "eq": [
+                      "reversal",
+                      "absent"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "class": "payment_intent_unsettled",
+          "predicate": {
+            "all": [
+              {
+                "not": {
+                  "any": [
+                    {
+                      "true": "identity_conflict"
+                    },
+                    {
+                      "true": "mapping_conflict"
+                    },
+                    {
+                      "all": [
+                        {
+                          "true": "terminal_charge_free_proven"
+                        },
+                        {
+                          "any": [
+                            {
+                              "not": {
+                                "eq": [
+                                  "marker",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "candidate",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "session",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "payment_intent",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "reversal",
+                                  "absent"
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "candidate",
+                            "absent"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "session",
+                            [
+                              "unpaid",
+                              "paid"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "paid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "unpaid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "succeeded",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "in": [
+                            "reversal",
+                            [
+                              "full",
+                              "dispute_lost"
+                            ]
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "unknown"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        },
+                        {
+                          "not": {
+                            "eq": [
+                              "session",
+                              "paid"
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "payment_intent",
+                            "reversed"
+                          ]
+                        },
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "session",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "unknown"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "reversed"
+                      ]
+                    },
+                    {
+                      "in": [
+                        "reversal",
+                        [
+                          "full",
+                          "dispute_lost"
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "succeeded"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "session",
+                        "paid"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "all": [
+                    {
+                      "true": "terminal_charge_free_proven"
+                    },
+                    {
+                      "eq": [
+                        "marker",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "candidate",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "session",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "absent"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "eq": [
+                  "payment_intent",
+                  "unsettled"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "class": "session_bound_unpaid",
+          "predicate": {
+            "all": [
+              {
+                "not": {
+                  "any": [
+                    {
+                      "true": "identity_conflict"
+                    },
+                    {
+                      "true": "mapping_conflict"
+                    },
+                    {
+                      "all": [
+                        {
+                          "true": "terminal_charge_free_proven"
+                        },
+                        {
+                          "any": [
+                            {
+                              "not": {
+                                "eq": [
+                                  "marker",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "candidate",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "session",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "payment_intent",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "reversal",
+                                  "absent"
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "candidate",
+                            "absent"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "session",
+                            [
+                              "unpaid",
+                              "paid"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "paid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "unpaid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "succeeded",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "in": [
+                            "reversal",
+                            [
+                              "full",
+                              "dispute_lost"
+                            ]
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "unknown"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        },
+                        {
+                          "not": {
+                            "eq": [
+                              "session",
+                              "paid"
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "payment_intent",
+                            "reversed"
+                          ]
+                        },
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "session",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "unknown"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "reversed"
+                      ]
+                    },
+                    {
+                      "in": [
+                        "reversal",
+                        [
+                          "full",
+                          "dispute_lost"
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "succeeded"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "session",
+                        "paid"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "all": [
+                    {
+                      "true": "terminal_charge_free_proven"
+                    },
+                    {
+                      "eq": [
+                        "marker",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "candidate",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "session",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "absent"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "eq": [
+                    "payment_intent",
+                    "unsettled"
+                  ]
+                }
+              },
+              {
+                "eq": [
+                  "session",
+                  "unpaid"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "class": "candidate_unbound",
+          "predicate": {
+            "all": [
+              {
+                "not": {
+                  "any": [
+                    {
+                      "true": "identity_conflict"
+                    },
+                    {
+                      "true": "mapping_conflict"
+                    },
+                    {
+                      "all": [
+                        {
+                          "true": "terminal_charge_free_proven"
+                        },
+                        {
+                          "any": [
+                            {
+                              "not": {
+                                "eq": [
+                                  "marker",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "candidate",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "session",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "payment_intent",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "reversal",
+                                  "absent"
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "candidate",
+                            "absent"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "session",
+                            [
+                              "unpaid",
+                              "paid"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "paid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "unpaid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "succeeded",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "in": [
+                            "reversal",
+                            [
+                              "full",
+                              "dispute_lost"
+                            ]
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "unknown"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        },
+                        {
+                          "not": {
+                            "eq": [
+                              "session",
+                              "paid"
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "payment_intent",
+                            "reversed"
+                          ]
+                        },
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "session",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "unknown"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "reversed"
+                      ]
+                    },
+                    {
+                      "in": [
+                        "reversal",
+                        [
+                          "full",
+                          "dispute_lost"
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "succeeded"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "session",
+                        "paid"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "all": [
+                    {
+                      "true": "terminal_charge_free_proven"
+                    },
+                    {
+                      "eq": [
+                        "marker",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "candidate",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "session",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "absent"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "eq": [
+                    "payment_intent",
+                    "unsettled"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "eq": [
+                    "session",
+                    "unpaid"
+                  ]
+                }
+              },
+              {
+                "eq": [
+                  "candidate",
+                  "unbound"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "class": "marker_only",
+          "predicate": {
+            "all": [
+              {
+                "not": {
+                  "any": [
+                    {
+                      "true": "identity_conflict"
+                    },
+                    {
+                      "true": "mapping_conflict"
+                    },
+                    {
+                      "all": [
+                        {
+                          "true": "terminal_charge_free_proven"
+                        },
+                        {
+                          "any": [
+                            {
+                              "not": {
+                                "eq": [
+                                  "marker",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "candidate",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "session",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "payment_intent",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "reversal",
+                                  "absent"
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "candidate",
+                            "absent"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "session",
+                            [
+                              "unpaid",
+                              "paid"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "paid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "unpaid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "succeeded",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "in": [
+                            "reversal",
+                            [
+                              "full",
+                              "dispute_lost"
+                            ]
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "unknown"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        },
+                        {
+                          "not": {
+                            "eq": [
+                              "session",
+                              "paid"
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "payment_intent",
+                            "reversed"
+                          ]
+                        },
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "session",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "unknown"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "reversed"
+                      ]
+                    },
+                    {
+                      "in": [
+                        "reversal",
+                        [
+                          "full",
+                          "dispute_lost"
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "succeeded"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "session",
+                        "paid"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "all": [
+                    {
+                      "true": "terminal_charge_free_proven"
+                    },
+                    {
+                      "eq": [
+                        "marker",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "candidate",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "session",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "absent"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "eq": [
+                    "payment_intent",
+                    "unsettled"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "eq": [
+                    "session",
+                    "unpaid"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "eq": [
+                    "candidate",
+                    "unbound"
+                  ]
+                }
+              },
+              {
+                "eq": [
+                  "marker",
+                  "present"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "class": "pending_no_provider",
+          "predicate": {
+            "all": [
+              {
+                "not": {
+                  "any": [
+                    {
+                      "true": "identity_conflict"
+                    },
+                    {
+                      "true": "mapping_conflict"
+                    },
+                    {
+                      "all": [
+                        {
+                          "true": "terminal_charge_free_proven"
+                        },
+                        {
+                          "any": [
+                            {
+                              "not": {
+                                "eq": [
+                                  "marker",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "candidate",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "session",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "payment_intent",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "reversal",
+                                  "absent"
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "candidate",
+                            "absent"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "session",
+                            [
+                              "unpaid",
+                              "paid"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "paid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "unpaid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "succeeded",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "in": [
+                            "reversal",
+                            [
+                              "full",
+                              "dispute_lost"
+                            ]
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "unknown"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        },
+                        {
+                          "not": {
+                            "eq": [
+                              "session",
+                              "paid"
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "payment_intent",
+                            "reversed"
+                          ]
+                        },
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "session",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "unknown"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "unknown"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "reversed"
+                      ]
+                    },
+                    {
+                      "in": [
+                        "reversal",
+                        [
+                          "full",
+                          "dispute_lost"
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "succeeded"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "session",
+                        "paid"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "all": [
+                    {
+                      "true": "terminal_charge_free_proven"
+                    },
+                    {
+                      "eq": [
+                        "marker",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "candidate",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "session",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "payment_intent",
+                        "absent"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "reversal",
+                        "absent"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "eq": [
+                    "payment_intent",
+                    "unsettled"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "eq": [
+                    "session",
+                    "unpaid"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "eq": [
+                    "candidate",
+                    "unbound"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "eq": [
+                    "marker",
+                    "present"
+                  ]
+                }
+              },
+              {
+                "all": [
+                  {
+                    "not": {
+                      "true": "terminal_charge_free_proven"
+                    }
+                  },
+                  {
+                    "eq": [
+                      "marker",
+                      "absent"
+                    ]
+                  },
+                  {
+                    "eq": [
+                      "candidate",
+                      "absent"
+                    ]
+                  },
+                  {
+                    "eq": [
+                      "session",
+                      "absent"
+                    ]
+                  },
+                  {
+                    "eq": [
+                      "payment_intent",
+                      "absent"
+                    ]
+                  },
+                  {
+                    "eq": [
+                      "reversal",
+                      "absent"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "class": "unknown",
+          "predicate": {
+            "all": [
+              {
+                "not": {
+                  "any": [
+                    {
+                      "true": "identity_conflict"
+                    },
+                    {
+                      "true": "mapping_conflict"
+                    },
+                    {
+                      "all": [
+                        {
+                          "true": "terminal_charge_free_proven"
+                        },
+                        {
+                          "any": [
+                            {
+                              "not": {
+                                "eq": [
+                                  "marker",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "candidate",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "session",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "payment_intent",
+                                  "absent"
+                                ]
+                              }
+                            },
+                            {
+                              "not": {
+                                "eq": [
+                                  "reversal",
+                                  "absent"
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "candidate",
+                            "absent"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "session",
+                            [
+                              "unpaid",
+                              "paid"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "paid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "session",
+                            "unpaid"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "succeeded",
+                              "reversed"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "in": [
+                            "reversal",
+                            [
+                              "full",
+                              "dispute_lost"
+                            ]
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "unknown"
+                            ]
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        },
+                        {
+                          "in": [
+                            "payment_intent",
+                            [
+                              "absent",
+                              "unsettled",
+                              "failed",
+                              "reversed"
+                            ]
+                          ]
+                        },
+                        {
+                          "not": {
+                            "eq": [
+                              "session",
+                              "paid"
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "all": [
+                        {
+                          "eq": [
+                            "payment_intent",
+                            "reversed"
+                          ]
+                        },
+                        {
+                          "eq": [
+                            "reversal",
+                            "partial"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "any": [
+                  {
+                    "any": [
+                      {
+                        "eq": [
+                          "session",
+                          "unknown"
+                        ]
+                      },
+                      {
+                        "eq": [
+                          "payment_intent",
+                          "unknown"
+                        ]
+                      },
+                      {
+                        "eq": [
+                          "reversal",
+                          "unknown"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "all": [
+                      {
+                        "not": {
+                          "any": [
+                            {
+                              "eq": [
+                                "payment_intent",
+                                "reversed"
+                              ]
+                            },
+                            {
+                              "in": [
+                                "reversal",
+                                [
+                                  "full",
+                                  "dispute_lost"
+                                ]
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "any": [
+                            {
+                              "eq": [
+                                "payment_intent",
+                                "succeeded"
+                              ]
+                            },
+                            {
+                              "eq": [
+                                "session",
+                                "paid"
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "all": [
+                            {
+                              "true": "terminal_charge_free_proven"
+                            },
+                            {
+                              "eq": [
+                                "marker",
+                                "absent"
+                              ]
+                            },
+                            {
+                              "eq": [
+                                "candidate",
+                                "absent"
+                              ]
+                            },
+                            {
+                              "eq": [
+                                "session",
+                                "absent"
+                              ]
+                            },
+                            {
+                              "eq": [
+                                "payment_intent",
+                                "absent"
+                              ]
+                            },
+                            {
+                              "eq": [
+                                "reversal",
+                                "absent"
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "eq": [
+                            "payment_intent",
+                            "unsettled"
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "eq": [
+                            "session",
+                            "unpaid"
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "eq": [
+                            "candidate",
+                            "unbound"
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "eq": [
+                            "marker",
+                            "present"
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "all": [
+                            {
+                              "not": {
+                                "true": "terminal_charge_free_proven"
+                              }
+                            },
+                            {
+                              "eq": [
+                                "marker",
+                                "absent"
+                              ]
+                            },
+                            {
+                              "eq": [
+                                "candidate",
+                                "absent"
+                              ]
+                            },
+                            {
+                              "eq": [
+                                "session",
+                                "absent"
+                              ]
+                            },
+                            {
+                              "eq": [
+                                "payment_intent",
+                                "absent"
+                              ]
+                            },
+                            {
+                              "eq": [
+                                "reversal",
+                                "absent"
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "enumeration": "exhaustive_modeled_fact_product",
+      "output_total_and_exclusive": true
+    },
+    "legacy_dispositions": {
+      "name": "legacy_dispositions",
+      "allowed_actions": [
+        "close_no_provider",
+        "close_charge_free",
+        "resume_or_reconcile_hold",
+        "paid_hold",
+        "reversed_terminal",
+        "quarantine"
+      ],
+      "allowed_accounting_effects": [
+        "preserve"
+      ],
+      "entries": [
+        {
+          "class": "pending_no_provider",
+          "action": "close_no_provider",
+          "required_proofs": [
+            "drained",
+            "zero_provider_identity_proven"
+          ],
+          "provider_create_allowed": false,
+          "activation_blocker": false,
+          "accounting_effect": "preserve",
+          "canonical_adoption": "none"
+        },
+        {
+          "class": "marker_only",
+          "action": "resume_or_reconcile_hold",
+          "required_proofs": [],
+          "provider_create_allowed": false,
+          "activation_blocker": false,
+          "accounting_effect": "preserve",
+          "canonical_adoption": "none"
+        },
+        {
+          "class": "candidate_unbound",
+          "action": "resume_or_reconcile_hold",
+          "required_proofs": [],
+          "provider_create_allowed": false,
+          "activation_blocker": false,
+          "accounting_effect": "preserve",
+          "canonical_adoption": "none"
+        },
+        {
+          "class": "session_bound_unpaid",
+          "action": "resume_or_reconcile_hold",
+          "required_proofs": [],
+          "provider_create_allowed": false,
+          "activation_blocker": false,
+          "accounting_effect": "preserve",
+          "canonical_adoption": "none"
+        },
+        {
+          "class": "payment_intent_unsettled",
+          "action": "resume_or_reconcile_hold",
+          "required_proofs": [],
+          "provider_create_allowed": false,
+          "activation_blocker": false,
+          "accounting_effect": "preserve",
+          "canonical_adoption": "none"
+        },
+        {
+          "class": "paid",
+          "action": "paid_hold",
+          "required_proofs": [],
+          "provider_create_allowed": false,
+          "activation_blocker": false,
+          "accounting_effect": "preserve",
+          "canonical_adoption": "none"
+        },
+        {
+          "class": "reversed",
+          "action": "reversed_terminal",
+          "required_proofs": [],
+          "provider_create_allowed": false,
+          "activation_blocker": false,
+          "accounting_effect": "preserve",
+          "canonical_adoption": "none"
+        },
+        {
+          "class": "terminal_charge_free",
+          "action": "close_charge_free",
+          "required_proofs": [
+            "terminal_charge_free_proven"
+          ],
+          "provider_create_allowed": false,
+          "activation_blocker": false,
+          "accounting_effect": "preserve",
+          "canonical_adoption": "none"
+        },
+        {
+          "class": "unknown",
+          "action": "quarantine",
+          "required_proofs": [],
+          "provider_create_allowed": false,
+          "activation_blocker": true,
+          "accounting_effect": "preserve",
+          "canonical_adoption": "none"
+        },
+        {
+          "class": "conflict",
+          "action": "quarantine",
+          "required_proofs": [],
+          "provider_create_allowed": false,
+          "activation_blocker": true,
+          "accounting_effect": "preserve",
+          "canonical_adoption": "none"
+        }
+      ]
+    },
+    "activation_closure_queries": {
+      "name": "activation_closure_queries",
+      "consumes_registry": "legacy_source_classes",
+      "metric_domain": [
+        "source_count",
+        "classified_mapping_count",
+        "unclassified_count",
+        "duplicate_source_identity_count",
+        "unknown_count",
+        "conflict_count",
+        "open_unmapped_exposure_count",
+        "classification_digest_run_1",
+        "classification_digest_run_2",
+        "source_delta_between_runs"
+      ],
+      "operator_domain": [
+        "eq_metric",
+        "eq_value"
+      ],
+      "equations": [
+        {
+          "id": "source_count_matches",
+          "lhs": "source_count",
+          "op": "eq_metric",
+          "rhs": "classified_mapping_count"
+        },
+        {
+          "id": "unclassified_zero",
+          "lhs": "unclassified_count",
+          "op": "eq_value",
+          "rhs": 0
+        },
+        {
+          "id": "duplicate_source_identity_zero",
+          "lhs": "duplicate_source_identity_count",
+          "op": "eq_value",
+          "rhs": 0
+        },
+        {
+          "id": "unknown_zero",
+          "lhs": "unknown_count",
+          "op": "eq_value",
+          "rhs": 0
+        },
+        {
+          "id": "conflict_zero",
+          "lhs": "conflict_count",
+          "op": "eq_value",
+          "rhs": 0
+        },
+        {
+          "id": "open_unmapped_exposure_zero",
+          "lhs": "open_unmapped_exposure_count",
+          "op": "eq_value",
+          "rhs": 0
+        },
+        {
+          "id": "classification_digests_equal",
+          "lhs": "classification_digest_run_1",
+          "op": "eq_metric",
+          "rhs": "classification_digest_run_2"
+        },
+        {
+          "id": "source_delta_zero",
+          "lhs": "source_delta_between_runs",
+          "op": "eq_value",
+          "rhs": 0
+        }
+      ],
+      "unknown_conflict_unmapped_blocks_activation": true,
+      "changed_bytes_create_immutable_revision": true
+    },
+    "stages": {
+      "name": "stages",
+      "values": [
+        "off",
+        "shadow",
+        "backfill",
+        "verified",
+        "activated",
+        "hold"
+      ]
+    },
+    "transition_guards": {
+      "name": "transition_guards",
+      "values": [
+        "activation_gate_passed",
+        "all_later_evidence",
+        "atomic_bind_settle",
+        "audited_hold",
+        "audited_resume",
+        "audited_unblock_from_ambiguous",
+        "audited_unblock_from_draft",
+        "audited_unblock_from_payable",
+        "audited_unblock_from_provisioning",
+        "authoritative_charge_free",
+        "backfill_rollback",
+        "backfill_verified",
+        "begin_backfill",
+        "begin_shadow",
+        "compatible_evidence",
+        "compatible_later_evidence",
+        "compatible_lost_evidence",
+        "compatible_open_evidence",
+        "compatible_or_partial_or_dispute",
+        "compatible_won_evidence",
+        "conflict",
+        "conflict_or_failed_pi",
+        "consistent_terminal_evidence",
+        "contradiction",
+        "disable_shadow",
+        "exact_authenticated_settlement",
+        "exact_settlement",
+        "first_lost_evidence",
+        "first_open_evidence",
+        "first_won_evidence",
+        "full_refund_or_lost_dispute",
+        "lost_evidence",
+        "never_entered_provider",
+        "opposite_lost_evidence",
+        "opposite_won_evidence",
+        "owned_reconciliation",
+        "runtime_outage_latch",
+        "stale_open_preserves_terminal",
+        "terminal_charge_free",
+        "tx13_all_generations_charge_free",
+        "tx13_plus_audited_unblock",
+        "tx3_first_marker",
+        "tx3_immutable_authorization",
+        "tx4_exact_response",
+        "tx5_exact_bind",
+        "tx5_exact_tuple",
+        "tx6_charge_free",
+        "tx6_reconciled_rotate_fence",
+        "tx6_terminal_charge_free_rotate_fence",
+        "tx7_exact_settlement",
+        "tx7_exact_settlement_preserve_holds",
+        "unknown_or_conflict",
+        "verification_invalidated",
+        "verified_rollback",
+        "won_evidence"
+      ]
+    },
+    "stage_edges": {
+      "name": "stage_edges",
+      "edges": [
+        {
+          "from": "off",
+          "to": "shadow",
+          "guard": "begin_shadow"
+        },
+        {
+          "from": "shadow",
+          "to": "off",
+          "guard": "disable_shadow"
+        },
+        {
+          "from": "shadow",
+          "to": "backfill",
+          "guard": "begin_backfill"
+        },
+        {
+          "from": "backfill",
+          "to": "shadow",
+          "guard": "backfill_rollback"
+        },
+        {
+          "from": "backfill",
+          "to": "verified",
+          "guard": "backfill_verified"
+        },
+        {
+          "from": "verified",
+          "to": "backfill",
+          "guard": "verification_invalidated"
+        },
+        {
+          "from": "verified",
+          "to": "shadow",
+          "guard": "verified_rollback"
+        },
+        {
+          "from": "verified",
+          "to": "activated",
+          "guard": "activation_gate_passed"
+        },
+        {
+          "from": "activated",
+          "to": "hold",
+          "guard": "runtime_outage_latch"
+        },
+        {
+          "from": "hold",
+          "to": "activated",
+          "guard": "audited_resume"
+        }
+      ],
+      "all_complements_rejected": true,
+      "legacy_reverse_fallback_prohibited": true
+    },
+    "order_states": {
+      "name": "order_states",
+      "values": [
+        "draft",
+        "provisioning",
+        "payable",
+        "ambiguous",
+        "blocked",
+        "abandoned",
+        "paid",
+        "reversed"
+      ]
+    },
+    "order_edges_with_guards": {
+      "name": "order_edges_with_guards",
+      "edges": [
+        {
+          "from": "draft",
+          "to": "provisioning",
+          "guard": "tx3_first_marker"
+        },
+        {
+          "from": "draft",
+          "to": "abandoned",
+          "guard": "never_entered_provider"
+        },
+        {
+          "from": "draft",
+          "to": "blocked",
+          "guard": "audited_hold"
+        },
+        {
+          "from": "provisioning",
+          "to": "payable",
+          "guard": "tx5_exact_bind"
+        },
+        {
+          "from": "provisioning",
+          "to": "paid",
+          "guard": "tx7_exact_settlement"
+        },
+        {
+          "from": "provisioning",
+          "to": "ambiguous",
+          "guard": "conflict_or_failed_pi"
+        },
+        {
+          "from": "provisioning",
+          "to": "abandoned",
+          "guard": "tx13_all_generations_charge_free"
+        },
+        {
+          "from": "provisioning",
+          "to": "blocked",
+          "guard": "audited_hold"
+        },
+        {
+          "from": "payable",
+          "to": "paid",
+          "guard": "tx7_exact_settlement"
+        },
+        {
+          "from": "payable",
+          "to": "provisioning",
+          "guard": "tx6_terminal_charge_free_rotate_fence"
+        },
+        {
+          "from": "payable",
+          "to": "ambiguous",
+          "guard": "conflict"
+        },
+        {
+          "from": "payable",
+          "to": "abandoned",
+          "guard": "tx13_all_generations_charge_free"
+        },
+        {
+          "from": "payable",
+          "to": "blocked",
+          "guard": "audited_hold"
+        },
+        {
+          "from": "ambiguous",
+          "to": "paid",
+          "guard": "tx7_exact_settlement"
+        },
+        {
+          "from": "ambiguous",
+          "to": "provisioning",
+          "guard": "tx6_reconciled_rotate_fence"
+        },
+        {
+          "from": "ambiguous",
+          "to": "abandoned",
+          "guard": "tx13_all_generations_charge_free"
+        },
+        {
+          "from": "ambiguous",
+          "to": "blocked",
+          "guard": "audited_hold"
+        },
+        {
+          "from": "blocked",
+          "to": "draft",
+          "guard": "audited_unblock_from_draft"
+        },
+        {
+          "from": "blocked",
+          "to": "provisioning",
+          "guard": "audited_unblock_from_provisioning"
+        },
+        {
+          "from": "blocked",
+          "to": "payable",
+          "guard": "audited_unblock_from_payable"
+        },
+        {
+          "from": "blocked",
+          "to": "ambiguous",
+          "guard": "audited_unblock_from_ambiguous"
+        },
+        {
+          "from": "blocked",
+          "to": "paid",
+          "guard": "tx7_exact_settlement_preserve_holds"
+        },
+        {
+          "from": "blocked",
+          "to": "abandoned",
+          "guard": "tx13_plus_audited_unblock"
+        },
+        {
+          "from": "paid",
+          "to": "reversed",
+          "guard": "full_refund_or_lost_dispute"
+        },
+        {
+          "from": "paid",
+          "to": "paid",
+          "guard": "compatible_or_partial_or_dispute"
+        },
+        {
+          "from": "reversed",
+          "to": "reversed",
+          "guard": "compatible_later_evidence"
+        }
+      ],
+      "all_unlisted_rejected": true
+    },
+    "provider_phases": {
+      "name": "provider_phases",
+      "values": [
+        "absent",
+        "marker",
+        "candidate",
+        "bound",
+        "settled",
+        "superseded",
+        "ambiguous"
+      ]
+    },
+    "provider_phase_edges_with_guards": {
+      "name": "provider_phase_edges_with_guards",
+      "edges": [
+        {
+          "from": "absent",
+          "to": "marker",
+          "guard": "tx3_immutable_authorization"
+        },
+        {
+          "from": "marker",
+          "to": "candidate",
+          "guard": "tx4_exact_response"
+        },
+        {
+          "from": "marker",
+          "to": "superseded",
+          "guard": "terminal_charge_free"
+        },
+        {
+          "from": "marker",
+          "to": "ambiguous",
+          "guard": "unknown_or_conflict"
+        },
+        {
+          "from": "candidate",
+          "to": "bound",
+          "guard": "tx5_exact_tuple"
+        },
+        {
+          "from": "candidate",
+          "to": "settled",
+          "guard": "atomic_bind_settle"
+        },
+        {
+          "from": "candidate",
+          "to": "superseded",
+          "guard": "tx6_charge_free"
+        },
+        {
+          "from": "candidate",
+          "to": "ambiguous",
+          "guard": "conflict"
+        },
+        {
+          "from": "bound",
+          "to": "settled",
+          "guard": "exact_settlement"
+        },
+        {
+          "from": "bound",
+          "to": "superseded",
+          "guard": "tx6_charge_free"
+        },
+        {
+          "from": "bound",
+          "to": "ambiguous",
+          "guard": "contradiction"
+        },
+        {
+          "from": "ambiguous",
+          "to": "candidate",
+          "guard": "owned_reconciliation"
+        },
+        {
+          "from": "ambiguous",
+          "to": "bound",
+          "guard": "owned_reconciliation"
+        },
+        {
+          "from": "ambiguous",
+          "to": "settled",
+          "guard": "exact_authenticated_settlement"
+        },
+        {
+          "from": "ambiguous",
+          "to": "superseded",
+          "guard": "authoritative_charge_free"
+        },
+        {
+          "from": "settled",
+          "to": "settled",
+          "guard": "compatible_evidence"
+        },
+        {
+          "from": "superseded",
+          "to": "superseded",
+          "guard": "consistent_terminal_evidence"
+        }
+      ],
+      "tx3_after_tx6": "validate_existing_provisioning_then_insert_marker_without_second_order_transition",
+      "all_unlisted_rejected": true
+    },
+    "event_processing_states": {
+      "name": "event_processing_states",
+      "values": [
+        "received",
+        "leased",
+        "retryable_failure",
+        "applied",
+        "quarantined"
+      ],
+      "exact_replay": {
+        "applied": "200_noop",
+        "quarantined": "200_noop_after_durable_containment",
+        "received": "reacquire",
+        "retryable_failure": "reacquire",
+        "expired_leased": "token_fenced_reacquire",
+        "live_leased": "409_retry_after"
+      },
+      "owner_token_fencing": true,
+      "different_digest": "durable_hold_case_before_200_and_effect_claim_recheck"
+    },
+    "evidence_classes": {
+      "name": "evidence_classes",
+      "values": [
+        "S+",
+        "S0",
+        "CF",
+        "FP",
+        "RP",
+        "RF",
+        "DC",
+        "DU",
+        "DW",
+        "DL",
+        "X"
+      ],
+      "failed_pi_class": "FP",
+      "partial_refund": "paid_with_risk_and_fulfillment_hold"
+    },
+    "event_families": {
+      "name": "event_families",
+      "values": [
+        "checkout.session.completed",
+        "checkout.session.async_payment_succeeded",
+        "checkout.session.async_payment_failed",
+        "payment_intent.succeeded",
+        "payment_intent.payment_failed",
+        "charge_or_refund_update",
+        "dispute_created",
+        "dispute_updated",
+        "dispute_won",
+        "dispute_lost_or_closed",
+        "unsupported_authenticated"
+      ]
+    },
+    "event_evidence_policy": {
+      "name": "event_evidence_policy",
+      "event_domain_registry": "event_families",
+      "evidence_domain_registry": "evidence_classes",
+      "success_pairs": [
+        [
+          "checkout.session.completed",
+          "S+"
+        ],
+        [
+          "checkout.session.completed",
+          "S0"
+        ],
+        [
+          "checkout.session.async_payment_succeeded",
+          "S+"
+        ],
+        [
+          "payment_intent.succeeded",
+          "S+"
+        ]
+      ],
+      "full_reversal_pairs": [
+        [
+          "charge_or_refund_update",
+          "RF"
+        ]
+      ],
+      "dispute_delegation_pairs": [
+        {
+          "event": "dispute_created",
+          "evidence": "DC",
+          "incoming": "open"
+        },
+        {
+          "event": "dispute_updated",
+          "evidence": "DU",
+          "incoming": "open"
+        },
+        {
+          "event": "dispute_won",
+          "evidence": "DW",
+          "incoming": "won"
+        },
+        {
+          "event": "dispute_lost_or_closed",
+          "evidence": "DL",
+          "incoming": "lost"
+        }
+      ],
+      "all_other_pairs": "durable_containment"
+    },
+    "event_outcome_matrix": {
+      "name": "event_outcome_matrix",
+      "dimensions": {
+        "states": "order_states",
+        "event_families": "event_families",
+        "evidence_classes": "evidence_classes"
+      },
+      "selection": "event_evidence_policy_then_state_projection",
+      "outcomes": {
+        "success": {
+          "state_targets": {
+            "draft": "draft",
+            "provisioning": "paid",
+            "payable": "paid",
+            "ambiguous": "paid",
+            "blocked": "paid",
+            "abandoned": "abandoned",
+            "paid": "paid",
+            "reversed": "reversed"
+          },
+          "risk_hold": "preserve",
+          "fulfillment_hold": "derived_after_complete_alias_consumption",
+          "processing": "applied_200"
+        },
+        "full_reversal": {
+          "state_targets": {
+            "draft": "draft",
+            "provisioning": "ambiguous",
+            "payable": "ambiguous",
+            "ambiguous": "ambiguous",
+            "blocked": "blocked",
+            "abandoned": "abandoned",
+            "paid": "reversed",
+            "reversed": "reversed"
+          },
+          "risk_hold": true,
+          "fulfillment_hold": true,
+          "processing": "applied_or_contained_200"
+        },
+        "dispute_delegation": {
+          "delegates_to": "dispute_transition_function",
+          "processing": "composed_guarded_transition_200"
+        },
+        "durable_containment": {
+          "state_targets_registry": "containment_projection",
+          "risk_hold": true,
+          "fulfillment_hold": true,
+          "processing": "durable_containment_then_200_else_5xx",
+          "creates_or_reuses_case": true
+        }
+      }
+    },
+    "document_readiness": {
+      "name": "document_readiness",
+      "edges": [
+        "absent>reserved",
+        "reserved>written_unverified",
+        "written_unverified>ready",
+        "reserved>failed",
+        "written_unverified>failed",
+        "ready>superseded"
+      ],
+      "w4_w5_readback_states": [
+        "reserved",
+        "written_unverified",
+        "ready"
+      ],
+      "immutable_ready_identity": true
+    },
+    "roles_and_function_grants": {
+      "name": "roles_and_function_grants",
+      "roles": [
+        "hsb_owner",
+        "hsb_app",
+        "hsb_webhook",
+        "hsb_worker",
+        "hsb_backfill",
+        "hsb_stage_admin",
+        "hsb_auditor"
+      ],
+      "public_execute": false,
+      "direct_table_dml_nonowner": false,
+      "drain_catch_up_item": "hsb_backfill_only_verified_active_drain_closed_admission_designated_run",
+      "enter_hold_after_outage": "hsb_app_only_activated_to_hold_exact_epoch_generation"
+    },
+    "owner_kind_nullability_rules": {
+      "name": "owner_kind_nullability_rules",
+      "branches": {
+        "scope": "scope_nonnull_order_null_independent_scope_fk",
+        "order": "scope_nonnull_order_nonnull_composite_fk",
+        "global": "both_null_enumerated_entity_kind",
+        "order_only": "forbidden"
+      }
+    },
+    "cutover_barrier": {
+      "name": "cutover_barrier",
+      "requirements": [
+        "zero_old_deployment_routing",
+        "termination_or_drain_all_old_instances",
+        "zero_inflight",
+        "wait_beyond_certified_max_duration_plus_skew",
+        "automatic_rollback_disabled",
+        "two_identical_enumerations",
+        "complete_immutable_revision_registry_match",
+        "zero_delta"
+      ],
+      "application_lease_alone_sufficient": false
+    },
+    "charge_risk_precedence": {
+      "name": "charge_risk_precedence",
+      "not_charged_requires_nonempty_generations": true,
+      "zero_generations": "provider_not_invoked",
+      "historical_resolution": "append_only"
+    },
+    "crash_outcomes": {
+      "name": "crash_outcomes",
+      "values": [
+        "W4_readback_reserved_written_ready",
+        "W5_written_or_ready_exact_replay",
+        "W8_marker_readback_one_create",
+        "S1_bare_marker_no_age_release",
+        "W9_exact_candidate_or_conflict",
+        "W10_same_bind_idempotent_difference_conflict",
+        "W11_CF_only_atomic_supersession",
+        "W12_atomic_apply_or_retryable_expiry",
+        "E1_processing_state_replay",
+        "E2_contained_digest_conflict",
+        "R1_identity_locked_reversal_consumption",
+        "C1_platform_old_writer_barrier",
+        "C2_revision_promote_or_quarantine",
+        "H1_outage_latch_unadmitted_restart"
+      ]
+    },
+    "acceptance_tests": {
+      "name": "acceptance_tests",
+      "groups": [
+        "T-R4",
+        "T-P6",
+        "T-P8",
+        "W4-W5",
+        "W10",
+        "capability",
+        "stages_roles",
+        "cutover",
+        "revisions",
+        "projections",
+        "states",
+        "facts",
+        "replay_conflict",
+        "event_matrix",
+        "reversal_first",
+        "risk",
+        "harness",
+        "duplicate_detector",
+        "legacy_activation",
+        "disputes"
+      ]
+    },
+    "capability_resolution": {
+      "name": "capability_resolution",
+      "precedence": [
+        "usable_handles_multiple_scopes_refuse",
+        "any_recognized_unusable_refuse",
+        "usable_handles_one_scope_resolve",
+        "absent_malformed_unrecognized_mint_new_scope"
+      ],
+      "content_email_fingerprint_are_authorization": false,
+      "canonical_fingerprint_mismatch": "refuse_and_require_capability_authenticated_start_new_purchase",
+      "request_time_legacy_blob_adoption": false
+    },
+    "provider_authorization_facts": {
+      "name": "provider_authorization_facts",
+      "frozen_before_create": [
+        "mode",
+        "customer_reference_digest",
+        "catalog_version",
+        "sku",
+        "quantity",
+        "line_items_digest",
+        "list_subtotal",
+        "promotion_rule_version",
+        "promotion_eligibility",
+        "discount_bounds",
+        "exact_discount",
+        "exact_total",
+        "currency",
+        "canonical_metadata_digest",
+        "idempotency_key",
+        "generation",
+        "fence",
+        "epoch",
+        "document_identity",
+        "fulfillment_contract_version"
+      ],
+      "payment_intent_initially_null": true,
+      "late_binding": "one_time_under_payment_identity_lock_conflict_never_overwrites",
+      "positive_subtotal_zero": "only_exact_frozen_100_percent_promotion_and_no_payment_required"
+    },
+    "backfill_revision_protocol": {
+      "name": "backfill_revision_protocol",
+      "checkpoint_transaction": "enumeration_commits_before_mapping",
+      "changed_source": "new_immutable_source_version_revision",
+      "input_registry": "immutable_full_source_fact_rows",
+      "observation": "one_strict_legacy_source_fact",
+      "result_domain": [
+        "append",
+        "noop",
+        "reject"
+      ],
+      "transition_branches": [
+        "exact_tuple_noop",
+        "same_version_changed_digest_reject",
+        "new_version_unchanged_digest_reject",
+        "new_version_changed_digest_append",
+        "malformed_prior_reject",
+        "duplicate_prior_key_reject",
+        "unknown_identity_reject",
+        "canonical_order_stable",
+        "input_immutable"
+      ],
+      "transition_table": [
+        {
+          "when": "same_identity_same_version_same_digest",
+          "result": "noop"
+        },
+        {
+          "when": "same_identity_same_version_changed_digest",
+          "result": "reject",
+          "reason": "immutable_revision_overwrite"
+        },
+        {
+          "when": "same_identity_new_version_unchanged_digest",
+          "result": "reject",
+          "reason": "unchanged_bytes_new_revision"
+        },
+        {
+          "when": "same_identity_new_version_changed_digest",
+          "result": "append",
+          "append_count": 1
+        }
+      ],
+      "rejection_reasons": [
+        "malformed_prior_row",
+        "duplicate_prior_revision_key",
+        "malformed_observed_source_fact",
+        "unknown_source_identity",
+        "immutable_revision_overwrite",
+        "unchanged_bytes_new_revision"
+      ],
+      "canonical_row_order": [
+        "source_identity",
+        "source_version",
+        "source_digest"
+      ],
+      "append_cardinality": 1,
+      "prior_rows_preserved_exactly": true,
+      "post_append_activation": "both_enumerations_equal_complete_immutable_revision_set_with_exact_digests",
+      "promotion": "only_compatible_nonauthoritative_nonexposed_never_reused",
+      "reused_payable_conflict": "quarantine_activation_blocker",
+      "rollback": "mark_inert_never_delete_immutable_history"
+    },
+    "projection_contract": {
+      "name": "projection_contract",
+      "payload": "immutable_canonical_bytes_and_digest",
+      "outbox_identity": [
+        "entity_kind",
+        "entity_key",
+        "mutation_seq"
+      ],
+      "apply": "sequence_monotonic_owner_token_fenced_exact_readback",
+      "poison_blocks_activation": true,
+      "reverse_gate_exists": false
+    },
+    "outage_routing": {
+      "name": "outage_routing",
+      "activated_requires_runtime_admission": true,
+      "instance_db_failure_latches": true,
+      "replacement_instance_unadmitted": true,
+      "hold_cleanup_provider_effect_dispatch": "forbidden"
+    },
+    "effect_claim_contract": {
+      "name": "effect_claim_contract",
+      "effects": [
+        "email",
+        "access",
+        "print",
+        "fulfillment",
+        "release",
+        "fulfillment_notification"
+      ],
+      "claim_rechecks": [
+        "order_hold",
+        "scope_hold",
+        "global_payment_effect_hold"
+      ],
+      "hold_blocks_claim": true
+    },
+    "authority_boundaries": {
+      "name": "authority_boundaries",
+      "documentation": "offline_candidate_only",
+      "implementation": "unauthorized",
+      "activation": "unauthorized",
+      "external_operations": "unauthorized",
+      "provider_qualification": "HOLD_UNQUALIFIED"
+    },
+    "preserved_controls": {
+      "name": "preserved_controls",
+      "values": [
+        "draft_fingerprint_mismatch_requires_start_new_purchase",
+        "immutable_reversal_evidence_separate_unique_consumption",
+        "platform_old_deployment_routing_termination_max_duration_barrier",
+        "verified_drain_catch_up_item_privilege",
+        "source_versioned_backfill_revisions",
+        "prohibit_hold_to_shadow_and_legacy_reverse_fallback",
+        "narrow_activated_to_hold_outage_function",
+        "append_only_historical_resolution",
+        "documentation_implementation_activation_external_authority_separated"
+      ]
+    }
+  }
+}

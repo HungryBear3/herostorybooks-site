@@ -26,6 +26,7 @@ import {
   resolveCallbackRequestLimit,
   resolveGuardLimits,
 } from '../src/lib/checkout-request-guard.ts';
+import { processEnv } from './support/process-env.ts';
 
 const BUCKET_START = Date.parse('2026-09-02T12:00:00.000Z');
 const EXPECT = { scope: 'intake', bucketStart: BUCKET_START };
@@ -71,46 +72,46 @@ test('unknown fields in a guard bucket are refused, not dropped', () => {
 test('a malformed configured limit fails closed instead of defaulting', () => {
   for (const bad of ['O', '-1', '1_000', '12.5', 'unlimited', 'NaN']) {
     assert.throws(
-      () => resolveGuardLimits({ HSB_CHECKOUT_GUARD_MAX_UPLOAD_BYTES_PER_MINUTE: bad } as NodeJS.ProcessEnv),
+      () => resolveGuardLimits(processEnv({ HSB_CHECKOUT_GUARD_MAX_UPLOAD_BYTES_PER_MINUTE: bad })),
       (error) => code(error) === 'abuse_guard_config_invalid',
       `HSB_CHECKOUT_GUARD_MAX_UPLOAD_BYTES_PER_MINUTE=${bad} must fail closed`,
     );
   }
   assert.throws(
-    () => resolveGuardLimits({ HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE: '-5' } as NodeJS.ProcessEnv),
+    () => resolveGuardLimits(processEnv({ HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE: '-5' })),
     (error) => code(error) === 'abuse_guard_config_invalid',
   );
   assert.throws(
-    () => resolveCallbackRequestLimit({ HSB_CHECKOUT_GUARD_MAX_CALLBACKS_PER_MINUTE: 'many' } as NodeJS.ProcessEnv),
+    () => resolveCallbackRequestLimit(processEnv({ HSB_CHECKOUT_GUARD_MAX_CALLBACKS_PER_MINUTE: 'many' })),
     (error) => code(error) === 'abuse_guard_config_invalid',
   );
 });
 
 test('an explicitly configured zero is preserved as zero', () => {
-  const limits = resolveGuardLimits({
+  const limits = resolveGuardLimits(processEnv({
     HSB_CHECKOUT_GUARD_MAX_UPLOAD_BYTES_PER_MINUTE: '0',
     HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE: '0',
-  } as NodeJS.ProcessEnv);
+  }));
   assert.equal(limits.uploadByteLimit, 0, 'a deliberate stop must not be widened to the default');
   assert.equal(limits.intakeCreationLimit, 0);
-  assert.equal(resolveCallbackRequestLimit({ HSB_CHECKOUT_GUARD_MAX_CALLBACKS_PER_MINUTE: '0' } as NodeJS.ProcessEnv), 0);
+  assert.equal(resolveCallbackRequestLimit(processEnv({ HSB_CHECKOUT_GUARD_MAX_CALLBACKS_PER_MINUTE: '0' })), 0);
 });
 
 test('an unset or empty limit uses the documented default', () => {
-  const limits = resolveGuardLimits({} as NodeJS.ProcessEnv);
+  const limits = resolveGuardLimits(processEnv());
   assert.equal(limits.uploadByteLimit, 120 * 1024 * 1024);
   assert.equal(limits.intakeCreationLimit, 12);
   assert.equal(
-    resolveGuardLimits({ HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE: '' } as NodeJS.ProcessEnv).intakeCreationLimit,
+    resolveGuardLimits(processEnv({ HSB_CHECKOUT_GUARD_MAX_INTAKES_PER_MINUTE: '' })).intakeCreationLimit,
     12,
   );
 });
 
 test('a valid configured limit is used exactly', () => {
-  const limits = resolveGuardLimits({
+  const limits = resolveGuardLimits(processEnv({
     HSB_CHECKOUT_GUARD_MAX_UPLOAD_BYTES_PER_MINUTE: '1048576',
     HSB_CHECKOUT_GUARD_MAX_REPLACEMENTS_PER_MINUTE: '3',
-  } as NodeJS.ProcessEnv, 7);
+  }), 7);
   assert.equal(limits.uploadByteLimit, 1048576);
   assert.equal(limits.replacementLimit, 3);
   assert.equal(limits.requestLimit, 7);

@@ -51,9 +51,39 @@ interface JournalEntry {
   access: string | null;
 }
 
+interface StepResult<T> {
+  ok: boolean;
+  value?: T;
+  error?: { name: string; code: string | null; message: string };
+}
+
+/**
+ * The steps tests/helpers/two-store-scenario.mjs records, each carrying the
+ * JSON form of what the real module under it returned. Naming the shapes here
+ * (rather than `unknown`) is what lets the assertions below read `.persisted`
+ * or `.storage` and be checked against the value the child actually prints.
+ */
+interface ScenarioSteps {
+  hasBlobToken: StepResult<boolean>;
+  /** src/lib/family-review/store.ts PersistResult, JSON-serialised. */
+  persistSubmission: StepResult<{ persisted: boolean; id: string; reviewTokenHash?: string }>;
+  /** private-assets.ts putAsset(). */
+  putPhotoAsset: StepResult<{ blobPathname: string; blobUrl?: string; storage: string }>;
+  putSampleAsset: StepResult<{ blobPathname: string; blobUrl?: string; storage: string }>;
+  /** The scenario maps records/assets down to the ids and facts it asserts. */
+  listRecentSubmissions: StepResult<string[]>;
+  findById: StepResult<string | null>;
+  openPrivateAsset: StepResult<{ storage: string; size: number }>;
+  openMissingPrivateAsset: StepResult<{ storage: string }>;
+  readMissingRecord: StepResult<string | null>;
+  deleteAsset: StepResult<{ deleted: boolean; reason?: string }>;
+  persistOrder: StepResult<string | null>;
+  getOrder: StepResult<string | null>;
+}
+
 interface ScenarioResult {
   scenario: string;
-  steps: Record<string, { ok: boolean; value?: unknown; error?: { name: string; code: string | null; message: string } }>;
+  steps: ScenarioSteps;
   journal: JournalEntry[];
   stores: Record<string, string[]>;
   raw: string;
@@ -170,7 +200,7 @@ for (const scenario of [
     const r = runScenario(scenario);
     assert.equal(r.steps.hasBlobToken.value, false, 'the 503 storage gate must close');
     assert.equal(r.steps.persistSubmission.value?.persisted, false);
-    for (const step of ['putPhotoAsset', 'putSampleAsset', 'openPrivateAsset']) {
+    for (const step of ['putPhotoAsset', 'putSampleAsset', 'openPrivateAsset'] as const) {
       assert.equal(r.steps[step].ok, false, `${step} must fail`);
       assert.equal(r.steps[step].error?.name, 'AssetStorageError');
       assert.equal(r.steps[step].error?.code, 'credential_unavailable');

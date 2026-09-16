@@ -142,7 +142,7 @@ test('authoritative sweep enumeration paginates Blob listing to exhaustion', asy
 test('authoritative sweep enumeration fails closed on a repeated Blob cursor', async () => {
   await assert.rejects(
     () => withEnv({ BLOB_READ_WRITE_TOKEN: 'blob_rw_test' }, () => listOrdersAuthoritative({
-      listImpl: async () => ({ blobs: [], hasMore: true, cursor: 'same-page' } as never),
+      listImpl: async () => ({ blobs: [], hasMore: true, cursor: 'same-page' }),
       getOrderImpl: async () => null,
     })),
     /repeated a cursor/,

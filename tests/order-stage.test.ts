@@ -36,8 +36,13 @@ test('deriveOrderStage: pageArtifacts alone are not a released customer artifact
     pageArtifacts: [
       {
         pageIndex: 0,
-        imageUrl: 'https://blob.example/internal-page.png',
-        prompt: 'internal generation work in progress',
+        storyText: 'Ava opens the door.',
+        basePrompt: 'internal generation work in progress',
+        currentImageUrl: 'https://blob.example/internal-page.png',
+        regenerateCount: 0,
+        accepted: false,
+        feedbackHistory: [],
+        versionHistory: [],
       },
     ],
   });

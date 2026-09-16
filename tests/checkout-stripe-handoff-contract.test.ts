@@ -22,6 +22,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import {
+  CHECKOUT_FRESH_ATTEMPT_GUIDANCE,
   CHECKOUT_HANDOFF_UNCONFIRMED,
   CHECKOUT_SUBMIT_UNCONFIRMED,
   checkoutSubmitFailureMessage,
@@ -58,6 +59,46 @@ test('a server-supplied message is preserved verbatim — including its own safe
   const ambiguous = 'We could not confirm the status of this checkout. Please do not pay again.';
   assert.equal(checkoutSubmitFailureMessage(ambiguous), ambiguous);
   assert.equal(checkoutSubmitFailureMessage('  trimmed  '), 'trimmed');
+});
+
+test('a reconciliation code adds bounded recovery without weakening the refusal', () => {
+  const server = 'We could not confirm the status of this checkout. Please do not pay again — contact support@herostorybooks.com with your order details and we will confirm exactly what happened and put it right.';
+
+  for (const code of ['checkout_canonical_reconciliation_required', 'checkout_intent_order_ownership_conflict']) {
+    const message = checkoutSubmitFailureMessage(server, code);
+    assert.ok(message.startsWith(server), `${code} must keep the server sentence first`);
+    assert.equal(message, `${server} ${CHECKOUT_FRESH_ATTEMPT_GUIDANCE}`);
+    assert.match(message, /do not pay again/i);
+    // The guidance offers ONE more submission of this form. It may not deny a
+    // charge, claim the request stopped, or promise the next attempt succeeds.
+    assert.doesNotMatch(message, /not been charged|no charge|nothing was charged|stopped before payment/i);
+    assert.doesNotMatch(CHECKOUT_FRESH_ATTEMPT_GUIDANCE, /\b(?:retry|try again|reload)\b/i);
+    assert.match(CHECKOUT_FRESH_ATTEMPT_GUIDANCE, /once more/i);
+  }
+});
+
+test('every other refusal keeps exactly the message it had', () => {
+  const server = 'We could not confirm the status of this checkout. Please do not pay again.';
+  for (const code of [
+    undefined, null, '', 'checkout_unconfirmed', 'hero_photo_persist_failed',
+    'CHECKOUT_CANONICAL_RECONCILIATION_REQUIRED', 42, {},
+  ]) {
+    assert.equal(checkoutSubmitFailureMessage(server, code), server, `unexpected guidance for ${String(code)}`);
+  }
+  assert.equal(
+    checkoutSubmitFailureMessage(null, 'checkout_intent_order_ownership_conflict'),
+    `${CHECKOUT_SUBMIT_UNCONFIRMED} ${CHECKOUT_FRESH_ATTEMPT_GUIDANCE}`,
+    'a refusal with a code but no sentence still reconciles first',
+  );
+});
+
+test('the checkout form passes the refusal code to the shared resolver', () => {
+  const start = FORM.indexOf('const response = await fetch("/api/order"');
+  const submit = FORM.slice(start, FORM.indexOf('} finally {', start));
+  assert.match(submit, /checkoutSubmitFailureMessage\(serverMessage, serverCode\)/);
+  assert.match(submit, /serverCode = refusal\?\.code/);
+  // Bounded means buyer-driven: no automatic resubmission of an ambiguous POST.
+  assert.doesNotMatch(submit.slice(0, submit.indexOf('} catch (error) {')), /fetch\("\/api\/order"[\s\S]*fetch\("\/api\/order"/);
 });
 
 test('a rejected redirect target is a failed hand-off that navigates nowhere', () => {

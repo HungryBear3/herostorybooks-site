@@ -16,9 +16,18 @@ import assert from 'node:assert/strict';
 import { seedreamEditImageProvider } from '../src/lib/image-provider-seedream-edit.ts';
 import { falEditImageProvider } from '../src/lib/image-provider-fal-edit.ts';
 
-function makeFakeFetch(captured: { url: string; body: unknown; status?: number; payload?: unknown }[]) {
+/**
+ * One slot in the `captured` array: `status`/`payload` are what a test seeds
+ * for the fake to answer with, `url`/`body` are what the provider actually
+ * sent. Both halves are optional because a slot starts empty — a call that
+ * never happens leaves `url` undefined, which is exactly what the
+ * no-reference-image tests assert.
+ */
+type CapturedCall = { url?: string; body?: unknown; status?: number; payload?: unknown };
+
+function makeFakeFetch(captured: CapturedCall[]) {
   const fn = async (url: RequestInfo | URL, init?: RequestInit) => {
-    const slot = captured[captured.length - 1] ?? {};
+    const slot: CapturedCall = captured[captured.length - 1] ?? {};
     captured[captured.length - 1] = { ...slot, url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null };
     const status = slot.status ?? 200;
     const payload = slot.payload ?? { images: [{ url: 'https://fake.example/edit.png' }] };

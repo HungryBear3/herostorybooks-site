@@ -50,6 +50,8 @@ export interface ProviderCheckoutSession {
   id: string;
   url: string | null;
   status: 'open' | 'complete' | 'expired' | null;
+  payment_status?: string | null;
+  payment_intent?: unknown;
 }
 
 export interface ProviderCheckoutSessionRequest {
@@ -93,7 +95,13 @@ export interface CheckoutSessionProvisionDeps {
   supersedeCheckoutSession(
     orderId: string,
     expiredStripeSessionId: string,
-    checkout: { leaseId: string; fingerprint: string },
+    checkout: {
+      leaseId: string;
+      fingerprint: string;
+      providerStatus: 'expired';
+      providerPaymentStatus: 'unpaid';
+      providerPaymentIntent: null;
+    },
   ): Promise<OrderRecord | null>;
   /**
    * Bind under the exact lease AND the exact supersession generation. The
@@ -463,6 +471,10 @@ export async function provisionCheckoutSession(
     }
 
     if (session.status === 'expired') {
+      if (session.payment_status !== 'unpaid' || session.payment_intent !== null) {
+        log(`[checkout] expired Session ${session.id} for ${orderId} has ambiguous payment evidence`);
+        return refused(409, 'checkout_session_payment_ambiguous', CHECKOUT_RECONCILIATION_SUPPORT, 'may_be_charged');
+      }
       if ((current.checkoutSessionAttempt ?? 0) >= CHECKOUT_SESSION_SUPERSEDE_LIMIT) {
         log(`[checkout] supersede limit reached for ${orderId}; refusing to mint another Session`);
         return refused(409, 'checkout_session_supersede_limit', reconciliationCopy(), risk());
@@ -472,6 +484,9 @@ export async function provisionCheckoutSession(
         retired = await deps.supersedeCheckoutSession(orderId, session.id, {
           leaseId: params.leaseId,
           fingerprint: params.fingerprint,
+          providerStatus: 'expired',
+          providerPaymentStatus: 'unpaid',
+          providerPaymentIntent: null,
         });
       } catch (error) {
         log(`[checkout] supersession failed for ${orderId}`, error);
@@ -489,6 +504,10 @@ export async function provisionCheckoutSession(
     if (session.status !== 'open') {
       log(`[checkout] Session ${session.id} for ${orderId} is not open`);
       return refused(409, 'checkout_session_not_open', reconciliationCopy(), risk());
+    }
+    if (session.payment_status !== 'unpaid' || session.payment_intent != null) {
+      log(`[checkout] open Session ${session.id} for ${orderId} has ambiguous payment evidence`);
+      return refused(409, 'checkout_session_payment_ambiguous', CHECKOUT_RECONCILIATION_SUPPORT, 'may_be_charged');
     }
 
     // ── Open. Bind (unless already bound), then release ───────────────────

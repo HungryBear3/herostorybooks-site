@@ -36,6 +36,7 @@ import {
   type CheckoutGuardStore,
 } from '../src/lib/checkout-request-guard.ts';
 import { createMemoryIntakeStore, type MemoryIntakeStore } from './support/checkout-intake-memory-store.ts';
+import { processEnv } from './support/process-env.ts';
 
 const ORIGIN = 'https://herostorybooks.com';
 const INTAKE_URL = `${ORIGIN}/api/checkout/intake`;
@@ -43,7 +44,7 @@ const UPLOAD_URL = `${ORIGIN}/api/checkout/intake/upload`;
 const MIB = 1024 * 1024;
 
 function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
-  return { HSB_CHECKOUT_DIRECT_UPLOAD: 'true', ...overrides } as NodeJS.ProcessEnv;
+  return processEnv({ HSB_CHECKOUT_DIRECT_UPLOAD: 'true', ...overrides });
 }
 
 function post(url: string, body: unknown): Request {

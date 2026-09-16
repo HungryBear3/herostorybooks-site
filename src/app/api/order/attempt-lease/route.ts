@@ -6,8 +6,16 @@ import {
   mintCheckoutAttemptId,
   resolveCheckoutAttemptLease,
 } from '@/lib/checkout-attempt-lease';
-import { resolveCheckoutAttemptRestart } from '@/lib/checkout-attempt-restart';
-import { getOrderAuthoritative, retireExpiredCheckoutAttempt } from '@/lib/orders';
+import {
+  checkoutAttemptRestartDependencies,
+  resolveCheckoutAttemptRestart,
+} from '@/lib/checkout-attempt-restart';
+import {
+  getOrderAuthoritative,
+  releaseCheckoutIntentOrderId,
+  resolveCheckoutOrderIdForAttempt,
+  retireExpiredCheckoutAttempt,
+} from '@/lib/orders';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 
 const NO_STORE_HEADERS = { 'Cache-Control': 'no-store' };
@@ -31,14 +39,22 @@ export async function POST(request: NextRequest) {
       request.cookies.get(CHECKOUT_ATTEMPT_LEASE_COOKIE)?.value,
       {
         mintAttemptId: mintCheckoutAttemptId,
+        resolveOrderId: resolveCheckoutOrderIdForAttempt,
         getOrder: getOrderAuthoritative,
         resolveExistingAttempt: async (attemptId) => {
           const stripe = new Stripe(getRequiredStripeSecretKey());
-          const decision = await resolveCheckoutAttemptRestart(attemptId, {
-            getOrder: getOrderAuthoritative,
-            retrieveSession: async (sessionId) => stripe.checkout.sessions.retrieve(sessionId),
-            retireExpiredAttempt: retireExpiredCheckoutAttempt,
-          });
+          const decision = await resolveCheckoutAttemptRestart(
+            attemptId,
+            // Same shared wiring as /api/order/attempt-restart: one rule decides
+            // when a checkoutIntentFingerprint generation may be released.
+            checkoutAttemptRestartDependencies({
+              resolveOrderId: resolveCheckoutOrderIdForAttempt,
+              getOrder: getOrderAuthoritative,
+              retrieveSession: async (sessionId) => stripe.checkout.sessions.retrieve(sessionId),
+              retireExpiredAttempt: retireExpiredCheckoutAttempt,
+              releaseIntentClaim: releaseCheckoutIntentOrderId,
+            }),
+          );
           return decision.status;
         },
       },

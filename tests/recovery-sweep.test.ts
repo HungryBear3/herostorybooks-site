@@ -7,15 +7,6 @@ import { runRecoverySweep } from '../src/lib/recovery-sweep.ts';
 
 const THRESHOLD_MS = 2 * 60 * 60 * 1000;
 
-function makeActive(overrides: Partial<RecoveryLead> = {}): RecoveryLead {
-  return buildNewRecoveryLead(
-    { email: 'test@example.com', childName: 'Ava', bookFormat: 'classic', theme: 'space' },
-    { id: 'rec_t', now: '2026-04-20T08:00:00.000Z' },
-    // @ts-expect-error -- overrides applied below
-    ...[]
-  ) as RecoveryLead;
-}
-
 function makeLeadAt(updatedAt: string, status: RecoveryLead['status'] = 'active'): RecoveryLead {
   return {
     ...buildNewRecoveryLead({ email: 'x@y.com' }, { id: 'rec_sweep', now: updatedAt }),

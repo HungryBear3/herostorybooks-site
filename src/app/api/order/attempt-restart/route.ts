@@ -1,8 +1,16 @@
 import { NextResponse } from 'next/server';
 import Stripe from 'stripe';
 
-import { resolveCheckoutAttemptRestart } from '@/lib/checkout-attempt-restart';
-import { getOrderAuthoritative, retireExpiredCheckoutAttempt } from '@/lib/orders';
+import {
+  checkoutAttemptRestartDependencies,
+  resolveCheckoutAttemptRestart,
+} from '@/lib/checkout-attempt-restart';
+import {
+  getOrderAuthoritative,
+  releaseCheckoutIntentOrderId,
+  resolveCheckoutOrderIdForAttempt,
+  retireExpiredCheckoutAttempt,
+} from '@/lib/orders';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
 
 const NO_STORE_HEADERS = { 'Cache-Control': 'no-store' };
@@ -27,11 +35,18 @@ export async function POST(request: Request) {
 
   try {
     const stripe = new Stripe(getRequiredStripeSecretKey());
-    const result = await resolveCheckoutAttemptRestart(checkoutAttemptId, {
-      getOrder: getOrderAuthoritative,
-      retrieveSession: async (stripeSessionId) => stripe.checkout.sessions.retrieve(stripeSessionId),
-      retireExpiredAttempt: retireExpiredCheckoutAttempt,
-    });
+    const result = await resolveCheckoutAttemptRestart(
+      checkoutAttemptId,
+      // The shared wiring owns the checkoutIntentFingerprint/generation release
+      // rule, so this route and the lease route can never drift apart on it.
+      checkoutAttemptRestartDependencies({
+        resolveOrderId: resolveCheckoutOrderIdForAttempt,
+        getOrder: getOrderAuthoritative,
+        retrieveSession: async (stripeSessionId) => stripe.checkout.sessions.retrieve(stripeSessionId),
+        retireExpiredAttempt: retireExpiredCheckoutAttempt,
+        releaseIntentClaim: releaseCheckoutIntentOrderId,
+      }),
+    );
     return NextResponse.json(
       { status: result.status },
       { status: 200, headers: NO_STORE_HEADERS },
