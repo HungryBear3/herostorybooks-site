@@ -12,10 +12,19 @@
  * connection pool, loads no database driver, and issues no SQL.
  *
  * Best-effort by construction: `recordShadowCheckoutSettlement` never throws and
- * never alters the caller's control flow. The database stage is `off` by
- * default, so even with the flag on the expected steady state is a swallowed
- * `ZH001` stage refusal. This is deliberately NOT fulfillment durability, NOT
- * reconciliation, and NOT an activation path.
+ * never alters the caller's control flow.
+ *
+ * Admission has a second gate the app flag does not control. The database stage
+ * is evaluated independently, inside SQL, on every call:
+ *   - at stage `off` (the default) the enqueue is refused with `ZH001`; that
+ *     refusal is contained here and reported only as a bounded `failed` outcome;
+ *   - at stage `shadow` the enqueue is admitted and one non-authoritative
+ *     evidence row is written.
+ * Neither state changes legacy authority. The enqueued row is pinned
+ * non-authoritative in SQL, nothing applies it, and no legacy order, payment,
+ * email, analytics, or fulfillment decision reads this module's outcome. This is
+ * deliberately NOT fulfillment durability, NOT reconciliation, and NOT an
+ * activation path.
  *
  * Server-only: `pg` is reached through a lazy dynamic import behind the flag, so
  * the driver never enters a client bundle.
@@ -74,10 +83,16 @@ export const SHADOW_SETTLEMENT_SQL = 'SELECT hsb_control.enqueue_projection($1, 
 export const SHADOW_SETTLEMENT_TOTAL_DEADLINE_MS = 6_000;
 
 /**
- * The effective SQL role. `enqueue_projection` is granted to `hsb_app` and to no
- * other runtime role, so the pool binds its sessions to exactly that boundary.
+ * The effective SQL role. This path is webhook evidence intake, so it binds the
+ * existing `hsb_webhook` privilege boundary — the narrowest role that holds
+ * `enqueue_projection`. That role carries no order lifecycle, no provider
+ * lifecycle, no stage machine, no worker, and no backfill function, and no
+ * direct table DML, so a compromised shadow session cannot reach beyond
+ * evidence. The pool binds its sessions to exactly that boundary; the server
+ * additionally binds the runtime login to it by default, so a pooler that drops
+ * startup options cannot widen the session.
  */
-export const SHADOW_SETTLEMENT_EFFECTIVE_ROLE = 'hsb_app';
+export const SHADOW_SETTLEMENT_EFFECTIVE_ROLE = 'hsb_webhook';
 
 /**
  * The exact app flag. Anything other than the literal string `true` — absent,

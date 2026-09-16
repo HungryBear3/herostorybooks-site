@@ -20,6 +20,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  RUNTIME_LOGIN,
   applyControlPlaneSchema,
   startDisposableCluster,
   type PostgresCluster,
@@ -93,11 +94,12 @@ interface ClientLike {
 // ---------------------------------------------------------------------------
 // The adapter's own pool, against the same disposable cluster.
 //
-// `enqueue_projection` is granted to hsb_app and to no other runtime role, so the
-// pool must reach PostgreSQL *as* hsb_app. These tests drive the real production
-// pool path — the real `pg` Pool, the real connection settings, the real
-// role binding — and only substitute the driver module so the constructed pool
-// can be observed and closed.
+// After 0007 the shadow path authenticates as the external runtime login and
+// must arrive holding hsb_webhook — the evidence intake boundary — and never
+// hsb_app. These tests drive the real production pool path: the real `pg` Pool,
+// the real connection settings, the real role binding, and the real login. Only
+// the driver module is substituted, so the constructed pool can be observed and
+// closed.
 // ---------------------------------------------------------------------------
 
 const pgModule = await import('pg');
@@ -115,9 +117,12 @@ interface PoolLike {
   end(): Promise<void>;
 }
 
-/** A URL for the disposable cluster. `host` is a directory, so pg uses the socket. */
+/**
+ * A URL for the disposable cluster, authenticating as the external runtime login
+ * exactly as deployed code does. `host` is a directory, so pg uses the socket.
+ */
 function clusterUrl(extraOptions?: string): string {
-  const url = new URL(`postgres://${USER}@localhost/${DATABASE}`);
+  const url = new URL(`postgres://${RUNTIME_LOGIN}@localhost/${DATABASE}`);
   url.searchParams.set('host', cluster.socketDir);
   url.searchParams.set('port', String(cluster.port));
   if (extraOptions !== undefined) url.searchParams.set('options', extraOptions);
@@ -217,22 +222,38 @@ test('the adapter\'s own pool is refused with ZH001 while the stage is off', { t
     assert.deepEqual(outcome, { status: 'failed', errorClass: 'DatabaseError', errorCode: 'ZH001' });
 
     const who = await pool().query('SELECT current_user AS effective, session_user AS login');
-    assert.equal(who.rows[0].effective, 'hsb_app', 'the pool must reach the server as the granted role');
-    assert.equal(who.rows[0].login, USER, 'the authenticated login itself is unchanged');
+    assert.equal(who.rows[0].effective, 'hsb_webhook', 'the pool must reach the server as the granted role');
+    assert.equal(who.rows[0].login, RUNTIME_LOGIN, 'the authenticated login itself is unchanged');
   });
 
   assert.equal(rowsFor(ROLE_FACTS.orderKey), '0', 'a refused shadow projection must write nothing');
 });
 
 test('an effective role carried in the URL cannot override the granted one', { timeout: 60_000 }, async () => {
-  await withAdapterPool(clusterUrl('-c role=hsb_webhook'), async ({ record, pool }) => {
-    // hsb_webhook holds no EXECUTE on enqueue_projection, so if the URL had won
-    // this would be 42501 (insufficient privilege) instead of the stage refusal.
+  // hsb_app is the wider boundary 0007 moved this login off. The runtime login is
+  // no longer a member, so a URL that won would not merely widen the session — it
+  // would fail the connection outright. Prove that first, so the assertion below
+  // is about the adapter dropping the option rather than about pg ignoring it.
+  const refused = await errorOf(new RealClient({
+    host: cluster.socketDir,
+    port: cluster.port,
+    user: RUNTIME_LOGIN,
+    database: DATABASE,
+    options: '-c role=hsb_app',
+    connectionTimeoutMillis: 10_000,
+  }).connect());
+  assert.match(
+    String(refused.message ?? ''),
+    /permission denied to set role|invalid value for parameter/i,
+    `the runtime login must not be able to assume hsb_app, got ${refused.message}`,
+  );
+
+  await withAdapterPool(clusterUrl('-c role=hsb_app'), async ({ record, pool }) => {
     const outcome = await record(ROLE_FACTS);
     assert.deepEqual(outcome, { status: 'failed', errorClass: 'DatabaseError', errorCode: 'ZH001' });
 
     const who = await pool().query('SELECT current_user AS effective');
-    assert.equal(who.rows[0].effective, 'hsb_app');
+    assert.equal(who.rows[0].effective, 'hsb_webhook');
   });
 });
 
@@ -323,7 +344,7 @@ test('the evidence row is immutable even to the schema owner', () => {
 // The grant boundary, exercised through the real adapter pool at stage shadow.
 // ===========================================================================
 
-test('the adapter pool inserts, replays, and conflicts correctly as hsb_app', { timeout: 60_000 }, async () => {
+test('the adapter pool inserts, replays, and conflicts correctly as hsb_webhook', { timeout: 60_000 }, async () => {
   assert.equal(one(`SELECT hsb_control.current_stage();`), 'shadow');
 
   await withAdapterPool(clusterUrl(), async ({ record }) => {
@@ -398,9 +419,9 @@ test('direct DML on the evidence table stays denied to the adapter pool', { time
  * Characterises the server side of the mechanism rather than this adapter: a role
  * startup option the session cannot assume is a FATAL at connection time, not a
  * silent fallback to the login's own privileges. That is what makes binding the
- * effective role fail closed. (The membership case itself is not exercised here —
- * the disposable harness has only its bootstrap superuser login, and this proof is
- * not permitted to create credentials or change grants.)
+ * effective role fail closed. The membership half of the same mechanism is
+ * exercised by the hsb_app probe above, now that the harness provisions the
+ * external runtime login 0007 rebinds.
  */
 test('a role startup option the session cannot assume fails the connection', { timeout: 60_000 }, async () => {
   const client = new RealClient({
@@ -419,35 +440,61 @@ test('a role startup option the session cannot assume fails the connection', { t
   );
 });
 
-test('hsb_webhook cannot enqueue the adapter\'s exact projection call', { timeout: 60_000 }, async () => {
-  const webhookKey = `ord_${'2'.repeat(16)}`;
-  const facts: ShadowSettlementFacts = { ...ROLE_FACTS, orderKey: webhookKey };
+/**
+ * The pooler-hostile case, end to end through the real driver: a connection that
+ * carries NO startup options at all. What `current_user` resolves to is then the
+ * login's server-side default role, which is the binding 0007 installs and the
+ * only one a pooler cannot strip. The adapter's exact call must be admitted on
+ * that session, and the wider surface must still be denied on it.
+ */
+test('the runtime login enqueues with no startup options and stays inside hsb_webhook', { timeout: 60_000 }, async () => {
+  const defaultRoleKey = `ord_${'2'.repeat(16)}`;
+  const facts: ShadowSettlementFacts = { ...ROLE_FACTS, orderKey: defaultRoleKey };
   const bytes = canonicalShadowSettlementBytes(facts);
 
   const client = new RealClient({
     host: cluster.socketDir, // a directory path makes pg use the Unix socket, never TCP
     port: cluster.port,
-    user: USER,
+    user: RUNTIME_LOGIN,
     database: DATABASE,
-    options: '-c role=hsb_webhook',
+    // Deliberately no `options`: nothing about the effective role is asserted
+    // by the client.
     connectionTimeoutMillis: 10_000,
   });
   await client.connect();
   try {
-    const who = await client.query('SELECT current_user AS effective');
-    assert.equal(who.rows[0].effective, 'hsb_webhook');
+    const who = await client.query('SELECT current_user AS effective, session_user AS login');
+    assert.equal(who.rows[0].effective, 'hsb_webhook', 'the server-side default role must bind the session');
+    assert.equal(who.rows[0].login, RUNTIME_LOGIN);
 
-    const denied = await errorOf(client.query(SHADOW_SETTLEMENT_SQL, [
+    const admitted = await client.query(SHADOW_SETTLEMENT_SQL, [
       SHADOW_SETTLEMENT_ENTITY_KIND,
-      webhookKey,
+      defaultRoleKey,
       SHADOW_SETTLEMENT_MUTATION_SEQ,
       bytes,
       shadowSettlementDigest(bytes),
-    ]));
-    assert.equal(denied.code, '42501', `hsb_webhook must not hold EXECUTE, got ${denied.code}`);
+    ]);
+    assert.equal(admitted.rows[0].enqueue_projection, true, 'the one granted call must be admitted');
+
+    // Everything beyond evidence intake stays denied on this very session.
+    const openOrder = await errorOf(client.query(`SELECT hsb_control.open_order_control($1)`, [defaultRoleKey]));
+    assert.equal(openOrder.code, '42501', `order lifecycle must be denied, got ${openOrder.code}`);
+    const applied = await errorOf(client.query(
+      `SELECT hsb_control.apply_projection($1, $2, $3, gen_random_uuid())`,
+      [SHADOW_SETTLEMENT_ENTITY_KIND, defaultRoleKey, SHADOW_SETTLEMENT_MUTATION_SEQ],
+    ));
+    assert.equal(applied.code, '42501', `projection application must be denied, got ${applied.code}`);
+    const assumed = await errorOf(client.query('SET ROLE hsb_app'));
+    assert.equal(assumed.code, '42501', `assuming hsb_app must be denied, got ${assumed.code}`);
   } finally {
     await client.end();
   }
 
-  assert.equal(rowsFor(webhookKey), '0', 'a denied enqueue must write nothing');
+  assert.equal(rowsFor(defaultRoleKey), '1', 'the admitted enqueue wrote exactly one evidence row');
+  assert.equal(
+    one(`SELECT count(*) FROM hsb_control.projection_row
+          WHERE entity_kind = '${SHADOW_SETTLEMENT_ENTITY_KIND}';`),
+    '0',
+    'evidence enqueued by the runtime login stays non-authoritative',
+  );
 });
