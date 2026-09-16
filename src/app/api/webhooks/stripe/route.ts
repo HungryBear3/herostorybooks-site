@@ -13,6 +13,7 @@ import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '../.
 import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment, recordPrintUpgradeSettlementConflict } from '../../../../lib/print-upgrades.ts';
 import { isExactSettledCheckoutSession } from '../../../../lib/checkout-session-confirmation.ts';
 import { scheduleGa4Purchase } from '../../../../lib/ga4-purchase.ts';
+import { recordShadowCheckoutSettlement } from '../../../../lib/hsb-control-plane-runtime/shadow-settlement.ts';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -293,6 +294,29 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'PaymentIntent backfill conflict' }, { status: 409 });
           }
           console.warn(`Stripe webhook: session ${session.id} already processed — payment state unchanged`);
+          // Shadow seam (exact already-paid replay). Best-effort, default-off,
+          // non-authoritative evidence only. It never throws and never changes
+          // the acknowledgement, email, GA4, or fulfillment behaviour below.
+          //
+          // A replay can land here while the order simultaneously carries a
+          // refund marker, or while its authoritative settled amount disagrees
+          // with what Stripe is presenting. "This legacy checkout settled for
+          // this amount" is not true in those states, so no evidence is emitted.
+          // This exclusion is shadow-only: every legacy branch below is reached
+          // exactly as before.
+          const shadowReplayContradicted = Boolean(replayOrder.refundedAt)
+            || Boolean(replayOrder.stripeRefundId)
+            || Boolean(replayOrder.refundClaimId)
+            || (replayOrder.settledAmountCents != null
+              && replayOrder.settledAmountCents !== session.amount_total);
+          if (!shadowReplayContradicted) {
+            await recordShadowCheckoutSettlement({
+              orderKey: orderId,
+              stripeSessionId: session.id,
+              amountTotalCents: session.amount_total ?? 0,
+              currency: session.currency ?? '',
+            });
+          }
           scheduleGa4Purchase({
             transactionId: session.id,
             amountCents: session.amount_total ?? 0,
@@ -378,6 +402,16 @@ export async function POST(request: Request) {
           { status: 500 },
         );
       }
+
+      // Shadow seam (newly-paid transition). The authoritative payment write
+      // above has already succeeded; this records best-effort, default-off,
+      // non-authoritative evidence and never alters what follows.
+      await recordShadowCheckoutSettlement({
+        orderKey: orderId,
+        stripeSessionId: session.id,
+        amountTotalCents: session.amount_total ?? 0,
+        currency: session.currency ?? '',
+      });
 
       scheduleOrderConfirmationEmail(updated, { afterImpl: after });
       scheduleGa4Purchase({
