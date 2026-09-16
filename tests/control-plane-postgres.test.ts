@@ -12,8 +12,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { loadContract, ACCEPTED } from './support/control-plane-identity.ts';
+import { loadContract, ACCEPTED, readSqlFile } from './support/control-plane-identity.ts';
 import {
+  RUNTIME_LOGIN,
   applyControlPlaneSchema,
   startDisposableCluster,
   waitForCondition,
@@ -126,6 +127,7 @@ test('every checked-in control-plane SQL file applies in ordinal order', () => {
     '0004_payment_identity_lock.sql',
     '0005_durable_substrate.sql',
     '0006_roles_and_grants.sql',
+    '0007_shadow_runtime_least_privilege.sql',
   ]);
   assert.equal(one(`SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = 'hsb_control';`), '1');
   assert.equal(
@@ -1240,16 +1242,36 @@ test('raw digest and currency inputs are rejected before fixed-width normalizati
 // Role and function boundaries
 // ===========================================================================
 
+/**
+ * Two identities in this cluster are deliberately not contract roles: the
+ * harness's own bootstrap user, and the external runtime login the deployment
+ * provisions for the shadow adapter. 0007 rebinds that login but never adds it
+ * to the accepted seven, so it is excluded here by name and then pinned
+ * separately — the census must stay exactly seven, not quietly absorb an eighth.
+ */
+const NON_CONTRACT_IDENTITIES = ['hsb_cp_bootstrap', RUNTIME_LOGIN];
+
 test('all seven contract roles exist and none of them can log in', () => {
+  const excluded = NON_CONTRACT_IDENTITIES.map((name) => `'${name}'`).join(', ');
   assert.deepEqual(
-    rows(`SELECT rolname FROM pg_catalog.pg_roles WHERE rolname LIKE 'hsb\\_%' AND rolname <> 'hsb_cp_bootstrap' ORDER BY rolname;`),
+    rows(`SELECT rolname FROM pg_catalog.pg_roles
+           WHERE rolname LIKE 'hsb\\_%' AND rolname NOT IN (${excluded}) ORDER BY rolname;`),
     [...registries.roles_and_function_grants.roles].sort(),
   );
   assert.equal(
     one(`SELECT count(*) FROM pg_catalog.pg_roles
-          WHERE rolname LIKE 'hsb\\_%' AND rolname <> 'hsb_cp_bootstrap'
+          WHERE rolname LIKE 'hsb\\_%' AND rolname NOT IN (${excluded})
             AND (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole);`),
     '0',
+  );
+  // The excluded runtime login is the only extra hsb_* identity 0007 introduces
+  // into the picture, and it is not a contract role.
+  assert.deepEqual(
+    rows(`SELECT rolname FROM pg_catalog.pg_roles
+           WHERE rolname LIKE 'hsb\\_%' AND rolname <> 'hsb_cp_bootstrap'
+             AND rolname <> ALL (ARRAY[${[...registries.roles_and_function_grants.roles].map((r: string) => `'${r}'`).join(', ')}])
+           ORDER BY rolname;`),
+    [RUNTIME_LOGIN],
   );
 });
 
@@ -1355,6 +1377,9 @@ test('the executable surface of each role is exactly the contract boundary', () 
     'hsb_webhook:bind_charge_alias',
     'hsb_webhook:current_stage',
     'hsb_webhook:current_stage_fingerprint',
+    // Added by 0007: webhook evidence intake, and the only function the shadow
+    // settlement adapter is permitted to call.
+    'hsb_webhook:enqueue_projection',
     'hsb_webhook:lock_payment_identities',
     'hsb_webhook:record_event_receipt',
     'hsb_webhook:record_provider_evidence',
@@ -1407,6 +1432,249 @@ test('role boundaries are enforced at call time, not only in the catalog', () =>
     cluster.sqlAsRole('hsb_backfill', `SELECT hsb_control.record_source_revision('legacy:orders', 'v4', '${'d'.repeat(64)}');`).trim(),
     'append',
   );
+});
+
+// ===========================================================================
+// The external shadow-runtime login (0007).
+//
+// The shadow settlement adapter authenticates as an ordinary external login and
+// must arrive holding exactly one privilege boundary: hsb_webhook. Two things
+// are proven here that a catalog grant list cannot show —
+//   1. the binding is SERVER-SIDE. The connection carries no `options` at all,
+//      so what `current_user` resolves to is the login's stored default role.
+//      A pooler that drops, rewrites, or never forwards startup options cannot
+//      widen this session.
+//   2. hsb_app membership is actively REVOKED, not merely never granted.
+//
+// Every statement below runs against the disposable Unix-socket cluster. No
+// Production target, no credential, and no password is ever involved: the login
+// was created with LOGIN and nothing else.
+// ===========================================================================
+
+// Split so the fixture never forms a production-shaped order id on one line.
+const RUNTIME_HEX = 'c3d4e5f607182930';
+const RUNTIME_ENTITY_KEY = `ord_${RUNTIME_HEX}`;
+const RUNTIME_PAYLOAD = `'\\x7b7d'::bytea`;
+const RUNTIME_ENQUEUE = (seq: number) =>
+  `SELECT hsb_control.enqueue_projection('legacy_checkout_settlement', '${RUNTIME_ENTITY_KEY}', ${seq},
+            ${RUNTIME_PAYLOAD}, encode(sha256(${RUNTIME_PAYLOAD}), 'hex'));`;
+
+const asLogin = (text: string): string => cluster.sqlAsLogin(RUNTIME_LOGIN, text).trim();
+
+test('the runtime login resolves to hsb_webhook through its server-side default role', () => {
+  // No startup option, no SET ROLE: this connection is exactly what a pooler
+  // that forwards nothing would produce.
+  assert.equal(asLogin(`SELECT current_user;`), 'hsb_webhook');
+  assert.equal(asLogin(`SELECT session_user;`), RUNTIME_LOGIN);
+  assert.equal(
+    one(`SELECT setconfig::text FROM pg_catalog.pg_db_role_setting s
+           JOIN pg_catalog.pg_roles r ON r.oid = s.setrole
+          WHERE r.rolname = '${RUNTIME_LOGIN}' AND s.setdatabase = 0;`),
+    '{role=hsb_webhook}',
+    'the default role must be stored on the server, not assumed from the client',
+  );
+});
+
+test('the runtime login can read the stage and enqueue evidence at stage shadow', () => {
+  assert.equal(one(`SELECT hsb_control.current_stage();`), 'shadow');
+  assert.equal(asLogin(`SELECT hsb_control.current_stage();`), 'shadow');
+  assert.equal(
+    asLogin(`SELECT stage FROM hsb_control.current_stage_fingerprint();`),
+    'shadow',
+    'the runtime login must be able to read the stage fingerprint',
+  );
+
+  assert.equal(asLogin(RUNTIME_ENQUEUE(0)), 't', 'the first enqueue must insert');
+  assert.equal(asLogin(RUNTIME_ENQUEUE(0)), 'f', 'an exact replay must converge without raising');
+  assert.equal(
+    one(`SELECT count(*) FROM hsb_control.projection_outbox
+          WHERE entity_kind = 'legacy_checkout_settlement' AND entity_key = '${RUNTIME_ENTITY_KEY}';`),
+    '1',
+  );
+  assert.equal(
+    one(`SELECT count(*) FROM hsb_control.projection_row
+          WHERE entity_kind = 'legacy_checkout_settlement';`),
+    '0',
+    'enqueued evidence must stay non-authoritative',
+  );
+});
+
+test('the runtime login holds no direct table DML on the control plane', () => {
+  const statements: Array<[string, string]> = [
+    ['insert', `INSERT INTO hsb_control.projection_outbox
+                  (entity_kind, entity_key, mutation_seq, payload_bytes, payload_digest)
+                VALUES ('legacy_checkout_settlement', '${RUNTIME_ENTITY_KEY}', 9,
+                        ${RUNTIME_PAYLOAD}, encode(sha256(${RUNTIME_PAYLOAD}), 'hex'));`],
+    ['update', `UPDATE hsb_control.projection_outbox SET payload_digest = repeat('0', 64);`],
+    ['delete', `DELETE FROM hsb_control.projection_outbox;`],
+    ['select', `SELECT payload_digest FROM hsb_control.projection_outbox;`],
+    ['order_control insert', `INSERT INTO hsb_control.order_control (order_key, order_state)
+                                VALUES ('${RUNTIME_ENTITY_KEY}', 'draft');`],
+    ['stage_state update', `UPDATE hsb_control.stage_state SET stage = 'activated';`],
+  ];
+  for (const [label, statement] of statements) {
+    assert.match(
+      cluster.sqlAsLoginExpectError(RUNTIME_LOGIN, statement),
+      /permission denied for (table|relation)/,
+      `direct ${label} was not denied to the runtime login`,
+    );
+  }
+  assert.equal(
+    one(`SELECT count(*) FROM hsb_control.projection_outbox
+          WHERE entity_kind = 'legacy_checkout_settlement' AND entity_key = '${RUNTIME_ENTITY_KEY}';`),
+    '1',
+    'the denied statements changed nothing',
+  );
+});
+
+test('the runtime login reaches no stage, lifecycle, worker, or backfill function', () => {
+  const denied: Array<[string, string]> = [
+    ['request_stage_transition', `SELECT hsb_control.request_stage_transition('backfill', 'begin_backfill', 'runtime');`],
+    ['enter_hold_after_outage', `SELECT hsb_control.enter_hold_after_outage(1, 0, 'runtime');`],
+    ['open_order_control', `SELECT hsb_control.open_order_control('${RUNTIME_ENTITY_KEY}');`],
+    ['advance_order_state', `SELECT hsb_control.advance_order_state('${RUNTIME_ENTITY_KEY}', 'provisioning', 'tx3_first_marker');`],
+    ['open_provider_phase', `SELECT hsb_control.open_provider_phase('${RUNTIME_ENTITY_KEY}', 0);`],
+    ['advance_provider_phase', `SELECT hsb_control.advance_provider_phase('${RUNTIME_ENTITY_KEY}', 0, 'marker', 'tx3_immutable_authorization');`],
+    ['apply_projection', `SELECT hsb_control.apply_projection('legacy_checkout_settlement', '${RUNTIME_ENTITY_KEY}', 0, gen_random_uuid());`],
+    ['claim_event_lease', `SELECT hsb_control.claim_event_lease('evt_runtime', gen_random_uuid(), 60);`],
+    ['settle_event_lease', `SELECT hsb_control.settle_event_lease('evt_runtime', gen_random_uuid(), 'applied');`],
+    ['consume_reversal', `SELECT hsb_control.consume_reversal('pi_runtime', 'rev1', '${RUNTIME_ENTITY_KEY}');`],
+    ['record_source_revision', `SELECT hsb_control.record_source_revision('legacy:orders', 'v7', '${DIGEST_B}');`],
+    ['mark_source_revision_inert', `SELECT hsb_control.mark_source_revision_inert('legacy:orders', 'v7');`],
+    ['register_source_identity', `SELECT hsb_control.register_source_identity('legacy:orders', 'current');`],
+  ];
+  for (const [name, statement] of denied) {
+    assert.match(
+      cluster.sqlAsLoginExpectError(RUNTIME_LOGIN, statement),
+      new RegExp(`permission denied for function ${name}`),
+      `${name} was not denied to the runtime login`,
+    );
+  }
+});
+
+test('the first application of 0007 revokes the login\'s pre-existing hsb_app membership', () => {
+  // The harness granted hsb_app to this login before 0007 was ever applied, so
+  // this cluster mirrors the live pre-hardening deployment: the membership below
+  // is one the migration actively removed on its first and only application, not
+  // one that was merely never granted.
+  assert.equal(
+    one(`SELECT pg_catalog.pg_has_role('${RUNTIME_LOGIN}', 'hsb_app', 'USAGE')::text;`),
+    'false',
+    'the shadow runtime login must not carry hsb_app privileges',
+  );
+  assert.equal(
+    one(`SELECT pg_catalog.pg_has_role('${RUNTIME_LOGIN}', 'hsb_app', 'MEMBER')::text;`),
+    'false',
+    'the shadow runtime login must not be a member of hsb_app',
+  );
+  assert.match(
+    cluster.sqlAsLoginExpectError(RUNTIME_LOGIN, `SET ROLE hsb_app;`),
+    /permission denied to set role/,
+    'the runtime login must not be able to SET ROLE hsb_app',
+  );
+  assert.equal(
+    one(`SELECT pg_catalog.pg_has_role('${RUNTIME_LOGIN}', 'hsb_webhook', 'MEMBER')::text;`),
+    'true',
+    'the runtime login must hold exactly the webhook boundary',
+  );
+});
+
+test('re-applying 0007 is idempotent and re-narrows a login that drifted back', () => {
+  // First-apply revocation is proven above. This covers the other half: 0007 is
+  // safe to re-run, and if an operator re-widens the login out of band, the next
+  // apply narrows it again rather than erroring or leaving it widened.
+  cluster.sql(`GRANT hsb_app TO ${RUNTIME_LOGIN};`);
+  assert.equal(one(`SELECT pg_catalog.pg_has_role('${RUNTIME_LOGIN}', 'hsb_app', 'MEMBER')::text;`), 'true');
+
+  cluster.sql(readSqlFile('0007_shadow_runtime_least_privilege.sql'), { timeoutMs: 60_000 });
+
+  assert.equal(
+    one(`SELECT pg_catalog.pg_has_role('${RUNTIME_LOGIN}', 'hsb_app', 'MEMBER')::text;`),
+    'false',
+    're-applying 0007 must revoke an existing hsb_app membership',
+  );
+  assert.equal(one(`SELECT pg_catalog.pg_has_role('${RUNTIME_LOGIN}', 'hsb_webhook', 'MEMBER')::text;`), 'true');
+  assert.equal(asLogin(`SELECT current_user;`), 'hsb_webhook', '0007 is idempotent');
+});
+
+test('0007 fails closed when the expected runtime login is absent', () => {
+  const migration = readSqlFile('0007_shadow_runtime_least_privilege.sql');
+  const stderr = cluster.sqlExpectError(
+    [
+      'BEGIN;',
+      `ALTER ROLE ${RUNTIME_LOGIN} RENAME TO hsb_runtime_absent;`,
+      migration,
+      'ROLLBACK;',
+    ].join('\n'),
+    { timeoutMs: 60_000 },
+  );
+  assert.match(
+    stderr,
+    /HSB_CONTROL_RUNTIME_LOGIN_ABSENT/,
+    `0007 must refuse rather than silently claim hardening:\n${stderr}`,
+  );
+
+  // The aborted transaction took the rename with it.
+  assert.equal(one(`SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname = '${RUNTIME_LOGIN}';`), '1');
+  assert.equal(one(`SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname = 'hsb_runtime_absent';`), '0');
+});
+
+test('the shadow runtime identities carry no dangerous role attribute', () => {
+  assert.equal(
+    one(`SELECT rolcanlogin::text FROM pg_catalog.pg_roles WHERE rolname = 'hsb_webhook';`),
+    'false',
+    'hsb_webhook is a privilege boundary, never a credential',
+  );
+  assert.equal(
+    one(`SELECT rolsuper::text || '|' || rolcreaterole::text || '|' || rolcreatedb::text || '|'
+                || rolreplication::text || '|' || rolbypassrls::text || '|' || rolinherit::text
+           FROM pg_catalog.pg_roles WHERE rolname = '${RUNTIME_LOGIN}';`),
+    'false|false|false|false|false|true',
+    'the runtime login must hold no superuser-adjacent attribute',
+  );
+  // It owns nothing: not the schema, not a table, not a function.
+  assert.equal(
+    one(`SELECT count(*) FROM pg_catalog.pg_namespace n
+           JOIN pg_catalog.pg_roles r ON r.oid = n.nspowner
+          WHERE n.nspname = 'hsb_control' AND r.rolname = '${RUNTIME_LOGIN}';`),
+    '0',
+  );
+  assert.deepEqual(
+    rows(`SELECT c.relname FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_catalog.pg_roles r ON r.oid = c.relowner
+           WHERE n.nspname = 'hsb_control' AND r.rolname = '${RUNTIME_LOGIN}';`),
+    [],
+  );
+  assert.deepEqual(
+    rows(`SELECT p.proname FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+            JOIN pg_catalog.pg_roles r ON r.oid = p.proowner
+           WHERE n.nspname = 'hsb_control' AND r.rolname = '${RUNTIME_LOGIN}';`),
+    [],
+  );
+  // CREATE on the schema stays with the owner alone.
+  assert.equal(
+    one(`SELECT pg_catalog.has_schema_privilege('${RUNTIME_LOGIN}', 'hsb_control', 'CREATE')::text;`),
+    'false',
+  );
+  assert.equal(
+    one(`SELECT pg_catalog.has_schema_privilege('hsb_webhook', 'hsb_control', 'CREATE')::text;`),
+    'false',
+  );
+});
+
+test('0007 mints no credential and sets no password', () => {
+  const migration = readSqlFile('0007_shadow_runtime_least_privilege.sql');
+  for (const forbidden of [/\bPASSWORD\b/i, /\bCREATE\s+ROLE\b/i, /\bCREATE\s+USER\b/i, /\bSUPERUSER\b/i,
+    /\bCREATEROLE\b/i, /\bCREATEDB\b/i, /\bREPLICATION\b/i, /\bBYPASSRLS\b/i, /\bWITH\s+ADMIN\b/i]) {
+    assert.ok(!forbidden.test(migration), `0007 contains a forbidden credential construct: ${forbidden}`);
+  }
+  // It grants exactly one additional function to hsb_webhook.
+  const grants = migration.match(/GRANT\s+EXECUTE\s+ON\s+FUNCTION[\s\S]*?;/gi) ?? [];
+  assert.equal(grants.length, 1, '0007 must grant exactly one additional function');
+  assert.match(grants[0], /enqueue_projection\(text,\s*text,\s*bigint,\s*bytea,\s*text\)/);
+  assert.match(grants[0], /TO\s+hsb_webhook/);
 });
 
 // ===========================================================================

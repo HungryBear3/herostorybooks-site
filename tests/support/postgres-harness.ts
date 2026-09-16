@@ -38,6 +38,16 @@ const BOOTSTRAP_USER = 'hsb_cp_bootstrap';
 const DATABASE_NAME = 'hsb_cp';
 const ROLE_PATTERN = /^hsb_[a-z_]+$/;
 
+/**
+ * The external runtime login the shadow adapter authenticates as. It is a
+ * deployment prerequisite, not a migration artifact: the checked-in SQL never
+ * creates a login and never sets a password, so a disposable cluster has to
+ * provision it before the migrations run. This harness creates it with no
+ * password at all — local socket `trust` auth is the only way in, and the
+ * cluster opens no TCP port.
+ */
+export const RUNTIME_LOGIN = 'hsb_runtime_login';
+
 export class PostgresUnavailableError extends Error {}
 
 function which(tool: RequiredTool): string | null {
@@ -104,6 +114,13 @@ export interface PostgresCluster {
   /** Run SQL after SET ROLE <role>. The role name is validated, never interpolated blindly. */
   sqlAsRole(role: string, text: string, options?: { timeoutMs?: number }): string;
   sqlAsRoleExpectError(role: string, text: string, options?: { timeoutMs?: number }): string;
+  /**
+   * Run SQL over a *separate authenticated connection* as `login`, with no
+   * startup options and no SET ROLE. This is the only way to observe what a
+   * server-side default role resolves to, which `sqlAsRole` cannot show.
+   */
+  sqlAsLogin(login: string, text: string, options?: { timeoutMs?: number }): string;
+  sqlAsLoginExpectError(login: string, text: string, options?: { timeoutMs?: number }): string;
   /** Start a concurrent psql session. Used only by the advisory-lock barrier proof. */
   startSession(text: string, options?: { timeoutMs?: number }): Promise<CommandResult>;
   stop(): void;
@@ -213,7 +230,12 @@ export function startDisposableCluster(): PostgresCluster {
     throw error;
   }
 
-  const runPsql = (database: string, text: string, timeoutMs: number): ReturnType<typeof spawnSync> =>
+  const runPsql = (
+    database: string,
+    text: string,
+    timeoutMs: number,
+    user: string = BOOTSTRAP_USER,
+  ): ReturnType<typeof spawnSync> =>
     spawnSync(
       tools.psql,
       [
@@ -225,7 +247,7 @@ export function startDisposableCluster(): PostgresCluster {
         '-v', 'ON_ERROR_STOP=1',
         '-h', socketDir,
         '-p', String(port),
-        '-U', BOOTSTRAP_USER,
+        '-U', user,
         '-d', database,
         '-f', '-', // SQL arrives on stdin; nothing is ever built into an argv string
       ],
@@ -250,6 +272,18 @@ export function startDisposableCluster(): PostgresCluster {
     teardown();
     process.removeListener('exit', exitHook);
     throw new Error(`PostgreSQL harness failed to create the test database: ${bootstrap.stderr}`);
+  }
+
+  // The external runtime login is a deployment prerequisite that the checked-in
+  // migrations deliberately do not create: 0007 rebinds a login that must
+  // already exist rather than minting credentials of its own. Provision it here,
+  // before any SQL file is applied, with no password and no attribute beyond
+  // LOGIN — the cluster is reachable only over its own private Unix socket.
+  const provisionLogin = runPsql(DATABASE_NAME, `CREATE ROLE ${RUNTIME_LOGIN} LOGIN;`, 30_000);
+  if (provisionLogin.status !== 0) {
+    teardown();
+    process.removeListener('exit', exitHook);
+    throw new Error(`PostgreSQL harness failed to create the runtime login: ${provisionLogin.stderr}`);
   }
 
   const assertRole = (role: string): string => {
@@ -281,6 +315,24 @@ export function startDisposableCluster(): PostgresCluster {
     },
     sqlAsRoleExpectError(role, text, options) {
       return cluster.sqlExpectError(`SET ROLE ${assertRole(role)};\n${text}`, options);
+    },
+    sqlAsLogin(login, text, options) {
+      const result = runPsql(DATABASE_NAME, text, options?.timeoutMs ?? 60_000, assertRole(login));
+      if (result.status !== 0) {
+        throw new Error(
+          `SQL as login ${login} failed (status=${result.status}):\n${text}\n--- stderr ---\n${result.stderr}`,
+        );
+      }
+      return String(result.stdout ?? '');
+    },
+    sqlAsLoginExpectError(login, text, options) {
+      const result = runPsql(DATABASE_NAME, text, options?.timeoutMs ?? 60_000, assertRole(login));
+      if (result.status === 0) {
+        throw new Error(
+          `SQL as login ${login} unexpectedly succeeded:\n${text}\n--- stdout ---\n${result.stdout}`,
+        );
+      }
+      return `${result.stderr ?? ''}`;
     },
     startSession(text, options) {
       const timeoutMs = options?.timeoutMs ?? 30_000;
@@ -337,16 +389,42 @@ export function startDisposableCluster(): PostgresCluster {
   return cluster;
 }
 
-/** Apply every checked-in control-plane SQL file in deterministic ordinal order. */
+/**
+ * Apply every checked-in control-plane SQL file in deterministic ordinal order.
+ *
+ * Immediately before the first file that rebinds the external runtime login, the
+ * harness puts that login into the state the live deployment is actually in: a
+ * member of hsb_app. Without it the narrowing migration would meet a login that
+ * simply never held the wider role, and its revocation would be proven only by
+ * a later re-application — a weaker claim than the one a fresh apply makes.
+ *
+ * The seed is deployment pre-state, not a migration: it is applied over the same
+ * private Unix socket as everything else, mints nothing, and is deliberately
+ * absent from the returned list, which stays exactly the checked-in `.sql`
+ * ordinals in apply order.
+ */
 export function applyControlPlaneSchema(cluster: PostgresCluster): string[] {
   const applied: string[] = [];
+  let seeded = false;
   for (const name of sqlFileNames()) {
+    const sql = readFileSync(path.join(SQL_DIR, name), 'utf8');
+    // Every earlier file has already been applied, so hsb_app exists by now.
+    if (!seeded && sql.includes(RUNTIME_LOGIN)) {
+      cluster.sql(`GRANT hsb_app TO ${RUNTIME_LOGIN};`, { timeoutMs: 30_000 });
+      seeded = true;
+    }
     try {
-      cluster.sql(readFileSync(path.join(SQL_DIR, name), 'utf8'), { timeoutMs: 120_000 });
+      cluster.sql(sql, { timeoutMs: 120_000 });
     } catch (error) {
       throw new Error(`applying db/control-plane/${name} failed: ${(error as Error).message}`);
     }
     applied.push(name);
+  }
+  if (!seeded) {
+    throw new Error(
+      `no checked-in control-plane SQL file rebinds ${RUNTIME_LOGIN}. The harness refuses to run: ` +
+        `the least-privilege proof would pass vacuously against a login that never held hsb_app.`,
+    );
   }
   return applied;
 }

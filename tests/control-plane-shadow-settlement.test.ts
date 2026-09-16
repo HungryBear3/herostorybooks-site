@@ -30,6 +30,7 @@ import Stripe from 'stripe';
 
 import { POST } from '../src/app/api/webhooks/stripe/route.ts';
 import {
+  SHADOW_SETTLEMENT_EFFECTIVE_ROLE,
   SHADOW_SETTLEMENT_ENTITY_KIND,
   SHADOW_SETTLEMENT_MUTATION_SEQ,
   SHADOW_SETTLEMENT_SCHEMA,
@@ -456,6 +457,41 @@ test('the adapter never logs or returns the control-plane database URL', () => {
       `a log line references the database URL: ${line.trim()}`,
     );
   }
+});
+
+/**
+ * The module header is the first thing a reader trusts, so it has to describe
+ * the mechanism that is actually there. Admission has two independent gates: the
+ * app flag, and the database stage. The header must say so, must keep the
+ * default-off and containment language it already had, and must not go on
+ * claiming that a stage refusal is the only outcome the shadow ever reaches.
+ */
+test('the adapter header states the independent database stage gate truthfully', () => {
+  const source = readFileSync('src/lib/hsb-control-plane-runtime/shadow-settlement.ts', 'utf8');
+  const header = source.slice(0, source.indexOf('*/') + 2);
+  assert.ok(header.startsWith('/**'), 'the adapter must open with its module header');
+
+  // Default-off and containment language is load-bearing and may not weaken.
+  assert.match(header, /OFF unless `HSB_CONTROL_PLANE_SHADOW` is exactly the string `true`/);
+  assert.match(header, /never throws and\s*\n \* never alters the caller's control flow/);
+  assert.match(header, /non-authoritative/);
+
+  // The database stage is a second, independent gate — not a restatement of the flag.
+  assert.match(header, /stage[\s\S]{0,200}independent/i, 'the header must say the DB stage gates admission independently');
+  assert.match(header, /stage `off`[\s\S]{0,160}ZH001/, 'the header must say stage off yields a contained ZH001');
+  assert.match(
+    header,
+    /stage `shadow`[\s\S]{0,200}enqueue/,
+    'the header must say stage shadow admits a non-authoritative enqueue',
+  );
+  assert.match(
+    header,
+    /[Nn]either[\s\S]{0,160}legacy/,
+    'the header must say neither stage changes legacy authority',
+  );
+
+  // The stale claim this replaces: that a swallowed refusal is the whole story.
+  assert.doesNotMatch(header, /the expected steady state is a swallowed/);
 });
 
 // ===========================================================================
@@ -970,6 +1006,148 @@ test('legacy acknowledgement and scheduling are identical off, on-success, and o
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// Caller containment at both paid seams, under a *thrown* SQL executor error.
+//
+// The adapter converts a thrown executor failure into `{status: 'failed'}`, and
+// the route deliberately ignores the returned outcome. A control-plane outage —
+// stage refusal, privilege denial, or a dead socket — must therefore be
+// completely invisible to the acknowledgement Stripe receives, to the
+// authoritative payment state, and to the deferred email/GA4/fulfillment work.
+//
+// These regressions drive the real POST handler through the test override seam
+// at both paid seams and compare every observable against the same seam with the
+// shadow off and with the shadow succeeding.
+// ---------------------------------------------------------------------------
+
+const THROWN_EXECUTOR_FAILURES: Array<[string, () => unknown]> = [
+  ['a stage refusal', () => Object.assign(new Error('HSB_CONTROL_STAGE_OFF'), { code: 'ZH001' })],
+  ['a privilege denial', () => Object.assign(new Error('permission denied for function enqueue_projection'), { code: '42501' })],
+  ['a dead control-plane socket', () => Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })],
+];
+
+interface PaidSeam {
+  readonly name: string;
+  readonly settled: (lines: string[]) => boolean;
+  seed(hex: string): Promise<OrderRecord>;
+}
+
+const PAID_SEAMS: PaidSeam[] = [
+  {
+    name: 'the newly-paid transition',
+    settled: EMAIL_AND_KICKOFF,
+    seed: (hex) => seedOrder(hex),
+  },
+  {
+    name: 'an exact already-paid replay',
+    settled: EMAIL_ONLY,
+    seed: (hex) => seedOrder(hex, {
+      paymentStatus: 'paid',
+      paidAt: '2026-09-15T00:05:00.000Z',
+      stripePaymentIntentId: `pi_${hex}`,
+      fulfillmentStatus: 'complete',
+    }),
+  },
+];
+
+interface SeamObservation {
+  name: string;
+  status: number;
+  body: string;
+  markers: string[];
+  paymentStatus: string | undefined;
+  shadowCalls: number;
+  failureCodes: Array<string | null>;
+}
+
+for (const seam of PAID_SEAMS) {
+  test(
+    `${seam.name} survives every contained shadow adapter failure unchanged`,
+    { timeout: 180_000 },
+    async () => {
+      const modes: Array<{ name: string; on: boolean; executor: ShadowProjectionExecutor }> = [
+        {
+          name: 'off',
+          on: false,
+          executor: async () => { throw new Error('unreachable while off'); },
+        },
+        {
+          name: 'success',
+          on: true,
+          executor: async () => ({ rows: [{ enqueue_projection: true }] }),
+        },
+        ...THROWN_EXECUTOR_FAILURES.map(([label, build]) => ({
+          name: `thrown ${label}`,
+          on: true,
+          executor: (async () => { throw build(); }) as ShadowProjectionExecutor,
+        })),
+      ];
+
+      const observed: SeamObservation[] = [];
+      for (const mode of modes) {
+        const root = setupStore();
+        let shadowCalls = 0;
+        __clearShadowSettlementWarningsForTest();
+        __setShadowSettlementTestOverrides({
+          env: (mode.on ? { HSB_CONTROL_PLANE_SHADOW: 'true' } : {}) as unknown as NodeJS.ProcessEnv,
+          executor: async (text, values) => {
+            shadowCalls += 1;
+            return mode.executor(text, values);
+          },
+        });
+        try {
+          const order = await seam.seed(freshHex());
+          const { response, lines } = await runWebhook(completedEvent(order), { settled: seam.settled });
+          const settled = await getOrder(order.id);
+          observed.push({
+            name: mode.name,
+            status: response.status,
+            body: JSON.stringify(await response.json()),
+            markers: legacyMarkers(lines, order),
+            paymentStatus: settled?.paymentStatus,
+            shadowCalls,
+            failureCodes: __readShadowSettlementWarningsForTest().map((warning) => warning.detail.errorCode),
+          });
+        } finally {
+          __resetShadowSettlementTestOverrides();
+          cleanupStore(root);
+        }
+      }
+
+      const [baseline, success, ...failures] = observed;
+      assert.ok(baseline.markers.length > 0, 'the legacy scheduling markers must actually be observed');
+      assert.equal(baseline.shadowCalls, 0, 'an off shadow must issue no SQL');
+      assert.equal(success.shadowCalls, 1, 'the success baseline must actually reach the executor');
+
+      for (const failure of failures) {
+        // The failure must really have happened — otherwise this proves nothing.
+        assert.equal(failure.shadowCalls, 1, `${failure.name}: the executor was never reached`);
+        assert.equal(
+          failure.failureCodes.length,
+          1,
+          `${failure.name}: exactly one contained failure must be reported`,
+        );
+      }
+
+      for (const scenario of observed) {
+        // The authoritative legacy payment write is untouched in every mode.
+        assert.equal(
+          scenario.paymentStatus,
+          'paid',
+          `${scenario.name}: the authoritative payment state must remain paid`,
+        );
+        assert.equal(scenario.status, baseline.status, `${scenario.name} changed the response status`);
+        assert.equal(scenario.body, baseline.body, `${scenario.name} changed the response body`);
+        assert.deepEqual(
+          scenario.markers,
+          baseline.markers,
+          `${scenario.name} changed legacy email/GA4/fulfillment scheduling`,
+        );
+      }
+    },
+  );
+}
 
 // ===========================================================================
 // 7. Route source-order boundary.
@@ -1650,11 +1828,25 @@ test('the lazy pool keeps pg\'s own connection, query, and statement bounds', ()
 // ===========================================================================
 // 12. The effective SQL role is bound to the accepted grant boundary.
 //
-// `enqueue_projection` is granted to hsb_app, not hsb_webhook. The pool asks the
-// server for that role explicitly, and an options value carried in the URL must
-// not be able to change it. The behavioural half of this proof runs against real
-// PostgreSQL in control-plane-shadow-settlement-postgres.test.ts.
+// This path is webhook evidence intake, so it binds the existing hsb_webhook
+// privilege role — never hsb_app, which carries the order lifecycle surface this
+// adapter must not be able to reach. The pool asks the server for that role
+// explicitly, and an options value carried in the URL must not be able to change
+// it. The behavioural half of this proof runs against real PostgreSQL in
+// control-plane-shadow-settlement-postgres.test.ts.
 // ===========================================================================
+
+test('the adapter binds hsb_webhook and never hsb_app', () => {
+  assert.equal(SHADOW_SETTLEMENT_EFFECTIVE_ROLE, 'hsb_webhook');
+  const source = readFileSync('src/lib/hsb-control-plane-runtime/shadow-settlement.ts', 'utf8');
+  assert.ok(
+    !/\bhsb_app\b/.test(source),
+    'the shadow adapter must not name hsb_app anywhere, not even in a comment',
+  );
+  const named = new Set(source.match(/\bhsb_[a-z_]+\b/g) ?? []);
+  assert.deepEqual([...named].sort(), ['hsb_control', 'hsb_webhook'],
+    'the adapter may name only its schema and its one privilege role');
+});
 
 test('the pool asks PostgreSQL for the granted effective role', { timeout: 15_000 }, async () => {
   const pools: FakePool[] = [];
@@ -1669,7 +1861,7 @@ test('the pool asks PostgreSQL for the granted effective role', { timeout: 15_00
       assert.equal(pools.length, 1);
       const connectionString = String(pools[0].config.connectionString ?? '');
       const parsed = new URL(connectionString);
-      assert.equal(parsed.searchParams.get('options'), '-c role=hsb_app');
+      assert.equal(parsed.searchParams.get('options'), '-c role=hsb_webhook');
       // The dedicated target itself is otherwise untouched.
       assert.equal(parsed.searchParams.get('host'), '/nonexistent-hsb-control-socket');
       assert.equal(parsed.searchParams.get('port'), '5432');
@@ -1689,13 +1881,16 @@ test('an effective role carried in the URL cannot override the granted one', { t
       await recordShadowCheckoutSettlement(FACTS, {
         env: {
           HSB_CONTROL_PLANE_SHADOW: 'true',
+          // hsb_app is the *wider* boundary the shadow runtime was deliberately
+          // moved off. A target that carries it must not be able to widen the
+          // session back, and neither may it drop the statement bound.
           HSB_CONTROL_PLANE_DATABASE_URL:
-            `${CONTROL_URL}&options=${encodeURIComponent('-c role=hsb_webhook -c statement_timeout=0')}`,
+            `${CONTROL_URL}&options=${encodeURIComponent('-c role=hsb_app -c statement_timeout=0')}`,
         } as unknown as NodeJS.ProcessEnv,
       });
       assert.equal(pools.length, 1);
       const parsed = new URL(String(pools[0].config.connectionString ?? ''));
-      assert.deepEqual(parsed.searchParams.getAll('options'), ['-c role=hsb_app']);
+      assert.deepEqual(parsed.searchParams.getAll('options'), ['-c role=hsb_webhook']);
     },
   );
 });
