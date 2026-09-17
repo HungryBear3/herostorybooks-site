@@ -58,6 +58,14 @@ import {
   describeCheckoutSubmitError,
   photoTypeUnsupportedMessage,
 } from "@/lib/checkout-direct-intake-error-copy";
+import {
+  CheckoutSubmitDiagnosticError,
+  classifyCheckoutSubmitFailure,
+  newCheckoutDiagnosticReference,
+  reportCheckoutSubmitDiagnostic,
+  type CheckoutDiagnosticCode,
+  type CheckoutDiagnosticPhase,
+} from "@/lib/checkout-submit-diagnostics";
 import { browserRandomHex } from "@/lib/browser-random-id";
 import {
   decideCheckoutAttemptContinue,
@@ -94,6 +102,7 @@ import {
   type DirectIntakeSubmissionCache,
   type IntakeClientTransport,
 } from "@/lib/checkout-intake-client-flow";
+import { assertLegacyCheckoutPayloadWithinLimit } from "@/lib/checkout-legacy-payload-preflight";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -574,6 +583,11 @@ export function CheckoutForm({
    */
   const resolvedAttemptRef = useRef<string | null>(null);
   const paidAttemptRef = useRef<string | null>(null);
+  // Copy-only evidence that this mounted checkout has authoritatively observed
+  // an earlier paid order. It is intentionally separate from attempt identity
+  // and new-purchase consent: it can only suppress a categorical no-charge
+  // sentence after rotation, never authorize another payable action.
+  const knownPriorPaidHistoryRef = useRef(false);
   /**
    * The exact paid attempt the buyer has explicitly asked to replace.
    *
@@ -589,6 +603,10 @@ export function CheckoutForm({
     message: string | null,
     recordedVoiceHint = false,
     explicitAttemptRisk?: CheckoutSubmitAttemptRisk,
+    // A closed diagnostic code plus this occurrence's reference. Optional: the
+    // pre-submit pickers below refuse a file without ever reaching the submit
+    // path, and there is no incident to correlate for those.
+    diagnostic?: { code: CheckoutDiagnosticCode; reference: string } | null,
   ) => {
     const attemptRisk = explicitAttemptRisk
       ?? checkoutSubmitBannerAttemptRisk({
@@ -597,12 +615,14 @@ export function CheckoutForm({
         inMemorySentAttemptId: checkoutAttemptSentRef.current,
         resolvedAttemptId: resolvedAttemptRef.current,
         paidAttemptId: paidAttemptRef.current,
+        priorPaidHistory: knownPriorPaidHistoryRef.current,
       });
     setSubmitBannerState(checkoutSubmitBanner({
       message,
       attemptRisk,
       recordedVoiceHint,
       paidAttemptId: paidAttemptRef.current,
+      diagnostic,
     }));
   }, []);
   const [photoNotice, setPhotoNotice] = useState<string | null>(null);
@@ -1146,6 +1166,7 @@ export function CheckoutForm({
     // `/api/order` request can create an order or Stripe Session. Track those
     // states separately so a retry after a local upload failure stays honest.
     let requestSent = false;
+    let diagnosticPhase: CheckoutDiagnosticPhase = "attempt";
     let attemptWasPreviouslySent = false;
     let previousAttemptResolved = false;
     let previousAttemptPaid = false;
@@ -1166,7 +1187,8 @@ export function CheckoutForm({
       );
       if (inMemoryIdentityConflict) {
         attemptWasPreviouslySent = true;
-        throw new Error(
+        throw new CheckoutSubmitDiagnosticError(
+          "attempt_identity_conflict",
           "We found conflicting checkout attempts in this browser. Please do not pay again — contact support@herostorybooks.com so we can confirm what happened.",
         );
       }
@@ -1220,15 +1242,17 @@ export function CheckoutForm({
           // purchase action.
           previousAttemptPaid = true;
           attemptWasPreviouslySent = true;
+          knownPriorPaidHistoryRef.current = true;
           paidAttemptRef.current = null;
           setPreviousPaidAttemptId(null);
-          throw new Error(PREVIOUS_CHECKOUT_PAID_RECOVERY);
+          throw new CheckoutSubmitDiagnosticError("previous_attempt_paid", PREVIOUS_CHECKOUT_PAID_RECOVERY);
         }
         if (leaseTransition.action === "abort_unresolved") {
           // The request may have reached the lease endpoint even though its
           // response did not reach us. Never mint locally or claim no charge.
           attemptWasPreviouslySent = true;
-          throw new Error(
+          throw new CheckoutSubmitDiagnosticError(
+            "attempt_lease_unavailable",
             "We couldn't safely verify your checkout attempt. Please do not pay again — contact support@herostorybooks.com so we can confirm what happened.",
           );
         }
@@ -1248,7 +1272,8 @@ export function CheckoutForm({
       }
       if (!reconciledAttempt.reliable) {
         attemptWasPreviouslySent = true;
-        throw new Error(
+        throw new CheckoutSubmitDiagnosticError(
+          "attempt_lease_unavailable",
           "We couldn't safely verify your previous checkout attempt in this browser. Please do not pay again — contact support@herostorybooks.com so we can confirm what happened.",
         );
       }
@@ -1265,7 +1290,8 @@ export function CheckoutForm({
         clearCheckoutAttemptSent();
         storeCheckoutAttemptId(checkoutAttemptId);
         if (!markCheckoutAttemptReserved(checkoutAttemptId)) {
-          throw new Error(
+          throw new CheckoutSubmitDiagnosticError(
+            "attempt_storage_unavailable",
             "This browser could not safely reserve your checkout attempt. No private files or order request were sent. Please reload this page and press Continue again.",
           );
         }
@@ -1285,13 +1311,21 @@ export function CheckoutForm({
           // take the explicit new-order action below to start another purchase.
           previousAttemptResolved = true;
           previousAttemptPaid = true;
+          knownPriorPaidHistoryRef.current = true;
           resolvedAttemptRef.current = checkoutAttemptId;
           paidAttemptRef.current = checkoutAttemptId;
           setPreviousPaidAttemptId(checkoutAttemptId);
-          throw new Error(PREVIOUS_CHECKOUT_PAID_RECOVERY);
+          throw new CheckoutSubmitDiagnosticError("previous_attempt_paid", PREVIOUS_CHECKOUT_PAID_RECOVERY);
         }
         if (continueDecision.action === "rotate_attempt") {
           previousAttemptResolved = true;
+          // Keep paid-history evidence for copy even after explicit consent has
+          // been consumed and a fresh, unsent attempt is reserved. This fact is
+          // weaker than attempt-specific paid recovery: it only suppresses a
+          // categorical no-charge sentence on later local failures.
+          if (continueDecision.reason === "completed_paid") {
+            knownPriorPaidHistoryRef.current = true;
+          }
           // Retain the proof BEFORE touching storage. Restart approval is the
           // server's authoritative word; a browser that then refuses to clear
           // its markers must not turn that settled state back into ambiguity.
@@ -1304,7 +1338,8 @@ export function CheckoutForm({
           // expired Session from an old checkout otherwise owns every future
           // submission in the same browser forever.
           if (!clearCheckoutAttemptStorage(checkoutAttemptStorage(), checkoutAttemptId)) {
-            throw new Error(
+            throw new CheckoutSubmitDiagnosticError(
+              "attempt_storage_unavailable",
               "This browser could not safely close your previous checkout attempt. No new order request was sent. Please reload this page and try again.",
             );
           }
@@ -1313,7 +1348,8 @@ export function CheckoutForm({
           checkoutAttemptId = newCheckoutAttemptId();
           storeCheckoutAttemptId(checkoutAttemptId);
           if (!markCheckoutAttemptReserved(checkoutAttemptId)) {
-            throw new Error(
+            throw new CheckoutSubmitDiagnosticError(
+              "attempt_storage_unavailable",
               "This browser could not safely reserve a new checkout attempt. No private files or order request were sent. Please reload this page and try again.",
             );
           }
@@ -1328,11 +1364,13 @@ export function CheckoutForm({
       if (!serverLeaseBacked
         && (!reservedAttempt?.reliable || reservedAttempt.attemptId !== checkoutAttemptId)) {
         attemptWasPreviouslySent = true;
-        throw new Error(
+        throw new CheckoutSubmitDiagnosticError(
+          "attempt_storage_unavailable",
           "We couldn't safely verify your checkout attempt before uploading. No private files or order request were sent. Please do not pay again — contact support@herostorybooks.com.",
         );
       }
       checkoutAttemptIdRef.current = checkoutAttemptId;
+      diagnosticPhase = "intake";
       payload.set("checkoutAttemptId", checkoutAttemptId);
       const familyCharactersForOrder = form.familyCharacters
         .filter((character) =>
@@ -1472,14 +1510,21 @@ export function CheckoutForm({
         if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
           appendGuidedCaptureToFormData(payload, guidedFrames);
         }
+        // Measure the final legacy multipart media before the sent marker. A
+        // platform-edge body rejection otherwise leaves no /api/order log and
+        // looks like an ambiguous possible payment to the browser. Direct
+        // intake bypasses this branch and keeps its own per-asset limits.
+        assertLegacyCheckoutPayloadWithinLimit(payload);
       }
 
       if (!serverLeaseBacked && !markCheckoutAttemptSent(checkoutAttemptId)) {
-        throw new Error(
+        throw new CheckoutSubmitDiagnosticError(
+          "attempt_storage_unavailable",
           "This browser could not safely preserve your checkout attempt. No order request was sent. Please reload this page and press Continue again.",
         );
       }
       if (!serverLeaseBacked) checkoutAttemptSentRef.current = checkoutAttemptId;
+      diagnosticPhase = "order";
       requestSent = true;
       const response = await fetch("/api/order", {
         method: "POST",
@@ -1509,9 +1554,14 @@ export function CheckoutForm({
         } catch {
           /* non-JSON response — the shared fallback is the safe default */
         }
-        throw new Error(checkoutSubmitFailureMessage(serverMessage, serverCode));
+        throw new CheckoutSubmitDiagnosticError(
+          "order_request_refused",
+          checkoutSubmitFailureMessage(serverMessage, serverCode),
+          serverCode,
+        );
       }
 
+      diagnosticPhase = "handoff";
       const result = await response.json();
       // Only reached when the order was durably persisted AND a Stripe session
       // was created. We are about to redirect to PAYMENT — do not claim the
@@ -1521,7 +1571,7 @@ export function CheckoutForm({
       // and we simply cannot see where to send the buyer. Denying a charge was
       // exactly the wrong thing to say about that.
       if (!result?.redirectTo) {
-        throw new Error(CHECKOUT_HANDOFF_UNCONFIRMED);
+        throw new CheckoutSubmitDiagnosticError("stripe_handoff_unconfirmed", CHECKOUT_HANDOFF_UNCONFIRMED);
       }
       // The capability has completed its only job. Drop the in-memory reference
       // before handing the page to Stripe; it is never persisted or put in a URL.
@@ -1552,7 +1602,7 @@ export function CheckoutForm({
         // something to navigate to. The server still got far enough to hand us
         // a target, so the Session behind it may well be payable — refusing to
         // navigate is not evidence that nothing was charged.
-        throw new Error(CHECKOUT_HANDOFF_UNCONFIRMED);
+        throw new CheckoutSubmitDiagnosticError("stripe_handoff_unconfirmed", CHECKOUT_HANDOFF_UNCONFIRMED);
       }
 
       // Navigation is already under way (or was refused). Only presentational
@@ -1576,6 +1626,7 @@ export function CheckoutForm({
         previouslySent: attemptWasPreviouslySent,
         previousAttemptResolved,
         previousAttemptPaid,
+        priorPaidHistory: knownPriorPaidHistoryRef.current,
       });
       const described = describeCheckoutSubmitError({
         voiceSource: form.voiceSource,
@@ -1586,7 +1637,23 @@ export function CheckoutForm({
           ? null
           : error instanceof Error ? error.message : null,
       });
-      setSubmitError(described.message, described.showRecordedVoiceHint, attemptRisk);
+      // Where this submit stopped, as a closed code, plus a fresh reference the
+      // buyer can quote to support. The 2026-09-17 iPhone Safari failure died
+      // before `/api/order` and left nothing in production to correlate with
+      // the buyer's report; this is that missing correlation handle. It is
+      // purely additive — it decides no copy, and touches no attempt state.
+      const classified = classifyCheckoutSubmitFailure({ error, fallbackPhase: diagnosticPhase });
+      const diagnosticReference = newCheckoutDiagnosticReference();
+      setSubmitError(
+        described.message,
+        described.showRecordedVoiceHint,
+        attemptRisk,
+        { code: classified.code, reference: diagnosticReference },
+      );
+      // Deliberately NOT awaited: the banner is already up, and a slow or dead
+      // diagnostics request must never delay it. The reporter swallows every
+      // transport outcome, so there is nothing here that can reject.
+      void reportCheckoutSubmitDiagnostic(classified, { reference: diagnosticReference });
     } finally {
       setIsSubmitting(false);
     }
@@ -3352,6 +3419,11 @@ export function CheckoutForm({
                     >
                       Start a separate new order
                     </button>
+                  )}
+                  {submitBanner.diagnosticLine && (
+                    <p className="mt-2 font-mono text-xs font-semibold text-red-800">
+                      {submitBanner.diagnosticLine}
+                    </p>
                   )}
                   <p className="mt-2 text-xs font-medium text-red-700">
                     If the issue continues, email{" "}

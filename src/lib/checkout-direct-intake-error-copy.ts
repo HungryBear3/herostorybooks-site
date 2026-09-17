@@ -16,6 +16,11 @@
 
 import { CHECKOUT_SUBMIT_UNCONFIRMED } from './checkout-handoff.ts';
 import type { CheckoutSubmitAttemptRisk } from './checkout-saved-draft.ts';
+import {
+  CHECKOUT_DIAGNOSTIC_REFERENCE,
+  checkoutDiagnosticReferenceLine,
+  type CheckoutDiagnosticCode,
+} from './checkout-submit-diagnostics.ts';
 
 export type CheckoutVoiceSource = 'recorded' | 'uploaded' | null | undefined;
 
@@ -101,6 +106,13 @@ export interface CheckoutSubmitBanner {
   showRecordedVoiceHint: boolean;
   /** The buyer must take a separate action before a second payable checkout. */
   newPurchaseActionRequired: boolean;
+  /**
+   * The support-correlation line: a closed diagnostic code plus this
+   * occurrence's reference, or `''` when no diagnostic was supplied. Empty
+   * string rather than null so the page renders it with a plain truthiness
+   * check and cannot accidentally print `null`.
+   */
+  diagnosticLine: string;
   /** Exactly the text the banner renders, in order. */
   lines: readonly string[];
 }
@@ -112,6 +124,7 @@ export const EMPTY_CHECKOUT_SUBMIT_BANNER: CheckoutSubmitBanner = {
   noChargeReassurance: false,
   showRecordedVoiceHint: false,
   newPurchaseActionRequired: false,
+  diagnosticLine: '',
   lines: [],
 };
 
@@ -128,12 +141,17 @@ export const EMPTY_CHECKOUT_SUBMIT_BANNER: CheckoutSubmitBanner = {
  * covers `completed_paid`, so a resolved prior attempt may be one the buyer has
  * already paid for. The mapper strips the sentence from the message for exactly
  * that reason; the banner must not put it back underneath.
+ *
+ * `diagnostic` is purely additive. It appends one correlation line at the very
+ * end and touches no other decision here: a code cannot change the heading, the
+ * message, or whether a no-charge sentence is authorized.
  */
 export function checkoutSubmitBanner(input: {
   message: string | null | undefined;
   attemptRisk: CheckoutSubmitAttemptRisk;
   recordedVoiceHint?: boolean;
   paidAttemptId?: string | null;
+  diagnostic?: { code: CheckoutDiagnosticCode; reference: string } | null;
 }): CheckoutSubmitBanner {
   if (!input.message) return EMPTY_CHECKOUT_SUBMIT_BANNER;
   const previousAttemptPaid = input.attemptRisk === 'previous_attempt_paid';
@@ -153,6 +171,13 @@ export function checkoutSubmitBanner(input: {
     : statusUnconfirmed
       ? SUBMIT_BANNER_HEADING_UNRESOLVED
       : SUBMIT_BANNER_HEADING_FAILED;
+  // A reference we cannot vouch for is not shown. The format check is what
+  // keeps this line a closed value rather than an echo of whatever the caller
+  // happened to hold.
+  const diagnosticLine = input.diagnostic
+    && CHECKOUT_DIAGNOSTIC_REFERENCE.test(input.diagnostic.reference)
+    ? checkoutDiagnosticReferenceLine(input.diagnostic)
+    : '';
   return {
     visible: true,
     heading,
@@ -160,12 +185,14 @@ export function checkoutSubmitBanner(input: {
     noChargeReassurance,
     showRecordedVoiceHint,
     newPurchaseActionRequired: previousAttemptPaid && paidAttemptIdKnown,
+    diagnosticLine,
     lines: [
       heading,
       message,
       ...(noChargeReassurance ? [NOT_CHARGED] : []),
       ...(showRecordedVoiceHint ? [SUBMIT_BANNER_RECORDED_VOICE_HINT] : []),
       SUBMIT_BANNER_SUPPORT_PROMPT,
+      ...(diagnosticLine ? [diagnosticLine] : []),
     ],
   };
 }
