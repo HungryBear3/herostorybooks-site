@@ -168,11 +168,14 @@ test('the error banner distinguishes the current order request from an unresolve
   // Dispatch state stays separate from retained-marker state.
   assert.match(FORM, /let requestSent = false;/);
   assert.match(FORM, /let attemptWasPreviouslySent = false;/);
-  assert.match(FORM, /if \(!serverLeaseBacked && !markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new Error/);
-  assert.match(FORM, /if \(!serverLeaseBacked\) checkoutAttemptSentRef\.current = checkoutAttemptId;\s*\n\s*requestSent = true;/);
-  assert.match(FORM, /requestSent = true;\s*\n\s*const response = await fetch\("\/api\/order"/);
+  assert.match(FORM, /if \(!serverLeaseBacked && !markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new CheckoutSubmitDiagnosticError/);
+  assert.match(FORM, /if \(!serverLeaseBacked\) checkoutAttemptSentRef\.current = checkoutAttemptId;\s*\n\s*diagnosticPhase = "order";\s*\n\s*requestSent = true;/);
+  assert.match(FORM, /diagnosticPhase = "order";\s*\n\s*requestSent = true;\s*\n\s*const response = await fetch\("\/api\/order"/);
   assert.match(FORM, /checkoutSubmitAttemptRisk\(\{[\s\S]{0,200}requestSent,[\s\S]{0,200}previouslySent: attemptWasPreviouslySent,[\s\S]{0,200}previousAttemptResolved,[\s\S]{0,200}previousAttemptPaid/);
-  assert.match(FORM, /setSubmitError\(described\.message, described\.showRecordedVoiceHint, attemptRisk\)/);
+  assert.match(
+    FORM,
+    /setSubmitError\(\s*described\.message,\s*described\.showRecordedVoiceHint,\s*attemptRisk,\s*\{ code: classified\.code, reference: diagnosticReference \},\s*\)/,
+  );
   // Resolution evidence outlives the invocation that earned it.
   assert.match(FORM, /resolvedAttemptRef = useRef</);
   assert.match(FORM, /resolvedAttemptId: resolvedAttemptRef\.current/);

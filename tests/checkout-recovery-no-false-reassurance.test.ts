@@ -177,6 +177,87 @@ test('a completed-paid restart followed by a failed browser cleanup renders no n
   assert.doesNotMatch(banner.lines.join(' '), /not been charged|no charge/i);
 });
 
+test('a consented new purchase after a paid order keeps prior-payment copy evidence', () => {
+  // The new attempt itself is reserved but unsent. The old attempt is resolved,
+  // paid, and already had explicit consent to rotate, so this failure must not
+  // re-open the new-purchase action — but it also must not claim the buyer has
+  // never been charged.
+  const attemptRisk = checkoutSubmitAttemptRisk({
+    requestSent: false,
+    previouslySent: false,
+    priorPaidHistory: true,
+  });
+  assert.equal(attemptRisk, 'previous_attempt_resolved');
+
+  const described = describeCheckoutSubmitError({
+    code: 'order_request_failed',
+    attemptRisk,
+    serverMessage:
+      'The attached media is too large, so this click did not send a new order request.',
+  });
+  const banner = checkoutSubmitBanner({
+    message: described.message,
+    attemptRisk,
+  });
+  assert.equal(banner.newPurchaseActionRequired, false);
+  assert.equal(banner.noChargeReassurance, false);
+  assert.doesNotMatch(banner.lines.join(' '), /not been charged|no charge|nothing was charged/i);
+});
+
+test('paid-history copy evidence survives repeated local failures without reopening purchase consent', () => {
+  for (let failedClick = 1; failedClick <= 2; failedClick += 1) {
+    const risk = checkoutSubmitAttemptRisk({
+      requestSent: false,
+      previouslySent: false,
+      priorPaidHistory: true,
+    });
+    const banner = checkoutSubmitBanner({
+      message: 'This click did not send a new order request.',
+      attemptRisk: risk,
+    });
+    assert.equal(risk, 'previous_attempt_resolved', `click ${failedClick}`);
+    assert.equal(banner.noChargeReassurance, false, `click ${failedClick}`);
+    assert.equal(banner.newPurchaseActionRequired, false, `click ${failedClick}`);
+  }
+});
+
+test('paid-history copy evidence survives a later picker error on the fresh unsent attempt', () => {
+  const storage = browserStorage({
+    [CHECKOUT_ATTEMPT_ID_STORAGE_KEY]: NEW_ATTEMPT,
+    [CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY]: NEW_ATTEMPT,
+  });
+  const risk = checkoutSubmitBannerAttemptRisk({
+    storage,
+    inMemoryAttemptId: NEW_ATTEMPT,
+    inMemorySentAttemptId: null,
+    resolvedAttemptId: OLD_ATTEMPT,
+    paidAttemptId: null,
+    priorPaidHistory: true,
+  });
+  const banner = checkoutSubmitBanner({
+    message: "We couldn't accept that photo.",
+    attemptRisk: risk,
+  });
+  assert.equal(risk, 'previous_attempt_resolved');
+  assert.equal(banner.noChargeReassurance, false);
+  assert.equal(banner.newPurchaseActionRequired, false);
+});
+
+test('the paid rotation branch preserves prior-payment evidence for submit copy', () => {
+  const form = fs.readFileSync(
+    path.join(process.cwd(), 'src/app/checkout/checkout-form.tsx'),
+    'utf8',
+  );
+  const rotationStart = form.indexOf('if (continueDecision.action === "rotate_attempt")');
+  const rotationEnd = form.indexOf('\n        }\n      }', rotationStart);
+  assert.ok(rotationStart >= 0 && rotationEnd > rotationStart, 'paid rotation branch must be bounded');
+  const rotation = form.slice(rotationStart, rotationEnd);
+  assert.match(
+    rotation,
+    /if \(continueDecision\.reason === "completed_paid"\)\s*\{\s*knownPriorPaidHistoryRef\.current = true;/,
+  );
+});
+
 test('the checkout page cannot append the no-charge sentence outside the banner helper', () => {
   const form = fs.readFileSync(
     path.join(process.cwd(), 'src/app/checkout/checkout-form.tsx'),

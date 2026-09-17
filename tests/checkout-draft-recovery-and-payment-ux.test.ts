@@ -714,7 +714,7 @@ test('checkout resolves local conflicts or a server lease before private intake 
     'identity conflict must abort before reconciliation or storage repair');
   assert.match(
     formSource.slice(conflictAbort, conflictRecovery),
-    /attemptWasPreviouslySent = true;[\s\S]*throw new Error/,
+    /attemptWasPreviouslySent = true;[\s\S]*throw new CheckoutSubmitDiagnosticError/,
   );
   assert.ok(leaseTransition > riskRepair && leaseAbort > leaseTransition);
   assert.ok(conflictGuard > leaseAbort, 'lease failure must still stop before checkout work');
@@ -730,9 +730,9 @@ test('checkout wiring marks an attempt sent only immediately before the order re
   assert.ok(marker > -1, 'missing sent-attempt marker');
   assert.ok(requestFlag > marker, 'requestSent must follow the durable marker');
   assert.ok(orderFetch > requestFlag, 'the marker and request flag must precede /api/order');
-  assert.match(formSource, /if \(!serverLeaseBacked && !markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new Error[\s\S]{0,300}if \(!serverLeaseBacked\) checkoutAttemptSentRef\.current = checkoutAttemptId/);
+  assert.match(formSource, /if \(!serverLeaseBacked && !markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new CheckoutSubmitDiagnosticError[\s\S]{0,300}if \(!serverLeaseBacked\) checkoutAttemptSentRef\.current = checkoutAttemptId/);
   assert.match(formSource, /readStoredCheckoutAttemptSent\(\s*checkoutAttemptId,\s*checkoutAttemptSentRef\.current,?\s*\)/);
-  assert.match(formSource, /if \(!serverLeaseBacked && !markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new Error/);
+  assert.match(formSource, /if \(!serverLeaseBacked && !markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new CheckoutSubmitDiagnosticError/);
   assert.ok(
     formSource.indexOf('if (!serverLeaseBacked && !markCheckoutAttemptSent(checkoutAttemptId))')
       < formSource.indexOf('fetch("/api/order"'),

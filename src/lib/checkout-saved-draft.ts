@@ -115,6 +115,7 @@ export function checkoutSubmitAttemptRisk(input: {
   previouslySent: boolean;
   previousAttemptResolved?: boolean;
   previousAttemptPaid?: boolean;
+  priorPaidHistory?: boolean;
 }): CheckoutSubmitAttemptRisk {
   if (input.requestSent) return 'current_order_request_sent';
   if (input.previouslySent) {
@@ -127,6 +128,10 @@ export function checkoutSubmitAttemptRisk(input: {
       ? 'previous_attempt_resolved'
       : 'previous_attempt_unresolved';
   }
+  // Weaker than `previous_attempt_paid`: this only suppresses categorical
+  // no-charge copy after consented rotation. It cannot re-open the consumed
+  // purchase action or settle a current attempt. Attempt evidence above wins.
+  if (input.priorPaidHistory) return 'previous_attempt_resolved';
   return 'none';
 }
 
@@ -148,6 +153,7 @@ export function checkoutSubmitBannerAttemptRisk(input: {
   inMemorySentAttemptId: string | null | undefined;
   resolvedAttemptId: string | null | undefined;
   paidAttemptId?: string | null | undefined;
+  priorPaidHistory?: boolean;
 }): CheckoutSubmitAttemptRisk {
   const snapshot = readCheckoutAttemptStorageSnapshot(input.storage);
   if (checkoutAttemptIdentityConflict(
@@ -161,7 +167,9 @@ export function checkoutSubmitBannerAttemptRisk(input: {
       input.inMemoryAttemptId ?? snapshot.attemptId,
       input.inMemorySentAttemptId,
     );
-  if (!markerIndicatesSent) return 'none';
+  if (!markerIndicatesSent) {
+    return input.priorPaidHistory ? 'previous_attempt_resolved' : 'none';
+  }
   if (!snapshot.reliable) return 'previous_attempt_unresolved';
   const evidenceIdentities = [
     snapshot.attemptId,
