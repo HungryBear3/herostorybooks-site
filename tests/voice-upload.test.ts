@@ -150,7 +150,11 @@ test('legacy story-source uploads use the exact credential validated before asyn
 test('switching away from Custom Story resets every source consent and fences late recorder callbacks', () => {
   const checkout = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
   const recorder = readFileSync('src/components/checkout/VoiceRecorderSection.tsx', 'utf8');
-  assert.match(checkout, /onClick=\{\(\) => \{[\s\S]{0,1200}setDirectMediaConsent\(false\)[\s\S]{0,500}Choose a ready-made adventure instead/);
+  assert.match(checkout, /onClick=\{clearCustomStoryMedia\}[\s\S]{0,500}Choose a ready-made adventure instead/);
+  assert.match(
+    checkout,
+    /const clearCustomStoryMedia[\s\S]*?commitDirectIntakeMediaChange\(\(\) => \{[\s\S]*?voiceConsent: false,[\s\S]*?setDirectMediaConsent\(false\)/,
+  );
   assert.match(recorder, /mountedRef\.current = false/);
   assert.match(recorder, /mediaOperationRef\.current \+= 1/);
   assert.match(recorder, /if \(!mountedRef\.current \|\| operationId !== mediaOperationRef\.current\)[\s\S]{0,300}return/);

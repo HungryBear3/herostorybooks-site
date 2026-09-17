@@ -303,11 +303,15 @@ test('server and Clear saved details enforce the same source/reset contract befo
   assert.ok(sourceRequired > 0 && sourceRequired < stripe);
 
   const clearSavedDetails = CHECKOUT_FORM_SRC.slice(
-    CHECKOUT_FORM_SRC.indexOf('We saved your progress'),
-    CHECKOUT_FORM_SRC.indexOf('Clear saved details') + 240,
+    CHECKOUT_FORM_SRC.indexOf('const clearSavedCheckoutProgress ='),
+    CHECKOUT_FORM_SRC.indexOf('/** The buyer abandons Custom Story'),
   );
+  assert.match(clearSavedDetails, /commitDirectIntakeMediaChange\(\(\) => \{/);
   assert.match(clearSavedDetails, /setDirectMediaConsent\(false\)/);
-  assert.match(clearSavedDetails, /intakeSessionRef\.current = null/);
+  assert.match(
+    CHECKOUT_FORM_SRC,
+    /const commitDirectIntakeMediaChange[\s\S]*?invalidateDirectIntakeMediaSelection\(\{[\s\S]*?completed: intakeSessionRef,[\s\S]*?preparation: directIntakePreparationRef,/,
+  );
   assert.match(CHECKOUT_FORM_SRC, /registerFieldRef\("voiceConsent"\)/);
 
   const readiness = CHECKOUT_FORM_SRC.slice(

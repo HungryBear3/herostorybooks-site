@@ -2124,9 +2124,23 @@ async function persistOrderUnsafe(order: OrderRecord) {
   return sanitized;
 }
 
-export async function getOrder(orderId: string) {
+/**
+ * Controls only this boundary's diagnostic logging. Errors still reject and
+ * successful/missing reads are unchanged. Most callers keep the historical
+ * diagnostics; privacy-sensitive routes can contain failures at a sanitized
+ * boundary without printing provider exception material.
+ */
+export interface OrderReadLoggingPolicy {
+  logFailures?: boolean;
+}
+
+export async function getOrder(
+  orderId: string,
+  loggingPolicy: OrderReadLoggingPolicy = {},
+) {
   const token = getBlobToken();
   const requireDurable = requiresDurablePersistence();
+  const logFailures = loggingPolicy.logFailures !== false;
 
   if (token) {
     try {
@@ -2145,19 +2159,25 @@ export async function getOrder(orderId: string) {
         // In production, blob errors must NOT silently fall back to ephemeral
         // disk — that's how the webhook reads from a different store than
         // persistOrder() wrote to. Re-throw so the caller can log + 500.
-        console.error(
-          `[orders] getOrder: blob read failed in production-like env (orderId=${orderId}):`,
-          err,
-        );
+        if (logFailures) {
+          console.error(
+            `[orders] getOrder: blob read failed in production-like env (orderId=${orderId}):`,
+            err,
+          );
+        }
         throw err;
       }
-      console.warn(`[orders] getOrder blob read failed in dev for ${orderId}:`, err);
+      if (logFailures) {
+        console.warn(`[orders] getOrder blob read failed in dev for ${orderId}:`, err);
+      }
       // dev: fall through to filesystem
     }
   } else if (requireDurable) {
-    console.error(
-      `[orders] getOrder: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=${orderId}).`,
-    );
+    if (logFailures) {
+      console.error(
+        `[orders] getOrder: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=${orderId}).`,
+      );
+    }
     throw new OrderPersistenceError(
       orderId,
       'BLOB_READ_WRITE_TOKEN missing in production — cannot read order',

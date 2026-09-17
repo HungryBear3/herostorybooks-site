@@ -98,7 +98,13 @@ import {
 import {
   DirectIntakePreparationError,
   applyPrimaryAndSupportingMediaToOrderPayload,
+  assertDirectIntakeAttemptAuthorityIsCurrent,
+  assertDirectIntakeResultIsCurrent,
+  captureDirectIntakeAttemptAuthority,
+  createDirectIntakePreparation,
+  invalidateDirectIntakeMediaSelection,
   prepareOrReuseDirectIntakeSubmission,
+  type DirectIntakePreparation,
   type DirectIntakeSubmissionCache,
   type IntakeClientTransport,
 } from "@/lib/checkout-intake-client-flow";
@@ -637,6 +643,39 @@ export function CheckoutForm({
   const [showGuidedPhotos, setShowGuidedPhotos] = useState(false);
   const [directMediaConsent, setDirectMediaConsent] = useState(false);
   const intakeSessionRef = useRef<DirectIntakeSubmissionCache | null>(null);
+  // The PARTIAL half of the same story. `intakeSessionRef` only ever holds a
+  // finished batch; this holds the intake, the capability and every slot the
+  // server has already confirmed, from the moment the intake exists. It is what
+  // lets a buyer whose fifth file died press Continue again and re-send only
+  // that one file. Lazily built and never re-created, exactly like the submit
+  // lock, so a re-render cannot orphan a live capability.
+  const directIntakePreparationRef = useRef<DirectIntakePreparation | null>(null);
+  if (!directIntakePreparationRef.current) {
+    directIntakePreparationRef.current = createDirectIntakePreparation();
+  }
+  // THE boundary for every committed change to the media a direct intake is
+  // built from — hero photo, supporting photos, guided stills, voice note,
+  // inspiration document, and the consents that decide whether any of them is
+  // part of the selection at all.
+  //
+  // Clearing React state is NOT an invalidation. A handler that removed the
+  // hero photo from the screen and left the preparation alone left its
+  // generation where it was, so a reserve-upload already in flight for the
+  // discarded photo woke up current: it uploaded, it passed the hand-off guard,
+  // and /api/order was handed a book built on media the buyer had just removed.
+  // Disabling the control while submitting does not fix that either — the
+  // window is the buyer's own navigation, not a double click.
+  //
+  // So invalidation runs FIRST, synchronously, and the UI mutation runs after
+  // it. There is no await in between for a parked run to wake up in, and every
+  // media handler below goes through here rather than touching either ref.
+  const commitDirectIntakeMediaChange = useCallback((mutate: () => void) => {
+    invalidateDirectIntakeMediaSelection({
+      completed: intakeSessionRef,
+      preparation: directIntakePreparationRef,
+    });
+    mutate();
+  }, []);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Ref-backed one-shot submit guard. `isSubmitting` alone cannot prevent a
   // double submit: it is React state, so two clicks in the same batch both
@@ -811,10 +850,12 @@ export function CheckoutForm({
       supportingPhotoOperationRef.current += 1;
       setSupportingPhotoPendingId(null);
     }
-    setForm((prev) => ({
-      ...prev,
-      familyCharacters: prev.familyCharacters.filter((character) => character.id !== id),
-    }));
+    commitDirectIntakeMediaChange(() => {
+      setForm((prev) => ({
+        ...prev,
+        familyCharacters: prev.familyCharacters.filter((character) => character.id !== id),
+      }));
+    });
     if (editingSupportingCharacterId === id) {
       setSupportingCharacterDraft(null);
       setEditingSupportingCharacterId(null);
@@ -852,20 +893,24 @@ export function CheckoutForm({
     }
 
     const savedName = supportingCharacterDraft.name.trim() || "Person";
-    setForm((prev) => {
-      const existingIndex = prev.familyCharacters.findIndex((character) => character.id === supportingCharacterDraft.id);
-      if (existingIndex >= 0) {
+    // Saving is the COMMIT point for a supporting character's photo: everything
+    // before it was draft state a direct intake never saw.
+    commitDirectIntakeMediaChange(() => {
+      setForm((prev) => {
+        const existingIndex = prev.familyCharacters.findIndex((character) => character.id === supportingCharacterDraft.id);
+        if (existingIndex >= 0) {
+          return {
+            ...prev,
+            familyCharacters: prev.familyCharacters.map((character) =>
+              character.id === supportingCharacterDraft.id ? supportingCharacterDraft : character,
+            ),
+          };
+        }
         return {
           ...prev,
-          familyCharacters: prev.familyCharacters.map((character) =>
-            character.id === supportingCharacterDraft.id ? supportingCharacterDraft : character,
-          ),
+          familyCharacters: [...prev.familyCharacters, supportingCharacterDraft],
         };
-      }
-      return {
-        ...prev,
-        familyCharacters: [...prev.familyCharacters, supportingCharacterDraft],
-      };
+      });
     });
     supportingPhotoOperationRef.current += 1;
     setSupportingPhotoPendingId(null);
@@ -1039,6 +1084,118 @@ export function CheckoutForm({
     }
   }, [currentStep, nextStep, scrollToField, form.bookFormat]);
 
+  /** Start over: every field, and therefore every media selection, is dropped. */
+  const clearSavedCheckoutProgress = () => {
+    heroPhotoOperationRef.current += 1;
+    supportingPhotoOperationRef.current += 1;
+    commitDirectIntakeMediaChange(() => {
+      setForm(emptyForm);
+      setSupportingCharacterDraft(null);
+      setEditingSupportingCharacterId(null);
+      setSupportingPhotoPendingId(null);
+      setGuidedFrames([]);
+      setGuidedConsent(false);
+      setDirectMediaConsent(false);
+      setShowGuidedPhotos(false);
+      setStepError(null);
+      setFieldErrors({});
+      setSubmitError(null);
+      setPhotoNotice(null);
+      setCurrentStepId("hero-details");
+      localStorage.removeItem(STORAGE_KEY);
+      setShowRecovery(false);
+    });
+  };
+
+  /** The buyer abandons Custom Story, dropping any attached voice note or file. */
+  const clearCustomStoryMedia = () => {
+    if (form.voicePreviewUrl?.startsWith("blob:")) {
+      URL.revokeObjectURL(form.voicePreviewUrl);
+    }
+    if (recoveryTimerRef.current) {
+      clearTimeout(recoveryTimerRef.current);
+      recoveryTimerRef.current = null;
+    }
+    commitDirectIntakeMediaChange(() => {
+      const clearedForm: FormState = {
+        ...form,
+        theme: "",
+        customStoryMemory: "",
+        customStorySourceMode: "",
+        voiceFile: null,
+        voicePreviewUrl: null,
+        voiceSource: null,
+        voiceConsent: false,
+      };
+      setDirectMediaConsent(false);
+      saveProgress(clearedForm);
+      setForm(clearedForm);
+    });
+  };
+
+  /** Guided stills are added or removed. */
+  const handleGuidedFramesChange = useCallback((frames: GuidedPhotoFile[]) => {
+    commitDirectIntakeMediaChange(() => {
+      setGuidedFrames(frames);
+    });
+  }, [commitDirectIntakeMediaChange]);
+
+  /** Guided consent decides whether those stills are part of the selection. */
+  const handleGuidedConsentChange = useCallback((consent: boolean) => {
+    commitDirectIntakeMediaChange(() => {
+      setGuidedConsent(consent);
+    });
+  }, [commitDirectIntakeMediaChange]);
+
+  /** A Custom Story voice note or inspiration document is attached or cleared. */
+  const handleStoryMediaChange = useCallback((
+    file: File | null,
+    previewUrl: string | null,
+    source: FormState["voiceSource"],
+  ) => {
+    commitDirectIntakeMediaChange(() => {
+      setForm((prev) => ({
+        ...prev,
+        customStorySourceMode: file
+          ? isStoryAudioFile(file) ? "audio" : "document"
+          : prev.customStoryMemory.trim() ? "written" : "",
+        voiceFile: file,
+        voicePreviewUrl: previewUrl,
+        voiceSource: source,
+        voiceConsent: file ? prev.voiceConsent : false,
+      }));
+    });
+  }, [commitDirectIntakeMediaChange]);
+
+  /** The consent that decides whether that file is part of the selection. */
+  const handleStoryMediaConsentChange = useCallback((consent: boolean) => {
+    commitDirectIntakeMediaChange(() => {
+      setForm((prev) => ({ ...prev, voiceConsent: consent }));
+    });
+  }, [commitDirectIntakeMediaChange]);
+
+  /** Final authorization is part of the media selection and revokes stale work. */
+  const handleDirectMediaConsentChange = useCallback((consent: boolean) => {
+    commitDirectIntakeMediaChange(() => {
+      setDirectMediaConsent(consent);
+    });
+  }, [commitDirectIntakeMediaChange]);
+
+  /** The hero photo is added or replaced. */
+  const applyHeroPhotoSelection = useCallback((uploadFile: File, photoDataUrl: string) => {
+    commitDirectIntakeMediaChange(() => {
+      setForm((prev) => ({ ...prev, photoFile: uploadFile, photoDataUrl }));
+    });
+  }, [commitDirectIntakeMediaChange]);
+
+  /** The hero photo is removed — "Change Photo" returns the buyer to the picker. */
+  const clearHeroPhoto = useCallback(() => {
+    heroPhotoOperationRef.current += 1;
+    commitDirectIntakeMediaChange(() => {
+      setForm((prev) => ({ ...prev, photoFile: null, photoDataUrl: null }));
+    });
+  }, [commitDirectIntakeMediaChange]);
+
   const processPhoto = useCallback(async (file: File) => {
     const operation = ++heroPhotoOperationRef.current;
     // Refuse an unsupported still format at the picker, with photo-specific
@@ -1056,11 +1213,7 @@ export function CheckoutForm({
       const reader = new FileReader();
       reader.onload = (e) => {
         if (operation !== heroPhotoOperationRef.current) return;
-        setForm((prev) => ({
-          ...prev,
-          photoFile: uploadFile,
-          photoDataUrl: e.target?.result as string,
-        }));
+        applyHeroPhotoSelection(uploadFile, e.target?.result as string);
       };
       reader.readAsDataURL(uploadFile);
     } catch {
@@ -1069,7 +1222,7 @@ export function CheckoutForm({
         "That photo is too large for checkout on this device. Please choose a smaller JPG/PNG, screenshot/crop it, or continue without the child photo and add it later.",
       );
     }
-  }, [setSubmitError]);
+  }, [applyHeroPhotoSelection, setSubmitError]);
 
   const processSupportingCharacterPhoto = useCallback(async (id: string, file: File) => {
     const operation = ++supportingPhotoOperationRef.current;
@@ -1139,6 +1292,13 @@ export function CheckoutForm({
     // touch+click pair, or a re-render re-entering this handler — the disabled
     // attribute below only takes effect after React re-renders.
     if (!submitLockRef.current?.acquire()) return;
+    // A submit owns the current media ATTEMPT before its first await. Attempt
+    // resolution can outlive a buyer navigating back and changing/clearing
+    // media; that reset must revoke this old closure before it can upload the
+    // discarded selection or dispatch an order built from it.
+    const submitDirectIntakeAuthority = captureDirectIntakeAttemptAuthority(
+      directIntakePreparationRef.current,
+    );
     setIsSubmitting(true);
     setSubmitError(null);
     // The review step is the fifth funnel step: it completes when a validated
@@ -1369,6 +1529,10 @@ export function CheckoutForm({
           "We couldn't safely verify your checkout attempt before uploading. No private files or order request were sent. Please do not pay again — contact support@herostorybooks.com.",
         );
       }
+      assertDirectIntakeAttemptAuthorityIsCurrent(
+        submitDirectIntakeAuthority,
+        directIntakePreparationRef.current,
+      );
       checkoutAttemptIdRef.current = checkoutAttemptId;
       diagnosticPhase = "intake";
       payload.set("checkoutAttemptId", checkoutAttemptId);
@@ -1488,7 +1652,14 @@ export function CheckoutForm({
                 mimeType: attachedStoryFile.type,
               }
             : null,
-      }, intakeSessionRef.current);
+      }, intakeSessionRef.current, { preparation: directIntakePreparationRef.current });
+      // Start over — or clearing a photo — can land while the call above is
+      // still awaiting. Both reset the preparation, and a result from the run
+      // they cancelled is an order built on a capability this page has already
+      // dropped. Refused here, before the payload exists and long before
+      // /api/order: the buyer gets a plain "we couldn't start your order", not
+      // a book assembled from media they just discarded.
+      assertDirectIntakeResultIsCurrent(preparedDirectIntake, directIntakePreparationRef.current);
       const directIntakeSubmission = preparedDirectIntake?.submission ?? null;
       applyPrimaryAndSupportingMediaToOrderPayload(payload, {
         directSubmission: directIntakeSubmission,
@@ -1516,6 +1687,11 @@ export function CheckoutForm({
         // intake bypasses this branch and keeps its own per-asset limits.
         assertLegacyCheckoutPayloadWithinLimit(payload);
       }
+
+      assertDirectIntakeAttemptAuthorityIsCurrent(
+        submitDirectIntakeAuthority,
+        directIntakePreparationRef.current,
+      );
 
       if (!serverLeaseBacked && !markCheckoutAttemptSent(checkoutAttemptId)) {
         throw new CheckoutSubmitDiagnosticError(
@@ -1575,7 +1751,10 @@ export function CheckoutForm({
       }
       // The capability has completed its only job. Drop the in-memory reference
       // before handing the page to Stripe; it is never persisted or put in a URL.
+      // Both halves go: the frozen batch AND the partial preparation holding
+      // the same capability, or the page would keep it alive past the order.
       intakeSessionRef.current = null;
+      directIntakePreparationRef.current?.reset();
       // Hand off to Stripe IMMEDIATELY.
       //
       // This used to be the success state + an unguarded
@@ -1808,26 +1987,7 @@ export function CheckoutForm({
                 We saved your progress — your details are filled in below.
               </span>
               <button
-                onClick={() => {
-                  heroPhotoOperationRef.current += 1;
-                  supportingPhotoOperationRef.current += 1;
-                  setForm(emptyForm);
-                  setSupportingCharacterDraft(null);
-                  setEditingSupportingCharacterId(null);
-                  setSupportingPhotoPendingId(null);
-                  setGuidedFrames([]);
-                  setGuidedConsent(false);
-                  setDirectMediaConsent(false);
-                  intakeSessionRef.current = null;
-                  setShowGuidedPhotos(false);
-                  setStepError(null);
-                  setFieldErrors({});
-                  setSubmitError(null);
-                  setPhotoNotice(null);
-                  setCurrentStepId("hero-details");
-                  localStorage.removeItem(STORAGE_KEY);
-                  setShowRecovery(false);
-                }}
+                onClick={clearSavedCheckoutProgress}
                 className="text-xs text-[#6e6154] underline hover:text-[#241914]"
               >
                 Clear saved details
@@ -1965,21 +2125,8 @@ export function CheckoutForm({
                           voicePreviewUrl={form.voicePreviewUrl}
                           voiceSource={form.voiceSource}
                           voiceConsent={form.voiceConsent}
-                          onVoiceChange={(file, previewUrl, source) =>
-                            setForm((prev) => ({
-                              ...prev,
-                              customStorySourceMode: file
-                                ? isStoryAudioFile(file) ? "audio" : "document"
-                                : prev.customStoryMemory.trim() ? "written" : "",
-                              voiceFile: file,
-                              voicePreviewUrl: previewUrl,
-                              voiceSource: source,
-                              voiceConsent: file ? prev.voiceConsent : false,
-                            }))
-                          }
-                          onConsentChange={(consent) =>
-                            setForm((prev) => ({ ...prev, voiceConsent: consent }))
-                          }
+                          onVoiceChange={handleStoryMediaChange}
+                          onConsentChange={handleStoryMediaConsentChange}
                         />
                       </div>
                     </>
@@ -2035,29 +2182,7 @@ export function CheckoutForm({
               ) : (
                 <button
                   type="button"
-                  onClick={() => {
-                    if (form.voicePreviewUrl?.startsWith("blob:")) {
-                      URL.revokeObjectURL(form.voicePreviewUrl);
-                    }
-                    intakeSessionRef.current = null;
-                    if (recoveryTimerRef.current) {
-                      clearTimeout(recoveryTimerRef.current);
-                      recoveryTimerRef.current = null;
-                    }
-                    const clearedForm: FormState = {
-                      ...form,
-                      theme: "",
-                      customStoryMemory: "",
-                      customStorySourceMode: "",
-                      voiceFile: null,
-                      voicePreviewUrl: null,
-                      voiceSource: null,
-                      voiceConsent: false,
-                    };
-                    setDirectMediaConsent(false);
-                    saveProgress(clearedForm);
-                    setForm(clearedForm);
-                  }}
+                  onClick={clearCustomStoryMedia}
                   className="w-full rounded-2xl border border-[#b8aa90] bg-[#fffaf1] px-4 py-3 text-sm font-semibold text-[#241914] underline decoration-[#a64c4c]/50 underline-offset-4"
                 >
                   Choose a ready-made adventure instead
@@ -2862,14 +2987,7 @@ export function CheckoutForm({
                     </div>
                     <button
                       type="button"
-                      onClick={() => {
-                        heroPhotoOperationRef.current += 1;
-                        setForm((prev) => ({
-                          ...prev,
-                          photoFile: null,
-                          photoDataUrl: null,
-                        }));
-                      }}
+                      onClick={clearHeroPhoto}
                       className="absolute top-2 right-2 bg-[#fffaf1]/90 hover:bg-[#fffaf1] text-[#1f1a16] text-xs font-semibold px-3 py-1.5 rounded-full shadow transition"
                     >
                       Change Photo
@@ -3051,8 +3169,8 @@ export function CheckoutForm({
                       heroName={form.childName}
                       frames={guidedFrames}
                       consent={guidedConsent}
-                      onConsentChange={setGuidedConsent}
-                      onFramesChange={setGuidedFrames}
+                      onConsentChange={handleGuidedConsentChange}
+                      onFramesChange={handleGuidedFramesChange}
                     />
                   )}
                 </div>
@@ -3339,7 +3457,7 @@ export function CheckoutForm({
                   <input
                     type="checkbox"
                     checked={directMediaConsent}
-                    onChange={(event) => setDirectMediaConsent(event.target.checked)}
+                    onChange={(event) => handleDirectMediaConsentChange(event.target.checked)}
                     className="mt-1 h-4 w-4 accent-deep-gold"
                   />
                   <span>

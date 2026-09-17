@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 
 import { getConfiguredAdminKey } from '@/lib/admin-auth';
 import { isAdminAuthedFromCookie } from '@/lib/admin-auth-server';
+import { listAdminIntakeAssets } from '@/lib/admin-intake-asset-route-handler';
 import { getOrder } from '@/lib/orders';
 import { buildOrderDiagnostics, formatDiagnosticsSummary } from '@/lib/order-diagnostics';
 import { CUSTOMER_QUEUE_STATUS_LABELS } from '@/lib/order-queue';
@@ -51,6 +52,10 @@ export default async function AdminOrderDetail({ params }: Props) {
   const diagnostics = buildOrderDiagnostics(order);
   const supportSummary = formatDiagnosticsSummary(diagnostics);
   const familyCharacters = Array.isArray(order.familyCharacters) ? order.familyCharacters : [];
+  // Only assets this order is exactly bound to, with retention still active.
+  // The helper returns a role label and a same-origin order-scoped href and
+  // nothing else — no storage path, no provider URL, no capability.
+  const intakeAssetLinks = listAdminIntakeAssets(order);
   const previewText = (value: string | null | undefined, max = 240) => {
     const text = (value ?? '').trim();
     if (!text) return null;
@@ -257,6 +262,38 @@ export default async function AdminOrderDetail({ params }: Props) {
           </Section>
         )}
 
+
+        <section className="bg-white border border-gray-200 rounded-xl p-5">
+          <h2 className="text-xs uppercase tracking-wider text-gray-500 mb-3">Private intake media</h2>
+          {intakeAssetLinks.length === 0 ? (
+            <p className="text-xs text-gray-500">
+              No privately staged checkout media is bound to this order, or its retention window has closed.
+            </p>
+          ) : (
+            <>
+              <p className="text-xs text-gray-500 mb-3">
+                Served from private storage through this admin session only. Handle under the manual
+                Custom Story runbook §4.4 — retrieval is supported; automated transcription and
+                automated prose are not.
+              </p>
+              <ul className="space-y-1.5 text-sm">
+                {intakeAssetLinks.map((asset) => (
+                  <li key={asset.assetId} className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-gray-700">{asset.label}</span>
+                    <a
+                      href={asset.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs underline text-forest"
+                    >
+                      Open {asset.mimeType} · {(asset.size / 1024).toFixed(0)} KB ↗
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </section>
 
         <Section title="Payment">
           <Row label="Status" value={order.paymentStatus} tone={order.paymentStatus === 'paid' ? 'good' : 'neutral'} />
