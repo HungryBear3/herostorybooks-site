@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  checkoutAttemptRestartDependencies,
   checkoutOrderIdForAttempt,
   resolveCheckoutAttemptRestart,
 } from '../src/lib/checkout-attempt-restart.ts';
@@ -55,6 +56,45 @@ test('allows a new attempt only after Stripe proves the old session expired unpa
   });
   assert.deepEqual(result, { status: 'restart_allowed', reason: 'expired_unpaid' });
   assert.equal(released, 1);
+});
+
+test('the concrete pre-claim legacy order with an expired lease retires and authorizes a fresh attempt', async () => {
+  const legacy = order({
+    id: 'ord_testfixture_legacy_expired',
+    checkoutAttemptId: 'bcadde66dd4a436b994a229a7b817d7a',
+    checkoutIntentFingerprint: undefined,
+    checkoutIntentClaimGeneration: undefined,
+    checkoutLeaseId: '11111111-1111-4111-8111-111111111111',
+    checkoutLeaseExpiresAt: '2026-08-27T12:00:00.000Z',
+    stripeSessionId: 'cs_legacy_expired',
+  });
+  let retired = 0;
+  let claimReleases = 0;
+  const deps = checkoutAttemptRestartDependencies({
+    resolveOrderId: async () => null,
+    getOrder: async () => legacy,
+    retrieveSession: async () => ({
+      status: 'expired',
+      payment_status: 'unpaid',
+      payment_intent: null,
+    }),
+    retireExpiredAttempt: async (observed) => {
+      retired += 1;
+      assert.equal(observed, legacy);
+      return true;
+    },
+    releaseIntentClaim: async () => {
+      claimReleases += 1;
+      return true;
+    },
+  });
+
+  assert.deepEqual(
+    await resolveCheckoutAttemptRestart('bcadde66dd4a436b994a229a7b817d7a', deps),
+    { status: 'restart_allowed', reason: 'expired_unpaid' },
+  );
+  assert.equal(retired, 1);
+  assert.equal(claimReleases, 0, 'a pre-claim order has no semantic claim to release');
 });
 
 test('fails closed when an expired unpaid provider session omits payment_intent', async () => {
@@ -184,6 +224,38 @@ test('fails closed for invalid identity, mismatched order ownership, ambiguous p
   );
 });
 
+test('all non-authoritative provider and record branches fail closed without retirement or claim release', async () => {
+  const cases = [
+    ['missing record / in-flight ambiguity', null, null],
+    ['open session', order(), { status: 'open', payment_status: 'unpaid', payment_intent: null }],
+    ['paid provider with pending local order', order(), { status: 'complete', payment_status: 'paid', payment_intent: 'pi_paid' }],
+    ['complete but unpaid', order(), { status: 'complete', payment_status: 'unpaid', payment_intent: null }],
+    ['expired with a PaymentIntent', order(), { status: 'expired', payment_status: 'unpaid', payment_intent: 'pi_unknown' }],
+    ['unknown provider state', order(), { status: 'mystery', payment_status: 'unpaid', payment_intent: null }],
+  ] as const;
+
+  for (const [name, record, session] of cases) {
+    let mutations = 0;
+    const result = await resolveCheckoutAttemptRestart(ATTEMPT, {
+      getOrder: async () => record as never,
+      retrieveSession: async () => session as never,
+      retireExpiredAttempt: async () => { mutations += 1; return true; },
+      releaseIntentClaim: async () => { mutations += 1; return true; },
+    });
+    assert.notEqual(result.status, 'restart_allowed', name);
+    assert.equal(mutations, 0, `${name} must not mutate retirement or claim state`);
+  }
+
+  let unavailableMutations = 0;
+  assert.deepEqual(await resolveCheckoutAttemptRestart(ATTEMPT, {
+    getOrder: async () => order(),
+    retrieveSession: async () => { throw new Error('provider unavailable'); },
+    retireExpiredAttempt: async () => { unavailableMutations += 1; return true; },
+    releaseIntentClaim: async () => { unavailableMutations += 1; return true; },
+  }), { status: 'unknown', reason: 'provider_unavailable' });
+  assert.equal(unavailableMutations, 0);
+});
+
 test('production wiring checks an old sent marker before uploads, clears only on verified restart, and retries with a new id', () => {
   const root = process.cwd();
   const form = fs.readFileSync(path.join(root, 'src/app/checkout/checkout-form.tsx'), 'utf8');
@@ -193,8 +265,21 @@ test('production wiring checks an old sent marker before uploads, clears only on
   const uploadAt = form.indexOf('prepareOrReuseDirectIntakeSubmission');
   assert.ok(preflightAt >= 0, 'checkout must run the restart preflight');
   assert.ok(uploadAt >= 0 && preflightAt < uploadAt, 'restart preflight must happen before any private upload');
-  assert.match(form, /restartStatus === ['"]restart_allowed['"][\s\S]{0,700}clearCheckoutAttemptStorage\(checkoutAttemptStorage\(\), checkoutAttemptId\)/);
-  assert.match(form, /clearCheckoutAttemptStorage\(checkoutAttemptStorage\(\), checkoutAttemptId\)[\s\S]{0,700}newCheckoutAttemptId\(\)/);
+  const decisionAt = form.indexOf('const continueDecision = decideCheckoutAttemptContinue({');
+  const paidRecoveryAt = form.indexOf('continueDecision.action === "paid_confirmation_required"', decisionAt);
+  const rotateAt = form.indexOf('continueDecision.action === "rotate_attempt"', decisionAt);
+  const cleanupAt = form.indexOf(
+    'clearCheckoutAttemptStorage(checkoutAttemptStorage(), checkoutAttemptId)',
+    rotateAt,
+  );
+  const replacementAt = form.indexOf('checkoutAttemptId = newCheckoutAttemptId()', cleanupAt);
+  assert.ok(decisionAt >= 0, 'the shared Continue decision must authorize every restart action');
+  assert.ok(paidRecoveryAt > decisionAt && paidRecoveryAt < rotateAt, 'paid attempts must route to recovery before rotation is considered');
+  assert.ok(cleanupAt > rotateAt, 'browser cleanup must run only inside the authorized rotation branch');
+  assert.ok(replacementAt > cleanupAt, 'a replacement identity must be minted only after verified cleanup');
+  // The restart REASON has to survive the hop to the browser: rotation is only
+  // ever automatic for an authoritatively expired+unpaid attempt.
+  assert.match(route, /\{ status: result\.status, reason: result\.reason \}/);
   assert.match(route, /resolveCheckoutAttemptRestart/);
   assert.match(route, /getOrderAuthoritative/);
   assert.match(route, /retireExpiredCheckoutAttempt/);

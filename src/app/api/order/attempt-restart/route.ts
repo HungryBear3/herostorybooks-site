@@ -28,7 +28,7 @@ export async function POST(request: Request) {
 
   if (!/^[a-f0-9]{32}$/i.test(checkoutAttemptId)) {
     return NextResponse.json(
-      { status: 'unknown' },
+      { status: 'unknown', reason: 'invalid_attempt' },
       { status: 400, headers: NO_STORE_HEADERS },
     );
   }
@@ -47,14 +47,20 @@ export async function POST(request: Request) {
         releaseIntentClaim: releaseCheckoutIntentOrderId,
       }),
     );
+    // The reason travels with the status. `expired_unpaid` and `completed_paid`
+    // are both terminal, but only the first lets the browser rotate to a new
+    // payable identity; the second must route the buyer to the order they have
+    // already paid for. Collapsing them here is what let a recovery click
+    // become a second purchase. The vocabulary is a fixed enum and names no
+    // customer or order data.
     return NextResponse.json(
-      { status: result.status },
+      { status: result.status, reason: result.reason },
       { status: 200, headers: NO_STORE_HEADERS },
     );
   } catch (error) {
     console.error('[checkout-attempt-restart] reconciliation failed', error);
     return NextResponse.json(
-      { status: 'unknown' },
+      { status: 'unknown', reason: 'provider_unavailable' },
       { status: 503, headers: NO_STORE_HEADERS },
     );
   }

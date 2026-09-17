@@ -26,10 +26,12 @@ test('the submit banner never renders a raw error code as its primary message', 
 });
 
 test('recorded-note preservation guidance is conditional on an in-checkout recording', () => {
-  const hint = formSource.indexOf('download it from the section above before retrying');
-  assert.ok(hint > -1, 'the preservation hint still exists for recorded notes');
-  const guard = formSource.lastIndexOf('showRecordedVoiceHint', hint);
-  assert.ok(guard > -1 && hint - guard < 600, 'the hint must be rendered only when the mapper says a recorded note is at risk');
+  assert.match(formSource, /SUBMIT_BANNER_RECORDED_VOICE_HINT/);
+  assert.match(
+    formSource,
+    /submitBanner\.showRecordedVoiceHint\s*&&\s*SUBMIT_BANNER_RECORDED_VOICE_HINT/,
+    'the shared hint must render only when the audited banner decision authorizes it',
+  );
 });
 
 test('the mapper is given the voice source so an uploaded memo is not mistaken for a recording', () => {

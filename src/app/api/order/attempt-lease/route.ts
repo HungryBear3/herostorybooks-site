@@ -34,6 +34,10 @@ export async function POST(request: NextRequest) {
     || contentType !== 'application/json') {
     return NextResponse.json({ status: 'unknown' }, { status: 403, headers: NO_STORE_HEADERS });
   }
+  // Why the previous cookie identity is not restartable, when it exists. A paid
+  // one must never be rotated away automatically: the buyer would get a second
+  // payable checkout for a book they have already bought.
+  let previousAttemptReason: string | null = null;
   try {
     const result = await resolveCheckoutAttemptLease(
       request.cookies.get(CHECKOUT_ATTEMPT_LEASE_COOKIE)?.value,
@@ -55,7 +59,13 @@ export async function POST(request: NextRequest) {
               releaseIntentClaim: releaseCheckoutIntentOrderId,
             }),
           );
-          return decision.status;
+          previousAttemptReason = decision.reason;
+          // Only an authoritatively expired+unpaid attempt authorizes a new
+          // lease identity. A completed_paid one is withheld from rotation here
+          // and reported below so the browser can route to confirmation.
+          return decision.status === 'restart_allowed' && decision.reason !== 'expired_unpaid'
+            ? 'resume_required'
+            : decision.status;
         },
       },
     );
@@ -64,8 +74,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ status: 'unknown' }, { status: 409, headers: NO_STORE_HEADERS });
     }
 
+    if (previousAttemptReason === 'completed_paid') {
+      return NextResponse.json(
+        { status: 'paid_confirmation_required', attemptId: result.attemptId },
+        { status: 200, headers: NO_STORE_HEADERS },
+      );
+    }
+
     const response = NextResponse.json(
-      { status: 'ready', attemptId: result.attemptId },
+      // `setCookie` is exactly the fresh/reused distinction: a minted identity
+      // gets a new cookie, a reused one keeps the buyer's existing cookie. The
+      // browser needs it because a reused lease may already own a dispatched
+      // `/api/order` request, and must not be told nothing was charged.
+      {
+        status: 'ready',
+        attemptId: result.attemptId,
+        provenance: result.setCookie ? 'fresh' : 'reused',
+      },
       { status: 200, headers: NO_STORE_HEADERS },
     );
     if (result.setCookie) {

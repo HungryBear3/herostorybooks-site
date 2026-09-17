@@ -136,39 +136,75 @@ test('the checkout form uses the shared reconciliation copy on every unconfirmed
   );
 });
 
-test('the error banner denies a charge only until the order request is actually sent', () => {
+test('the error banner distinguishes the current order request from an unresolved older attempt', () => {
   // The banner used to append "You have not been charged." to EVERY submit
   // failure, including ones that happened after this or an earlier invocation
-  // could have reached the server.
+  // could have reached the server. It then kept doing so through the RENDER,
+  // below a message that said the opposite. The claim now exists in exactly one
+  // place — the decision helper — and the page has no literal of its own, so no
+  // branch of the JSX can reintroduce it.
   assert.equal(
-    FORM.split('You have not been charged.').length - 1,
-    1,
-    'exactly one place may make that claim',
+    FORM.split('You have not been charged').length - 1,
+    0,
+    'the page may not carry its own no-charge literal',
   );
-  assert.match(FORM, /\{!chargeUnconfirmed && "You have not been charged\. "\}/);
+  const customerFacingStringLiterals = [...FORM.matchAll(/"([^"\n]*)"|'([^'\n]*)'|`([^`\n]*)`/g)]
+    .map((match) => match[1] ?? match[2] ?? match[3] ?? '')
+    .join('\n');
+  assert.doesNotMatch(
+    customerFacingStringLiterals,
+    /no charge|nothing was charged/i,
+    'the page may import audited helpers/constants but must not own literal no-charge copy',
+  );
+
+  // Every rendered line comes from the one decision helper, which is driven
+  // directly in tests/checkout-paid-attempt-recovery.test.ts.
+  assert.match(FORM, /setSubmitBannerState\(checkoutSubmitBanner\(\{[\s\S]{0,180}message,[\s\S]{0,180}attemptRisk,[\s\S]{0,180}recordedVoiceHint,[\s\S]{0,180}paidAttemptId: paidAttemptRef\.current/);
+  assert.match(FORM, /\{submitBanner\.heading\}/);
+  assert.match(FORM, /\{submitBanner\.message\}/);
+  assert.match(FORM, /submitBanner\.noChargeReassurance && `\$\{NOT_CHARGED\} `/);
+  assert.match(FORM, /submitBanner\.showRecordedVoiceHint && SUBMIT_BANNER_RECORDED_VOICE_HINT/);
+
+  // Dispatch state stays separate from retained-marker state.
   assert.match(FORM, /let requestSent = false;/);
   assert.match(FORM, /let attemptWasPreviouslySent = false;/);
-  assert.match(
-    FORM,
-    /attemptWasPreviouslySent = readStoredCheckoutAttemptSent\(\s*checkoutAttemptId,\s*checkoutAttemptSentRef\.current,?\s*\)/,
-  );
   assert.match(FORM, /if \(!serverLeaseBacked && !markCheckoutAttemptSent\(checkoutAttemptId\)\)[\s\S]{0,300}throw new Error/);
   assert.match(FORM, /if \(!serverLeaseBacked\) checkoutAttemptSentRef\.current = checkoutAttemptId;\s*\n\s*requestSent = true;/);
   assert.match(FORM, /requestSent = true;\s*\n\s*const response = await fetch\("\/api\/order"/);
-  assert.match(FORM, /checkoutAttemptMayHaveReachedServer\(\{[\s\S]{0,120}requestSent,[\s\S]{0,120}previouslySent: attemptWasPreviouslySent/);
-  assert.match(FORM, /setSubmitError\(described\.message, described\.showRecordedVoiceHint, attemptMayHaveReachedServer\)/);
-  assert.match(FORM, /const storedAttempt = readStoredCheckoutAttempt\(\);[\s\S]{0,240}const retainedAttemptMayHaveReachedServer = !storedAttempt\.reliable[\s\S]{0,240}checkoutAttemptIdRef\.current \?\? storedAttempt\.attemptId/);
-  assert.match(FORM, /const chargeIsUnconfirmed = unconfirmedCharge \?\? retainedAttemptMayHaveReachedServer/);
-  assert.match(
-    FORM,
-    /setSubmitErrorState\(\s*message \? checkoutSubmitErrorMessageForAttempt\(message, chargeIsUnconfirmed\) : null,?\s*\)/,
-    'the central state sink must normalize every banner message against attempt risk',
+  assert.match(FORM, /checkoutSubmitAttemptRisk\(\{[\s\S]{0,200}requestSent,[\s\S]{0,200}previouslySent: attemptWasPreviouslySent,[\s\S]{0,200}previousAttemptResolved,[\s\S]{0,200}previousAttemptPaid/);
+  assert.match(FORM, /setSubmitError\(described\.message, described\.showRecordedVoiceHint, attemptRisk\)/);
+  // Resolution evidence outlives the invocation that earned it.
+  assert.match(FORM, /resolvedAttemptRef = useRef</);
+  assert.match(FORM, /resolvedAttemptId: resolvedAttemptRef\.current/);
+  assert.match(FORM, /checkoutSubmitBannerAttemptRisk\(\{/);
+});
+
+test('a previously paid attempt cannot be rotated into a second payable checkout by Continue', () => {
+  // The rotation branch is gated on the shared decision helper, which is driven
+  // directly in tests/checkout-paid-attempt-recovery.test.ts. What is pinned
+  // here is that the handler has no second, softer path of its own.
+  assert.match(FORM, /decideCheckoutAttemptContinue\(\{/);
+  assert.match(FORM, /continueDecision\.action === "paid_confirmation_required"/);
+  assert.match(FORM, /continueDecision\.action === "rotate_attempt"/);
+  assert.match(FORM, /newPurchaseConsentAttemptId: newPurchaseConsentRef\.current/);
+  // Consent is written by an explicit control, never by the submit handler.
+  const submitStart = FORM.indexOf('const handleSubmit');
+  const submitEnd = FORM.indexOf('} finally {', submitStart);
+  const submit = FORM.slice(submitStart, submitEnd);
+  assert.ok(submitStart > -1 && submitEnd > submitStart);
+  const submitConsentAssignments = [
+    ...submit.matchAll(/newPurchaseConsentRef\.current\s*=\s*([^;\n]+)/g),
+  ].map((match) => match[1].trim());
+  assert.deepEqual(
+    submitConsentAssignments,
+    ['null'],
+    'the submit handler must clear new-purchase consent exactly once and never grant it',
   );
-  assert.match(FORM, /setChargeUnconfirmed\(Boolean\(message\) && chargeIsUnconfirmed\)/);
-  assert.match(
-    FORM,
-    /chargeUnconfirmed\s*\?\s*"We need to confirm your order status\."\s*:\s*"We couldn't start your order\."/,
-    'the banner heading must not deny a durable order when payment state is uncertain',
+  // Exactly one place mints a replacement identity after a restart approval.
+  assert.equal(
+    FORM.split('decideCheckoutAttemptContinue({').length - 1,
+    1,
+    'one decision point owns every rotation',
   );
 });
 

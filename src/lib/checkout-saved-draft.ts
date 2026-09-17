@@ -96,11 +96,114 @@ export function sanitizeSavedCheckoutDraft(value: unknown): UnknownRecord {
   };
 }
 
+export type CheckoutSubmitAttemptRisk =
+  | 'none'
+  | 'previous_attempt_resolved'
+  | 'previous_attempt_unresolved'
+  | 'previous_attempt_paid'
+  | 'current_order_request_sent';
+
+/**
+ * Keep current-dispatch ambiguity separate from a retained browser marker.
+ * A terminal restart decision resolves the old marker even if local cleanup
+ * subsequently fails; an open/unknown decision remains conservative, but it
+ * must not pretend that the current click dispatched `/api/order` when it did
+ * not.
+ */
+export function checkoutSubmitAttemptRisk(input: {
+  requestSent: boolean;
+  previouslySent: boolean;
+  previousAttemptResolved?: boolean;
+  previousAttemptPaid?: boolean;
+}): CheckoutSubmitAttemptRisk {
+  if (input.requestSent) return 'current_order_request_sent';
+  if (input.previouslySent) {
+    // `previousAttemptResolved` is true for BOTH terminal restart reasons.
+    // A paid resolution must never collapse into the generic resolved risk:
+    // that path renders the "couldn't start your order" banner with no
+    // explicit new-purchase action, exactly the false reassurance this fixes.
+    if (input.previousAttemptPaid) return 'previous_attempt_paid';
+    return input.previousAttemptResolved
+      ? 'previous_attempt_resolved'
+      : 'previous_attempt_unresolved';
+  }
+  return 'none';
+}
+
+/**
+ * Classify the retained browser evidence behind a banner that carries no
+ * explicit risk of its own — a photo-picker refusal, say, rather than a submit.
+ *
+ * `resolvedAttemptId` is the durable half of the fix. Restart approval used to
+ * live in a local variable inside one submit invocation, so an approval whose
+ * browser cleanup then failed left the sent/cleanup markers in place: the very
+ * next non-submit error reread them and resurrected ambiguity the server had
+ * already settled. Evidence is keyed to the EXACT attempt it was proved for, so
+ * a different identity — or a snapshot too damaged to name one — can never
+ * borrow it. Nothing here clears or rotates anything: ambiguity stays ambiguous.
+ */
+export function checkoutSubmitBannerAttemptRisk(input: {
+  storage: MinimalWebStorage | null | undefined;
+  inMemoryAttemptId: string | null | undefined;
+  inMemorySentAttemptId: string | null | undefined;
+  resolvedAttemptId: string | null | undefined;
+  paidAttemptId?: string | null | undefined;
+}): CheckoutSubmitAttemptRisk {
+  const snapshot = readCheckoutAttemptStorageSnapshot(input.storage);
+  if (checkoutAttemptIdentityConflict(
+    snapshot,
+    input.inMemoryAttemptId,
+    input.inMemorySentAttemptId,
+  )) return 'previous_attempt_unresolved';
+  const markerIndicatesSent = !snapshot.reliable
+    || checkoutAttemptWasSent(
+      input.storage,
+      input.inMemoryAttemptId ?? snapshot.attemptId,
+      input.inMemorySentAttemptId,
+    );
+  if (!markerIndicatesSent) return 'none';
+  if (!snapshot.reliable) return 'previous_attempt_unresolved';
+  const evidenceIdentities = [
+    snapshot.attemptId,
+    input.inMemoryAttemptId,
+    input.inMemorySentAttemptId,
+  ].filter((attemptId): attemptId is string => Boolean(attemptId));
+  const uniqueIdentities = new Set(evidenceIdentities);
+  // Resolution is proof about one exact attempt. It must never settle a
+  // different in-memory dispatch identity merely because durable storage still
+  // names the resolved one.
+  if (uniqueIdentities.size !== 1) return 'previous_attempt_unresolved';
+  const evidenceAttemptId = evidenceIdentities[0];
+  if (!evidenceAttemptId) return 'previous_attempt_unresolved';
+  if (evidenceAttemptId === input.resolvedAttemptId
+    && evidenceAttemptId === input.paidAttemptId) {
+    return 'previous_attempt_paid';
+  }
+  return evidenceAttemptId === input.resolvedAttemptId
+    ? 'previous_attempt_resolved'
+    : 'previous_attempt_unresolved';
+}
+
+/** A durable/current/sent disagreement must be resolved before repair or use. */
+export function checkoutAttemptIdentityConflict(
+  snapshot: CheckoutAttemptStorageSnapshot,
+  inMemoryAttemptId: string | null | undefined,
+  inMemorySentAttemptId: string | null | undefined,
+): boolean {
+  const identities = [
+    snapshot.attemptId,
+    inMemoryAttemptId,
+    inMemorySentAttemptId,
+  ].filter((attemptId): attemptId is string => Boolean(attemptId));
+  return new Set(identities).size > 1;
+}
+
 export function checkoutAttemptMayHaveReachedServer(input: {
   requestSent: boolean;
   previouslySent: boolean;
+  previousAttemptResolved?: boolean;
 }): boolean {
-  return input.requestSent || input.previouslySent;
+  return checkoutSubmitAttemptRisk(input) !== 'none';
 }
 
 /**

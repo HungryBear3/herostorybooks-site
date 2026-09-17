@@ -50,13 +50,18 @@ import { upload } from "@vercel/blob/client";
 import { classifyStoryAttachment } from "@/lib/story-attachment";
 import { canonicalMediaMime } from "@/lib/checkout-media-mime";
 import {
-  checkoutSubmitErrorMessageForAttempt,
+  EMPTY_CHECKOUT_SUBMIT_BANNER,
+  NOT_CHARGED,
+  PREVIOUS_CHECKOUT_PAID_RECOVERY,
+  SUBMIT_BANNER_RECORDED_VOICE_HINT,
+  checkoutSubmitBanner,
   describeCheckoutSubmitError,
   photoTypeUnsupportedMessage,
 } from "@/lib/checkout-direct-intake-error-copy";
 import { browserRandomHex } from "@/lib/browser-random-id";
 import {
-  resolveServerCheckoutAttemptLease,
+  decideCheckoutAttemptContinue,
+  resolveCheckoutAttemptSubmitLease,
   resolveStoredCheckoutAttemptForNewPurchase,
 } from "@/lib/checkout-attempt-restart-client";
 import {
@@ -64,8 +69,9 @@ import {
   CHECKOUT_DRAFT_STORAGE_KEY,
   CHECKOUT_ATTEMPT_SENT_STORAGE_KEY,
   CHECKOUT_ATTEMPT_RESERVED_STORAGE_KEY,
-  checkoutAttemptMayHaveReachedServer,
-  checkoutAttemptStorageUnavailable,
+  checkoutSubmitAttemptRisk,
+  checkoutSubmitBannerAttemptRisk,
+  checkoutAttemptIdentityConflict,
   checkoutAttemptWasSent,
   clearCheckoutAttemptStorage,
   recoverConflictingCheckoutAttemptStorage,
@@ -78,6 +84,7 @@ import {
   recordCheckoutAttemptSent,
   savedFamilyCharactersForStorage,
   sanitizeSavedCheckoutDraft,
+  type CheckoutSubmitAttemptRisk,
   type MinimalWebStorage,
 } from "@/lib/checkout-saved-draft";
 import {
@@ -549,43 +556,54 @@ export function CheckoutForm({
   // Specific, inline submit error. We use an in-page banner rather than
   // window.alert so the exact server reason is visible/scrollable (alerts get
   // dismissed instantly on mobile).
-  const [submitError, setSubmitErrorState] = useState<string | null>(null);
+  // Everything the banner renders — heading, message, whether a categorical
+  // no-charge line is authorized, whether the buyer must take an explicit
+  // new-purchase action — is decided by one audited helper. The JSX below owns
+  // no copy of its own, so it cannot re-add a reassurance the helper withheld.
+  const [submitBanner, setSubmitBannerState] = useState(EMPTY_CHECKOUT_SUBMIT_BANNER);
   const checkoutAttemptIdRef = useRef<string | null>(null);
   const checkoutAttemptSentRef = useRef<string | null>(null);
-  // The recorded-note preservation hint is only true when the failed attempt
-  // held an in-checkout RECORDING; an uploaded memo or a photo failure gets
-  // no such advice. Set together with the message so they cannot drift.
-  const [showRecordedVoiceHint, setShowRecordedVoiceHint] = useState(false);
   /**
-   * Whether the banner may add its own "You have not been charged" line.
+   * The exact prior attempt the SERVER has authoritatively resolved.
    *
-   * It used to say that for EVERY submit failure, including ones that happened
-   * after the request reached the server — where a Session may have been
-   * created and bound, and where the message above it now says the opposite.
-   * The browser can prove the negative until `/api/order` is actually sent.
-   * Reserving an attempt ID for direct-upload work is not server exposure; a
-   * separate sent marker preserves the conservative warning only after order
-   * submission begins.
+   * Restart approval used to live in a local variable for the duration of one
+   * submit. If approval succeeded but the browser then refused to clear its
+   * markers, the next non-submit error reread that stale sent/cleanup evidence
+   * and reported the settled attempt as unresolved again. Keeping the proof
+   * here — keyed to the identity it was proved for — is what stops that.
    */
-  const [chargeUnconfirmed, setChargeUnconfirmed] = useState(false);
+  const resolvedAttemptRef = useRef<string | null>(null);
+  const paidAttemptRef = useRef<string | null>(null);
+  /**
+   * The exact paid attempt the buyer has explicitly asked to replace.
+   *
+   * Pressing Continue is consent to finish the order in front of them, never to
+   * buy a second one. A prior attempt that turns out to be `completed_paid`
+   * therefore waits here for a deliberate, separate action before any second
+   * payable checkout may be created.
+   */
+  const newPurchaseConsentRef = useRef<string | null>(null);
+  const [previousPaidAttemptId, setPreviousPaidAttemptId] = useState<string | null>(null);
   const [peopleNotice, setPeopleNotice] = useState<string | null>(null);
   const setSubmitError = useCallback((
     message: string | null,
     recordedVoiceHint = false,
-    unconfirmedCharge?: boolean,
+    explicitAttemptRisk?: CheckoutSubmitAttemptRisk,
   ) => {
-    const storedAttempt = readStoredCheckoutAttempt();
-    const retainedAttemptMayHaveReachedServer = !storedAttempt.reliable
-      || readStoredCheckoutAttemptSent(
-        checkoutAttemptIdRef.current ?? storedAttempt.attemptId,
-        checkoutAttemptSentRef.current,
-      );
-    const chargeIsUnconfirmed = unconfirmedCharge ?? retainedAttemptMayHaveReachedServer;
-    setSubmitErrorState(
-      message ? checkoutSubmitErrorMessageForAttempt(message, chargeIsUnconfirmed) : null,
-    );
-    setShowRecordedVoiceHint(Boolean(message) && recordedVoiceHint && !chargeIsUnconfirmed);
-    setChargeUnconfirmed(Boolean(message) && chargeIsUnconfirmed);
+    const attemptRisk = explicitAttemptRisk
+      ?? checkoutSubmitBannerAttemptRisk({
+        storage: checkoutAttemptStorage(),
+        inMemoryAttemptId: checkoutAttemptIdRef.current,
+        inMemorySentAttemptId: checkoutAttemptSentRef.current,
+        resolvedAttemptId: resolvedAttemptRef.current,
+        paidAttemptId: paidAttemptRef.current,
+      });
+    setSubmitBannerState(checkoutSubmitBanner({
+      message,
+      attemptRisk,
+      recordedVoiceHint,
+      paidAttemptId: paidAttemptRef.current,
+    }));
   }, []);
   const [photoNotice, setPhotoNotice] = useState<string | null>(null);
   const [showRecovery, setShowRecovery] = useState(false);
@@ -1129,6 +1147,8 @@ export function CheckoutForm({
     // states separately so a retry after a local upload failure stays honest.
     let requestSent = false;
     let attemptWasPreviouslySent = false;
+    let previousAttemptResolved = false;
+    let previousAttemptPaid = false;
     let serverLeaseBacked = false;
 
     try {
@@ -1139,15 +1159,38 @@ export function CheckoutForm({
         storedAttempt,
         checkoutAttemptIdRef.current,
       );
+      let inMemoryIdentityConflict = checkoutAttemptIdentityConflict(
+        storedAttempt,
+        checkoutAttemptIdRef.current,
+        checkoutAttemptSentRef.current,
+      );
+      if (inMemoryIdentityConflict) {
+        attemptWasPreviouslySent = true;
+        throw new Error(
+          "We found conflicting checkout attempts in this browser. Please do not pay again — contact support@herostorybooks.com so we can confirm what happened.",
+        );
+      }
       if (!reconciledAttempt.reliable
         && await recoverConflictingCheckoutAttemptStorage(
           attemptStorage,
-          resolveStoredCheckoutAttemptForNewPurchase,
+          async (attemptId) => {
+            const decision = await resolveStoredCheckoutAttemptForNewPurchase(attemptId);
+            if (decision.status === "resume_required") return "resume_required";
+            return decision.status === "restart_allowed"
+              && decision.reason === "expired_unpaid"
+              ? "restart_allowed"
+              : "unknown";
+          },
         )) {
         checkoutAttemptIdRef.current = null;
         checkoutAttemptSentRef.current = null;
         storedAttempt = readStoredCheckoutAttempt(attemptStorage);
         reconciledAttempt = reconcileCheckoutAttemptIdentity(storedAttempt, null);
+        inMemoryIdentityConflict = checkoutAttemptIdentityConflict(
+          storedAttempt,
+          checkoutAttemptIdRef.current,
+          checkoutAttemptSentRef.current,
+        );
       }
       if (!reconciledAttempt.reliable
         && repairCheckoutAttemptStorageToRiskIdentity(attemptStorage)) {
@@ -1164,19 +1207,43 @@ export function CheckoutForm({
           );
         }
       }
-      const browserAttemptStorageUnavailable = checkoutAttemptStorageUnavailable(
-        attemptStorage,
-        storedAttempt,
-      );
-      if (browserAttemptStorageUnavailable) {
-        const leasedAttemptId = await resolveServerCheckoutAttemptLease();
-        if (leasedAttemptId) {
+      const leaseTransition = await resolveCheckoutAttemptSubmitLease({
+        storage: attemptStorage,
+        snapshot: storedAttempt,
+      });
+      if (leaseTransition.action !== "use_browser_storage") {
+        if (leaseTransition.action === "recover_paid_attempt") {
+          // The cookie identity is already paid. Route to that order instead of
+          // leasing anything a second payment could be attached to. This
+          // cookie-only path cannot consume exact-attempt new-purchase consent
+          // before the next lease check, so it deliberately offers no second-
+          // purchase action.
+          previousAttemptPaid = true;
+          attemptWasPreviouslySent = true;
+          paidAttemptRef.current = null;
+          setPreviousPaidAttemptId(null);
+          throw new Error(PREVIOUS_CHECKOUT_PAID_RECOVERY);
+        }
+        if (leaseTransition.action === "abort_unresolved") {
+          // The request may have reached the lease endpoint even though its
+          // response did not reach us. Never mint locally or claim no charge.
+          attemptWasPreviouslySent = true;
+          throw new Error(
+            "We couldn't safely verify your checkout attempt. Please do not pay again — contact support@herostorybooks.com so we can confirm what happened.",
+          );
+        }
+        if (leaseTransition.action === "use_server_lease") {
           // Safari Private and restricted in-app browsers can deny all access
           // to sessionStorage. A secure same-site HttpOnly cookie then owns the
           // stable attempt identity, preserving one click / one order without
           // exposing customer data or relying on browser storage APIs.
           serverLeaseBacked = true;
-          reconciledAttempt = { attemptId: leasedAttemptId, reliable: true };
+          // A REUSED cookie lease may already own a dispatched `/api/order`
+          // request that this browser has no local record of. Only a freshly
+          // minted lease is provably unsent, so only it may later support a
+          // no-charge claim about a local preparation failure.
+          attemptWasPreviouslySent = leaseTransition.provenance !== "fresh";
+          reconciledAttempt = { attemptId: leaseTransition.attemptId, reliable: true };
         }
       }
       if (!reconciledAttempt.reliable) {
@@ -1199,19 +1266,43 @@ export function CheckoutForm({
         storeCheckoutAttemptId(checkoutAttemptId);
         if (!markCheckoutAttemptReserved(checkoutAttemptId)) {
           throw new Error(
-            "This browser could not safely reserve your checkout attempt. No private files or order request were sent. Please open this page in Safari or Chrome with private browsing off, then try again.",
+            "This browser could not safely reserve your checkout attempt. No private files or order request were sent. Please reload this page and press Continue again.",
           );
         }
         checkoutAttemptSentRef.current = null;
       }
       if (checkoutAttemptId && attemptWasPreviouslySent && !serverLeaseBacked) {
-        const restartStatus = await resolveStoredCheckoutAttemptForNewPurchase(checkoutAttemptId);
-        if (restartStatus === "restart_allowed") {
+        const restart = await resolveStoredCheckoutAttemptForNewPurchase(checkoutAttemptId);
+        const continueDecision = decideCheckoutAttemptContinue({
+          attemptId: checkoutAttemptId,
+          decision: restart,
+          newPurchaseConsentAttemptId: newPurchaseConsentRef.current,
+        });
+        if (continueDecision.action === "paid_confirmation_required") {
+          // The previous attempt is already PAID. Pressing Continue again is a
+          // retry of THIS order, not consent to buy a second book, so nothing
+          // rotates: the buyer is routed to the order they paid for and must
+          // take the explicit new-order action below to start another purchase.
+          previousAttemptResolved = true;
+          previousAttemptPaid = true;
+          resolvedAttemptRef.current = checkoutAttemptId;
+          paidAttemptRef.current = checkoutAttemptId;
+          setPreviousPaidAttemptId(checkoutAttemptId);
+          throw new Error(PREVIOUS_CHECKOUT_PAID_RECOVERY);
+        }
+        if (continueDecision.action === "rotate_attempt") {
+          previousAttemptResolved = true;
+          // Retain the proof BEFORE touching storage. Restart approval is the
+          // server's authoritative word; a browser that then refuses to clear
+          // its markers must not turn that settled state back into ambiguity.
+          resolvedAttemptRef.current = checkoutAttemptId;
           // The server has authoritatively proved that the durable attempt is
-          // absent, terminal+unpaid, or already completed+paid. Only then may a
-          // repeat buyer rotate to a new purchase identity. This fixes the case
-          // where an expired Session from an old checkout otherwise owns every
-          // future submission in the same browser forever.
+          // terminal and can never take money — expired+unpaid with no
+          // PaymentIntent, or a paid one the buyer has explicitly asked to
+          // follow with a separate new order. Only then may a repeat buyer
+          // rotate to a new purchase identity. This fixes the case where an
+          // expired Session from an old checkout otherwise owns every future
+          // submission in the same browser forever.
           if (!clearCheckoutAttemptStorage(checkoutAttemptStorage(), checkoutAttemptId)) {
             throw new Error(
               "This browser could not safely close your previous checkout attempt. No new order request was sent. Please reload this page and try again.",
@@ -1226,6 +1317,10 @@ export function CheckoutForm({
               "This browser could not safely reserve a new checkout attempt. No private files or order request were sent. Please reload this page and try again.",
             );
           }
+          // The consent is spent on the one rotation it authorized.
+          newPurchaseConsentRef.current = null;
+          paidAttemptRef.current = null;
+          setPreviousPaidAttemptId(null);
           attemptWasPreviouslySent = false;
         }
       }
@@ -1381,7 +1476,7 @@ export function CheckoutForm({
 
       if (!serverLeaseBacked && !markCheckoutAttemptSent(checkoutAttemptId)) {
         throw new Error(
-          "This browser could not safely preserve your checkout attempt. No order request was sent. Please open this page in Safari or Chrome with private browsing off, then try again.",
+          "This browser could not safely preserve your checkout attempt. No order request was sent. Please reload this page and press Continue again.",
         );
       }
       if (!serverLeaseBacked) checkoutAttemptSentRef.current = checkoutAttemptId;
@@ -1476,20 +1571,22 @@ export function CheckoutForm({
       // A direct-intake refusal arrives as a stable code plus the label of the
       // asset that failed; the mapper turns that into a sentence and decides
       // whether a recorded note is at risk. A legacy server sentence is kept.
-      const attemptMayHaveReachedServer = checkoutAttemptMayHaveReachedServer({
+      const attemptRisk = checkoutSubmitAttemptRisk({
         requestSent,
         previouslySent: attemptWasPreviouslySent,
+        previousAttemptResolved,
+        previousAttemptPaid,
       });
       const described = describeCheckoutSubmitError({
         voiceSource: form.voiceSource,
         code: error instanceof DirectIntakePreparationError ? error.code : "order_request_failed",
         label: error instanceof DirectIntakePreparationError ? error.label : null,
-        attemptMayHaveReachedServer,
+        attemptRisk,
         serverMessage: error instanceof DirectIntakePreparationError
           ? null
           : error instanceof Error ? error.message : null,
       });
-      setSubmitError(described.message, described.showRecordedVoiceHint, attemptMayHaveReachedServer);
+      setSubmitError(described.message, described.showRecordedVoiceHint, attemptRisk);
     } finally {
       setIsSubmitting(false);
     }
@@ -3218,33 +3315,44 @@ export function CheckoutForm({
               )}
               {/* Inline submit error. Shows the SPECIFIC server reason, so a
                   failed submission (e.g. a voice-save abort) never looks like
-                  it went through. The blanket reassurance below it is limited
-                  to failures that happened BEFORE the request left the browser:
-                  after that, only the message itself may speak about the
-                  buyer's money, because only the server can see the provider. */}
-              {submitError && (
+                  it went through. Every line here — heading, message, whether
+                  the categorical no-charge sentence is authorized, whether a
+                  recorded-note hint applies, whether a second payable checkout
+                  needs an explicit action — is decided by the audited
+                  `checkoutSubmitBanner` helper. This block owns no copy of its
+                  own, so it can never reintroduce a reassurance the helper
+                  withheld. */}
+              {submitBanner.visible && (
                 <div
                   role="alert"
                   aria-live="assertive"
                   data-testid="submit-error"
                   className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700"
                 >
-                  <p className="font-semibold">
-                    {chargeUnconfirmed
-                      ? "We need to confirm your order status."
-                      : "We couldn't start your order."}
-                  </p>
-                  <p className="mt-1">{submitError}</p>
-                  <p className="mt-1 text-xs text-red-600">
-                    {!chargeUnconfirmed && "You have not been charged. "}
-                    {showRecordedVoiceHint && (
-                      <>
-                        If you recorded a voice note,
-                        download it from the section above before retrying so it
-                        isn&apos;t lost.
-                      </>
-                    )}
-                  </p>
+                  <p className="font-semibold">{submitBanner.heading}</p>
+                  <p className="mt-1">{submitBanner.message}</p>
+                  {(submitBanner.noChargeReassurance || submitBanner.showRecordedVoiceHint) && (
+                    <p className="mt-1 text-xs text-red-600">
+                      {submitBanner.noChargeReassurance && `${NOT_CHARGED} `}
+                      {submitBanner.showRecordedVoiceHint && SUBMIT_BANNER_RECORDED_VOICE_HINT}
+                    </p>
+                  )}
+                  {submitBanner.newPurchaseActionRequired && (
+                    <button
+                      type="button"
+                      data-testid="start-new-order"
+                      onClick={() => {
+                        // The only place this consent is ever granted: a
+                        // deliberate click naming the exact paid attempt it
+                        // authorizes rotation away from. The submit handler
+                        // itself only ever clears this ref.
+                        newPurchaseConsentRef.current = previousPaidAttemptId;
+                      }}
+                      className="mt-2 text-xs font-semibold text-red-700 underline decoration-red-400 underline-offset-2 hover:text-red-900"
+                    >
+                      Start a separate new order
+                    </button>
+                  )}
                   <p className="mt-2 text-xs font-medium text-red-700">
                     If the issue continues, email{" "}
                     <a
