@@ -60,7 +60,7 @@ test('allows a new attempt only after Stripe proves the old session expired unpa
 
 test('the concrete pre-claim legacy order with an expired lease retires and authorizes a fresh attempt', async () => {
   const legacy = order({
-    id: 'ord_088e4f5b9b93c844',
+    id: 'ord_testfixture_legacy_expired',
     checkoutAttemptId: 'bcadde66dd4a436b994a229a7b817d7a',
     checkoutIntentFingerprint: undefined,
     checkoutIntentClaimGeneration: undefined,

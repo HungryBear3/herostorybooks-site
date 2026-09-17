@@ -89,7 +89,11 @@ export async function installHandoffHarness(
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ status: 'ready', attemptId: 'e'.repeat(32) }),
+        body: JSON.stringify({
+          status: 'ready',
+          attemptId: 'e'.repeat(32),
+          provenance: 'fresh',
+        }),
       });
     }
     if (url.origin === appOrigin && url.pathname === '/api/checkout/attempt-status') {
