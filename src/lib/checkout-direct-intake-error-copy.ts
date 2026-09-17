@@ -15,6 +15,7 @@
  */
 
 import { CHECKOUT_SUBMIT_UNCONFIRMED } from './checkout-handoff.ts';
+import type { CheckoutSubmitAttemptRisk } from './checkout-saved-draft.ts';
 
 export type CheckoutVoiceSource = 'recorded' | 'uploaded' | null | undefined;
 
@@ -33,6 +34,8 @@ export interface CheckoutSubmitErrorInput {
   serverMessage?: string | null;
   /** This attempt ID existed before the current local submit, or this submit sent it. */
   attemptMayHaveReachedServer?: boolean;
+  /** Distinguishes the current request from unresolved evidence left by an older click. */
+  attemptRisk?: CheckoutSubmitAttemptRisk;
 }
 
 export interface CheckoutSubmitErrorCopy {
@@ -53,11 +56,145 @@ const BARE_CODE = /^[a-z0-9]+(?:_[a-z0-9]+)*$/;
 const UNSAFE_ATTEMPT_GUIDANCE = /\b(?:not been charged|no charge|nothing was charged|stopped before payment|try again|retry|reload|start a fresh attempt)\b/i;
 const GENERIC = `We couldn't start your order. ${NOT_CHARGED} Please try again.`;
 
+/**
+ * This used to promise that Continue "will safely reuse the same checkout
+ * attempt". It cannot promise that: an unresolved attempt may turn out to be
+ * already paid, and the recovery path then routes to confirmation rather than
+ * reusing anything. What IS guaranteed is the part the buyer needs — pressing
+ * Continue re-checks the old attempt first and never starts a second payment
+ * for it.
+ */
+export const PREVIOUS_CHECKOUT_UNRESOLVED_WARNING =
+  'Your previous order status still needs confirmation, so please do not pay again. '
+  + 'Correct the issue above, then press Continue again; we will re-check that attempt '
+  + 'first and will never start a second payment for it.';
+
+export const CURRENT_ORDER_NOT_SENT_GUIDANCE =
+  'This click did not send a new order request. Correct the issue above, then press Continue again.';
+
+export const PREVIOUS_CHECKOUT_PAID_RECOVERY =
+  'Your previous checkout was already paid, so we did not start a second payment — please do not '
+  + 'pay again for it. Check your email for that order confirmation, or contact '
+  + 'support@herostorybooks.com if it has not arrived. If you want an additional book, choose '
+  + '"Start a separate new order" below.';
+
+export const PREVIOUS_CHECKOUT_PAID_RECOVERY_NO_ACTION =
+  'Your previous checkout may already be paid. Check your email or order status and please do not '
+  + 'pay again. Contact support@herostorybooks.com if you need help confirming it.';
+
+export const SUBMIT_BANNER_HEADING_FAILED = "We couldn't start your order.";
+export const SUBMIT_BANNER_HEADING_UNRESOLVED = 'We need to confirm your order status.';
+export const SUBMIT_BANNER_HEADING_PAID = 'Your previous order was already paid.';
+export const SUBMIT_BANNER_RECORDED_VOICE_HINT =
+  'If you recorded a voice note, download it from the section above before retrying so it '
+  + "isn't lost.";
+export const SUBMIT_BANNER_SUPPORT_PROMPT =
+  "If the issue continues, email support@herostorybooks.com and we'll help you finish the order "
+  + 'manually.';
+
+export interface CheckoutSubmitBanner {
+  visible: boolean;
+  heading: string;
+  message: string;
+  /** The ONLY authorization to render categorical no-charge reassurance. */
+  noChargeReassurance: boolean;
+  showRecordedVoiceHint: boolean;
+  /** The buyer must take a separate action before a second payable checkout. */
+  newPurchaseActionRequired: boolean;
+  /** Exactly the text the banner renders, in order. */
+  lines: readonly string[];
+}
+
+export const EMPTY_CHECKOUT_SUBMIT_BANNER: CheckoutSubmitBanner = {
+  visible: false,
+  heading: '',
+  message: '',
+  noChargeReassurance: false,
+  showRecordedVoiceHint: false,
+  newPurchaseActionRequired: false,
+  lines: [],
+};
+
+/**
+ * Decide everything the submit-error banner renders.
+ *
+ * The banner used to derive its no-charge line from `!chargeUnconfirmed`, which
+ * conflated two different questions. "Is the payment status unconfirmed?" picks
+ * the heading. "May we state categorically that no money moved?" authorizes the
+ * reassurance — and only a click that provably never reached `/api/order`, on a
+ * browser holding no prior dispatch evidence, can answer that yes.
+ *
+ * `previous_attempt_resolved` is emphatically NOT such a state: restart approval
+ * covers `completed_paid`, so a resolved prior attempt may be one the buyer has
+ * already paid for. The mapper strips the sentence from the message for exactly
+ * that reason; the banner must not put it back underneath.
+ */
+export function checkoutSubmitBanner(input: {
+  message: string | null | undefined;
+  attemptRisk: CheckoutSubmitAttemptRisk;
+  recordedVoiceHint?: boolean;
+  paidAttemptId?: string | null;
+}): CheckoutSubmitBanner {
+  if (!input.message) return EMPTY_CHECKOUT_SUBMIT_BANNER;
+  const previousAttemptPaid = input.attemptRisk === 'previous_attempt_paid';
+  const paidAttemptIdKnown = typeof input.paidAttemptId === 'string'
+    && /^[a-f0-9]{32}$/i.test(input.paidAttemptId);
+  const message = previousAttemptPaid && !paidAttemptIdKnown
+    ? PREVIOUS_CHECKOUT_PAID_RECOVERY_NO_ACTION
+    : checkoutSubmitErrorMessageForAttempt(input.message, input.attemptRisk);
+  const statusUnconfirmed = input.attemptRisk === 'previous_attempt_unresolved'
+    || input.attemptRisk === 'current_order_request_sent';
+  const noChargeReassurance = input.attemptRisk === 'none';
+  const showRecordedVoiceHint = Boolean(input.recordedVoiceHint)
+    && !statusUnconfirmed
+    && !previousAttemptPaid;
+  const heading = previousAttemptPaid
+    ? SUBMIT_BANNER_HEADING_PAID
+    : statusUnconfirmed
+      ? SUBMIT_BANNER_HEADING_UNRESOLVED
+      : SUBMIT_BANNER_HEADING_FAILED;
+  return {
+    visible: true,
+    heading,
+    message,
+    noChargeReassurance,
+    showRecordedVoiceHint,
+    newPurchaseActionRequired: previousAttemptPaid && paidAttemptIdKnown,
+    lines: [
+      heading,
+      message,
+      ...(noChargeReassurance ? [NOT_CHARGED] : []),
+      ...(showRecordedVoiceHint ? [SUBMIT_BANNER_RECORDED_VOICE_HINT] : []),
+      SUBMIT_BANNER_SUPPORT_PROMPT,
+    ],
+  };
+}
+
+function withoutUnprovenNoChargeClaim(message: string): string {
+  return message.replace(/\s*You have not been charged\.\s*/gi, ' ').trim();
+}
+
 export function checkoutSubmitErrorMessageForAttempt(
   proposedMessage: string,
-  attemptMayHaveReachedServer: boolean,
+  attemptRisk: CheckoutSubmitAttemptRisk | boolean,
 ): string {
-  if (!attemptMayHaveReachedServer) return proposedMessage;
+  const risk = typeof attemptRisk === 'boolean'
+    ? attemptRisk ? 'current_order_request_sent' : 'none'
+    : attemptRisk;
+  if (risk === 'none') return proposedMessage;
+  // An already-paid prior attempt outranks whatever went wrong locally: the
+  // buyer's next safe step is their existing order, not a corrected retry.
+  if (risk === 'previous_attempt_paid') return PREVIOUS_CHECKOUT_PAID_RECOVERY;
+  if (risk === 'previous_attempt_resolved') {
+    if (proposedMessage.endsWith(CURRENT_ORDER_NOT_SENT_GUIDANCE)) return proposedMessage;
+    const actionable = withoutUnprovenNoChargeClaim(proposedMessage);
+    return `${actionable} ${CURRENT_ORDER_NOT_SENT_GUIDANCE}`;
+  }
+  if (risk === 'previous_attempt_unresolved') {
+    if (proposedMessage.endsWith(PREVIOUS_CHECKOUT_UNRESOLVED_WARNING)) return proposedMessage;
+    const actionable = withoutUnprovenNoChargeClaim(proposedMessage);
+    return `${actionable} ${PREVIOUS_CHECKOUT_UNRESOLVED_WARNING}`;
+  }
   return /do not pay again/i.test(proposedMessage) && !UNSAFE_ATTEMPT_GUIDANCE.test(proposedMessage)
     ? proposedMessage
     : CHECKOUT_SUBMIT_UNCONFIRMED;
@@ -145,13 +282,16 @@ export function describeCheckoutSubmitError(input: CheckoutSubmitErrorInput): Ch
   const serverMessage = (input.serverMessage ?? '').trim();
   const serverSentence = serverMessage && !BARE_CODE.test(serverMessage) ? serverMessage : null;
   const proposedMessage = serverSentence ?? messageFor(code, input.label);
+  const attemptRisk = input.attemptRisk
+    ?? (input.attemptMayHaveReachedServer ? 'current_order_request_sent' : 'none');
   const message = checkoutSubmitErrorMessageForAttempt(
     proposedMessage,
-    Boolean(input.attemptMayHaveReachedServer),
+    attemptRisk,
   );
   return {
     message,
-    showRecordedVoiceHint: input.voiceSource === 'recorded' && !input.attemptMayHaveReachedServer,
+    showRecordedVoiceHint: input.voiceSource === 'recorded'
+      && (attemptRisk === 'none' || attemptRisk === 'previous_attempt_resolved'),
     reference: code,
   };
 }

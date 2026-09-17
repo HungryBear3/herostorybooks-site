@@ -79,7 +79,7 @@ test('CD/Cowork checkout polish avoids contradictory or nervous copy', () => {
 
 test('checkout errors stay specific, visible near payment, and include manual support contact', () => {
   assert.match(checkoutFormSource, /data-testid="submit-error"/);
-  assert.match(checkoutFormSource, /\{submitError\}/);
+  assert.match(checkoutFormSource, /\{submitBanner\.message\}/);
   assert.match(checkoutFormSource, /mailto:support@herostorybooks\.com/);
   assert.match(checkoutFormSource, /help you finish the order manually/);
 });

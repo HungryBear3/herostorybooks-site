@@ -12,6 +12,7 @@ import {
   recoverConflictingCheckoutAttemptStorage,
   clearCheckoutAfterConfirmedPayment,
   checkoutAttemptMayHaveReachedServer,
+  checkoutSubmitAttemptRisk,
   checkoutAttemptStorageUnavailable,
   checkoutAttemptWasSent,
   confirmedCheckoutCleanupAttemptId,
@@ -203,6 +204,29 @@ test('a reserved attempt id does not imply the order request reached the server'
   assert.equal(checkoutAttemptMayHaveReachedServer({ requestSent: false, previouslySent: false }), false);
   assert.equal(checkoutAttemptMayHaveReachedServer({ requestSent: true, previouslySent: false }), true);
   assert.equal(checkoutAttemptMayHaveReachedServer({ requestSent: false, previouslySent: true }), true);
+});
+
+test('submit risk distinguishes this click from a retained unresolved attempt', () => {
+  assert.equal(checkoutSubmitAttemptRisk({
+    requestSent: false,
+    previouslySent: false,
+    previousAttemptResolved: false,
+  }), 'none');
+  assert.equal(checkoutSubmitAttemptRisk({
+    requestSent: false,
+    previouslySent: true,
+    previousAttemptResolved: false,
+  }), 'previous_attempt_unresolved');
+  assert.equal(checkoutSubmitAttemptRisk({
+    requestSent: false,
+    previouslySent: true,
+    previousAttemptResolved: true,
+  }), 'previous_attempt_resolved');
+  assert.equal(checkoutSubmitAttemptRisk({
+    requestSent: true,
+    previouslySent: true,
+    previousAttemptResolved: true,
+  }), 'current_order_request_sent');
 });
 
 test('unreadable storage remains conservatively ambiguous across in-memory marker mismatches', () => {
@@ -543,10 +567,26 @@ test('failed verified draft deletion preserves all attempt evidence behind the t
 });
 
 test('paid cleanup is authorized server-side and attempt rotation cleanup never runs at Stripe handoff', () => {
-  const restartAuthorizationAt = formSource.indexOf('restartStatus === "restart_allowed"');
+  const decisionAt = formSource.indexOf('const continueDecision = decideCheckoutAttemptContinue({');
+  const paidRecoveryAt = formSource.indexOf(
+    'continueDecision.action === "paid_confirmation_required"',
+    decisionAt,
+  );
+  const restartAuthorizationAt = formSource.indexOf(
+    'continueDecision.action === "rotate_attempt"',
+    decisionAt,
+  );
   const restartCleanupAt = formSource.indexOf('clearCheckoutAttemptStorage(', restartAuthorizationAt);
   const handoffAt = formSource.indexOf('performStripeHandoff(');
-  assert.ok(restartAuthorizationAt >= 0 && restartCleanupAt > restartAuthorizationAt);
+  assert.ok(decisionAt >= 0, 'the shared Continue decision must own restart authorization');
+  assert.ok(
+    paidRecoveryAt > decisionAt && paidRecoveryAt < restartAuthorizationAt,
+    'completed-paid attempts must route to recovery before the rotation branch',
+  );
+  assert.ok(
+    restartCleanupAt > restartAuthorizationAt,
+    'attempt cleanup must occur only after the rotate_attempt decision',
+  );
   assert.ok(handoffAt > restartCleanupAt);
   assert.doesNotMatch(formSource.slice(handoffAt), /clearCheckoutAttemptStorage\s*\(/);
   assert.match(confirmationRouteSource, /confirmedCheckoutCleanupAttemptId\s*\(/);
@@ -658,17 +698,26 @@ test('checkout resolves local conflicts or a server lease before private intake 
   const snapshotRead = formSource.indexOf('let storedAttempt = readStoredCheckoutAttempt(attemptStorage)');
   const identityReconcile = formSource.indexOf('reconcileCheckoutAttemptIdentity(', snapshotRead);
   const riskRepair = formSource.indexOf('repairCheckoutAttemptStorageToRiskIdentity(', identityReconcile);
-  const storageUnavailable = formSource.indexOf('const browserAttemptStorageUnavailable', riskRepair);
-  const serverLease = formSource.indexOf('resolveServerCheckoutAttemptLease()', storageUnavailable);
-  const conflictGuard = formSource.indexOf('if (!reconciledAttempt.reliable)', serverLease);
+  const identityConflict = formSource.indexOf('checkoutAttemptIdentityConflict(', identityReconcile);
+  const conflictAbort = formSource.indexOf('if (inMemoryIdentityConflict)', identityConflict);
+  const conflictRecovery = formSource.indexOf('recoverConflictingCheckoutAttemptStorage(', conflictAbort);
+  const leaseTransition = formSource.indexOf('resolveCheckoutAttemptSubmitLease({', riskRepair);
+  const leaseAbort = formSource.indexOf('leaseTransition.action === "abort_unresolved"', leaseTransition);
+  const conflictGuard = formSource.indexOf('if (!reconciledAttempt.reliable)', leaseAbort);
   const reservation = formSource.indexOf('markCheckoutAttemptReserved(checkoutAttemptId)', conflictGuard);
   const reservedReadback = formSource.indexOf('const reservedAttempt = serverLeaseBacked ? null : readStoredCheckoutAttempt()', reservation);
   const reservedGuard = formSource.indexOf('if (!serverLeaseBacked', reservedReadback);
   const intake = formSource.indexOf('prepareOrReuseDirectIntakeSubmission(', reservedGuard);
   assert.ok(snapshotRead > -1 && identityReconcile > snapshotRead);
-  assert.ok(riskRepair > identityReconcile && storageUnavailable > riskRepair && serverLease > storageUnavailable);
-  assert.match(formSource.slice(storageUnavailable, serverLease), /if \(browserAttemptStorageUnavailable\)/);
-  assert.ok(conflictGuard > serverLease, 'lease failure must still stop before checkout work');
+  assert.ok(identityConflict > identityReconcile && conflictAbort > identityConflict);
+  assert.ok(conflictRecovery > conflictAbort && riskRepair > conflictRecovery,
+    'identity conflict must abort before reconciliation or storage repair');
+  assert.match(
+    formSource.slice(conflictAbort, conflictRecovery),
+    /attemptWasPreviouslySent = true;[\s\S]*throw new Error/,
+  );
+  assert.ok(leaseTransition > riskRepair && leaseAbort > leaseTransition);
+  assert.ok(conflictGuard > leaseAbort, 'lease failure must still stop before checkout work');
   assert.ok(reservation > conflictGuard && reservedReadback > reservation && reservedGuard > reservedReadback);
   assert.ok(intake > reservedGuard, 'all identity and reservation guards must precede private intake');
   assert.doesNotMatch(formSource, /\/api\/checkout\/attempt-status|clearAbsentCheckoutAttemptMarkers/);

@@ -121,7 +121,11 @@ test('serializes concurrent browser lease calls so tabs converge on the cookie w
     await new Promise((resolve) => setTimeout(resolve, 5));
     const attemptId = observed ?? String(++minted).padStart(32, '0');
     cookie = attemptId;
-    return new Response(JSON.stringify({ status: 'ready', attemptId }), {
+    return new Response(JSON.stringify({
+      status: 'ready',
+      attemptId,
+      provenance: observed ? 'reused' : 'fresh',
+    }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -131,7 +135,8 @@ test('serializes concurrent browser lease calls so tabs converge on the cookie w
     resolveServerCheckoutAttemptLease(fetchImpl as typeof fetch, locks),
     resolveServerCheckoutAttemptLease(fetchImpl as typeof fetch, locks),
   ]);
-  assert.equal(first, second);
+  assert.deepEqual(first, { status: 'ready', attemptId: cookie, provenance: 'fresh' });
+  assert.deepEqual(second, { status: 'ready', attemptId: cookie, provenance: 'reused' });
   assert.equal(minted, 1);
 });
 
@@ -147,12 +152,15 @@ test('requests a server lease when Safari blocks the Web Locks getter', async ()
   try {
     const fetchImpl = (async () => {
       fetches += 1;
-      return new Response(JSON.stringify({ status: 'ready', attemptId: ATTEMPT }), {
+      return new Response(JSON.stringify({ status: 'ready', attemptId: ATTEMPT, provenance: 'fresh' }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
     }) as typeof fetch;
-    assert.equal(await resolveServerCheckoutAttemptLease(fetchImpl), ATTEMPT);
+    assert.deepEqual(
+      await resolveServerCheckoutAttemptLease(fetchImpl),
+      { status: 'ready', attemptId: ATTEMPT, provenance: 'fresh' },
+    );
     assert.equal(fetches, 1);
   } finally {
     if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
@@ -169,13 +177,16 @@ test('requests one server lease when Safari rejects lock acquisition before the 
   };
   const fetchImpl = (async () => {
     fetches += 1;
-    return new Response(JSON.stringify({ status: 'ready', attemptId: ATTEMPT }), {
+    return new Response(JSON.stringify({ status: 'ready', attemptId: ATTEMPT, provenance: 'fresh' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   }) as typeof fetch;
 
-  assert.equal(await resolveServerCheckoutAttemptLease(fetchImpl, deniedLocks), ATTEMPT);
+  assert.deepEqual(
+    await resolveServerCheckoutAttemptLease(fetchImpl, deniedLocks),
+    { status: 'ready', attemptId: ATTEMPT, provenance: 'fresh' },
+  );
   assert.equal(fetches, 1);
 });
 
@@ -191,7 +202,7 @@ test('does not retry when the lock callback started and the lease response was l
     throw new TypeError('response lost');
   }) as typeof fetch;
 
-  assert.equal(await resolveServerCheckoutAttemptLease(fetchImpl, locks), null);
+  assert.deepEqual(await resolveServerCheckoutAttemptLease(fetchImpl, locks), { status: 'unavailable' });
   assert.equal(fetches, 1);
 });
 
@@ -227,7 +238,7 @@ test('production route sets a secure HttpOnly same-site cookie and checkout uses
   const orderHandler = fs.readFileSync(path.join(root, 'src/lib/checkout-order-route-handler.ts'), 'utf8');
   assert.match(orderHandler, /checkoutAttemptLeaseHeaderMatchesCookie/);
   assert.match(form, /['"]x-hsb-checkout-attempt['"]:\s*checkoutAttemptId/);
-  const leaseAt = form.indexOf('resolveServerCheckoutAttemptLease(');
+  const leaseAt = form.indexOf('resolveCheckoutAttemptSubmitLease({');
   const uploadAt = form.indexOf('prepareOrReuseDirectIntakeSubmission(');
   assert.ok(leaseAt >= 0 && uploadAt > leaseAt, 'server lease must be resolved before private uploads');
 });
