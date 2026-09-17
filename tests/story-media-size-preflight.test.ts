@@ -254,7 +254,11 @@ test('every attachment upload and payment path downstream is gated on the file t
   assert.match(CHECKOUT_FORM_SRC, /else if \(attachedStoryFile\) \{[\s\S]*?payload\.set\("document", attachedStoryFile\)/);
 
   const writers = CHECKOUT_FORM_SRC.match(/voiceFile:/g) ?? [];
-  // Declaration, initial state, the two resets, and the onVoiceChange writer.
+  // Declaration, initial state, the resets, and the named onVoiceChange writer.
   assert.ok(writers.length > 0);
-  assert.match(CHECKOUT_FORM_SRC, /onVoiceChange=\{\([\s\S]*?voiceFile: file,/);
+  assert.match(CHECKOUT_FORM_SRC, /onVoiceChange=\{handleStoryMediaChange\}/);
+  assert.match(
+    CHECKOUT_FORM_SRC,
+    /const handleStoryMediaChange[\s\S]*?commitDirectIntakeMediaChange\(\(\) => \{[\s\S]*?voiceFile: file,/,
+  );
 });

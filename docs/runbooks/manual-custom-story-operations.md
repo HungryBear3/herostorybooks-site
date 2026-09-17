@@ -318,26 +318,50 @@ the direct server flag or credentials, and that deployment must explicitly set
 cannot bypass validation while the direct server remains enabled. Typed Custom
 Story text and ordinary hero/family photos remain available.
 
-### 4.4 Opening the media — not implemented; escalate
+### 4.4 Opening the media — supported, admin-authenticated, order-scoped
 
-**There is no product surface that serves a media-backed order's audio or
-document bytes to an operator.** Verified across `src/app/api/**`: no route
-resolves `voiceBlobUrl`, `documentBlobUrl`, or an intake asset path for an
-order. The Family Review lane has such a route
-(`/api/family-review/admin/submissions/[submissionId]/asset/[assetId]`); the
-**order** lane does not. `/admin/orders/<orderId>` renders the storage *path*
-only ("Upload blob path", "Document storage path"), never a playable or
-downloadable link.
+Bytes that checkout staged in **private intake storage** and bound to the order
+are retrievable from the ops dashboard. Open `/admin/orders/<orderId>` and use
+the **Private intake media** section: each bound hero photo, family/pet
+reference, guided still, voice note and inspiration document is one link to
 
-Therefore:
+```
+GET /api/admin/orders/<orderId>/intake-assets/<assetId>
+```
+
+That route authenticates with the same `hsb-ops-key` admin session the rest of
+the dashboard uses — there is no key in the URL and no shareable link. It reads
+only an asset the order's own `checkoutIntake.selection` names, whose mirrored
+binding agrees, and whose media retention is still `active`; it refuses
+everything else rather than guessing. Documents download; photos and audio open
+inline — a voice note plays in the browser's own player. Nothing about the
+storage path, the credential or the provider appears in that response or in the
+link that opens it, and the read is logged server-side as order id + asset id +
+category + outcome, with no customer data.
+
+That claim is about the retrieval response and its link, and about nothing else
+on the page. Separate, pre-existing rows on `/admin/orders/<orderId>` — "Upload
+blob path", "Document storage path", and a family character's reference-photo
+row — still print storage paths to a signed-in operator. Those rows predate
+this surface. A storage path is ticket-recordable text that grants access to
+nobody on its own; a credential is what grants access, and no credential is
+rendered anywhere on the page.
+
+What has **not** changed:
 
 - **Do not** construct a Blob URL, mint a token, or reach into the Blob store to
-  fetch the bytes. That is direct Blob surgery and it is prohibited by this
-  runbook.
-- Record the storage path and the consent evidence in the ticket, and
-  **escalate to engineering** for an authorized, logged retrieval.
-- Any actual transcription this release is a human listening to media obtained
-  through that escalated path. There is no automated transcription (§12).
+  fetch the bytes. That is direct Blob surgery and it is still prohibited by
+  this runbook. Use the link above or nothing.
+- If the link is absent or the route refuses, the order's binding or retention
+  is not in a state this surface will serve. Record the refusal and
+  **escalate to engineering**; do not work around it.
+- Retrieval is not interpretation. Any actual transcription this release is a
+  human listening to the media obtained through this surface. There is no
+  automated transcription (§12), and the media-backed manual-review hold in
+  §6.3 is untouched.
+- Legacy pre-intake orders — those carrying only `voiceBlobPath` /
+  `documentBlobPath` with no `checkoutIntake` binding — are **not** served by
+  this route. They remain an engineering escalation.
 
 ---
 
@@ -430,7 +454,9 @@ An approval is not a memory or a Slack thumbs-up. Record, in the order ticket:
 
 ### 6.2 Manual (a human does this, outside the product)
 
-- Obtaining the media through an escalated, authorized retrieval (§4.4).
+- Obtaining the media: for an intake-bound order, through the admin-authenticated
+  order-scoped retrieval surface; for legacy pre-intake media, through an
+  escalated, authorized retrieval (§4.4).
 - Listening to / reading it and transcribing as applicable.
 - Writing the sanitized brief and getting it approved (§5).
 - **Authoring the story prose.** For this release the prose for a media-backed
@@ -446,7 +472,7 @@ An approval is not a memory or a Slack thumbs-up. Record, in the order ticket:
 | Admin "Retry fulfillment" on a media-backed order | Prohibited; returns 409 |
 | Page regeneration, proof publish, resolve-text-change | Prohibited; return 409 |
 | Print rebuild | Prohibited; refused |
-| Fetching order media bytes from an operator surface | **Not implemented; escalate** (§4.4) |
+| Fetching *intake-bound* order media bytes from an operator surface | **Supported** via the admin-authenticated, order-scoped route (§4.4). Legacy pre-intake media: still escalate. |
 | Writing operator-authored prose back onto the order through a supported product path | **Not implemented; escalate.** No admin route or script accepts operator prose for an order. |
 | Persisting an intervention-log entry | **Not implemented; escalate** (§5.3) |
 | Editing order JSON or Blob objects directly to work around any of the above | **Prohibited.** No exceptions in this runbook. |
