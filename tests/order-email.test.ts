@@ -100,6 +100,15 @@ test('buildOrderConfirmationEmail includes the promised order details and suppor
   assert.match(email.text, /support@herostorybooks.com/);
 });
 
+test('buildOrderConfirmationEmail discloses the pre-production reference-photo policy', () => {
+  const email = buildOrderConfirmationEmail(makePremiumOrder(), { supportEmail: SUPPORT });
+  for (const body of [email.html, email.text]) {
+    assert.match(body, /final reference-photo changes/i);
+    assert.match(body, /\$19 restart fee/i);
+    assert.match(body, /reset the timeline/i);
+  }
+});
+
 // ── buildPreviewReadyEmail ────────────────────────────────────────────────────
 
 test('buildPreviewReadyEmail for print includes child name and approval framing', () => {
@@ -306,6 +315,21 @@ test('buildProofReadyEmail: copy describes the per-page review + acknowledgment 
   assert.match(email.html, /approve/i);
   // Honest about the proof-only fallback.
   assert.match(email.html, /proof PDF/i);
+});
+
+test('buildProofReadyEmail communicates the bounded revision policy', () => {
+  const order = makeClassicOrder();
+  const email = buildProofReadyEmail(order, {
+    reviewUrl: `https://hsb.example.com/review/${order.id}?token=abc`,
+    proofUrl: 'https://cdn.example.com/proof.pdf',
+    supportEmail: SUPPORT,
+  });
+  for (const body of [email.html, email.text]) {
+    assert.match(body, /one consolidated revision round/i);
+    assert.match(body, /identity, anatomy, text, and continuity errors/i);
+    assert.match(body, /\$19 restart fee/i);
+    assert.match(body, /cannot be made after printing begins/i);
+  }
 });
 
 test('buildProofReadyEmail: subject + child name are present', () => {

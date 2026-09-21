@@ -23,6 +23,8 @@ const FEEDBACK_HELPER =
   'Tell us what to change on this page — for example: fix the hands, make the child look happier, brighten the garden, or make the face look more like the uploaded photo.';
 const REGENERATION_POLICY =
   'Regenerations are included for small fixes. After 3 tries on one page, we may step in to help; after 5, the page is flagged for a human quality check so we do not burn your time or the book budget.';
+const REVISION_ROUND_POLICY =
+  'Review the full proof and submit all page notes as one consolidated revision round. After the revised proof, the final check is limited to anything we missed from that request.';
 
 interface Snapshot {
   orderId: string;
@@ -376,7 +378,7 @@ No image yet
             ) : null}
 
             <p className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-900">
-              {REGENERATION_POLICY}
+              {REVISION_ROUND_POLICY} {REGENERATION_POLICY}
             </p>
 
             <label
