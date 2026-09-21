@@ -1,6 +1,19 @@
-import { randomUUID } from 'node:crypto';
+/**
+ * Best-effort, post-response kickoff of the paid-order confirmation email.
+ *
+ * Both schedulers are bounded by the serverless invocation, so this path is an
+ * optimization, not a guarantee: the durable guarantee is the scheduled sweep
+ * in `confirmation-email-sweep.ts`. The claim, the send and the receipt all
+ * live in `confirmation-email-delivery.ts` so that this path and the sweep
+ * share one protocol and one provider identity.
+ */
+import {
+  classifyConfirmationEmailError,
+  deliverOrderConfirmationEmail,
+  type ConfirmationEmailDeliveryOutcome,
+} from './confirmation-email-delivery.ts';
 import { sendOrderConfirmationEmail as defaultSendOrderConfirmationEmail } from './order-email.ts';
-import { getOrderAuthoritative, withOrderTransaction, type OrderRecord } from './orders.ts';
+import { getOrderAuthoritative, type OrderRecord } from './orders.ts';
 
 export interface ScheduleOrderConfirmationEmailDeps {
   send?: typeof defaultSendOrderConfirmationEmail;
@@ -8,7 +21,9 @@ export interface ScheduleOrderConfirmationEmailDeps {
   setImmediateImpl?: (cb: () => void) => unknown;
   afterImpl?: ((cb: () => void | Promise<void>) => void) | null;
   log?: (line: string) => void;
-  errorLog?: (line: string, error?: unknown) => void;
+  /** Pre-sanitized lines only: provider and storage errors can quote the
+   *  recipient address, so nothing raw crosses this boundary. */
+  errorLog?: (line: string) => void;
 }
 
 const inFlight = new Map<string, Promise<void>>();
@@ -17,15 +32,50 @@ export function _resetConfirmationEmailInFlightForTest() {
   inFlight.clear();
 }
 
+/** A non-`sent` outcome ends this attempt. It is carried as a bounded code —
+ *  built only from this module's own literals plus the delivery layer's
+ *  classification — so the scheduler can log why without ever touching a
+ *  provider or storage error. */
+class ConfirmationEmailAttemptError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(code);
+    this.name = 'ConfirmationEmailAttemptError';
+    this.code = code;
+  }
+}
+
+function outcomeError(outcome: ConfirmationEmailDeliveryOutcome): ConfirmationEmailAttemptError {
+  switch (outcome.status) {
+    case 'skipped':
+      return new ConfirmationEmailAttemptError(`confirmation_email_skipped:${outcome.reason}`);
+    case 'blocked':
+      return new ConfirmationEmailAttemptError(`confirmation_email_blocked:${outcome.reason}`);
+    case 'receipt_unrecorded':
+      return new ConfirmationEmailAttemptError(`confirmation_email_receipt_unrecorded:${outcome.reason}`);
+    case 'failed':
+      return new ConfirmationEmailAttemptError(`confirmation_email_send_failed:${outcome.errorClass}`);
+    default:
+      return new ConfirmationEmailAttemptError('confirmation_email_unexpected_outcome');
+  }
+}
+
+/** Anything else that reached the catch is unexpected; report its class only. */
+function attemptErrorCode(error: unknown): string {
+  return error instanceof ConfirmationEmailAttemptError
+    ? error.code
+    : `unexpected:${classifyConfirmationEmailError(error)}`;
+}
+
 export function scheduleOrderConfirmationEmail(
   order: OrderRecord,
   deps: ScheduleOrderConfirmationEmailDeps = {},
 ): void {
-  const send = deps.send ?? defaultSendOrderConfirmationEmail;
   const setImmediateFn = deps.setImmediateImpl ?? setImmediate;
   const afterFn = deps.afterImpl;
   const log = deps.log ?? ((line: string) => console.log(line));
-  const errorLog = deps.errorLog ?? ((line: string, error?: unknown) => console.error(line, error));
+  const errorLog = deps.errorLog ?? ((line: string) => console.error(line));
 
   const run = async (scheduler: string) => {
     const existing = inFlight.get(order.id);
@@ -36,87 +86,22 @@ export function scheduleOrderConfirmationEmail(
       } catch (error) {
         // The owning scheduler logs the send failure and clears the in-flight
         // slot. A joiner must not leak an unhandled rejection from after().
-        errorLog(`[confirmation-email] ${scheduler} joined failed send for ${order.id}`, error);
+        errorLog(
+          `[confirmation-email] ${scheduler} joined failed send for ${order.id}`
+            + ` reason=${attemptErrorCode(error)}`,
+        );
       }
       return;
     }
 
     const promise = (async () => {
-      const current = deps.getOrder
-        ? await deps.getOrder(order.id)
-        : deps.send
-          ? order
-          : await getOrderAuthoritative(order.id);
-      if (
-        !current
-        || current.paymentStatus !== 'paid'
-        || current.refundedAt
-        || current.stripeRefundId
-        || current.refundClaimId
-        || current.confirmationEmailSentAt
-      ) {
-        throw new Error('confirmation_email_blocked_by_authoritative_order_state');
-      }
-      const claimId = randomUUID();
-      const claimed = deps.send ? current : await withOrderTransaction<OrderRecord | null>(
-        order.id,
-        (latest) => {
-          if (
-            latest.paymentStatus !== 'paid'
-            || latest.refundedAt
-            || latest.stripeRefundId
-            || latest.refundClaimId
-            || latest.emailResendClaimId
-            || latest.confirmationEmailSentAt
-          ) return { abort: null };
-          const updated: OrderRecord = {
-            ...latest,
-            emailResendClaimId: claimId,
-            emailResendClaimKind: 'order_confirmation',
-            emailResendClaimArtifact: latest.stripeSessionId ?? latest.id,
-            emailResendClaimAt: new Date().toISOString(),
-          };
-          return { commit: updated, result: updated };
-        },
-        { notFound: () => null },
-      );
-      if (!claimed) throw new Error('confirmation_email_claim_blocked');
-
-      const result = await send(claimed);
-      if (result.skipped) {
-        if (!deps.send) {
-          await withOrderTransaction(order.id, (latest) => {
-            if (latest.emailResendClaimId !== claimId) return { abort: null };
-            return {
-              commit: {
-                ...latest,
-                emailResendClaimId: null,
-                emailResendClaimKind: null,
-                emailResendClaimArtifact: null,
-                emailResendClaimAt: null,
-              },
-              result: null,
-            };
-          }, { notFound: () => null });
-        }
-        throw new Error(`confirmation_email_skipped:${result.reason}`);
-      }
-      if (!deps.send) {
-        await withOrderTransaction(order.id, (latest) => {
-          if (latest.emailResendClaimId !== claimId) return { abort: null };
-          return {
-            commit: {
-              ...latest,
-              confirmationEmailSentAt: new Date().toISOString(),
-              emailResendClaimId: null,
-              emailResendClaimKind: null,
-              emailResendClaimArtifact: null,
-              emailResendClaimAt: null,
-            },
-            result: null,
-          };
-        }, { notFound: () => null });
-      }
+      const outcome = await deliverOrderConfirmationEmail(order.id, {
+        ...(deps.send ? { send: deps.send } : {}),
+        ...(deps.getOrder ? { getOrder: deps.getOrder } : {}),
+        log,
+        errorLog,
+      });
+      if (outcome.status !== 'sent') throw outcomeError(outcome);
       log(`[confirmation-email] ${scheduler} completed for ${order.id}`);
     })();
     inFlight.set(order.id, promise);
@@ -125,7 +110,10 @@ export function scheduleOrderConfirmationEmail(
       await promise;
     } catch (error) {
       inFlight.delete(order.id);
-      errorLog(`[confirmation-email] ${scheduler} failed for ${order.id}`, error);
+      errorLog(
+        `[confirmation-email] ${scheduler} failed for ${order.id}`
+          + ` reason=${attemptErrorCode(error)}`,
+      );
     }
   };
 
@@ -134,7 +122,10 @@ export function scheduleOrderConfirmationEmail(
     try {
       afterFn(() => run('after'));
     } catch (error) {
-      errorLog(`[confirmation-email] after unavailable for ${order.id}`, error);
+      errorLog(
+        `[confirmation-email] after unavailable for ${order.id}`
+          + ` errorClass=${classifyConfirmationEmailError(error)}`,
+      );
     }
   }
 }

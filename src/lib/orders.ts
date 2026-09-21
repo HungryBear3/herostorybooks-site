@@ -756,6 +756,18 @@ export interface OrderRecord extends OrderInput {
   shippedEmailSentAt?: string | null;
   /** Durable receipt that the initial paid-order confirmation was accepted. */
   confirmationEmailSentAt?: string | null;
+  /** Immutable provider identity for the paid-order confirmation email.
+   *
+   *  Resend rejects reuse of an idempotency key whose request body has changed,
+   *  so the sender and the key are one indivisible identity: sharing a key
+   *  across a sender fallback makes the fallback permanently unrejectable, and
+   *  splitting the key by sender makes a configuration change a second way to
+   *  accept the same email. Both are chosen exactly once, inside the
+   *  confirmation claim transaction, and are never rewritten automatically —
+   *  not by a retry, not by a stale-claim takeover, not by an operator changing
+   *  `HSB_EMAIL_FROM`. Moving them is a separately reviewed migration. */
+  confirmationEmailFrom?: string | null;
+  confirmationEmailIdempotencyKey?: string | null;
   /** Durable pre-provider refund fence and reconciliation identity. */
   refundClaimId?: string | null;
   refundClaimAt?: string | null;

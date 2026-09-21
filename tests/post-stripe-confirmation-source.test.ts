@@ -13,10 +13,16 @@ test('checkout success URL includes Stripe opaque session placeholder for server
   assert.match(orderRoute, /sessionId=\{CHECKOUT_SESSION_ID\}/);
 });
 
-test('confirmation email uses deterministic per-order Resend idempotency keys', () => {
+test('confirmation email sends under one immutable, order-scoped Resend identity', () => {
   assert.match(orderEmail, /idempotencyKey/);
-  assert.match(orderEmail, /order-confirmation-\$\{order\.id\}-primary-v1/);
-  assert.match(orderEmail, /order-confirmation-\$\{order\.id\}-fallback-v1/);
+  // One deterministic key per order, and no sender-dependent variants of it:
+  // a `-primary`/`-fallback` split would let a sender rotation open a second
+  // provider identity and deliver the confirmation twice.
+  assert.match(orderEmail, /return `order-confirmation-\$\{order\.id\}-primary-v1`/);
+  assert.doesNotMatch(orderEmail, /return `order-confirmation-\$\{order\.id\}-fallback-v1`/);
+  // The sender and key are read off the record, never rebuilt from the env.
+  assert.match(orderEmail, /const from = order\.confirmationEmailFrom/);
+  assert.match(orderEmail, /const idempotencyKey = order\.confirmationEmailIdempotencyKey/);
 });
 
 test('webhook durably writes payment but defers confirmation email and fulfillment', () => {

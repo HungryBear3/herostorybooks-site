@@ -382,9 +382,48 @@ function withoutStoryMediaSizeExtraction(candidate: string): string {
   return normalized;
 }
 
+/** The one sanctioned schedule addition: the confirmation-email recovery sweep.
+ *  Declared here as exact bytes so every other schedule in `vercel.json` — the
+ *  fulfillment sweep and the intake cleanup — stays frozen to the base commit. */
+const VERCEL_SANCTIONED_TRANSFORMS: ReadonlyArray<{
+  description: string;
+  candidate: string;
+  base: string;
+}> = [
+  {
+    description: 'confirmation-email recovery sweep schedule',
+    candidate: `    },
+    {
+      "path": "/api/cron/confirmation-email-sweep",
+      "schedule": "7,22,37,52 * * * *"
+    }
+  ]
+`,
+    base: `    }
+  ]
+`,
+  },
+];
+
+function withoutConfirmationEmailSweepSchedule(candidate: string): string {
+  let normalized = candidate;
+  for (const rule of VERCEL_SANCTIONED_TRANSFORMS) {
+    const occurrences = normalized.split(rule.candidate).length - 1;
+    assert.equal(
+      occurrences,
+      1,
+      `vercel.json must carry the ${rule.description} exactly once, found ${occurrences}`,
+    );
+    // A function replacer: no `$&`-style expansion out of the base text.
+    normalized = normalized.replace(rule.candidate, () => rule.base);
+  }
+  return normalized;
+}
+
 /** Files frozen except for a declared, reversible transformation. */
 const FREEZE_NORMALIZERS: Readonly<Record<string, (source: string) => string>> = {
   'src/lib/orders.ts': withoutStoryMediaSizeExtraction,
+  'vercel.json': withoutConfirmationEmailSweepSchedule,
 };
 
 test('the operator copy says what the state is and forbids automatic retry', () => {

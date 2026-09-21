@@ -200,26 +200,111 @@ export function buildOrderConfirmationEmail(
   return { subject, html, text };
 }
 
+/**
+ * Provider-level deduplication identity for the paid-order confirmation.
+ *
+ * Derived from the order id alone — never from the attempt, the claim, the
+ * sender configuration, or any customer field — so every retry (deferred
+ * scheduler, webhook replay, recovery sweep) presents Resend with the same key
+ * and can only ever produce one accepted message. That is what makes the
+ * ambiguous case safe: if Resend accepted the email but our durable receipt
+ * write was lost, re-sending is a no-op at the provider rather than a second
+ * confirmation in the buyer's inbox.
+ *
+ * ONE key, because there is one sender. Resend rejects reuse of a key whose
+ * request body has changed, so a `-primary`/`-fallback` pair sharing this value
+ * would make the fallback permanently unusable, and a pair splitting it by
+ * sender would let an `HSB_EMAIL_FROM` change open a second identity. The
+ * sender is therefore frozen alongside this key on the order record
+ * (`confirmationEmailFrom`) and the confirmation path never falls back. The
+ * retained `-primary-v1` suffix is legacy compatibility, not an active half of
+ * a fallback pair. Other lifecycle emails keep their separate
+ * `-primary`/`-fallback` keys.
+ */
+export function buildOrderConfirmationIdempotencyKey(order: OrderRecord): string {
+  // Preserve the pre-cutover primary identity so a confirmation accepted by
+  // the old primary path but missing its durable receipt still deduplicates.
+  return `order-confirmation-${order.id}-primary-v1`;
+}
+
+/** The record carries no frozen identity, so there is nothing safe to present.
+ *  Fail closed rather than reconstruct one from the current environment: a
+ *  reconstructed identity is exactly the duplicate this design prevents. */
+export class ConfirmationEmailIdentityError extends Error {
+  constructor(orderId: string) {
+    super(`Order confirmation email for ${orderId} has no persisted sender identity`);
+    this.name = 'ConfirmationEmailIdentityError';
+  }
+}
+
+/**
+ * Bounded, PII-free confirmation-send failure.
+ *
+ * Resend quotes the recipient address in its error messages, and the sender
+ * address is itself an address, so only the HTTP status and a name-shaped
+ * classification cross this boundary — never a message, and never an `@`. The
+ * rejected sender is recoverable from `confirmationEmailFrom` on the record.
+ */
+export class ConfirmationEmailProviderError extends Error {
+  readonly statusCode: number | null;
+
+  readonly providerErrorClass: string;
+
+  constructor(orderId: string, detail: ResendError | null | undefined) {
+    const statusCode = typeof detail?.statusCode === 'number' ? detail.statusCode : null;
+    const rawName = typeof detail?.name === 'string' ? detail.name : '';
+    const providerErrorClass = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(rawName) ? rawName : 'unknown';
+    super(
+      `Order confirmation email for ${orderId} was rejected by the provider`
+        + ` (status=${statusCode ?? 'unknown'} providerErrorClass=${providerErrorClass});`
+        + ' the rejected sender is recorded as confirmationEmailFrom on the order',
+    );
+    this.name = 'ConfirmationEmailProviderError';
+    this.statusCode = statusCode;
+    this.providerErrorClass = providerErrorClass;
+  }
+}
+
+/**
+ * Send the paid-order confirmation under the identity already frozen on the
+ * record: exactly one provider attempt, with that exact `from` and that exact
+ * idempotency key.
+ *
+ * Deliberately does NOT use `sendWithFallback`. A verified-sender fallback
+ * changes `from`, which changes the request body, which Resend refuses under an
+ * already-seen key — so the fallback could never succeed, and giving it its own
+ * key would instead let a sender rotation deliver the confirmation twice. If
+ * the frozen sender is rejected, this throws and the attempt is retried later
+ * under the same identity; correcting the sender is an operator migration, not
+ * something this path may decide.
+ */
 export async function sendOrderConfirmationEmail(order: OrderRecord) {
   const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
   if (!apiKey) {
     return { skipped: true as const, reason: 'missing_resend_api_key' };
   }
 
+  const from = order.confirmationEmailFrom;
+  const idempotencyKey = order.confirmationEmailIdempotencyKey;
+  if (!from || !idempotencyKey) throw new ConfirmationEmailIdentityError(order.id);
+
   const resend = new Resend(apiKey);
   const supportEmail = getSupportEmail();
   const email = buildOrderConfirmationEmail(order, { supportEmail });
-  return sendWithFallback(resend, `Order confirmation email for ${order.id}`, {
-    from: getOrderSenderEmail(),
+  const result = await resend.emails.send({
+    from,
     to: [order.email],
     subject: email.subject,
     html: email.html,
     text: email.text,
     replyTo: supportEmail,
-  }, {
-    primaryIdempotencyKey: `order-confirmation-${order.id}-primary-v1`,
-    fallbackIdempotencyKey: `order-confirmation-${order.id}-fallback-v1`,
-  });
+  }, { idempotencyKey });
+
+  if (result.error) throw new ConfirmationEmailProviderError(order.id, result.error);
+  if (!result.data?.id) {
+    throw new ConfirmationEmailProviderError(order.id, { name: 'missing_provider_message_id' });
+  }
+  return { skipped: false as const, id: result.data.id };
 }
 
 // ── Lifecycle email builders ──────────────────────────────────────────────────
