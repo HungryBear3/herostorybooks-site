@@ -30,6 +30,11 @@ const faqs = [
       "Digital orders are fully refundable up until you approve the proof. Printed books are refundable up until you approve the proof for print. After proof approval, we can only replace books with printing defects or fulfillment errors.",
   },
   {
+    question: 'How many revision rounds are included?',
+    answer:
+      'One consolidated revision round is included after you review the full proof, followed by a final check limited to anything we missed from that request. We correct genuine identity, anatomy, text, and continuity errors we introduced. New photos, characters, scenes, major story changes, or a new creative direction after production begins require a $19 restart fee and reset the timeline. Approval closes the book; changes cannot be made after printing begins.',
+  },
+  {
     question: 'Is this a good gift?',
     answer:
       "Yes — personalized storybooks are a popular birthday and holiday gift. Approve the proof at least 9–12 business days before the date you need it to give the printed book the best chance of arriving in time. Carriers vary, so we don't promise specific delivery dates; for tight timing the Digital PDF is a reliable fallback you can print at home or share instantly.",

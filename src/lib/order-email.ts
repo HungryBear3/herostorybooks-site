@@ -175,6 +175,7 @@ export function buildOrderConfirmationEmail(
         ${detailRows.map(([label, value]) => `<p style="margin:0 0 8px;"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</p>`).join('')}
       </div>
       <p style="margin:0 0 12px;">${escapeHtml(previewNote)}</p>
+      <p style="margin:0 0 12px;color:#6b7280;font-size:13px;"><strong>Before production:</strong> please send any final reference-photo changes together as soon as possible. Once production begins, new photos, characters, scenes, major story changes, or a new creative direction require a $19 restart fee and reset the timeline.</p>
       <p style="margin:0 0 12px;">${escapeHtml(PROOF_REVIEW_ASSURANCE)} ${escapeHtml(PROOF_VOLUME_NOTE)}</p>
       <p style="margin:0 0 12px;color:#6b7280;font-size:14px;">${escapeHtml(PROOF_DELAY_SUPPORT_NOTE)}</p>
       <p style="margin:0 0 12px;">If you have questions, just reply to this email or contact <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>.</p>
@@ -191,6 +192,7 @@ export function buildOrderConfirmationEmail(
     `Order ID: ${order.id}`,
     '',
     previewNote,
+    `Before production: please send any final reference-photo changes together as soon as possible. Once production begins, new photos, characters, scenes, major story changes, or a new creative direction require a $19 restart fee and reset the timeline.`,
     `${PROOF_REVIEW_ASSURANCE} ${PROOF_VOLUME_NOTE}`,
     PROOF_DELAY_SUPPORT_NOTE,
     `Track your order: ${(process.env.NEXT_PUBLIC_URL?.replace(/\/$/, '') || 'https://herostorybooks.com')}/status/${order.id}`,
@@ -649,7 +651,8 @@ export function buildProofReadyEmail(
       </div>
       <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">On the review page you'll see every illustrated page, the full proof PDF, and the approval button — approval only unlocks after you've reviewed the proof.</p>
       <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">Prefer to glance at just the proof PDF first? <a href="${escapeHtml(options.proofUrl)}" style="color:#1F3A5F;">View proof PDF</a> (you'll still need the review page to approve).</p>
-      <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">If you'd like any changes, request them on the review page or reply to this email. Once approved, we'll print and ship in 5–7 business days.</p>
+      <p style="margin:0 0 12px;color:#6b7280;font-size:13px;"><strong>Revision policy:</strong> review the full proof, then send one complete list. One consolidated revision round is included, followed by a final check limited to anything we missed from that request. We also correct genuine identity, anatomy, text, and continuity errors we introduced.</p>
+      <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">New photos, characters, scenes, major story changes, or a new creative direction after production begins require a $19 restart fee and reset the timeline. Once approved, later changes require a paid restart and cannot be made after printing begins.</p>
       <p style="margin:0 0 12px;">Questions? <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a></p>
       <p style="margin:24px 0 0;color:#6b7280;font-size:14px;">Order ID: ${escapeHtml(order.id)}</p>
     </div>
@@ -663,7 +666,8 @@ export function buildProofReadyEmail(
     '',
     `Proof PDF only (no approval): ${options.proofUrl}`,
     '',
-    `If you'd like changes, request them on the review page or reply to this email.`,
+    `Revision policy: review the full proof, then send one complete list. One consolidated revision round is included, followed by a final check limited to anything we missed from that request. We also correct genuine identity, anatomy, text, and continuity errors we introduced.`,
+    `New photos, characters, scenes, major story changes, or a new creative direction after production begins require a $19 restart fee and reset the timeline. Once approved, later changes require a paid restart and cannot be made after printing begins.`,
     `Once approved, we'll print and ship in 5–7 business days.`,
     '',
     `Questions? ${supportEmail}`,
