@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "node --experimental-strip-types scripts/check-story-media-env.ts && next build",
+    "build": "node --experimental-strip-types scripts/check-story-media-env.ts && node --experimental-strip-types scripts/check-confirmation-envelope-env.ts && next build",
     "dev": "next dev",
+    "envelope:probe": "node --experimental-strip-types scripts/probe-confirmation-envelope-store.ts",
     "launch:hygiene": "node scripts/launch-hygiene-check.mjs",
     "lint": "eslint .",
     "order:status": "node --experimental-strip-types scripts/order-status.ts",

@@ -12,6 +12,21 @@ import {
   put,
 } from '@vercel/blob';
 
+import type { ConfirmationEmailEnvelopeV1 } from './confirmation-email-envelope.ts';
+// A3-3: a RUNTIME import, unlike the two type-only L-4 foundation imports
+// below. The public-store write boundary has to actually run the ref validator,
+// so this is the one confirmation module `orders.ts` executes rather than
+// merely describes.
+import {
+  materializeConfirmationEmailEnvelopeRef,
+  validateConfirmationEmailEnvelopeRef,
+  type ConfirmationEmailEnvelopeRefV1,
+} from './confirmation-envelope-ref.ts';
+import type {
+  ConfirmationEmailAttemptRecord,
+  ConfirmationEmailHoldReason,
+  ConfirmationEmailState,
+} from './confirmation-email-state.ts';
 import type { CheckoutTracking } from './checkout-tracking.ts';
 import type { CustomerQueueStatus } from './order-queue.ts';
 import type { FulfillmentStatus, LayoutVersion, PageTextLayout, ProofCardOverride, VoiceTranscriptMeta } from './fulfillment-types.ts';
@@ -469,7 +484,14 @@ export type ReviewAuditEventType =
   | 'internal_disposition_marked'
   | 'page_layout_override_applied'
   | 'page_layout_override_reset'
-  | 'layout_help_requested';
+  | 'layout_help_requested'
+  | 'confirmation_snapshotted'
+  | 'confirmation_dispatch_intent'
+  | 'confirmation_accepted'
+  | 'confirmation_held'
+  | 'confirmation_reconciled'
+  | 'confirmation_owner_resend'
+  | 'confirmation_payload_purged';
 
 export interface ReviewAuditEvent {
   /** ISO timestamp the event was recorded. */
@@ -768,6 +790,38 @@ export interface OrderRecord extends OrderInput {
    *  `HSB_EMAIL_FROM`. Moving them is a separately reviewed migration. */
   confirmationEmailFrom?: string | null;
   confirmationEmailIdempotencyKey?: string | null;
+  /** Durable confirmation transition state (L-4). Additive and optional: a
+   *  record written before this existed carries none, and is classified on
+   *  first touch rather than assumed to be anything. */
+  confirmationEmailState?: ConfirmationEmailState | null;
+  /** RETIRED (L-4 Slice A3-3). The A1 inline envelope carried the six provider
+   *  request fields on the public order record. A3 never writes it again: the
+   *  frozen request lives in the dedicated private store and the record carries
+   *  `confirmationEmailEnvelopeRef` instead. The declaration stays so a legacy
+   *  or hand-edited record that still carries the field remains describable —
+   *  `assertNoConfirmationRequestBytes` refuses such a record on every write
+   *  path, and `scrubRetiredPrivateFields` deletes it on every read path. */
+  confirmationEmailEnvelope?: ConfirmationEmailEnvelopeV1 | null;
+  /** Non-PII pointer to the frozen envelope in the dedicated private store
+   *  (L-4 Slice A3-3). Integrity metadata, a non-secret provider binding label
+   *  and the store key — never request bytes, never the idempotency key, never
+   *  a URL or a token. Validated on every public-store write. */
+  confirmationEmailEnvelopeRef?: ConfirmationEmailEnvelopeRefV1 | null;
+  /** WRITE-ONCE. The earliest instant any dispatch intent was durably recorded
+   *  for this order. Never cleared by a release, a receipt, a takeover, a
+   *  purge, or a reconciliation; the only legal write is null -> instant. */
+  confirmationEmailFirstDispatchIntentAt?: string | null;
+  /** Identity of the attempt that currently holds dispatch intent. */
+  confirmationEmailAttemptId?: string | null;
+  /** Local wall-clock ceiling for the attempt holding dispatch intent. */
+  confirmationEmailDispatchDeadlineAt?: string | null;
+  /** Provider acceptance evidence. */
+  confirmationEmailProviderMessageId?: string | null;
+  confirmationEmailAcceptedAt?: string | null;
+  /** Bounded append-only attempt history; see the attempt-history cap. */
+  confirmationEmailAttempts?: readonly ConfirmationEmailAttemptRecord[] | null;
+  /** Set only while the record is held for reconciliation. */
+  confirmationEmailHoldReason?: ConfirmationEmailHoldReason | null;
   /** Durable pre-provider refund fence and reconciliation identity. */
   refundClaimId?: string | null;
   refundClaimAt?: string | null;
@@ -1837,6 +1891,12 @@ export async function rollbackOrderMediaUploads(
   return uniquePaths.length;
 }
 
+/** The retired A1 inline field, named once so the guard and the scrub agree. */
+const CONFIRMATION_ENVELOPE_RETIRED_INLINE_FIELD = 'confirmationEmailEnvelope';
+
+/** The A3-3 record-level ref field. */
+const CONFIRMATION_ENVELOPE_REF_FIELD = 'confirmationEmailEnvelopeRef';
+
 function scrubRetiredPrivateFields(order: OrderRecord): OrderRecord {
   const sanitized = { ...order } as OrderRecord & Record<string, unknown>;
   // Legacy records can still carry the removed original voice filename. Derive
@@ -1847,7 +1907,114 @@ function scrubRetiredPrivateFields(order: OrderRecord): OrderRecord {
     sanitized.legacyVoiceUploadPresent = true;
   }
   delete sanitized['voiceFileName'];
+  // A3-3. The retired A1 inline envelope carried the six provider request
+  // fields. Deleting it HERE covers the read path — every order-record
+  // deserialization in this module goes through `parseOrderRecord`, which calls
+  // this — so a legacy or hand-edited record cannot bring request bytes back
+  // into memory and from there into a DTO, a log line or a response body.
+  //
+  // No presence signal is derived, unlike the voice filename above: a flag
+  // would be a new record field, and nothing in A3 needs to know.
+  //
+  // The write paths never rely on this. `assertNoConfirmationRequestBytes` runs
+  // BEFORE this function on all three of them and throws, so a write cannot be
+  // quietly repaired into looking successful. Read repairs and stays usable;
+  // write refuses and stays honest.
+  delete sanitized[CONFIRMATION_ENVELOPE_RETIRED_INLINE_FIELD];
   return sanitized;
+}
+
+/**
+ * The fail-closed backstop at the public-store boundary (architecture §2.6).
+ *
+ * Called from `persistOrderUnsafe`, `persistNewOrder` and
+ * `commitOrderConditional` — each one before its own scrub and before any store
+ * I/O. It refuses a record that:
+ *
+ *   - carries the retired inline `confirmationEmailEnvelope` AT ALL, or
+ *   - carries a `confirmationEmailEnvelopeRef` that is not a structurally valid
+ *     ref for this order under this deployment's Blob namespace.
+ *
+ * It THROWS. It deliberately does not strip and continue: the independent
+ * privacy review's requirement is explicit — "do not silently drop the envelope
+ * and report a successful snapshot" — and a silent strip would let an order
+ * report itself persisted while the frozen request a later dispatch depends on
+ * had vanished.
+ *
+ * Presence beats truthiness. `confirmationEmailEnvelope: undefined` and
+ * `: null` are still keys on the object, and a writer that produced either came
+ * from before this boundary existed; `in` is used rather than `Object.hasOwn` so
+ * a value reached through the prototype chain is refused too.
+ *
+ * No message here quotes a record value. Every refusal is a fixed string plus a
+ * closed problem code, because an `OrderPersistenceError` message is routinely
+ * handed to a log sink and the thing being refused may be customer content.
+ */
+export function assertNoConfirmationRequestBytes(order: OrderRecord): void {
+  if (order === null || typeof order !== 'object') {
+    throw new OrderPersistenceError('unknown', 'confirmation_envelope_boundary:record_not_object');
+  }
+  const candidate = order as OrderRecord & Record<string, unknown>;
+  const orderId = typeof candidate.id === 'string' ? candidate.id : 'unknown';
+
+  if (CONFIRMATION_ENVELOPE_RETIRED_INLINE_FIELD in candidate) {
+    throw new OrderPersistenceError(
+      orderId,
+      'confirmation_envelope_boundary:retired_inline_envelope_present',
+    );
+  }
+
+  const ref = candidate[CONFIRMATION_ENVELOPE_REF_FIELD];
+  // Absent and explicitly-null are both "this order has no frozen envelope",
+  // which is every order in the system today and the overwhelmingly common case
+  // afterwards. Only a present value is validated.
+  if (ref === undefined || ref === null) return;
+
+  // The namespace is resolved here rather than baked into the ref's validator so
+  // there is exactly one namespace rule in the process. A misconfigured
+  // namespace throws `BlobNamespaceError` out of this call, which is the same
+  // fail-closed outcome `getOrderBlobPath` already produces for the record
+  // itself — a deployment that cannot say which keyspace it owns must not write.
+  const problem = validateConfirmationEmailEnvelopeRef(ref, {
+    orderId,
+    namespace: getBlobNamespace(),
+  });
+  if (problem) {
+    throw new OrderPersistenceError(orderId, `confirmation_envelope_boundary:${problem}`);
+  }
+}
+
+/**
+ * Replace the ref on an already-scrubbed write copy with a fresh validated
+ * literal, or throw. Called by all three writers AFTER the scrub and before
+ * serialization.
+ *
+ * `assertNoConfirmationRequestBytes` decides about the raw argument; this
+ * decides about the bytes. They are different objects: the scrub re-reads
+ * every member, so an accessor-backed ref can answer the two reads
+ * differently, and even a ref read once can be a proxy whose [[Get]] hands
+ * `JSON.stringify` a `toJSON` no inspection sees. So the ref is re-validated on
+ * the copy and swapped for the materialized literal, whose ten members are the
+ * primitives just validated. What reaches the store is that literal and never
+ * the caller's object.
+ *
+ * `write` is the scrub's own spread copy, so reading its ref is a plain data
+ * read and the assignment mutates nothing the caller holds. Refusal throws with
+ * the same fixed-string-plus-code message as the boundary, for the same reason.
+ */
+function sealConfirmationEnvelopeRefForWrite(write: OrderRecord): void {
+  const candidate = write as OrderRecord & Record<string, unknown>;
+  const ref = candidate[CONFIRMATION_ENVELOPE_REF_FIELD];
+  if (ref === undefined || ref === null) return;
+  const orderId = typeof candidate.id === 'string' ? candidate.id : 'unknown';
+  const result = materializeConfirmationEmailEnvelopeRef(ref, {
+    orderId,
+    namespace: getBlobNamespace(),
+  });
+  if ('problem' in result) {
+    throw new OrderPersistenceError(orderId, `confirmation_envelope_boundary:${result.problem}`);
+  }
+  candidate[CONFIRMATION_ENVELOPE_REF_FIELD] = result.ref;
 }
 
 function exactObjectKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
@@ -2079,8 +2246,14 @@ export async function persistOrder(order: OrderRecord) {
 }
 
 async function persistOrderUnsafe(order: OrderRecord) {
+  // A3-3: before the scrub, and before anything reads a credential or touches
+  // the store. Refusing on the RAW argument is the point — the scrub below would
+  // delete the retired inline envelope, and a write that repaired itself would
+  // report success for a record whose request bytes had silently vanished.
+  assertNoConfirmationRequestBytes(order);
   const token = getBlobToken();
   const sanitized = scrubRetiredPrivateFields(order);
+  sealConfirmationEnvelopeRefForWrite(sanitized);
   assertCheckoutIntakeOrderContract(sanitized);
   const serialized = JSON.stringify(sanitized, null, 2);
   const requireDurable = requiresDurablePersistence();
@@ -3178,7 +3351,11 @@ export async function readOrderVersioned(
 
 /** Create a new order only when its deterministic record path is absent. */
 export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> {
+  // A3-3: independently enforced here, not inherited from persistOrder. This is
+  // a separate entry point with its own adapter call.
+  assertNoConfirmationRequestBytes(order);
   const sanitized = scrubRetiredPrivateFields(order);
+  sealConfirmationEnvelopeRefForWrite(sanitized);
   assertCheckoutIntakeOrderContract(sanitized);
   const adapter = resolveOrderStoreAdapter();
   // NO up-front generation claim here, unlike persistOrder. A create that loses
@@ -3721,7 +3898,12 @@ export async function commitOrderConditional(
   const generation = beginOrderWrite(order.id);
   let result: ConditionalCommitResult;
   try {
+    // A3-3: the CAS path is enforced independently of the two unconditional
+    // writers. It is the path a legacy read-modify-write reaches, and the one a
+    // future dispatch commit will use.
+    assertNoConfirmationRequestBytes(order);
     const sanitized = scrubRetiredPrivateFields(order);
+    sealConfirmationEnvelopeRefForWrite(sanitized);
     assertCheckoutIntakeOrderContract(sanitized);
     result = await adapter.replaceIfVersion(
       getOrderBlobPath(order.id),

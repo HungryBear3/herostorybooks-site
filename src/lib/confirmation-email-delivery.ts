@@ -23,6 +23,7 @@ import {
   getOrderSenderEmail,
   sendOrderConfirmationEmail as defaultSendOrderConfirmationEmail,
 } from './order-email.ts';
+import { isConfirmationEmailHeldState } from './confirmation-email-state.ts';
 import {
   getOrderAuthoritative,
   withOrderTransaction,
@@ -43,6 +44,7 @@ export type ConfirmationEmailBlockReason =
   | 'not_paid'
   | 'refunded'
   | 'already_sent'
+  | 'held_for_reconciliation'
   | 'claim_other_kind'
   | 'claim_active';
 
@@ -128,6 +130,8 @@ export type ConfirmationEmailClaimResult =
  *
  * A claim with no parsable `emailResendClaimAt` has no bound, so it is treated
  * as active forever rather than silently stolen — an operator decides.
+ *
+ * Reads only the record. No environment, no flag, no provider, no mutation.
  */
 export function evaluateConfirmationEmailClaimability(
   order: OrderRecord,
@@ -135,7 +139,28 @@ export function evaluateConfirmationEmailClaimability(
 ): ConfirmationEmailBlockReason | null {
   if (order.paymentStatus !== 'paid') return 'not_paid';
   if (order.refundedAt || order.stripeRefundId || order.refundClaimId) return 'refunded';
+  // Requirement R2 (architecture §3.9). `ACCEPTED` is a success, not a hold, so
+  // it is deliberately absent from `CONFIRMATION_EMAIL_HELD_STATES` — which
+  // leaves the receipt check below as the only thing that would stop it. A
+  // record in `ACCEPTED` with no `confirmationEmailSentAt` is reachable through
+  // a partial or hand-edited record, and it was claimable and re-sendable.
+  //
+  // Fenced on the state itself and placed BEFORE the receipt check so it cannot
+  // be skipped by a missing or falsy receipt. The literal is checked against the
+  // state union by `tsc`, so a misspelling is a compile error rather than a
+  // silently dead branch; the held set is deliberately not modified, because it
+  // is the exported hold set other callers consume.
+  if (order.confirmationEmailState === 'ACCEPTED') return 'already_sent';
   if (order.confirmationEmailSentAt) return 'already_sent';
+  // A record whose dispatch outcome is unknown, or whose hold an operator has
+  // already resolved, is never re-claimed — by this path or any other. This
+  // block is deliberately unconditional: it is what keeps a hold durable if the
+  // durable-confirmation work is ever rolled back by turning its flag off, and
+  // a hold that only exists while a flag is on is not a hold at all. It is also
+  // evaluated ahead of the stale-claim window below, because past dispatch
+  // intent an abandoned claim is exactly the case that must NOT be recovered:
+  // the abandoned attempt may already have reached the provider.
+  if (isConfirmationEmailHeldState(order.confirmationEmailState)) return 'held_for_reconciliation';
   if (order.emailResendClaimId) {
     if (order.emailResendClaimKind !== CONFIRMATION_EMAIL_CLAIM_KIND) return 'claim_other_kind';
     const claimedAtMs = order.emailResendClaimAt ? Date.parse(order.emailResendClaimAt) : Number.NaN;

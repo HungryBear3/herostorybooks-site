@@ -1,5 +1,6 @@
 import { getConfiguredAdminKey } from '@/lib/admin-auth';
 import { isAdminAuthedFromCookie } from '@/lib/admin-auth-server';
+import { toAdminOrderListItem } from '@/lib/admin-order-dto';
 import { listOrders } from '@/lib/orders';
 import type { OrderRecord } from '@/lib/orders';
 import { deriveOrderAttention } from '@/lib/order-stage';
@@ -93,7 +94,12 @@ export default async function AdminOrdersPage({ searchParams }: PageProps) {
           </section>
         )}
 
-        <AdminOrdersClient orders={orders} />
+        {/* Stats and the reconciliation panel above are server-only and read the
+            full records. What crosses into the client component is the explicit
+            projection and nothing else — passing `orders` here would serialize
+            every field the record carries into the browser payload, including
+            shipping addresses and audit events that only fed a derivation. */}
+        <AdminOrdersClient orders={orders.map(toAdminOrderListItem)} />
       </div>
     </div>
   );

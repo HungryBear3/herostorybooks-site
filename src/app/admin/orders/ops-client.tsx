@@ -2,14 +2,13 @@
 
 import { useMemo, useState } from 'react';
 
-import type { OrderRecord } from '@/lib/orders';
-import { deriveOrderAttention, deriveOrderStage } from '@/lib/order-stage';
+import type { AdminOrderListItem } from '@/lib/admin-order-dto';
 
 /** Client-side mirror of preprintRefundRefusalReason (kept inline to
  *  avoid pulling Stripe into the client bundle through admin-actions).
  *  Server is the source of truth — UI just hides the button when the
  *  state already disqualifies the order. */
-function uiCanRefund(order: OrderRecord): boolean {
+function uiCanRefund(order: AdminOrderListItem): boolean {
   if (order.paymentStatus !== 'paid') return false;
   if (order.refundedAt) return false;
   if (order.status === 'shipped' || order.status === 'print_in_production') return false;
@@ -28,11 +27,11 @@ const IN_PROGRESS_FULFILLMENT_STATUSES = new Set([
   'submitting_to_print',
 ]);
 
-function isInternalArchived(order: OrderRecord): boolean {
+function isInternalArchived(order: AdminOrderListItem): boolean {
   return Boolean(order.internalDisposition);
 }
 
-function paidArtifactNeedsAttention(order: OrderRecord, now = Date.now()): boolean {
+function paidArtifactNeedsAttention(order: AdminOrderListItem, now = Date.now()): boolean {
   if (order.paymentStatus !== 'paid' || order.storyArtifactUrl) return false;
   const f = order.fulfillmentStatus ?? 'not_started';
   if (f === 'not_started' || f === 'failed_manual_review') return true;
@@ -43,7 +42,7 @@ function paidArtifactNeedsAttention(order: OrderRecord, now = Date.now()): boole
   return true;
 }
 
-export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] }) {
+export default function AdminOrdersClient({ orders }: { orders: AdminOrderListItem[] }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [showInternalArchived, setShowInternalArchived] = useState(false);
@@ -63,7 +62,7 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
       )) return false;
 
       switch (filter) {
-        case 'paid_attention': return deriveOrderAttention(o).severity !== 'none';
+        case 'paid_attention': return o.attention.severity !== 'none';
         case 'paid': return o.paymentStatus === 'paid';
         case 'in_progress':
           return ['generating_story', 'generating_images', 'building_pdf', 'submitting_to_print'].includes(o.fulfillmentStatus ?? '');
@@ -80,7 +79,7 @@ export default function AdminOrdersClient({ orders }: { orders: OrderRecord[] })
     [orders],
   );
   const paidAttentionCount = useMemo(
-    () => orders.filter((o) => (!showInternalArchived && isInternalArchived(o)) ? false : deriveOrderAttention(o).severity !== 'none').length,
+    () => orders.filter((o) => (!showInternalArchived && isInternalArchived(o)) ? false : o.attention.severity !== 'none').length,
     [orders, showInternalArchived],
   );
 
@@ -204,7 +203,7 @@ function Row({
   onRefund,
   refunding,
 }: {
-  order: OrderRecord;
+  order: AdminOrderListItem;
   onRetry: (id: string) => void;
   retrying: boolean;
   onRefund: (id: string) => void;
@@ -226,8 +225,10 @@ function Row({
   const created = order.createdAt ? new Date(order.createdAt) : null;
   const createdShort = created ? `${created.toISOString().slice(0, 10)} ${created.toISOString().slice(11, 16)}Z` : '—';
   const needsPaidArtifactAttention = paidArtifactNeedsAttention(order);
-  const derivedStage = deriveOrderStage(order);
-  const attention = deriveOrderAttention(order);
+  // Both were computed on the server; see src/lib/admin-order-dto.ts. Deriving
+  // them here is what required the whole record in the browser payload.
+  const derivedStage = order.stage;
+  const attention = order.attention;
   const attentionTone =
     attention.severity === 'blocked' ? 'bg-coral/20 text-coral-dark' :
     attention.severity === 'warn' ? 'bg-[#FFF8E6] text-[#8a6d1a]' :
