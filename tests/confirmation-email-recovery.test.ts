@@ -35,6 +35,7 @@ import {
 import {
   CONFIRMATION_EMAIL_SWEEP_ACTIVATION_PAID_AT,
   CONFIRMATION_EMAIL_SWEEP_ACTIVATION_PAID_AT_MS,
+  CONFIRMATION_EMAIL_SWEEP_MAX_DELIVERIES,
   buildDefaultConfirmationEmailSweepDeps,
   evaluateConfirmationEmailSweepEligibility,
   runConfirmationEmailSweep,
@@ -1266,4 +1267,267 @@ test('the confirmation sweep is actually scheduled and does not stack on the ful
     assert.match(minute, /^\d{1,2}$/, 'the minutes must be fixed values');
     assert.notEqual(Number(minute) % 10, 0, 'do not stack on a fulfillment-sweep tick');
   }
+});
+
+// ── L-4 Slice A2 — the rollback hold ────────────────────────────────────────
+//
+// The durable-confirmation design records a hold on the order record when a
+// dispatch outcome is unknown. A hold is only durable if the path that predates
+// it understands it: if the envelope work is ever rolled back by turning its
+// flag off, the claimability fence is the one thing still standing between a
+// held record and a second confirmation. So this block is unconditional — it is
+// not behind any flag, and it must survive every flag being absent or false.
+
+const HELD_STATES = [
+  'DISPATCH_INTENT_RECORDED',
+  'RECONCILIATION_REQUIRED',
+  'RECONCILED_ACCEPTED',
+  'OWNER_AUTHORIZED_RESEND_SENT',
+] as const;
+
+/** Every flag name the later slices may introduce, pinned off and absent. */
+const FUTURE_FLAGS = [
+  'HSB_CONFIRMATION_ENVELOPE_ENABLED',
+  'HSB_CONFIRMATION_DISPATCH_ENABLED',
+  'HSB_CONFIRMATION_KICKOFF_PAUSED',
+] as const;
+
+function heldOrder(state: (typeof HELD_STATES)[number], overrides: Partial<OrderRecord> = {}): OrderRecord {
+  return makePaidOrder(`ord_held_${state.toLowerCase()}`, {
+    confirmationEmailState: state,
+    confirmationEmailFirstDispatchIntentAt: '2026-09-21T17:00:00.000Z',
+    confirmationEmailFrom: SENDER_PRIMARY,
+    confirmationEmailIdempotencyKey: 'order-confirmation-ord_held-primary-v1',
+    ...overrides,
+  });
+}
+
+test('A2: every held state is refused by claimability with all new flags absent', async () => {
+  await withEnv(Object.fromEntries(FUTURE_FLAGS.map((flag) => [flag, undefined])), () => {
+    for (const state of HELD_STATES) {
+      assert.equal(
+        evaluateConfirmationEmailClaimability(heldOrder(state), {
+          nowMs: NOW_MS,
+          claimStaleMs: CONFIRMATION_EMAIL_CLAIM_STALE_MS,
+        }),
+        'held_for_reconciliation',
+        `${state} must be refused with no flag present at all`,
+      );
+    }
+  });
+});
+
+test('A2: the hold survives every future flag being explicitly false', async () => {
+  await withEnv(Object.fromEntries(FUTURE_FLAGS.map((flag) => [flag, 'false'])), () => {
+    for (const state of HELD_STATES) {
+      assert.equal(
+        evaluateConfirmationEmailClaimability(heldOrder(state), {
+          nowMs: NOW_MS,
+          claimStaleMs: CONFIRMATION_EMAIL_CLAIM_STALE_MS,
+        }),
+        'held_for_reconciliation',
+        `${state} must be refused with the rollback flag off`,
+      );
+    }
+  });
+});
+
+test('A2: the hold is evaluated before ordinary stale-claim recovery', () => {
+  // A claim abandoned well past the stale window is exactly the case the
+  // recovery path exists to reclaim. Past dispatch intent it must not be.
+  const stale = heldOrder('DISPATCH_INTENT_RECORDED', {
+    emailResendClaimId: 'claim_abandoned',
+    emailResendClaimKind: 'order_confirmation',
+    emailResendClaimAt: new Date(NOW_MS - CONFIRMATION_EMAIL_CLAIM_STALE_MS * 10).toISOString(),
+  });
+  assert.equal(
+    evaluateConfirmationEmailClaimability(stale, {
+      nowMs: NOW_MS,
+      claimStaleMs: CONFIRMATION_EMAIL_CLAIM_STALE_MS,
+    }),
+    'held_for_reconciliation',
+  );
+});
+
+test('A2: states outside the hold set keep exactly their existing disposition', () => {
+  const cfg = { nowMs: NOW_MS, claimStaleMs: CONFIRMATION_EMAIL_CLAIM_STALE_MS };
+  for (const state of ['SNAPSHOTTED', 'PROVABLY_PRE_DISPATCH_FAILED']) {
+    assert.equal(
+      evaluateConfirmationEmailClaimability(
+        makePaidOrder('ord_open', { confirmationEmailState: state } as Partial<OrderRecord>),
+        cfg,
+      ),
+      null,
+      `${state} is not a hold and must stay claimable`,
+    );
+  }
+  // A3-3 Requirement R2 (architecture §3.9, finding F-8). This assertion
+  // encoded the defect R2 exists to remove: `ACCEPTED` is deliberately not a
+  // member of the held set, so before R2 the receipt check was the ONLY thing
+  // between an `ACCEPTED` record with no `confirmationEmailSentAt` — reachable
+  // through a partial or hand-edited record — and a second confirmation in the
+  // buyer's inbox.
+  //
+  // The A2 property this test exists for is unchanged: `ACCEPTED` is still not a
+  // hold, and the reason proves it — `already_sent`, not
+  // `held_for_reconciliation`. Only this one state's verdict moves, from
+  // claimable to refused.
+  assert.equal(
+    evaluateConfirmationEmailClaimability(
+      makePaidOrder('ord_accepted', { confirmationEmailState: 'ACCEPTED' } as Partial<OrderRecord>),
+      cfg,
+    ),
+    'already_sent',
+    'R2: ACCEPTED is refused on the state itself, ahead of the receipt check',
+  );
+  assert.equal(evaluateConfirmationEmailClaimability(makePaidOrder('ord_plain'), cfg), null);
+});
+
+test('A2: a record with no confirmation state at all is untouched by the hold', () => {
+  const cfg = { nowMs: NOW_MS, claimStaleMs: CONFIRMATION_EMAIL_CLAIM_STALE_MS };
+  for (const state of [null, undefined, '', 'reconciliation_required', 'nonsense']) {
+    assert.equal(
+      evaluateConfirmationEmailClaimability(
+        makePaidOrder('ord_stateless', { confirmationEmailState: state } as Partial<OrderRecord>),
+        cfg,
+      ),
+      null,
+      `state=${String(state)} must not be read as a hold`,
+    );
+  }
+});
+
+test('A2: the existing fences still win, so no current disposition changed', () => {
+  const cfg = { nowMs: NOW_MS, claimStaleMs: CONFIRMATION_EMAIL_CLAIM_STALE_MS };
+  assert.equal(
+    evaluateConfirmationEmailClaimability(
+      heldOrder('RECONCILIATION_REQUIRED', { paymentStatus: 'pending' }),
+      cfg,
+    ),
+    'not_paid',
+  );
+  assert.equal(
+    evaluateConfirmationEmailClaimability(
+      heldOrder('RECONCILIATION_REQUIRED', { refundedAt: '2026-09-22T00:00:00.000Z' }),
+      cfg,
+    ),
+    'refunded',
+    'the refund fence must keep reporting itself',
+  );
+  assert.equal(
+    evaluateConfirmationEmailClaimability(
+      heldOrder('RECONCILED_ACCEPTED', { confirmationEmailSentAt: '2026-09-22T00:00:00.000Z' }),
+      cfg,
+    ),
+    'already_sent',
+  );
+});
+
+test('A2: delivery on a held record is blocked and issues no provider call', async () => {
+  await localStore(async () => {
+    for (const state of HELD_STATES) {
+      const order = heldOrder(state);
+      await persistOrder(order);
+      let sends = 0;
+
+      const outcome = await deliverOrderConfirmationEmail(order.id, {
+        send: async () => {
+          sends += 1;
+          throw new Error('a held record must never reach the provider');
+        },
+        now: () => NOW_MS,
+      });
+
+      assert.deepEqual(outcome, { status: 'blocked', reason: 'held_for_reconciliation' });
+      assert.equal(sends, 0, `${state} reached the provider`);
+    }
+  });
+});
+
+test('A2: a held record is left byte-identical by a blocked delivery', async () => {
+  await localStore(async () => {
+    const order = heldOrder('RECONCILIATION_REQUIRED');
+    await persistOrder(order);
+    const before = JSON.stringify(await getOrderAuthoritative(order.id));
+
+    await deliverOrderConfirmationEmail(order.id, {
+      send: async () => { throw new Error('unreachable'); },
+      now: () => NOW_MS,
+    });
+
+    assert.equal(JSON.stringify(await getOrderAuthoritative(order.id)), before, 'the hold must not mutate');
+  });
+});
+
+test('A2: 1000 sweep ticks over a full hold queue issue zero provider calls', async () => {
+  await localStore(async () => {
+    const held = HELD_STATES.map((state) => heldOrder(state));
+    for (const order of held) await persistOrder(order);
+    let sends = 0;
+
+    for (let tick = 0; tick < 1000; tick += 1) {
+      const summary = await runConfirmationEmailSweep({
+        listOrders: async () => {
+          const loaded = await Promise.all(held.map((order) => getOrderAuthoritative(order.id)));
+          return loaded.filter((order): order is OrderRecord => order !== null);
+        },
+        deliver: (orderId) => deliverOrderConfirmationEmail(orderId, {
+          send: async () => {
+            sends += 1;
+            throw new Error('a swept hold must never reach the provider');
+          },
+          now: () => NOW_MS,
+        }),
+        now: () => NOW_MS,
+        graceMs: 0,
+        claimStaleMs: CONFIRMATION_EMAIL_CLAIM_STALE_MS,
+        activationPaidAtMs: ACTIVATION_MS,
+        log: () => {},
+        errorLog: () => {},
+        maxDeliveries: CONFIRMATION_EMAIL_SWEEP_MAX_DELIVERIES,
+      });
+      assert.equal(summary.eligible, 0, `tick ${tick} found a held record eligible`);
+      assert.equal(summary.sent, 0, `tick ${tick} sent a held record`);
+    }
+
+    assert.equal(sends, 0);
+    for (const order of held) {
+      const latest = await getOrderAuthoritative(order.id);
+      assert.equal(latest?.confirmationEmailSentAt ?? null, null);
+      assert.equal(latest?.emailResendClaimId ?? null, null, 'a hold is never even claimed');
+    }
+  });
+});
+
+test('A2: the sweep reports the hold as its own ineligibility reason', () => {
+  for (const state of HELD_STATES) {
+    assert.deepEqual(
+      evaluateConfirmationEmailSweepEligibility(heldOrder(state), {
+        nowMs: NOW_MS,
+        graceMs: 0,
+        claimStaleMs: CONFIRMATION_EMAIL_CLAIM_STALE_MS,
+        activationPaidAtMs: ACTIVATION_MS,
+      }),
+      { eligible: false, reason: 'held_for_reconciliation' },
+    );
+  }
+});
+
+test('A2: the hold reads the shared state model, so the fence cannot drift from it', () => {
+  const source = readFileSync(new URL('../src/lib/confirmation-email-delivery.ts', import.meta.url), 'utf8');
+  assert.match(
+    source,
+    /isConfirmationEmailHeldState/,
+    'the held set must come from the transition model, not a second hand-kept list',
+  );
+  const evaluate = source.slice(source.indexOf('export function evaluateConfirmationEmailClaimability'));
+  const body = evaluate.slice(0, evaluate.indexOf('\nexport '));
+  // Comments explain the rule; only executable text can make it conditional.
+  const code = body.replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(code, /process\.env|getEnv|isEnabled|Flag\b/, 'the hold may not be conditional');
+  assert.doesNotMatch(code, /if \([^)]*&&[^)]*\) return 'held_for_reconciliation'/, 'no extra guard');
+  assert.ok(
+    code.indexOf('held_for_reconciliation') < code.indexOf('emailResendClaimId'),
+    'the hold must be evaluated before ordinary stale-claim recovery',
+  );
 });
