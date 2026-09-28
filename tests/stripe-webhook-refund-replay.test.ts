@@ -81,7 +81,7 @@ test('webhook source: fulfillment is scheduled via setImmediate+after helper (re
 
 test('webhook source: payment write is awaited before responding (must commit before 200)', () => {
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
-  assert.match(src, /const\s+updated\s*=\s*await\s+updateOrderPayment\(/);
+  assert.match(src, /const\s+settlement\s*=\s*await\s+settleOrderPayment\(/);
 });
 
 test('webhook source: verifies exact settlement facts and returns retryable conflicts', () => {

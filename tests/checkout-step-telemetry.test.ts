@@ -399,9 +399,9 @@ test('adversarial: fake PII in every free-form field never reaches any emitted s
   const gtagCalls: unknown[][] = [];
   const storage = new Map<string, string>();
   const mockWindow = {
-    location: new URL('https://herostorybooks.com/checkout?utm_source=founder&utm_medium=warm-intro&utm_campaign=friends&ref=zqxfounder'),
+    location: new URL('https://herostorybooks.com/checkout?utm_source=newsletter&utm_medium=email&utm_campaign=launch&ref=zqxfounder'),
     gtag: (...args: unknown[]) => gtagCalls.push(args),
-    sessionStorage: {
+    localStorage: {
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => storage.set(key, value),
     },
@@ -413,6 +413,8 @@ test('adversarial: fake PII in every free-form field never reaches any emitted s
   Object.defineProperty(globalThis, 'document', { configurable: true, value: { referrer: '' } });
   try {
     const { track } = await import('../src/lib/analytics.ts');
+    const { recordBrowserAttributionLanding } = await import('../src/lib/attribution-contract.ts');
+    recordBrowserAttributionLanding();
     const deduper = createCheckoutStepViewDeduper();
     for (const step of progress.steps) {
       const props = checkoutStepEventProps(step.id, form.bookFormat);
@@ -444,9 +446,10 @@ test('adversarial: fake PII in every free-form field never reaches any emitted s
       for (const key of Object.keys(event)) {
         assert.ok(ALLOWED_EVENT_KEYS.has(key), `unexpected event field "${key}" on ${String(event.event)}`);
       }
-      assert.equal(event.utm_source, 'founder', 'first-touch attribution must survive');
-      assert.equal(event.utm_medium, 'warm-intro');
-      assert.equal(event.ref, 'zqxfounder');
+      assert.equal(event.utm_source, 'newsletter', 'governed attribution must survive');
+      assert.equal(event.utm_medium, 'email');
+      assert.equal(event.ref, undefined);
+      assert.doesNotMatch(serialized, /zqxfounder|utm_term|campaign_term/);
       assert.equal(event.pathname, '/checkout');
       assert.equal(event.total_steps, 4);
       assert.equal(event.selected_format, 'premium');

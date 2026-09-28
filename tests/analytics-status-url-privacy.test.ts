@@ -123,14 +123,14 @@ test('the default page-location path is sanitized when no pathname is supplied',
   });
 });
 
-test('a status URL arriving as the referrer is collapsed to its route template', async () => {
+test('a status URL arriving as the referrer is reduced to its origin', async () => {
   await withAnalytics(
     { href: 'https://herostorybooks.com/', referrer: STATUS_URL },
     async ({ calls }, { trackPageView }) => {
       trackPageView('/');
 
       const params = eventParams(calls, 'page_view');
-      assert.equal(params.page_referrer, 'https://herostorybooks.com/status/[orderId]');
+      assert.equal(params.page_referrer, 'https://herostorybooks.com');
       assertNoBearerMaterial(JSON.stringify(calls), 'gtag payload');
     },
   );
@@ -185,6 +185,8 @@ test('non-sensitive routes and event names are preserved verbatim', async () => 
       referrer: 'https://herostorybooks.com/gifts/birthday',
     },
     async ({ calls, window }, { track, trackPageView }) => {
+      const { recordBrowserAttributionLanding } = await import('../src/lib/attribution-contract.ts');
+      recordBrowserAttributionLanding();
       trackPageView('/checkout');
       trackPageView('/gifts/birthday');
       trackPageView('/');
@@ -199,7 +201,7 @@ test('non-sensitive routes and event names are preserved verbatim', async () => 
       const checkoutParams = eventParams(calls, 'begin_checkout');
       assert.equal(checkoutParams.pathname, '/checkout');
       assert.equal(checkoutParams.page_location, 'https://herostorybooks.com/checkout');
-      assert.equal(checkoutParams.page_referrer, 'https://herostorybooks.com/gifts/birthday');
+      assert.equal(checkoutParams.page_referrer, 'https://herostorybooks.com');
       assert.equal(checkoutParams.utm_source, 'telegram');
       assert.equal(window.hsbEvents?.length, 5);
     },

@@ -42,6 +42,7 @@ import {
   type CreateIfAbsentOrderResult,
   type PreparedIntakeOrderBindingDependencies,
 } from './checkout-intake-order-binding.ts';
+import type { CheckoutRequestAnalytics } from './checkout-analytics-context.ts';
 import type { DirectIntakeOrderRequest } from './checkout-direct-order-request.ts';
 import { abortIntakeFinalization, finalizeIntakeSelection } from './checkout-finalize.ts';
 import { markIntakeFinalized, type IntakeStore } from './checkout-intake.ts';
@@ -85,6 +86,7 @@ export interface DirectIntakeCheckoutParams {
   stripeProductId: string;
   baseUrl: string;
   gaClientId: string | null;
+  analytics?: CheckoutRequestAnalytics | null;
 }
 
 export type DirectIntakeCheckoutResult =
@@ -337,6 +339,7 @@ export async function runDirectIntakeCheckout(
     stripeProductId: params.stripeProductId,
     baseUrl: params.baseUrl,
     gaClientId: params.gaClientId,
+    analytics: params.analytics ?? null,
   }, {
     createCheckoutSession: deps.createCheckoutSession,
     retrieveCheckoutSession: deps.retrieveCheckoutSession,

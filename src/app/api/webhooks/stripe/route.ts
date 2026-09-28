@@ -1,7 +1,7 @@
 import { NextResponse, after } from 'next/server.js';
 import Stripe from 'stripe';
 
-import { getOrder, isPrintFormat, recordPaymentSettlementConflict, updateOrderPayment, type ShippingAddress } from '../../../../lib/orders.ts';
+import { getOrder, isPrintFormat, recordPaymentSettlementConflict, settleOrderPayment, updateOrderPayment, type ShippingAddress } from '../../../../lib/orders.ts';
 import {
   processStripePaymentTerminalEvent,
   recordUnmatchedPaymentSettlement,
@@ -12,7 +12,7 @@ import { scheduleOrderConfirmationEmail } from '../../../../lib/order-confirmati
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '../../../../lib/stripe-env.ts';
 import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment, recordPrintUpgradeSettlementConflict } from '../../../../lib/print-upgrades.ts';
 import { isExactSettledCheckoutSession } from '../../../../lib/checkout-session-confirmation.ts';
-import { scheduleGa4Purchase } from '../../../../lib/ga4-purchase.ts';
+import { scheduleTrustedPurchaseAnalytics } from '../../../../lib/purchase-analytics.ts';
 import { recordShadowCheckoutSettlement } from '../../../../lib/hsb-control-plane-runtime/shadow-settlement.ts';
 
 export const runtime = 'nodejs';
@@ -183,15 +183,14 @@ export async function POST(request: Request) {
           `Stripe webhook: recorded print upgrade for ${upgradeOrderId} session=${session.id}; ` +
             `manual print-go still required after QA`,
         );
-        scheduleGa4Purchase({
+        scheduleTrustedPurchaseAnalytics({
           transactionId: session.id,
-          amountCents: session.amount_total ?? 0,
+          amountCents: session.amount_total,
           currency: session.currency,
-          itemId: `print_upgrade_${targetFormat}`,
-          itemName: `Print upgrade: ${targetFormat}`,
           paymentStatus: session.payment_status,
-          clientId: session.metadata?.gaClientId,
-        }, after);
+          itemId: `print_upgrade_${targetFormat}`,
+          metadata: session.metadata,
+        }, { afterImpl: after });
       } catch (err) {
         console.error(`Stripe webhook: failed to process print upgrade for ${upgradeOrderId}:`, err);
         return NextResponse.json({ error: 'Processing failed' }, { status: 500 });
@@ -296,7 +295,7 @@ export async function POST(request: Request) {
           console.warn(`Stripe webhook: session ${session.id} already processed — payment state unchanged`);
           // Shadow seam (exact already-paid replay). Best-effort, default-off,
           // non-authoritative evidence only. It never throws and never changes
-          // the acknowledgement, email, GA4, or fulfillment behaviour below.
+          // the acknowledgement, email, or fulfillment behaviour below.
           //
           // A replay can land here while the order simultaneously carries a
           // refund marker, or while its authoritative settled amount disagrees
@@ -317,15 +316,8 @@ export async function POST(request: Request) {
               currency: session.currency ?? '',
             });
           }
-          scheduleGa4Purchase({
-            transactionId: session.id,
-            amountCents: session.amount_total ?? 0,
-            currency: session.currency,
-            itemId: `book_${replayOrder.bookFormat}`,
-            itemName: `HeroStoryBooks ${replayOrder.bookFormat}`,
-            paymentStatus: session.payment_status,
-            clientId: session.metadata?.gaClientId,
-          }, after);
+          // No purchase analytics on a replay: the purchase belongs to the
+          // durable pending → paid transition below, never to a redelivery.
           scheduleOrderConfirmationEmail(replayOrder, { afterImpl: after });
           if (!replayOrder.fulfillmentStatus || replayOrder.fulfillmentStatus === 'not_started') {
             // Repair path: a prior webhook/replay marked the order paid but
@@ -366,13 +358,14 @@ export async function POST(request: Request) {
       }
 
       const shipping = extractShipping(session);
-      const updated = await updateOrderPayment(orderId, 'paid', {
+      const settlement = await settleOrderPayment(orderId, {
         stripeSessionId: session.id,
         ...(extractPaymentIntentId(session) ? { stripePaymentIntentId: extractPaymentIntentId(session) } : {}),
         settledAmountCents: session.amount_total!,
         ...(shipping ? { shippingAddress: shipping } : {}),
       });
 
+      const updated = settlement?.order;
       if (!updated) {
         const blocked = await getOrder(orderId);
         if (blocked) {
@@ -414,15 +407,17 @@ export async function POST(request: Request) {
       });
 
       scheduleOrderConfirmationEmail(updated, { afterImpl: after });
-      scheduleGa4Purchase({
+      // The trusted purchase: exact settlement verified above, durable
+      // transition committed. Deferred, typed and redacted; it can never
+      // change this acknowledgement, the order, or fulfillment.
+      if (settlement?.transitionedToPaid) scheduleTrustedPurchaseAnalytics({
         transactionId: session.id,
-        amountCents: session.amount_total ?? 0,
+        amountCents: session.amount_total,
         currency: session.currency,
-        itemId: `book_${updated.bookFormat}`,
-        itemName: `HeroStoryBooks ${updated.bookFormat}`,
         paymentStatus: session.payment_status,
-        clientId: session.metadata?.gaClientId,
-      }, after);
+        itemId: `book_${updated.bookFormat}`,
+        metadata: session.metadata,
+      }, { afterImpl: after });
 
       // Webhook contract:
       //   - The payment write (above) is awaited so the order is durably

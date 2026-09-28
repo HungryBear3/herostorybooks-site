@@ -10,8 +10,17 @@ export default class Stripe {
     this.checkout = {
       sessions: {
         create: async (params) => {
-          record('stripe', 'checkout.sessions.create', { orderId: params?.client_reference_id ?? null });
-          return { id: 'cs_test_journalled', url: 'https://stripe.test/session', status: 'open' };
+          record('stripe', 'checkout.sessions.create', {
+            orderId: params?.client_reference_id ?? null,
+            metadata: params?.metadata ?? null,
+          });
+          return {
+            id: 'cs_test_journalled',
+            url: 'https://stripe.test/session',
+            status: 'open',
+            payment_status: 'unpaid',
+            payment_intent: null,
+          };
         },
         retrieve: async (id) => {
           record('stripe', 'checkout.sessions.retrieve', { id });

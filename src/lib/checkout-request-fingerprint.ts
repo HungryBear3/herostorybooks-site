@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 
+import { CHECKOUT_ANALYTICS_FORM_FIELDS } from './checkout-analytics-context.ts';
 import { CHECKOUT_FINGERPRINT_EXCLUDED_FIELDS } from './checkout-direct-order-request.ts';
 import type { FinalizedSelectionEntry } from './checkout-intake.ts';
 import type { OrderRecord } from './orders.ts';
@@ -79,11 +80,23 @@ async function fingerprintForm(
 }
 
 /**
+ * Analytics-only fields describe the visit, not the purchase. A retry of the
+ * same attempt can legitimately carry a later GA session or an advanced last
+ * touch, and must still resume the same durable order and lease.
+ * `gaClientId` predates this and keeps its place, so no in-flight attempt
+ * changes identity across a deploy.
+ */
+const CHECKOUT_REQUEST_FINGERPRINT_EXCLUDED_FIELDS: ReadonlySet<string> = new Set([
+  ...CHECKOUT_FINGERPRINT_EXCLUDED_FIELDS,
+  ...CHECKOUT_ANALYTICS_FORM_FIELDS,
+]);
+
+/**
  * Deterministic checkout identity. Bearer capability fields are deliberately
  * excluded: they authorize access but are not part of what the buyer ordered.
  */
 export async function checkoutRequestFingerprint(form: CheckoutFingerprintFormLike): Promise<string> {
-  return fingerprintForm(form, CHECKOUT_FINGERPRINT_EXCLUDED_FIELDS);
+  return fingerprintForm(form, CHECKOUT_REQUEST_FINGERPRINT_EXCLUDED_FIELDS);
 }
 
 function canonicalJsonValue(value: unknown): unknown {
