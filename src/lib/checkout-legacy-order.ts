@@ -35,6 +35,7 @@
  * inputs. Two such workers racing is the ordinary concurrent-retry case the
  * machine already converges.
  */
+import type { CheckoutRequestAnalytics } from './checkout-analytics-context.ts';
 import {
   hasCheckoutProviderEvidence,
   type OrderRecord,
@@ -57,6 +58,7 @@ export interface LegacyCheckoutEntrypointParams {
   stripeProductId: string;
   baseUrl: string;
   gaClientId: string | null;
+  analytics?: CheckoutRequestAnalytics | null;
 }
 
 export type LegacyCheckoutEntrypointResult =
@@ -136,6 +138,7 @@ export async function resumeOrContinueLegacyCheckout(
     stripeProductId: params.stripeProductId,
     baseUrl: params.baseUrl,
     gaClientId: params.gaClientId,
+    analytics: params.analytics ?? null,
   }, deps);
 
   if (provisioned.status === 'refused') return provisioned;

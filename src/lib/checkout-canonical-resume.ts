@@ -1,3 +1,4 @@
+import type { CheckoutRequestAnalytics } from './checkout-analytics-context.ts';
 import {
   getOrderAuthoritative,
   hasCheckoutProviderEvidence,
@@ -27,6 +28,7 @@ export async function resumeCanonicalCheckoutSession(input: {
   stripeProductId: string;
   baseUrl: string;
   gaClientId: string | null;
+  analytics?: CheckoutRequestAnalytics | null;
 }, deps: CheckoutSessionProvisionDeps): Promise<CanonicalCheckoutResumeResult> {
   const canonical = await getOrderAuthoritative(input.orderId);
   if (!canonical || !hasCheckoutProviderEvidence(canonical)) {
@@ -68,6 +70,7 @@ export async function resumeCanonicalCheckoutSession(input: {
     stripeProductId: input.stripeProductId,
     baseUrl: input.baseUrl,
     gaClientId: input.gaClientId,
+    analytics: input.analytics ?? null,
   }, deps);
 
   if (result.status === 'refused') return result;

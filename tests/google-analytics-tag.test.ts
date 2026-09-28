@@ -62,7 +62,7 @@ test('runtime payload strips PII and preserves first-touch campaign attribution 
       'https://herostorybooks.com/checkout?childName=PrivateName&utm_source=telegram&utm_medium=social&utm_campaign=launch',
     ),
     gtag: (...args: unknown[]) => calls.push(args),
-    sessionStorage: {
+    localStorage: {
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => storage.set(key, value),
     },
@@ -83,6 +83,8 @@ test('runtime payload strips PII and preserves first-touch campaign attribution 
 
   try {
     const { track, trackPageView } = await import('../src/lib/analytics.ts');
+    const { recordBrowserAttributionLanding } = await import('../src/lib/attribution-contract.ts');
+    recordBrowserAttributionLanding();
     trackPageView('/checkout');
     mockWindow.location = new URL('https://herostorybooks.com/thank-you');
     track('purchase_intent', { bookFormat: 'digital' });
@@ -93,7 +95,7 @@ test('runtime payload strips PII and preserves first-touch campaign attribution 
     assert.ok(eventCall);
     const eventParams = eventCall[2] as Record<string, unknown>;
     assert.equal(eventParams.page_location, 'https://herostorybooks.com/checkout');
-    assert.equal(eventParams.page_referrer, 'https://herostorybooks.com/');
+    assert.equal(eventParams.page_referrer, 'https://herostorybooks.com');
     assert.equal(eventParams.pathname, '/checkout');
 
     const purchaseCall = calls.find(
@@ -112,17 +114,17 @@ test('runtime payload strips PII and preserves first-touch campaign attribution 
     assert.ok(directVisitCall);
     assert.equal((directVisitCall[2] as Record<string, unknown>).page_referrer, '');
 
-    const campaignSetCall = calls.find(
-      (call) =>
-        call[0] === 'set' &&
-        (call[1] as Record<string, unknown>).campaign_source === 'telegram',
-    );
-    assert.ok(campaignSetCall);
-    assert.deepEqual(campaignSetCall[1], {
-      campaign_source: 'telegram',
-      campaign_medium: 'social',
-      campaign_name: 'launch',
-    });
+    assert.equal(calls.some((call) => call[0] === 'set'), false);
+    for (const call of calls.filter((call) => call[0] === 'event')) {
+      const campaign = Object.fromEntries(Object.entries(call[2] as Record<string, unknown>)
+        .filter(([key]) => key.startsWith('campaign_')));
+      assert.deepEqual(campaign, {
+        campaign_source: 'telegram',
+        campaign_medium: 'social',
+        campaign_name: 'launch',
+        campaign_content: '',
+      });
+    }
 
     const serialized = JSON.stringify(calls);
     assert.match(serialized, /page_view/);

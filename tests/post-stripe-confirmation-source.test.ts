@@ -26,7 +26,7 @@ test('confirmation email sends under one immutable, order-scoped Resend identity
 });
 
 test('webhook durably writes payment but defers confirmation email and fulfillment', () => {
-  assert.match(webhookRoute, /const\s+updated\s*=\s*await\s+updateOrderPayment\(/);
+  assert.match(webhookRoute, /const\s+settlement\s*=\s*await\s+settleOrderPayment\(/);
   assert.doesNotMatch(webhookRoute, /await\s+sendOrderConfirmationEmail\(updated\)/);
   assert.match(webhookRoute, /scheduleOrderConfirmationEmail\(updated,\s*\{\s*afterImpl:\s*after\s*\}\)/);
   assert.match(webhookRoute, /scheduleFulfillmentKickoff\(orderId,\s*\{\s*afterImpl:\s*after\s*\}\)/);

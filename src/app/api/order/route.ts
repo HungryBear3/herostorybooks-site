@@ -11,6 +11,7 @@ import {
 } from '@/lib/orders';
 import { markRecoveryLeadConverted } from '@/lib/recovery';
 import { getRequiredStripeSecretKey } from '@/lib/stripe-env';
+import { checkoutAnalyticsStripeMetadata } from '@/lib/checkout-analytics-context';
 import { type DirectCheckoutSessionRequest } from '@/lib/checkout-direct-order';
 import { createVercelIntakeStore } from '@/lib/checkout-intake';
 import { handleCheckoutOrderPost } from '@/lib/checkout-order-route-handler';
@@ -50,7 +51,7 @@ async function retrieveDirectCheckoutSession(sessionId: string) {
 }
 
 async function createDirectCheckoutSession(request: DirectCheckoutSessionRequest) {
-  const { order, stripeProductId, baseUrl, gaClientId, idempotencyKey } = request;
+  const { order, stripeProductId, baseUrl, gaClientId, analytics, idempotencyKey } = request;
   // The success URL lands in browser history, referrer headers, and anything
   // that records page location. It carries opaque reconciliation ids only —
   // the thank-you page reads the name, format, and email off the order record.
@@ -65,6 +66,8 @@ async function createDirectCheckoutSession(request: DirectCheckoutSessionRequest
       ...(gaClientId ? { gaClientId } : {}),
       ...(order.checkoutTracking?.cohort ? { cohort: order.checkoutTracking.cohort } : {}),
       ...(order.checkoutTracking?.invite ? { invite: order.checkoutTracking.invite } : {}),
+      // Bounded attribution + GA session only; re-validated by the webhook.
+      ...checkoutAnalyticsStripeMetadata({ attribution: order.checkoutAttribution, analytics }),
     },
     payment_intent_data: { metadata: { orderId: order.id } },
     line_items: [{
