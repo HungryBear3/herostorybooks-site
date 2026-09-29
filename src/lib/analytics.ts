@@ -5,6 +5,7 @@ import type { CoverVariant } from './cover-variant';
 import { sanitizeAnalyticsPath, sanitizeAnalyticsUrl } from './analytics-path.ts';
 import { track as trackVercelEvent } from '@vercel/analytics';
 import { currentBrowserCampaignParams } from './attribution-contract.ts';
+import { projectBrowserEventParams } from './analytics-event-contract.ts';
 
 type GtagFn = {
   (command: 'config' | 'event', target: string, params?: Record<string, unknown>): void;
@@ -27,7 +28,10 @@ export type CoverEventName =
 export function trackCoverEvent(name: CoverEventName, params: Record<string, unknown>): void {
   if (typeof window === 'undefined') return;
   try {
-    const eventParams = governedProps(params);
+    // Only the event contract's declared params survive; an undeclared event is not sent.
+    const declared = projectBrowserEventParams(name, params);
+    if (declared === null) return;
+    const eventParams = governedProps(declared);
     if (typeof window.gtag === 'function') {
       window.gtag('event', name, googleSafeProps(eventParams));
     }
@@ -229,14 +233,18 @@ function isServerOnlyEvent(event: unknown): boolean {
 
 /**
  * Push an HSB event. Safe to call anywhere (server, client, missing
- * globals). Returns the pushed record, or null on the server and for a
- * server-only event name.
+ * globals). Returns the pushed record, or null on the server, for a
+ * server-only event name, and for an event the contract does not declare.
  */
 export function track(
   event: HsbEventName,
   props: Record<string, string | number | boolean | null | undefined> = {},
 ): HsbEventRecord | null {
   if (typeof window === 'undefined' || isServerOnlyEvent(event)) return null;
+  // The checked-in event contract is the vendor boundary: only its declared
+  // params with in-vocabulary values survive (src/lib/analytics-event-contract.ts).
+  const declared = projectBrowserEventParams(event, props);
+  if (declared === null) return null;
   const pathname =
     typeof window.location !== 'undefined'
       ? sanitizeAnalyticsPath(window.location.pathname ?? '')
@@ -249,7 +257,7 @@ export function track(
         ? `${window.location.origin ?? ''}${pathname ?? ''}`
         : undefined,
     pathname,
-    ...governedProps(props),
+    ...governedProps(declared),
   };
   // A caller-supplied pathname (AnalyticsPageView forwards usePathname()) lands
   // after the spread, so the merged values get sanitized rather than only the

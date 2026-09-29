@@ -23,6 +23,7 @@
  * deterministic transaction_id, so GA4's transaction dedup covers the one
  * remaining window — two concurrent first deliveries of the same event.
  */
+import { GA4_PURCHASE_ITEMS, GA4_TRANSACTION_ID_PATTERN } from './analytics-event-contract.ts';
 import { attributionFromStripeMetadata, type AttributionState } from './attribution-contract.ts';
 import { sanitizeGaClientId, sanitizeGaSessionId, sanitizeGaSessionNumber } from './ga-cookie-identity.ts';
 import { Ga4PurchaseError, sendGa4Purchase, type Ga4PurchaseFailureCode } from './ga4-purchase.ts';
@@ -67,15 +68,10 @@ export interface SchedulePurchaseAnalyticsDeps extends PurchaseAnalyticsDeps {
   log?: (line: string) => void;
 }
 
-const CHECKOUT_SESSION_ID_RE = /^cs_(?:test|live)_[A-Za-z0-9]{1,255}$/;
+// The transaction id rule and item catalog belong to the checked-in event contract.
+const CHECKOUT_SESSION_ID_RE = GA4_TRANSACTION_ID_PATTERN;
 const MAX_AMOUNT_CENTS = 1_000_000;
-const PURCHASE_ITEMS: Readonly<Record<string, string>> = Object.freeze({
-  book_digital: 'HeroStoryBooks digital',
-  book_classic: 'HeroStoryBooks classic',
-  book_premium: 'HeroStoryBooks premium',
-  print_upgrade_classic: 'Print upgrade: classic',
-  print_upgrade_premium: 'Print upgrade: premium',
-});
+const PURCHASE_ITEMS = GA4_PURCHASE_ITEMS;
 
 const NO_ANALYTICS: TrustedPurchaseAnalytics = Object.freeze({
   gaClientId: null,

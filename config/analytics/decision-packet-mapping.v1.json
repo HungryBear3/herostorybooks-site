@@ -1,0 +1,232 @@
+{
+  "schema": "hsb.decision_packet_mapping",
+  "schema_version": 1,
+  "source": {
+    "schema": "hsb.decision_export.ga4_behavior",
+    "schema_version": 1
+  },
+  "target": {
+    "schema": "decision_packet.ga4_behavior",
+    "schema_version": 1,
+    "reference_commit": "d64d095"
+  },
+  "header_fields": {
+    "schema_version": "schema_version",
+    "data_origin": "data_origin",
+    "business": "business",
+    "timezone": "timezone",
+    "generated_at": "generated_at",
+    "coverage": "coverage",
+    "attested_complete_ranges": "attested_complete_ranges",
+    "quality": "quality"
+  },
+  "row_fields": {
+    "date": "date",
+    "source": "source",
+    "medium": "medium",
+    "campaign": "campaign",
+    "content": "content",
+    "landing_path": "landing_path",
+    "sessions": "sessions",
+    "checkout_starts": "checkout_starts",
+    "purchase_events": "purchase_events"
+  },
+  "value_maps": {
+    "source": {
+      "facebook": {
+        "to": "facebook"
+      },
+      "instagram": {
+        "to": "instagram"
+      },
+      "google": {
+        "to": "google"
+      },
+      "bing": {
+        "to": "bing"
+      },
+      "newsletter": {
+        "to": "newsletter"
+      },
+      "pinterest": {
+        "to": "pinterest"
+      },
+      "youtube": {
+        "to": "youtube"
+      },
+      "tiktok": {
+        "to": "tiktok"
+      },
+      "telegram": {
+        "blocked": "PACKET_SOURCE_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "direct": {
+        "to": "direct"
+      },
+      "not_set": {
+        "to": "not_set"
+      },
+      "other": {
+        "to": "other"
+      }
+    },
+    "medium": {
+      "paid_social": {
+        "to": "paid_social"
+      },
+      "social": {
+        "to": "social"
+      },
+      "email": {
+        "to": "email"
+      },
+      "cpc": {
+        "to": "cpc"
+      },
+      "organic": {
+        "to": "organic"
+      },
+      "referral": {
+        "to": "referral"
+      },
+      "none": {
+        "to": "none"
+      },
+      "not_set": {
+        "to": "not_set"
+      },
+      "other": {
+        "to": "other"
+      }
+    },
+    "campaign": {
+      "governed": {
+        "blocked": "PACKET_CAMPAIGN_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "none": {
+        "to": "none"
+      },
+      "not_set": {
+        "to": "not_set"
+      },
+      "other": {
+        "to": "other"
+      }
+    },
+    "content": {
+      "video-a": {
+        "to": "vid_a"
+      },
+      "video-b": {
+        "to": "vid_b"
+      },
+      "video-c": {
+        "blocked": "PACKET_CONTENT_VARIANT_MISSING",
+        "fallback": "other"
+      },
+      "image-a": {
+        "to": "img_a"
+      },
+      "image-b": {
+        "to": "img_b"
+      },
+      "image-c": {
+        "blocked": "PACKET_CONTENT_VARIANT_MISSING",
+        "fallback": "other"
+      },
+      "carousel-a": {
+        "to": "car_a"
+      },
+      "carousel-b": {
+        "to": "car_b"
+      },
+      "carousel-c": {
+        "blocked": "PACKET_CONTENT_VARIANT_MISSING",
+        "fallback": "other"
+      },
+      "text-a": {
+        "to": "txt_a"
+      },
+      "text-b": {
+        "to": "txt_b"
+      },
+      "text-c": {
+        "blocked": "PACKET_CONTENT_VARIANT_MISSING",
+        "fallback": "other"
+      },
+      "not_set": {
+        "to": "not_set"
+      },
+      "other": {
+        "to": "other"
+      }
+    },
+    "landing_path": {
+      "/": {
+        "to": "/"
+      },
+      "/about": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "/pricing": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "/samples": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "/gifts": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "/gifts/birthdays": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "/gifts/grandparents": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "/gifts/siblings": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "/gifts/pets": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "/gifts/holidays": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "/gifts/child-as-hero": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "/checkout": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "/create/your-memory": {
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+        "fallback": "other"
+      },
+      "not_set": {
+        "to": "not_set"
+      },
+      "other": {
+        "to": "other"
+      }
+    }
+  },
+  "extensions_required": [
+    "PACKET_CAMPAIGN_VOCABULARY_MISSING",
+    "PACKET_CONTENT_VARIANT_MISSING",
+    "PACKET_LANDING_PATH_VOCABULARY_MISSING",
+    "PACKET_SOURCE_VOCABULARY_MISSING"
+  ]
+}

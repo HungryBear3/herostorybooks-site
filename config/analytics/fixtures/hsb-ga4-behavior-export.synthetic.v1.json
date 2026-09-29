@@ -1,0 +1,256 @@
+{
+  "schema": "hsb.decision_export.ga4_behavior",
+  "schema_version": 1,
+  "data_origin": "synthetic_fixture",
+  "business": "hsb",
+  "timezone": "America/Chicago",
+  "generated_at": "2026-09-10T12:00:00Z",
+  "coverage": {
+    "start": "2026-09-01",
+    "end": "2026-09-07"
+  },
+  "attested_complete_ranges": [
+    {
+      "start": "2026-09-01",
+      "end": "2026-09-07"
+    }
+  ],
+  "quality": {
+    "sampled": false,
+    "thresholded": false,
+    "other_row": false
+  },
+  "rows": [
+    {
+      "date": "2026-09-01",
+      "source": "direct",
+      "medium": "none",
+      "campaign": "none",
+      "content": "not_set",
+      "landing_path": "/",
+      "sessions": 30,
+      "checkout_starts": 2,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-01",
+      "source": "facebook",
+      "medium": "paid_social",
+      "campaign": "2026-09-gifts",
+      "content": "video-a",
+      "landing_path": "/gifts/birthdays",
+      "sessions": 25,
+      "checkout_starts": 3,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-01",
+      "source": "newsletter",
+      "medium": "email",
+      "campaign": "launch",
+      "content": "text-b",
+      "landing_path": "/",
+      "sessions": 12,
+      "checkout_starts": 1,
+      "purchase_events": 0
+    },
+    {
+      "date": "2026-09-02",
+      "source": "direct",
+      "medium": "none",
+      "campaign": "none",
+      "content": "not_set",
+      "landing_path": "/",
+      "sessions": 31,
+      "checkout_starts": 2,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-02",
+      "source": "facebook",
+      "medium": "paid_social",
+      "campaign": "2026-09-gifts",
+      "content": "video-a",
+      "landing_path": "/gifts/birthdays",
+      "sessions": 26,
+      "checkout_starts": 3,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-02",
+      "source": "newsletter",
+      "medium": "email",
+      "campaign": "launch",
+      "content": "text-b",
+      "landing_path": "/",
+      "sessions": 13,
+      "checkout_starts": 1,
+      "purchase_events": 0
+    },
+    {
+      "date": "2026-09-03",
+      "source": "direct",
+      "medium": "none",
+      "campaign": "none",
+      "content": "not_set",
+      "landing_path": "/",
+      "sessions": 32,
+      "checkout_starts": 2,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-03",
+      "source": "facebook",
+      "medium": "paid_social",
+      "campaign": "2026-09-gifts",
+      "content": "video-a",
+      "landing_path": "/gifts/birthdays",
+      "sessions": 27,
+      "checkout_starts": 3,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-03",
+      "source": "newsletter",
+      "medium": "email",
+      "campaign": "launch",
+      "content": "text-b",
+      "landing_path": "/",
+      "sessions": 14,
+      "checkout_starts": 1,
+      "purchase_events": 0
+    },
+    {
+      "date": "2026-09-04",
+      "source": "direct",
+      "medium": "none",
+      "campaign": "none",
+      "content": "not_set",
+      "landing_path": "/",
+      "sessions": 33,
+      "checkout_starts": 2,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-04",
+      "source": "facebook",
+      "medium": "paid_social",
+      "campaign": "2026-09-gifts",
+      "content": "video-a",
+      "landing_path": "/gifts/birthdays",
+      "sessions": 28,
+      "checkout_starts": 3,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-04",
+      "source": "newsletter",
+      "medium": "email",
+      "campaign": "launch",
+      "content": "text-b",
+      "landing_path": "/",
+      "sessions": 15,
+      "checkout_starts": 1,
+      "purchase_events": 0
+    },
+    {
+      "date": "2026-09-05",
+      "source": "direct",
+      "medium": "none",
+      "campaign": "none",
+      "content": "not_set",
+      "landing_path": "/",
+      "sessions": 34,
+      "checkout_starts": 2,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-05",
+      "source": "facebook",
+      "medium": "paid_social",
+      "campaign": "2026-09-gifts",
+      "content": "video-a",
+      "landing_path": "/gifts/birthdays",
+      "sessions": 29,
+      "checkout_starts": 3,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-05",
+      "source": "newsletter",
+      "medium": "email",
+      "campaign": "launch",
+      "content": "text-b",
+      "landing_path": "/",
+      "sessions": 16,
+      "checkout_starts": 1,
+      "purchase_events": 0
+    },
+    {
+      "date": "2026-09-06",
+      "source": "direct",
+      "medium": "none",
+      "campaign": "none",
+      "content": "not_set",
+      "landing_path": "/",
+      "sessions": 35,
+      "checkout_starts": 2,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-06",
+      "source": "facebook",
+      "medium": "paid_social",
+      "campaign": "2026-09-gifts",
+      "content": "video-a",
+      "landing_path": "/gifts/birthdays",
+      "sessions": 30,
+      "checkout_starts": 3,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-06",
+      "source": "newsletter",
+      "medium": "email",
+      "campaign": "launch",
+      "content": "text-b",
+      "landing_path": "/",
+      "sessions": 17,
+      "checkout_starts": 1,
+      "purchase_events": 0
+    },
+    {
+      "date": "2026-09-07",
+      "source": "direct",
+      "medium": "none",
+      "campaign": "none",
+      "content": "not_set",
+      "landing_path": "/",
+      "sessions": 36,
+      "checkout_starts": 2,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-07",
+      "source": "facebook",
+      "medium": "paid_social",
+      "campaign": "2026-09-gifts",
+      "content": "video-a",
+      "landing_path": "/gifts/birthdays",
+      "sessions": 31,
+      "checkout_starts": 3,
+      "purchase_events": 1
+    },
+    {
+      "date": "2026-09-07",
+      "source": "newsletter",
+      "medium": "email",
+      "campaign": "launch",
+      "content": "text-b",
+      "landing_path": "/",
+      "sessions": 18,
+      "checkout_starts": 1,
+      "purchase_events": 0
+    }
+  ]
+}

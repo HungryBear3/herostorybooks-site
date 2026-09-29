@@ -1,0 +1,142 @@
+{
+  "schema": "hsb.ga4_admin_checklist",
+  "schema_version": 1,
+  "event_contract_version": 1,
+  "measurement_id": "G-68FKEDZEG3",
+  "custom_dimensions": [
+    {
+      "parameter_name": "step_id",
+      "display_name": "HSB checkout step",
+      "scope": "EVENT",
+      "source_events": ["checkout_step_view", "checkout_step_complete", "checkout_step_blocked"],
+      "rationale": "Locates where buyers stop in the four-step checkout, as a bounded step id.",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "reason",
+      "display_name": "HSB checkout blocked reason",
+      "scope": "EVENT",
+      "source_events": ["checkout_step_blocked"],
+      "rationale": "Names the validation rule that stopped a buyer as a bounded code, never the UI copy or a field value.",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "selected_format",
+      "display_name": "HSB checkout selected format",
+      "scope": "EVENT",
+      "source_events": ["checkout_step_view", "checkout_step_complete", "checkout_step_blocked"],
+      "rationale": "Separates funnel behavior by the book format in progress (digital, classic, premium).",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "hsb_ft_source",
+      "display_name": "HSB purchase first touch source",
+      "scope": "EVENT",
+      "source_events": ["purchase"],
+      "rationale": "Credits the webhook-verified purchase to its governed first-touch source.",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "hsb_ft_medium",
+      "display_name": "HSB purchase first touch medium",
+      "scope": "EVENT",
+      "source_events": ["purchase"],
+      "rationale": "Credits the webhook-verified purchase to its governed first-touch medium.",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "hsb_ft_campaign",
+      "display_name": "HSB purchase first touch campaign",
+      "scope": "EVENT",
+      "source_events": ["purchase"],
+      "rationale": "Credits the webhook-verified purchase to its governed first-touch campaign.",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "hsb_ft_content",
+      "display_name": "HSB purchase first touch content",
+      "scope": "EVENT",
+      "source_events": ["purchase"],
+      "rationale": "Credits the webhook-verified purchase to its governed first-touch creative variant.",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "hsb_ft_landing",
+      "display_name": "HSB purchase first touch landing",
+      "scope": "EVENT",
+      "source_events": ["purchase"],
+      "rationale": "Credits the webhook-verified purchase to its first-touch landing route template.",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "hsb_lt_source",
+      "display_name": "HSB purchase last touch source",
+      "scope": "EVENT",
+      "source_events": ["purchase"],
+      "rationale": "Credits the webhook-verified purchase to its governed last non-direct source.",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "hsb_lt_medium",
+      "display_name": "HSB purchase last touch medium",
+      "scope": "EVENT",
+      "source_events": ["purchase"],
+      "rationale": "Credits the webhook-verified purchase to its governed last non-direct medium.",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "hsb_lt_campaign",
+      "display_name": "HSB purchase last touch campaign",
+      "scope": "EVENT",
+      "source_events": ["purchase"],
+      "rationale": "Credits the webhook-verified purchase to its governed last non-direct campaign.",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "hsb_lt_content",
+      "display_name": "HSB purchase last touch content",
+      "scope": "EVENT",
+      "source_events": ["purchase"],
+      "rationale": "Credits the webhook-verified purchase to its governed last non-direct creative variant.",
+      "status": "owner_action_pending"
+    },
+    {
+      "parameter_name": "hsb_lt_landing",
+      "display_name": "HSB purchase last touch landing",
+      "scope": "EVENT",
+      "source_events": ["purchase"],
+      "rationale": "Credits the webhook-verified purchase to its last non-direct landing route template.",
+      "status": "owner_action_pending"
+    }
+  ],
+  "key_events": [
+    {
+      "event_name": "purchase",
+      "counting_method": "ONCE_PER_EVENT",
+      "rationale": "Only the signed Stripe webhook's settled winner writes a purchase, once per paid Checkout Session; GA4 stays behavioral evidence, never payment authority.",
+      "status": "owner_action_pending"
+    }
+  ],
+  "not_key_events": [
+    {
+      "event_name": "page_view",
+      "rationale": "Traffic context; sessions are the denominator, so marking page views would count browsing as conversion."
+    },
+    {
+      "event_name": "begin_checkout",
+      "rationale": "A behavioral step read as an event count for checkout start rate; only a settled payment is a conversion."
+    },
+    {
+      "event_name": "checkout_step_view",
+      "rationale": "Funnel diagnostics counted per step; a step view is not an outcome."
+    },
+    {
+      "event_name": "checkout_step_complete",
+      "rationale": "Funnel diagnostics counted per step; completing a step is not an outcome."
+    },
+    {
+      "event_name": "checkout_step_blocked",
+      "rationale": "Friction diagnostics; a blocked step is not an outcome."
+    }
+  ]
+}
