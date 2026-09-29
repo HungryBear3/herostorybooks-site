@@ -11,17 +11,20 @@
  * the request with a read-only (`analytics.readonly`) token outside this repo
  * and feeds the JSON response back. Inputs are validated with the same
  * Checkout Session rule the purchase writer uses; relative dates are refused
- * so a request means the same thing whenever it is run. Verdicts never echo a
- * value from the report.
+ * so a request means the same thing whenever it is run. The response is read
+ * only through the strict runReport reader (src/lib/ga4-run-report.ts).
+ * Verdicts never echo a value from the report.
  */
 import { GA4_TRANSACTION_ID_PATTERN } from './analytics-event-contract.ts';
 import { isCalendarDate, isPlainRecord } from './campaign-governance.ts';
 import { GA4_READONLY_SCOPE } from './ga4-admin-checklist.ts';
+import { readGa4RunReport } from './ga4-run-report.ts';
 
 const PROPERTY_ID_RE = /^[1-9]\d{5,14}$/;
 const DAY_MS = 86_400_000;
 /** A dedup check brackets one purchase; a quarter is the most a single check may span. */
 const MAX_RANGE_DAYS = 93;
+const ROW_LIMIT = 10;
 
 export interface TransactionReadbackInput {
   propertyId: string;
@@ -70,7 +73,7 @@ export function buildGa4TransactionReadbackRequest(input: TransactionReadbackInp
           andGroup: { expressions: [exactFilter('eventName', 'purchase'), exactFilter('transactionId', input.transactionId)] },
         },
         keepEmptyRows: false,
-        limit: '10',
+        limit: String(ROW_LIMIT),
       },
     },
   };
@@ -89,20 +92,13 @@ export interface TransactionReadbackResult {
   reasons: string[];
 }
 
-function names(value: unknown): string | null {
-  if (!Array.isArray(value) || !value.every((item) => isPlainRecord(item) && typeof item.name === 'string')) return null;
-  return value.map((item) => item.name).join(',');
-}
-
-function cell(values: unknown, index: number): unknown {
-  return Array.isArray(values) && isPlainRecord(values[index]) ? values[index].value : undefined;
-}
-
 /**
  * EXACTLY_ONE: one purchase event for this transaction. DUPLICATE: GA4 kept
  * more than one. MISSING: none (yet — processing can lag a day or two).
- * INCONCLUSIVE: sampled, thresholded, or folded into "(other)". Anything that
- * is not the shape this request produces is INVALID_RESPONSE.
+ * INCONCLUSIVE: sampled, thresholded, folded into "(other)", or truncated
+ * (GA4 reports more rows than it returned). Anything that is not exactly the
+ * shape this request produces — extra or missing headers, cells or fields, a
+ * rowCount below the rows received, untyped metadata — is INVALID_RESPONSE.
  */
 export function evaluateGa4TransactionReadback(
   request: { transactionId: string },
@@ -112,28 +108,16 @@ export function evaluateGa4TransactionReadback(
     return { verdict: 'INVALID_REQUEST', reasons: ['TRANSACTION_ID_INVALID'] };
   }
   const invalid = (reason: string): TransactionReadbackResult => ({ verdict: 'INVALID_RESPONSE', reasons: [reason] });
-  if (!isPlainRecord(response)) return invalid('RESPONSE_SHAPE');
-  if (names(response.dimensionHeaders) !== 'transactionId,eventName' || names(response.metricHeaders) !== 'eventCount') {
-    return invalid('HEADERS_MISMATCH');
-  }
-  const metadata = isPlainRecord(response.metadata) ? response.metadata : {};
-  const inconclusive: string[] = [];
-  if (Array.isArray(metadata.samplingMetadatas) && metadata.samplingMetadatas.length > 0) inconclusive.push('SAMPLED');
-  if (metadata.subjectToThresholding === true) inconclusive.push('THRESHOLDED');
-  if (metadata.dataLossFromOtherRow === true) inconclusive.push('OTHER_ROW');
-  if (inconclusive.length > 0) return { verdict: 'INCONCLUSIVE', reasons: inconclusive };
-
-  const rows = response.rows === undefined ? [] : response.rows;
-  if (!Array.isArray(rows)) return invalid('RESPONSE_SHAPE');
+  const read = readGa4RunReport(response, { dimensions: ['transactionId', 'eventName'], metrics: ['eventCount'], limit: ROW_LIMIT });
+  if (read.ok === false) return invalid(read.defect);
+  const { rows, gaps } = read.report;
+  if (gaps.length > 0) return { verdict: 'INCONCLUSIVE', reasons: [...gaps] };
   if (rows.length === 0) return { verdict: 'MISSING', reasons: [] };
   if (rows.length > 1) return invalid('ROW_DUPLICATED');
-  const row = rows[0];
-  if (!isPlainRecord(row)) return invalid('RESPONSE_SHAPE');
-  if (cell(row.dimensionValues, 0) !== request.transactionId || cell(row.dimensionValues, 1) !== 'purchase') {
-    return invalid('FILTER_NOT_APPLIED');
-  }
-  const count = cell(row.metricValues, 0);
-  if (typeof count !== 'string' || !/^[1-9]\d{0,9}$/.test(count)) return invalid('METRIC_INVALID');
+  const [transactionId, eventName] = rows[0].dimensions;
+  if (transactionId !== request.transactionId || eventName !== 'purchase') return invalid('FILTER_NOT_APPLIED');
+  const [count] = rows[0].metrics;
+  if (!/^[1-9]\d{0,9}$/.test(count)) return invalid('METRIC_INVALID');
   return count === '1'
     ? { verdict: 'EXACTLY_ONE', reasons: [] }
     : { verdict: 'DUPLICATE', reasons: ['EVENT_COUNT_ABOVE_ONE'] };

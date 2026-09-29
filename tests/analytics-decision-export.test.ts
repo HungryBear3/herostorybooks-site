@@ -1,13 +1,14 @@
 /**
  * Source-side export for the offline decision packet.
  *
- * HSB never imports, runs, or emits the standalone packet's documents. It
- * emits its own versioned, closed GA4-behavior export (HSB vocabulary), a
+ * HSB emits its own versioned, closed GA4-behavior export (HSB vocabulary), a
  * JSON Schema generated from the same rules, a deterministic synthetic
  * fixture, and a machine-checked mapping contract that states exactly which
  * HSB values the packet can accept today and which need a reviewed packet
  * vocabulary extension. Raw URLs, query strings, identifiers and free text
- * can never be represented.
+ * can never be represented, and a truncated report is never certified.
+ * The conversion into the packet's own document is proven against the pinned
+ * packet in tests/decision-packet-compat.test.ts.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -144,19 +145,15 @@ test('a hostile GA4 report projects to an exact, aggregated, governed export', (
         { date: '2026-09-02', source: 'facebook', medium: 'referral', campaign: 'none', content: 'not_set', landing_path: '/gifts/birthdays', sessions: 7, checkout_starts: 1, purchase_events: 1 },
       ],
     },
+    completeness: 'ATTESTED',
+    reasons: [],
   });
   assert.doesNotMatch(JSON.stringify(projected), /jane|ord_|fbclid|\?|@|l\.facebook/i);
   if (projected.ok) assert.deepEqual(validateHsbGa4BehaviorExport(projected.document), []);
 });
 
-test('report quality metadata becomes quality flags, and malformed reports are refused', () => {
+test('malformed reports are refused', () => {
   const one: Array<[string[], string[]]> = [[['20260901', '(direct)', '(none)', '(direct)', '(not set)', '/'], ['1', '0', '0']]];
-  const flagged = projectGa4BehaviorReport(ga4Report(one, {
-    subjectToThresholding: true, dataLossFromOtherRow: true, samplingMetadatas: [{ samplesReadCount: '1', samplingSpaceSize: '2' }],
-  }), HEADER);
-  assert.equal(flagged.ok, true);
-  if (flagged.ok) assert.deepEqual(flagged.document.quality, { sampled: true, thresholded: true, other_row: true });
-
   const refusals: Array<[unknown, Record<string, unknown>, string[]]> = [
     [ga4Report([[['20260901', 'google', 'organic', '(organic)', '(not set)', '/'], ['1.5', '0', '0']]]), HEADER, ['METRIC_INVALID@$.rows[0]']],
     [ga4Report([[['20260901', 'google', 'organic', '(organic)', '(not set)', '/'], ['-1', '0', '0']]]), HEADER, ['METRIC_INVALID@$.rows[0]']],
@@ -305,12 +302,100 @@ test('mapping defects are rejected', () => {
       ['MAPPING_INCOMPLETE@$.value_maps.source', 'MAPPING_EXTENSION_UNUSED@$.extensions_required']],
     ['unknown value', mutate((d) => { d.value_maps.source['jane@example.com'] = { to: 'other' }; }), ['MAPPING_UNKNOWN_VALUE@$.value_maps.source']],
     ['forbidden target', mutate((d) => { d.value_maps.medium.email = { to: 'https://evil.example' }; }), ['MAPPING_TARGET_FORBIDDEN@$.value_maps.medium.email']],
-    ['undeclared extension', mutate((d) => { d.value_maps.content['video-c'] = { blocked: 'PACKET_NEW_GAP', fallback: 'other' }; }),
+    ['undeclared extension', mutate((d) => { d.value_maps.content['video-c'] = { blocked: 'PACKET_NEW_GAP' }; }),
       ['MAPPING_EXTENSION_UNDECLARED@$.value_maps.content.video-c']],
-    ['fallback that keeps a value', mutate((d) => { d.value_maps.source.telegram = { blocked: 'PACKET_SOURCE_VOCABULARY_MISSING', fallback: 'telegram' }; }),
-      ['MAPPING_FALLBACK_INVALID@$.value_maps.source.telegram']],
+    ['any fallback', mutate((d) => { d.value_maps.source.telegram = { blocked: 'PACKET_SOURCE_VOCABULARY_MISSING', fallback: 'telegram' }; }),
+      ['MAPPING_ENTRY_INVALID@$.value_maps.source.telegram', 'MAPPING_EXTENSION_UNUSED@$.extensions_required']],
     ['wrong target schema', mutate((d) => { d.target.schema = 'decision_packet.payment_ledger'; }), ['MAPPING_TARGET_SCHEMA@$.target.schema']],
     ['free-text key', mutate((d) => { d.notes = 'ask Jane'; }), ['FORBIDDEN_KEY@$']],
   ];
   for (const [label, doc, expected] of cases) assert.deepEqual(validateDecisionPacketMapping(doc), expected, label);
+});
+
+// ── Completeness: truncation is refused; GA4 data loss is never attested ─────
+
+const ONE_DAY = {
+  dataOrigin: 'operator_export',
+  generatedAt: '2026-09-30T12:00:00Z',
+  coverage: { start: '2026-09-01', end: '2026-09-01' },
+  attestedCompleteRanges: [{ start: '2026-09-01', end: '2026-09-01' }],
+};
+const GOVERNED_ROW: [string[], string[]] = [['20260901', 'facebook', 'paid_social', '2026-09-gifts', 'video-a', '/'], ['1', '0', '0']];
+
+test('the reviewer reproducer: rowCount 250001 against one received row is refused', () => {
+  const report = {
+    dimensionHeaders: DIMENSION_HEADERS.map((name) => ({ name })),
+    metricHeaders: METRIC_HEADERS.map((name) => ({ name })),
+    rows: [{ dimensionValues: GOVERNED_ROW[0].map((value) => ({ value })), metricValues: GOVERNED_ROW[1].map((value) => ({ value })) }],
+    rowCount: 250001,
+    metadata: { timeZone: 'America/Chicago' },
+  };
+  assert.deepEqual(projectGa4BehaviorReport(report, ONE_DAY), { ok: false, issues: ['REPORT_TRUNCATED@$.rowCount'] });
+});
+
+test('a full 250000-row page is refused when GA4 reports 250001 rows, and complete at exactly 250000', () => {
+  const [page] = [ga4Report([GOVERNED_ROW])];
+  const rows = Array.from({ length: 250_000 }, () => page.rows[0]);
+  assert.deepEqual(projectGa4BehaviorReport({ ...page, rows, rowCount: 250_001 }, ONE_DAY),
+    { ok: false, issues: ['REPORT_TRUNCATED@$.rowCount'] });
+  const complete = projectGa4BehaviorReport({ ...page, rows, rowCount: 250_000 }, ONE_DAY);
+  assert.equal(complete.ok, true);
+  if (!complete.ok) return;
+  assert.equal(complete.completeness, 'ATTESTED');
+  assert.deepEqual(complete.document.rows.map((row) => row.sessions), [250_000]);
+  assert.deepEqual(complete.document.attested_complete_ranges, [{ start: '2026-09-01', end: '2026-09-01' }]);
+});
+
+test('row-count, response and metadata ambiguity is refused rather than certified', () => {
+  const one = ga4Report([GOVERNED_ROW]);
+  const cases: Array<[string, unknown, string[]]> = [
+    ['rowCount above the rows received', { ...one, rowCount: 2 }, ['REPORT_TRUNCATED@$.rowCount']],
+    ['rowCount without rows', { ...ga4Report([]), rowCount: 5 }, ['REPORT_TRUNCATED@$.rowCount']],
+    ['rowCount below the rows received', { ...one, rowCount: 0 }, ['ROW_COUNT_INVALID@$.rowCount']],
+    ['rowCount missing beside rows', (() => { const r: Record<string, unknown> = { ...one }; delete r.rowCount; return r; })(),
+      ['ROW_COUNT_INVALID@$.rowCount']],
+    ['rowCount as text', { ...one, rowCount: '1' }, ['ROW_COUNT_INVALID@$.rowCount']],
+    ['pagination token', { ...one, nextPageToken: 'next' }, ['RESPONSE_SHAPE@$']],
+    ['unrequested totals', { ...one, totals: [] }, ['RESPONSE_SHAPE@$']],
+    ['unknown metadata field', ga4Report([GOVERNED_ROW], { truncated: true }), ['METADATA_INVALID@$.metadata']],
+    ['other-row flag as text', ga4Report([GOVERNED_ROW], { dataLossFromOtherRow: 'true' }), ['METADATA_INVALID@$.metadata.dataLossFromOtherRow']],
+    ['sampling metadata not a list', ga4Report([GOVERNED_ROW], { samplingMetadatas: 'none' }), ['METADATA_INVALID@$.metadata.samplingMetadatas']],
+    ['extra metric cell', { ...one, rows: [{ ...one.rows[0], metricValues: [...one.rows[0].metricValues, { value: '9' }] }] }, ['ROW_SHAPE@$.rows[0]']],
+    ['cell with an extra field', { ...one, rows: [{ ...one.rows[0], dimensionValues: one.rows[0].dimensionValues.map((cell) => ({ ...cell, oneValue: 'x' })) }] },
+      ['ROW_SHAPE@$.rows[0]']],
+  ];
+  for (const [label, response, issues] of cases) {
+    assert.deepEqual(projectGa4BehaviorReport(response, ONE_DAY), { ok: false, issues }, label);
+  }
+});
+
+test('GA4 data-loss flags make the export explicitly INSUFFICIENT_EVIDENCE and drop the attestation', () => {
+  const flags: Array<[Record<string, unknown>, Record<string, boolean>, string[]]> = [
+    [{ samplingMetadatas: [{ samplesReadCount: '1', samplingSpaceSize: '2' }] }, { sampled: true, thresholded: false, other_row: false }, ['SAMPLED']],
+    [{ subjectToThresholding: true }, { sampled: false, thresholded: true, other_row: false }, ['THRESHOLDED']],
+    [{ dataLossFromOtherRow: true }, { sampled: false, thresholded: false, other_row: true }, ['OTHER_ROW']],
+    [{ samplingMetadatas: [{ samplesReadCount: '1', samplingSpaceSize: '2' }], subjectToThresholding: true, dataLossFromOtherRow: true },
+      { sampled: true, thresholded: true, other_row: true }, ['SAMPLED', 'THRESHOLDED', 'OTHER_ROW']],
+  ];
+  for (const [metadata, quality, reasons] of flags) {
+    const result = projectGa4BehaviorReport(ga4Report([GOVERNED_ROW], metadata), ONE_DAY);
+    assert.equal(result.ok, true, reasons.join());
+    if (!result.ok) continue;
+    assert.equal(result.completeness, 'INSUFFICIENT_EVIDENCE', reasons.join());
+    assert.deepEqual(result.reasons, reasons);
+    assert.deepEqual(result.document.quality, quality);
+    assert.deepEqual(result.document.attested_complete_ranges, [], 'no complete-range attestation survives a GA4 data-loss flag');
+    assert.deepEqual(validateHsbGa4BehaviorExport(result.document), []);
+  }
+  const clean = projectGa4BehaviorReport(ga4Report([GOVERNED_ROW], { samplingMetadatas: [], subjectToThresholding: false }), ONE_DAY);
+  assert.equal(clean.ok && clean.completeness, 'ATTESTED');
+});
+
+test('an export may not attest completeness while it carries a GA4 data-loss flag', () => {
+  for (const flag of ['sampled', 'thresholded', 'other_row'] as const) {
+    const attested = hostile((d) => { d.quality[flag] = true; });
+    assert.deepEqual(validateHsbGa4BehaviorExport(attested), ['ATTESTATION_CONTRADICTS_QUALITY@$.attested_complete_ranges'], flag);
+    const honest = hostile((d) => { d.quality[flag] = true; d.attested_complete_ranges = []; });
+    assert.deepEqual(validateHsbGa4BehaviorExport(honest), [], flag);
+  }
 });

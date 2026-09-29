@@ -9,11 +9,12 @@ GA4, Meta, Stripe or Vercel.
 
 | Area | Artifact | State |
 | --- | --- | --- |
-| Event contract | `src/lib/analytics-event-contract.ts` (v1) | Enforced at `track()` / `trackCoverEvent()` |
+| Event contract | `src/lib/analytics-event-contract.ts` (v1) | Enforced at `track()` / `trackCoverEvent()`; GA paths are approved routes or `/(other)` |
 | Purchase | `src/lib/purchase-analytics.ts` (Phase A) | Server-only, settled-webhook winner, unchanged |
 | GA4 Admin checklist | `config/analytics/ga4-admin-checklist.v1.json` | 13 dimensions + 1 key event, all `owner_action_pending` |
 | Transaction dedup readback | `src/lib/ga4-transaction-readback.ts` | Request builder + evaluator, no network |
-| Decision-packet export | `src/lib/analytics-decision-export.ts`, `config/analytics/*` | HSB schema, fixture, mapping; packet vocabulary gaps are HOLD |
+| GA4 report reader | `src/lib/ga4-run-report.ts` | Strict `runReport` reader behind every export/readback verdict |
+| Decision-packet export | `src/lib/analytics-decision-export.ts`, `src/lib/decision-packet-contract.ts`, `config/analytics/*` | HSB schema + packet compat export pinned to packet `d64d095`; unrepresentable values fail closed (HOLD) |
 | Campaign governance | `src/lib/campaign-governance.ts`, `config/analytics/experiment-registry.v1.json` | Registry empty; linter live |
 | Meta browser | `src/lib/meta-pixel-candidate.ts` | Candidate, not mounted, cannot activate (no consent surface) |
 | Meta server (CAPI) | `src/lib/meta-capi-status.ts` | `DEFERRED`: frozen, null event, no transport |
@@ -35,10 +36,21 @@ it before anything is buffered or sent: undeclared keys, out-of-vocabulary
 values (for example a free-text `theme` restored from storage) and throwing
 getters are dropped, and an undeclared event name — including `purchase` in
 any casing — emits nothing. The analytics layer then adds only its own
-sanitized fields: `timestamp`, a route-template `pathname`/`page_location`, a
-referrer origin, governed `utm_*`, and the complete event-scoped
+sanitized fields: `timestamp`, a `pathname`/`page_location` path, a referrer
+origin, governed `utm_*`, and the complete event-scoped
 `campaign_source|medium|name|content` projection with explicit `''` clears.
 `gtag('set', …)` is never used.
+
+**GA path boundary.** Every path GA can see — the event `pathname` (from the
+browser or a `trackPageView(path)` caller), the event `page_location`, and
+the root-layout bootstrap `config` — is `analyticsRoutePath()`
+(`src/lib/attribution-contract.ts`): the Phase-A approved landing route, an
+identifier-route template such as `/status/[orderId]`, or the one opaque
+`/(other)` bucket. A 404 someone typed, a child's name, a phone number, an
+address, an order or provider id, a query string or a fragment never
+crosses. The bootstrap's inline `hsbSafeRoute` is generated from the same
+tables, and `page_referrer` is only ever an origin. `checkGa4BrowserEventCall`
+rejects any other path.
 
 | Event | Declared params | Decision-grade |
 | --- | --- | --- |
@@ -88,9 +100,17 @@ node --experimental-strip-types -e "import('./src/lib/ga4-admin-checklist.ts').t
 Run each request with an `analytics.readonly` token outside this repo, then
 feed the JSON responses to `evaluateCustomDimensionsReadback`,
 `evaluateKeyEventsReadback` and `evaluateDimensionProbe`. `MATCH` requires the
-property's dimensions and key events to be exactly the checklist's, and every
-reported dimension value to be inside the contract vocabulary (values are
-never echoed).
+property's dimensions and key events to be exactly the checklist's (a
+duplicated entry is a `MISMATCH`), and every reported dimension value to be
+inside the contract vocabulary (values are never echoed). A probe response is
+read only through the strict reader (`src/lib/ga4-run-report.ts`): unknown
+fields, headers, metadata or cells, a wrong row width, or a `rowCount` below
+the rows received is `INVALID_RESPONSE`; a sampled, thresholded,
+`(other)`-folded or truncated report (`rowCount` above the rows received,
+e.g. beyond the 1000-row cap) is `INCONCLUSIVE`, never `MATCH`. An
+out-of-contract value is a `MISMATCH` even in an incomplete report. A list
+response with a page token is `INCONCLUSIVE`; a malformed token or an unknown
+field is `INVALID_RESPONSE`.
 
 ## 3. Transaction-id dedup readback
 
@@ -100,14 +120,18 @@ and the exact Checkout Session id (`cs_test_…`/`cs_live_…`, the same rule th
 purchase writer uses). Absolute dates only, at most 93 days.
 `evaluateGa4TransactionReadback({ transactionId }, response)` returns
 `EXACTLY_ONE`, `DUPLICATE`, `MISSING` (GA4 processing can lag a day or two),
-`INCONCLUSIVE` (sampled, thresholded, or `(other)` row) or `INVALID_RESPONSE`.
+`INCONCLUSIVE` (sampled, thresholded, `(other)` row, or truncated: `rowCount`
+above the rows received) or `INVALID_RESPONSE` (anything but the exact shape
+the request produces — extra or missing headers, cells or fields, untyped
+metadata, a missing or low `rowCount`). `EXACTLY_ONE` needs a complete,
+exactly-shaped one-row report.
 
 ## 4. Decision-packet export
 
-The offline decision packet is a separate, standalone tool. HSB does not
-import it, run it, or emit its documents: that would couple the repositories,
-and the packet's campaign/content/landing vocabulary does not contain HSB's
-governed labels. Instead:
+The offline decision packet is a separate, standalone tool, pinned here at
+commit `d64d095f361dc10b939289a8787f25dc6d5d925c`. HSB never runs it at
+runtime. It keeps its own export and converts it into the packet's own
+document only through a checked mapping:
 
 - `hsb.decision_export.ga4_behavior` v1 — field-for-field the packet's
   `ga4_behavior` v1 (daily `sessions`, `checkout_starts`, `purchase_events` per
@@ -116,22 +140,57 @@ governed labels. Instead:
   `projectGa4BehaviorReport` (response → export). Every raw GA4 value is
   re-governed through the Phase-A allowlists or collapsed into `direct` /
   `none` / `not_set` / `other`; query strings, referrer hosts, identifier
-  routes and free text cannot survive. Output is revalidated before return.
+  routes and free text cannot survive. The response is read through the
+  strict reader. **A truncated report is refused** (`REPORT_TRUNCATED`:
+  `rowCount` above the rows received, including anything beyond the
+  250 000-row request cap), as is a missing, low or non-integer `rowCount`, an
+  unknown field or metadata key, or a malformed flag. A sampled, thresholded or
+  `(other)`-folded report becomes an export with those quality flags and **no
+  attested range**, returned as `completeness: 'INSUFFICIENT_EVIDENCE'`; the
+  export validator rejects any document that attests completeness while
+  carrying such a flag. Output is revalidated before return.
 - `config/analytics/hsb-ga4-behavior-export.schema.v1.json` — generated closed
   JSON Schema. `config/analytics/fixtures/hsb-ga4-behavior-export.synthetic.v1.json`
   — deterministic synthetic fixture (not business data). Regenerate with
   `scripts/analytics-governance.ts schema|fixture`; tests require byte equality.
-- `config/analytics/decision-packet-mapping.v1.json` — the mapping contract,
-  validated to cover the HSB export vocabulary exactly.
+- `src/lib/decision-packet-contract.ts` — the packet's `ga4_behavior` contract
+  (closed keys, vocabularies, naming grammar, limits), copied from the pinned
+  commit and bound to the SHA-256 of each source file; its validator is at
+  least as strict as the packet's.
+- `config/analytics/decision-packet-mapping.v1.json` — the mapping contract.
+  It must name the pinned packet schema and full commit, carry each HSB field
+  into the packet field of the same meaning, and map every HSB value to
+  exactly its packet counterpart (placeholders to themselves, sources/mediums/
+  routes by name, content `video-a` → `vid_a` …) — one-to-one, never onto a
+  catch-all such as `other` — or declare it `blocked` when the packet has no
+  counterpart. There is no fallback.
+- `exportDecisionPacketGa4Behavior` / `scripts/analytics-governance.ts
+  packet-export FILE` — emits the packet's own `decision_packet.ga4_behavior`
+  v1 document, or refuses the whole export with value-free codes when any
+  value is blocked or a packet evidence rule would fail (coverage over 400
+  days, overlapping attested ranges, checkout starts or purchases above
+  sessions, 16 MiB input limit). Nothing is collapsed into `other` and no row
+  is dropped, so every packet row maps back to exactly its HSB row.
+  `config/analytics/fixtures/decision-packet-ga4-behavior.synthetic.v1.json`
+  (`packet-fixture`) is the export of the packet-representable synthetic
+  fixture.
+- Proof: `tests/decision-packet-compat.test.ts` runs the packet's own
+  validator — the pinned files vendored byte for byte under
+  `tests/fixtures/decision-packet-d64d095/`, hash-checked — on every success
+  output, reads the packet's vocabularies back out of it, and shows why the
+  export must refuse on its own: the packet rejects raw HSB labels but would
+  silently accept an `other` collapse.
 
-**Packet vocabulary gaps (HOLD, packet-side ruling).** Mappable today:
+**Packet vocabulary gaps (HOLD, packet-side ruling).** Representable today:
 sources except `telegram`; all mediums; content `video|image|carousel|text`
-× `a|b` (→ `vid_a` … `txt_b`); landing `/`; all sentinels. Blocked and
-collapsed to `other` until the packet vocabulary is extended by a reviewed
-change there: every governed campaign (HSB names carry no objective and the
-packet's slug list has none of `gifts|holiday|birthdays|launch`), content
-variant `c`, every landing route except `/`, and source `telegram`. Until then
-the packet cannot evaluate an HSB experiment segment. App-outcome and
+× `a|b` (→ `vid_a` … `txt_b`); landing `/`; all placeholders. Blocked — the
+export refuses, it does not collapse — until the packet vocabulary is extended
+by a reviewed change there: every governed campaign (packet names need an
+objective and one of its reviewed slugs; HSB names carry no objective and the
+slug list has none of `gifts|holiday|birthdays|launch`), content variant `c`,
+every landing route except `/`, and source `telegram`. So today the packet can
+take HSB traffic without governed campaigns (the checked-in governed fixture
+is refused) and cannot evaluate an HSB experiment. App-outcome and
 payment-ledger exports need operator-keyed `conversion_ref` values and order
 data; they are out of scope here.
 
@@ -209,8 +268,9 @@ one GA4 purchase and contacts no Meta host.
    are outside this contract and can carry URL or form text.
 3. Verify one production purchase with the transaction-id readback
    (`EXACTLY_ONE`) after Phase A is deployed.
-4. Decision packet: rule on the vocabulary gaps in §4 (packet-side change), or
-   on changing HSB campaign naming.
+4. Decision packet: rule on the vocabulary gaps in §4 (packet-side change,
+   then re-pin), or on changing HSB campaign naming. Until then any export
+   containing a governed campaign is refused.
 5. Meta browser: requires an owner-approved consent surface that records
    durable marketing consent, a pixel id, the two public env vars,
    confirmation that `NEXT_PUBLIC_VERCEL_ENV` is exposed to the build, and a
@@ -222,9 +282,12 @@ one GA4 purchase and contacts no Meta host.
 
 ## 8. Open rulings
 
-- GA4 `page_location`/`pathname` still carry an unknown path verbatim (only
-  identifier routes are templated) — a Phase-A contract with its own test
-  ("non-sensitive routes … preserved verbatim"). Closing it to the approved
-  route set would change 404 reporting; left for a ruling.
+- The packet requires `checkout_starts` and `purchase_events` ≤ `sessions` per
+  segment-day. GA4 counts every `begin_checkout`, so a real segment-day can
+  exceed its sessions; the export then refuses (`METRIC_INVARIANT`) rather than
+  clamp. Needs a ruling before real exports.
+- Vercel Web Analytics' automatic page views keep an unknown route verbatim
+  (identifier routes and queries are still redacted). Outside the GA boundary
+  closed here; left for a ruling.
 - `begin_checkout` accepts an optional `bookFormat` although the live call
   site sends none (a closed enum kept so the Phase-A boundary test holds).

@@ -121,3 +121,74 @@ test('a verdict never echoes identifiers from the report', () => {
   const result = evaluateGa4TransactionReadback({ transactionId: TXN }, hostile);
   assert.doesNotMatch(JSON.stringify(result), /jane|cs_live/);
 });
+
+// ── A verdict rests only on a complete, exactly-shaped report ──────────────
+
+test('the reviewer reproducer: extra cells and a rowCount mismatch are never EXACTLY_ONE', () => {
+  const response = {
+    dimensionHeaders: [{ name: 'transactionId' }, { name: 'eventName' }],
+    metricHeaders: [{ name: 'eventCount' }],
+    rows: [{
+      dimensionValues: [{ value: 'cs_test_abc' }, { value: 'purchase' }, { value: 'unexpected' }],
+      metricValues: [{ value: '1' }, { value: '99' }],
+    }],
+    rowCount: 2,
+  };
+  assert.deepEqual(evaluateGa4TransactionReadback({ transactionId: 'cs_test_abc' }, response),
+    { verdict: 'INVALID_RESPONSE', reasons: ['ROW_SHAPE'] });
+});
+
+function without(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const copy = { ...record };
+  delete copy[key];
+  return copy;
+}
+
+test('malformed, truncated or quality-flagged reports never yield a definitive verdict', () => {
+  const one = report([[TXN, 'purchase', '1']]);
+  const row = (dimensionValues: unknown, metricValues: unknown, extra: Record<string, unknown> = {}) =>
+    ({ ...one, rows: [{ dimensionValues, metricValues, ...extra }] });
+  const dims = [{ value: TXN }, { value: 'purchase' }];
+  const count = [{ value: '1' }];
+  const flags = { samplingMetadatas: [{ samplesReadCount: '10', samplingSpaceSize: '100' }], subjectToThresholding: true, dataLossFromOtherRow: true };
+  const cases: Array<[string, unknown, { verdict: string; reasons: string[] }]> = [
+    ['rowCount above the rows received', { ...one, rowCount: 2 }, { verdict: 'INCONCLUSIVE', reasons: ['TRUNCATED'] }],
+    ['rowCount above the request limit', { ...one, rowCount: 11 }, { verdict: 'INCONCLUSIVE', reasons: ['TRUNCATED'] }],
+    ['rowCount without rows', { ...report([]), rowCount: 3 }, { verdict: 'INCONCLUSIVE', reasons: ['TRUNCATED'] }],
+    ['rowCount below the rows received', { ...one, rowCount: 0 }, { verdict: 'INVALID_RESPONSE', reasons: ['ROW_COUNT_INVALID'] }],
+    ['rowCount missing beside rows', without(one, 'rowCount'), { verdict: 'INVALID_RESPONSE', reasons: ['ROW_COUNT_INVALID'] }],
+    ['rowCount as text', { ...one, rowCount: '1' }, { verdict: 'INVALID_RESPONSE', reasons: ['ROW_COUNT_INVALID'] }],
+    ['fractional rowCount', { ...one, rowCount: 1.5 }, { verdict: 'INVALID_RESPONSE', reasons: ['ROW_COUNT_INVALID'] }],
+    ['extra dimension cell', row([...dims, { value: 'x' }], count), { verdict: 'INVALID_RESPONSE', reasons: ['ROW_SHAPE'] }],
+    ['extra metric cell', row(dims, [...count, { value: '99' }]), { verdict: 'INVALID_RESPONSE', reasons: ['ROW_SHAPE'] }],
+    ['missing metric cell', row(dims, []), { verdict: 'INVALID_RESPONSE', reasons: ['ROW_SHAPE'] }],
+    ['extra row field', row(dims, count, { note: 'x' }), { verdict: 'INVALID_RESPONSE', reasons: ['ROW_SHAPE'] }],
+    ['cell with an extra field', row([{ value: TXN, oneValue: 'x' }, dims[1]], count), { verdict: 'INVALID_RESPONSE', reasons: ['ROW_SHAPE'] }],
+    ['non-string cell', row(dims, [{ value: 1 }]), { verdict: 'INVALID_RESPONSE', reasons: ['ROW_SHAPE'] }],
+    ['extra dimension header', { ...one, dimensionHeaders: [...one.dimensionHeaders, { name: 'date' }] },
+      { verdict: 'INVALID_RESPONSE', reasons: ['HEADERS_MISMATCH'] }],
+    ['missing metric headers', without(one, 'metricHeaders'), { verdict: 'INVALID_RESPONSE', reasons: ['HEADERS_MISMATCH'] }],
+    ['header with an extra field', { ...one, dimensionHeaders: [{ name: 'transactionId', type: 'x' }, { name: 'eventName' }] },
+      { verdict: 'INVALID_RESPONSE', reasons: ['HEADERS_MISMATCH'] }],
+    ['non-integer metric type', { ...one, metricHeaders: [{ name: 'eventCount', type: 'TYPE_FLOAT' }] },
+      { verdict: 'INVALID_RESPONSE', reasons: ['HEADERS_MISMATCH'] }],
+    ['unrequested totals', { ...one, totals: [{ dimensionValues: [], metricValues: [{ value: '1' }] }] },
+      { verdict: 'INVALID_RESPONSE', reasons: ['RESPONSE_SHAPE'] }],
+    ['pagination token', { ...one, nextPageToken: 'x' }, { verdict: 'INVALID_RESPONSE', reasons: ['RESPONSE_SHAPE'] }],
+    ['foreign response kind', { ...one, kind: 'analyticsData#batchRunReports' }, { verdict: 'INVALID_RESPONSE', reasons: ['RESPONSE_SHAPE'] }],
+    ['thresholding flag as text', report([[TXN, 'purchase', '1']], { subjectToThresholding: 'true' }),
+      { verdict: 'INVALID_RESPONSE', reasons: ['METADATA_INVALID'] }],
+    ['other-row flag as text', report([[TXN, 'purchase', '1']], { dataLossFromOtherRow: 'yes' }),
+      { verdict: 'INVALID_RESPONSE', reasons: ['METADATA_INVALID'] }],
+    ['sampling metadata not a list', report([[TXN, 'purchase', '1']], { samplingMetadatas: {} }),
+      { verdict: 'INVALID_RESPONSE', reasons: ['METADATA_INVALID'] }],
+    ['unknown metadata field', report([[TXN, 'purchase', '1']], { rowsTruncated: true }),
+      { verdict: 'INVALID_RESPONSE', reasons: ['METADATA_INVALID'] }],
+    ['metadata not an object', { ...one, metadata: 'complete' }, { verdict: 'INVALID_RESPONSE', reasons: ['METADATA_INVALID'] }],
+    ['every gap at once', { ...report([[TXN, 'purchase', '1']], flags), rowCount: 2 },
+      { verdict: 'INCONCLUSIVE', reasons: ['SAMPLED', 'THRESHOLDED', 'OTHER_ROW', 'TRUNCATED'] }],
+  ];
+  for (const [label, response, expected] of cases) {
+    assert.deepEqual(evaluateGa4TransactionReadback({ transactionId: TXN }, response), expected, label);
+  }
+});

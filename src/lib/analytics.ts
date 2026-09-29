@@ -2,9 +2,9 @@
 // Also forwards to Vercel Analytics if available, so the A/B test isn't dark
 // when GA isn't wired yet.
 import type { CoverVariant } from './cover-variant';
-import { sanitizeAnalyticsPath, sanitizeAnalyticsUrl } from './analytics-path.ts';
+import { sanitizeAnalyticsUrl } from './analytics-path.ts';
 import { track as trackVercelEvent } from '@vercel/analytics';
-import { currentBrowserCampaignParams } from './attribution-contract.ts';
+import { analyticsRoutePath, currentBrowserCampaignParams } from './attribution-contract.ts';
 import { projectBrowserEventParams } from './analytics-event-contract.ts';
 
 type GtagFn = {
@@ -147,7 +147,7 @@ function vercelSafeProps(input: Record<string, unknown>): VercelAnalyticsProps {
 
 function sanitizedPageLocation(): string | undefined {
   if (typeof window === 'undefined' || typeof window.location === 'undefined') return undefined;
-  return `${window.location.origin ?? ''}${sanitizeAnalyticsPath(window.location.pathname ?? '')}`;
+  return `${window.location.origin ?? ''}${analyticsRoutePath(window.location.pathname)}`;
 }
 
 const unwantedReferralHosts = new Set(['checkout.stripe.com']);
@@ -245,9 +245,10 @@ export function track(
   // params with in-vocabulary values survive (src/lib/analytics-event-contract.ts).
   const declared = projectBrowserEventParams(event, props);
   if (declared === null) return null;
+  // Only an approved route, a route template or `/(other)` — never a raw path.
   const pathname =
     typeof window.location !== 'undefined'
-      ? sanitizeAnalyticsPath(window.location.pathname ?? '')
+      ? analyticsRoutePath(window.location.pathname)
       : undefined;
   const record: HsbEventRecord = {
     event,
@@ -263,7 +264,7 @@ export function track(
   // after the spread, so the merged values get sanitized rather than only the
   // defaults above.
   if (typeof record.pathname === 'string') {
-    record.pathname = sanitizeAnalyticsPath(record.pathname);
+    record.pathname = analyticsRoutePath(record.pathname);
   }
   if (typeof record.href === 'string') {
     record.href = sanitizeAnalyticsUrl(record.href);

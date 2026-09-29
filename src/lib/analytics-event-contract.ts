@@ -6,8 +6,9 @@
  *    parameter set; `track()` and `trackCoverEvent()` project every caller's
  *    props through it before anything is buffered or sent, so an undeclared
  *    key or an out-of-vocabulary value never leaves the page. The analytics
- *    layer then adds only its own sanitized fields: a route template, a
- *    referrer origin, governed `utm_*` values, and the complete event-scoped
+ *    layer then adds only its own sanitized fields: an approved route, route
+ *    template or `/(other)` (never a raw path), a referrer origin, governed
+ *    `utm_*` values, and the complete event-scoped
  *    `campaign_*` projection (explicit empty strings clear absent fields; a
  *    persistent `set` is never used).
  *  - `purchase` is server-only. The signed Stripe webhook's settled winner
@@ -22,8 +23,7 @@
 import type { CoverEventName, HsbEventName } from './analytics.ts';
 import type { CoverVariant } from './cover-variant.ts';
 import type { BookFormat } from './orders.ts';
-import { sanitizeAnalyticsPath } from './analytics-path.ts';
-import { sanitizeAttributionValue, sanitizeLandingPath } from './attribution-contract.ts';
+import { isCanonicalLandingPath, sanitizeAttributionValue, sanitizeLandingPath } from './attribution-contract.ts';
 import {
   CHECKOUT_STEP_BLOCKED_REASONS,
   CHECKOUT_TELEMETRY_STEP_IDS,
@@ -98,8 +98,6 @@ const integer = (min: number, max: number): ParamSpec => ({ rule: { kind: 'integ
 const flag: ParamSpec = { rule: { kind: 'boolean' }, dimension: false };
 const routePath: ParamSpec = { rule: { kind: 'path' }, dimension: false };
 
-const PATH_MAX_LENGTH = 2_048;
-
 function ruleAccepts(rule: ParamRule, value: unknown): boolean {
   switch (rule.kind) {
     case 'enum':
@@ -109,7 +107,8 @@ function ruleAccepts(rule: ParamRule, value: unknown): boolean {
     case 'boolean':
       return typeof value === 'boolean';
     case 'path':
-      return typeof value === 'string' && value.length <= PATH_MAX_LENGTH && value.startsWith('/') && !value.startsWith('//');
+      // The approved landing route set, a route template, or `/(other)` — never a raw path.
+      return isCanonicalLandingPath(value);
   }
 }
 
@@ -182,8 +181,10 @@ export type ContractParamValue = string | number | boolean | null;
 
 /**
  * The caller's props reduced to the event's declared parameters with valid
- * values. Null for an event the contract does not declare — the caller must
- * then emit nothing. Never throws, even for hostile getters.
+ * values. A path is collapsed to its approved route, template or `/(other)`;
+ * a value that is not a path is dropped. Null for an event the contract does
+ * not declare — the caller must then emit nothing. Never throws, even for
+ * hostile getters.
  */
 export function projectBrowserEventParams(event: unknown, props: unknown): Record<string, ContractParamValue> | null {
   const spec = browserEventSpec(event);
@@ -198,7 +199,8 @@ export function projectBrowserEventParams(event: unknown, props: unknown): Recor
     } catch {
       continue;
     }
-    if (ruleAccepts(param.rule, value)) projected[key] = value as ContractParamValue;
+    const candidate = param.rule.kind === 'path' ? sanitizeLandingPath(value) : value;
+    if (ruleAccepts(param.rule, candidate)) projected[key] = candidate as ContractParamValue;
   }
   return projected;
 }
@@ -217,7 +219,7 @@ const CAMPAIGN_KEYS: ReadonlySet<string> = new Set(CAMPAIGN_PROJECTION.map(([key
 const UTM_KEYS: ReadonlySet<string> = new Set(CAMPAIGN_PROJECTION.map(([, key]) => key));
 
 function isSanitizedPath(value: unknown): value is string {
-  return typeof value === 'string' && value.startsWith('/') && !/[?#]/.test(value) && sanitizeAnalyticsPath(value) === value;
+  return isCanonicalLandingPath(value);
 }
 
 function isSanitizedLocation(value: unknown): boolean {

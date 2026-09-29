@@ -26,7 +26,7 @@
  * Isomorphic and dependency-light: the browser, the checkout API and the
  * webhook all read the same rules.
  */
-import { sanitizeAnalyticsPath } from './analytics-path.ts';
+import { analyticsPathBootstrapScript, sanitizeAnalyticsPath } from './analytics-path.ts';
 import { GIFT_OCCASIONS } from './gift-occasions.ts';
 
 export const ATTRIBUTION_STORAGE_KEY = 'hsb:attribution:v1';
@@ -170,8 +170,37 @@ export function sanitizeLandingPath(raw: unknown): string | null {
   return LANDING_PATHS.has(path) ? path : OTHER_LANDING_PATH;
 }
 
-function isCanonicalLandingPath(value: unknown): value is string {
+/** True only for a value `sanitizeLandingPath` can return: an approved route, a template, or `/(other)`. */
+export function isCanonicalLandingPath(value: unknown): value is string {
   return typeof value === 'string' && (value === OTHER_LANDING_PATH || LANDING_PATHS.has(value));
+}
+
+/**
+ * The one form of a browser pathname an analytics vendor may see:
+ * `sanitizeLandingPath`'s approved route, route template or `/(other)` — and
+ * `/(other)` for anything that is not a pathname at all. A raw path — a 404
+ * someone typed, a name, a phone number, an order or provider id, a query
+ * string or a fragment — never comes out.
+ */
+export function analyticsRoutePath(raw: unknown): string {
+  return sanitizeLandingPath(raw) ?? OTHER_LANDING_PATH;
+}
+
+/**
+ * `analyticsRoutePath` as inline ES5 (`hsbSafeRoute`, after `hsbSafePath`) for
+ * the root layout's `beforeInteractive` gtag bootstrap, which runs before any
+ * module loads. Generated from the same tables, so the copy cannot drift.
+ */
+export function analyticsRouteBootstrapScript(): string {
+  const other = JSON.stringify(OTHER_LANDING_PATH);
+  return `${analyticsPathBootstrapScript()}
+var hsbRoutes = ${JSON.stringify([...LANDING_PATHS])};
+function hsbSafeRoute(path) {
+  if (typeof path !== 'string' || path.length === 0 || path.length > ${PATH_MAX_LENGTH} || path.charAt(0) !== '/') return ${other};
+  var route = hsbSafePath(path);
+  if (route.length > 1 && route.charAt(route.length - 1) === '/') route = route.slice(0, -1);
+  return hsbRoutes.indexOf(route) === -1 ? ${other} : route;
+}`;
 }
 
 function acceptCapturedAt(raw: unknown, bounds: AcceptWindow): string | null {

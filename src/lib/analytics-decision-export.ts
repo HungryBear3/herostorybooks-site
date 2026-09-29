@@ -2,9 +2,9 @@
  * Source-side export for the offline analytics decision packet.
  *
  * The packet is a separate, standalone tool with its own closed schemas and
- * vocabulary. Emitting its documents from here would couple the two
- * repositories, and its campaign/content/landing vocabulary does not contain
- * HSB's governed labels, so HSB emits its own versioned, closed export instead:
+ * vocabulary, which lacks most of HSB's governed labels. HSB keeps its own
+ * versioned, closed export and converts it for the packet only through a
+ * checked, one-to-one mapping:
  *
  *  - `hsb.decision_export.ga4_behavior` v1 — daily sessions, checkout starts
  *    (`begin_checkout`) and GA4 purchase events per governed segment. The
@@ -15,12 +15,16 @@
  *    reduces the operator-supplied response to the export: every raw GA4
  *    value is re-governed through the Phase-A allowlists or collapsed into a
  *    fixed sentinel, so raw URLs, query strings, referrer hosts, identifiers
- *    and free text cannot be represented;
- *  - a JSON Schema generated from the same rules, a deterministic synthetic
- *    fixture, and a validator for the checked-in mapping contract
- *    (config/analytics/decision-packet-mapping.v1.json) that says exactly
- *    which values the packet accepts today and which need a reviewed packet
- *    vocabulary extension.
+ *    and free text cannot be represented. A truncated report is refused; a
+ *    sampled, thresholded or "(other)"-folded one carries no attestation;
+ *  - a JSON Schema generated from the same rules, and deterministic
+ *    synthetic fixtures;
+ *  - the mapping contract (config/analytics/decision-packet-mapping.v1.json),
+ *    validated as the semantic counterpart of every HSB value inside the
+ *    pinned packet vocabulary (src/lib/decision-packet-contract.ts), and
+ *    `exportDecisionPacketGa4Behavior`, which emits the packet's own
+ *    `decision_packet.ga4_behavior` document or refuses when any value has
+ *    no counterpart there.
  *
  * Nothing here calls GA4, reads a credential, or touches the network.
  */
@@ -41,7 +45,14 @@ import {
   isPlainRecord,
   screenedString,
 } from './campaign-governance.ts';
+import {
+  DECISION_PACKET_GA4_BEHAVIOR,
+  DECISION_PACKET_PIN,
+  decisionPacketValueValid,
+  validateDecisionPacketGa4Behavior,
+} from './decision-packet-contract.ts';
 import { GA4_READONLY_SCOPE } from './ga4-admin-checklist.ts';
+import { readGa4RunReport } from './ga4-run-report.ts';
 
 export const HSB_GA4_BEHAVIOR_EXPORT_SCHEMA = 'hsb.decision_export.ga4_behavior';
 export const HSB_GA4_BEHAVIOR_EXPORT_VERSION = 1;
@@ -285,6 +296,12 @@ export function validateHsbGa4BehaviorExport(doc: unknown): string[] {
     for (const key of QUALITY_KEYS) {
       if (typeof doc.quality[key] !== 'boolean') out.add('TYPE_BOOLEAN', `$.quality.${key}`);
     }
+    // GA4 reported data loss: no day of this export can be attested complete.
+    const quality = doc.quality;
+    if (QUALITY_KEYS.some((key) => quality[key] === true)
+      && Array.isArray(doc.attested_complete_ranges) && doc.attested_complete_ranges.length > 0) {
+      out.add('ATTESTATION_CONTRADICTS_QUALITY', '$.attested_complete_ranges');
+    }
   }
   if (!Array.isArray(doc.rows) || doc.rows.length > MAX_ROWS) {
     out.add('TYPE_ARRAY', '$.rows');
@@ -316,17 +333,6 @@ export interface ExportHeaderInput {
   attestedCompleteRanges: DateRange[];
 }
 
-function headerNames(value: unknown): string | null {
-  if (!Array.isArray(value) || !value.every((item) => isPlainRecord(item) && typeof item.name === 'string')) return null;
-  return value.map((item) => item.name).join(',');
-}
-
-function cellValues(values: unknown, length: number): string[] | null {
-  if (!Array.isArray(values) || values.length !== length) return null;
-  const cells = values.map((item) => (isPlainRecord(item) && typeof item.value === 'string' ? item.value : null));
-  return cells.every((cell): cell is string => cell !== null) ? cells : null;
-}
-
 function compareRows(a: Ga4BehaviorExportRow, b: Ga4BehaviorExportRow): number {
   for (const key of ['date', ...DIMENSION_KEYS] as const) {
     if (a[key] !== b[key]) return a[key] < b[key] ? -1 : 1;
@@ -335,13 +341,24 @@ function compareRows(a: Ga4BehaviorExportRow, b: Ga4BehaviorExportRow): number {
 }
 
 /**
+ * ATTESTED: GA4 flagged no data loss, so the operator's attested ranges stand
+ * (the packet still applies its own settle lag). INSUFFICIENT_EVIDENCE: GA4
+ * sampled, thresholded or folded rows into "(other)"; the export carries those
+ * flags and no attested range.
+ */
+export type ExportCompleteness = 'ATTESTED' | 'INSUFFICIENT_EVIDENCE';
+
+/**
  * Reduce an operator-supplied GA4 `runReport` response (from
- * `buildGa4BehaviorExportRequest`) to the closed export. Rows that collapse
- * to the same governed segment are summed. Refuses — rather than repairs —
- * malformed metrics, dates outside coverage, foreign headers or timezones.
+ * `buildGa4BehaviorExportRequest`) to the closed export. The response is read
+ * only through the strict reader (src/lib/ga4-run-report.ts). Rows that
+ * collapse to the same governed segment are summed. Refuses — rather than
+ * repairs — a truncated report (GA4 reports more rows than it returned: the
+ * row cap or pagination), a malformed or ambiguous response, malformed
+ * metrics, dates outside coverage, foreign headers or timezones.
  */
 export function projectGa4BehaviorReport(response: unknown, header: ExportHeaderInput):
-  | { ok: true; document: Ga4BehaviorExport }
+  | { ok: true; document: Ga4BehaviorExport; completeness: ExportCompleteness; reasons: string[] }
   | { ok: false; issues: string[] } {
   const out = new IssueCollector();
   const refuse = () => ({ ok: false as const, issues: out.issues });
@@ -355,35 +372,25 @@ export function projectGa4BehaviorReport(response: unknown, header: ExportHeader
   if (!attested || attested.some((range) => range === null)) out.add('HEADER_INVALID', '$.attestedCompleteRanges');
   if (out.count > 0) return refuse();
 
-  if (!isPlainRecord(response)) {
-    out.add('RESPONSE_SHAPE', '$');
+  const read = readGa4RunReport(response, { dimensions: REPORT_DIMENSIONS, metrics: REPORT_METRICS, limit: MAX_ROWS });
+  if (read.ok === false) {
+    out.add(read.defect, read.path);
     return refuse();
   }
-  if (headerNames(response.dimensionHeaders) !== REPORT_DIMENSIONS.join(',') || headerNames(response.metricHeaders) !== REPORT_METRICS.join(',')) {
-    out.add('HEADERS_MISMATCH', '$');
+  const { rows, timeZone: timezone, gaps } = read.report;
+  // Rows GA4 counted but did not return cannot be summed, so no export exists.
+  if (gaps.includes('TRUNCATED')) {
+    out.add('REPORT_TRUNCATED', '$.rowCount');
     return refuse();
   }
-  const metadata = isPlainRecord(response.metadata) ? response.metadata : {};
-  const timezone = metadata.timeZone;
-  if (typeof timezone !== 'string' || !(EXPORT_TIMEZONES as readonly string[]).includes(timezone)) {
+  if (timezone === null || !(EXPORT_TIMEZONES as readonly string[]).includes(timezone)) {
     out.add('TIMEZONE_UNSUPPORTED', '$.metadata.timeZone');
-    return refuse();
-  }
-  const rows = response.rows === undefined ? [] : response.rows;
-  if (!Array.isArray(rows) || rows.length > MAX_ROWS) {
-    out.add('RESPONSE_SHAPE', '$.rows');
     return refuse();
   }
 
   const merged = new Map<string, Ga4BehaviorExportRow>();
-  rows.forEach((row, index) => {
+  rows.forEach(({ dimensions, metrics }, index) => {
     const path = `$.rows[${index}]`;
-    const dimensions = isPlainRecord(row) ? cellValues(row.dimensionValues, REPORT_DIMENSIONS.length) : null;
-    const metrics = isPlainRecord(row) ? cellValues(row.metricValues, REPORT_METRICS.length) : null;
-    if (!dimensions || !metrics) {
-      out.add('RESPONSE_SHAPE', path);
-      return;
-    }
     const [rawDate, sessionSource, sessionMedium, sessionCampaignName, sessionManualAdContent, landingPage] = dimensions;
     const date = /^\d{8}$/.test(rawDate) ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6)}` : null;
     if (!date || !isCalendarDate(date)) {
@@ -419,6 +426,11 @@ export function projectGa4BehaviorReport(response: unknown, header: ExportHeader
   });
   if (out.count > 0) return refuse();
 
+  const quality = {
+    sampled: gaps.includes('SAMPLED'),
+    thresholded: gaps.includes('THRESHOLDED'),
+    other_row: gaps.includes('OTHER_ROW'),
+  };
   const document: Ga4BehaviorExport = {
     schema: HSB_GA4_BEHAVIOR_EXPORT_SCHEMA,
     schema_version: HSB_GA4_BEHAVIOR_EXPORT_VERSION,
@@ -427,40 +439,57 @@ export function projectGa4BehaviorReport(response: unknown, header: ExportHeader
     timezone: timezone as Ga4BehaviorExport['timezone'],
     generated_at: header.generatedAt,
     coverage: { start: coverage!.start, end: coverage!.end },
-    attested_complete_ranges: attested!.map((range) => ({ start: range!.start, end: range!.end })),
-    quality: {
-      sampled: Array.isArray(metadata.samplingMetadatas) && metadata.samplingMetadatas.length > 0,
-      thresholded: metadata.subjectToThresholding === true,
-      other_row: metadata.dataLossFromOtherRow === true,
-    },
+    // GA4-reported data loss withdraws every complete-range attestation.
+    attested_complete_ranges: gaps.length > 0 ? [] : attested!.map((range) => ({ start: range!.start, end: range!.end })),
+    quality,
     rows: [...merged.values()].sort(compareRows),
   };
   // Revalidate at the boundary: the adapter's output must pass the same closed schema as any other input.
   const issues = validateHsbGa4BehaviorExport(document);
-  return issues.length > 0 ? { ok: false, issues } : { ok: true, document };
+  if (issues.length > 0) return { ok: false, issues };
+  return gaps.length > 0
+    ? { ok: true, document, completeness: 'INSUFFICIENT_EVIDENCE', reasons: [...gaps] }
+    : { ok: true, document, completeness: 'ATTESTED', reasons: [] };
 }
 
 // ── Deterministic synthetic fixture ─────────────────────────────────────────
 
-const SYNTHETIC_SEGMENTS: ReadonlyArray<{ dimensions: GovernedDimensions; base: readonly [number, number, number] }> = [
-  { dimensions: { source: 'direct', medium: 'none', campaign: 'none', content: 'not_set', landing_path: '/' }, base: [30, 2, 1] },
-  {
-    dimensions: { source: 'facebook', medium: 'paid_social', campaign: '2026-09-gifts', content: 'video-a', landing_path: '/gifts/birthdays' },
-    base: [25, 3, 1],
-  },
-  { dimensions: { source: 'newsletter', medium: 'email', campaign: 'launch', content: 'text-b', landing_path: '/' }, base: [12, 1, 0] },
-];
+type SyntheticSegments = ReadonlyArray<{ dimensions: GovernedDimensions; base: readonly [number, number, number] }>;
+
+const SYNTHETIC_SEGMENTS: Readonly<Record<SyntheticProfile, SyntheticSegments>> = {
+  // Governed HSB campaigns: the pinned packet can represent none of them.
+  governed: [
+    { dimensions: { source: 'direct', medium: 'none', campaign: 'none', content: 'not_set', landing_path: '/' }, base: [30, 2, 1] },
+    {
+      dimensions: { source: 'facebook', medium: 'paid_social', campaign: '2026-09-gifts', content: 'video-a', landing_path: '/gifts/birthdays' },
+      base: [25, 3, 1],
+    },
+    { dimensions: { source: 'newsletter', medium: 'email', campaign: 'launch', content: 'text-b', landing_path: '/' }, base: [12, 1, 0] },
+  ],
+  // Only values with a counterpart in the pinned packet vocabulary.
+  packet_representable: [
+    { dimensions: { source: 'direct', medium: 'none', campaign: 'none', content: 'not_set', landing_path: '/' }, base: [30, 2, 1] },
+    { dimensions: { source: 'google', medium: 'organic', campaign: 'none', content: 'not_set', landing_path: '/' }, base: [22, 2, 1] },
+    { dimensions: { source: 'facebook', medium: 'social', campaign: 'not_set', content: 'video-a', landing_path: '/' }, base: [14, 1, 0] },
+    { dimensions: { source: 'newsletter', medium: 'email', campaign: 'not_set', content: 'text-b', landing_path: 'other' }, base: [9, 1, 0] },
+  ],
+};
+
+export type SyntheticProfile = 'governed' | 'packet_representable';
 
 /** Synthetic, clearly-labelled fixture data — never business results. Pure function of its input. */
-export function generateSyntheticGa4BehaviorExport(input: { startDate: string; days: number }): Ga4BehaviorExport {
+export function generateSyntheticGa4BehaviorExport(input: { startDate: string; days: number; profile?: SyntheticProfile }): Ga4BehaviorExport {
   if (!isCalendarDate(input.startDate) || !Number.isSafeInteger(input.days) || input.days < 1 || input.days > MAX_EXPORT_DAYS) {
     throw new RangeError('synthetic export needs a calendar start date and 1-366 days');
   }
+  const profile = input.profile ?? 'governed';
+  if (!hasOwn(SYNTHETIC_SEGMENTS, profile)) throw new RangeError('unknown synthetic profile');
+  const segments = SYNTHETIC_SEGMENTS[profile];
   const end = addDays(input.startDate, input.days - 1);
   const rows: Ga4BehaviorExportRow[] = [];
   for (let day = 0; day < input.days; day += 1) {
     const date = addDays(input.startDate, day);
-    for (const { dimensions, base } of SYNTHETIC_SEGMENTS) {
+    for (const { dimensions, base } of segments) {
       rows.push({
         date,
         source: dimensions.source,
@@ -538,28 +567,98 @@ export function hsbGa4BehaviorExportJsonSchema(): Record<string, unknown> {
 
 const MAPPING_KEYS = ['schema', 'schema_version', 'source', 'target', 'header_fields', 'row_fields', 'value_maps', 'extensions_required'] as const;
 const MAPPED_HEADER_FIELDS = HEADER_KEYS.filter((key) => key !== 'schema' && key !== 'rows');
-const FIELD_NAME_RE = /^[a-z][a-z_]{0,39}$/;
 const EXTENSION_CODE_RE = /^PACKET_[A-Z_]{1,60}$/;
-/** Collapsing an unmappable value may only ever lose information, never keep it. */
-const MAPPING_FALLBACKS = new Set(['other']);
+/** The one mapping key that stands for every governed Phase-A campaign label. */
+const GOVERNED_CAMPAIGN = 'governed';
 
-const MAPPED_VOCABULARY: Readonly<Record<string, readonly string[]>> = {
+type MappedField = (typeof DIMENSION_KEYS)[number];
+
+const MAPPED_VOCABULARY: Readonly<Record<MappedField, readonly string[]>> = {
   source: EXPORT_SOURCES,
   medium: EXPORT_MEDIUMS,
-  campaign: ['governed', ...EXPORT_CAMPAIGN_SENTINELS],
+  campaign: [GOVERNED_CAMPAIGN, ...EXPORT_CAMPAIGN_SENTINELS],
   content: EXPORT_CONTENTS,
   landing_path: EXPORT_LANDING_PATHS,
 };
 
-function checkFieldMap(value: unknown, keys: readonly string[], path: string, out: IssueCollector): void {
+/** HSB placeholders; each must cross as the identical packet placeholder. */
+const HSB_PLACEHOLDERS: Readonly<Record<MappedField, readonly string[]>> = {
+  source: ['direct', 'not_set', 'other'],
+  medium: ['none', 'not_set', 'other'],
+  campaign: EXPORT_CAMPAIGN_SENTINELS,
+  content: ['not_set', 'other'],
+  landing_path: ['not_set', 'other'],
+};
+
+/** Packet values that name nothing in particular: a governed value mapped onto one is lost. */
+const PACKET_CATCH_ALLS: readonly string[] = ['none', 'not_set', 'other', 'referral_other'];
+const PACKET_CONTENT_FORMATS: Readonly<Record<string, string>> = { video: 'vid', image: 'img', carousel: 'car', text: 'txt' };
+
+/**
+ * The packet value that means the same thing as one HSB export value, or null
+ * when the pinned packet vocabulary has none. Placeholders map to themselves;
+ * sources, mediums and landing routes keep their name; content `{format}-{v}`
+ * is the packet's `{fmt}_{v}`. No governed campaign has one: packet campaign
+ * names need an objective and one of the packet's reviewed slugs.
+ */
+function packetCounterpart(field: MappedField, value: string): string | null {
+  let candidate: string | null = value;
+  if (field === 'campaign' && value === GOVERNED_CAMPAIGN) candidate = null;
+  else if (field === 'content' && !HSB_PLACEHOLDERS.content.includes(value)) {
+    const [format, variant] = value.split('-');
+    candidate = hasOwn(PACKET_CONTENT_FORMATS, format) ? `${PACKET_CONTENT_FORMATS[format]}_${variant}` : null;
+  }
+  return candidate !== null && decisionPacketValueValid(field, candidate, 'hsb') ? candidate : null;
+}
+
+/** Field names must be the pinned packet's, each carried by the HSB field of the same meaning (the same name). */
+function checkFieldMap(value: unknown, keys: readonly string[], packetKeys: readonly string[], path: string, out: IssueCollector): void {
   if (!checkClosedObject(value, keys, path, out)) return;
   for (const key of keys) {
     const target = value[key];
-    if (typeof target !== 'string' || !FIELD_NAME_RE.test(target)) out.add('MAPPING_TARGET_FORBIDDEN', `${path}.${key}`);
+    if (typeof target !== 'string' || !packetKeys.includes(target)) out.add('MAPPING_TARGET_NOT_IN_PACKET_SCHEMA', `${path}.${key}`);
+    else if (target !== key) out.add('MAPPING_FIELD_CORRESPONDENCE', `${path}.${key}`);
   }
 }
 
-/** Value-free issues for the mapping contract; it must cover the HSB export vocabulary exactly. */
+/** Why one value-map entry is wrong, or null; records the targets and extension codes it legitimately uses. */
+function mappingEntryIssue(
+  field: MappedField,
+  value: string,
+  entry: unknown,
+  accepted: Set<string>,
+  declared: ReadonlySet<string>,
+  used: Set<string>,
+): string | null {
+  const counterpart = packetCounterpart(field, value);
+  if (isPlainRecord(entry) && Object.keys(entry).join(',') === 'to') {
+    const target = entry.to;
+    if (typeof target !== 'string' || target.length === 0 || forbiddenValueCode(target) !== null) return 'MAPPING_TARGET_FORBIDDEN';
+    if (!decisionPacketValueValid(field, target, 'hsb')) return 'MAPPING_TARGET_NOT_IN_PACKET_VOCABULARY';
+    if (accepted.has(target)) return 'MAPPING_TARGET_DUPLICATE';
+    if (!HSB_PLACEHOLDERS[field].includes(value) && PACKET_CATCH_ALLS.includes(target)) return 'MAPPING_LOSSY';
+    if (counterpart === null) return 'MAPPING_NO_PACKET_COUNTERPART';
+    if (target !== counterpart) return 'MAPPING_SEMANTIC_MISMATCH';
+    accepted.add(target);
+    return null;
+  }
+  if (isPlainRecord(entry) && Object.keys(entry).join(',') === 'blocked') {
+    if (typeof entry.blocked !== 'string' || !declared.has(entry.blocked)) return 'MAPPING_EXTENSION_UNDECLARED';
+    if (counterpart !== null) return 'MAPPING_BLOCK_UNNECESSARY';
+    used.add(entry.blocked);
+    return null;
+  }
+  return 'MAPPING_ENTRY_INVALID';
+}
+
+/**
+ * Value-free issues for the mapping contract. It must name the pinned packet
+ * schema and commit, carry every HSB field into the packet field of the same
+ * meaning, and map every HSB export value to exactly its packet counterpart —
+ * one-to-one, never onto a catch-all such as `other` — or declare it blocked
+ * (no counterpart exists) with a declared extension code. A blocked value can
+ * never cross: the export refuses rather than falls back.
+ */
 export function validateDecisionPacketMapping(doc: unknown): string[] {
   const out = new IssueCollector();
   if (!isPlainRecord(doc)) {
@@ -580,14 +679,12 @@ export function validateDecisionPacketMapping(doc: unknown): string[] {
     out.add('MAPPING_SOURCE_SCHEMA', '$.source');
   }
   if (checkClosedObject(doc.target, ['schema', 'schema_version', 'reference_commit'], '$.target', out)) {
-    if (doc.target.schema !== DECISION_PACKET_TARGET_SCHEMA) out.add('MAPPING_TARGET_SCHEMA', '$.target.schema');
-    if (doc.target.schema_version !== 1) out.add('MAPPING_TARGET_SCHEMA', '$.target.schema_version');
-    if (typeof doc.target.reference_commit !== 'string' || !/^[0-9a-f]{7,40}$/.test(doc.target.reference_commit)) {
-      out.add('MAPPING_TARGET_SCHEMA', '$.target.reference_commit');
-    }
+    if (doc.target.schema !== DECISION_PACKET_GA4_BEHAVIOR.schema) out.add('MAPPING_TARGET_SCHEMA', '$.target.schema');
+    if (doc.target.schema_version !== DECISION_PACKET_GA4_BEHAVIOR.schemaVersion) out.add('MAPPING_TARGET_SCHEMA', '$.target.schema_version');
+    if (doc.target.reference_commit !== DECISION_PACKET_PIN.commit) out.add('MAPPING_TARGET_SCHEMA', '$.target.reference_commit');
   }
-  checkFieldMap(doc.header_fields, MAPPED_HEADER_FIELDS, '$.header_fields', out);
-  checkFieldMap(doc.row_fields, ROW_KEYS, '$.row_fields', out);
+  checkFieldMap(doc.header_fields, MAPPED_HEADER_FIELDS, DECISION_PACKET_GA4_BEHAVIOR.headerKeys, '$.header_fields', out);
+  checkFieldMap(doc.row_fields, ROW_KEYS, DECISION_PACKET_GA4_BEHAVIOR.rowKeys, '$.row_fields', out);
 
   const declared = new Set<string>();
   const extensions = doc.extensions_required;
@@ -600,7 +697,8 @@ export function validateDecisionPacketMapping(doc: unknown): string[] {
 
   const used = new Set<string>();
   if (checkClosedObject(doc.value_maps, Object.keys(MAPPED_VOCABULARY), '$.value_maps', out)) {
-    for (const [field, vocabulary] of Object.entries(MAPPED_VOCABULARY)) {
+    for (const field of DIMENSION_KEYS) {
+      const vocabulary = MAPPED_VOCABULARY[field];
       const map = doc.value_maps[field];
       const path = `$.value_maps.${field}`;
       if (!isPlainRecord(map)) {
@@ -609,21 +707,11 @@ export function validateDecisionPacketMapping(doc: unknown): string[] {
       }
       if (vocabulary.some((value) => !hasOwn(map, value))) out.add('MAPPING_INCOMPLETE', path);
       if (Object.keys(map).some((value) => !vocabulary.includes(value))) out.add('MAPPING_UNKNOWN_VALUE', path);
+      const accepted = new Set<string>();
       for (const value of vocabulary) {
         if (!hasOwn(map, value)) continue;
-        const entry = map[value];
-        const entryPath = `${path}.${value}`;
-        if (isPlainRecord(entry) && Object.keys(entry).join(',') === 'to') {
-          if (typeof entry.to !== 'string' || entry.to.length === 0 || forbiddenValueCode(entry.to) !== null) {
-            out.add('MAPPING_TARGET_FORBIDDEN', entryPath);
-          }
-        } else if (isPlainRecord(entry) && Object.keys(entry).sort().join(',') === 'blocked,fallback') {
-          if (typeof entry.blocked !== 'string' || !declared.has(entry.blocked)) out.add('MAPPING_EXTENSION_UNDECLARED', entryPath);
-          else used.add(entry.blocked);
-          if (typeof entry.fallback !== 'string' || !MAPPING_FALLBACKS.has(entry.fallback)) out.add('MAPPING_FALLBACK_INVALID', entryPath);
-        } else {
-          out.add('MAPPING_ENTRY_INVALID', entryPath);
-        }
+        const issue = mappingEntryIssue(field, value, map[value], accepted, declared, used);
+        if (issue) out.add(issue, `${path}.${value}`);
       }
     }
   }
@@ -643,7 +731,7 @@ export function summarizeDecisionPacketMapping(doc: unknown): {
     extensions_required: string[];
   };
   const blocked: Record<string, string[]> = {};
-  for (const field of Object.keys(MAPPED_VOCABULARY)) {
+  for (const field of DIMENSION_KEYS) {
     blocked[field] = Object.entries(mapping.value_maps[field])
       .filter(([, entry]) => typeof entry.blocked === 'string')
       .map(([value]) => value)
@@ -654,4 +742,89 @@ export function summarizeDecisionPacketMapping(doc: unknown): {
     blocked,
     extensions_required: [...mapping.extensions_required].sort(),
   };
+}
+
+// ── The packet's own document ───────────────────────────────────────────────
+
+export interface DecisionPacketGa4Behavior {
+  schema: typeof DECISION_PACKET_TARGET_SCHEMA;
+  schema_version: 1;
+  data_origin: Ga4BehaviorExport['data_origin'];
+  business: 'hsb';
+  timezone: Ga4BehaviorExport['timezone'];
+  generated_at: string;
+  coverage: DateRange;
+  attested_complete_ranges: DateRange[];
+  quality: Ga4BehaviorExport['quality'];
+  rows: Ga4BehaviorExportRow[];
+}
+
+/** The exact bytes a packet document is written as; its size is bounded by the packet's input limit. */
+export function serializeDecisionPacketDocument(document: DecisionPacketGa4Behavior): string {
+  return `${JSON.stringify(document, null, 2)}\n`;
+}
+
+/**
+ * The packet's own `decision_packet.ga4_behavior` v1 document for one HSB
+ * export, or a refusal before any document exists. Every value crosses
+ * through the validated mapping, so every packet value is exactly the
+ * counterpart of its HSB value and the rows map back one for one. A value
+ * with no counterpart — today every governed campaign, content variant `c`,
+ * source `telegram` and every landing route but `/` — refuses the whole
+ * export with its value-free extension code: nothing is collapsed into
+ * `other` and no row is dropped. The packet's evidence rules the HSB schema
+ * does not already imply (coverage length, ordered attested ranges, checkout
+ * starts and purchases within sessions, input size) are refused here too, and
+ * the document is revalidated against the pinned packet contract.
+ */
+export function exportDecisionPacketGa4Behavior(doc: unknown, mapping: unknown):
+  | { ok: true; document: DecisionPacketGa4Behavior }
+  | { ok: false; issues: string[] } {
+  if (validateDecisionPacketMapping(mapping).length > 0) return { ok: false, issues: ['MAPPING_INVALID@$'] };
+  const exportIssues = validateHsbGa4BehaviorExport(doc);
+  if (exportIssues.length > 0) return { ok: false, issues: exportIssues };
+  const source = doc as Ga4BehaviorExport;
+  const maps = (mapping as { value_maps: Record<MappedField, Record<string, { to?: string; blocked?: string }>> }).value_maps;
+  const out = new IssueCollector();
+
+  const coverageDays = (Date.parse(source.coverage.end) - Date.parse(source.coverage.start)) / DAY_MS + 1;
+  if (coverageDays > DECISION_PACKET_GA4_BEHAVIOR.maxCoverageDays) out.add('COVERAGE_TOO_LONG', '$.coverage');
+  let previousEnd: string | null = null;
+  source.attested_complete_ranges.forEach((range, index) => {
+    if (previousEnd !== null && range.start <= previousEnd) out.add('ATTESTED_RANGE_INVALID', `$.attested_complete_ranges[${index}]`);
+    else previousEnd = range.end;
+  });
+
+  const rows = source.rows.map((row, index) => {
+    const path = `$.rows[${index}]`;
+    if (row.checkout_starts > row.sessions || row.purchase_events > row.sessions) out.add('METRIC_INVARIANT', path);
+    const mapped = { ...row };
+    for (const field of DIMENSION_KEYS) {
+      const key = field === 'campaign' && !EXPORT_CAMPAIGN_SENTINELS.includes(row.campaign) ? GOVERNED_CAMPAIGN : row[field];
+      const entry = hasOwn(maps[field], key) ? maps[field][key] : {};
+      if (typeof entry.to === 'string') mapped[field] = entry.to;
+      else out.add(entry.blocked ?? 'MAPPING_INCOMPLETE', `${path}.${field}`);
+    }
+    return mapped;
+  });
+  if (out.count > 0) return { ok: false, issues: out.issues };
+
+  const document: DecisionPacketGa4Behavior = {
+    schema: DECISION_PACKET_TARGET_SCHEMA,
+    schema_version: 1,
+    data_origin: source.data_origin,
+    business: source.business,
+    timezone: source.timezone,
+    generated_at: source.generated_at,
+    coverage: { start: source.coverage.start, end: source.coverage.end },
+    attested_complete_ranges: source.attested_complete_ranges.map((range) => ({ start: range.start, end: range.end })),
+    quality: { sampled: source.quality.sampled, thresholded: source.quality.thresholded, other_row: source.quality.other_row },
+    rows,
+  };
+  const issues = validateDecisionPacketGa4Behavior(document);
+  if (issues.length > 0) return { ok: false, issues };
+  if (new TextEncoder().encode(serializeDecisionPacketDocument(document)).length > DECISION_PACKET_GA4_BEHAVIOR.maxInputBytes) {
+    return { ok: false, issues: ['INPUT_TOO_LARGE@$'] };
+  }
+  return { ok: true, document };
 }

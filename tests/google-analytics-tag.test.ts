@@ -13,16 +13,14 @@ test('root layout loads the Google Analytics gtag script with the production mea
   assert.match(layoutSource, /googletagmanager\.com\/gtag\/js\?id=\$\{googleAnalyticsMeasurementId\}/);
   assert.match(layoutSource, /<Script id="google-analytics-gtag" strategy="beforeInteractive">/);
   assert.match(layoutSource, /gtag\('js', new Date\(\)\)/);
-  // Paths go through hsbSafePath so bearer-like routes such as /status/<orderId>
-  // reach GA as their route template. See analytics-status-url-privacy.test.ts.
+  // Paths go through hsbSafeRoute, so GA sees only an approved route, a route
+  // template such as /status/[orderId], or /(other); the referrer is reduced to
+  // its origin. See analytics-path-boundary.test.ts.
   assert.match(
     layoutSource,
-    /var pageLocation = window\.location\.origin \+ hsbSafePath\(window\.location\.pathname\)/,
+    /var pageLocation = window\.location\.origin \+ hsbSafeRoute\(window\.location\.pathname\)/,
   );
-  assert.match(
-    layoutSource,
-    /pageReferrer = referrerUrl\.origin \+ hsbSafePath\(referrerUrl\.pathname\)/,
-  );
+  assert.match(layoutSource, /if \(!ignoreReferrer\) pageReferrer = referrerUrl\.origin;/);
   assert.match(layoutSource, /send_page_view: false/);
   assert.match(layoutSource, /page_location: pageLocation/);
   assert.match(layoutSource, /page_referrer: pageReferrer/);

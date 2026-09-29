@@ -11,8 +11,17 @@
  *       Prints the deterministic synthetic GA4-behavior export fixture.
  *   node --experimental-strip-types scripts/analytics-governance.ts schema
  *       Prints the generated JSON Schema for that export.
+ *   node --experimental-strip-types scripts/analytics-governance.ts packet-export FILE
+ *       Converts one HSB GA4-behavior export into the offline decision
+ *       packet's own `decision_packet.ga4_behavior` document through the
+ *       checked-in mapping, or refuses: any value the pinned packet cannot
+ *       represent rejects the whole export (nothing is collapsed into `other`).
+ *   node --experimental-strip-types scripts/analytics-governance.ts packet-fixture
+ *       Prints the synthetic packet document (the export of the
+ *       packet-representable synthetic fixture).
  *
- * Output is value-free: `OK <artifact>` or `REJECTED <artifact> CODE@$.path`.
+ * Output is value-free: `OK <artifact>` or `REJECTED <artifact> CODE@$.path`;
+ * a packet document is printed only on success.
  * Exit 0 when everything is accepted, 3 on any rejection, 2 on usage errors
  * or an unreadable file.
  */
@@ -21,8 +30,10 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 import {
+  exportDecisionPacketGa4Behavior,
   generateSyntheticGa4BehaviorExport,
   hsbGa4BehaviorExportJsonSchema,
+  serializeDecisionPacketDocument,
   validateDecisionPacketMapping,
 } from '../src/lib/analytics-decision-export.ts';
 import { validateExperimentRegistry, validateExperimentRegistryTransition } from '../src/lib/campaign-governance.ts';
@@ -35,13 +46,16 @@ const DEFAULTS = {
   checklist: path.join(ROOT, 'config/analytics/ga4-admin-checklist.v1.json'),
   mapping: path.join(ROOT, 'config/analytics/decision-packet-mapping.v1.json'),
 };
-/** The checked-in fixture is exactly this generator call. */
+/** The checked-in fixtures are exactly these generator calls. */
 const FIXTURE_INPUT = { startDate: '2026-09-01', days: 7 };
+const PACKET_FIXTURE_INPUT = { ...FIXTURE_INPUT, profile: 'packet_representable' } as const;
 
 class UsageError extends Error {}
 
 function usage(): never {
-  throw new UsageError('usage: analytics-governance.ts check [--registry F] [--previous F] [--checklist F] [--mapping F] | fixture | schema');
+  throw new UsageError(
+    'usage: analytics-governance.ts check [--registry F] [--previous F] [--checklist F] [--mapping F] | fixture | schema | packet-fixture | packet-export F',
+  );
 }
 
 function parseCheckArgs(args: string[]): Record<'registry' | 'previous' | 'checklist' | 'mapping', string | undefined> {
@@ -117,6 +131,30 @@ function check(args: string[]): number {
   return ok ? 0 : 3;
 }
 
+function packetExport(file: string): number {
+  const doc = readJson(file);
+  const mapping = readJson(DEFAULTS.mapping);
+  const result = doc.ok && mapping.ok ? exportDecisionPacketGa4Behavior(doc.value, mapping.value) : null;
+  if (result?.ok) {
+    process.stdout.write(serializeDecisionPacketDocument(result.document));
+    return 0;
+  }
+  const lines: string[] = [];
+  if (!doc.ok) report('decision_packet_export', ['JSON_INVALID@$'], '', lines);
+  else if (!mapping.ok) report('decision_packet_mapping', ['JSON_INVALID@$'], '', lines);
+  else if (result?.ok === false) report('decision_packet_export', result.issues, '', lines);
+  process.stdout.write(`${lines.join('\n')}\n`);
+  return 3;
+}
+
+function packetFixture(): number {
+  const mapping = readJson(DEFAULTS.mapping);
+  const result = mapping.ok ? exportDecisionPacketGa4Behavior(generateSyntheticGa4BehaviorExport(PACKET_FIXTURE_INPUT), mapping.value) : null;
+  if (!result?.ok) throw new Error('the synthetic packet fixture no longer exports');
+  process.stdout.write(serializeDecisionPacketDocument(result.document));
+  return 0;
+}
+
 function main(argv: string[]): number {
   const [command, ...rest] = argv;
   if (command === 'check') return check(rest);
@@ -128,6 +166,8 @@ function main(argv: string[]): number {
     process.stdout.write(`${JSON.stringify(hsbGa4BehaviorExportJsonSchema(), null, 2)}\n`);
     return 0;
   }
+  if (command === 'packet-fixture' && rest.length === 0) return packetFixture();
+  if (command === 'packet-export' && rest.length === 1 && !rest[0].startsWith('--')) return packetExport(rest[0]);
   return usage();
 }
 

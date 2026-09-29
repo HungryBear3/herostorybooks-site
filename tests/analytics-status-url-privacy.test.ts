@@ -178,7 +178,7 @@ test('family-review token and asset routes are collapsed to templates', async ()
   );
 });
 
-test('non-sensitive routes and event names are preserved verbatim', async () => {
+test('approved routes and event names pass through; unknown routes collapse to /(other)', async () => {
   await withAnalytics(
     {
       href: 'https://herostorybooks.com/checkout?utm_source=telegram',
@@ -196,7 +196,7 @@ test('non-sensitive routes and event names are preserved verbatim', async () => 
       const pageViews = calls
         .filter((c) => c[0] === 'event' && c[1] === 'page_view')
         .map((c) => (c[2] as Record<string, unknown>).pathname);
-      assert.deepEqual(pageViews, ['/checkout', '/gifts/birthday', '/', '/admin/orders']);
+      assert.deepEqual(pageViews, ['/checkout', '/(other)', '/', '/(other)']);
 
       const checkoutParams = eventParams(calls, 'begin_checkout');
       assert.equal(checkoutParams.pathname, '/checkout');
@@ -233,7 +233,7 @@ test('the sanitizer collapses identifier routes and leaves everything else alone
 });
 
 test('the inline gtag bootstrap config never publishes a raw status URL', async () => {
-  const { analyticsPathBootstrapScript } = await import('../src/lib/analytics-path.ts');
+  const { analyticsRouteBootstrapScript } = await import('../src/lib/attribution-contract.ts');
   const layoutSource = readFileSync(new URL('../src/app/layout.tsx', import.meta.url), 'utf8');
   const inline = layoutSource.match(
     /<Script id="google-analytics-gtag"[^>]*>\s*\{`([\s\S]*?)`\}\s*<\/Script>/,
@@ -241,7 +241,7 @@ test('the inline gtag bootstrap config never publishes a raw status URL', async 
   assert.ok(inline, 'expected an inline google-analytics-gtag bootstrap script');
   const body = inline[1]
     .replaceAll('${googleAnalyticsMeasurementId}', 'G-TEST')
-    .replaceAll('${analyticsPathBootstrapScript()}', analyticsPathBootstrapScript());
+    .replaceAll('${analyticsRouteBootstrapScript()}', analyticsRouteBootstrapScript());
   // Guard the substitution above: a new interpolation must not be silently
   // evaluated as dead literal text.
   assert.doesNotMatch(body, /\$\{/, 'unresolved interpolation in the extracted bootstrap script');
@@ -264,7 +264,7 @@ test('the inline gtag bootstrap config never publishes a raw status URL', async 
   assert.ok(config, 'expected a gtag config call');
   const params = config[2] as Record<string, unknown>;
   assert.equal(params.page_location, 'https://herostorybooks.com/status/[orderId]');
-  assert.equal(params.page_referrer, 'https://herostorybooks.com/status/[orderId]');
+  assert.equal(params.page_referrer, 'https://herostorybooks.com');
   assert.equal(params.send_page_view, false);
 
   assertNoBearerMaterial(JSON.stringify(Array.from(dataLayer).map((a) => Array.from(a))), 'gtag config');

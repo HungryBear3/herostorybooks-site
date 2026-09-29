@@ -32,6 +32,7 @@ import {
   isPlainRecord,
 } from './campaign-governance.ts';
 import { HSB_GA4_MEASUREMENT_ID } from './ga-cookie-identity.ts';
+import { readGa4RunReport } from './ga4-run-report.ts';
 
 export const GA4_ADMIN_CHECKLIST_SCHEMA = 'hsb.ga4_admin_checklist';
 export const GA4_ADMIN_CHECKLIST_VERSION = 1;
@@ -43,6 +44,7 @@ const PARAM_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
 const RESERVED_PARAM_PREFIX_RE = /^(?:google_|ga_|firebase_)/i;
 const DISPLAY_NAME_RE = /^[A-Za-z][A-Za-z0-9_ ]{0,81}$/;
 const PROPERTY_ID_RE = /^[1-9]\d{5,14}$/;
+const PROBE_ROW_LIMIT = 1000;
 
 const CHECKLIST_KEYS = [
   'schema', 'schema_version', 'event_contract_version', 'measurement_id', 'custom_dimensions', 'key_events', 'not_key_events',
@@ -238,7 +240,7 @@ export function buildGa4AdminReadbackPlan(
         dimensionFilter: {
           filter: { fieldName: 'eventName', inListFilter: { values: dimension.source_events, caseSensitive: true } },
         },
-        limit: '1000',
+        limit: String(PROBE_ROW_LIMIT),
       },
     });
   }
@@ -252,13 +254,14 @@ export interface ReadbackVerdict {
   issues: string[];
 }
 
+/** One page of an Admin API list: only the list and a string page token, which must be empty. */
 function listFrom(response: unknown, key: string): Array<Record<string, unknown>> | ReadbackVerdict {
-  if (!isPlainRecord(response)) return { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] };
+  const invalid: ReadbackVerdict = { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] };
+  if (!isPlainRecord(response) || Object.keys(response).some((field) => field !== key && field !== 'nextPageToken')) return invalid;
   const list = hasOwn(response, key) ? response[key] : [];
-  if (!Array.isArray(list) || !list.every(isPlainRecord)) return { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] };
-  if (typeof response.nextPageToken === 'string' && response.nextPageToken !== '') {
-    return { verdict: 'INCONCLUSIVE', issues: ['RESPONSE_PAGINATED'] };
-  }
+  if (!Array.isArray(list) || !list.every(isPlainRecord)) return invalid;
+  if (hasOwn(response, 'nextPageToken') && typeof response.nextPageToken !== 'string') return invalid;
+  if (response.nextPageToken) return { verdict: 'INCONCLUSIVE', issues: ['RESPONSE_PAGINATED'] };
   return list;
 }
 
@@ -278,8 +281,10 @@ export function evaluateCustomDimensionsReadback(checklist: unknown, response: u
   const issues: string[] = [];
   if (list.some((item) => !expected.has(item.parameterName as string))) issues.push('UNEXPECTED_DIMENSION');
   for (const [name, item] of expected) {
-    const actual = list.find((entry) => entry.parameterName === name);
+    const matches = list.filter((entry) => entry.parameterName === name);
+    const actual = matches[0];
     if (!actual) issues.push(`MISSING_DIMENSION:${name}`);
+    else if (matches.length > 1) issues.push(`DUPLICATE_DIMENSION:${name}`);
     else if (actual.scope !== item.scope) issues.push(`SCOPE_MISMATCH:${name}`);
     else if (actual.displayName !== item.display_name) issues.push(`DISPLAY_NAME_MISMATCH:${name}`);
   }
@@ -297,49 +302,42 @@ export function evaluateKeyEventsReadback(checklist: unknown, response: unknown)
   const issues: string[] = [];
   if (list.some((item) => !expected.has(item.eventName as string))) issues.push('UNEXPECTED_KEY_EVENT');
   for (const [name, countingMethod] of expected) {
-    const actual = list.find((item) => item.eventName === name);
+    const matches = list.filter((item) => item.eventName === name);
+    const actual = matches[0];
     if (!actual) issues.push(`MISSING_KEY_EVENT:${name}`);
+    else if (matches.length > 1) issues.push(`DUPLICATE_KEY_EVENT:${name}`);
     else if (actual.countingMethod !== countingMethod) issues.push(`COUNTING_METHOD_MISMATCH:${name}`);
   }
   return verdictOf(issues);
 }
 
-function headerNames(value: unknown): string[] | null {
-  if (!Array.isArray(value) || !value.every((item) => isPlainRecord(item) && typeof item.name === 'string')) return null;
-  return value.map((item) => item.name as string);
-}
-
 /**
- * A dimension probe matches when every reported value of the dimension is
- * inside the contract's vocabulary (or GA4's `(not set)`) and arrives only on
- * the dimension's source events. Values are never echoed.
+ * A dimension probe matches when the report is complete and well formed (read
+ * through src/lib/ga4-run-report.ts) and every reported value of the
+ * dimension is inside the contract's vocabulary (or GA4's `(not set)`) and
+ * arrives only on the dimension's source events. A value outside the contract
+ * is a MISMATCH even in an incomplete report; otherwise a sampled,
+ * thresholded, `(other)`-folded or truncated report is INCONCLUSIVE, never
+ * MATCH. Values are never echoed.
  */
 export function evaluateDimensionProbe(checklist: unknown, parameterName: string, response: unknown): ReadbackVerdict {
   if (validateGa4AdminChecklist(checklist).length > 0) return { verdict: 'INVALID_REQUEST', issues: ['CHECKLIST_INVALID'] };
   const dimension = dimensionsOf(checklist as Record<string, unknown>).find((item) => item.parameter_name === parameterName);
   if (!dimension) return { verdict: 'INVALID_REQUEST', issues: ['DIMENSION_NOT_IN_CHECKLIST'] };
-  if (!isPlainRecord(response)) return { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] };
-  const dimensions = headerNames(response.dimensionHeaders);
-  const metrics = headerNames(response.metricHeaders);
-  if (dimensions?.join(',') !== `eventName,customEvent:${parameterName}` || metrics?.join(',') !== 'eventCount') {
-    return { verdict: 'INVALID_RESPONSE', issues: ['HEADERS_MISMATCH'] };
-  }
-  const rows = hasOwn(response, 'rows') && response.rows !== undefined ? response.rows : [];
-  if (!Array.isArray(rows)) return { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] };
-  if (rows.length === 0) return { verdict: 'NO_DATA', issues: [] };
+  const read = readGa4RunReport(response, {
+    dimensions: ['eventName', `customEvent:${parameterName}`],
+    metrics: ['eventCount'],
+    limit: PROBE_ROW_LIMIT,
+  });
+  if (read.ok === false) return { verdict: 'INVALID_RESPONSE', issues: [read.defect] };
+  const { rows, gaps } = read.report;
   const issues = new Set<string>();
-  for (const row of rows) {
-    const values = isPlainRecord(row) && Array.isArray(row.dimensionValues) ? row.dimensionValues : null;
-    const counts = isPlainRecord(row) && Array.isArray(row.metricValues) ? row.metricValues : null;
-    const eventName = isPlainRecord(values?.[0]) ? values[0].value : undefined;
-    const value = isPlainRecord(values?.[1]) ? values[1].value : undefined;
-    const count = isPlainRecord(counts?.[0]) ? counts[0].value : undefined;
-    if (values?.length !== 2 || counts?.length !== 1 || typeof eventName !== 'string' || typeof value !== 'string'
-      || typeof count !== 'string' || !/^\d+$/.test(count)) {
-      return { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] };
-    }
+  for (const { dimensions: [eventName, value], metrics: [count] } of rows) {
+    if (!/^\d+$/.test(count)) return { verdict: 'INVALID_RESPONSE', issues: ['METRIC_INVALID'] };
     if (!dimension.source_events.includes(eventName)) issues.add('UNEXPECTED_EVENT');
     else if (value !== '(not set)' && !ga4DimensionValueAllowed(eventName, parameterName, value)) issues.add('UNEXPECTED_VALUE');
   }
-  return verdictOf([...issues]);
+  if (issues.size > 0) return verdictOf([...issues]);
+  if (gaps.length > 0) return { verdict: 'INCONCLUSIVE', issues: [...gaps] };
+  return rows.length === 0 ? { verdict: 'NO_DATA', issues: [] } : verdictOf([]);
 }

@@ -8,7 +8,7 @@
   "target": {
     "schema": "decision_packet.ga4_behavior",
     "schema_version": 1,
-    "reference_commit": "d64d095"
+    "reference_commit": "d64d095f361dc10b939289a8787f25dc6d5d925c"
   },
   "header_fields": {
     "schema_version": "schema_version",
@@ -58,8 +58,7 @@
         "to": "tiktok"
       },
       "telegram": {
-        "blocked": "PACKET_SOURCE_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_SOURCE_VOCABULARY_MISSING"
       },
       "direct": {
         "to": "direct"
@@ -102,8 +101,7 @@
     },
     "campaign": {
       "governed": {
-        "blocked": "PACKET_CAMPAIGN_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_CAMPAIGN_VOCABULARY_MISSING"
       },
       "none": {
         "to": "none"
@@ -123,8 +121,7 @@
         "to": "vid_b"
       },
       "video-c": {
-        "blocked": "PACKET_CONTENT_VARIANT_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_CONTENT_VARIANT_MISSING"
       },
       "image-a": {
         "to": "img_a"
@@ -133,8 +130,7 @@
         "to": "img_b"
       },
       "image-c": {
-        "blocked": "PACKET_CONTENT_VARIANT_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_CONTENT_VARIANT_MISSING"
       },
       "carousel-a": {
         "to": "car_a"
@@ -143,8 +139,7 @@
         "to": "car_b"
       },
       "carousel-c": {
-        "blocked": "PACKET_CONTENT_VARIANT_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_CONTENT_VARIANT_MISSING"
       },
       "text-a": {
         "to": "txt_a"
@@ -153,8 +148,7 @@
         "to": "txt_b"
       },
       "text-c": {
-        "blocked": "PACKET_CONTENT_VARIANT_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_CONTENT_VARIANT_MISSING"
       },
       "not_set": {
         "to": "not_set"
@@ -168,52 +162,40 @@
         "to": "/"
       },
       "/about": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "/pricing": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "/samples": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "/gifts": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "/gifts/birthdays": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "/gifts/grandparents": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "/gifts/siblings": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "/gifts/pets": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "/gifts/holidays": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "/gifts/child-as-hero": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "/checkout": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "/create/your-memory": {
-        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING",
-        "fallback": "other"
+        "blocked": "PACKET_LANDING_PATH_VOCABULARY_MISSING"
       },
       "not_set": {
         "to": "not_set"

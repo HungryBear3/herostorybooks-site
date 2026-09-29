@@ -259,3 +259,76 @@ test('a dimension probe accepts only contract vocabulary and never echoes a valu
   };
   assert.deepEqual(evaluateDimensionProbe(doc, 'hsb_ft_campaign', campaignProbe), { verdict: 'MISMATCH', issues: ['UNEXPECTED_VALUE'] });
 });
+
+// ── MATCH rests only on a complete, exactly-shaped report ──────────────────
+
+test('the reviewer reproducer: a truncated, sampled, thresholded, other-row probe is never MATCH', () => {
+  const response = {
+    dimensionHeaders: [{ name: 'eventName' }, { name: 'customEvent:step_id' }],
+    metricHeaders: [{ name: 'eventCount' }],
+    rows: [{ dimensionValues: [{ value: 'checkout_step_view' }, { value: 'people' }], metricValues: [{ value: '1' }] }],
+    rowCount: 1001,
+    metadata: {
+      subjectToThresholding: true,
+      dataLossFromOtherRow: true,
+      samplingMetadatas: [{ samplesReadCount: '1', samplingSpaceSize: '100' }],
+    },
+  };
+  assert.deepEqual(evaluateDimensionProbe(checklist(), 'step_id', response),
+    { verdict: 'INCONCLUSIVE', issues: ['SAMPLED', 'THRESHOLDED', 'OTHER_ROW', 'TRUNCATED'] });
+});
+
+test('a dimension probe is MATCH only for a complete, well-formed report', () => {
+  const doc = checklist();
+  const one = probeResponse([['checkout_step_view', 'people', '1']]);
+  const full = probeResponse(Array.from({ length: 1000 }, () => ['checkout_step_view', 'people', '1'] as [string, string, string]));
+  const withRow = (row: Record<string, unknown>) => ({ ...one, rows: [row] });
+  const cases: Array<[string, unknown, { verdict: string; issues: string[] }]> = [
+    ['a full page and more rows beyond the cap', { ...full, rowCount: 1001 }, { verdict: 'INCONCLUSIVE', issues: ['TRUNCATED'] }],
+    ['rowCount above the rows received', { ...one, rowCount: 2 }, { verdict: 'INCONCLUSIVE', issues: ['TRUNCATED'] }],
+    ['rowCount without rows', { ...probeResponse([]), rowCount: 3 }, { verdict: 'INCONCLUSIVE', issues: ['TRUNCATED'] }],
+    ['sampled', { ...one, metadata: { ...one.metadata, samplingMetadatas: [{ samplesReadCount: '1', samplingSpaceSize: '2' }] } },
+      { verdict: 'INCONCLUSIVE', issues: ['SAMPLED'] }],
+    ['thresholded', { ...one, metadata: { ...one.metadata, subjectToThresholding: true } }, { verdict: 'INCONCLUSIVE', issues: ['THRESHOLDED'] }],
+    ['other row', { ...one, metadata: { ...one.metadata, dataLossFromOtherRow: true } }, { verdict: 'INCONCLUSIVE', issues: ['OTHER_ROW'] }],
+    ['no rows but thresholded', { ...probeResponse([]), metadata: { subjectToThresholding: true } },
+      { verdict: 'INCONCLUSIVE', issues: ['THRESHOLDED'] }],
+    ['extra dimension cell', withRow({ dimensionValues: [{ value: 'checkout_step_view' }, { value: 'people' }, { value: 'x' }], metricValues: [{ value: '1' }] }),
+      { verdict: 'INVALID_RESPONSE', issues: ['ROW_SHAPE'] }],
+    ['extra metric cell', withRow({ dimensionValues: [{ value: 'checkout_step_view' }, { value: 'people' }], metricValues: [{ value: '1' }, { value: '2' }] }),
+      { verdict: 'INVALID_RESPONSE', issues: ['ROW_SHAPE'] }],
+    ['rowCount below the rows received', { ...one, rowCount: 0 }, { verdict: 'INVALID_RESPONSE', issues: ['ROW_COUNT_INVALID'] }],
+    ['rowCount missing beside rows', (() => { const r: Record<string, unknown> = { ...one }; delete r.rowCount; return r; })(),
+      { verdict: 'INVALID_RESPONSE', issues: ['ROW_COUNT_INVALID'] }],
+    ['unrequested response field', { ...one, nextPageToken: 'x' }, { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] }],
+    ['unknown metadata field', { ...one, metadata: { ...one.metadata, partial: true } }, { verdict: 'INVALID_RESPONSE', issues: ['METADATA_INVALID'] }],
+    ['non-numeric count', probeResponse([['checkout_step_view', 'people', 'many']]), { verdict: 'INVALID_RESPONSE', issues: ['METRIC_INVALID'] }],
+    ['a received leak is definitive even when truncated', { ...probeResponse([['checkout_step_view', 'jane@example.com', '1']]), rowCount: 5 },
+      { verdict: 'MISMATCH', issues: ['UNEXPECTED_VALUE'] }],
+  ];
+  for (const [label, response, expected] of cases) {
+    const result = evaluateDimensionProbe(doc, 'step_id', response);
+    assert.deepEqual(result, expected, label);
+    assert.doesNotMatch(JSON.stringify(result), /jane|people/, label);
+  }
+  assert.deepEqual(evaluateDimensionProbe(doc, 'step_id', full), { verdict: 'MATCH', issues: [] }, 'a complete full page still matches');
+});
+
+test('Admin list readbacks fail closed on malformed pagination, unknown fields and duplicate entries', () => {
+  const doc = checklist();
+  assert.deepEqual(evaluateCustomDimensionsReadback(doc, { customDimensions: adminDimensions(), nextPageToken: 5 }),
+    { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] });
+  assert.deepEqual(evaluateCustomDimensionsReadback(doc, { customDimensions: adminDimensions(), partial: true }),
+    { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] });
+  const userDuplicate = [...adminDimensions(), { parameterName: 'step_id', displayName: 'Checkout step', scope: 'USER' }];
+  assert.deepEqual(evaluateCustomDimensionsReadback(doc, { customDimensions: userDuplicate }),
+    { verdict: 'MISMATCH', issues: ['DUPLICATE_DIMENSION:step_id'] });
+
+  const purchase = { name: 'properties/123456789/keyEvents/1', eventName: 'purchase', countingMethod: 'ONCE_PER_EVENT' };
+  assert.deepEqual(evaluateKeyEventsReadback(doc, { keyEvents: [purchase, { ...purchase, countingMethod: 'ONCE_PER_SESSION' }] }),
+    { verdict: 'MISMATCH', issues: ['DUPLICATE_KEY_EVENT:purchase'] });
+  assert.deepEqual(evaluateKeyEventsReadback(doc, { keyEvents: [purchase], nextPageToken: 'next' }),
+    { verdict: 'INCONCLUSIVE', issues: ['RESPONSE_PAGINATED'] });
+  assert.deepEqual(evaluateKeyEventsReadback(doc, { keyEvents: [purchase], nextPageToken: null }),
+    { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] });
+});
