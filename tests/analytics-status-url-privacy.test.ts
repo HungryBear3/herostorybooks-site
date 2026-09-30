@@ -1,8 +1,8 @@
 // Order-status URLs are bearer-like: /status/ord_<id> identifies an order to
 // anyone holding the link, and operators append ?email=<buyer> to it. None of
-// that may reach Google Analytics, Vercel Analytics, or the window.hsbEvents
-// buffer. These tests pin the sanitized shape for both the explicit-pathname
-// path (AnalyticsPageView -> trackPageView) and the default page-location path
+// that may reach Google Analytics or the window.hsbEvents buffer. These tests
+// pin the sanitized shape for both the explicit-pathname path
+// (AnalyticsPageView -> trackPageView) and the default page-location path
 // (track() reading window.location), plus the referrer and the inline gtag
 // bootstrap config in the root layout.
 import assert from 'node:assert/strict';
@@ -270,74 +270,11 @@ test('the inline gtag bootstrap config never publishes a raw status URL', async 
   assertNoBearerMaterial(JSON.stringify(Array.from(dataLayer).map((a) => Array.from(a))), 'gtag config');
 });
 
-// Vercel Web Analytics is the other vendor mounted on every page. Its
-// `beforeSend` hook sees both the component's automatic page views and the
-// custom events track() forwards, and the event URL is a full URL — so
-// stripping the query string alone still hands Vercel the bearer segment
-// sitting in the path. On /family-review/review/<token> that segment IS the
-// parent's sole access credential, and the family-review CSP that blocks GA4
-// explicitly permits this same-origin channel.
-test('Vercel Analytics event URLs are redacted, not merely de-queried', async () => {
-  const { sanitizeVercelAnalyticsUrl } = await import('../src/lib/analytics-path.ts');
-  const origin = 'https://herostorybooks.com';
-  const cases: Array<[string, string]> = [
-    [STATUS_URL, `${origin}/status/[orderId]`],
-    [`${origin}${STATUS_PATH}`, `${origin}/status/[orderId]`],
-    // Relative event URLs resolve against the current origin.
-    [`${STATUS_PATH}?email=${BUYER_EMAIL}`, `${origin}/status/[orderId]`],
-    [`${origin}/review/${ORDER_ID}?token=rvw_secret_bearer`, `${origin}/review/[orderId]`],
-    [`${origin}/checkout?childName=Private#top`, `${origin}/checkout`],
-    [`${origin}/gifts/birthday`, `${origin}/gifts/birthday`],
-    [`${origin}/`, `${origin}/`],
-  ];
-  for (const [input, expected] of cases) {
-    assert.equal(
-      sanitizeVercelAnalyticsUrl(input, origin, '/'),
-      expected,
-      `sanitizeVercelAnalyticsUrl(${input})`,
-    );
-  }
-  assertNoBearerMaterial(
-    JSON.stringify(cases.map(([input]) => sanitizeVercelAnalyticsUrl(input, origin, '/'))),
-    'vercel analytics urls',
-  );
-});
-
-test('the family-review bearer token never reaches Vercel Analytics', async () => {
-  const { sanitizeVercelAnalyticsUrl } = await import('../src/lib/analytics-path.ts');
-  const origin = 'https://herostorybooks.com';
-  const token = 'frv_testfixturetoken01';
-  const assetId = 'asset_44c1';
-
-  assert.equal(
-    sanitizeVercelAnalyticsUrl(`${origin}/family-review/review/${token}`, origin, '/'),
-    `${origin}/family-review/review/[reviewToken]`,
-  );
-  const withAsset = sanitizeVercelAnalyticsUrl(
-    `${origin}/family-review/review/${token}/image/${assetId}`,
-    origin,
-    '/',
-  );
-  assert.equal(withAsset, `${origin}/family-review/review/[reviewToken]/image/[assetId]`);
-  assert.doesNotMatch(withAsset, new RegExp(token), 'leaked the family-review bearer token');
-  assert.doesNotMatch(withAsset, new RegExp(assetId), 'leaked the asset id');
-});
-
-test('the unparseable-URL fallback sanitizes the current location too', async () => {
-  const { sanitizeVercelAnalyticsUrl } = await import('../src/lib/analytics-path.ts');
-  // An empty base makes URL() throw, exercising the fallback branch.
-  assert.equal(sanitizeVercelAnalyticsUrl(STATUS_PATH, '', STATUS_PATH), '/status/[orderId]');
-});
-
-test('SafeVercelAnalytics routes beforeSend through the shared redactor', () => {
-  const source = readFileSync(
-    new URL('../src/components/safe-vercel-analytics.tsx', import.meta.url),
-    'utf8',
-  );
-  assert.match(source, /beforeSend=/);
-  assert.match(source, /sanitizeVercelAnalyticsUrl\(/);
-  assert.match(source, /from ["']@\/lib\/analytics-path["']/);
-  // No local copy that rebuilds the URL from the unredacted pathname.
-  assert.doesNotMatch(source, /\$\{url\.origin\}\$\{url\.pathname\}/);
-  assert.doesNotMatch(source, /\$\{window\.location\.origin\}\$\{window\.location\.pathname\}/);
+// Vercel Web Analytics used to be a second sink here. Its route (`dp`) and
+// cross-origin referrer (`r`) bypass `beforeSend`, so no URL redactor could
+// make it safe; it is removed rather than sanitized. See
+// vercel-analytics-removed.test.ts for the absence proofs.
+test('no Vercel-specific URL redactor survives to suggest the sink is governed', async () => {
+  const pathModule = await import('../src/lib/analytics-path.ts');
+  assert.equal('sanitizeVercelAnalyticsUrl' in pathModule, false);
 });

@@ -1,9 +1,8 @@
 // Thin analytics shim. Calls window.gtag if it's loaded; otherwise no-ops.
-// Also forwards to Vercel Analytics if available, so the A/B test isn't dark
-// when GA isn't wired yet.
+// Vercel Web Analytics is intentionally not a sink: its route and referrer
+// fields cannot be redacted at the final boundary (docs/analytics/README.md).
 import type { CoverVariant } from './cover-variant';
 import { sanitizeAnalyticsUrl } from './analytics-path.ts';
-import { track as trackVercelEvent } from '@vercel/analytics';
 import { analyticsRoutePath, currentBrowserCampaignParams } from './attribution-contract.ts';
 import { projectBrowserEventParams } from './analytics-event-contract.ts';
 
@@ -35,7 +34,6 @@ export function trackCoverEvent(name: CoverEventName, params: Record<string, unk
     if (typeof window.gtag === 'function') {
       window.gtag('event', name, googleSafeProps(eventParams));
     }
-    trackVercelEvent(name, vercelSafeProps(eventParams));
   } catch {
     /* never let analytics throw into the UI */
   }
@@ -60,14 +58,12 @@ export function trackCheckoutStart(variant: CoverVariant) {
 // ── Generic HSB event layer ────────────────────────────────────────────────
 //
 // Why this lives alongside the cover-variant helpers: both paths forward to
-// Google Analytics when gtag is available and to Vercel Analytics through its
-// official client helper. This lower-level layer records every funnel event
-// locally and forwards it when the runtime is mounted:
+// Google Analytics when gtag is available. This lower-level layer records
+// every funnel event locally and forwards it when the runtime is mounted:
 //
 //   - pushes to `window.hsbEvents` (in-memory buffer; inspectable from
 //     DevTools and Playwright tests),
 //   - calls gtag exactly once instead of also pushing a GTM-style event object,
-//   - forwards through the official Vercel Analytics `track` helper,
 //   - attaches only governed campaign fields from the attribution contract,
 //   - console-logs in non-production OR when
 //     NEXT_PUBLIC_HSB_ANALYTICS_DEBUG=true,
@@ -124,10 +120,10 @@ function googleCampaignFields(campaign: CampaignParams): Record<string, string> 
   };
 }
 
-type VercelAnalyticsProps = Record<string, string | number | boolean | null>;
+type ScalarProps = Record<string, string | number | boolean | null>;
 
-function vercelSafeProps(input: Record<string, unknown>): VercelAnalyticsProps {
-  const props: VercelAnalyticsProps = {};
+function scalarGovernedProps(input: Record<string, unknown>): ScalarProps {
+  const props: ScalarProps = {};
   for (const [key, value] of Object.entries(governedProps(input))) {
     if (key === 'event' || key === 'href' || value === undefined) continue;
     if (value === null) {
@@ -203,7 +199,7 @@ function sanitizedPageReferrer(): string {
 
 function googleSafeProps(input: Record<string, unknown>): Record<string, unknown> {
   const props: Record<string, unknown> = {
-    ...vercelSafeProps(input),
+    ...scalarGovernedProps(input),
     ...googleCampaignFields(currentBrowserCampaignParams()),
   };
   const pageLocation = sanitizedPageLocation();
@@ -274,9 +270,6 @@ export function track(
     window.hsbEvents.push(record);
     if (typeof window.gtag === 'function') {
       window.gtag('event', event, googleSafeProps(record));
-    }
-    if (event !== 'page_view') {
-      trackVercelEvent(event, vercelSafeProps(record));
     }
   } catch {
     /* never throw from analytics */

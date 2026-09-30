@@ -4,7 +4,7 @@
 // mount, (b) emitted only on the real validation outcome, and (c) free of any
 // buyer- or child-authored content. The adversarial test below plants a
 // distinctive fake token in every free-form field and proves none of it
-// reaches the event buffer, gtag, or Vercel Analytics.
+// reaches the event buffer or gtag.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

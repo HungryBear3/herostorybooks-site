@@ -2,10 +2,11 @@
  * The checked-in GA4 event contract, executed against the real emitters.
  *
  * `track()` and `trackCoverEvent()` are the only browser writers. Every call
- * they make to gtag, Vercel and the local `hsbEvents` buffer must be exactly
- * the contract's closed parameter set — under a hostile URL (query, fragment,
+ * they make to gtag and the local `hsbEvents` buffer must be exactly the
+ * contract's closed parameter set — under a hostile URL (query, fragment,
  * identifier path), a hostile referrer, tampered attribution storage, and
- * hostile caller props — and a purchase can never be written by the browser.
+ * hostile caller props — nothing reaches Vercel Analytics, and a purchase can
+ * never be written by the browser.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -42,7 +43,7 @@ function assertConforms(calls: unknown[][]) {
   for (const call of calls) assert.deepEqual(checkGa4BrowserEventCall(call), [], JSON.stringify(call));
 }
 
-// ── Exact serialized GA4 / Vercel boundary ──────────────────────────────────
+// ── Exact serialized GA4 boundary; no Vercel sink ───────────────────────────
 
 test('page_view on an identifier route with hostile query, fragment, referrer and storage is exact', async () => {
   await withBrowser({
@@ -64,7 +65,7 @@ test('page_view on an identifier route with hostile query, fragment, referrer an
     assert.deepEqual(f.win.hsbEvents, [{
       event: 'page_view', timestamp: NOW, href: 'https://herostorybooks.com/status/[orderId]', pathname: '/status/[orderId]',
     }]);
-    assert.deepEqual(f.vercel, [], 'page views are not forwarded as Vercel custom events');
+    assert.deepEqual(f.vercel, [], 'Vercel Analytics is not a sink');
     assertConforms(f.gtag);
   });
 });
@@ -109,10 +110,7 @@ test('begin_checkout keeps only contract params and the governed campaign under 
       page_referrer: '',
       ignore_referrer: true,
     }]]);
-    assert.deepEqual(f.vercel, [['event', {
-      name: 'begin_checkout',
-      data: { timestamp: NOW, pathname: '/checkout', bookFormat: 'premium', ...governed },
-    }]]);
+    assert.deepEqual(f.vercel, [], 'custom events are not sent to Vercel Analytics');
     assertConforms(f.gtag);
     assert.doesNotMatch(JSON.stringify({ gtag: f.gtag, vercel: f.vercel, events: f.win.hsbEvents }), LEAK);
   });
@@ -166,12 +164,7 @@ test('a storage-restored free-text theme never reaches a vendor; catalog themes 
       ['event', 'story_selected', { ...layer, theme: 'brave-explorer' }],
       ['event', 'story_selected', { ...layer }],
     ]);
-    assert.deepEqual(f.vercel.map((call) => (call[1] as { data: unknown }).data), [
-      { timestamp: NOW, pathname: '/checkout', ...intent },
-      { timestamp: NOW, pathname: '/checkout', ...intent },
-      { timestamp: NOW, pathname: '/checkout', theme: 'brave-explorer' },
-      { timestamp: NOW, pathname: '/checkout' },
-    ]);
+    assert.deepEqual(f.vercel, [], 'custom events are not sent to Vercel Analytics');
     assertConforms(f.gtag);
     assert.doesNotMatch(JSON.stringify({ gtag: f.gtag, vercel: f.vercel, events: f.win.hsbEvents }), LEAK);
   });
@@ -192,10 +185,7 @@ test('cover events carry only the closed variant; a free-form page label is drop
       ['event', 'cover_variant_shown', { variant: 'B', ...layer }],
       ['event', 'preview_click', { ...layer }],
     ]);
-    assert.deepEqual(f.vercel, [
-      ['event', { name: 'cover_variant_shown', data: { variant: 'B', utm_source: 'google', utm_medium: 'cpc' } }],
-      ['event', { name: 'preview_click', data: { utm_source: 'google', utm_medium: 'cpc' } }],
-    ]);
+    assert.deepEqual(f.vercel, [], 'cover events are not sent to Vercel Analytics');
     assertConforms(f.gtag);
   });
 });

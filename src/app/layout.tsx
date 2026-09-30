@@ -1,7 +1,6 @@
 import './globals.css';
 import type { Metadata } from 'next';
 import Script from 'next/script';
-import { SafeVercelAnalytics } from '@/components/safe-vercel-analytics';
 import { AnalyticsPageView } from '@/components/analytics-page-view';
 import { analyticsRouteBootstrapScript } from '@/lib/attribution-contract';
 
@@ -61,7 +60,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         ) : null}
       </head>
       <body className="bg-cream text-gray-900">
-        <SafeVercelAnalytics />
         <AnalyticsPageView />
         {children}
       </body>

@@ -2,7 +2,8 @@
  * A controllable browser for analytics boundary tests.
  *
  * Installs `window`/`document` globals with a real URL location, a Map-backed
- * localStorage, recording gtag and Vercel (`window.va`) sinks, and a document
+ * localStorage, a recording gtag sink, a recording Vercel (`window.va`) trap
+ * that must stay empty because Vercel Analytics is not a sink, and a document
  * that records — and refuses — any attempt to create or attach an element, so
  * a test can prove that no third-party script was loaded. `Date.now` is pinned
  * so serialized timestamps are literal. Everything is restored afterwards.

@@ -19,6 +19,27 @@ GA4, Meta, Stripe or Vercel.
 | Funnel diagnostics | `src/lib/ga4-funnel-diagnostics.ts`, `scripts/funnel-diagnostics.ts`, [`funnel.md`](funnel.md) | Read-only request plan + closed `hsb.funnel_diagnostics` v1 report; no new events |
 | Meta browser | `src/lib/meta-pixel-candidate.ts` | Candidate, not mounted, cannot activate (no consent surface) |
 | Meta server (CAPI) | `src/lib/meta-capi-status.ts` | `DEFERRED`: frozen, null event, no transport |
+| Vercel Web Analytics | none (`tests/vercel-analytics-removed.test.ts`) | Intentionally not mounted; no dependency, no custom-event forwarding |
+
+GA4 is the behavioral authority. The signed Stripe webhook and the order
+ledger remain the payment authority.
+
+### Why Vercel Web Analytics is not mounted
+
+`@vercel/analytics@1.6.1` and the hosted insights script send the route
+(`dp`) and, on cross-origin arrival and with every custom event, the raw
+`document.referrer` (`r`). Neither passes through `beforeSend`, and neither
+can be redacted by passing a route or path: on a route without dynamic params
+the SDK folds query-string keys into `dp`, a typed 404 goes out verbatim, and
+a referring page with a permissive referrer policy delivers its full path and
+query in `r`. Final-boundary privacy for those fields cannot be guaranteed, so
+the channel is removed rather than sanitized: HSB collects less instead of
+running an ungoverned second channel.
+
+Code removal alone stops app-originated collection. Owner follow-up after
+this is deployed: disable Web Analytics for the project in the Vercel
+dashboard, so a future remount or config drift cannot silently resume
+collection. Remounting requires a new privacy review of `dp` and `r`.
 
 Check everything offline:
 
@@ -310,9 +331,6 @@ one GA4 purchase and contacts no Meta host.
   segment-day. GA4 counts every `begin_checkout`, so a real segment-day can
   exceed its sessions; the export then refuses (`METRIC_INVARIANT`) rather than
   clamp. Needs a ruling before real exports.
-- Vercel Web Analytics' automatic page views keep an unknown route verbatim
-  (identifier routes and queries are still redacted). Outside the GA boundary
-  closed here; left for a ruling.
 - `begin_checkout` accepts an optional `bookFormat` although the live call
   site sends none (a closed enum kept so the Phase-A boundary test holds).
 - Packet-side defect, closed on the HSB side: the pinned validator raises an

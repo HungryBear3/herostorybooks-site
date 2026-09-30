@@ -68,7 +68,7 @@ test('the reviewer reproducer: trackPageView(callerPath) collapses a hostile cal
   });
 });
 
-test('track() on a hostile page serializes only the approved route to GA, Vercel and the buffer', async () => {
+test('track() on a hostile page serializes only the approved route to GA and the buffer, and nothing to Vercel', async () => {
   for (const [label, path, route] of HOSTILE_PATHS) {
     await withBrowser({ href: `${ORIGIN}${path}`, referrer: HOSTILE_REFERRER, now: NOW }, (f) => {
       track('begin_checkout', { bookFormat: 'digital' });
@@ -80,7 +80,7 @@ test('track() on a hostile page serializes only the approved route to GA, Vercel
         page_location: `${ORIGIN}${route}`,
         page_referrer: 'https://mail.example',
       }]], label);
-      assert.deepEqual(f.vercel, [['event', { name: 'begin_checkout', data: { timestamp: NOW, pathname: route, bookFormat: 'digital' } }]], label);
+      assert.deepEqual(f.vercel, [], label);
       assert.deepEqual(f.win.hsbEvents, [{
         event: 'begin_checkout', timestamp: NOW, href: `${ORIGIN}${route}`, pathname: route, bookFormat: 'digital',
       }], label);

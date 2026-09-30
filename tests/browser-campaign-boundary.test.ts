@@ -79,9 +79,10 @@ for (const transition of ['partial', 'direct', 'tampered'] as const) {
       assert.match(params.page_location as string, /^https:\/\/herostorybooks\.com\/(?:checkout)?$/);
     }
     assert.equal((f.ga[2][2] as Record<string, unknown>).bookFormat, 'digital');
-    for (const props of [...f.win.hsbEvents, ...f.vercel.map((call) => (call[1] as { data: Record<string, unknown> }).data)]) {
+    for (const props of f.win.hsbEvents) {
       assert.equal(Object.keys(props).some((key) => key.startsWith('campaign_')), false);
     }
+    assert.equal(f.vercel.length, 0, 'no event reaches a Vercel Analytics queue');
     assert.doesNotMatch(f.serialized(), forbidden);
   }));
 }
@@ -96,7 +97,7 @@ for (const legacyPresent of [false, true]) {
     f.win.location = new URL('https://herostorybooks.com/checkout');
     track('begin_checkout', { bookFormat: 'digital' });
     assert.equal(f.ga.filter((c) => c[0] === 'event').length, 2);
-    assert.equal(f.vercel.length, 1, 'real Vercel helper forwards begin_checkout, not duplicate page_view');
+    assert.equal(f.vercel.length, 0, 'Vercel Analytics is not a sink for page_view or begin_checkout');
     assert.equal(f.win.hsbEvents.length, 2);
     assert.doesNotMatch(f.serialized(), forbidden);
     for (const event of f.win.hsbEvents) assert.equal(event.utm_source, 'facebook');
@@ -122,8 +123,8 @@ test('governed last non-direct state wins immediately and survives direct naviga
   assert.equal(f.ga.some((c) => c[0] === 'set'), false);
   const lastCampaign = Object.fromEntries(Object.entries(f.ga.at(-1)?.[2] as Record<string, unknown>).filter(([key]) => key.startsWith('campaign_')));
   assert.deepEqual(lastCampaign, { campaign_source: 'google', campaign_medium: 'cpc', campaign_name: '2026-09-gifts.v2', campaign_content: 'image-b' });
-  const data = (f.vercel[0][1] as { data: Record<string, unknown> }).data;
-  assert.equal(data.utm_campaign, '2026-09-gifts.v2');
+  assert.equal(f.win.hsbEvents.at(-1)?.utm_campaign, '2026-09-gifts.v2');
+  assert.equal(f.vercel.length, 0);
   assert.doesNotMatch(f.serialized(), forbidden);
 }));
 
@@ -141,7 +142,7 @@ test('final boundaries ignore caller campaign overrides and revalidate tampered 
   track('begin_checkout');
   assert.equal(f.win.hsbEvents.at(-1)?.utm_source, undefined, 'tampered storage is not emission authority');
   assert.doesNotMatch(f.serialized(), forbidden);
-  assert.equal(f.vercel.length, 3);
+  assert.equal(f.vercel.length, 0);
 }));
 
 test('campaign first touch fallback and direct absence are deterministic', () => fixture((f) => {

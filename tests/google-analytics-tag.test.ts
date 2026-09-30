@@ -34,7 +34,7 @@ test('shared analytics layer forwards HSB funnel events to gtag once when availa
   assert.doesNotMatch(analyticsSource, /dataLayer\.push\(record\)/);
   assert.match(analyticsSource, /props\.page_location = pageLocation/);
   assert.match(analyticsSource, /props\.page_referrer = sanitizedPageReferrer\(\)/);
-  assert.match(analyticsSource, /trackVercelEvent\(event/);
+  assert.doesNotMatch(analyticsSource, /trackVercelEvent|@vercel\/analytics/);
 });
 
 test('malformed analytics cookies cannot abort checkout payload construction', async () => {
