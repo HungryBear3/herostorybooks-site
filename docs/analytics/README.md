@@ -182,20 +182,31 @@ propertyId, dataStreamId }, response)` and `evaluateDimensionProbe`.
   `MEASUREMENT_STREAM_DUPLICATE` otherwise), so a readback of another stream
   cannot stand in for HSB's.
 - `evaluateEnhancedMeasurementReadback` is `MATCH` only when the response is
-  named exactly `properties/<property>/dataStreams/<stream>/enhancedMeasurementSettings`
-  and both `siteSearchEnabled` and `pageChangesEnabled` are the boolean
+  named exactly `properties/<property>/dataStreams/<stream>/enhancedMeasurementSettings`,
+  every field in it is one of the resource's 11 documented fields with its
+  documented type, and both `siteSearchEnabled` and `pageChangesEnabled` are
   `false`. Either one `true` is `MISMATCH` (`SETTING_ENABLED:<field>`), even
-  while `streamEnabled` is off, because re-enabling the stream would re-arm
-  it. A governed field that is absent is `INCONCLUSIVE`
-  (`SETTING_ABSENT:<field>`), never read as off. A wrong name is
-  `INVALID_RESPONSE` (`RESOURCE_NAME_MISMATCH`); a wrong type (`"false"`, `0`,
-  `null`), an unknown field, or an API error body is `INVALID_RESPONSE`
+  while `streamEnabled` is off (re-enabling the stream would re-arm it) and
+  even when the other is absent. A wrong name is `INVALID_RESPONSE`
+  (`RESOURCE_NAME_MISMATCH`); a wrong type (`"false"`, `0`, `null`), an
+  unknown or inherited field, or an API error body is `INVALID_RESPONSE`
   (`RESPONSE_SHAPE`). No value (including the search query parameters) is
   echoed.
-- Not yet exercised against the live property: Google's proto3 JSON encoding
-  may omit a boolean that is `false`. If the first live read returns
-  `SETTING_ABSENT`, that is not a pass — hold the 48-hour window and ask for a
-  ruling rather than editing the evaluator to read absence as off.
+- **Omitted means `false` on a full response.** Both settings are
+  implicit-presence proto3 `bool`s (`bool site_search_enabled = 5;`,
+  `bool page_changes_enabled = 8;` in the upstream `resources.proto`), REST
+  transcoding must follow the proto3 JSON mapping (`google/api/http.proto`),
+  and that mapping omits a field holding its default. So the normal response
+  for a correctly OFF stream has both fields **absent**, e.g.
+  `{"name": "…/enhancedMeasurementSettings", "streamEnabled": true, …,
+  "searchQueryParameter": "q,s,search,query,keyword"}` — that is `MATCH`. The
+  Admin API has no option to emit defaults, and the plan sends no `fields`
+  mask (the request URL has no query string at all). Absence is read as
+  `false` only when the response proves it is the full resource: the REQUIRED
+  `searchQueryParameter` is present and non-blank. Without it an absent
+  governed field is `INCONCLUSIVE` (`SETTING_ABSENT:<field>`) — rerun the
+  exact planned request; do not start the window. Explicit `false` is also
+  `MATCH`.
 
 `MATCH` requires the
 property's dimensions and key events to be exactly the checklist's (a

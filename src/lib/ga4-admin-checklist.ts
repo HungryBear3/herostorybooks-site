@@ -420,11 +420,18 @@ export function evaluateDataStreamsReadback(checklist: unknown, target: Readback
 
 /**
  * The stream's Enhanced Measurement settings must have every governed setting
- * explicitly `false`. Only the documented v1alpha fields, correctly typed and
- * named for exactly this stream, are read; anything else is INVALID_RESPONSE.
- * A governed setting that is `true` is a MISMATCH (even while `streamEnabled`
- * is off, which would re-arm it later); one that is absent is INCONCLUSIVE,
- * never read as off. No value is echoed.
+ * `false`. Only the documented v1alpha fields, correctly typed and named for
+ * exactly this stream, are read; anything else is INVALID_RESPONSE. A governed
+ * setting that is `true` is a MISMATCH (even while `streamEnabled` is off,
+ * which would re-arm it later).
+ *
+ * The governed settings are implicit-presence proto3 `bool`s, and REST
+ * transcoding follows the proto3 JSON mapping, which omits a field holding its
+ * default — so a correctly OFF stream normally returns them absent. Absence is
+ * read as `false` only when the response is provably the full resource: the
+ * REQUIRED `searchQueryParameter` is present and non-blank (a partial response
+ * would drop it; the plan never sends a `fields` mask). Otherwise an absent
+ * setting is INCONCLUSIVE. No value is echoed.
  */
 export function evaluateEnhancedMeasurementReadback(checklist: unknown, target: ReadbackTarget, response: unknown): ReadbackVerdict {
   if (validateGa4AdminChecklist(checklist).length > 0) return { verdict: 'INVALID_REQUEST', issues: ['CHECKLIST_INVALID'] };
@@ -447,7 +454,8 @@ export function evaluateEnhancedMeasurementReadback(checklist: unknown, target: 
     else if (response[setting] !== false) enabled.push(`SETTING_ENABLED:${setting}`);
   }
   if (enabled.length > 0) return verdictOf(enabled);
-  if (absent.length > 0) return { verdict: 'INCONCLUSIVE', issues: absent };
+  const fullResource = hasOwn(response, 'searchQueryParameter') && (response.searchQueryParameter as string).trim() !== '';
+  if (absent.length > 0 && !fullResource) return { verdict: 'INCONCLUSIVE', issues: absent };
   return verdictOf([]);
 }
 

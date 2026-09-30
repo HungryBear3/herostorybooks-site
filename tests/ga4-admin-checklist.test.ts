@@ -339,13 +339,36 @@ function emSettings(overrides: Record<string, unknown> = {}): Record<string, unk
   };
 }
 
-function withoutField(field: string): Record<string, unknown> {
-  const response = emSettings();
-  delete response[field];
-  return response;
+function withoutFields(response: Record<string, unknown>, ...fields: string[]): Record<string, unknown> {
+  const copy = { ...response };
+  for (const field of fields) delete copy[field];
+  return copy;
 }
 
-test('Enhanced Measurement readback is MATCH only for explicit false Site Search and page changes', () => {
+function withoutField(field: string): Record<string, unknown> {
+  return withoutFields(emSettings(), field);
+}
+
+/**
+ * The correctly-OFF stream as a proto3 JSON serializer emits it (the reviewer's
+ * `json_format.MessageToJson` output of the upstream message): the
+ * implicit-presence bools that are false, and the empty `uriQueryParameter`,
+ * are omitted; the REQUIRED `searchQueryParameter` is present.
+ */
+function protoJsonOff(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    name: `${STREAM_NAME}/enhancedMeasurementSettings`,
+    streamEnabled: true,
+    scrollsEnabled: true,
+    outboundClicksEnabled: true,
+    videoEngagementEnabled: true,
+    fileDownloadsEnabled: true,
+    searchQueryParameter: 'q,s,search,query,keyword',
+    ...overrides,
+  };
+}
+
+test('Enhanced Measurement readback is MATCH for explicit false Site Search and page changes', () => {
   const doc = checklist();
   assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, emSettings()), { verdict: 'MATCH', issues: [] });
   assert.deepEqual(
@@ -353,6 +376,52 @@ test('Enhanced Measurement readback is MATCH only for explicit false Site Search
     { verdict: 'MATCH', issues: [] },
     'other toggles are not governed',
   );
+});
+
+test('the reviewer reproducer: a ProtoJSON-conformant full response with both governed booleans omitted is MATCH', () => {
+  const doc = checklist();
+  assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, protoJsonOff()), { verdict: 'MATCH', issues: [] });
+  assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, protoJsonOff({ siteSearchEnabled: false })),
+    { verdict: 'MATCH', issues: [] }, 'one explicit, one omitted');
+  assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, protoJsonOff({ pageChangesEnabled: false })),
+    { verdict: 'MATCH', issues: [] }, 'one omitted, one explicit');
+  const allDefaults = { name: `${STREAM_NAME}/enhancedMeasurementSettings`, searchQueryParameter: 'q' };
+  assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, allDefaults), { verdict: 'MATCH', issues: [] },
+    'every bool false: only the name and the required string are emitted');
+});
+
+test('an omitted governed boolean is read as off only when the response proves it is the full resource', () => {
+  const doc = checklist();
+  const both = ['SETTING_ABSENT:siteSearchEnabled', 'SETTING_ABSENT:pageChangesEnabled'];
+  const cases: Array<[string, unknown, string[]]> = [
+    ['required searchQueryParameter missing', withoutFields(protoJsonOff(), 'searchQueryParameter'), both],
+    ['required searchQueryParameter empty', protoJsonOff({ searchQueryParameter: '' }), both],
+    ['required searchQueryParameter blank', protoJsonOff({ searchQueryParameter: '  ' }), both],
+    ['name only', { name: `${STREAM_NAME}/enhancedMeasurementSettings` }, both],
+    ['one omitted without the guard', withoutFields(emSettings(), 'siteSearchEnabled', 'searchQueryParameter'),
+      ['SETTING_ABSENT:siteSearchEnabled']],
+    ['the other omitted without the guard', withoutFields(emSettings({ searchQueryParameter: '' }), 'pageChangesEnabled'),
+      ['SETTING_ABSENT:pageChangesEnabled']],
+  ];
+  for (const [label, response, issues] of cases) {
+    assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, response), { verdict: 'INCONCLUSIVE', issues }, label);
+  }
+  assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, withoutFields(emSettings(), 'searchQueryParameter')),
+    { verdict: 'MATCH', issues: [] }, 'explicit false needs no full-resource guard');
+});
+
+test('the Enhanced Measurement read carries no fields mask or any other partial-response parameter', () => {
+  const plan = buildGa4AdminReadbackPlan(checklist(), { ...TARGET, startDate: '2026-09-01', endDate: '2026-09-28' });
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+  const request = plan.requests.find((item) => item.id === 'enhanced_measurement_settings');
+  assert.ok(request);
+  const url = new URL(request.url);
+  assert.equal(url.search, '', 'no query string at all: no fields, $fields, alt or prettyPrint');
+  assert.equal(url.hash, '');
+  assert.equal(url.pathname, `/v1alpha/${STREAM_NAME}/enhancedMeasurementSettings`);
+  assert.equal(request.method, 'GET');
+  assert.equal(request.body, null);
 });
 
 test('Enhanced Measurement readback reports every enabled governed setting as a MISMATCH', () => {
@@ -366,19 +435,26 @@ test('Enhanced Measurement readback reports every enabled governed setting as a 
       ['SETTING_ENABLED:siteSearchEnabled']],
     ['an enabled setting is definitive beside an absent one', { ...withoutField('pageChangesEnabled'), siteSearchEnabled: true },
       ['SETTING_ENABLED:siteSearchEnabled']],
+    ['ProtoJSON: site search on, page changes omitted', protoJsonOff({ siteSearchEnabled: true }), ['SETTING_ENABLED:siteSearchEnabled']],
+    ['ProtoJSON: page changes on, site search omitted', protoJsonOff({ pageChangesEnabled: true }), ['SETTING_ENABLED:pageChangesEnabled']],
+    ['on beside an absent sibling without the full-resource guard',
+      withoutFields(protoJsonOff({ pageChangesEnabled: true }), 'searchQueryParameter'), ['SETTING_ENABLED:pageChangesEnabled']],
   ];
   for (const [label, response, issues] of cases) {
     assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, response), { verdict: 'MISMATCH', issues }, label);
   }
 });
 
-test('Enhanced Measurement readback never reads an absent, mistyped or unknown field as OFF', () => {
+test('Enhanced Measurement readback never reads a mistyped, unknown, inherited or misnamed response as OFF', () => {
   const doc = checklist();
-  assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, withoutField('siteSearchEnabled')),
-    { verdict: 'INCONCLUSIVE', issues: ['SETTING_ABSENT:siteSearchEnabled'] });
-  assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, withoutField('pageChangesEnabled')),
-    { verdict: 'INCONCLUSIVE', issues: ['SETTING_ABSENT:pageChangesEnabled'] });
   const shape: Array<[string, unknown, string]> = [
+    ['ProtoJSON + unknown field', protoJsonOff({ aiSummariesEnabled: false }), 'RESPONSE_SHAPE'],
+    ['ProtoJSON + null query parameter', protoJsonOff({ searchQueryParameter: null }), 'RESPONSE_SHAPE'],
+    ['ProtoJSON + string "false"', protoJsonOff({ pageChangesEnabled: 'false' }), 'RESPONSE_SHAPE'],
+    ['ProtoJSON + another stream', protoJsonOff({ name: 'properties/123456789/dataStreams/5/enhancedMeasurementSettings' }),
+      'RESOURCE_NAME_MISMATCH'],
+    ['ProtoJSON + name missing', withoutFields(protoJsonOff(), 'name'), 'RESOURCE_NAME_MISMATCH'],
+    ['ProtoJSON + error body', { ...protoJsonOff(), error: { code: 403 } }, 'RESPONSE_SHAPE'],
     ['string "false"', emSettings({ siteSearchEnabled: 'false' }), 'RESPONSE_SHAPE'],
     ['zero', emSettings({ pageChangesEnabled: 0 }), 'RESPONSE_SHAPE'],
     ['null', emSettings({ siteSearchEnabled: null }), 'RESPONSE_SHAPE'],
@@ -403,6 +479,13 @@ test('Enhanced Measurement readback never reads an absent, mistyped or unknown f
   Object.assign(inherited, withoutField('siteSearchEnabled'));
   assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, inherited), { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] },
     'an inherited property is not a readback');
+  const inheritedOn = Object.create({ siteSearchEnabled: true });
+  Object.assign(inheritedOn, protoJsonOff());
+  assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, inheritedOn), { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] },
+    'an inherited true cannot hide behind ProtoJSON omission');
+  const nullProto = Object.assign(Object.create(null), protoJsonOff(), { siteSearchEnabled: true });
+  assert.deepEqual(evaluateEnhancedMeasurementReadback(doc, TARGET, nullProto),
+    { verdict: 'MISMATCH', issues: ['SETTING_ENABLED:siteSearchEnabled'] }, 'own keys of a null-prototype record are still read');
 });
 
 test('Enhanced Measurement readback refuses an invalid checklist or target', () => {
