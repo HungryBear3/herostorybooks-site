@@ -7,7 +7,8 @@
  * there — never an identifier, amount or free-form value. Only the
  * webhook-authoritative purchase may be a key event; every other
  * decision-grade event carries an explicit "not a key event" decision, so no
- * funnel step is marked. Items stay `owner_action_pending`: nothing offline
+ * funnel step is marked. Enhanced Measurement Site Search and browser-history
+ * page changes must be OFF. Items stay `owner_action_pending`: nothing offline
  * can prove an Admin change happened, so nothing here may claim it did.
  *
  * The readback plan is a list of read-only Admin/Data API requests built
@@ -44,14 +45,39 @@ const PARAM_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
 const RESERVED_PARAM_PREFIX_RE = /^(?:google_|ga_|firebase_)/i;
 const DISPLAY_NAME_RE = /^[A-Za-z][A-Za-z0-9_ ]{0,81}$/;
 const PROPERTY_ID_RE = /^[1-9]\d{5,14}$/;
+const DATA_STREAM_ID_RE = /^[1-9]\d{0,19}$/;
 const PROBE_ROW_LIMIT = 1000;
 
 const CHECKLIST_KEYS = [
   'schema', 'schema_version', 'event_contract_version', 'measurement_id', 'custom_dimensions', 'key_events', 'not_key_events',
+  'enhanced_measurement',
 ] as const;
 const DIMENSION_KEYS = ['parameter_name', 'display_name', 'scope', 'source_events', 'rationale', 'status'] as const;
 const KEY_EVENT_KEYS = ['event_name', 'counting_method', 'rationale', 'status'] as const;
 const NOT_KEY_EVENT_KEYS = ['event_name', 'rationale'] as const;
+const ENHANCED_MEASUREMENT_KEYS = ['readback_api', 'settings'] as const;
+const ENHANCED_MEASUREMENT_SETTING_KEYS = ['setting', 'required_value', 'rationale', 'status'] as const;
+
+/**
+ * Enhanced Measurement is read only through the Admin API v1alpha singleton
+ * (discovery revision 20260331; v1beta has no such method): it needs the web
+ * data stream id, and alpha fields can change, so the readback fails closed on
+ * anything it does not know.
+ */
+export const GA4_ENHANCED_MEASUREMENT_READBACK_API = 'analyticsadmin.v1alpha.properties.dataStreams.getEnhancedMeasurementSettings';
+/**
+ * Both must be OFF: HSB has no site search (GA4 would turn `q=` into
+ * `view_search_results` with the raw value as `search_term`), and the app owns
+ * `page_view` (browser-history page views would add a second owner).
+ */
+export const GA4_ENHANCED_MEASUREMENT_REQUIRED_OFF = ['siteSearchEnabled', 'pageChangesEnabled'] as const;
+/** Every field of the v1alpha EnhancedMeasurementSettings resource. */
+const ENHANCED_MEASUREMENT_BOOLEAN_FIELDS = [
+  'streamEnabled', 'scrollsEnabled', 'outboundClicksEnabled', 'siteSearchEnabled', 'videoEngagementEnabled',
+  'fileDownloadsEnabled', 'pageChangesEnabled', 'formInteractionsEnabled',
+] as const;
+const ENHANCED_MEASUREMENT_STRING_FIELDS = ['name', 'searchQueryParameter', 'uriQueryParameter'] as const;
+const DATA_STREAM_TYPES = ['DATA_STREAM_TYPE_UNSPECIFIED', 'WEB_DATA_STREAM', 'ANDROID_APP_DATA_STREAM', 'IOS_APP_DATA_STREAM'];
 
 interface ChecklistDimension {
   parameter_name: string;
@@ -181,7 +207,35 @@ export function validateGa4AdminChecklist(doc: unknown): string[] {
     && GA4_DECISION_GRADE_EVENTS.some((event) => !keyEvents.has(event) && !notKey.has(event))) {
     out.add('KEY_EVENT_DECISION_MISSING', '$.not_key_events');
   }
+  if (hasOwn(doc, 'enhanced_measurement')) validateEnhancedMeasurement(doc.enhanced_measurement, '$.enhanced_measurement', out);
   return out.issues;
+}
+
+/** Exactly the governed settings, each required OFF (the boolean `false`), each still pending. */
+function validateEnhancedMeasurement(block: unknown, path: string, out: IssueCollector): void {
+  if (!checkClosedObject(block, ENHANCED_MEASUREMENT_KEYS, path, out)) return;
+  if (block.readback_api !== GA4_ENHANCED_MEASUREMENT_READBACK_API) out.add('ENHANCED_MEASUREMENT_READBACK_API_INVALID', `${path}.readback_api`);
+  if (!Array.isArray(block.settings)) {
+    out.add('TYPE_ARRAY', `${path}.settings`);
+    return;
+  }
+  const governed: readonly string[] = GA4_ENHANCED_MEASUREMENT_REQUIRED_OFF;
+  const seen = new Set<string>();
+  block.settings.forEach((item, index) => {
+    const at = `${path}.settings[${index}]`;
+    if (!checkClosedObject(item, ENHANCED_MEASUREMENT_SETTING_KEYS, at, out)) return;
+    const setting = item.setting;
+    if (typeof setting !== 'string' || !governed.includes(setting)) out.add('ENHANCED_MEASUREMENT_SETTING_UNKNOWN', `${at}.setting`);
+    else if (seen.has(setting)) out.add('ENHANCED_MEASUREMENT_SETTING_DUPLICATE', `${at}.setting`);
+    else seen.add(setting);
+    if (typeof item.required_value !== 'boolean') out.add('TYPE_BOOLEAN', `${at}.required_value`);
+    else if (item.required_value !== false) out.add('ENHANCED_MEASUREMENT_MUST_BE_OFF', `${at}.required_value`);
+    if (!rationaleValid(item.rationale)) out.add('RATIONALE_INVALID', `${at}.rationale`);
+    checkStatus(item.status, `${at}.status`, out);
+  });
+  for (const setting of governed) {
+    if (!seen.has(setting)) out.add(`ENHANCED_MEASUREMENT_SETTING_MISSING:${setting}`, `${path}.settings`);
+  }
 }
 
 function dimensionsOf(checklist: Record<string, unknown>): ChecklistDimension[] {
@@ -205,27 +259,55 @@ export interface ReadonlyRequest {
 
 export type ReadbackPlan =
   | { ok: true; requests: ReadonlyRequest[] }
-  | { ok: false; reason: 'CHECKLIST_INVALID' | 'PROPERTY_ID_INVALID' | 'DATE_INVALID' | 'DATE_RANGE_INVALID' };
+  | {
+    ok: false;
+    reason: 'CHECKLIST_INVALID' | 'PROPERTY_ID_INVALID' | 'DATA_STREAM_ID_INVALID' | 'DATE_INVALID' | 'DATE_RANGE_INVALID';
+  };
+
+/** The property and the web data stream a readback is about. */
+export interface ReadbackTarget {
+  propertyId: string;
+  dataStreamId: string;
+}
+
+function targetDefect(input: unknown): 'PROPERTY_ID_INVALID' | 'DATA_STREAM_ID_INVALID' | null {
+  const target = isPlainRecord(input) ? input : {};
+  if (typeof target.propertyId !== 'string' || !PROPERTY_ID_RE.test(target.propertyId)) return 'PROPERTY_ID_INVALID';
+  if (typeof target.dataStreamId !== 'string' || !DATA_STREAM_ID_RE.test(target.dataStreamId)) return 'DATA_STREAM_ID_INVALID';
+  return null;
+}
 
 /**
- * Admin API list reads for custom dimensions and key events, plus one Data
- * API probe per dimension confirming it carries only contract vocabulary.
- * Absolute dates only: a relative range would make the plan depend on when
- * it runs.
+ * Admin API list reads for custom dimensions, key events and data streams, the
+ * v1alpha Enhanced Measurement singleton of the given web stream, plus one
+ * Data API probe per dimension confirming it carries only contract
+ * vocabulary. Without a data-stream id there is no Enhanced Measurement read,
+ * so there is no plan. Absolute dates only: a relative range would make the
+ * plan depend on when it runs.
  */
 export function buildGa4AdminReadbackPlan(
   checklist: unknown,
-  input: { propertyId: string; startDate: string; endDate: string },
+  input: ReadbackTarget & { startDate: string; endDate: string },
 ): ReadbackPlan {
   if (validateGa4AdminChecklist(checklist).length > 0) return { ok: false, reason: 'CHECKLIST_INVALID' };
-  if (typeof input?.propertyId !== 'string' || !PROPERTY_ID_RE.test(input.propertyId)) return { ok: false, reason: 'PROPERTY_ID_INVALID' };
+  const defect = targetDefect(input);
+  if (defect) return { ok: false, reason: defect };
   if (!isCalendarDate(input.startDate) || !isCalendarDate(input.endDate)) return { ok: false, reason: 'DATE_INVALID' };
   if (input.startDate > input.endDate) return { ok: false, reason: 'DATE_RANGE_INVALID' };
   const admin = `https://analyticsadmin.googleapis.com/v1beta/properties/${input.propertyId}`;
+  const adminAlpha = `https://analyticsadmin.googleapis.com/v1alpha/properties/${input.propertyId}`;
   const runReport = `https://analyticsdata.googleapis.com/v1beta/properties/${input.propertyId}:runReport`;
   const requests: ReadonlyRequest[] = [
     { id: 'custom_dimensions', method: 'GET', url: `${admin}/customDimensions?pageSize=200`, oauthScope: GA4_READONLY_SCOPE, body: null },
     { id: 'key_events', method: 'GET', url: `${admin}/keyEvents?pageSize=200`, oauthScope: GA4_READONLY_SCOPE, body: null },
+    { id: 'data_streams', method: 'GET', url: `${admin}/dataStreams?pageSize=200`, oauthScope: GA4_READONLY_SCOPE, body: null },
+    {
+      id: 'enhanced_measurement_settings',
+      method: 'GET',
+      url: `${adminAlpha}/dataStreams/${input.dataStreamId}/enhancedMeasurementSettings`,
+      oauthScope: GA4_READONLY_SCOPE,
+      body: null,
+    },
   ];
   for (const dimension of dimensionsOf(checklist as Record<string, unknown>)) {
     requests.push({
@@ -309,6 +391,64 @@ export function evaluateKeyEventsReadback(checklist: unknown, response: unknown)
     else if (actual.countingMethod !== countingMethod) issues.push(`COUNTING_METHOD_MISMATCH:${name}`);
   }
   return verdictOf(issues);
+}
+
+/**
+ * The supplied stream id must be the property's one web stream carrying the
+ * checklist's measurement id, so an Enhanced Measurement readback of another
+ * stream can never stand in for HSB's.
+ */
+export function evaluateDataStreamsReadback(checklist: unknown, target: ReadbackTarget, response: unknown): ReadbackVerdict {
+  if (validateGa4AdminChecklist(checklist).length > 0) return { verdict: 'INVALID_REQUEST', issues: ['CHECKLIST_INVALID'] };
+  const defect = targetDefect(target);
+  if (defect) return { verdict: 'INVALID_REQUEST', issues: [defect] };
+  const list = listFrom(response, 'dataStreams');
+  if (!Array.isArray(list)) return list;
+  const streamName = new RegExp(`^properties/${target.propertyId}/dataStreams/[1-9]\\d{0,19}$`);
+  const wellFormed = list.every((item) => typeof item.name === 'string' && streamName.test(item.name)
+    && typeof item.type === 'string' && DATA_STREAM_TYPES.includes(item.type)
+    && (item.type !== 'WEB_DATA_STREAM'
+      || (isPlainRecord(item.webStreamData) && typeof item.webStreamData.measurementId === 'string')));
+  if (!wellFormed) return { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] };
+  const measurementId = (checklist as { measurement_id: string }).measurement_id;
+  const matches = list.filter((item) => item.type === 'WEB_DATA_STREAM'
+    && (item.webStreamData as Record<string, unknown>).measurementId === measurementId);
+  if (matches.length === 0) return verdictOf(['MEASUREMENT_STREAM_MISSING']);
+  if (matches.length > 1) return verdictOf(['MEASUREMENT_STREAM_DUPLICATE']);
+  return verdictOf(matches[0].name === `properties/${target.propertyId}/dataStreams/${target.dataStreamId}` ? [] : ['DATA_STREAM_ID_MISMATCH']);
+}
+
+/**
+ * The stream's Enhanced Measurement settings must have every governed setting
+ * explicitly `false`. Only the documented v1alpha fields, correctly typed and
+ * named for exactly this stream, are read; anything else is INVALID_RESPONSE.
+ * A governed setting that is `true` is a MISMATCH (even while `streamEnabled`
+ * is off, which would re-arm it later); one that is absent is INCONCLUSIVE,
+ * never read as off. No value is echoed.
+ */
+export function evaluateEnhancedMeasurementReadback(checklist: unknown, target: ReadbackTarget, response: unknown): ReadbackVerdict {
+  if (validateGa4AdminChecklist(checklist).length > 0) return { verdict: 'INVALID_REQUEST', issues: ['CHECKLIST_INVALID'] };
+  const defect = targetDefect(target);
+  if (defect) return { verdict: 'INVALID_REQUEST', issues: [defect] };
+  const invalid: ReadbackVerdict = { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] };
+  if (!isPlainRecord(response)) return invalid;
+  const booleans: readonly string[] = ENHANCED_MEASUREMENT_BOOLEAN_FIELDS;
+  const strings: readonly string[] = ENHANCED_MEASUREMENT_STRING_FIELDS;
+  for (const [field, value] of Object.entries(response)) {
+    const typed = booleans.includes(field) ? typeof value === 'boolean' : strings.includes(field) && typeof value === 'string';
+    if (!typed) return invalid;
+  }
+  const expectedName = `properties/${target.propertyId}/dataStreams/${target.dataStreamId}/enhancedMeasurementSettings`;
+  if (response.name !== expectedName) return { verdict: 'INVALID_RESPONSE', issues: ['RESOURCE_NAME_MISMATCH'] };
+  const enabled: string[] = [];
+  const absent: string[] = [];
+  for (const setting of GA4_ENHANCED_MEASUREMENT_REQUIRED_OFF) {
+    if (!hasOwn(response, setting)) absent.push(`SETTING_ABSENT:${setting}`);
+    else if (response[setting] !== false) enabled.push(`SETTING_ENABLED:${setting}`);
+  }
+  if (enabled.length > 0) return verdictOf(enabled);
+  if (absent.length > 0) return { verdict: 'INCONCLUSIVE', issues: absent };
+  return verdictOf([]);
 }
 
 /**

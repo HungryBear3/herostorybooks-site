@@ -11,7 +11,7 @@ GA4, Meta, Stripe or Vercel.
 | --- | --- | --- |
 | Event contract | `src/lib/analytics-event-contract.ts` (v1) | Enforced at `track()` / `trackCoverEvent()`; GA paths are approved routes or `/(other)` |
 | Purchase | `src/lib/purchase-analytics.ts` (Phase A) | Server-only, settled-webhook winner, unchanged |
-| GA4 Admin checklist | `config/analytics/ga4-admin-checklist.v1.json` | 13 dimensions + 1 key event, all `owner_action_pending` |
+| GA4 Admin checklist | `config/analytics/ga4-admin-checklist.v1.json` | 13 dimensions + 1 key event + Enhanced Measurement Site Search and page changes OFF, all `owner_action_pending` |
 | Transaction dedup readback | `src/lib/ga4-transaction-readback.ts` | Request builder + evaluator, no network |
 | GA4 report reader | `src/lib/ga4-run-report.ts` | Strict `runReport` reader behind every export/readback verdict |
 | Decision-packet export | `src/lib/analytics-decision-export.ts`, `src/lib/decision-packet-contract.ts`, `config/analytics/*` | HSB schema + packet compat export pinned to packet `d64d095`; unrepresentable values fail closed (HOLD) |
@@ -106,24 +106,98 @@ event-scoped custom dimensions and key events. Nothing is pre-marked done.
 - **Explicitly not key events** — `page_view`, `begin_checkout`, the three
   checkout step events, `name_preview_submitted` and `order_submit_attempt`.
   Do not mark funnel steps.
+- **Enhanced Measurement OFF** — `siteSearchEnabled: false` and
+  `pageChangesEnabled: false` on the `G-68FKEDZEG3` web stream. HSB has no
+  site search: with Site Search on, GA4 turned a raw `q=ZQXQUERYMARK` into
+  `view_search_results` with `ep.search_term=ZQXQUERYMARK` on apex and on the
+  immutable production URL. The app already owns `page_view`
+  (`send_page_view: false` + `AnalyticsPageView`), so browser-history page
+  views would be a second page-view owner outside the path boundary. Other
+  Enhanced Measurement toggles are not governed by this checklist.
 
 The linter rejects user/item scope, identifiers or amounts as dimensions
 (`transaction_id`, `value`, …), parameters an event does not send, reserved
 prefixes, duplicates, any marked funnel step, and any status other than
-`owner_action_pending`.
+`owner_action_pending`. For Enhanced Measurement it rejects a missing block or
+setting, a required value other than the boolean `false` (`true`, `"false"`,
+`0`, `null`), any setting other than the two governed ones, duplicates, and
+any readback API other than
+`analyticsadmin.v1alpha.properties.dataStreams.getEnhancedMeasurementSettings`.
+
+### Owner action: Enhanced Measurement (HOLD until readback)
+
+Nothing in this repo changes GA4. In the GA4 dashboard: Admin → Data streams →
+the `G-68FKEDZEG3` web stream → Enhanced measurement (gear icon):
+
+1. Turn **Site search** off.
+2. Under **Page views → Show advanced settings**, turn **Page changes based on
+   browser history events** off.
+3. Save. Note the stream's **Stream ID** (numeric, on the stream details page).
+4. Run the read-only readback below with that Stream ID. Start the 48-hour
+   window only after `evaluateDataStreamsReadback` and
+   `evaluateEnhancedMeasurementReadback` both return `MATCH`. Any other
+   verdict means the window has not started; the checklist items stay
+   `owner_action_pending` either way — the readback verdict is the evidence,
+   not an edit to this file.
+
+### Read-only readback
 
 Readback (read-only, after the owner's Admin changes):
 
 ```bash
 node --experimental-strip-types -e "import('./src/lib/ga4-admin-checklist.ts').then(async (m) => {
   const doc = JSON.parse(require('node:fs').readFileSync('config/analytics/ga4-admin-checklist.v1.json', 'utf8'));
-  console.log(JSON.stringify(m.buildGa4AdminReadbackPlan(doc, { propertyId: '<numeric property id>', startDate: '<YYYY-MM-DD>', endDate: '<YYYY-MM-DD>' }), null, 2));
+  console.log(JSON.stringify(m.buildGa4AdminReadbackPlan(doc, { propertyId: '<numeric property id>', dataStreamId: '<numeric stream id>', startDate: '<YYYY-MM-DD>', endDate: '<YYYY-MM-DD>' }), null, 2));
 })"
 ```
 
+The plan refuses to build without a numeric `dataStreamId`
+(`DATA_STREAM_ID_INVALID`): Enhanced Measurement is a per-stream singleton and
+there is no property-level read. Every request is a `GET` (Admin) or a Data
+API `runReport` `POST`, all with the `analytics.readonly` scope; the plan never
+contains an update/patch method or the `analytics.edit` scope.
+
+| Request id | Official method | API surface |
+| --- | --- | --- |
+| `custom_dimensions` | `properties.customDimensions.list` | Admin v1beta |
+| `key_events` | `properties.keyEvents.list` | Admin v1beta |
+| `data_streams` | `properties.dataStreams.list` | Admin v1beta |
+| `enhanced_measurement_settings` | `properties.dataStreams.getEnhancedMeasurementSettings` | Admin **v1alpha only** (not in v1beta) |
+| `dimension_probe:<param>` | `properties.runReport` | Data v1beta |
+
+The Enhanced Measurement read exists only in the Admin API v1alpha (checked
+against Google's discovery documents, revision `20260331`); alpha fields can
+change without notice, so the evaluator fails closed on any field it does not
+know rather than guessing.
+
 Run each request with an `analytics.readonly` token outside this repo, then
 feed the JSON responses to `evaluateCustomDimensionsReadback`,
-`evaluateKeyEventsReadback` and `evaluateDimensionProbe`. `MATCH` requires the
+`evaluateKeyEventsReadback`, `evaluateDataStreamsReadback(doc, { propertyId,
+dataStreamId }, response)`, `evaluateEnhancedMeasurementReadback(doc, {
+propertyId, dataStreamId }, response)` and `evaluateDimensionProbe`.
+
+- `evaluateDataStreamsReadback` is `MATCH` only when the supplied stream id is
+  the property's one web stream whose `measurementId` is the checklist's
+  (`DATA_STREAM_ID_MISMATCH`, `MEASUREMENT_STREAM_MISSING`,
+  `MEASUREMENT_STREAM_DUPLICATE` otherwise), so a readback of another stream
+  cannot stand in for HSB's.
+- `evaluateEnhancedMeasurementReadback` is `MATCH` only when the response is
+  named exactly `properties/<property>/dataStreams/<stream>/enhancedMeasurementSettings`
+  and both `siteSearchEnabled` and `pageChangesEnabled` are the boolean
+  `false`. Either one `true` is `MISMATCH` (`SETTING_ENABLED:<field>`), even
+  while `streamEnabled` is off, because re-enabling the stream would re-arm
+  it. A governed field that is absent is `INCONCLUSIVE`
+  (`SETTING_ABSENT:<field>`), never read as off. A wrong name is
+  `INVALID_RESPONSE` (`RESOURCE_NAME_MISMATCH`); a wrong type (`"false"`, `0`,
+  `null`), an unknown field, or an API error body is `INVALID_RESPONSE`
+  (`RESPONSE_SHAPE`). No value (including the search query parameters) is
+  echoed.
+- Not yet exercised against the live property: Google's proto3 JSON encoding
+  may omit a boolean that is `false`. If the first live read returns
+  `SETTING_ABSENT`, that is not a pass — hold the 48-hour window and ask for a
+  ruling rather than editing the evaluator to read absence as off.
+
+`MATCH` requires the
 property's dimensions and key events to be exactly the checklist's (a
 duplicated entry is a `MISMATCH`), and every reported dimension value to be
 inside the contract vocabulary (values are never echoed). A probe response is
