@@ -20,6 +20,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  buildGa4BehaviorExportRequest,
   exportDecisionPacketGa4Behavior,
   generateSyntheticGa4BehaviorExport,
   projectGa4BehaviorReport,
@@ -94,7 +95,26 @@ sys.stdout.write(json.dumps({
     "contentVariants": list(vocab.CONTENT_VARIANTS), "landingPaths": list(vocab.LANDING_PATHS),
     "maxRows": schemas.MAX_ROWS, "maxRanges": schemas.MAX_RANGES, "maxCount": schemas.MAX_COUNT,
     "maxCoverageDays": evidence.MAX_COVERAGE_DAYS, "maxInputBytes": jsonio.MAX_INPUT_BYTES,
+    "settleHours": evidence.SETTLE_HOURS[vocab.GA4_BEHAVIOR],
 }))
+`;
+
+// Like PACKET_VALIDATE, but a crash inside the pinned validator is reported as such instead of failing the harness.
+const PACKET_VALIDATE_OR_CRASH = `
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from decision_packet.errors import InputRejected
+from decision_packet.evidence import load_evidence
+out = []
+for text in json.loads(sys.stdin.buffer.read().decode("utf-8")):
+    try:
+        m = load_evidence(text.encode("utf-8")).manifest()
+        out.append({"accepted": True, "completeness": m["completeness"], "unsettled_days": m["unsettled_days"]})
+    except InputRejected as exc:
+        out.append({"accepted": False, "issues": [issue.code + "@" + issue.path for issue in exc.issues]})
+    except Exception as exc:
+        out.append({"accepted": False, "crash": type(exc).__name__})
+sys.stdout.write(json.dumps(out))
 `;
 
 function python(script: string, input: string): unknown {
@@ -346,10 +366,19 @@ test('a truncated report never becomes an export; a GA4-flagged one reaches the 
     coverage: { start: '2026-09-01', end: '2026-09-01' },
     attestedCompleteRanges: [{ start: '2026-09-01', end: '2026-09-01' }],
   };
-  assert.deepEqual(projectGa4BehaviorReport(report({}, 250_001), header), { ok: false, issues: ['REPORT_TRUNCATED@$.rowCount'] });
+  const built = buildGa4BehaviorExportRequest({ propertyId: '123456789', startDate: '2026-09-01', endDate: '2026-09-01' });
+  assert.ok(built.ok);
+  const request = built.request;
+  assert.deepEqual(projectGa4BehaviorReport(request, report({}, 250_001), header), { ok: false, issues: ['REPORT_TRUNCATED@$.rowCount'] });
 
-  const clean = projectGa4BehaviorReport(report({}, 1), header);
-  const flagged = projectGa4BehaviorReport(report({ dataLossFromOtherRow: true }, 1), header);
+  const clean = projectGa4BehaviorReport(request, report({}, 1), header);
+  const flagged = projectGa4BehaviorReport(request, report({ dataLossFromOtherRow: true }, 1), header);
+  const emptyForReason = projectGa4BehaviorReport(request, { ...report({ emptyReason: 'x' }, 0), rows: [] }, header);
+  assert.ok(emptyForReason.ok && emptyForReason.completeness === 'INSUFFICIENT_EVIDENCE');
+  const emptyPacket = exportDecisionPacketGa4Behavior(emptyForReason.ok && emptyForReason.document, mapping());
+  assert.ok(emptyPacket.ok);
+  const [emptyVerdict] = packetValidate([serializeDecisionPacketDocument(emptyPacket.document)]);
+  assert.deepEqual(emptyVerdict.accepted && [emptyVerdict.completeness, emptyVerdict.gap_days], ['empty', 1], 'an emptyReason export reaches the packet with no attested day');
   assert.ok(clean.ok && flagged.ok);
   const [cleanPacket, flaggedPacket] = [clean.document, flagged.document].map((doc) => exportDecisionPacketGa4Behavior(doc, mapping()));
   assert.ok(cleanPacket.ok && flaggedPacket.ok);
@@ -378,6 +407,10 @@ test('the TS contract gate never accepts a document the pinned packet rejects', 
     ['undeclared key', mutate((d) => { d.rows[0].client_id = '123.456'; })],
     ['fractional count', mutate((d) => { d.rows[0].sessions = 1.5; })],
     ['unsupported schema version', mutate((d) => { d.schema_version = 2; })],
+    ['year-zero coverage start', mutate((d) => { d.coverage = { start: '0000-12-31', end: '0001-01-01' }; d.attested_complete_ranges = []; d.rows = []; d.generated_at = '0001-01-05T00:00:00Z'; })],
+    ['year-zero row date', mutate((d) => { d.coverage = { start: '0000-12-31', end: '0001-01-01' }; d.attested_complete_ranges = []; d.generated_at = '0001-01-05T00:00:00Z'; d.rows = [{ ...d.rows[0], date: '0000-12-31' }]; })],
+    ['earliest packet dates', mutate((d) => { d.coverage = { start: '0001-01-01', end: '0001-01-02' }; d.attested_complete_ranges = [{ start: '0001-01-01', end: '0001-01-02' }]; d.generated_at = '0001-01-05T00:00:00Z'; d.rows = [{ ...d.rows[0], date: '0001-01-01' }]; })],
+    ['latest packet dates', mutate((d) => { d.coverage = { start: '9999-12-26', end: '9999-12-27' }; d.attested_complete_ranges = [{ start: '9999-12-26', end: '9999-12-27' }]; d.generated_at = '9999-12-31T00:00:00Z'; d.rows = [{ ...d.rows[0], date: '9999-12-27' }]; })],
   ];
   // Deliberately stricter than the packet: generation inside the last covered day (the packet accepts it as unsettled).
   const stricter = mutate((d) => { d.generated_at = '2026-09-07T12:00:00Z'; });
@@ -386,15 +419,55 @@ test('the TS contract gate never accepts a document the pinned packet rejects', 
     const tsAccepts = validateDecisionPacketGa4Behavior(doc).length === 0;
     if (tsAccepts) assert.equal(verdicts[index].accepted, true, `${label}: TS accepted what the packet rejects`);
   });
-  assert.deepEqual(docs.map(([label, doc]) => [label, validateDecisionPacketGa4Behavior(doc).length === 0]), [
-    ['fixture', true],
-    ['packet-valid campaign', true],
-    ['packet-valid content', true],
-    ...docs.slice(3).map(([label]) => [label, false]),
-  ]);
-  assert.deepEqual(verdicts.slice(0, docs.length).map((verdict) => verdict.accepted), [true, true, true, ...docs.slice(3).map(() => false)]);
+  const accepted = new Set(['fixture', 'packet-valid campaign', 'packet-valid content', 'earliest packet dates', 'latest packet dates']);
+  assert.deepEqual(docs.map(([label, doc]) => [label, validateDecisionPacketGa4Behavior(doc).length === 0]), docs.map(([label]) => [label, accepted.has(label)]));
+  assert.deepEqual(verdicts.slice(0, docs.length).map((verdict) => verdict.accepted), docs.map(([label]) => accepted.has(label)));
   assert.deepEqual([validateDecisionPacketGa4Behavior(stricter), verdicts[docs.length].accepted],
     [['COVERAGE_AFTER_GENERATED_AT@$.coverage.end'], true]);
+});
+
+test('the upper calendar boundary: whatever the TS gate accepts, the pinned packet accepts without crashing', () => {
+  // The packet settles an attested day 48 h after the next day starts in the
+  // declared zone; past 9999-12-28 that arithmetic overflows Python's datetime
+  // and the validator crashes instead of rejecting. HSB must therefore refuse
+  // such an attestation before any packet document exists.
+  const good = JSON.parse(readText(PACKET_FIXTURE));
+  const days = ['9999-12-24', '9999-12-25', '9999-12-26', '9999-12-27', '9999-12-28', '9999-12-29', '9999-12-30', '9999-12-31'];
+  const docs: Array<[string, Record<string, unknown>]> = [];
+  for (const timezone of DECISION_PACKET_GA4_BEHAVIOR.timezones) {
+    for (const end of days) {
+      for (const attested of [true, false]) {
+        const doc = structuredClone(good);
+        doc.timezone = timezone;
+        doc.coverage = { start: '9999-12-24', end };
+        doc.generated_at = '9999-12-31T23:59:59Z';
+        doc.attested_complete_ranges = attested ? [{ start: '9999-12-24', end }] : [];
+        doc.rows = [{ ...doc.rows[0], date: end }];
+        docs.push([`${timezone} end=${end} attested=${attested}`, doc]);
+      }
+    }
+  }
+  const run = spawnSync('python3', ['-I', '-B', '-c', PACKET_VALIDATE_OR_CRASH, VENDORED], { input: JSON.stringify(docs.map(([, doc]) => JSON.stringify(doc))), env: {} as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 120_000 });
+  assert.equal(run.status, 0, run.stderr);
+  const verdicts = JSON.parse(run.stdout) as Array<{ accepted: boolean; completeness?: string; crash?: string; issues?: string[] }>;
+  const gaps: string[] = [];
+  const crashes: string[] = [];
+  docs.forEach(([label, doc], index) => {
+    const tsIssues = validateDecisionPacketGa4Behavior(doc);
+    const verdict = verdicts[index];
+    if (verdict.crash) crashes.push(label);
+    if (tsIssues.length === 0 && !verdict.accepted) gaps.push(`${label}: packet=${verdict.crash ?? verdict.issues?.join('|')}`);
+    if (label.endsWith('end=9999-12-28 attested=true')) {
+      assert.deepEqual(tsIssues, [], label);
+      assert.deepEqual([verdict.accepted, verdict.completeness], [true, 'complete'], label);
+    }
+    if (/end=9999-12-(29|30) attested=true/.test(label)) {
+      assert.deepEqual(tsIssues, ['ATTESTED_RANGE_UNSETTLEABLE@$.attested_complete_ranges[0]'], label);
+    }
+  });
+  assert.deepEqual(gaps, [], 'the TS gate accepted a document the pinned packet rejects or crashes on');
+  // The crash is the packet's, classified separately: it only ever happens on documents the TS gate refuses.
+  assert.ok(crashes.length > 0 && crashes.every((label) => /end=9999-12-(29|30|31) attested=true/.test(label)), crashes.join(', '));
 });
 
 // ── The executable handoff ──────────────────────────────────────────────────

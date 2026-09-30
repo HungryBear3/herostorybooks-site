@@ -19,6 +19,7 @@ import {
   CAMPAIGN_MEDIUM_VALUES,
   CAMPAIGN_SOURCE_VALUES,
   buildGovernedCampaignUrl,
+  isCalendarDate,
   validateExperimentRegistry,
   validateExperimentRegistryTransition,
 } from '../src/lib/campaign-governance.ts';
@@ -300,4 +301,11 @@ test('the governance CLI regenerates the checked-in fixture and schema byte for 
   const schema = runCli(['schema']);
   assert.equal(schema.status, 0);
   assert.equal(schema.stdout, readFileSync(new URL('../config/analytics/hsb-ga4-behavior-export.schema.v1.json', import.meta.url), 'utf8'));
+});
+
+test('a calendar date is a real proleptic-Gregorian day between 0001-01-01 and 9999-12-31, as in the pinned packet', () => {
+  for (const day of ['0001-01-01', '9999-12-31', '2026-02-28', '2028-02-29']) assert.equal(isCalendarDate(day), true, day);
+  for (const day of ['0000-01-01', '0000-12-31', '2026-02-30', '2026-09-31', '2027-02-29', '2026-9-1', '2026-09-01T00:00:00Z', '2026-09-01 ', ' 2026-09-01', '+2026-09-01', '20260901', 2026, null]) {
+    assert.equal(isCalendarDate(day), false, String(day));
+  }
 });

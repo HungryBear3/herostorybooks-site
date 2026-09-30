@@ -12,11 +12,13 @@
  *    Field-for-field it matches the packet's `ga4_behavior` v1; only the
  *    schema id and value vocabulary differ.
  *  - a read-only GA4 Data API request for that report, and an adapter that
- *    reduces the operator-supplied response to the export: every raw GA4
- *    value is re-governed through the Phase-A allowlists or collapsed into a
- *    fixed sentinel, so raw URLs, query strings, referrer hosts, identifiers
- *    and free text cannot be represented. A truncated report is refused; a
- *    sampled, thresholded or "(other)"-folded one carries no attestation;
+ *    reduces the operator-supplied response to the export, bound to the exact
+ *    request that produced it: every raw GA4 value is re-governed through the
+ *    Phase-A allowlists or collapsed into a fixed sentinel, so raw URLs, query
+ *    strings, referrer hosts, identifiers and free text cannot be represented;
+ *    coverage and attestation can only name days that were requested. A
+ *    truncated or contradictory report is refused; a sampled, thresholded,
+ *    "(other)"-folded or empty-for-a-reason one carries no attestation;
  *  - a JSON Schema generated from the same rules, and deterministic
  *    synthetic fixtures;
  *  - the mapping contract (config/analytics/decision-packet-mapping.v1.json),
@@ -158,8 +160,20 @@ function governedLandingPath(raw: string): string {
 const REPORT_DIMENSIONS = ['date', 'sessionSource', 'sessionMedium', 'sessionCampaignName', 'sessionManualAdContent', 'landingPage'];
 const REPORT_METRICS = ['sessions', 'checkouts', 'ecommercePurchases'];
 
+/**
+ * The one read-only report request an export can be projected from. A
+ * projection takes the exact built request, so the export's coverage and
+ * attestation are bound to the days GA4 was actually asked about.
+ */
+export interface Ga4BehaviorExportRequest {
+  method: 'POST';
+  url: string;
+  oauthScope: typeof GA4_READONLY_SCOPE;
+  body: Record<string, unknown>;
+}
+
 export function buildGa4BehaviorExportRequest(input: { propertyId: string; startDate: string; endDate: string }):
-  | { ok: true; request: { method: 'POST'; url: string; oauthScope: typeof GA4_READONLY_SCOPE; body: Record<string, unknown> } }
+  | { ok: true; request: Ga4BehaviorExportRequest }
   | { ok: false; reason: 'PROPERTY_ID_INVALID' | 'DATE_INVALID' | 'DATE_RANGE_INVALID' } {
   if (typeof input?.propertyId !== 'string' || !PROPERTY_ID_RE.test(input.propertyId)) return { ok: false, reason: 'PROPERTY_ID_INVALID' };
   if (!isCalendarDate(input.startDate) || !isCalendarDate(input.endDate)) return { ok: false, reason: 'DATE_INVALID' };
@@ -348,20 +362,62 @@ function compareRows(a: Ga4BehaviorExportRow, b: Ga4BehaviorExportRow): number {
  */
 export type ExportCompleteness = 'ATTESTED' | 'INSUFFICIENT_EVIDENCE';
 
+const REQUEST_URL_RE = /^https:\/\/analyticsdata\.googleapis\.com\/v1beta\/properties\/(\d+):runReport$/;
+
+/** Structural equality over plain JSON values: own keys only, so an inherited or foreign shape never matches. */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, index) => sameJson(item, b[index]));
+  }
+  if (isPlainRecord(a) || isPlainRecord(b)) {
+    if (!isPlainRecord(a) || !isPlainRecord(b)) return false;
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every((key) => hasOwn(b, key) && sameJson(a[key], b[key]));
+  }
+  return a === b;
+}
+
 /**
- * Reduce an operator-supplied GA4 `runReport` response (from
- * `buildGa4BehaviorExportRequest`) to the closed export. The response is read
- * only through the strict reader (src/lib/ga4-run-report.ts). Rows that
- * collapse to the same governed segment are summed. Refuses — rather than
- * repairs — a truncated report (GA4 reports more rows than it returned: the
- * row cap or pagination), a malformed or ambiguous response, malformed
- * metrics, dates outside coverage, foreign headers or timezones.
+ * The day range of exactly one built export request, or null. The request is
+ * rebuilt from the property and dates it names and must match structurally,
+ * so a readback request, a hand-edited copy, a different property, another
+ * limit or a second date range is not an export request.
  */
-export function projectGa4BehaviorReport(response: unknown, header: ExportHeaderInput):
+function requestedRange(request: unknown): DateRange | null {
+  if (!isPlainRecord(request) || typeof request.url !== 'string' || !isPlainRecord(request.body)) return null;
+  const propertyId = REQUEST_URL_RE.exec(request.url)?.[1];
+  const ranges = request.body.dateRanges;
+  if (!propertyId || !Array.isArray(ranges) || ranges.length !== 1 || !isPlainRecord(ranges[0])) return null;
+  const { startDate, endDate } = ranges[0];
+  if (typeof startDate !== 'string' || typeof endDate !== 'string') return null;
+  const rebuilt = buildGa4BehaviorExportRequest({ propertyId, startDate, endDate });
+  return rebuilt.ok && sameJson(rebuilt.request, request) ? { start: startDate, end: endDate } : null;
+}
+
+/**
+ * Reduce an operator-supplied GA4 `runReport` response to the closed export.
+ * The projection is bound to the exact request that produced the response
+ * (`buildGa4BehaviorExportRequest`): the header's coverage must lie inside
+ * the requested days and every attested range inside the coverage, in order
+ * and without overlap, so a header can narrow what is attested but never
+ * widen, shift or extend it over days GA4 was not asked about. The response
+ * is read only through the strict reader (src/lib/ga4-run-report.ts). Rows
+ * that collapse to the same governed segment are summed. Refuses — rather
+ * than repairs — a request that is not exactly an export request, a truncated
+ * report (GA4 reports more rows than it returned: the row cap or pagination),
+ * a malformed, contradictory or ambiguous response, malformed metrics, dates
+ * outside coverage, foreign headers or timezones.
+ */
+export function projectGa4BehaviorReport(request: Ga4BehaviorExportRequest, response: unknown, header: ExportHeaderInput):
   | { ok: true; document: Ga4BehaviorExport; completeness: ExportCompleteness; reasons: string[] }
   | { ok: false; issues: string[] } {
   const out = new IssueCollector();
   const refuse = () => ({ ok: false as const, issues: out.issues });
+  const requested = requestedRange(request);
+  if (!requested) {
+    out.add('REQUEST_INVALID', '$.request');
+    return refuse();
+  }
   if (!isPlainRecord(header) || !(DATA_ORIGINS as readonly string[]).includes(header.dataOrigin as string)) out.add('HEADER_INVALID', '$.dataOrigin');
   if (!isPlainRecord(header) || !isTimestamp(header.generatedAt)) out.add('HEADER_INVALID', '$.generatedAt');
   const coverage = isPlainRecord(header) ? rangeValue(header.coverage, '$.coverage', new IssueCollector()) : null;
@@ -370,6 +426,18 @@ export function projectGa4BehaviorReport(response: unknown, header: ExportHeader
     ? header.attestedCompleteRanges.map((range) => rangeValue(range, '$', new IssueCollector()))
     : null;
   if (!attested || attested.some((range) => range === null)) out.add('HEADER_INVALID', '$.attestedCompleteRanges');
+  if (out.count > 0) return refuse();
+  // Bound to the request: coverage inside the requested days, attestation
+  // inside coverage, ordered and disjoint.
+  if (coverage!.start < requested.start || coverage!.end > requested.end) out.add('RANGE_UNBOUND', '$.coverage');
+  let previousEnd: string | null = null;
+  attested!.forEach((range, index) => {
+    if (range!.start < coverage!.start || range!.end > coverage!.end || (previousEnd !== null && range!.start <= previousEnd)) {
+      out.add('ATTESTED_RANGE_INVALID', `$.attestedCompleteRanges[${index}]`);
+      return;
+    }
+    previousEnd = range!.end;
+  });
   if (out.count > 0) return refuse();
 
   const read = readGa4RunReport(response, { dimensions: REPORT_DIMENSIONS, metrics: REPORT_METRICS, limit: MAX_ROWS });

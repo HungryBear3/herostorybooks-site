@@ -15,7 +15,9 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
+  type Ga4BehaviorExportRequest,
   buildGa4BehaviorExportRequest,
+  exportDecisionPacketGa4Behavior,
   generateSyntheticGa4BehaviorExport,
   governGa4BehaviorDimensions,
   hsbGa4BehaviorExportJsonSchema,
@@ -108,6 +110,15 @@ function ga4Report(rows: Array<[string[], string[]]>, metadata: Record<string, u
   };
 }
 
+/** The exact built request a projection is bound to; a projection without one cannot exist. */
+function request(startDate: string, endDate: string): Ga4BehaviorExportRequest {
+  const built = buildGa4BehaviorExportRequest({ propertyId: '123456789', startDate, endDate });
+  assert.equal(built.ok, true);
+  return (built as { ok: true; request: Ga4BehaviorExportRequest }).request;
+}
+const TWO_DAYS_REQUEST = request('2026-09-01', '2026-09-02');
+const ONE_DAY_REQUEST = request('2026-09-01', '2026-09-01');
+
 const HEADER = {
   dataOrigin: 'operator_export',
   generatedAt: '2026-09-30T12:00:00Z',
@@ -124,7 +135,7 @@ test('a hostile GA4 report projects to an exact, aggregated, governed export', (
     [['20260902', 'l.facebook.com', 'referral', '(referral)', '(not set)', '/gifts/birthdays'], ['5', '1', '1']],
     [['20260902', 'm.facebook.com', 'referral', '(referral)', '(not set)', '/gifts/birthdays/'], ['2', '0', '0']],
   ]);
-  const projected = projectGa4BehaviorReport(response, HEADER);
+  const projected = projectGa4BehaviorReport(TWO_DAYS_REQUEST, response, HEADER);
   assert.deepEqual(projected, {
     ok: true,
     document: {
@@ -166,7 +177,7 @@ test('malformed reports are refused', () => {
     ['jane', HEADER, ['RESPONSE_SHAPE@$']],
   ];
   for (const [response, header, issues] of refusals) {
-    assert.deepEqual(projectGa4BehaviorReport(response, header as never), { ok: false, issues }, JSON.stringify(issues));
+    assert.deepEqual(projectGa4BehaviorReport(TWO_DAYS_REQUEST, response, header as never), { ok: false, issues }, JSON.stringify(issues));
   }
 });
 
@@ -330,15 +341,15 @@ test('the reviewer reproducer: rowCount 250001 against one received row is refus
     rowCount: 250001,
     metadata: { timeZone: 'America/Chicago' },
   };
-  assert.deepEqual(projectGa4BehaviorReport(report, ONE_DAY), { ok: false, issues: ['REPORT_TRUNCATED@$.rowCount'] });
+  assert.deepEqual(projectGa4BehaviorReport(ONE_DAY_REQUEST, report, ONE_DAY), { ok: false, issues: ['REPORT_TRUNCATED@$.rowCount'] });
 });
 
 test('a full 250000-row page is refused when GA4 reports 250001 rows, and complete at exactly 250000', () => {
   const [page] = [ga4Report([GOVERNED_ROW])];
   const rows = Array.from({ length: 250_000 }, () => page.rows[0]);
-  assert.deepEqual(projectGa4BehaviorReport({ ...page, rows, rowCount: 250_001 }, ONE_DAY),
+  assert.deepEqual(projectGa4BehaviorReport(ONE_DAY_REQUEST, { ...page, rows, rowCount: 250_001 }, ONE_DAY),
     { ok: false, issues: ['REPORT_TRUNCATED@$.rowCount'] });
-  const complete = projectGa4BehaviorReport({ ...page, rows, rowCount: 250_000 }, ONE_DAY);
+  const complete = projectGa4BehaviorReport(ONE_DAY_REQUEST, { ...page, rows, rowCount: 250_000 }, ONE_DAY);
   assert.equal(complete.ok, true);
   if (!complete.ok) return;
   assert.equal(complete.completeness, 'ATTESTED');
@@ -365,7 +376,7 @@ test('row-count, response and metadata ambiguity is refused rather than certifie
       ['ROW_SHAPE@$.rows[0]']],
   ];
   for (const [label, response, issues] of cases) {
-    assert.deepEqual(projectGa4BehaviorReport(response, ONE_DAY), { ok: false, issues }, label);
+    assert.deepEqual(projectGa4BehaviorReport(ONE_DAY_REQUEST, response, ONE_DAY), { ok: false, issues }, label);
   }
 });
 
@@ -378,7 +389,7 @@ test('GA4 data-loss flags make the export explicitly INSUFFICIENT_EVIDENCE and d
       { sampled: true, thresholded: true, other_row: true }, ['SAMPLED', 'THRESHOLDED', 'OTHER_ROW']],
   ];
   for (const [metadata, quality, reasons] of flags) {
-    const result = projectGa4BehaviorReport(ga4Report([GOVERNED_ROW], metadata), ONE_DAY);
+    const result = projectGa4BehaviorReport(ONE_DAY_REQUEST, ga4Report([GOVERNED_ROW], metadata), ONE_DAY);
     assert.equal(result.ok, true, reasons.join());
     if (!result.ok) continue;
     assert.equal(result.completeness, 'INSUFFICIENT_EVIDENCE', reasons.join());
@@ -387,7 +398,7 @@ test('GA4 data-loss flags make the export explicitly INSUFFICIENT_EVIDENCE and d
     assert.deepEqual(result.document.attested_complete_ranges, [], 'no complete-range attestation survives a GA4 data-loss flag');
     assert.deepEqual(validateHsbGa4BehaviorExport(result.document), []);
   }
-  const clean = projectGa4BehaviorReport(ga4Report([GOVERNED_ROW], { samplingMetadatas: [], subjectToThresholding: false }), ONE_DAY);
+  const clean = projectGa4BehaviorReport(ONE_DAY_REQUEST, ga4Report([GOVERNED_ROW], { samplingMetadatas: [], subjectToThresholding: false }), ONE_DAY);
   assert.equal(clean.ok && clean.completeness, 'ATTESTED');
 });
 
@@ -397,5 +408,152 @@ test('an export may not attest completeness while it carries a GA4 data-loss fla
     assert.deepEqual(validateHsbGa4BehaviorExport(attested), ['ATTESTATION_CONTRADICTS_QUALITY@$.attested_complete_ranges'], flag);
     const honest = hostile((d) => { d.quality[flag] = true; d.attested_complete_ranges = []; });
     assert.deepEqual(validateHsbGa4BehaviorExport(honest), [], flag);
+  }
+});
+
+// ── B-2: every projection is bound to the request that produced the report ──
+
+test('the reviewer reproducer: a header cannot attest days outside the requested range', () => {
+  const wide = {
+    ...ONE_DAY,
+    generatedAt: '2026-09-30T12:00:00Z',
+    coverage: { start: '2026-09-01', end: '2026-09-07' },
+    attestedCompleteRanges: [{ start: '2026-09-01', end: '2026-09-07' }],
+  };
+  assert.deepEqual(projectGa4BehaviorReport(ONE_DAY_REQUEST, ga4Report([GOVERNED_ROW]), wide),
+    { ok: false, issues: ['RANGE_UNBOUND@$.coverage'] });
+});
+
+test('coverage and attestation may narrow the request but never widen, shift, or leave it', () => {
+  const three = request('2026-09-01', '2026-09-03');
+  const rows: Array<[string[], string[]]> = [GOVERNED_ROW, [['20260902', '(direct)', '(none)', '(direct)', '(not set)', '/'], ['2', '0', '0']]];
+  const header = (coverage: { start: string; end: string }, attested: Array<{ start: string; end: string }>) =>
+    ({ dataOrigin: 'operator_export', generatedAt: '2026-09-30T12:00:00Z', coverage, attestedCompleteRanges: attested });
+  const narrowed = projectGa4BehaviorReport(three, ga4Report(rows), header({ start: '2026-09-01', end: '2026-09-02' }, [{ start: '2026-09-02', end: '2026-09-02' }]));
+  assert.equal(narrowed.ok, true);
+  if (narrowed.ok) {
+    assert.deepEqual(narrowed.document.coverage, { start: '2026-09-01', end: '2026-09-02' });
+    assert.deepEqual(narrowed.document.attested_complete_ranges, [{ start: '2026-09-02', end: '2026-09-02' }]);
+    assert.equal(narrowed.completeness, 'ATTESTED');
+  }
+  const cases: Array<[string, ReturnType<typeof header>, string[]]> = [
+    ['coverage widened before the request', header({ start: '2026-08-31', end: '2026-09-03' }, []), ['RANGE_UNBOUND@$.coverage']],
+    ['coverage widened after the request', header({ start: '2026-09-01', end: '2026-09-04' }, []), ['RANGE_UNBOUND@$.coverage']],
+    ['coverage shifted', header({ start: '2026-09-02', end: '2026-09-04' }, []), ['RANGE_UNBOUND@$.coverage']],
+    ['attestation outside coverage', header({ start: '2026-09-01', end: '2026-09-02' }, [{ start: '2026-09-01', end: '2026-09-03' }]), ['ATTESTED_RANGE_INVALID@$.attestedCompleteRanges[0]']],
+    ['attestation before coverage', header({ start: '2026-09-02', end: '2026-09-03' }, [{ start: '2026-09-01', end: '2026-09-02' }]), ['ATTESTED_RANGE_INVALID@$.attestedCompleteRanges[0]']],
+    ['reversed attested range', header({ start: '2026-09-01', end: '2026-09-03' }, [{ start: '2026-09-03', end: '2026-09-01' }]), ['HEADER_INVALID@$.attestedCompleteRanges']],
+    ['overlapping attested ranges', header({ start: '2026-09-01', end: '2026-09-03' }, [{ start: '2026-09-01', end: '2026-09-02' }, { start: '2026-09-02', end: '2026-09-03' }]), ['ATTESTED_RANGE_INVALID@$.attestedCompleteRanges[1]']],
+    ['duplicate attested ranges', header({ start: '2026-09-01', end: '2026-09-03' }, [{ start: '2026-09-01', end: '2026-09-01' }, { start: '2026-09-01', end: '2026-09-01' }]), ['ATTESTED_RANGE_INVALID@$.attestedCompleteRanges[1]']],
+    ['unordered attested ranges', header({ start: '2026-09-01', end: '2026-09-03' }, [{ start: '2026-09-03', end: '2026-09-03' }, { start: '2026-09-01', end: '2026-09-01' }]), ['ATTESTED_RANGE_INVALID@$.attestedCompleteRanges[1]']],
+    ['reversed coverage', header({ start: '2026-09-03', end: '2026-09-01' }, []), ['HEADER_INVALID@$.coverage']],
+    ['year-zero coverage', header({ start: '0000-12-31', end: '2026-09-01' }, []), ['HEADER_INVALID@$.coverage']],
+    ['timestamp-shaped coverage', header({ start: '2026-09-01T00:00:00Z', end: '2026-09-02' }, []), ['HEADER_INVALID@$.coverage']],
+    ['unpadded coverage', header({ start: '2026-9-1', end: '2026-09-02' }, []), ['HEADER_INVALID@$.coverage']],
+    ['impossible calendar day', header({ start: '2026-09-01', end: '2026-09-31' }, []), ['HEADER_INVALID@$.coverage']],
+    ['non-string dates', header({ start: 20260901 as never, end: '2026-09-02' }, []), ['HEADER_INVALID@$.coverage']],
+    ['inherited coverage', header(Object.create({ start: '2026-09-01', end: '2026-09-02' }), []), ['HEADER_INVALID@$.coverage']],
+    ['attested ranges not a list', header({ start: '2026-09-01', end: '2026-09-02' }, { 0: { start: '2026-09-01', end: '2026-09-01' } } as never), ['HEADER_INVALID@$.attestedCompleteRanges']],
+  ];
+  for (const [label, hdr, issues] of cases) {
+    const result = projectGa4BehaviorReport(three, ga4Report(rows), hdr);
+    assert.deepEqual(result, { ok: false, issues }, label);
+  }
+});
+
+test('a projection refuses any request that is not exactly a built export request', () => {
+  const built = ONE_DAY_REQUEST;
+  const body = built.body as Record<string, unknown>;
+  const cases: Array<[string, unknown]> = [
+    ['no request', undefined],
+    ['null request', null],
+    ['the response passed as the request', ga4Report([GOVERNED_ROW])],
+    ['a transaction-readback-shaped request', { ...built, body: { ...body, dimensions: [{ name: 'transactionId' }], metrics: [{ name: 'eventCount' }] } }],
+    ['a smaller row limit', { ...built, body: { ...body, limit: '10' } }],
+    ['keepEmptyRows true', { ...built, body: { ...body, keepEmptyRows: true } }],
+    ['two date ranges', { ...built, body: { ...body, dateRanges: [...(body.dateRanges as unknown[]), { startDate: '2026-09-02', endDate: '2026-09-02' }] } }],
+    ['relative dates', { ...built, body: { ...body, dateRanges: [{ startDate: '30daysAgo', endDate: 'today' }] } }],
+    ['reversed dates', { ...built, body: { ...body, dateRanges: [{ startDate: '2026-09-02', endDate: '2026-09-01' }] } }],
+    ['year-zero dates', { ...built, body: { ...body, dateRanges: [{ startDate: '0000-01-01', endDate: '0000-01-01' }] } }],
+    ['a non-numeric property in the url', { ...built, url: built.url.replace('123456789', 'abc') }],
+    ['a different endpoint', { ...built, url: built.url.replace(':runReport', ':runPivotReport') }],
+    ['a GET', { ...built, method: 'GET' }],
+    ['a wider scope', { ...built, oauthScope: 'https://www.googleapis.com/auth/analytics.edit' }],
+    ['an extra field', { ...built, token: 'x' }],
+    ['a missing body', (() => { const r: Record<string, unknown> = { ...built }; delete r.body; return r; })()],
+    ['an inherited request', Object.create(built)],
+  ];
+  for (const [label, req] of cases) {
+    assert.deepEqual(projectGa4BehaviorReport(req as never, ga4Report([GOVERNED_ROW]), ONE_DAY), { ok: false, issues: ['REQUEST_INVALID@$.request'] }, label);
+  }
+});
+
+test('packet boundary dates stay representable through a bound projection', () => {
+  const early = request('0001-01-01', '0001-01-02');
+  const earlyHeader = { dataOrigin: 'operator_export', generatedAt: '0001-01-05T00:00:00Z', coverage: { start: '0001-01-01', end: '0001-01-02' }, attestedCompleteRanges: [{ start: '0001-01-01', end: '0001-01-02' }] };
+  const earlyRows: Array<[string[], string[]]> = [[['00010101', '(direct)', '(none)', '(direct)', '(not set)', '/'], ['1', '0', '0']]];
+  const earlyResult = projectGa4BehaviorReport(early, ga4Report(earlyRows), earlyHeader);
+  assert.equal(earlyResult.ok && earlyResult.completeness, 'ATTESTED');
+  if (earlyResult.ok) assert.deepEqual(validateHsbGa4BehaviorExport(earlyResult.document), []);
+  const late = request('9999-12-26', '9999-12-27');
+  const lateHeader = { dataOrigin: 'operator_export', generatedAt: '9999-12-31T00:00:00Z', coverage: { start: '9999-12-26', end: '9999-12-27' }, attestedCompleteRanges: [{ start: '9999-12-26', end: '9999-12-27' }] };
+  const lateRows: Array<[string[], string[]]> = [[['99991227', '(direct)', '(none)', '(direct)', '(not set)', '/'], ['1', '0', '0']]];
+  const lateResult = projectGa4BehaviorReport(late, ga4Report(lateRows), lateHeader);
+  assert.equal(lateResult.ok && lateResult.completeness, 'ATTESTED');
+  if (lateResult.ok) assert.deepEqual(validateHsbGa4BehaviorExport(lateResult.document), []);
+  assert.deepEqual(buildGa4BehaviorExportRequest({ propertyId: '123456789', startDate: '0000-12-31', endDate: '0001-01-01' }), { ok: false, reason: 'DATE_INVALID' });
+});
+
+// ── B-1: emptyReason at the export boundary ─────────────────────────────────
+
+test('the reviewer reproducer: an emptyReason report is INSUFFICIENT_EVIDENCE with no attested range, never ATTESTED', () => {
+  const reason = 'Data is not available for this request';
+  const empty: Record<string, unknown> = { ...ga4Report([], { emptyReason: reason }) };
+  delete empty.rows;
+  delete empty.rowCount;
+  for (const [label, response] of [['rows omitted', empty], ['empty rows list', ga4Report([], { emptyReason: reason })]] as Array<[string, unknown]>) {
+    const result = projectGa4BehaviorReport(ONE_DAY_REQUEST, response, ONE_DAY);
+    assert.equal(result.ok, true, label);
+    if (!result.ok) continue;
+    assert.equal(result.completeness, 'INSUFFICIENT_EVIDENCE', label);
+    assert.deepEqual(result.reasons, ['EMPTY_REASON'], label);
+    assert.deepEqual(result.document.attested_complete_ranges, [], label);
+    assert.deepEqual(result.document.rows, [], label);
+    assert.deepEqual(result.document.quality, { sampled: false, thresholded: false, other_row: false }, label);
+    assert.deepEqual(validateHsbGa4BehaviorExport(result.document), [], label);
+    assert.doesNotMatch(JSON.stringify(result), /not available|request/i, `${label}: reason text leaked`);
+  }
+  const flagged = projectGa4BehaviorReport(ONE_DAY_REQUEST, ga4Report([], { emptyReason: reason, dataLossFromOtherRow: true }), ONE_DAY);
+  assert.deepEqual(flagged.ok && flagged.reasons, ['OTHER_ROW', 'EMPTY_REASON']);
+});
+
+test('emptyReason beside returned rows is contradictory metadata and refuses the export', () => {
+  assert.deepEqual(projectGa4BehaviorReport(ONE_DAY_REQUEST, ga4Report([GOVERNED_ROW], { emptyReason: 'x' }), ONE_DAY),
+    { ok: false, issues: ['METADATA_INVALID@$.metadata.emptyReason'] });
+  for (const value of [null, ['x'], 1, { reason: 'x' }]) {
+    assert.deepEqual(projectGa4BehaviorReport(ONE_DAY_REQUEST, ga4Report([], { emptyReason: value }), ONE_DAY),
+      { ok: false, issues: ['METADATA_INVALID@$.metadata.emptyReason'] }, JSON.stringify(value));
+  }
+});
+
+test('an attestation the pinned packet cannot settle never becomes a packet document', () => {
+  // Past 9999-12-28 the packet's 48 h settle arithmetic overflows and its validator crashes rather than rejects;
+  // HSB refuses before a packet document exists, while the HSB export itself stays well formed.
+  const mapping = readJson(MAPPING_PATH);
+  const late = request('9999-12-26', '9999-12-30');
+  const header = (end: string) => ({
+    dataOrigin: 'operator_export', generatedAt: '9999-12-31T23:59:59Z',
+    coverage: { start: '9999-12-26', end: '9999-12-30' }, attestedCompleteRanges: [{ start: '9999-12-26', end }],
+  });
+  const rows: Array<[string[], string[]]> = [[['99991226', '(direct)', '(none)', '(direct)', '(not set)', '/'], ['1', '0', '0']]];
+  const settleable = projectGa4BehaviorReport(late, ga4Report(rows), header('9999-12-28'));
+  assert.equal(settleable.ok, true);
+  if (settleable.ok) assert.equal(exportDecisionPacketGa4Behavior(settleable.document, mapping).ok, true);
+  for (const end of ['9999-12-29', '9999-12-30']) {
+    const unsettleable = projectGa4BehaviorReport(late, ga4Report(rows), header(end));
+    assert.equal(unsettleable.ok, true, `${end}: the HSB export is well formed`);
+    if (!unsettleable.ok) continue;
+    assert.deepEqual(exportDecisionPacketGa4Behavior(unsettleable.document, mapping),
+      { ok: false, issues: ['ATTESTED_RANGE_UNSETTLEABLE@$.attested_complete_ranges[0]'] }, end);
   }
 });

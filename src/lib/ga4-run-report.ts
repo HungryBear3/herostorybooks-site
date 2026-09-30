@@ -14,12 +14,16 @@
  *
  * What a well-formed response still cannot rule out is returned as a gap,
  * never guessed away: `SAMPLED`, `THRESHOLDED` and `OTHER_ROW` from the
- * metadata, and `TRUNCATED` when GA4 reports more rows than were received (a
- * row cap or pagination). Defects and gaps are value-free codes.
+ * metadata, `TRUNCATED` when GA4 reports more rows than were received (a
+ * row cap or pagination), and `EMPTY_REASON` when GA4 states that the report
+ * is empty for a reason — an empty result GA4 explains is not evidence of
+ * zero traffic. `emptyReason` beside returned rows contradicts itself and is
+ * a defect. Defects and gaps are value-free codes; the reason text is never
+ * read past its type check.
  */
 import { hasOwn, isPlainRecord } from './campaign-governance.ts';
 
-export type Ga4ReportGap = 'SAMPLED' | 'THRESHOLDED' | 'OTHER_ROW' | 'TRUNCATED';
+export type Ga4ReportGap = 'SAMPLED' | 'THRESHOLDED' | 'OTHER_ROW' | 'TRUNCATED' | 'EMPTY_REASON';
 export type Ga4ReportDefect = 'RESPONSE_SHAPE' | 'HEADERS_MISMATCH' | 'METADATA_INVALID' | 'ROW_SHAPE' | 'ROW_COUNT_INVALID';
 
 export interface Ga4ReportRow {
@@ -116,10 +120,16 @@ export function readGa4RunReport(response: unknown, request: Ga4ReportRequestSha
     return fail('ROW_COUNT_INVALID', '$.rowCount');
   }
 
+  // GA4 explains an empty result with `emptyReason`; the same key beside
+  // returned rows is a contradiction, not a report.
+  const emptyForReason = hasOwn(metadata, 'emptyReason');
+  if (emptyForReason && rows.length > 0) return fail('METADATA_INVALID', '$.metadata.emptyReason');
+
   const gaps: Ga4ReportGap[] = [];
   if (Array.isArray(sampling) && sampling.length > 0) gaps.push('SAMPLED');
   if (metadata.subjectToThresholding === true) gaps.push('THRESHOLDED');
   if (metadata.dataLossFromOtherRow === true) gaps.push('OTHER_ROW');
   if (typeof rowCount === 'number' && rowCount > rows.length) gaps.push('TRUNCATED');
+  if (emptyForReason) gaps.push('EMPTY_REASON');
   return { ok: true, report: { rows, timeZone: typeof metadata.timeZone === 'string' ? metadata.timeZone : null, gaps } };
 }

@@ -217,9 +217,13 @@ export function integerValue(value: unknown, min: number, max: number, path: str
   return value;
 }
 
-/** An exact YYYY-MM-DD calendar date. */
+/**
+ * An exact YYYY-MM-DD calendar date between 0001-01-01 and 9999-12-31. Year
+ * zero exists in ISO 8601 and in JavaScript's Date, but not in the pinned
+ * decision packet's calendar (`date.fromisoformat`), so it is not a date here.
+ */
 export function isCalendarDate(value: unknown): value is string {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith('0000-')) return false;
   const time = Date.parse(`${value}T00:00:00.000Z`);
   return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
 }

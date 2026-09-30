@@ -332,3 +332,21 @@ test('Admin list readbacks fail closed on malformed pagination, unknown fields a
   assert.deepEqual(evaluateKeyEventsReadback(doc, { keyEvents: [purchase], nextPageToken: null }),
     { verdict: 'INVALID_RESPONSE', issues: ['RESPONSE_SHAPE'] });
 });
+
+test('the reviewer reproducer: a dimension probe with emptyReason is INCONCLUSIVE, never NO_DATA; beside rows it is contradictory', () => {
+  const doc = checklist();
+  const reason = 'Data is not available for this request';
+  const empty = { ...probeResponse([]), metadata: { currencyCode: 'USD', timeZone: 'America/Chicago', emptyReason: reason } };
+  const withoutRows: Record<string, unknown> = { ...empty };
+  delete withoutRows.rows;
+  delete withoutRows.rowCount;
+  for (const [label, response] of [['rows omitted', withoutRows], ['empty rows list', empty]] as Array<[string, unknown]>) {
+    const result = evaluateDimensionProbe(doc, 'step_id', response);
+    assert.deepEqual(result, { verdict: 'INCONCLUSIVE', issues: ['EMPTY_REASON'] }, label);
+    assert.doesNotMatch(JSON.stringify(result), /not available|request/i, label);
+  }
+  const contradictory = { ...probeResponse([['checkout_step_view', 'people', '1']]), metadata: { currencyCode: 'USD', timeZone: 'America/Chicago', emptyReason: reason } };
+  assert.deepEqual(evaluateDimensionProbe(doc, 'step_id', contradictory), { verdict: 'INVALID_RESPONSE', issues: ['METADATA_INVALID'] });
+  const flagged = { ...empty, metadata: { ...empty.metadata, subjectToThresholding: true } };
+  assert.deepEqual(evaluateDimensionProbe(doc, 'step_id', flagged), { verdict: 'INCONCLUSIVE', issues: ['THRESHOLDED', 'EMPTY_REASON'] });
+});

@@ -106,11 +106,14 @@ inside the contract vocabulary (values are never echoed). A probe response is
 read only through the strict reader (`src/lib/ga4-run-report.ts`): unknown
 fields, headers, metadata or cells, a wrong row width, or a `rowCount` below
 the rows received is `INVALID_RESPONSE`; a sampled, thresholded,
-`(other)`-folded or truncated report (`rowCount` above the rows received,
-e.g. beyond the 1000-row cap) is `INCONCLUSIVE`, never `MATCH`. An
-out-of-contract value is a `MISMATCH` even in an incomplete report. A list
-response with a page token is `INCONCLUSIVE`; a malformed token or an unknown
-field is `INVALID_RESPONSE`.
+`(other)`-folded, truncated (`rowCount` above the rows received, e.g. beyond
+the 1000-row cap) or empty-for-a-reason report (`metadata.emptyReason`
+present with no rows: GA4 explains the emptiness, so it is not evidence of
+zero events) is `INCONCLUSIVE`, never `MATCH` or `NO_DATA`; `emptyReason`
+beside returned rows is contradictory metadata and `INVALID_RESPONSE`. The
+reason text is never read or echoed. An out-of-contract value is a
+`MISMATCH` even in an incomplete report. A list response with a page token is
+`INCONCLUSIVE`; a malformed token or an unknown field is `INVALID_RESPONSE`.
 
 ## 3. Transaction-id dedup readback
 
@@ -120,11 +123,14 @@ and the exact Checkout Session id (`cs_test_…`/`cs_live_…`, the same rule th
 purchase writer uses). Absolute dates only, at most 93 days.
 `evaluateGa4TransactionReadback({ transactionId }, response)` returns
 `EXACTLY_ONE`, `DUPLICATE`, `MISSING` (GA4 processing can lag a day or two),
-`INCONCLUSIVE` (sampled, thresholded, `(other)` row, or truncated: `rowCount`
-above the rows received) or `INVALID_RESPONSE` (anything but the exact shape
-the request produces — extra or missing headers, cells or fields, untyped
-metadata, a missing or low `rowCount`). `EXACTLY_ONE` needs a complete,
-exactly-shaped one-row report.
+`INCONCLUSIVE` (sampled, thresholded, `(other)` row, truncated: `rowCount`
+above the rows received, or empty for a stated reason: `metadata.emptyReason`
+with no rows, which is not the same as `MISSING`) or `INVALID_RESPONSE`
+(anything but the exact shape the request produces — extra or missing
+headers, cells or fields, untyped metadata, a missing or low `rowCount`,
+`emptyReason` beside returned rows). `EXACTLY_ONE` needs a complete,
+exactly-shaped one-row report; `MISSING` needs an empty report GA4 does not
+explain.
 
 ## 4. Decision-packet export
 
@@ -137,18 +143,33 @@ document only through a checked mapping:
   `ga4_behavior` v1 (daily `sessions`, `checkout_starts`, `purchase_events` per
   source/medium/campaign/content/landing path), in HSB vocabulary.
 - `buildGa4BehaviorExportRequest` (read-only report) and
-  `projectGa4BehaviorReport` (response → export). Every raw GA4 value is
-  re-governed through the Phase-A allowlists or collapsed into `direct` /
-  `none` / `not_set` / `other`; query strings, referrer hosts, identifier
-  routes and free text cannot survive. The response is read through the
-  strict reader. **A truncated report is refused** (`REPORT_TRUNCATED`:
-  `rowCount` above the rows received, including anything beyond the
-  250 000-row request cap), as is a missing, low or non-integer `rowCount`, an
-  unknown field or metadata key, or a malformed flag. A sampled, thresholded or
-  `(other)`-folded report becomes an export with those quality flags and **no
-  attested range**, returned as `completeness: 'INSUFFICIENT_EVIDENCE'`; the
+  `projectGa4BehaviorReport(request, response, header)` (response → export).
+  **A projection is bound to the exact built request**: the request is
+  rebuilt from the property and dates it names and must match structurally
+  (`REQUEST_INVALID` otherwise — a readback request, an edited copy, another
+  limit or a second date range is not an export request); the header's
+  coverage must lie inside the requested days (`RANGE_UNBOUND`) and every
+  attested range inside the coverage, ordered and disjoint
+  (`ATTESTED_RANGE_INVALID`), so a header can narrow what is attested but
+  never widen, shift or extend it over days GA4 was not asked about. Calendar
+  dates are `0001-01-01`–`9999-12-31`, as in the packet; year zero is not a
+  date, and the packet export refuses an attestation ending after
+  `9999-12-28` (`ATTESTED_RANGE_UNSETTLEABLE`, see §8). Every raw GA4 value is re-governed through the Phase-A allowlists or
+  collapsed into `direct` / `none` / `not_set` / `other`; query strings,
+  referrer hosts, identifier routes and free text cannot survive. The
+  response is read through the strict reader. **A truncated report is
+  refused** (`REPORT_TRUNCATED`: `rowCount` above the rows received, including
+  anything beyond the 250 000-row request cap), as is a missing, low or
+  non-integer `rowCount`, an unknown field or metadata key, a malformed flag,
+  or `metadata.emptyReason` beside returned rows (`METADATA_INVALID`). A
+  sampled, thresholded or `(other)`-folded report becomes an export with
+  those quality flags and **no attested range**, returned as
+  `completeness: 'INSUFFICIENT_EVIDENCE'`; an empty-for-a-reason report
+  (`emptyReason` with no rows) is likewise `INSUFFICIENT_EVIDENCE` with reason
+  `EMPTY_REASON` and no attested range — GA4 explaining an empty result is not
+  evidence of zero traffic, and the reason text is never read or echoed. The
   export validator rejects any document that attests completeness while
-  carrying such a flag. Output is revalidated before return.
+  carrying a quality flag. Output is revalidated before return.
 - `config/analytics/hsb-ga4-behavior-export.schema.v1.json` — generated closed
   JSON Schema. `config/analytics/fixtures/hsb-ga4-behavior-export.synthetic.v1.json`
   — deterministic synthetic fixture (not business data). Regenerate with
@@ -291,3 +312,13 @@ one GA4 purchase and contacts no Meta host.
   closed here; left for a ruling.
 - `begin_checkout` accepts an optional `bookFormat` although the live call
   site sends none (a closed enum kept so the Phase-A boundary test holds).
+- Packet-side defect, closed on the HSB side: the pinned validator raises an
+  uncaught `OverflowError` (not a rejection) when an attested day ends on or
+  after `9999-12-29` in any packet timezone — its 48-hour settle arithmetic
+  overflows Python's datetime. The TS packet gate therefore refuses any
+  attestation ending after `9999-12-28` (`ATTESTED_RANGE_UNSETTLEABLE`),
+  derived from the packet's `SETTLE_HOURS`, before a packet document exists;
+  `tests/decision-packet-compat.test.ts` sweeps every day through
+  `9999-12-31` in every zone against the real validator and proves the gate
+  accepts nothing the packet crashes on. Unattested coverage is unaffected.
+  The packet's crash itself remains a packet-side ruling.

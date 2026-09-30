@@ -93,10 +93,22 @@ export const DECISION_PACKET_GA4_BEHAVIOR = deepFreeze({
   maxCount: 1_000_000_000,
   maxCoverageDays: 400,
   maxInputBytes: 16 * 1024 * 1024,
+  /** Hours after an attested day ends (in the declared zone) before the packet treats it as settled. */
+  settleHours: 48,
 });
 
 const P = DECISION_PACKET_GA4_BEHAVIOR;
 const DAY_MS = 86_400_000;
+/**
+ * The last day an attestation may end. The packet settles an attested day
+ * `d` when `d + 1 day` starts in the declared zone plus `settleHours` — Python
+ * datetime arithmetic that overflows past 9999-12-31 and crashes its validator
+ * instead of rejecting. Every allowed zone is at or west of UTC, so the bound
+ * is the same for all of them: 9999-12-31 minus (1 + ceil(settleHours / 24))
+ * days. Whatever this gate accepts, the packet must accept without crashing.
+ */
+const LAST_ATTESTABLE_DAY = new Date(Date.parse('9999-12-31T00:00:00.000Z') - (1 + Math.ceil(P.settleHours / 24)) * DAY_MS)
+  .toISOString().slice(0, 10);
 const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const MONTH_RE = new RegExp(`^${P.campaignMonthPattern}$`);
 
@@ -192,6 +204,7 @@ export function validateDecisionPacketGa4Behavior(doc: unknown): string[] {
         out.add('ATTESTED_RANGE_INVALID', path);
         return;
       }
+      if (range.end > LAST_ATTESTABLE_DAY) out.add('ATTESTED_RANGE_UNSETTLEABLE', path);
       previousEnd = range.end;
     });
   }

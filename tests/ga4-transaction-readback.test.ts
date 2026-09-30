@@ -192,3 +192,38 @@ test('malformed, truncated or quality-flagged reports never yield a definitive v
     assert.deepEqual(evaluateGa4TransactionReadback({ transactionId: TXN }, response), expected, label);
   }
 });
+
+// ── emptyReason: GA4 says the report is empty for a reason ──────────────────
+
+test('the reviewer reproducer: an emptyReason report is an INCONCLUSIVE evidence gap, never a definitive MISSING', () => {
+  const reason = 'Data is not available for this request';
+  const withoutRows = without(without(report([], { emptyReason: reason }), 'rows'), 'rowCount');
+  const cases: Array<[string, unknown, { verdict: string; reasons: string[] }]> = [
+    ['emptyReason, rows and rowCount omitted', withoutRows, { verdict: 'INCONCLUSIVE', reasons: ['EMPTY_REASON'] }],
+    ['emptyReason with an empty rows list', report([], { emptyReason: reason }), { verdict: 'INCONCLUSIVE', reasons: ['EMPTY_REASON'] }],
+    ['empty-string emptyReason still counts', report([], { emptyReason: '' }), { verdict: 'INCONCLUSIVE', reasons: ['EMPTY_REASON'] }],
+    ['emptyReason after every other gap', { ...report([], { emptyReason: reason, subjectToThresholding: true, dataLossFromOtherRow: true }), rowCount: 3 },
+      { verdict: 'INCONCLUSIVE', reasons: ['THRESHOLDED', 'OTHER_ROW', 'TRUNCATED', 'EMPTY_REASON'] }],
+  ];
+  for (const [label, response, expected] of cases) {
+    const result = evaluateGa4TransactionReadback({ transactionId: TXN }, response);
+    assert.deepEqual(result, expected, label);
+    assert.doesNotMatch(JSON.stringify(result), /not available|request/i, `${label}: reason text leaked`);
+  }
+});
+
+test('emptyReason beside returned rows, or with a non-string value, is contradictory metadata and INVALID_RESPONSE', () => {
+  const cases: Array<[string, unknown]> = [
+    ['emptyReason with one row', report([[TXN, 'purchase', '1']], { emptyReason: 'x' })],
+    ['emptyReason with two rows', report([[TXN, 'purchase', '1'], [TXN, 'purchase', '1']], { emptyReason: 'x' })],
+    ['emptyReason null', report([], { emptyReason: null })],
+    ['emptyReason list', report([], { emptyReason: ['x'] })],
+    ['emptyReason number', report([], { emptyReason: 1 })],
+    ['emptyReason object', report([], { emptyReason: { reason: 'x' } })],
+    ['emptyReason inherited through the prototype', { ...report([]), metadata: Object.create({ emptyReason: 'x' }) }],
+  ];
+  for (const [label, response] of cases) {
+    assert.deepEqual(evaluateGa4TransactionReadback({ transactionId: TXN }, response),
+      { verdict: 'INVALID_RESPONSE', reasons: ['METADATA_INVALID'] }, label);
+  }
+});
