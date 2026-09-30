@@ -137,6 +137,14 @@
     {
       "event_name": "checkout_step_blocked",
       "rationale": "Friction diagnostics; a blocked step is not an outcome."
+    },
+    {
+      "event_name": "name_preview_submitted",
+      "rationale": "Funnel context counted as users who tried the name preview; engagement is not an outcome."
+    },
+    {
+      "event_name": "order_submit_attempt",
+      "rationale": "Funnel stage counted as users who submitted a validated order; only a settled payment is a conversion."
     }
   ]
 }

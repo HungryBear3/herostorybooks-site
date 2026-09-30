@@ -16,6 +16,7 @@ GA4, Meta, Stripe or Vercel.
 | GA4 report reader | `src/lib/ga4-run-report.ts` | Strict `runReport` reader behind every export/readback verdict |
 | Decision-packet export | `src/lib/analytics-decision-export.ts`, `src/lib/decision-packet-contract.ts`, `config/analytics/*` | HSB schema + packet compat export pinned to packet `d64d095`; unrepresentable values fail closed (HOLD) |
 | Campaign governance | `src/lib/campaign-governance.ts`, `config/analytics/experiment-registry.v1.json` | Registry empty; linter live |
+| Funnel diagnostics | `src/lib/ga4-funnel-diagnostics.ts`, `scripts/funnel-diagnostics.ts`, [`funnel.md`](funnel.md) | Read-only request plan + closed `hsb.funnel_diagnostics` v1 report; no new events |
 | Meta browser | `src/lib/meta-pixel-candidate.ts` | Candidate, not mounted, cannot activate (no consent surface) |
 | Meta server (CAPI) | `src/lib/meta-capi-status.ts` | `DEFERRED`: frozen, null event, no transport |
 
@@ -58,8 +59,9 @@ rejects any other path.
 | `begin_checkout` | `bookFormat` | yes |
 | `checkout_step_view` / `_complete` | `step_id`, `step_number`, `total_steps`, `selected_format` | yes |
 | `checkout_step_blocked` | the above + `reason` | yes |
-| `order_submit_attempt` / `purchase_intent` | `theme`, `bookFormat`, `hasPhoto`, `hasVoice`, `familyCharacterCount` | no |
-| `name_preview_submitted` | `has_name`, `preview_name_length` | no |
+| `order_submit_attempt` | `theme`, `bookFormat`, `hasPhoto`, `hasVoice`, `familyCharacterCount` | yes (funnel stage) |
+| `purchase_intent` (alias of the above) | same | no |
+| `name_preview_submitted` | `has_name` (no name length: it derives from a child's typed name) | yes (funnel context) |
 | `format_selected` / `story_selected` / `proof_approved` | `format` / `theme` / `bookFormat` | no |
 | `start_checkout` (no live emitter) | — | no |
 | cover events (no live emitter) | `variant` (`A`/`B`) | no |
@@ -80,8 +82,9 @@ event-scoped custom dimensions and key events. Nothing is pre-marked done.
   `source|medium|campaign|content|landing` (purchase). Display names,
   source events and rationale are in the file.
 - **Key event** — `purchase` only, counted once per event.
-- **Explicitly not key events** — `page_view`, `begin_checkout` and the three
-  checkout step events. Do not mark funnel steps.
+- **Explicitly not key events** — `page_view`, `begin_checkout`, the three
+  checkout step events, `name_preview_submitted` and `order_submit_attempt`.
+  Do not mark funnel steps.
 
 The linter rejects user/item scope, identifiers or amounts as dimensions
 (`transaction_id`, `value`, …), parameters an event does not send, reserved

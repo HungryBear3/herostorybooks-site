@@ -88,6 +88,7 @@ test('HSB mounts privacy-sanitized Vercel Analytics and forwards campaign params
 test('NamePreview analytics sends only derived metrics, never the child name', () => {
   const eventBlock = namePreviewSource.match(/track\(["']name_preview_submitted["'][\s\S]*?\}\);/)?.[0] ?? '';
   assert.match(eventBlock, /has_name/);
-  assert.match(eventBlock, /preview_name_length/);
+  // Not even a length derived from the typed name leaves the page.
+  assert.doesNotMatch(eventBlock, /preview_name_length|\.length/);
   assert.doesNotMatch(eventBlock, /childName\s*:|displayName\s*:|\bname\s*:/);
 });

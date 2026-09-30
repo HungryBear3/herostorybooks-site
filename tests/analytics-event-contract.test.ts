@@ -243,8 +243,8 @@ test('projection keeps every value the real prop builders and catalogs produce',
     assert.deepEqual(projectBrowserEventParams('story_selected', { theme }), { theme });
   }
   assert.deepEqual(
-    projectBrowserEventParams('name_preview_submitted', { has_name: true, preview_name_length: 5 }),
-    { has_name: true, preview_name_length: 5 },
+    projectBrowserEventParams('name_preview_submitted', { has_name: true }),
+    { has_name: true },
   );
   assert.deepEqual(
     projectBrowserEventParams('order_submit_attempt', {
@@ -264,7 +264,7 @@ test('projection drops undeclared keys and out-of-contract values, and refuses u
     }, { hasVoice: false }],
     ['checkout_step_view', { step_id: 'people', reason: 'email_required', step_number: 0, total_steps: 5 }, { step_id: 'people' }],
     ['checkout_step_blocked', { reason: 'Missing: Jane Doe' }, {}],
-    ['name_preview_submitted', { has_name: 1, preview_name_length: -1, child_name: 'Jane' }, {}],
+    ['name_preview_submitted', { has_name: 1, preview_name_length: 4, child_name: 'Jane' }, {}],
     ['format_selected', { format: 'Premium' }, {}],
     ['proof_approved', { bookFormat: 'digital', orderId: 'ord_ZQXSYNTH7731' }, { bookFormat: 'digital' }],
     ['begin_checkout', { value: 19, currency: 'USD', transaction_id: 'cs_live_x' }, {}],
