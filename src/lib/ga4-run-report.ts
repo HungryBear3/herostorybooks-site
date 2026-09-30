@@ -7,7 +7,8 @@
  *  - the fields a response to those requests carries, and no others (none of
  *    them asks for totals, quotas or another page);
  *  - the requested dimension and metric headers, in order (every requested
- *    metric is an integer count);
+ *    metric is an integer count); a request for no dimensions may omit the
+ *    empty dimension headers and row values, as proto3 JSON does;
  *  - rows exactly as wide as the headers, every cell exactly `{ value }`;
  *  - a `rowCount` beside any row, never below the rows received;
  *  - known metadata only, each flag with its documented type.
@@ -84,7 +85,12 @@ export function readGa4RunReport(response: unknown, request: Ga4ReportRequestSha
   const fail = (defect: Ga4ReportDefect, path: string) => ({ ok: false as const, defect, path });
   if (!isPlainRecord(response) || Object.keys(response).some((key) => !RESPONSE_FIELDS.has(key))) return fail('RESPONSE_SHAPE', '$');
   if (hasOwn(response, 'kind') && response.kind !== RESPONSE_KIND) return fail('RESPONSE_SHAPE', '$');
-  if (!sameList(headerNames(response.dimensionHeaders, false), request.dimensions)
+  // Proto3 JSON omits an empty repeated field, so a request for no dimensions
+  // may come back without dimension headers or row values. Only then is an
+  // absent field an empty list; a request for dimensions still requires both.
+  const omittable = request.dimensions.length === 0;
+  const dimensionHeaders = omittable && !hasOwn(response, 'dimensionHeaders') ? [] : response.dimensionHeaders;
+  if (!sameList(headerNames(dimensionHeaders, false), request.dimensions)
     || !sameList(headerNames(response.metricHeaders, true), request.metrics)) {
     return fail('HEADERS_MISMATCH', '$');
   }
@@ -107,7 +113,9 @@ export function readGa4RunReport(response: unknown, request: Ga4ReportRequestSha
   const rows: Ga4ReportRow[] = [];
   for (const [index, row] of received.entries()) {
     const shaped = isPlainRecord(row) && Object.keys(row).every((key) => ROW_FIELDS.has(key));
-    const dimensions = shaped ? cellValues(row.dimensionValues, request.dimensions.length) : null;
+    const dimensions = shaped
+      ? cellValues(omittable && !hasOwn(row, 'dimensionValues') ? [] : row.dimensionValues, request.dimensions.length)
+      : null;
     const metrics = shaped ? cellValues(row.metricValues, request.metrics.length) : null;
     if (!dimensions || !metrics) return fail('ROW_SHAPE', `$.rows[${index}]`);
     rows.push({ dimensions, metrics });

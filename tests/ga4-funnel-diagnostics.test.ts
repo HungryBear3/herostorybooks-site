@@ -18,6 +18,7 @@ import { track } from '../src/lib/analytics.ts';
 import { ATTRIBUTION_STORAGE_KEY, recordBrowserAttributionLanding } from '../src/lib/attribution-contract.ts';
 import { CHECKOUT_STEP_BLOCKED_REASONS, checkoutStepEventProps } from '../src/lib/checkout-step-telemetry.ts';
 import { validateGa4AdminChecklist } from '../src/lib/ga4-admin-checklist.ts';
+import { readGa4RunReport } from '../src/lib/ga4-run-report.ts';
 import {
   FUNNEL_CUSTOM_DIMENSIONS,
   FUNNEL_MIN_DENOMINATOR,
@@ -432,6 +433,128 @@ test('a malformed, hostile or unbound response set is refused with value-free co
   }
 });
 
+/**
+ * The response set as the live Data API serializes it: proto3 JSON omits an
+ * empty repeated field, so a zero-dimension request comes back without
+ * `dimensionHeaders` and its rows carry only `metricValues`.
+ */
+function proto3(doc: Record<string, unknown>): Record<string, unknown> {
+  const out = structuredClone(doc) as Record<string, unknown> & { dimensionHeaders?: unknown[]; rows?: Array<Record<string, unknown>> };
+  if (Array.isArray(out.dimensionHeaders) && out.dimensionHeaders.length === 0) delete out.dimensionHeaders;
+  for (const row of out.rows ?? []) {
+    if (Array.isArray(row.dimensionValues) && row.dimensionValues.length === 0) delete row.dimensionValues;
+  }
+  return out;
+}
+
+function liveResponses(planDoc: FunnelRequestPlan, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const all = responses(planDoc, overrides);
+  return Object.fromEntries(Object.entries(all).map(([id, doc]) => [id, proto3(doc as Record<string, unknown>)]));
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) deepFreeze(item);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+test('the default report reads the live proto3 shape of its zero-dimension traffic request', () => {
+  const planDoc = plan();
+  const live = deepFreeze(liveResponses(planDoc));
+  const traffic = live.traffic as Record<string, unknown> & { rows: Array<Record<string, unknown>> };
+  assert.equal(Object.hasOwn(traffic, 'dimensionHeaders'), false);
+  assert.deepEqual(Object.keys(traffic.rows[0]), ['metricValues']);
+  // Dimensional requests keep their headers and row values in the live shape.
+  assert.ok(Array.isArray((live.events as Record<string, unknown>).dimensionHeaders));
+
+  const synthetic = report(planDoc);
+  const read = buildFunnelReport(planDoc, live);
+  assert.ok(read.ok, JSON.stringify(read));
+  assert.deepEqual(validateFunnelReport(read.report), []);
+  assert.deepEqual(read.report, synthetic);
+  assert.equal(stage(read.report, 'landing').users, 800);
+  assert.equal(stage(read.report, 'landing').sessions, 1000);
+  assert.equal(read.report.evidence, 'COMPLETE');
+
+  // Present-but-empty headers beside rows that omit their empty values, and a
+  // zero-traffic report with neither headers nor rows, are the same contract.
+  const mixed = buildFunnelReport(planDoc, { ...live, traffic: { ...traffic, dimensionHeaders: [] } });
+  assert.ok(mixed.ok, JSON.stringify(mixed));
+  assert.deepEqual(mixed.report, synthetic);
+  const empty = buildFunnelReport(planDoc, { ...live, traffic: proto3(response(planDoc, 'traffic', [])) });
+  assert.ok(empty.ok, JSON.stringify(empty));
+  assert.equal(stage(empty.report, 'landing').users, 0);
+});
+
+test('an omitted dimension field is refused wherever the request asked for dimensions', () => {
+  const omit = (doc: unknown, where: 'headers' | 'values') => {
+    const out = structuredClone(doc) as Record<string, unknown> & { rows: Array<Record<string, unknown>> };
+    if (where === 'headers') delete out.dimensionHeaders;
+    else for (const row of out.rows) delete row.dimensionValues;
+    return out;
+  };
+  const none = plan();
+  const noneLive = liveResponses(none);
+  const device = plan('device_category');
+  const deviceAll = responses(device, {
+    traffic: response(device, 'traffic', [['mobile', '600', '500']]),
+    events: response(device, 'events', [['mobile', 'purchase', '10', '10']]),
+    steps: response(device, 'steps', []),
+    blocked: response(device, 'blocked', []),
+  });
+  assert.ok(buildFunnelReport(device, deviceAll).ok);
+  const format = plan('selected_format');
+  const formatAll = responses(format, {
+    steps: response(format, 'steps', [['premium', 'checkout_step_view', 'hero-details', '9', '9']]),
+    blocked: response(format, 'blocked', []),
+  });
+  assert.ok(buildFunnelReport(format, formatAll).ok);
+  const traffic = noneLive.traffic as Record<string, unknown>;
+
+  const cases: Array<[string, FunnelRequestPlan, unknown, string[]]> = [
+    ['events headers omitted', none, { ...noneLive, events: omit(noneLive.events, 'headers') }, ['HEADERS_MISMATCH@$.responses.events']],
+    ['events values omitted', none, { ...noneLive, events: omit(noneLive.events, 'values') }, ['ROW_SHAPE@$.responses.events.rows[0]']],
+    ['steps headers omitted', none, { ...noneLive, steps: omit(noneLive.steps, 'headers') }, ['HEADERS_MISMATCH@$.responses.steps']],
+    ['blocked values omitted', none, { ...noneLive, blocked: omit(noneLive.blocked, 'values') }, ['ROW_SHAPE@$.responses.blocked.rows[0]']],
+    ['breakdown traffic headers omitted', device, { ...deviceAll, traffic: omit(deviceAll.traffic, 'headers') }, ['HEADERS_MISMATCH@$.responses.traffic']],
+    ['breakdown traffic values omitted', device, { ...deviceAll, traffic: omit(deviceAll.traffic, 'values') }, ['ROW_SHAPE@$.responses.traffic.rows[0]']],
+    ['format steps headers omitted', format, { ...formatAll, steps: omit(formatAll.steps, 'headers') }, ['HEADERS_MISMATCH@$.responses.steps']],
+    ['format steps values omitted', format, { ...formatAll, steps: omit(formatAll.steps, 'values') }, ['ROW_SHAPE@$.responses.steps.rows[0]']],
+    // A zero-dimension request still binds exactly: a null or named header, or
+    // a row carrying a dimension cell, is not an omission.
+    ['zero-dimension null headers', none, { ...noneLive, traffic: { ...traffic, dimensionHeaders: null } }, ['HEADERS_MISMATCH@$.responses.traffic']],
+    ['zero-dimension named header', none, { ...noneLive, traffic: { ...traffic, dimensionHeaders: [{ name: 'pagePath' }] } }, ['HEADERS_MISMATCH@$.responses.traffic']],
+    ['zero-dimension null row values', none, {
+      ...noneLive, traffic: { ...traffic, rows: [{ dimensionValues: null, metricValues: [{ value: '1000' }, { value: '800' }] }] },
+    }, ['ROW_SHAPE@$.responses.traffic.rows[0]']],
+    ['zero-dimension row with a dimension cell', none, {
+      ...noneLive, traffic: { ...traffic, rows: [{ dimensionValues: [{ value: 'jane' }], metricValues: [{ value: '1000' }, { value: '800' }] }] },
+    }, ['ROW_SHAPE@$.responses.traffic.rows[0]']],
+    ['zero-dimension row without metrics', none, { ...noneLive, traffic: { ...traffic, rows: [{}] } }, ['ROW_SHAPE@$.responses.traffic.rows[0]']],
+  ];
+  for (const [label, planDoc, input, expected] of cases) {
+    const result = buildFunnelReport(planDoc, input);
+    assert.deepEqual(result, { ok: false, issues: expected }, label);
+    assert.doesNotMatch(JSON.stringify(result), LEAK, label);
+  }
+});
+
+test('the shared reader accepts an omitted dimension field only for a zero-dimension request', () => {
+  const metricsOnly = { metricHeaders: [{ name: 'eventCount', type: 'TYPE_INTEGER' }], rows: [{ metricValues: [{ value: '3' }] }], rowCount: 1 };
+  assert.deepEqual(readGa4RunReport(metricsOnly, { dimensions: [], metrics: ['eventCount'], limit: 10 }),
+    { ok: true, report: { rows: [{ dimensions: [], metrics: ['3'] }], timeZone: null, gaps: [] } });
+  // The decision export, transaction readback and Admin probe all request dimensions.
+  for (const dimensions of [['transactionId', 'eventName'], ['eventName', 'customEvent:step_id'], ['date']]) {
+    assert.deepEqual(readGa4RunReport(metricsOnly, { dimensions, metrics: ['eventCount'], limit: 10 }),
+      { ok: false, defect: 'HEADERS_MISMATCH', path: '$' }, dimensions.join());
+    const headed = { ...metricsOnly, dimensionHeaders: dimensions.map((name) => ({ name })) };
+    assert.deepEqual(readGa4RunReport(headed, { dimensions, metrics: ['eventCount'], limit: 10 }),
+      { ok: false, defect: 'ROW_SHAPE', path: '$.rows[0]' }, dimensions.join());
+  }
+});
+
 test('the report validator is closed', () => {
   const doc = report(plan());
   const mutate = (change: (value: Record<string, any>) => void) => {
@@ -563,6 +686,30 @@ test('the CLI prints the plan, builds a report from saved responses, and refuses
     const text = cli(['report', '--plan', planFile, '--responses', responsesFile, '--format', 'text']);
     assert.equal(text.status, 0, text.stderr);
     assert.match(text.stdout, /^HSB funnel 2026-09-01\.\.2026-09-28/);
+
+    // The live proto3 shape: traffic without `dimensionHeaders`, rows with only `metricValues`.
+    const live = liveResponses(planDoc);
+    assert.equal(Object.hasOwn(live.traffic as object, 'dimensionHeaders'), false);
+    writeFileSync(responsesFile, JSON.stringify(live));
+    const liveJson = cli(['report', '--plan', planFile, '--responses', responsesFile]);
+    assert.equal(liveJson.status, 0, liveJson.stdout + liveJson.stderr);
+    assert.equal(liveJson.stdout, json.stdout);
+    const liveText = cli(['report', '--plan', planFile, '--responses', responsesFile, '--format', 'text']);
+    assert.equal(liveText.status, 0, liveText.stderr);
+    assert.equal(liveText.stdout, text.stdout);
+
+    const noHeaders = structuredClone(live) as Record<string, Record<string, unknown>>;
+    delete noHeaders.events.dimensionHeaders;
+    writeFileSync(responsesFile, JSON.stringify(noHeaders));
+    const headerless = cli(['report', '--plan', planFile, '--responses', responsesFile]);
+    assert.equal(headerless.status, 3);
+    assert.equal(headerless.stdout, 'REJECTED funnel_report HEADERS_MISMATCH@$.responses.events\n');
+    const noValues = structuredClone(live) as Record<string, { rows: Array<Record<string, unknown>> }>;
+    delete noValues.steps.rows[0].dimensionValues;
+    writeFileSync(responsesFile, JSON.stringify(noValues));
+    const valueless = cli(['report', '--plan', planFile, '--responses', responsesFile]);
+    assert.equal(valueless.status, 3);
+    assert.equal(valueless.stdout, 'REJECTED funnel_report ROW_SHAPE@$.responses.steps.rows[0]\n');
 
     writeFileSync(responsesFile, JSON.stringify(responses(planDoc, { events: response(planDoc, 'events', [['jane@example.com', '1', '1']]) })));
     const refused = cli(['report', '--plan', planFile, '--responses', responsesFile]);

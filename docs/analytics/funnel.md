@@ -79,9 +79,14 @@ limit or property) is `REQUEST_PLAN_INVALID`; a response set that does not
 answer exactly the plan's requests is `RESPONSES_SHAPE`; a malformed response
 (unknown fields, wrong headers, a row outside the request's event filter, a
 repeated row, users above events, a non-integer count, a conflicting
-timezone) is refused with value-free `CODE@$.path` lines and exit 3. The GA4
-Data API compatibility of each request has not been exercised against a live
-property; an API error body is not a `runReport` and is refused.
+timezone) is refused with value-free `CODE@$.path` lines and exit 3. The
+zero-dimension `traffic` request of the default breakdown is read in the
+proto3 JSON shape the Data API emits (no `dimensionHeaders`, rows with only
+`metricValues`); every request that asks for dimensions must still return its
+headers and row values. The GA4 Data API compatibility of each request has not
+been exercised against a live property, so the first live run of each
+breakdown is also its compatibility check; an API error body is not a
+`runReport` and is refused.
 
 ## Reading the report
 
