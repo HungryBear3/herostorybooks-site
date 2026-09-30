@@ -146,5 +146,22 @@
       "event_name": "order_submit_attempt",
       "rationale": "Funnel stage counted as users who submitted a validated order; only a settled payment is a conversion."
     }
-  ]
+  ],
+  "enhanced_measurement": {
+    "readback_api": "analyticsadmin.v1alpha.properties.dataStreams.getEnhancedMeasurementSettings",
+    "settings": [
+      {
+        "setting": "siteSearchEnabled",
+        "required_value": false,
+        "rationale": "HSB has no site search; left on, GA4 turns any q-style query parameter into view_search_results with the raw value as search_term.",
+        "status": "owner_action_pending"
+      },
+      {
+        "setting": "pageChangesEnabled",
+        "required_value": false,
+        "rationale": "The app sends its own contract page_view; browser-history page views would add a second page view owner outside the path boundary.",
+        "status": "owner_action_pending"
+      }
+    ]
+  }
 }

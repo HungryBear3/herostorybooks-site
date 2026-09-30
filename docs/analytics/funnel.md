@@ -54,7 +54,14 @@ this repo:
 2. Keep `purchase` as the only key event (once per event). `page_view`,
    `begin_checkout`, `name_preview_submitted`, the three step events and
    `order_submit_attempt` are explicitly **not** key events.
-3. Run the checklist readback (`docs/analytics/README.md` §2) to `MATCH`.
+3. Turn Enhanced Measurement **Site search** and **Page changes based on
+   browser history events** off on the `G-68FKEDZEG3` web stream. Site Search
+   turns any `q=`-style query into `view_search_results` (HSB has no site
+   search); history page changes add a second `page_view` owner beside the
+   app's own, outside the GA path boundary.
+4. Run the checklist readback (`docs/analytics/README.md` §2, including the
+   Enhanced Measurement read with the numeric stream id) to `MATCH` before
+   starting the 48-hour window.
 
 ## Running it
 
