@@ -1,0 +1,8 @@
+{
+  "schema": "hsb.experiment_registry",
+  "schema_version": 1,
+  "data_origin": "operator_export",
+  "business": "hsb",
+  "currency": "USD",
+  "experiments": []
+}

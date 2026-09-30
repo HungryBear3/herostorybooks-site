@@ -23,7 +23,8 @@ import {
   STORY_THEMES,
 } from "@/lib/story-catalog";
 import { getFathersDayCountdown } from "@/lib/fathers-day";
-import { currentGaClientId, safeDecodeCookieValue, track } from "@/lib/analytics";
+import { safeDecodeCookieValue, track } from "@/lib/analytics";
+import { browserCheckoutAnalyticsFormFields } from "@/lib/checkout-analytics-context";
 import {
   checkoutStepBlockedReason,
   checkoutStepEventProps,
@@ -741,15 +742,6 @@ export function CheckoutForm({
       setForm((prev) => ({ ...prev, ...queryPrefill }));
     }
 
-    track("begin_checkout", {
-      hadSavedProgress: Boolean(saved && (saved.childName || saved.theme)),
-      formatFromUrl: nextFormat || null,
-      childNameFromUrl: childNameFromUrl ? "yes" : "no",
-      childNameFromNamePreview: childNameFromHandoff ? "yes" : "no",
-      directionFromUrl: directionFromUrl ? directionFromUrl.slice(0, 32) : null,
-      occasionFromUrl: occasionFromUrl || null,
-      themePreselected: themeFromDirection || null,
-    });
   }, []);
 
   // Auto-save on meaningful changes
@@ -1292,6 +1284,8 @@ export function CheckoutForm({
     // touch+click pair, or a re-render re-entering this handler — the disabled
     // attribute below only takes effect after React re-renders.
     if (!submitLockRef.current?.acquire()) return;
+    // Each validated attempt wins once; release permits a genuine later retry.
+    track("begin_checkout");
     // A submit owns the current media ATTEMPT before its first await. Attempt
     // resolution can outlive a buyer navigating back and changing/clearing
     // media; that reset must revoke this old closure before it can upload the
@@ -1613,8 +1607,11 @@ export function CheckoutForm({
       const checkoutTracking = checkoutTrackingFromSearchParams(new URLSearchParams(window.location.search));
       if (checkoutTracking?.cohort) payload.set("cohort", checkoutTracking.cohort);
       if (checkoutTracking?.invite) payload.set("invite", checkoutTracking.invite);
-      const gaClientId = currentGaClientId();
-      if (gaClientId) payload.set("gaClientId", gaClientId);
+      // Fail-closed GA ids and the validated attribution state only; the
+      // server re-validates every field and none of them is checkout identity.
+      for (const [name, value] of Object.entries(browserCheckoutAnalyticsFormFields())) {
+        payload.set(name, value);
+      }
       const attachedStoryFile = isCustomStorySelected ? form.voiceFile : null;
       const attachedStoryFileIsAudio = isStoryAudioFile(attachedStoryFile);
       const preparedDirectIntake = await prepareOrReuseDirectIntakeSubmission({

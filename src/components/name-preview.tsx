@@ -149,7 +149,6 @@ export function NamePreview() {
                 writeNamePreviewHandoff(checkoutName);
                 track("name_preview_submitted", {
                   has_name: Boolean(checkoutName),
-                  preview_name_length: checkoutName.length,
                 });
               }}
               className="inline-block bg-navy text-cream px-8 py-3.5 rounded-xl font-semibold text-base shadow-sm hover:bg-navy/90 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200"

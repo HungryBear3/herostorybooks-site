@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -6,10 +6,6 @@ const checkoutFormSource = readFileSync('src/app/checkout/checkout-form.tsx', 'u
 const namePreviewSource = readFileSync('src/components/name-preview.tsx', 'utf8');
 const analyticsSource = readFileSync('src/lib/analytics.ts', 'utf8');
 const layoutSource = readFileSync('src/app/layout.tsx', 'utf8');
-const safeVercelAnalyticsSource = readFileSync(
-  'src/components/safe-vercel-analytics.tsx',
-  'utf8',
-);
 
 test('checkout reads childName query param for NamePreview handoff', () => {
   assert.match(checkoutFormSource, /params\.get\(['"]childName['"]\)/);
@@ -71,23 +67,21 @@ test('NamePreview + checkout fire shared analytics events', () => {
   assert.match(checkoutFormSource, /track\(["']purchase_intent["']/);
 });
 
-test('HSB mounts privacy-sanitized Vercel Analytics and forwards campaign params', () => {
-  assert.match(layoutSource, /<SafeVercelAnalytics \/>/);
-  assert.match(safeVercelAnalyticsSource, /from ["']@vercel\/analytics\/next["']/);
-  assert.match(safeVercelAnalyticsSource, /beforeSend=/);
-  // Redaction moved into the shared sanitizer: the raw-pathname form this used
-  // to assert leaked bearer segments. See analytics-status-url-privacy.test.ts.
-  assert.match(safeVercelAnalyticsSource, /sanitizeVercelAnalyticsUrl\(/);
+test('HSB does not mount Vercel Analytics and still forwards governed campaign params', () => {
+  // Vercel's route and referrer fields cannot be redacted, so it is not a sink.
+  // See vercel-analytics-removed.test.ts.
+  assert.doesNotMatch(layoutSource, /SafeVercelAnalytics|@vercel\/analytics/);
+  assert.equal(existsSync('src/components/safe-vercel-analytics.tsx'), false);
+  assert.doesNotMatch(analyticsSource, /@vercel\/analytics|trackVercelEvent|vercelSafeProps/);
   assert.match(analyticsSource, /utm_source/);
   assert.match(analyticsSource, /utm_campaign/);
-  assert.match(analyticsSource, /event !== ['"]page_view['"]/);
-  assert.match(analyticsSource, /trackVercelEvent\(event, vercelSafeProps\(record\)\)/);
   assert.match(analyticsSource, /key === ['"]href['"]/);
 });
 
 test('NamePreview analytics sends only derived metrics, never the child name', () => {
   const eventBlock = namePreviewSource.match(/track\(["']name_preview_submitted["'][\s\S]*?\}\);/)?.[0] ?? '';
   assert.match(eventBlock, /has_name/);
-  assert.match(eventBlock, /preview_name_length/);
+  // Not even a length derived from the typed name leaves the page.
+  assert.doesNotMatch(eventBlock, /preview_name_length|\.length/);
   assert.doesNotMatch(eventBlock, /childName\s*:|displayName\s*:|\bname\s*:/);
 });

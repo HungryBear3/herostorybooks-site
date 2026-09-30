@@ -1,5 +1,12 @@
 # GA4 purchase events
 
+> **Current truth:** the purchase is sent only from the signed webhook's
+> durable pending → paid transition (a replay never re-sends it), only on a
+> production deployment, with bounded attribution — see
+> `src/lib/purchase-analytics.ts`. The event contract, GA4 Admin checklist and
+> transaction-id readback live in `docs/analytics/README.md`. Anything below
+> that conflicts (Preview sends, replay dedup) is superseded.
+
 HSB emits GA4's recommended `purchase` event from the signed Stripe webhook,
 after the durable order/payment write. The event uses Stripe's Checkout Session
 ID as `transaction_id`, allowing GA4 to deduplicate webhook replays. The

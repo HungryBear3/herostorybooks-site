@@ -1,9 +1,8 @@
 import './globals.css';
 import type { Metadata } from 'next';
 import Script from 'next/script';
-import { SafeVercelAnalytics } from '@/components/safe-vercel-analytics';
 import { AnalyticsPageView } from '@/components/analytics-page-view';
-import { analyticsPathBootstrapScript } from '@/lib/analytics-path';
+import { analyticsRouteBootstrapScript } from '@/lib/attribution-contract';
 
 const googleAnalyticsMeasurementId = 'G-68FKEDZEG3';
 const googleAnalyticsEnabled = process.env.VERCEL_ENV === 'production';
@@ -34,18 +33,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             />
             <Script id="google-analytics-gtag" strategy="beforeInteractive">
               {`
-                ${analyticsPathBootstrapScript()}
+                ${analyticsRouteBootstrapScript()}
                 window.dataLayer = window.dataLayer || [];
                 function gtag(){dataLayer.push(arguments);}
                 window.gtag = window.gtag || gtag;
-                var pageLocation = window.location.origin + hsbSafePath(window.location.pathname);
+                var pageLocation = window.location.origin + hsbSafeRoute(window.location.pathname);
                 var pageReferrer = '';
                 var ignoreReferrer = false;
                 try {
                   if (document.referrer) {
                     var referrerUrl = new URL(document.referrer);
                     ignoreReferrer = referrerUrl.hostname.toLowerCase() === 'checkout.stripe.com';
-                    if (!ignoreReferrer) pageReferrer = referrerUrl.origin + hsbSafePath(referrerUrl.pathname);
+                    if (!ignoreReferrer) pageReferrer = referrerUrl.origin;
                   }
                 } catch (_) {}
                 gtag('js', new Date());
@@ -61,7 +60,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         ) : null}
       </head>
       <body className="bg-cream text-gray-900">
-        <SafeVercelAnalytics />
         <AnalyticsPageView />
         {children}
       </body>

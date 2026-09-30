@@ -27,6 +27,7 @@ import type {
   ConfirmationEmailHoldReason,
   ConfirmationEmailState,
 } from './confirmation-email-state.ts';
+import type { AttributionState } from './attribution-contract.ts';
 import type { CheckoutTracking } from './checkout-tracking.ts';
 import type { CustomerQueueStatus } from './order-queue.ts';
 import type { FulfillmentStatus, LayoutVersion, PageTextLayout, ProofCardOverride, VoiceTranscriptMeta } from './fulfillment-types.ts';
@@ -398,6 +399,8 @@ export interface OrderInput {
   customStoryValidation?: ValidationResult | null;
   /** Sanitized private tester/source tracking from normal checkout URL params. */
   checkoutTracking?: CheckoutTracking | null;
+  /** Validated first / last non-direct campaign touch (attribution-contract.ts). */
+  checkoutAttribution?: AttributionState | null;
   /** Lossless binding to the exact private intake tuple committed with this order. */
   checkoutIntake?: CheckoutIntakeBinding | null;
   /** Private intake references are not fetchable/public Blob URLs. */
@@ -748,6 +751,10 @@ export interface OrderRecord extends OrderInput {
   pageArtifacts?: PageArtifact[];
   /** Private F&F/pilot checkout tracking captured from ?cohort= and ?invite=. */
   checkoutTracking?: CheckoutTracking | null;
+  /** Bounded campaign attribution validated at checkout; absent on orders that
+   *  carried none. Describes the visit, never the purchased book, so it is in
+   *  no checkout identity, fingerprint, or contract digest. */
+  checkoutAttribution?: AttributionState | null;
   /** Internal manual-queue + customer-status tracking for F&F/concierge orders.
    *  All additive + optional; legacy AND new orders default to null. Populated by
    *  ops tooling only — never by automated fulfillment. See lib/order-queue.ts. */
@@ -1398,6 +1405,9 @@ export function createOrderRecord(input: OrderInput, options: CreateOrderOptions
     customStoryBrief: input.customStoryBrief ?? null,
     customStoryValidation: input.customStoryValidation ?? null,
     checkoutTracking: input.checkoutTracking ?? null,
+    // Only present when checkout carried a validated state, so every other
+    // record keeps its exact pre-existing shape.
+    ...(input.checkoutAttribution ? { checkoutAttribution: input.checkoutAttribution } : {}),
     // Internal queue/status tracking starts empty; ops tooling populates it later.
     manualQueueEnteredAt: null,
     customerQueueStatus: null,
@@ -4049,18 +4059,33 @@ export async function retireExpiredCheckoutAttempt(observed: OrderRecord): Promi
   return retired;
 }
 
+interface PaymentUpdateOptions {
+  stripeSessionId?: string;
+  stripePaymentIntentId?: string;
+  shippingAddress?: ShippingAddress;
+  settledAmountCents?: number;
+}
+
 export async function updateOrderPayment(
   orderId: string,
   paymentStatus: PaymentStatus,
-  opts: {
-    stripeSessionId?: string;
-    stripePaymentIntentId?: string;
-    shippingAddress?: ShippingAddress;
-    settledAmountCents?: number;
-  } = {},
+  opts: PaymentUpdateOptions = {},
+) {
+  return (await updateOrderPaymentResult(orderId, paymentStatus, opts))?.order ?? null;
+}
+
+/** Only the committed pending → paid winner may schedule purchase analytics. */
+export async function settleOrderPayment(orderId: string, opts: PaymentUpdateOptions) {
+  return updateOrderPaymentResult(orderId, 'paid', opts);
+}
+
+async function updateOrderPaymentResult(
+  orderId: string,
+  paymentStatus: PaymentStatus,
+  opts: PaymentUpdateOptions,
 ) {
   const now = new Date().toISOString();
-  return withOrderTransaction<OrderRecord | null>(
+  return withOrderTransaction<{ order: OrderRecord; transitionedToPaid: boolean } | null>(
     orderId,
     (current) => {
       if (paymentStatus === 'paid') {
@@ -4084,7 +4109,7 @@ export async function updateOrderPayment(
               : {}),
             updatedAt: now,
           };
-          return { commit: replay, result: replay };
+          return { commit: replay, result: { order: replay, transitionedToPaid: false } };
         }
         if (
           current.paymentStatus !== 'pending'
@@ -4107,7 +4132,10 @@ export async function updateOrderPayment(
         ...(paymentStatus === 'paid' && !current.paidAt ? { paidAt: now } : {}),
         updatedAt: now,
       };
-      return { commit: updated, result: updated };
+      return { commit: updated, result: {
+        order: updated,
+        transitionedToPaid: paymentStatus === 'paid' && current.paymentStatus === 'pending',
+      } };
     },
     { notFound: () => null },
   );

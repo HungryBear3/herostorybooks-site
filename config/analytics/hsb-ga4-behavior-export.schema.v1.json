@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hsb:schema:hsb.decision_export.ga4_behavior:v1",
+  "title": "HSB GA4 behavior decision export",
+  "description": "Daily GA4 behavior per governed segment. Purchase events are behavioral evidence, never payment authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "data_origin",
+    "business",
+    "timezone",
+    "generated_at",
+    "coverage",
+    "attested_complete_ranges",
+    "quality",
+    "rows"
+  ],
+  "properties": {
+    "schema": {
+      "const": "hsb.decision_export.ga4_behavior"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "data_origin": {
+      "enum": [
+        "synthetic_fixture",
+        "operator_export"
+      ]
+    },
+    "business": {
+      "const": "hsb"
+    },
+    "timezone": {
+      "enum": [
+        "UTC",
+        "America/Chicago",
+        "America/New_York",
+        "America/Denver",
+        "America/Los_Angeles"
+      ]
+    },
+    "generated_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "coverage": {
+      "$ref": "#/$defs/range"
+    },
+    "attested_complete_ranges": {
+      "type": "array",
+      "maxItems": 400,
+      "items": {
+        "$ref": "#/$defs/range"
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sampled",
+        "thresholded",
+        "other_row"
+      ],
+      "properties": {
+        "sampled": {
+          "type": "boolean"
+        },
+        "thresholded": {
+          "type": "boolean"
+        },
+        "other_row": {
+          "type": "boolean"
+        }
+      }
+    },
+    "rows": {
+      "type": "array",
+      "maxItems": 250000,
+      "items": {
+        "$ref": "#/$defs/row"
+      }
+    }
+  },
+  "$defs": {
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "$ref": "#/$defs/date"
+        },
+        "end": {
+          "$ref": "#/$defs/date"
+        }
+      }
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000000
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "source",
+        "medium",
+        "campaign",
+        "content",
+        "landing_path",
+        "sessions",
+        "checkout_starts",
+        "purchase_events"
+      ],
+      "properties": {
+        "date": {
+          "$ref": "#/$defs/date"
+        },
+        "source": {
+          "enum": [
+            "facebook",
+            "instagram",
+            "google",
+            "bing",
+            "newsletter",
+            "pinterest",
+            "youtube",
+            "tiktok",
+            "telegram",
+            "direct",
+            "not_set",
+            "other"
+          ]
+        },
+        "medium": {
+          "enum": [
+            "paid_social",
+            "social",
+            "email",
+            "cpc",
+            "organic",
+            "referral",
+            "none",
+            "not_set",
+            "other"
+          ]
+        },
+        "campaign": {
+          "type": "string",
+          "pattern": "^(?:none|not_set|other|launch|202[6-9]-(?:0[1-9]|1[0-2])-(?:gifts|holiday|birthdays|launch)(?:\\.v[1-9])?)$"
+        },
+        "content": {
+          "enum": [
+            "video-a",
+            "video-b",
+            "video-c",
+            "image-a",
+            "image-b",
+            "image-c",
+            "carousel-a",
+            "carousel-b",
+            "carousel-c",
+            "text-a",
+            "text-b",
+            "text-c",
+            "not_set",
+            "other"
+          ]
+        },
+        "landing_path": {
+          "enum": [
+            "/",
+            "/about",
+            "/pricing",
+            "/samples",
+            "/gifts",
+            "/gifts/birthdays",
+            "/gifts/grandparents",
+            "/gifts/siblings",
+            "/gifts/pets",
+            "/gifts/holidays",
+            "/gifts/child-as-hero",
+            "/checkout",
+            "/create/your-memory",
+            "not_set",
+            "other"
+          ]
+        },
+        "sessions": {
+          "$ref": "#/$defs/count"
+        },
+        "checkout_starts": {
+          "$ref": "#/$defs/count"
+        },
+        "purchase_events": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    }
+  }
+}

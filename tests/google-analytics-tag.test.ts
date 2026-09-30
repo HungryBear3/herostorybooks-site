@@ -13,16 +13,14 @@ test('root layout loads the Google Analytics gtag script with the production mea
   assert.match(layoutSource, /googletagmanager\.com\/gtag\/js\?id=\$\{googleAnalyticsMeasurementId\}/);
   assert.match(layoutSource, /<Script id="google-analytics-gtag" strategy="beforeInteractive">/);
   assert.match(layoutSource, /gtag\('js', new Date\(\)\)/);
-  // Paths go through hsbSafePath so bearer-like routes such as /status/<orderId>
-  // reach GA as their route template. See analytics-status-url-privacy.test.ts.
+  // Paths go through hsbSafeRoute, so GA sees only an approved route, a route
+  // template such as /status/[orderId], or /(other); the referrer is reduced to
+  // its origin. See analytics-path-boundary.test.ts.
   assert.match(
     layoutSource,
-    /var pageLocation = window\.location\.origin \+ hsbSafePath\(window\.location\.pathname\)/,
+    /var pageLocation = window\.location\.origin \+ hsbSafeRoute\(window\.location\.pathname\)/,
   );
-  assert.match(
-    layoutSource,
-    /pageReferrer = referrerUrl\.origin \+ hsbSafePath\(referrerUrl\.pathname\)/,
-  );
+  assert.match(layoutSource, /if \(!ignoreReferrer\) pageReferrer = referrerUrl\.origin;/);
   assert.match(layoutSource, /send_page_view: false/);
   assert.match(layoutSource, /page_location: pageLocation/);
   assert.match(layoutSource, /page_referrer: pageReferrer/);
@@ -36,7 +34,7 @@ test('shared analytics layer forwards HSB funnel events to gtag once when availa
   assert.doesNotMatch(analyticsSource, /dataLayer\.push\(record\)/);
   assert.match(analyticsSource, /props\.page_location = pageLocation/);
   assert.match(analyticsSource, /props\.page_referrer = sanitizedPageReferrer\(\)/);
-  assert.match(analyticsSource, /trackVercelEvent\(event/);
+  assert.doesNotMatch(analyticsSource, /trackVercelEvent|@vercel\/analytics/);
 });
 
 test('malformed analytics cookies cannot abort checkout payload construction', async () => {
@@ -62,7 +60,7 @@ test('runtime payload strips PII and preserves first-touch campaign attribution 
       'https://herostorybooks.com/checkout?childName=PrivateName&utm_source=telegram&utm_medium=social&utm_campaign=launch',
     ),
     gtag: (...args: unknown[]) => calls.push(args),
-    sessionStorage: {
+    localStorage: {
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => storage.set(key, value),
     },
@@ -83,6 +81,8 @@ test('runtime payload strips PII and preserves first-touch campaign attribution 
 
   try {
     const { track, trackPageView } = await import('../src/lib/analytics.ts');
+    const { recordBrowserAttributionLanding } = await import('../src/lib/attribution-contract.ts');
+    recordBrowserAttributionLanding();
     trackPageView('/checkout');
     mockWindow.location = new URL('https://herostorybooks.com/thank-you');
     track('purchase_intent', { bookFormat: 'digital' });
@@ -93,7 +93,7 @@ test('runtime payload strips PII and preserves first-touch campaign attribution 
     assert.ok(eventCall);
     const eventParams = eventCall[2] as Record<string, unknown>;
     assert.equal(eventParams.page_location, 'https://herostorybooks.com/checkout');
-    assert.equal(eventParams.page_referrer, 'https://herostorybooks.com/');
+    assert.equal(eventParams.page_referrer, 'https://herostorybooks.com');
     assert.equal(eventParams.pathname, '/checkout');
 
     const purchaseCall = calls.find(
@@ -112,17 +112,17 @@ test('runtime payload strips PII and preserves first-touch campaign attribution 
     assert.ok(directVisitCall);
     assert.equal((directVisitCall[2] as Record<string, unknown>).page_referrer, '');
 
-    const campaignSetCall = calls.find(
-      (call) =>
-        call[0] === 'set' &&
-        (call[1] as Record<string, unknown>).campaign_source === 'telegram',
-    );
-    assert.ok(campaignSetCall);
-    assert.deepEqual(campaignSetCall[1], {
-      campaign_source: 'telegram',
-      campaign_medium: 'social',
-      campaign_name: 'launch',
-    });
+    assert.equal(calls.some((call) => call[0] === 'set'), false);
+    for (const call of calls.filter((call) => call[0] === 'event')) {
+      const campaign = Object.fromEntries(Object.entries(call[2] as Record<string, unknown>)
+        .filter(([key]) => key.startsWith('campaign_')));
+      assert.deepEqual(campaign, {
+        campaign_source: 'telegram',
+        campaign_medium: 'social',
+        campaign_name: 'launch',
+        campaign_content: '',
+      });
+    }
 
     const serialized = JSON.stringify(calls);
     assert.match(serialized, /page_view/);

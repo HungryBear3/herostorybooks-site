@@ -33,7 +33,9 @@ const shape = (events: StepEvent[]) =>
 
 test('step view is deduplicated, complete/blocked follow validation, attribution survives, no PII is emitted', async ({ page, baseURL }) => {
   const harness = await installHandoffHarness(page, baseURL!);
-  await page.goto('/checkout?utm_source=founder&utm_medium=warm-intro&utm_campaign=friends&ref=e2efounder');
+  await page.goto(
+    '/checkout?utm_source=telegram&utm_medium=social&utm_campaign=launch&utm_content=video-a&utm_term=312-555-0100&ref=e2efounder',
+  );
 
   const continueButton = page.getByTestId('checkout-bottom-continue');
 
@@ -47,12 +49,14 @@ test('step view is deduplicated, complete/blocked follow validation, attribution
     step_number: 1,
     total_steps: 4,
     selected_format: 'digital',
-    utm_source: 'founder',
-    utm_medium: 'warm-intro',
-    utm_campaign: 'friends',
-    ref: 'e2efounder',
+    utm_source: 'telegram',
+    utm_medium: 'social',
+    utm_campaign: 'launch',
+    utm_content: 'video-a',
     pathname: '/checkout',
   });
+  expect(firstView).not.toHaveProperty('utm_term');
+  expect(firstView).not.toHaveProperty('ref');
 
   // Blocked: nothing filled in, Continue refuses with a bounded reason code.
   await continueButton.click();
@@ -114,13 +118,17 @@ test('step view is deduplicated, complete/blocked follow validation, attribution
   // layer's own sanitized envelope, and attribution survives to the last step.
   const allowed = new Set([
     'event', 'timestamp', 'href', 'pathname',
-    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'ref',
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_content',
     'step_id', 'step_number', 'total_steps', 'selected_format', 'reason',
   ]);
   for (const event of await stepEvents(page)) {
     for (const key of Object.keys(event)) expect(allowed, `field ${key} on ${event.event}`).toContain(key);
-    expect(event.utm_source).toBe('founder');
-    expect(event.ref).toBe('e2efounder');
+    expect(event.utm_source).toBe('telegram');
+    expect(event.utm_medium).toBe('social');
+    expect(event.utm_campaign).toBe('launch');
+    expect(event.utm_content).toBe('video-a');
+    expect(event).not.toHaveProperty('utm_term');
+    expect(event).not.toHaveProperty('ref');
     expect(event.total_steps).toBe(4);
   }
 

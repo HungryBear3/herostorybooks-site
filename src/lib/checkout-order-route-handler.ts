@@ -63,6 +63,7 @@ import {
   missingSupportingCharacterDescriptionLabels,
 } from './checkout-photo-policy.ts';
 import { buildCheckoutTracking } from './checkout-tracking.ts';
+import { parseCheckoutAnalyticsForm } from './checkout-analytics-context.ts';
 import { sanitizeGaClientId } from './ga4-purchase.ts';
 import { CHECKOUT_PAUSED_CODE, CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from './checkout-pause.ts';
 import { getRequiredStripeProductId } from './stripe-products.ts';
@@ -251,6 +252,8 @@ export async function handleCheckoutOrderPost<TResponse>(
       invite: form.get('invite'),
     });
     const gaClientId = sanitizeGaClientId(form.get('gaClientId'));
+    // Visit context only: never part of the order's identity or fingerprints.
+    const checkoutAnalytics = parseCheckoutAnalyticsForm(form, { now: Date.now(), gaClientId });
     const childName = String(form.get('childName') || '').trim();
     const email = String(form.get('email') || '').trim();
     const bookFormat = String(form.get('bookFormat') || 'classic').trim();
@@ -618,6 +621,7 @@ export async function handleCheckoutOrderPost<TResponse>(
       customStoryBrief,
       customStoryValidation,
       checkoutTracking,
+      checkoutAttribution: checkoutAnalytics.attribution,
     }, {
       id: `ord_${crypto.createHash('sha256').update(checkoutAttemptId).digest('hex').slice(0, 16)}`,
       // Explicit workflow intent (NOT a default): every current customer-checkout
@@ -731,6 +735,7 @@ export async function handleCheckoutOrderPost<TResponse>(
       stripeProductId,
       baseUrl: getReturnBaseUrl(request),
       gaClientId,
+      analytics: checkoutAnalytics.analytics,
     }, checkoutProvisionDeps);
     if (canonicalResume.status === 'refused') {
       return json(
@@ -750,6 +755,7 @@ export async function handleCheckoutOrderPost<TResponse>(
         stripeProductId,
         baseUrl: getReturnBaseUrl(request),
         gaClientId,
+        analytics: checkoutAnalytics.analytics,
       }, {
         binding: buildDirectIntakeBindingDependencies(intakeStore),
         ...checkoutProvisionDeps,
@@ -789,6 +795,7 @@ export async function handleCheckoutOrderPost<TResponse>(
       stripeProductId,
       baseUrl: getReturnBaseUrl(request),
       gaClientId,
+      analytics: checkoutAnalytics.analytics,
     }, {
       ...legacyCheckoutDeps,
       persistOrResumeCheckoutOrder: (order) => persistOrResumeCheckoutOrder(order),
@@ -1062,6 +1069,7 @@ export async function handleCheckoutOrderPost<TResponse>(
         stripeProductId,
         baseUrl: getReturnBaseUrl(request),
         gaClientId,
+        analytics: checkoutAnalytics.analytics,
       }, legacyCheckoutDeps);
 
       if (provisioned.status === 'refused') {

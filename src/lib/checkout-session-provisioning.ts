@@ -36,6 +36,7 @@
  * released to this buyer — see `chargeRisk`. "No charge was made" is a claim
  * about the buyer's money, and it is only made where it is provable.
  */
+import type { CheckoutRequestAnalytics } from './checkout-analytics-context.ts';
 import {
   CHECKOUT_SESSION_SUPERSEDE_LIMIT,
   checkoutProviderIdempotencyKey,
@@ -59,6 +60,8 @@ export interface ProviderCheckoutSessionRequest {
   stripeProductId: string;
   baseUrl: string;
   gaClientId: string | null;
+  /** This request's validated GA session; forwarded, never interpreted here. */
+  analytics?: CheckoutRequestAnalytics | null;
   idempotencyKey: string;
 }
 
@@ -125,6 +128,7 @@ export interface CheckoutSessionProvisionParams {
   stripeProductId: string;
   baseUrl: string;
   gaClientId: string | null;
+  analytics?: CheckoutRequestAnalytics | null;
 }
 
 /**
@@ -422,6 +426,7 @@ export async function provisionCheckoutSession(
           stripeProductId: params.stripeProductId,
           baseUrl: params.baseUrl,
           gaClientId: params.gaClientId,
+          analytics: params.analytics ?? null,
           idempotencyKey,
         });
       } catch (error) {

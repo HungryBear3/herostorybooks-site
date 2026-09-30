@@ -64,27 +64,6 @@ export function sanitizeAnalyticsUrl(href: string): string {
 }
 
 /**
- * Redact a Vercel Analytics event URL. Vercel's `beforeSend` hook sees both the
- * component's automatic page views and the custom events forwarded by track(),
- * and the event URL is a full URL — so stripping the query string alone would
- * still ship the bearer segment in the path. Relative URLs resolve against the
- * current origin; an unparseable one falls back to the current location, which
- * is redacted too.
- */
-export function sanitizeVercelAnalyticsUrl(
-  rawUrl: string,
-  currentOrigin: string,
-  currentPathname: string,
-): string {
-  try {
-    const url = new URL(rawUrl, currentOrigin);
-    return `${url.origin}${sanitizeAnalyticsPath(url.pathname)}`;
-  } catch {
-    return `${currentOrigin}${sanitizeAnalyticsPath(currentPathname)}`;
-  }
-}
-
-/**
  * The same rule as an inline ES5 snippet, for the root layout's
  * `beforeInteractive` gtag bootstrap. It defines `hsbSafePath` from the table
  * above so the inline copy cannot drift from the module one.

@@ -1164,16 +1164,16 @@ test('the webhook calls the shadow wrapper at exactly the two paid seams', () =>
   const callSites = [...route.matchAll(/recordShadowCheckoutSettlement\(/g)].map((m) => m.index!);
   assert.equal(callSites.length, 2, 'exactly two call sites: newly-paid and exact replay');
 
-  const newlyPaidWrite = route.indexOf('const updated = await updateOrderPayment(orderId, \'paid\'');
+  const newlyPaidWrite = route.indexOf('const settlement = await settleOrderPayment(orderId,');
   const newlyPaidGuardEnd = route.indexOf('scheduleOrderConfirmationEmail(updated');
   assert.ok(newlyPaidWrite > 0 && newlyPaidGuardEnd > newlyPaidWrite);
 
   const replayGuard = route.indexOf('if (!replayOrder)');
-  const replayGa4 = route.indexOf('scheduleGa4Purchase({', replayGuard);
-  assert.ok(replayGuard > 0 && replayGa4 > replayGuard);
+  const replayNotification = route.indexOf('scheduleOrderConfirmationEmail(replayOrder', replayGuard);
+  assert.ok(replayGuard > 0 && replayNotification > replayGuard);
 
   const [replaySeam, newSeam] = callSites.sort((a, b) => a - b);
-  assert.ok(replaySeam > replayGuard && replaySeam < replayGa4,
+  assert.ok(replaySeam > replayGuard && replaySeam < replayNotification,
     'the replay seam must sit after the PaymentIntent backfill guard and before replay notification');
   assert.ok(newSeam > newlyPaidWrite && newSeam < newlyPaidGuardEnd,
     'the newly-paid seam must sit after the proven payment write and before notification scheduling');
