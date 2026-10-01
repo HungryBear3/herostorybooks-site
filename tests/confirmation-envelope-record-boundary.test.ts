@@ -1024,6 +1024,8 @@ test('B9: the ref module is reached at runtime only by the files that need it (A
     // A3-6: the reconciliation module validates the ref for door 2 and the
     // operator projection, and owns the order-id grammar for the route.
     'src/lib/confirmation-email-reconciliation.ts',
+    // A3-7 AM-1: the inert retention planner uses only the two pure ref predicates.
+    'src/lib/confirmation-envelope-retention.ts',
   ]);
   const offenders = files.filter((file) => {
     if (allowed.has(file)) return false;

@@ -1319,6 +1319,16 @@ const NBT_IMPORT_HUNK: [string, string] = [
   "import { applyBlobNamespace, BlobNamespaceError, getBlobNamespace, withBlobNamespace } from './blob-namespace.ts';\n",
   "import { BlobNamespaceError, getBlobNamespace, withBlobNamespace } from './blob-namespace.ts';\n",
 ];
+// A3-7 AM-2: NT-20 reconstructs its pinned base by removing only the
+// controller-authorized additive retention-hold declaration.
+const A37_RETENTION_HOLD_DECLARATION_HUNK: [string, string] = [
+  "  /** Retention legal hold on the frozen envelope (L-4 Slice A3-7). DECLARED\n" +
+    "   *  ONLY: nothing writes it and no write path validates it until owner\n" +
+    "   *  decision OD-3 settles who may set it. While present — any value, past or\n" +
+    "   *  future — the inert retention planner refuses purge. */\n" +
+    "  confirmationEmailRetentionHoldUntil?: string | null;\n",
+  '',
+];
 const NBT_BLOCK_START = '// ── NBT: the namespace-bound order transaction substrate';
 const NBT_BLOCK_END = '// ── end NBT ──\n\n';
 
@@ -1423,7 +1433,11 @@ test('NT-20: every existing declaration is source-identical to base; the four bo
     assert.equal(whole.indexOf(NBT_BLOCK_START, blockStart + 1), -1, 'exactly one NBT block');
     whole = whole.slice(0, blockStart) + whole.slice(blockEnd + NBT_BLOCK_END.length);
   }
-  whole = revertHunks(whole, [NBT_IMPORT_HUNK, ...BOUND_HELPERS.flatMap(([, hunks]) => hunks)]);
+  whole = revertHunks(whole, [
+    NBT_IMPORT_HUNK,
+    A37_RETENTION_HOLD_DECLARATION_HUNK,
+    ...BOUND_HELPERS.flatMap(([, hunks]) => hunks),
+  ]);
   assert.equal(sha(whole), NT20_BASE_FILE_SHA256);
 });
 

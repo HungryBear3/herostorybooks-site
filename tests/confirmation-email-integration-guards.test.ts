@@ -69,6 +69,22 @@
  * A3-5 amends this file to admit the frozen dispatcher as one more runtime
  * reader with its own per-file rules and field grant, adds its two suites to
  * `CANDIDATE_TESTS`, and pins it (GD-1 … GD-5, RL-2) at the end of the file.
+ *
+ * A3-7 amends this file for the SAFE INERT retention skeleton only. Each change
+ * is marked `A3-7` below:
+ *
+ *   - `CANDIDATE_TESTS` gains the retention suite;
+ *   - `NEW_RECORD_FIELDS` gains `confirmationEmailRetentionHoldUntil`;
+ *   - `RECORD_FIELD_GRANTS` grants the retention module exactly the state, the
+ *     acceptance anchor and the hold, and `CONFIRMATION_REF_READER_ALLOWLIST`
+ *     admits it to read the ref;
+ *   - RT-1 … RT-5 pin the module and the route as unable to reach a store,
+ *     a config, the environment, an order I/O binding or any deletion, pin the
+ *     route as auth-first and field-free, keep `vercel.json` free of a purge
+ *     schedule, and leave GA-8 unchanged. Each pin has a synthetic offender.
+ *
+ * Activation (any real delete) is outside this amendment and needs A3-6, OD-2,
+ * OD-3, the store path/delete/readback amendments and a separate approval.
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -438,6 +454,9 @@ const CANDIDATE_TESTS = new Set([
   // A3-6: the reaper and operator suites seed and read the transition fields.
   'tests/confirmation-email-reaper.test.ts',
   'tests/confirmation-email-operator-reconciliation.test.ts',
+  // A3-7: the retention suite drives the planner over the record fields and
+  // the ref directly.
+  'tests/confirmation-envelope-retention.test.ts',
 ]);
 
 /** A3-4 R2 GA-5: a candidate exemption is only ever a test file. */
@@ -541,6 +560,8 @@ const NEW_RECORD_FIELDS = [
   'confirmationEmailAcceptedAt',
   'confirmationEmailAttempts',
   'confirmationEmailHoldReason',
+  // A3-7: declared only; nothing writes it until OD-3.
+  'confirmationEmailRetentionHoldUntil',
 ] as const;
 
 const FIELD_READER_ALLOWLIST = new Set([
@@ -572,6 +593,8 @@ const CONFIRMATION_REF_READER_ALLOWLIST = new Set([
   'src/lib/confirmation-email-dispatch.ts',
   // A3-6: door 2 refuses without a valid ref; the projection shows its view.
   'src/lib/confirmation-email-reconciliation.ts',
+  // A3-7: the inert retention planner validates the ref and reads its tombstone.
+  'src/lib/confirmation-envelope-retention.ts',
   ...CANDIDATE_TESTS,
 ]);
 
@@ -608,6 +631,13 @@ const RECORD_FIELD_GRANTS: Record<string, readonly string[]> = {
     'confirmationEmailAcceptedAt',
     'confirmationEmailAttempts',
     'confirmationEmailHoldReason',
+  ],
+  // A3-7: the inert planner reads the state, the acceptance anchor and the
+  // hold. It names no attempt, intent, provider or hold-reason field.
+  'src/lib/confirmation-envelope-retention.ts': [
+    'confirmationEmailState',
+    'confirmationEmailAcceptedAt',
+    'confirmationEmailRetentionHoldUntil',
   ],
 };
 
@@ -2167,4 +2197,258 @@ test('A3-5 GD-4/GD-5 synthetic: an extra dispatch binding and an edited legacy t
   const edited = delivery.replace("    await release('receipt_write_failed');\n", '');
   assert.notEqual(edited, delivery);
   assert.notEqual(legacyTailDigest(edited), LEGACY_TAIL_SHA256);
+});
+
+// ══ A3-7 — the inert retention skeleton, pinned (RT-1 … RT-5) ══════════════
+//
+// The slice ships unable to delete anything: the resolver is structurally
+// unconfigured, the route reports `retention_unconfigured`, and the planner has
+// no "due" verdict. These pins keep it that way until activation, which needs
+// A3-6, OD-2, OD-3, the store path/delete/readback amendments and a separate
+// owner approval — and which must amend these pins deliberately, not slip past
+// them. Pure checkers over source text; each also runs on a synthetic offender.
+
+const RETENTION = 'src/lib/confirmation-envelope-retention.ts';
+const PURGE_ROUTE = 'src/app/api/cron/confirmation-envelope-purge/route.ts';
+
+/** RT-1. The retention module's edges, exactly: the two ref predicates at run
+ *  time and the order record as a type. The ref specifier is a regex literal
+ *  (B9 refuses a quoted one in this file). */
+const RETENTION_REF_SPECIFIER = /^\.\/confirmation-envelope-ref\.ts$/;
+const RETENTION_REF_BINDINGS = ['isConfirmationEmailEnvelopeRefTombstone', 'validateConfirmationEmailEnvelopeRefShape'];
+const RETENTION_TYPE_SPECIFIER = /^\.\/orders\.ts$/;
+
+function retentionImportOffenders(source: string): string[] {
+  const offenders: string[] = [];
+  let refEdges = 0;
+  for (const statement of importStatementsIn(source)) {
+    if (statement.kind === 'type' && RETENTION_TYPE_SPECIFIER.test(statement.specifier)) continue;
+    if (statement.kind === 'named' && RETENTION_REF_SPECIFIER.test(statement.specifier)) {
+      refEdges += 1;
+      if (!sameBindings(statement.bindings, RETENTION_REF_BINDINGS)) {
+        offenders.push(`RT-1: ref bindings ${JSON.stringify(statement.bindings)} are not ${JSON.stringify(RETENTION_REF_BINDINGS)}`);
+      }
+      continue;
+    }
+    offenders.push(`RT-1: ${statement.kind} edge to ${statement.specifier}`);
+  }
+  if (refEdges !== 1) offenders.push(`RT-1: the ref must be reached by exactly one runtime import, found ${refEdges}`);
+  return offenders;
+}
+
+/** RT-2 / RT-3. What neither the module nor the route may name — in code or
+ *  in prose, so a commented-out call is as visible as a live one. */
+const RETENTION_FORBIDDEN_REACH: ReadonlyArray<[RegExp, string]> = [
+  [/delet/i, 'a deletion'],
+  [/\bdel\b/, 'the Blob del binding'],
+  [/\blist\w*\s*\(/, 'a listing call'],
+  [/@vercel\/blob/, 'the Blob SDK'],
+  [/confirmation-envelope-(?:store|config|producer)/, 'the envelope store, config or producer'],
+  [/confirmation-email-(?:dispatch|delivery|sweep|state|envelope)/, 'a confirmation dispatch or model module'],
+  [/\bHSB_CONFIRMATION_ENVELOPE_RETENTION_DAYS\b/, 'the retention variable'],
+  [/\bfetch\s*\(/, 'the network'],
+  [
+    /\b(?:getOrder\w*|listOrders\w*|persistOrder\w*|updateOrder\w*|withOrderTransaction\w*|commitOrderConditional\w*|bindOrderNamespace|readOrderVersioned\w*|orderRecordPath\w*|createConfirmationEnvelopeStore)\b/,
+    'an order or envelope I/O binding',
+  ],
+  [/purge_due/, 'a purge-due verdict'],
+];
+
+function forbiddenReachOffenders(pin: string, source: string): string[] {
+  return RETENTION_FORBIDDEN_REACH
+    .filter(([pattern]) => pattern.test(source))
+    .map(([pattern, why]) => `${pin}: names ${why} (${source.match(pattern)![0]})`);
+}
+
+const RETENTION_EXPORTED_FUNCTIONS = [
+  'resolveConfirmationEnvelopeRetention',
+  'evaluateConfirmationEnvelopePurgeEligibility',
+  'runConfirmationEnvelopePurge',
+];
+const RETENTION_RESOLVER_RE =
+  /^export function resolveConfirmationEnvelopeRetention\(\): \w+ \{\n {2}return \{ configured: false \};\n\}$/;
+const RETENTION_RUN_RE =
+  /^export function runConfirmationEnvelopePurge\(_options: [^)\n]*\): \w+ \{\n {2}return \{ ok: true, skipped: 'retention_unconfigured' \};\n\}$/;
+
+/** RT-2. The module: no environment, no clock, no asynchrony, the exact three
+ *  functions, and a resolver and a run whose bodies are the inert literal. */
+function retentionModuleOffenders(source: string): string[] {
+  const offenders = forbiddenReachOffenders('RT-2', source);
+  for (const [pattern, why] of [
+    [/\bprocess\b/, 'reads the environment'],
+    [/\bglobalThis\b/, 'reaches a global'],
+    [/\b(?:async|await|Promise)\b|\.then\s*\(/, 'performs asynchronous work'],
+    [/\bDate\.now\b|new Date\s*\(\s*\)/, 'reads a clock'],
+    [/\bsetTimeout\b|\bsetImmediate\b/, 'schedules work'],
+  ] as ReadonlyArray<[RegExp, string]>) {
+    if (pattern.test(source)) offenders.push(`RT-2: the module ${why}`);
+  }
+  const exported = [...source.matchAll(/^export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)].map((match) => match[1]);
+  if (!sameBindings(exported, RETENTION_EXPORTED_FUNCTIONS)) {
+    offenders.push(`RT-2: exported functions ${JSON.stringify(exported)} are not ${JSON.stringify(RETENTION_EXPORTED_FUNCTIONS)}`);
+  }
+  const declarations = moduleLevelDeclarations(source);
+  if (!RETENTION_RESOLVER_RE.test(declarations.get('resolveConfirmationEnvelopeRetention') ?? '')) {
+    offenders.push('RT-2: the resolver must take nothing and return { configured: false } and nothing else');
+  }
+  if (!RETENTION_RUN_RE.test(declarations.get('runConfirmationEnvelopePurge') ?? '')) {
+    offenders.push("RT-2: the run must return { ok: true, skipped: 'retention_unconfigured' } and nothing else");
+  }
+  return offenders;
+}
+
+const PURGE_ROUTE_IMPORTS: ReadonlyArray<{ specifier: RegExp; bindings: string[] }> = [
+  { specifier: /^\.\.\/\.\.\/\.\.\/\.\.\/lib\/cron-auth\.ts$/, bindings: ['evaluateCronAuth'] },
+  { specifier: /^\.\.\/\.\.\/\.\.\/\.\.\/lib\/confirmation-envelope-retention\.ts$/, bindings: ['runConfirmationEnvelopePurge'] },
+];
+
+/** RT-3. The route: exactly two named imports, one secret read, no record
+ *  field or locator, and auth → deny → dryRun parse → run, in that order. */
+function purgeRouteOffenders(source: string): string[] {
+  const offenders = forbiddenReachOffenders('RT-3', source);
+  const statements = importStatementsIn(source);
+  for (const statement of statements) {
+    const row = PURGE_ROUTE_IMPORTS.find((candidate) => candidate.specifier.test(statement.specifier));
+    if (statement.kind !== 'named' || !row) {
+      offenders.push(`RT-3: ${statement.kind} edge to ${statement.specifier}`);
+    } else if (!sameBindings(statement.bindings, row.bindings)) {
+      offenders.push(`RT-3: ${statement.specifier} bindings ${JSON.stringify(statement.bindings)}`);
+    }
+  }
+  for (const row of PURGE_ROUTE_IMPORTS) {
+    const count = statements.filter((statement) => statement.kind === 'named' && row.specifier.test(statement.specifier)).length;
+    if (count !== 1) offenders.push(`RT-3: ${row.specifier} must be imported exactly once, found ${count}`);
+  }
+  if (countOf(source, /\bprocess\b/) !== 1 || countOf(source, /\bprocess\.env\.CRON_SECRET\b/) !== 1) {
+    offenders.push('RT-3: the environment must be read exactly once, as process.env.CRON_SECRET');
+  }
+  const field = source.match(/\bconfirmationEmail\w*|\borderId\b|\bobjectPath\b|\bpurgedAt\b|\bOrderRecord\b|confirmation-envelopes\//);
+  if (field) offenders.push(`RT-3: the route names a record field or locator (${field[0]})`);
+
+  const auth = source.indexOf('evaluateCronAuth(');
+  const deny = source.indexOf('if (denied !== null)');
+  const parse = source.indexOf('searchParams');
+  const run = source.indexOf('runConfirmationEnvelopePurge(');
+  if (countOf(source, /\bevaluateCronAuth\(/) !== 1 || countOf(source, /\brunConfirmationEnvelopePurge\(/) !== 1) {
+    offenders.push('RT-3: exactly one auth evaluation and one run');
+  }
+  if (!(auth !== -1 && auth < deny && deny < parse && parse < run)) {
+    offenders.push('RT-3: the route must evaluate auth, deny, parse dryRun and only then run');
+  }
+  if (!/^export const runtime = 'nodejs';$/m.test(source) || !/^export const dynamic = 'force-dynamic';$/m.test(source)) {
+    offenders.push('RT-3: the route must be nodejs and force-dynamic');
+  }
+  for (const method of ['GET', 'POST']) {
+    if (!new RegExp(`^export async function ${method}\\(`, 'm').test(source)) offenders.push(`RT-3: ${method} is not exported`);
+  }
+  return offenders;
+}
+
+/** RT-4. No schedule for the purge route: a cron entry is an activation step. */
+function purgeScheduleOffenders(vercelJson: string): string[] {
+  return vercelJson.includes('confirmation-envelope-purge') ? ['RT-4: vercel.json schedules the purge route'] : [];
+}
+
+// ── Real-tree pins ──────────────────────────────────────────────────────────
+
+test('A3-7 RT-1: the retention module reaches the ref predicates and the record type, and nothing else', () => {
+  const source = readRepoFile(RETENTION);
+  assert.deepEqual(retentionImportOffenders(source), []);
+  assert.deepEqual(findModuleReferences(RETENTION), [], 'no edge of any kind to the state or envelope modules');
+  assert.deepEqual(runtimeReachOffenders(RETENTION, findModuleReferences(RETENTION)), []);
+});
+
+test('A3-7 RT-2: the retention module is unconfigured by construction and names exactly its granted fields', () => {
+  const source = readRepoFile(RETENTION);
+  assert.deepEqual(retentionModuleOffenders(source), []);
+  for (const field of ['confirmationEmailState', 'confirmationEmailAcceptedAt', 'confirmationEmailRetentionHoldUntil', CONFIRMATION_REF_FIELD]) {
+    assert.equal(namesRecordField(source, field), true, `the retention module must name ${field}`);
+  }
+  for (const field of NEW_RECORD_FIELDS) {
+    if (RECORD_FIELD_GRANTS[RETENTION].includes(field)) continue;
+    assert.equal(namesRecordField(source, field), false, `the retention module must not name ${field}`);
+  }
+  assert.deepEqual(fieldNameOffenders(RETENTION, source), []);
+});
+
+test('A3-7 RT-3: the purge route is auth-first, reads only the secret and names no record field', () => {
+  const source = readRepoFile(PURGE_ROUTE);
+  assert.deepEqual(purgeRouteOffenders(source), []);
+  assert.deepEqual(fieldNameOffenders(PURGE_ROUTE, source), []);
+  assert.deepEqual(findModuleReferences(PURGE_ROUTE), []);
+});
+
+test('A3-7 RT-4: vercel.json carries no purge schedule', () => {
+  assert.deepEqual(purgeScheduleOffenders(readRepoFile('vercel.json')), []);
+});
+
+test('A3-7 RT-5 (GA-8 unchanged): neither the module nor the route is a store importer', () => {
+  assert.deepEqual(storeImporterOffenders(RETENTION, readRepoFile(RETENTION)), []);
+  assert.deepEqual(storeImporterOffenders(PURGE_ROUTE, readRepoFile(PURGE_ROUTE)), []);
+  assert.equal(CANDIDATE_TESTS.has(RETENTION) || CANDIDATE_TESTS.has(PURGE_ROUTE), false, 'no production file is exempt');
+});
+
+// ── Synthetic offenders (each checker must see its own) ─────────────────────
+
+const RETENTION_REF_IMPORT_ANCHOR = 'validateConfirmationEmailEnvelopeRefShape } from';
+const RESOLVER_BODY_ANCHOR = '  return { configured: false };\n';
+const ROUTE_AUTH_ANCHOR = '  const denied = evaluateCronAuth(';
+const ROUTE_RESPONSE_ANCHOR = 'Response.json(runConfirmationEnvelopePurge({ dryRun })';
+
+test('A3-7 RT-1 synthetic: a store, state, runtime order, dynamic or widened ref edge is seen', () => {
+  const real = readRepoFile(RETENTION);
+  const store = ['./confirmation-envelope', 'store.ts'].join('-');
+  assert.notDeepEqual(retentionImportOffenders(`import { createConfirmationEnvelopeStore } from '${store}';\n${real}`), []);
+  assert.notDeepEqual(retentionImportOffenders(`import { isConfirmationEmailHeldState } from './confirmation-email-state.ts';\n${real}`), []);
+  assert.notDeepEqual(retentionImportOffenders(`import { getOrderAuthoritative } from './orders.ts';\n${real}`), []);
+  assert.notDeepEqual(retentionImportOffenders(`import * as blob from '@vercel/blob';\n${real}`), []);
+  assert.notDeepEqual(retentionImportOffenders(`${real}\nvoid import('./orders.ts');\n`), []);
+  const widened = variant(real, RETENTION_REF_IMPORT_ANCHOR, 'validateConfirmationEmailEnvelopeRefShape, materializeConfirmationEmailEnvelopeRef } from');
+  assert.notDeepEqual(retentionImportOffenders(widened), []);
+  assert.notDeepEqual(
+    runtimeReachOffenders(RETENTION, findModuleReferencesIn(RETENTION, `import type { ConfirmationEmailState } from './confirmation-email-state.ts';\n${real}`)),
+    [],
+    'even a type edge to the state module is outside the boundary',
+  );
+});
+
+test('A3-7 RT-2 synthetic: an env read, a deletion, a listing, asynchrony, a due verdict or an extra function is seen', () => {
+  const real = readRepoFile(RETENTION);
+  const envRead = variant(real, RESOLVER_BODY_ANCHOR, '  void process.env.HSB_CONFIRMATION_ENVELOPE_RETENTION_DAYS;\n  return { configured: false };\n');
+  const envOffenders = retentionModuleOffenders(envRead);
+  assert.ok(envOffenders.includes('RT-2: the module reads the environment'));
+  assert.ok(envOffenders.some((o) => o.includes('the retention variable')));
+  assert.ok(envOffenders.some((o) => o.startsWith('RT-2: the resolver')));
+  assert.ok(retentionModuleOffenders(variant(real, RESOLVER_BODY_ANCHOR, '  return { configured: true } as never;\n')).some((o) => o.startsWith('RT-2: the resolver')));
+  assert.ok(retentionModuleOffenders(`${real}\n// store.delete(orderId)\n`).some((o) => o.includes('a deletion')));
+  assert.ok(retentionModuleOffenders(`${real}\nconst x = [].length; void list();\n`).some((o) => o.includes('a listing call')));
+  assert.ok(retentionModuleOffenders(`${real}\nconst due = 'purge_due';\n`).some((o) => o.includes('purge-due')));
+  assert.ok(retentionModuleOffenders(`${real}\nconst later = async () => 1;\n`).some((o) => o.includes('asynchronous')));
+  assert.ok(retentionModuleOffenders(`${real}\nconst t = Date.now();\n`).some((o) => o.includes('clock')));
+  assert.ok(retentionModuleOffenders(`${real}\nexport function purgeOne(): void {\n}\n`).some((o) => o.includes('exported functions')));
+  assert.ok(retentionModuleOffenders(`${real}\nvoid withOrderTransaction;\n`).some((o) => o.includes('I/O binding')));
+  assert.notDeepEqual(fieldNameOffenders(RETENTION, `${real}\nvoid 'confirmationEmailHoldReason';\n`), []);
+  assert.notDeepEqual(fieldNameOffenders(RETENTION, `${real}\nvoid 'confirmationEmailFirstDispatchIntentAt';\n`), []);
+});
+
+test('A3-7 RT-3 synthetic: run-before-auth, a second env read, an echoed record field or an extra import is seen', () => {
+  const real = readRepoFile(PURGE_ROUTE);
+  const runFirst = variant(real, ROUTE_AUTH_ANCHOR, `  void runConfirmationEnvelopePurge({ dryRun: false });\n${ROUTE_AUTH_ANCHOR}`);
+  assert.ok(purgeRouteOffenders(runFirst).some((o) => o.includes('exactly one auth evaluation and one run')));
+  const reordered = variant(real, ROUTE_AUTH_ANCHOR, `  void new URL(request.url).searchParams;\n${ROUTE_AUTH_ANCHOR}`);
+  assert.ok(purgeRouteOffenders(reordered).some((o) => o.includes('evaluate auth, deny, parse dryRun and only then run')));
+  const envRead = variant(real, ROUTE_AUTH_ANCHOR, `  void process.env.HSB_CONFIRMATION_ENVELOPE_RETENTION_DAYS;\n${ROUTE_AUTH_ANCHOR}`);
+  assert.ok(purgeRouteOffenders(envRead).some((o) => o.includes('exactly once, as process.env.CRON_SECRET')));
+  const echoed = variant(real, ROUTE_RESPONSE_ANCHOR, 'Response.json({ ...runConfirmationEnvelopePurge({ dryRun }), orderId: null }');
+  assert.ok(purgeRouteOffenders(echoed).some((o) => o.includes('record field or locator')));
+  assert.ok(purgeRouteOffenders(`import { getOrderAuthoritative } from '../../../../lib/orders.ts';\n${real}`).some((o) => o.includes('edge to')));
+  assert.ok(purgeRouteOffenders(`${real}\n// await store.delete(id)\n`).some((o) => o.includes('a deletion')));
+});
+
+test('A3-7 RT-4/RT-5 synthetic: a purge schedule and a store import are seen', () => {
+  const scheduled = JSON.stringify({ crons: [{ path: '/api/cron/confirmation-envelope-purge', schedule: '0 5 * * *' }] });
+  assert.deepEqual(purgeScheduleOffenders(scheduled), ['RT-4: vercel.json schedules the purge route']);
+  const store = ['./confirmation-envelope', 'store.ts'].join('-');
+  assert.notDeepEqual(storeImporterOffenders(RETENTION, `import { createConfirmationEnvelopeStore } from '${store}';`), []);
+  assert.notDeepEqual(storeImporterOffenders(PURGE_ROUTE, `import { createConfirmationEnvelopeStore } from '../../../../lib/${store.slice(2)}';`), []);
 });

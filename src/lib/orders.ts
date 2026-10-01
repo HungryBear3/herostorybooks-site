@@ -829,6 +829,11 @@ export interface OrderRecord extends OrderInput {
   confirmationEmailAttempts?: readonly ConfirmationEmailAttemptRecord[] | null;
   /** Set only while the record is held for reconciliation. */
   confirmationEmailHoldReason?: ConfirmationEmailHoldReason | null;
+  /** Retention legal hold on the frozen envelope (L-4 Slice A3-7). DECLARED
+   *  ONLY: nothing writes it and no write path validates it until owner
+   *  decision OD-3 settles who may set it. While present — any value, past or
+   *  future — the inert retention planner refuses purge. */
+  confirmationEmailRetentionHoldUntil?: string | null;
   /** Durable pre-provider refund fence and reconciliation identity. */
   refundClaimId?: string | null;
   refundClaimAt?: string | null;
