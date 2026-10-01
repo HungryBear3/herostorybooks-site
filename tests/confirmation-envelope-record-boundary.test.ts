@@ -79,6 +79,9 @@ import {
   type OrderRecord,
   type OrderStoreAdapter,
 } from '../src/lib/orders.ts';
+// NBT (AM-NB1…AM-NB3): the bound substrate, imported as a namespace object so
+// a tree without it fails only the NBT siblings, never the A3-3 tests here.
+import * as boundOrders from '../src/lib/orders.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const ORDERS_SOURCE = readFileSync(path.join(REPO_ROOT, 'src/lib/orders.ts'), 'utf8');
@@ -995,7 +998,7 @@ test('B9: the ref module is pure — no storage, credential, clock or log sink',
   }
 });
 
-test('B9: the ref module is reached at runtime only by the two files that need it', () => {
+test('B9: the ref module is reached at runtime only by the files that need it (A3-4 R2: plus the snapshot producer)', () => {
   const skip = new Set([
     'node_modules', '.git', '.next', '.vercel', 'graphify-out',
     'test-results', 'playwright-report', 'blob-report', '.e2e-store', '.data',
@@ -1016,6 +1019,13 @@ test('B9: the ref module is reached at runtime only by the two files that need i
     'src/lib/orders.ts',
     'src/lib/admin-order-dto.ts',
     'tests/confirmation-envelope-record-boundary.test.ts',
+    // A3-4 R2 AM-B1: the snapshot producer materializes the ref it writes.
+    'src/lib/confirmation-envelope-producer.ts',
+    // A3-6: the reconciliation module validates the ref for door 2 and the
+    // operator projection, and owns the order-id grammar for the route.
+    'src/lib/confirmation-email-reconciliation.ts',
+    // A3-7 AM-1: the inert retention planner uses only the two pure ref predicates.
+    'src/lib/confirmation-envelope-retention.ts',
   ]);
   const offenders = files.filter((file) => {
     if (allowed.has(file)) return false;
@@ -1441,4 +1451,238 @@ test('B9: there is still no envelope producer, store caller or dispatch wiring',
     readFileSync(path.join(REPO_ROOT, 'src/lib/confirmation-envelope-ref.ts'), 'utf8'),
     /createConfirmationEnvelopeStore|buildConfirmationEmailEnvelope/,
   );
+});
+
+// ── NBT siblings (AM-NB1…AM-NB3): the fourth writer ────────────────────────
+//
+// NBT adds exactly one new write path to the record boundary: the private
+// `commitOrderConditionalInNamespace`, reachable only through
+// `withOrderTransactionInNamespace`. Its boundary and seal calls name the
+// bound namespace, so their call text differs from the three ambient writers'
+// and B2/B10 above (which count those three) cannot see it. These siblings
+// extend the same pins and the same hostile-ref fixtures to it; B2 and B10
+// themselves are unchanged and still count three.
+
+/** The bound writer's source text, through the end of its declaration. */
+function boundWriterSource(): string {
+  const start = ORDERS_SOURCE.indexOf('async function commitOrderConditionalInNamespace(');
+  assert.ok(start > 0, 'the bound writer must exist');
+  const end = ORDERS_SOURCE.indexOf('\n}\n', start);
+  assert.ok(end > start, 'the bound writer must be bounded');
+  return ORDERS_SOURCE.slice(start, end + 2);
+}
+
+test('B2/NBT: the bound writer calls the boundary on the raw record, against the bound namespace, before it scrubs', () => {
+  const body = boundWriterSource();
+  const guardAt = body.indexOf('assertNoConfirmationRequestBytes(order, binding.namespace)');
+  const scrubAt = body.indexOf('scrubRetiredPrivateFields(order)');
+  assert.ok(guardAt > 0, 'the bound writer must call the boundary against the bound namespace');
+  assert.ok(scrubAt > 0, 'the bound writer must still scrub');
+  assert.ok(guardAt < scrubAt, 'the bound writer must refuse BEFORE it scrubs');
+  assert.equal(
+    (ORDERS_SOURCE.match(/assertNoConfirmationRequestBytes\(order, binding\.namespace\)/g) ?? []).length,
+    1,
+    'exactly the one bound writer calls the boundary against the bound namespace',
+  );
+});
+
+test('B10/NBT: the bound writer seals the ref against the bound namespace after the scrub and before it serializes', () => {
+  const body = boundWriterSource();
+  const guardAt = body.indexOf('assertNoConfirmationRequestBytes(order, binding.namespace)');
+  const scrubAt = body.indexOf('const sanitized = scrubRetiredPrivateFields(order);');
+  const sealAt = body.indexOf('sealConfirmationEnvelopeRefForWrite(sanitized, binding.namespace);');
+  const serializeAt = body.indexOf('JSON.stringify(sanitized');
+  assert.ok(guardAt > 0 && scrubAt > guardAt, 'the bound writer must refuse before it scrubs');
+  assert.ok(sealAt > scrubAt, 'the bound writer must seal the scrubbed copy, against the bound namespace');
+  assert.ok(serializeAt > sealAt, 'the bound writer must serialize only after the seal');
+  assert.equal(
+    (ORDERS_SOURCE.match(/sealConfirmationEnvelopeRefForWrite\(sanitized, binding\.namespace\);/g) ?? []).length,
+    1,
+    'exactly the one bound writer seals against the bound namespace',
+  );
+});
+
+/** A store for the bound writer: one seeded record to read, every write body captured. */
+function boundCapturingAdapter(): OrderStoreAdapter & { readonly bodies: string[]; readonly calls: string[] } {
+  const bodies: string[] = [];
+  const calls: string[] = [];
+  const seed = JSON.stringify(baseOrder(ORDER_ID), null, 2);
+  return {
+    kind: 'nbt-capturing',
+    bodies,
+    calls,
+    async readVersioned(pathname) { calls.push(`readVersioned:${pathname}`); return { body: seed, version: 'v1' }; },
+    async createIfAbsent(pathname) { calls.push(`createIfAbsent:${pathname}`); throw new Error('the bound writer never creates'); },
+    async replaceIfVersion(pathname, body) {
+      calls.push(`replaceIfVersion:${pathname}`);
+      bodies.push(body);
+      return { ok: true, version: 'v2' };
+    },
+  };
+}
+
+/**
+ * Drive the bound writer once: `withOrderTransactionInNamespace` with a
+ * one-shot decision that returns `order`, under a binding equal to the ambient
+ * namespace (so this exercises the writer, not drift). Returns every body the
+ * store received.
+ */
+async function writeThroughBound(order: OrderRecord): Promise<{ bodies: string[]; error: unknown; result: unknown }> {
+  return localStore(async () => {
+    const adapter = boundCapturingAdapter();
+    __setOrderStoreAdapterFactoryForTests(() => adapter);
+    const bound = boundOrders.bindOrderNamespace(boundOrders.getBlobNamespace());
+    assert.equal(bound.ok, true, 'the ambient namespace must bind');
+    const binding = (bound as { ok: true; binding: boundOrders.OrderNamespaceBinding }).binding;
+    let served = 0;
+    let error: unknown;
+    let result: unknown;
+    try {
+      result = await boundOrders.withOrderTransactionInNamespace(binding, ORDER_ID, () => {
+        served += 1;
+        return { commit: order, result: 'written' };
+      }, { notFound: () => 'not_found', maxAttempts: 1 });
+    } catch (caught) {
+      error = caught;
+    }
+    assert.ok(served <= 1, 'the decision is one-shot');
+    for (const call of adapter.calls) assert.ok(call.endsWith(`orders/${ORDER_ID}.json`), `bound call at the record path: ${call}`);
+    return { bodies: [...adapter.bodies], error, result };
+  });
+}
+
+test('B10/NBT: a ref whose prototype supplies toJSON never reaches the bound store body', async () => {
+  const ref = prototypeToJsonRef();
+  assert.ok(JSON.stringify(ref).includes(CANARY.requestHtml), 'the fixture must serialize the canary');
+  const { bodies, error } = await writeThroughBound(
+    baseOrder(ORDER_ID, { confirmationEmailEnvelopeRef: ref } as Partial<OrderRecord>),
+  );
+  for (const body of bodies) assertNoRequestCanaries(body, 'the bound store body');
+  assert.deepEqual(bodies, [], 'a refused bound write must hand the store nothing');
+  assert.ok(error instanceof OrderPersistenceError, 'the bound write must be refused, not repaired');
+  assert.match((error as Error).message, /confirmation_envelope_boundary:ref_not_plain_data/);
+});
+
+test('B10/NBT: a proxy ref whose [[Get]] answers toJSON is written by the bound writer as its validated values only', async () => {
+  const ref = new Proxy(validRef(), {
+    get(t, key, receiver) {
+      if (key === 'toJSON') return () => requestShapedCanaryPayload();
+      return Reflect.get(t, key, receiver);
+    },
+  });
+  assert.ok(JSON.stringify(ref).includes(CANARY.requestHtml), 'the fixture must serialize the canary');
+  const { bodies, error } = await writeThroughBound(
+    baseOrder(ORDER_ID, { confirmationEmailEnvelopeRef: ref } as Partial<OrderRecord>),
+  );
+  assert.equal(error, undefined, 'the bound writer must write the validated ref');
+  assert.equal(bodies.length, 1, 'the bound writer must have written exactly one body');
+  assertNoRequestCanaries(bodies[0], 'the bound store body');
+  const stored = (JSON.parse(bodies[0]) as OrderRecord).confirmationEmailEnvelopeRef;
+  assert.equal(JSON.stringify(stored), JSON.stringify(validRef()), 'the bound writer must store the ten values');
+});
+
+test('B10/NBT: a ref field re-read between the boundary and the scrub cannot swap in a hostile ref on the bound writer', async () => {
+  const order = baseOrder(ORDER_ID) as OrderRecord & Record<string, unknown>;
+  let reads = 0;
+  Object.defineProperty(order, 'confirmationEmailEnvelopeRef', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      reads += 1;
+      return reads === 1 ? validRef() : prototypeToJsonRef();
+    },
+  });
+  const { bodies, error } = await writeThroughBound(order);
+  for (const body of bodies) assertNoRequestCanaries(body, 'the bound store body');
+  assert.deepEqual(bodies, [], 'the bound writer must hand the store nothing');
+  assert.ok(error instanceof OrderPersistenceError, 'the bound writer must refuse, not repair');
+  assert.match((error as Error).message, /confirmation_envelope_boundary:ref_not_plain_data/);
+});
+
+test('B10/NBT: every hostile ref is refused on the bound write path before the store is asked', async () => {
+  for (const [label, code, make] of hostileRefs()) {
+    const order = baseOrder(ORDER_ID, { confirmationEmailEnvelopeRef: make() } as Partial<OrderRecord>);
+    const { bodies, error } = await writeThroughBound(order);
+    for (const body of bodies) assertNoRequestCanaries(body, `bound body for ${label}`);
+    assert.deepEqual(bodies, [], `the bound writer must write nothing for ${label}`);
+    assert.ok(error instanceof OrderPersistenceError, `the bound writer must refuse ${label}`);
+    assert.match((error as Error).message, new RegExp(`confirmation_envelope_boundary:${code}$`), label);
+    assertNoRequestCanaries((error as Error).message, `bound refusal for ${label}`);
+  }
+});
+
+test('B10/NBT: a polluted Object.prototype.toJSON is refused by the bound writer rather than serialized', async () => {
+  assert.equal(Object.hasOwn(Object.prototype, 'toJSON'), false, 'the realm must start unpolluted');
+  // Built BEFORE pollution, as in the ambient test.
+  const order = baseOrder(ORDER_ID, { confirmationEmailEnvelopeRef: validRef() } as Partial<OrderRecord>);
+  let captured: Awaited<ReturnType<typeof writeThroughBound>>;
+  try {
+    installRefToJsonPollution();
+    captured = await writeThroughBound(order);
+  } finally {
+    Reflect.deleteProperty(Object.prototype, 'toJSON');
+  }
+  assert.equal(Object.hasOwn(Object.prototype, 'toJSON'), false, 'the realm must be restored');
+  for (const body of captured.bodies) assertNoRequestCanaries(body, 'the bound store body under pollution');
+  assert.deepEqual(captured.bodies, [], 'the bound writer must hand the store nothing');
+  assert.ok(captured.error instanceof OrderPersistenceError);
+  assert.match((captured.error as Error).message, /confirmation_envelope_boundary:ref_not_plain_data$/);
+});
+
+for (const timing of ['pre-existing', 'during descriptor inspection'] as const) {
+  // The same null-prototype candidate the R3.1 tests above use.
+  function boundCandidate(): ConfirmationEmailEnvelopeRefV1 {
+    const target = Object.assign(Object.create(null) as object,
+      Object.fromEntries(Object.entries(validRef()).reverse())) as ConfirmationEmailEnvelopeRefV1;
+    return timing === 'pre-existing' ? target : new Proxy(target, {
+      getOwnPropertyDescriptor(object, key) {
+        installRefToJsonPollution();
+        return Reflect.getOwnPropertyDescriptor(object, key);
+      },
+    });
+  }
+
+  test(`B10/NBT R3.1: the bound writer body resists ${timing} Object.prototype.toJSON pollution`, async () => {
+    assert.equal(Object.hasOwn(Object.prototype, 'toJSON'), false);
+    const expected = JSON.stringify(Object.fromEntries(Object.entries(validRef()).reverse()));
+    const order = baseOrder(ORDER_ID, { confirmationEmailEnvelopeRef: boundCandidate() });
+    let captured: Awaited<ReturnType<typeof writeThroughBound>>;
+    try {
+      if (timing === 'pre-existing') installRefToJsonPollution();
+      captured = await writeThroughBound(order);
+      assert.equal(Object.hasOwn(Object.prototype, 'toJSON'), true, 'the attack must actually run');
+    } finally {
+      Reflect.deleteProperty(Object.prototype, 'toJSON');
+    }
+    assert.equal(captured.error, undefined, 'the bound writer must accept valid data');
+    assert.equal(captured.bodies.length, 1, 'the bound writer must write exactly one body');
+    assertNoRequestCanaries(captured.bodies[0], `the bound body under ${timing} pollution`);
+    const stored = (JSON.parse(captured.bodies[0]) as OrderRecord).confirmationEmailEnvelopeRef;
+    assert.equal(JSON.stringify(stored), expected, 'the bound writer must retain values and key order');
+  });
+}
+
+test('B10/NBT: what the bound writer stores is a fresh literal, not the caller\'s ref', async () => {
+  const ref = validRef();
+  const order = baseOrder(ORDER_ID, { confirmationEmailEnvelopeRef: ref } as Partial<OrderRecord>);
+  const { bodies, error, result } = await writeThroughBound(order);
+  assert.equal(error, undefined, 'the bound writer must accept a valid ref');
+  assert.equal((result as { status: string }).status, 'committed');
+  assert.equal(bodies.length, 1);
+  assert.deepEqual((JSON.parse(bodies[0]) as OrderRecord).confirmationEmailEnvelopeRef, ref);
+  assert.equal(order.confirmationEmailEnvelopeRef, ref, 'the bound writer must not mutate the caller\'s record');
+});
+
+test('B10/NBT: plain data that is not an Object literal is still accepted and round-trips through the bound writer', async () => {
+  const parsed = JSON.parse(JSON.stringify(validRef())) as unknown;
+  const nullProto = Object.assign(Object.create(null) as object, validRef());
+  const reordered = Object.fromEntries(Object.entries(validRef()).reverse());
+  for (const [label, ref] of [['parsed', parsed], ['null prototype', nullProto], ['reordered', reordered]] as const) {
+    const expectedBytes = JSON.stringify(ref);
+    const order = baseOrder(ORDER_ID, { confirmationEmailEnvelopeRef: ref } as Partial<OrderRecord>);
+    const { bodies, error } = await writeThroughBound(order);
+    assert.equal(error, undefined, `the bound writer must accept ${label}`);
+    const stored = (JSON.parse(bodies[0]) as OrderRecord).confirmationEmailEnvelopeRef;
+    assert.equal(JSON.stringify(stored), expectedBytes, `the bound writer must keep ${label} byte-identical`);
+  }
 });

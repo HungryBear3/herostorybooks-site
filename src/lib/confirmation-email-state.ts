@@ -410,10 +410,12 @@ const TRANSITIONS = new Map<string, TransitionRow>([
     writesFirstDispatchIntent: true,
   }],
 
-  // T10/T11/T12 — the only doors out of a hold, all operator-driven.
-  [key('RECONCILIATION_REQUIRED', 'operator_bind_acceptance', 'operator'), { to: 'RECONCILED_ACCEPTED' }],
-  [key('RECONCILIATION_REQUIRED', 'operator_prove_non_acceptance', 'operator'), { to: 'SNAPSHOTTED' }],
-  [key('RECONCILIATION_REQUIRED', 'operator_authorized_resend', 'operator'), { to: 'OWNER_AUTHORIZED_RESEND_SENT' }],
+  // T10/T11/T12 — the only doors out of a hold, all operator-driven. Each
+  // releases the confirmation claim (AM-1): a resolved hold must not keep a
+  // stale claim that blocks every later order operation.
+  [key('RECONCILIATION_REQUIRED', 'operator_bind_acceptance', 'operator'), { to: 'RECONCILED_ACCEPTED', releasesClaim: true }],
+  [key('RECONCILIATION_REQUIRED', 'operator_prove_non_acceptance', 'operator'), { to: 'SNAPSHOTTED', releasesClaim: true }],
+  [key('RECONCILIATION_REQUIRED', 'operator_authorized_resend', 'operator'), { to: 'OWNER_AUTHORIZED_RESEND_SENT', releasesClaim: true }],
 ]);
 
 // I-5 — a release drops the claim fields and nothing else, from any state.

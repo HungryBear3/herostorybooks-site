@@ -6,6 +6,10 @@ import { isAdminAuthedFromCookie } from '@/lib/admin-auth-server';
 import { listAdminIntakeAssets } from '@/lib/admin-intake-asset-route-handler';
 import { getOrder } from '@/lib/orders';
 import { buildOrderDiagnostics, formatDiagnosticsSummary } from '@/lib/order-diagnostics';
+import {
+  describeConfirmationEmailOperatorResult,
+  projectConfirmationEmailForOperator,
+} from '@/lib/confirmation-email-reconciliation';
 import { CUSTOMER_QUEUE_STATUS_LABELS } from '@/lib/order-queue';
 import { proofIsFresh } from '@/lib/page-review';
 import {
@@ -19,9 +23,12 @@ import PageReviewGrid from './page-review-grid';
 
 export const dynamic = 'force-dynamic';
 
-type Props = { params: Promise<{ orderId: string }> };
+type Props = {
+  params: Promise<{ orderId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
 
-export default async function AdminOrderDetail({ params }: Props) {
+export default async function AdminOrderDetail({ params, searchParams }: Props) {
   if (!getConfiguredAdminKey()) {
     return (
       <div className="min-h-screen bg-cream flex items-center justify-center px-4">
@@ -56,6 +63,12 @@ export default async function AdminOrderDetail({ params }: Props) {
   // The helper returns a role label and a same-origin order-scoped href and
   // nothing else — no storage path, no provider URL, no capability.
   const intakeAssetLinks = listAdminIntakeAssets(order);
+  // A3-6: the confirmation-email view is the operator projection and nothing
+  // else; the result code from a door redirect goes through a closed lookup.
+  const emailRecon = projectConfirmationEmailForOperator(order);
+  const confirmationResultCode = (await searchParams)?.confirmation;
+  const confirmationResult = describeConfirmationEmailOperatorResult(confirmationResultCode);
+  const confirmationDoorAction = `/api/admin/orders/${order.id}/confirmation-email`;
   const previewText = (value: string | null | undefined, max = 240) => {
     const text = (value ?? '').trim();
     if (!text) return null;
@@ -311,6 +324,80 @@ export default async function AdminOrderDetail({ params }: Props) {
                 before telling the customer anything about a charge, then escalate manually. Follow
                 the support stuck-order runbook.
               </p>
+            </div>
+          )}
+        </Section>
+
+        <Section title="Confirmation email">
+          {confirmationResult && (
+            <p role="status" className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-2 text-xs text-gray-700">
+              {confirmationResult}
+            </p>
+          )}
+          <Row label="State" value={emailRecon.state ?? 'none'}
+               tone={emailRecon.state === 'RECONCILIATION_REQUIRED' || emailRecon.state === 'unrecognized' ? 'bad' : 'neutral'} mono />
+          <Row label="Hold reason" value={emailRecon.holdReason ?? '—'} tone={emailRecon.holdReason ? 'bad' : 'neutral'} mono />
+          <Row label="First dispatch intent" value={emailRecon.firstDispatchIntentAt ?? '—'} mono />
+          <Row label="Dispatch deadline" value={emailRecon.dispatchDeadlineAt ?? '—'} mono />
+          <Row label="Provider accepted at" value={emailRecon.acceptedAt ?? '—'} mono />
+          <Row label="Receipt recorded at" value={emailRecon.sentAt ?? '—'} mono />
+          <Row label="Provider message id" value={emailRecon.providerMessageId ?? '—'} mono />
+          <Row label="Frozen sender" value={emailRecon.from ?? '—'} />
+          <Row label="Attempts recorded" value={String(emailRecon.attemptCount)} />
+          {emailRecon.envelope && (
+            <>
+              <Row label="Frozen envelope digest" value={emailRecon.envelope.canonicalDigest} mono />
+              <Row label="Envelope template" value={emailRecon.envelope.templateVersion} />
+              <Row label="Envelope frozen at" value={emailRecon.envelope.createdAt} mono />
+              <Row label="Provider account" value={emailRecon.envelope.accountLabel} />
+            </>
+          )}
+          {emailRecon.availableDoors.length > 0 && (
+            <div className="mt-4 space-y-3 border-t border-gray-100 pt-4 text-xs">
+              <p className="text-gray-600">
+                This confirmation is on hold. Resolve it with exactly one of the actions below, using what the
+                provider dashboard shows. None of them sends an email.
+              </p>
+              {emailRecon.holdReason === 'deadline_exceeded' && (
+                <p className="rounded border border-amber-300 bg-amber-50 p-2 text-amber-900">
+                  The sending attempt ran out of time. The message may already have been accepted by the provider:
+                  check the provider dashboard first.
+                </p>
+              )}
+              {emailRecon.availableDoors.includes('bind_acceptance') && (
+                <form method="post" action={confirmationDoorAction} className="rounded border border-gray-200 p-3 space-y-2">
+                  <input type="hidden" name="action" value="bind_acceptance" />
+                  <input type="hidden" name="expectedToken" value={emailRecon.expectedToken} />
+                  <label className="block text-gray-700">
+                    Provider message id
+                    <input name="providerMessageId" required pattern="[A-Za-z0-9\-]{1,128}" maxLength={128}
+                           className="mt-1 block w-full rounded border border-gray-300 px-2 py-1 font-mono" />
+                  </label>
+                  <p className="text-gray-500">Records that the provider accepted this confirmation, under this message id.</p>
+                  <button type="submit" className="rounded bg-forest px-3 py-1.5 font-semibold text-white">Record provider acceptance</button>
+                </form>
+              )}
+              {emailRecon.availableDoors.includes('prove_non_acceptance') && (
+                <form method="post" action={confirmationDoorAction} className="rounded border border-gray-200 p-3 space-y-2">
+                  <input type="hidden" name="action" value="prove_non_acceptance" />
+                  <input type="hidden" name="expectedToken" value={emailRecon.expectedToken} />
+                  <input type="hidden" name="attestation" value="provider_shows_no_acceptance" />
+                  <p className="text-gray-500">
+                    Records that the provider shows no acceptance. The frozen confirmation becomes eligible to be sent
+                    again by the frozen dispatcher, if that is enabled. Check the provider dashboard first.
+                  </p>
+                  <button type="submit" className="rounded border border-gray-300 px-3 py-1.5 font-semibold text-gray-800">Record: provider shows no acceptance</button>
+                </form>
+              )}
+              {emailRecon.availableDoors.includes('resend_attestation') && (
+                <form method="post" action={confirmationDoorAction} className="rounded border border-gray-200 p-3 space-y-2">
+                  <input type="hidden" name="action" value="resend_attestation" />
+                  <input type="hidden" name="expectedToken" value={emailRecon.expectedToken} />
+                  <input type="hidden" name="attestation" value="sent_out_of_band" />
+                  <p className="text-gray-500">Records that you already sent it yourself. This sends nothing.</p>
+                  <button type="submit" className="rounded border border-gray-300 px-3 py-1.5 font-semibold text-gray-800">Record: I sent it myself</button>
+                </form>
+              )}
             </div>
           )}
         </Section>

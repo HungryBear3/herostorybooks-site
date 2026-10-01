@@ -50,12 +50,43 @@ export const CONFIRMATION_ENVELOPE_TOKEN_ENV = 'HSB_CONFIRMATION_ENVELOPE_BLOB_T
  * `enabled`, or any other noncanonical spelling leaves the writer off, which
  * is the safe direction: an unarmed writer stores nothing.
  *
- * A3-2 adds no application caller, so nothing reads this flag at runtime yet.
- * It exists now because the build gate must be able to tell "Production
- * intends to write envelopes" from "Production does not", and that intent has
- * to be expressed somewhere before the producer lands in A3-4.
+ * A3-4 R2 reads it at the start of every confirmation delivery attempt (the
+ * snapshot producer's W0 gate). The build gate refuses it on every Vercel
+ * Production build, and the runtime refuses it on every Vercel deployment,
+ * until the frozen dispatcher (A3-5) is accepted: a snapshot producer alone
+ * sends no confirmation email.
  */
 export const CONFIRMATION_ENVELOPE_WRITER_ENV = 'HSB_CONFIRMATION_ENVELOPE_WRITER';
+
+/**
+ * The activation epoch (A3-4 R2). Only orders paid at or after it are enrolled
+ * into the snapshot path; everything earlier keeps the legacy path. Read only
+ * when the writer flag is exactly `true`. No trim, no default, no repair.
+ */
+export const CONFIRMATION_ENVELOPE_WRITER_EPOCH_ENV = 'HSB_CONFIRMATION_ENVELOPE_WRITER_EPOCH';
+
+/**
+ * No epoch may precede the instant the confirmation recovery path came into
+ * existence. Restated from `CONFIRMATION_EMAIL_LEGACY_T193_FLOOR_AT` so this
+ * module keeps no runtime dependency on the transition model; a test pins the
+ * two equal.
+ */
+export const CONFIRMATION_ENVELOPE_WRITER_EPOCH_FLOOR_AT = '2026-09-21T12:48:51.665Z';
+
+/** The non-secret provider account label every frozen envelope is bound to. */
+export const CONFIRMATION_ENVELOPE_ACCOUNT_LABEL = 'hsb-resend-primary-v1';
+
+/** The deployed template identity every frozen envelope is bound to. Bumped
+ *  whenever the rendered confirmation template changes. */
+export const CONFIRMATION_ENVELOPE_TEMPLATE_VERSION = 'hsb-order-confirmation-v1';
+
+/**
+ * The build and runtime activation interlock, verbatim. Only the independently
+ * accepted frozen-dispatch slice (A3-5) may lift it.
+ */
+export const CONFIRMATION_ENVELOPE_WRITER_ACTIVATION_INTERLOCK_PROBLEM =
+  `${CONFIRMATION_ENVELOPE_WRITER_ENV} cannot be armed on a Vercel deployment until the frozen dispatcher `
+  + '(L-4 A3-5) is accepted: the snapshot producer alone sends no confirmation email';
 
 /** Every other HSB Blob lane the envelope store must not share a store with. */
 export const CONFIRMATION_ENVELOPE_PEER_TOKEN_ENVS = {
@@ -93,7 +124,8 @@ export type ConfirmationEnvelopeStorageRefusal =
   | 'delete_failed'
   | 'invalid_object'
   | 'too_large'
-  | 'digest_mismatch';
+  | 'digest_mismatch'
+  | 'object_mismatch';
 
 /**
  * The resolved credential. It exists only inside the storage module: nothing
@@ -294,13 +326,155 @@ export function confirmationEnvelopeRefusalProblem(
  * deliberately shipping Production without the envelope lane says so by not
  * arming the writer — which is also the default, so no configuration at all is
  * a passing build.
+ *
+ * A3-4 R2: an armed Production build is ALWAYS refused with the activation
+ * interlock, however correct its configuration. The snapshot producer alone
+ * sends no confirmation email; only the accepted frozen dispatcher (A3-5) may
+ * lift this. Epoch and credential validation is
+ * `confirmationEnvelopeWriterConfigProblem`, below.
  */
 export function confirmationEnvelopeBuildContractProblem(
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
   if (!isVercelProductionBuild(env)) return null;
   if (!isConfirmationEnvelopeWriterEnabled(env)) return null;
+  return CONFIRMATION_ENVELOPE_WRITER_ACTIVATION_INTERLOCK_PROBLEM;
+}
 
+// ---------------------------------------------------------------------------
+// The writer configuration (A3-4 R2). Pure: each function reads only the
+// environment object it is given.
+// ---------------------------------------------------------------------------
+
+/** Every reason the writer configuration does not arm, in evaluation order. */
+export type ConfirmationEnvelopeWriterConfigRefusal =
+  | 'flag_off'
+  | 'activation_interlock'
+  | 'epoch_missing'
+  | 'epoch_invalid'
+  | 'epoch_before_floor'
+  | 'binding_invalid'
+  | 'namespace_invalid';
+
+export interface ConfirmationEnvelopeBindings {
+  readonly accountLabel: string;
+  readonly templateVersion: string;
+}
+
+export type ConfirmationEnvelopeWriterConfig =
+  | {
+      readonly armed: true;
+      readonly epochMs: number;
+      readonly epochAt: string;
+      readonly accountLabel: string;
+      readonly templateVersion: string;
+      /** `getBlobNamespace` evaluated on the environment this was given. */
+      readonly namespace: string;
+    }
+  | { readonly armed: false; readonly reason: ConfirmationEnvelopeWriterConfigRefusal };
+
+const CONFIRMATION_ENVELOPE_BINDINGS: ConfirmationEnvelopeBindings = Object.freeze({
+  accountLabel: CONFIRMATION_ENVELOPE_ACCOUNT_LABEL,
+  templateVersion: CONFIRMATION_ENVELOPE_TEMPLATE_VERSION,
+});
+
+const WRITER_EPOCH_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const WRITER_EPOCH_FLOOR_MS = Date.parse(CONFIRMATION_ENVELOPE_WRITER_EPOCH_FLOOR_AT);
+/** The ref grammar for a label, and the narrower one for a binding constant. */
+const BINDING_LABEL_RE = /^[\x20-\x7E]{1,256}$/;
+const BINDING_CONSTANT_RE = /^[a-z0-9][a-z0-9.-]{0,63}$/;
+
+type WriterEpochVerdict =
+  | { readonly ok: true; readonly epochMs: number; readonly epochAt: string }
+  | { readonly ok: false; readonly reason: 'epoch_missing' | 'epoch_invalid' | 'epoch_before_floor' };
+
+/** A strict canonical UTC instant, at or after the floor. No trim, no repair. */
+function resolveWriterEpoch(env: NodeJS.ProcessEnv): WriterEpochVerdict {
+  const epochAt = env[CONFIRMATION_ENVELOPE_WRITER_EPOCH_ENV];
+  if (epochAt === undefined || epochAt === '') return { ok: false, reason: 'epoch_missing' };
+  if (!WRITER_EPOCH_RE.test(epochAt)) return { ok: false, reason: 'epoch_invalid' };
+  const epochMs = Date.parse(epochAt);
+  if (!Number.isFinite(epochMs) || new Date(epochMs).toISOString() !== epochAt) {
+    return { ok: false, reason: 'epoch_invalid' };
+  }
+  if (epochMs < WRITER_EPOCH_FLOOR_MS) return { ok: false, reason: 'epoch_before_floor' };
+  return { ok: true, epochMs, epochAt };
+}
+
+function bindingsValid(bindings: ConfirmationEnvelopeBindings): boolean {
+  return [bindings.accountLabel, bindings.templateVersion].every(
+    (value) => typeof value === 'string' && BINDING_LABEL_RE.test(value) && BINDING_CONSTANT_RE.test(value),
+  );
+}
+
+/**
+ * Resolve the snapshot writer's configuration from `env`, or the first reason
+ * it does not arm, in this order: `flag_off` (and then nothing else is read),
+ * `activation_interlock` (any Vercel deployment), `epoch_missing`,
+ * `epoch_invalid`, `epoch_before_floor`, `binding_invalid`,
+ * `namespace_invalid`. `bindings` exists for the configuration tests; every
+ * runtime caller passes nothing and gets the versioned constants.
+ */
+export function resolveConfirmationEnvelopeWriterConfig(
+  env: NodeJS.ProcessEnv,
+  bindings: ConfirmationEnvelopeBindings = CONFIRMATION_ENVELOPE_BINDINGS,
+): ConfirmationEnvelopeWriterConfig {
+  if (!isConfirmationEnvelopeWriterEnabled(env)) return { armed: false, reason: 'flag_off' };
+  if (env.VERCEL === '1') return { armed: false, reason: 'activation_interlock' };
+  const epoch = resolveWriterEpoch(env);
+  if (epoch.ok === false) return { armed: false, reason: epoch.reason };
+  if (!bindingsValid(bindings)) return { armed: false, reason: 'binding_invalid' };
+  const namespace = resolveConfirmationEnvelopeWriterNamespace(env);
+  if (namespace.ok === false) return { armed: false, reason: 'namespace_invalid' };
+  return {
+    armed: true,
+    epochMs: epoch.epochMs,
+    epochAt: epoch.epochAt,
+    accountLabel: bindings.accountLabel,
+    templateVersion: bindings.templateVersion,
+    namespace: namespace.namespace,
+  };
+}
+
+/**
+ * The writer's namespace, settled from `env` alone, or `{ ok: false }` when it
+ * does not resolve. The producer settles this BEFORE any other configuration
+ * verdict, so a namespace problem under an armed flag is always a no-send
+ * refusal rather than a disarm.
+ */
+export function resolveConfirmationEnvelopeWriterNamespace(
+  env: NodeJS.ProcessEnv,
+): { readonly ok: true; readonly namespace: string } | { readonly ok: false } {
+  try {
+    return { ok: true, namespace: getBlobNamespace(env) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * What is wrong with the writer's own configuration in `env` — the epoch, the
+ * binding constants, the dedicated credential and the namespace — or null.
+ * Independent of the activation interlock, so a correct configuration can be
+ * proven correct while the interlock still refuses it. Names the variable and
+ * the fault, never a value. Writer off: null.
+ */
+export function confirmationEnvelopeWriterConfigProblem(env: NodeJS.ProcessEnv): string | null {
+  if (!isConfirmationEnvelopeWriterEnabled(env)) return null;
+  const epoch = resolveWriterEpoch(env);
+  if (epoch.ok === false) {
+    switch (epoch.reason) {
+      case 'epoch_missing':
+        return `${CONFIRMATION_ENVELOPE_WRITER_EPOCH_ENV} is not set`;
+      case 'epoch_invalid':
+        return `${CONFIRMATION_ENVELOPE_WRITER_EPOCH_ENV} must be a canonical UTC instant (YYYY-MM-DDTHH:mm:ss.sssZ)`;
+      default:
+        return `${CONFIRMATION_ENVELOPE_WRITER_EPOCH_ENV} must not precede ${CONFIRMATION_ENVELOPE_WRITER_EPOCH_FLOOR_AT}`;
+    }
+  }
+  if (!bindingsValid(CONFIRMATION_ENVELOPE_BINDINGS)) {
+    return 'the confirmation envelope account label or template version is not a valid binding';
+  }
   const result = resolveConfirmationEnvelopeStoreCredential(env);
   // `=== true`, not a truthiness test: this repository compiles with
   // "strict": false, so strictNullChecks is off and a boolean-literal

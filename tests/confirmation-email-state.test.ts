@@ -192,6 +192,69 @@ test('S1: exactly two transitions in the whole model authorize a provider call',
   ]);
 });
 
+// ── AM-1 (A3-6) — the operator doors release the claim; the reaper does not ──
+
+test('AM-1: the claim is released by the worker outcomes, the releases and the three operator doors only', () => {
+  const releasing: string[] = [];
+  for (const from of FROM_STATES) {
+    for (const event of EVENTS) {
+      for (const actor of ACTORS) {
+        const decision = decide({ from, event, actor, holdReason: holdReasonFor(event) });
+        if (decision.allowed === true && decision.releasesClaim) releasing.push(allowedKey(from, event, actor));
+      }
+    }
+  }
+  assert.deepEqual(releasing.sort(), [
+    'DISPATCH_INTENT_RECORDED|ambiguous_outcome|worker',
+    'DISPATCH_INTENT_RECORDED|integrity_fence_failed|worker',
+    'DISPATCH_INTENT_RECORDED|pre_dispatch_failure_proven|worker',
+    'DISPATCH_INTENT_RECORDED|provider_accepted|worker',
+    'RECONCILIATION_REQUIRED|operator_authorized_resend|operator',
+    'RECONCILIATION_REQUIRED|operator_bind_acceptance|operator',
+    'RECONCILIATION_REQUIRED|operator_prove_non_acceptance|operator',
+    ...FROM_STATES.map((from) => allowedKey(from, 'claim_released', 'worker')),
+  ].sort());
+});
+
+test('AM-1: T10–T12 release the claim and authorize no provider call; T9 and T8 keep the claim', () => {
+  for (const [event, to] of [
+    ['operator_bind_acceptance', 'RECONCILED_ACCEPTED'],
+    ['operator_prove_non_acceptance', 'SNAPSHOTTED'],
+    ['operator_authorized_resend', 'OWNER_AUTHORIZED_RESEND_SENT'],
+  ] as const) {
+    const decision = evaluateConfirmationEmailTransition({ from: 'RECONCILIATION_REQUIRED', event, actor: 'operator' });
+    assert.deepEqual(decision, {
+      allowed: true,
+      to,
+      holdReason: null,
+      permitsProviderCall: false,
+      writesFirstDispatchIntent: false,
+      releasesClaim: true,
+    }, event);
+  }
+  assert.deepEqual(
+    evaluateConfirmationEmailTransition({ from: 'DISPATCH_INTENT_RECORDED', event: 'deadline_elapsed', actor: 'reaper' }),
+    {
+      allowed: true,
+      to: 'RECONCILIATION_REQUIRED',
+      holdReason: 'deadline_exceeded',
+      permitsProviderCall: false,
+      writesFirstDispatchIntent: false,
+      releasesClaim: false,
+    },
+    'T9: the reaper keeps the claim as evidence',
+  );
+  const t8 = evaluateConfirmationEmailTransition({
+    from: 'DISPATCH_INTENT_RECORDED', event: 'receipt_failed', actor: 'worker', holdReason: 'receipt_write_failed',
+  });
+  assert.equal(t8.allowed === true && t8.releasesClaim, false, 'T8 keeps the claim');
+  // The doors are operator-only: no other actor opens them.
+  for (const actor of ['worker', 'reaper'] as const) {
+    const decision = evaluateConfirmationEmailTransition({ from: 'RECONCILIATION_REQUIRED', event: 'operator_authorized_resend', actor });
+    assert.equal(decision.allowed, false, actor);
+  }
+});
+
 test('S1: an unknown state or event is refused rather than defaulted', () => {
   const bogusState = decide({
     from: 'NOT_A_STATE' as ConfirmationEmailState,
@@ -1465,10 +1528,19 @@ test('A3-3 R2: the held set is deliberately not modified', () => {
 test('A3-3 R2: no other state disposition moved', () => {
   // Every non-ACCEPTED, non-held state stays claimable, so the new line refuses
   // exactly one thing.
+  //
+  // A3-4 R2 AM-ST1 (fence F1, the same move AM-R1 and GA-11 make):
+  // SNAPSHOTTED and PROVABLY_PRE_DISPATCH_FAILED hold a frozen envelope that
+  // only the frozen dispatcher (A3-5) may send, so the legacy path refuses both
+  // as awaiting_frozen_dispatch — never as a hold. R2's ACCEPTED line is unchanged.
   for (const state of CONFIRMATION_EMAIL_STATES) {
     const expected = state === 'ACCEPTED'
       ? 'already_sent'
-      : isConfirmationEmailHeldState(state) ? 'held_for_reconciliation' : null;
+      : isConfirmationEmailHeldState(state)
+        ? 'held_for_reconciliation'
+        : state === 'SNAPSHOTTED' || state === 'PROVABLY_PRE_DISPATCH_FAILED'
+          ? 'awaiting_frozen_dispatch'
+          : null;
     assert.equal(
       evaluateConfirmationEmailClaimability(r2Order({ confirmationEmailState: state }), R2_FENCE_CFG),
       expected,

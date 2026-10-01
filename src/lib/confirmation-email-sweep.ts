@@ -12,6 +12,7 @@
  * refund state are none of its business.
  */
 import {
+  CONFIRMATION_EMAIL_AWAITING_FROZEN_DISPATCH,
   CONFIRMATION_EMAIL_CLAIM_STALE_MS,
   classifyConfirmationEmailError,
   deliverOrderConfirmationEmail,
@@ -19,6 +20,10 @@ import {
   type ConfirmationEmailBlockReason,
   type ConfirmationEmailDeliveryOutcome,
 } from './confirmation-email-delivery.ts';
+import {
+  runConfirmationEmailReaper,
+  type ConfirmationEmailReaperResult,
+} from './confirmation-email-reconciliation.ts';
 import { listOrdersAuthoritative, type OrderRecord } from './orders.ts';
 
 /** How long after payment the sweep starts caring. The in-process path has the
@@ -61,6 +66,9 @@ export interface ConfirmationEmailSweepEligibilityConfig {
   claimStaleMs: number;
   /** Fixed floor on `paidAt`; see CONFIRMATION_EMAIL_SWEEP_ACTIVATION_PAID_AT. */
   activationPaidAtMs: number;
+  /** A3-5: admit records waiting for the frozen dispatcher. Absent or not
+   *  exactly `true`: they stay ineligible, as before. */
+  admitAwaitingFrozenDispatch?: boolean;
 }
 
 export interface ConfirmationEmailSweepDeps {
@@ -74,6 +82,12 @@ export interface ConfirmationEmailSweepDeps {
   /** Pre-sanitized lines only — see `classifyConfirmationEmailError`. */
   errorLog: (line: string) => void;
   maxDeliveries?: number;
+  /** A3-5: see `ConfirmationEmailSweepEligibilityConfig`. The default deps
+   *  leave it out. */
+  admitAwaitingFrozenDispatch?: boolean;
+  /** A3-6: the separate reaper pass over the same listing, run before the
+   *  delivery loop with its own budget. It writes holds only and never sends. */
+  reap?: (orders: readonly OrderRecord[], nowMs: number) => Promise<ConfirmationEmailReaperResult>;
 }
 
 export interface ConfirmationEmailSweepResult {
@@ -84,6 +98,16 @@ export interface ConfirmationEmailSweepResult {
   skipped: number;
   blocked: number;
   failed: number;
+  /** A3-4 R2: envelopes frozen and committed; nothing was sent. */
+  snapshotted: number;
+  /** A3-4 R2: records moved to a reconciliation hold; nothing was sent. */
+  held: number;
+  /** A3-4 R2: attempts that changed nothing and sent nothing; the next tick retries. */
+  deferred: number;
+  /** A3-6 (R-3): present only when a reaper ran. Leases turned into holds. */
+  reaped?: number;
+  /** A3-6 (R-3): present only when a reaper ran. Due leases left unreaped. */
+  reapDeferred?: number;
 }
 
 /**
@@ -99,7 +123,10 @@ export function evaluateConfirmationEmailSweepEligibility(
     nowMs: cfg.nowMs,
     claimStaleMs: cfg.claimStaleMs,
   });
-  if (blocked) return { eligible: false, reason: blocked };
+  // A3-5: an opted-in sweep admits a frozen record past the shared fence, and
+  // only that one reason; the paidAt rules below still apply to it.
+  const admitted = blocked === CONFIRMATION_EMAIL_AWAITING_FROZEN_DISPATCH && cfg.admitAwaitingFrozenDispatch === true;
+  if (blocked && !admitted) return { eligible: false, reason: blocked };
 
   if (!order.paidAt) return { eligible: false, reason: 'missing_paidat' };
   const paidAtMs = Date.parse(order.paidAt);
@@ -124,6 +151,12 @@ export function buildDefaultConfirmationEmailSweepDeps(): ConfirmationEmailSweep
     log: (line: string) => console.log(line),
     errorLog: (line: string) => console.error(line),
     maxDeliveries: CONFIRMATION_EMAIL_SWEEP_MAX_DELIVERIES,
+    // A3-6: the ambient writer gate. Unset — the default — it reaps nothing.
+    reap: (orders, nowMs) => runConfirmationEmailReaper(orders, {
+      nowMs,
+      log: (line: string) => console.log(line),
+      errorLog: (line: string) => console.error(line),
+    }),
   };
 }
 
@@ -139,6 +172,24 @@ export async function runConfirmationEmailSweep(
   let skipped = 0;
   let blocked = 0;
   let failed = 0;
+  let snapshotted = 0;
+  let held = 0;
+  let deferred = 0;
+
+  // A3-6: the reaper pass. Not a branch of the eligibility filter, which can
+  // never surface a record holding dispatch intent (R1).
+  let reaped = 0;
+  let reapDeferred = 0;
+  if (deps.reap) {
+    try {
+      const reap = await deps.reap(orders, nowMs);
+      reaped = reap.reaped;
+      reapDeferred = reap.deferred + reap.unbound;
+    } catch (err) {
+      reapDeferred += 1;
+      deps.errorLog(`[confirmation-email-sweep] reaper threw errorClass=${classifyConfirmationEmailError(err)}`);
+    }
+  }
 
   for (const order of orders) {
     if (eligible >= maxDeliveries) break;
@@ -147,27 +198,30 @@ export async function runConfirmationEmailSweep(
       graceMs: deps.graceMs,
       claimStaleMs: deps.claimStaleMs,
       activationPaidAtMs: deps.activationPaidAtMs,
+      admitAwaitingFrozenDispatch: deps.admitAwaitingFrozenDispatch,
     });
     if (!verdict.eligible) continue;
 
     eligible += 1;
     try {
       const outcome = await deps.deliver(order.id);
+      // A3-4 R2: exhaustive — every arm ends the iteration, and the never
+      // check below fails `tsc` the moment an outcome has no arm.
       switch (outcome.status) {
         case 'sent':
           sent += 1;
           deps.log(`[confirmation-email-sweep] sent orderId=${order.id}`);
-          break;
+          continue;
         case 'skipped':
           skipped += 1;
           deps.log(`[confirmation-email-sweep] skipped orderId=${order.id} reason=${outcome.reason}`);
-          break;
+          continue;
         case 'blocked':
           // Lost the race with a concurrent sender — the expected, benign
           // outcome of webhook/sweep overlap.
           blocked += 1;
           deps.log(`[confirmation-email-sweep] blocked orderId=${order.id} reason=${outcome.reason}`);
-          break;
+          continue;
         case 'receipt_unrecorded':
           // The provider accepted but nothing durable records it. That is a
           // failure, not a delivery: it must be visible and it must not be
@@ -176,15 +230,33 @@ export async function runConfirmationEmailSweep(
           deps.errorLog(
             `[confirmation-email-sweep] receipt unrecorded orderId=${order.id} reason=${outcome.reason}`,
           );
-          break;
-        default:
+          continue;
+        case 'failed':
           failed += 1;
           deps.errorLog(
             `[confirmation-email-sweep] delivery failed orderId=${order.id}`
               + ` reason=${outcome.reason} errorClass=${outcome.errorClass}`,
           );
-          break;
+          continue;
+        case 'snapshotted':
+          // Frozen, not sent: neither a delivery nor a failure.
+          snapshotted += 1;
+          deps.log(`[confirmation-email-sweep] snapshotted orderId=${order.id} via=${outcome.via}`);
+          continue;
+        case 'held':
+          // A hold is the designed, durable outcome; it does not fail the run.
+          held += 1;
+          deps.errorLog(`[confirmation-email-sweep] held orderId=${order.id} reason=${outcome.reason}`);
+          continue;
+        case 'snapshot_deferred':
+          // Nothing changed and nothing was sent; the run is not ok so the
+          // deferral stays visible, and the next tick retries.
+          deferred += 1;
+          deps.errorLog(`[confirmation-email-sweep] deferred orderId=${order.id} reason=${outcome.reason}`);
+          continue;
       }
+      const _exhaustive: never = outcome;
+      void _exhaustive;
     } catch (err) {
       failed += 1;
       deps.errorLog(
@@ -195,12 +267,16 @@ export async function runConfirmationEmailSweep(
   }
 
   return {
-    ok: failed === 0,
+    ok: failed === 0 && deferred === 0 && reapDeferred === 0,
     scanned: orders.length,
     eligible,
     sent,
     skipped,
     blocked,
     failed,
+    snapshotted,
+    held,
+    deferred,
+    ...(deps.reap ? { reaped, reapDeferred } : {}),
   };
 }

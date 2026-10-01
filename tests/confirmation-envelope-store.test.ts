@@ -21,10 +21,12 @@ import test from 'node:test';
 
 import { fileURLToPath } from 'node:url';
 
-// The ONE SDK value these tests import: cleanup verification turns on the
-// SDK's own error class, so a test that hand-rolled a stand-in would be
-// testing its own fixture rather than the contract.
-import { BlobNotFoundError } from '@vercel/blob';
+// The SDK error classes these tests construct: absence (store and probe) turns
+// on the SDK's own error identity, and A3-2.1's existence/absence rows throw
+// the real classes, so a test that hand-rolled a stand-in would be testing its
+// own fixture rather than the contract. @vercel/blob@2.3.3 exports no
+// existing-object class (evidence branch N), so none is imported.
+import { BlobError, BlobNotFoundError, BlobStoreNotFoundError } from '@vercel/blob';
 
 import {
   buildConfirmationEmailEnvelope,
@@ -427,7 +429,7 @@ test('a public-store rejection is store_not_private with exactly one put', async
 
 // ── P-5: write-once ─────────────────────────────────────────────────────────
 
-test('a second write is object_exists and never clobbers the first', async () => {
+test('a second write is refused as write_failed and never clobbers the first', async () => {
   const rec = recorder();
   const store = openStore(baseEnv(), rec.io);
   const first = JSON.stringify(syntheticEnvelope());
@@ -443,7 +445,7 @@ test('a second write is object_exists and never clobbers the first', async () =>
   const second = await store.write(VALID_ORDER_ID, replacement);
 
   assert.equal(second.ok, false);
-  assert.equal(second.ok === false && second.refusal, 'object_exists');
+  assert.equal(second.ok === false && second.refusal, 'write_failed');
   assert.equal(rec.objects.get(EXPECTED_PATH), first, 'the first object must be untouched');
   assertNoLeak(second);
 });
@@ -479,7 +481,7 @@ test('a delete failure that is not an absent object is delete_failed', async () 
 });
 
 test('deleting an object the store says is absent is success', async () => {
-  const rec = recorder({ delError: () => Object.assign(new Error('blob not found'), { name: 'BlobNotFoundError' }) });
+  const rec = recorder({ delError: () => new BlobNotFoundError() });
   const store = openStore(baseEnv(), rec.io);
   assert.equal((await store.delete(VALID_ORDER_ID)).ok, true);
 });
@@ -696,6 +698,596 @@ test('no store operation throws; every failure is a closed refusal member', asyn
   }
 });
 
+// ── A3-2.1: existence and absence by SDK identity (E-1…E-10) ────────────────
+//
+// @vercel/blob@2.3.3 has no existing-object class and emits no fixed
+// existing-object sentence (evidence branch N): an `allowOverwrite: false`
+// conflict can only surface as server-supplied `bad_request` prose or as the
+// generic `BlobUnknownError`. So no write failure is `object_exists` — every
+// one other than `store_not_private` is `write_failed` — and absence is proven
+// only by `BlobNotFoundError` that is not `BlobStoreNotFoundError`, never by
+// text or by a stamped `.name`.
+
+/**
+ * Every result an E or BX row produced, sealed afterwards by E-14 and BX-8.
+ * Rows run in declaration order within this file, and E-14/BX-8 refuse to pass
+ * on a partial collection, so an isolated run cannot pass vacuously.
+ */
+const SEALED: Array<{ row: string; result: unknown }> = [];
+
+function seal(row: string, result: unknown): void {
+  SEALED.push({ row, result });
+}
+
+async function writeFailureFor(row: string, thrown: () => Error): Promise<string | null> {
+  const rec = recorder({ putError: thrown });
+  const store = openStore(baseEnv(), rec.io);
+  const result = await store.write(VALID_ORDER_ID, JSON.stringify(syntheticEnvelope()));
+  seal(row, result);
+  assert.equal(rec.calls.length, 1, `${row}: a failed write is never retried`);
+  assert.equal(rec.objects.size, 0, `${row}: nothing may be stored`);
+  return refusalOf(result);
+}
+
+async function readFailureFor(row: string, thrown: () => unknown): Promise<string | null> {
+  const rec = recorder({ getError: thrown as () => Error });
+  const result = await openStore(baseEnv(), rec.io).read(VALID_ORDER_ID);
+  seal(row, result);
+  assert.equal(rec.calls.length, 1, `${row}: exactly one get`);
+  return refusalOf(result);
+}
+
+async function deleteOutcomeFor(row: string, thrown: () => unknown): Promise<string | null> {
+  const rec = recorder({ delError: thrown as () => Error });
+  const result = await openStore(baseEnv(), rec.io).delete(VALID_ORDER_ID);
+  seal(row, result);
+  assert.equal(rec.calls.length, 1, `${row}: exactly one del`);
+  return result.ok ? 'ok' : refusalOf(result);
+}
+
+/** Plain values that only LOOK like SDK absence. None of them is evidence. */
+const ABSENCE_LOOKALIKES: Array<{ label: string; thrown: () => unknown }> = [
+  {
+    label: 'a plain Error whose name is BlobNotFoundError',
+    thrown: () => Object.assign(new Error('blob not found'), { name: 'BlobNotFoundError' }),
+  },
+  { label: 'a plain Error carrying the SDK not-found sentence', thrown: () => new Error(SDK_ERROR_TEXT.blobNotFound) },
+  { label: 'a plain Error saying 404 not found', thrown: () => new Error('404 not found') },
+  {
+    label: 'a foreign same-named class without SDK identity',
+    thrown: () => {
+      const ForeignBlobNotFoundError = class BlobNotFoundError extends Error {};
+      return new ForeignBlobNotFoundError('The requested blob does not exist');
+    },
+  },
+];
+
+test('E-1: put throwing the real BlobStoreNotFoundError is write_failed', async () => {
+  assert.equal(await writeFailureFor('E-1', () => new BlobStoreNotFoundError()), 'write_failed');
+});
+
+test('E-2: put throwing the real BlobNotFoundError is write_failed', async () => {
+  assert.equal(await writeFailureFor('E-2', () => new BlobNotFoundError()), 'write_failed');
+});
+
+test('E-3: a plain Error with existing-object prose is write_failed', async () => {
+  assert.equal(
+    await writeFailureFor(
+      'E-3',
+      () => new Error('This blob already exists, use allowOverwrite: true to overwrite it'),
+    ),
+    'write_failed',
+  );
+});
+
+test('E-4: a plain Error saying 409 or Conflict is write_failed', async () => {
+  assert.equal(await writeFailureFor('E-4', () => new Error('409 conflict')), 'write_failed');
+  assert.equal(await writeFailureFor('E-4', () => new Error('Conflict')), 'write_failed');
+});
+
+test('E-5 (branch N): a real BlobError with existing-object wording is write_failed', async () => {
+  // The dist carries no existing-object wording of its own, so the matrix's
+  // fallback sentence is used.
+  const error = new BlobError('This blob already exists');
+  assert.equal(Object.getPrototypeOf(error), BlobError.prototype);
+  assert.equal(await writeFailureFor('E-5', () => error), 'write_failed');
+});
+
+test('E-6: get throwing the real BlobStoreNotFoundError is read_failed, never not_found', async () => {
+  assert.equal(await readFailureFor('E-6', () => new BlobStoreNotFoundError()), 'read_failed');
+});
+
+test('E-7: get throwing the real BlobNotFoundError, or a subclass of it, is not_found', async () => {
+  class SdkSubclass extends BlobNotFoundError {}
+  assert.equal(await readFailureFor('E-7', () => new BlobNotFoundError()), 'not_found');
+  assert.equal(await readFailureFor('E-7', () => new SdkSubclass()), 'not_found');
+});
+
+test('E-8: a lookalike of SDK absence is never absence, on read or on delete', async () => {
+  for (const { label, thrown } of ABSENCE_LOOKALIKES) {
+    assert.equal(await readFailureFor('E-8', thrown), 'read_failed', `read: ${label}`);
+    assert.equal(await deleteOutcomeFor('E-8', thrown), 'delete_failed', `delete: ${label}`);
+  }
+});
+
+test('E-9: del throwing the real BlobStoreNotFoundError is delete_failed, never ok', async () => {
+  assert.equal(await deleteOutcomeFor('E-9', () => new BlobStoreNotFoundError()), 'delete_failed');
+});
+
+test('E-10: del throwing the real BlobNotFoundError is an idempotent ok', async () => {
+  assert.equal(await deleteOutcomeFor('E-10', () => new BlobNotFoundError()), 'ok');
+});
+
+// ── A3-2.1: byte-exact readback (E-11…E-14, BX-1…BX-9) ─────────────────────
+
+const CANONICAL = JSON.stringify(syntheticEnvelope());
+
+function envelopeWith(request: Partial<ConfirmationEmailRequestV1>): ConfirmationEmailEnvelopeV1 {
+  const built = buildConfirmationEmailEnvelope({
+    orderId: VALID_ORDER_ID,
+    templateVersion: 'order-confirmation@synthetic',
+    createdAt: '2026-09-24T00:00:00.000Z',
+    idempotencyKey: `order-confirmation-${VALID_ORDER_ID}-primary-v1`,
+    providerBinding: { accountLabel: 'hsb-synthetic-test-v1' },
+    request: syntheticRequest(request),
+  });
+  assert.equal(built.ok, true);
+  return (built as { ok: true; envelope: ConfirmationEmailEnvelopeV1 }).envelope;
+}
+
+interface ByteStore {
+  readonly calls: Call[];
+  readonly io: ConfirmationEnvelopeStoreIo;
+}
+
+/**
+ * A read-only adapter over RAW stored bytes. `put` and `del` fail the test if
+ * reached; `get` serves `body` (null = absent) with an optional declared size,
+ * status code, stream or thrown error, and every `get` carries a canary URL
+ * that must never cross the boundary.
+ */
+function byteStore(
+  body: Uint8Array | null,
+  options: {
+    declaredSize?: number;
+    statusCode?: number;
+    stream?: ReadableStream<Uint8Array> | null;
+    getError?: () => unknown;
+  } = {},
+): ByteStore {
+  const calls: Call[] = [];
+  const forbid = (op: Call['op']) =>
+    (async (pathname: string, ...rest: unknown[]) => {
+      calls.push({ op, pathname, options: (rest.at(-1) ?? {}) as Record<string, unknown> });
+      throw new Error(`the SDK must not be reached: ${op}`);
+    }) as never;
+  const io: ConfirmationEnvelopeStoreIo = {
+    put: forbid('put'),
+    del: forbid('del'),
+    get: (async (pathname: string, opts: Record<string, unknown>) => {
+      calls.push({ op: 'get', pathname, options: opts });
+      if (options.getError) throw options.getError();
+      if (body === null) return null;
+      return {
+        statusCode: options.statusCode ?? 200,
+        stream: options.stream === undefined ? new Response(new Uint8Array(body)).body : options.stream,
+        headers: new Headers(),
+        blob: {
+          url: `https://example-store.invalid/${pathname}?${LEAK_CANARY}`,
+          downloadUrl: `https://example-store.invalid/${pathname}?download&${LEAK_CANARY}`,
+          pathname,
+          contentDisposition: 'inline',
+          cacheControl: 'no-store',
+          uploadedAt: new Date(0),
+          etag: 'synthetic-etag',
+          contentType: 'application/json',
+          size: options.declaredSize ?? body.byteLength,
+        },
+      };
+    }) as never,
+  };
+  return { calls, io };
+}
+
+/**
+ * Observe every decode and parse while `run` executes. Counts only decodes of
+ * buffers whose bytes equal `stored`, so an unrelated decode elsewhere in the
+ * process cannot trip it; records every JSON.parse input.
+ */
+async function withDecodeSpy<T>(
+  stored: Uint8Array,
+  run: () => Promise<T>,
+): Promise<{ result: T; storedDecodes: number; parsed: string[] }> {
+  const storedBuffer = Buffer.from(stored);
+  const sameBytes = (input: unknown) => {
+    try {
+      if (!ArrayBuffer.isView(input)) return false;
+      const view = Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+      return view.equals(storedBuffer);
+    } catch {
+      return false;
+    }
+  };
+  const originalDecode = TextDecoder.prototype.decode;
+  const originalToString = Buffer.prototype.toString;
+  const originalParse = JSON.parse;
+  let storedDecodes = 0;
+  const parsed: string[] = [];
+  TextDecoder.prototype.decode = function (this: TextDecoder, ...args: Parameters<TextDecoder['decode']>) {
+    if (sameBytes(args[0])) storedDecodes += 1;
+    return originalDecode.apply(this, args);
+  };
+  Buffer.prototype.toString = function (this: Buffer, ...args: unknown[]) {
+    if (sameBytes(this)) storedDecodes += 1;
+    return (originalToString as (...inner: unknown[]) => string).apply(this, args);
+  } as typeof Buffer.prototype.toString;
+  JSON.parse = function (text: string, reviver?: (key: string, value: unknown) => unknown) {
+    parsed.push(String(text));
+    return originalParse(text, reviver);
+  } as typeof JSON.parse;
+  try {
+    const result = await run();
+    return { result, storedDecodes, parsed };
+  } finally {
+    TextDecoder.prototype.decode = originalDecode;
+    Buffer.prototype.toString = originalToString;
+    JSON.parse = originalParse;
+  }
+}
+
+/**
+ * The readback of `stored` against `expectedSerialized` must be
+ * `object_mismatch` after exactly one private, uncached, dedicated-token get,
+ * and the stored bytes must never be decoded or parsed.
+ */
+async function assertObjectMismatch(
+  row: string,
+  label: string,
+  expectedSerialized: string,
+  stored: Uint8Array,
+): Promise<void> {
+  const bytes = byteStore(stored);
+  const store = openStore(baseEnv(), bytes.io);
+  const { result, storedDecodes, parsed } = await withDecodeSpy(stored, () =>
+    store.verifyStoredBytes(VALID_ORDER_ID, expectedSerialized),
+  );
+  seal(row, result);
+  assert.equal(refusalOf(result), 'object_mismatch', `${row}: ${label}`);
+  assert.deepEqual(
+    bytes.calls,
+    [{ op: 'get', pathname: EXPECTED_PATH, options: { access: 'private', useCache: false, token: ENVELOPE_TOKEN } }],
+    `${row}: ${label}: exactly one private uncached get`,
+  );
+  assert.equal(storedDecodes, 0, `${row}: ${label}: mismatching stored bytes were decoded`);
+  assert.deepEqual(
+    parsed.filter((text) => text !== expectedSerialized),
+    [],
+    `${row}: ${label}: something other than the expected document was parsed`,
+  );
+}
+
+/** Replace the first occurrence of `needle` in `haystack` with `replacement`. */
+function spliceBytes(haystack: Buffer, needle: Buffer, replacement: Buffer): Buffer {
+  const at = haystack.indexOf(needle);
+  assert.ok(at >= 0, 'fixture: the byte run to replace must be present');
+  return Buffer.concat([haystack.subarray(0, at), replacement, haystack.subarray(at + needle.byteLength)]);
+}
+
+/**
+ * Malformed UTF-8 sequences that a replacing decoder turns into exactly `k`
+ * U+FFFD characters (WHATWG maximal-subpart replacement), each followed in the
+ * fixture by an ASCII byte.
+ */
+const FFFD_COLLISIONS: Array<{ label: string; k: number; bytes: Buffer }> = [
+  { label: 'FF', k: 1, bytes: Buffer.from([0xff]) },
+  { label: 'C0 AF overlong', k: 2, bytes: Buffer.from([0xc0, 0xaf]) },
+  { label: 'ED A0 80 encoded surrogate', k: 3, bytes: Buffer.from([0xed, 0xa0, 0x80]) },
+  { label: 'F4 90 80 80 above U+10FFFF', k: 4, bytes: Buffer.from([0xf4, 0x90, 0x80, 0x80]) },
+  { label: 'E2 82 truncated before an ASCII byte', k: 1, bytes: Buffer.from([0xe2, 0x82]) },
+];
+
+/** A valid envelope whose subject carries k×U+FFFD, and a malformed twin of its bytes. */
+function fffdCollision(k: number, malformed: Buffer): { serialized: string; stored: Buffer } {
+  const serialized = JSON.stringify(envelopeWith({ subject: `Hero ${'�'.repeat(k)} story` }));
+  const stored = spliceBytes(
+    Buffer.from(serialized, 'utf8'),
+    Buffer.from('�'.repeat(k), 'utf8'),
+    malformed,
+  );
+  return { serialized, stored };
+}
+
+const REFUSALS_A321 = new Set([
+  'store_unconfigured',
+  'store_not_dedicated',
+  'namespace_invalid',
+  'path_invalid',
+  'store_not_private',
+  'object_exists',
+  'not_found',
+  'read_failed',
+  'write_failed',
+  'delete_failed',
+  'invalid_object',
+  'too_large',
+  'digest_mismatch',
+  'object_mismatch',
+]);
+
+/**
+ * A result is sealed when it carries exactly its discriminant and one closed
+ * member (or the two-field ref), and nothing else: no stored byte, decoded
+ * text, U+FFFD, SDK message, URL, token or canary.
+ */
+function assertSealed(row: string, result: unknown): void {
+  const value = result as Record<string, unknown>;
+  if (value.ok === true) {
+    assert.deepEqual(Object.keys(value).sort(), ['ok', 'value'], `${row}: ok shape`);
+    const inner = value.value;
+    if (inner !== null) {
+      assert.deepEqual(Object.keys(inner as object).sort(), ['objectPath', 'storedBytes'], `${row}: ref shape`);
+      assert.equal((inner as { objectPath: unknown }).objectPath, EXPECTED_PATH, `${row}: ref path`);
+      assert.equal(typeof (inner as { storedBytes: unknown }).storedBytes, 'number', `${row}: ref size`);
+    }
+  } else {
+    assert.deepEqual(Object.keys(value).sort(), ['ok', 'refusal'], `${row}: refusal shape`);
+    assert.ok(REFUSALS_A321.has(value.refusal as string), `${row}: ${String(value.refusal)} is not closed`);
+  }
+  assertNoLeak(result);
+  const surface = surfaceOf(result);
+  for (const forbidden of ['Vercel Blob', '�', 'Buffer', 'buyer@example.invalid', 'Synthetic order confirmation', 'Hero ']) {
+    assert.ok(!surface.includes(forbidden), `${row}: surface leaked ${JSON.stringify(forbidden)}: ${surface}`);
+  }
+}
+
+test('E-11: stored bytes identical to the expected bytes verify ok after exactly one private get', async () => {
+  for (const serialized of [CANONICAL, JSON.stringify(envelopeWith({ subject: 'Héro ✓ \u{1F600} story' }))]) {
+    const bytes = byteStore(Buffer.from(serialized, 'utf8'));
+    const store = openStore(baseEnv(), bytes.io);
+    const result = await store.verifyStoredBytes(VALID_ORDER_ID, serialized);
+    seal('E-11', result);
+    assert.equal(result.ok, true);
+    assert.deepEqual((result as { ok: true; value: unknown }).value, {
+      objectPath: EXPECTED_PATH,
+      storedBytes: Buffer.byteLength(serialized, 'utf8'),
+    });
+    assert.deepEqual(bytes.calls, [
+      { op: 'get', pathname: EXPECTED_PATH, options: { access: 'private', useCache: false, token: ENVELOPE_TOKEN } },
+    ]);
+  }
+});
+
+test('E-11 (absence): the readback classifies absence by SDK identity only', async () => {
+  const cases: Array<[string, ByteStore, string]> = [
+    ['get returns null', byteStore(null), 'not_found'],
+    ['status 404', byteStore(Buffer.from(CANONICAL), { statusCode: 404 }), 'not_found'],
+    ['real BlobNotFoundError', byteStore(null, { getError: () => new BlobNotFoundError() }), 'not_found'],
+    ['real BlobStoreNotFoundError', byteStore(null, { getError: () => new BlobStoreNotFoundError() }), 'read_failed'],
+    ...ABSENCE_LOOKALIKES.map(({ label, thrown }): [string, ByteStore, string] => [
+      label,
+      byteStore(null, { getError: thrown }),
+      'read_failed',
+    ]),
+    ['status 500', byteStore(Buffer.from(CANONICAL), { statusCode: 500 }), 'read_failed'],
+    ['no stream', byteStore(Buffer.from(CANONICAL), { stream: null }), 'read_failed'],
+  ];
+  for (const [label, bytes, refusal] of cases) {
+    const result = await openStore(baseEnv(), bytes.io).verifyStoredBytes(VALID_ORDER_ID, CANONICAL);
+    seal('E-11', result);
+    assert.equal(refusalOf(result), refusal, label);
+    assert.equal(bytes.calls.length, 1, `${label}: exactly one get`);
+  }
+});
+
+test('E-12: valid, self-consistent objects that differ from the expected bytes are object_mismatch', async () => {
+  const envelope = syntheticEnvelope();
+  const { envelopeVersion, ...rest } = envelope;
+  const variants: Record<string, string> = {
+    'key order': JSON.stringify({ ...rest, envelopeVersion }),
+    whitespace: JSON.stringify(envelope, null, 2),
+    createdAt: JSON.stringify({ ...envelope, createdAt: '2026-09-25T00:00:00.000Z' }),
+    'extra unknown key': JSON.stringify({ ...envelope, note: LEAK_CANARY }),
+    templateVersion: JSON.stringify({ ...envelope, templateVersion: 'order-confirmation@synthetic-2' }),
+    'escape form': CANONICAL.replace('"Synthetic order confirmation"', '"\\u0053ynthetic order confirmation"'),
+  };
+  for (const [label, body] of Object.entries(variants)) {
+    assert.notEqual(body, CANONICAL, `fixture: ${label} must differ`);
+    // Precondition: each variant is itself a valid, digest-consistent object.
+    const rec = recorder({ seed: { [EXPECTED_PATH]: body } });
+    assert.equal((await openStore(baseEnv(), rec.io).read(VALID_ORDER_ID)).ok, true, `fixture: ${label} reads ok`);
+    await assertObjectMismatch('E-12', label, CANONICAL, Buffer.from(body, 'utf8'));
+  }
+});
+
+test('E-13: oversized stored objects are too_large; non-JSON, tombstone and digest-inconsistent are object_mismatch', async () => {
+  const envelope = syntheticEnvelope();
+
+  const declared = byteStore(Buffer.from(CANONICAL), { declaredSize: CONFIRMATION_ENVELOPE_OBJECT_MAX_BYTES + 1 });
+  const byDeclared = await openStore(baseEnv(), declared.io).verifyStoredBytes(VALID_ORDER_ID, CANONICAL);
+  seal('E-13', byDeclared);
+  assert.equal(refusalOf(byDeclared), 'too_large', 'declared oversize');
+
+  const oversized = Buffer.alloc(CONFIRMATION_ENVELOPE_OBJECT_MAX_BYTES + 1, 0x78);
+  const streamed = byteStore(oversized, { declaredSize: 10 });
+  const { result: byStream, storedDecodes } = await withDecodeSpy(oversized, () =>
+    openStore(baseEnv(), streamed.io).verifyStoredBytes(VALID_ORDER_ID, CANONICAL),
+  );
+  seal('E-13', byStream);
+  assert.equal(refusalOf(byStream), 'too_large', 'streamed oversize');
+  assert.equal(storedDecodes, 0);
+
+  const others: Record<string, string> = {
+    'non-JSON': `this is not json ${LEAK_CANARY}`,
+    tombstone: JSON.stringify({ ...envelope, request: null, purgedAt: '2026-09-24T00:00:00.000Z' }),
+    'digest-inconsistent': JSON.stringify({
+      ...envelope,
+      request: { ...envelope.request, subject: `Tampered ${LEAK_CANARY}` },
+    }),
+  };
+  for (const [label, body] of Object.entries(others)) {
+    await assertObjectMismatch('E-13', label, CANONICAL, Buffer.from(body, 'utf8'));
+  }
+});
+
+test('BX-1: a malformed sequence that decodes to the expected U+FFFD run is object_mismatch', async () => {
+  for (const { label, k, bytes } of FFFD_COLLISIONS) {
+    const { serialized, stored } = fffdCollision(k, bytes);
+    // The collision precondition: a replacing decoder cannot tell them apart.
+    assert.equal(stored.toString('utf8'), serialized, `fixture: ${label} must collide`);
+    assert.equal(Buffer.from(serialized, 'utf8').equals(stored), false, `fixture: ${label} bytes differ`);
+    await assertObjectMismatch('BX-1', label, serialized, stored);
+  }
+});
+
+test('BX-2: a BOM-prefixed copy of the expected bytes is object_mismatch', async () => {
+  const stored = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(CANONICAL, 'utf8')]);
+  await assertObjectMismatch('BX-2', 'BOM', CANONICAL, stored);
+});
+
+test('BX-3: an expected string that is not well-formed is invalid_object with zero SDK calls', async () => {
+  // UTF-8 encoding is not injective on ill-formed strings: every lone
+  // surrogate encodes to EF BF BD.
+  assert.equal(Buffer.from('a\uD800', 'utf8').equals(Buffer.from('a\uDC00', 'utf8')), true);
+  for (const lone of ['\uD800', '\uDC00']) {
+    const escaped = JSON.stringify(envelopeWith({ subject: `Synthetic ${lone} confirmation` }));
+    const expected = escaped.replace(`\\u${lone.charCodeAt(0).toString(16)}`, lone);
+    assert.notEqual(expected, escaped, 'fixture: the escape must have been replaced');
+    assert.equal(expected.isWellFormed(), false, 'fixture: the expected string must be ill-formed');
+    const calls: Call[] = [];
+    const result = await openStore(baseEnv(), forbiddenIo(calls)).verifyStoredBytes(VALID_ORDER_ID, expected);
+    seal('BX-3', result);
+    assert.equal(refusalOf(result), 'invalid_object');
+    assert.deepEqual(calls, [], 'an ill-formed expected string must refuse before the SDK');
+  }
+});
+
+test('BX-4: a non-canonical expected string is invalid_object with zero SDK calls', async () => {
+  const envelope = syntheticEnvelope();
+  const { envelopeVersion, ...rest } = envelope;
+  const variants: Record<string, string> = {
+    whitespace: JSON.stringify(envelope, null, 2),
+    'trailing newline': `${CANONICAL}\n`,
+    'reordered keys': JSON.stringify({ ...rest, envelopeVersion }),
+    'extra key': JSON.stringify({ ...envelope, note: 'synthetic' }),
+    'escape variant': CANONICAL.replace('"Synthetic order confirmation"', '"\\u0053ynthetic order confirmation"'),
+  };
+  for (const [label, expected] of Object.entries(variants)) {
+    const calls: Call[] = [];
+    const result = await openStore(baseEnv(), forbiddenIo(calls)).verifyStoredBytes(VALID_ORDER_ID, expected);
+    seal('BX-4', result);
+    assert.equal(refusalOf(result), 'invalid_object', label);
+    assert.deepEqual(calls, [], `${label} must refuse before the SDK`);
+  }
+});
+
+test('BX-4 (pre-I/O): the other expected-side pre-checks refuse before the SDK', async () => {
+  const envelope = syntheticEnvelope();
+  const cases: Array<[string, string, unknown, string]> = [
+    ['invalid order id', '../etc', CANONICAL, 'path_invalid'],
+    ['non-string expected', VALID_ORDER_ID, 42, 'invalid_object'],
+    ['oversized expected', VALID_ORDER_ID, 'x'.repeat(CONFIRMATION_ENVELOPE_OBJECT_MAX_BYTES + 1), 'too_large'],
+    ['unparseable expected', VALID_ORDER_ID, 'not json', 'invalid_object'],
+    ['expected bound to another order', OTHER_ORDER_ID, CANONICAL, 'invalid_object'],
+    ['expected tombstone', VALID_ORDER_ID, JSON.stringify({ ...envelope, request: null, purgedAt: '2026-09-24T00:00:00.000Z' }), 'invalid_object'],
+    [
+      'expected digest-inconsistent',
+      VALID_ORDER_ID,
+      JSON.stringify({ ...envelope, request: { ...envelope.request, subject: 'Tampered subject' } }),
+      'digest_mismatch',
+    ],
+  ];
+  for (const [label, orderId, expected, refusal] of cases) {
+    const calls: Call[] = [];
+    const result = await openStore(baseEnv(), forbiddenIo(calls)).verifyStoredBytes(orderId, expected as string);
+    seal('BX-4', result);
+    assert.equal(refusalOf(result), refusal, label);
+    assert.deepEqual(calls, [], `${label} must refuse before the SDK`);
+  }
+});
+
+test('BX-5: one byte more, one byte fewer, or one byte flipped is object_mismatch', async () => {
+  const expected = Buffer.from(CANONICAL, 'utf8');
+  const flipped = Buffer.from(expected);
+  const at = flipped.indexOf(Buffer.from('Synthetic order confirmation'));
+  flipped[at] = flipped[at]! ^ 0x01;
+  const variants: Record<string, Buffer> = {
+    'one trailing byte': Buffer.concat([expected, Buffer.from([0x0a])]),
+    'last byte removed': expected.subarray(0, expected.byteLength - 1),
+    'one byte flipped': flipped,
+  };
+  for (const [label, stored] of Object.entries(variants)) {
+    await assertObjectMismatch('BX-5', label, CANONICAL, stored);
+  }
+});
+
+test('BX-6: read() refuses malformed UTF-8 even when its repaired text is a valid envelope', async () => {
+  for (const { label, k, bytes } of FFFD_COLLISIONS) {
+    const { serialized, stored } = fffdCollision(k, bytes);
+    assert.equal(stored.toString('utf8'), serialized, `fixture: ${label} must collide`);
+    // Precondition: the repaired text is a self-consistent, valid envelope.
+    const repaired = recorder({ seed: { [EXPECTED_PATH]: serialized } });
+    assert.equal((await openStore(baseEnv(), repaired.io).read(VALID_ORDER_ID)).ok, true, `fixture: ${label}`);
+
+    const bytesIo = byteStore(stored);
+    const result = await openStore(baseEnv(), bytesIo.io).read(VALID_ORDER_ID);
+    seal('BX-6', result);
+    assert.equal(refusalOf(result), 'invalid_object', label);
+    assert.equal(bytesIo.calls.length, 1);
+  }
+});
+
+test('BX-7: read() refuses a BOM-prefixed valid object', async () => {
+  const stored = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(CANONICAL, 'utf8')]);
+  const bytesIo = byteStore(stored);
+  const result = await openStore(baseEnv(), bytesIo.io).read(VALID_ORDER_ID);
+  seal('BX-7', result);
+  assert.equal(refusalOf(result), 'invalid_object');
+});
+
+test('BX-9: a stream that passes the ceiling after a small declared size is too_large, and is cancelled', async () => {
+  const chunkBytes = Math.ceil((CONFIRMATION_ENVELOPE_OBJECT_MAX_BYTES + 1) / 2);
+  const chunks = [0, 1, 2, 3].map(() => new Uint8Array(chunkBytes).fill(0x78));
+  const state = { pulled: 0, cancelled: false };
+  let next = 0;
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        if (next < chunks.length) {
+          state.pulled += 1;
+          controller.enqueue(chunks[next++]!);
+        } else {
+          controller.close();
+        }
+      },
+      cancel() {
+        state.cancelled = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const bytesIo = byteStore(Buffer.from(CANONICAL), { declaredSize: 10, stream });
+  const result = await openStore(baseEnv(), bytesIo.io).verifyStoredBytes(VALID_ORDER_ID, CANONICAL);
+  seal('BX-9', result);
+  assert.equal(refusalOf(result), 'too_large');
+  assert.equal(state.cancelled, true, 'the reader must be cancelled');
+  assert.equal(state.pulled, 2, 'reading must stop at the first chunk past the ceiling');
+});
+
+const E_ROWS = ['E-1', 'E-2', 'E-3', 'E-4', 'E-5', 'E-6', 'E-7', 'E-8', 'E-9', 'E-10', 'E-11', 'E-12', 'E-13'];
+const BX_ROWS = ['BX-1', 'BX-2', 'BX-3', 'BX-4', 'BX-5', 'BX-6', 'BX-7', 'BX-9'];
+
+test('E-14: every E result is sealed: no canary, token, url, SDK text, stored bytes or U+FFFD', () => {
+  const rows = new Set(SEALED.map((entry) => entry.row));
+  assert.deepEqual(E_ROWS.filter((row) => !rows.has(row)), [], 'every E row must have produced results');
+  for (const { row, result } of SEALED) if (row.startsWith('E-')) assertSealed(row, result);
+});
+
+test('BX-8: every BX result is sealed: no stored bytes, U+FFFD, canary or SDK text', () => {
+  const rows = new Set(SEALED.map((entry) => entry.row));
+  assert.deepEqual(BX_ROWS.filter((row) => !rows.has(row)), [], 'every BX row must have produced results');
+  for (const { row, result } of SEALED) if (row.startsWith('BX-')) assertSealed(row, result);
+});
+
 // ── Source guards: the lane is inert in the application ─────────────────────
 
 const NEW_PATHS = new Set([
@@ -736,11 +1328,15 @@ function importsModuleMatching(text: string, pattern: string): boolean {
   ).test(text);
 }
 
-test('no application runtime file imports the envelope store or its config', () => {
+/** A3-4 R2 AM-S4: the snapshot producer is the one application importer. */
+const A3_4_STORE_IMPORTERS = new Set(['src/lib/confirmation-envelope-producer.ts']);
+
+test('no application runtime file other than the A3-4 snapshot producer imports the envelope store or its config', () => {
   const offenders: string[] = [];
   for (const file of [...sourceFiles('src'), ...sourceFiles('scripts')]) {
     const rel = path.relative(REPO, file);
     if (NEW_PATHS.has(rel)) continue;
+    if (A3_4_STORE_IMPORTERS.has(rel)) continue;
     if (importsModuleMatching(readFileSync(file, 'utf8'), 'confirmation-envelope-(store|config)')) {
       offenders.push(rel);
     }
@@ -748,8 +1344,21 @@ test('no application runtime file imports the envelope store or its config', () 
   assert.deepEqual(
     offenders,
     [],
-    'A3-2 adds no application caller: the producer is A3-4 and the dispatcher is A3-5',
+    'A3-4 R2 adds exactly one application caller, the snapshot producer; the dispatcher is A3-5',
   );
+  // The producer is reached only through its own entry points: delivery,
+  // kickoff and sweep import neither the store nor its config.
+  for (const rel of [
+    'src/lib/confirmation-email-delivery.ts',
+    'src/lib/order-confirmation-kickoff.ts',
+    'src/lib/confirmation-email-sweep.ts',
+  ]) {
+    assert.equal(
+      importsModuleMatching(readFileSync(path.join(REPO, rel), 'utf8'), 'confirmation-envelope-(store|config)'),
+      false,
+      `${rel} must not import the envelope store or its config`,
+    );
+  }
 });
 
 test('the import guard would actually catch a caller', () => {

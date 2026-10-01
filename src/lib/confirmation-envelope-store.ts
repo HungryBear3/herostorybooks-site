@@ -5,13 +5,16 @@
  * `ConfirmationEmailEnvelopeV1`, in a Blob store that is not the public order
  * store and not any other HSB lane's store.
  *
- * Inert by construction
- * ---------------------
- * Nothing in the order, checkout, webhook, confirmation, sweep, admin or
- * customer paths imports this module. A3-2 adds no producer, no dispatcher,
- * no route, no cron and no caller; the snapshot producer is A3-4 and the
- * frozen dispatch is A3-5. Until then this module writes nothing, because
- * nothing calls it.
+ * Interlocked, not called by default
+ * ----------------------------------
+ * The one application importer is the A3-4 snapshot producer
+ * (`confirmation-envelope-producer.ts`). It constructs this store only when the
+ * writer flag is exactly `true`, the process is not a Vercel deployment, and
+ * its caller has injected all three SDK adapters; no production or development
+ * caller injects them, and the build gate refuses the flag on Production. The
+ * order, checkout, webhook, delivery, sweep, admin and customer paths do not
+ * import this module, and the frozen dispatch is A3-5. Direct callers that pass
+ * no adapters still get the real SDK below.
  *
  * Positive private-store evidence
  * -------------------------------
@@ -54,6 +57,7 @@
  */
 
 import { del, get, put } from '@vercel/blob';
+import { BlobNotFoundError, BlobStoreNotFoundError } from '@vercel/blob';
 
 import {
   CONFIRMATION_ENVELOPE_OBJECT_MAX_BYTES,
@@ -120,6 +124,21 @@ export interface ConfirmationEnvelopeStore {
 
   /** Remove one envelope object. Absent is success; the store is idempotent. */
   delete(orderId: string): Promise<ConfirmationEnvelopeStoreResult<null>>;
+
+  /**
+   * Prove that the stored object is EXACTLY `Buffer.from(expectedSerialized,
+   * 'utf8')`, byte for byte, after one authenticated read.
+   *
+   * `expectedSerialized` must itself be a well-formed, canonical, digest-valid
+   * envelope for `orderId`; anything else is refused before any I/O. Stored
+   * bytes that do not match are `object_mismatch` and are never decoded,
+   * parsed, validated, logged or returned. Success carries only the computed
+   * path and the byte count.
+   */
+  verifyStoredBytes(
+    orderId: string,
+    expectedSerialized: string,
+  ): Promise<ConfirmationEnvelopeStoreResult<ConfirmationEnvelopeObjectRef>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,13 +170,32 @@ function isPrivateAccessRejected(text: string): boolean {
   return /private access on a public store/i.test(text);
 }
 
-/** `allowOverwrite: false` meeting an object that is already there. */
-function isAlreadyExists(text: string): boolean {
-  return /already exists|blob.*exist|\b409\b|conflict/i.test(text);
-}
+/*
+ * There is deliberately no existing-object classifier. `@vercel/blob@2.3.3`
+ * exports no class for an `allowOverwrite: false` conflict and emits no fixed
+ * sentence for it: the conflict can only arrive as server-supplied
+ * `bad_request` prose inside a generic `BlobError`, or as `BlobUnknownError`,
+ * neither of which is evidence of an existing object. So `object_exists` is
+ * never produced, and every write failure other than `store_not_private` is
+ * `write_failed`. Nothing depends on the distinction: a caller that must know
+ * what is stored proves it with `verifyStoredBytes`.
+ */
 
-function isNotFound(text: string): boolean {
-  return /BlobNotFound|not ?found|\b404\b/i.test(text);
+/**
+ * Proven absence, by SDK identity only.
+ *
+ * `BlobNotFoundError` is the SDK's "no such object" class. `BlobStoreNotFoundError`
+ * — the whole STORE is gone — is excluded explicitly, whatever its prototype
+ * chain, because a vanished store proves nothing about any object in it. A
+ * message, a `.name` (the SDK never assigns one) or a same-named foreign class
+ * is not evidence. Any throw while inspecting the value is not evidence either.
+ */
+function isProvenAbsence(error: unknown): boolean {
+  try {
+    return error instanceof BlobNotFoundError && !(error instanceof BlobStoreNotFoundError);
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -165,17 +203,17 @@ function isNotFound(text: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Buffer a stream under a hard ceiling.
+ * Buffer a stream's RAW bytes under a hard ceiling. Never decodes.
  *
  * Returns null once the ceiling is passed, WITHOUT retaining the overflowing
  * bytes: an unbounded read of an attacker- or corruption-controlled object is
  * a memory fault, and a bounded read that still kept the bytes to report their
  * size would be the same fault with extra steps.
  */
-async function readTextUnderLimit(
+async function readBytesUnderLimit(
   stream: ReadableStream<Uint8Array>,
   maxBytes: number,
-): Promise<string | null> {
+): Promise<Buffer | null> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -201,7 +239,21 @@ async function readTextUnderLimit(
     }
   }
   if (overflowed) return null;
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8');
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+}
+
+/**
+ * Strict UTF-8: a malformed sequence is an error, never U+FFFD, and a leading
+ * BOM is kept as U+FEFF so `JSON.parse` refuses it. A replacing decoder would
+ * turn distinct stored bytes into the same text and accept a repaired document
+ * as though it were the one that was written.
+ */
+function decodeStrictUtf8(bytes: Uint8Array): string | null {
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -272,6 +324,32 @@ function validateEnvelope(
   };
 }
 
+/**
+ * Why `serialized` is not the one canonical document for `orderId`, or null
+ * when it is: it parses, validates for `orderId`, hashes to its own digest,
+ * and re-serializes in the builder's key order to the very same string. So
+ * whitespace, reordered or extra keys and alternative escape forms are all
+ * refused.
+ */
+function canonicalEnvelopeRefusal(
+  serialized: string,
+  orderId: string,
+): ConfirmationEnvelopeStorageRefusal | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch {
+    return 'invalid_object';
+  }
+  const envelope = validateEnvelope(parsed, orderId);
+  if (!envelope) return 'invalid_object';
+  if (digestConfirmationRequest(envelope.request!) !== envelope.canonicalDigest) {
+    return 'digest_mismatch';
+  }
+  if (JSON.stringify(envelope) !== serialized) return 'invalid_object';
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // The store
 // ---------------------------------------------------------------------------
@@ -339,7 +417,6 @@ export function createConfirmationEnvelopeStore(
           // publicly is how customer content reaches an anonymous URL.
           return { ok: false, refusal: 'store_not_private' };
         }
-        if (isAlreadyExists(text)) return { ok: false, refusal: 'object_exists' };
         return { ok: false, refusal: 'write_failed' };
       }
 
@@ -356,7 +433,7 @@ export function createConfirmationEnvelopeStore(
       try {
         result = await getImpl(objectPath, { ...CONFIRMATION_ENVELOPE_READ_OPTIONS, token });
       } catch (error) {
-        return { ok: false, refusal: isNotFound(errorText(error)) ? 'not_found' : 'read_failed' };
+        return { ok: false, refusal: isProvenAbsence(error) ? 'not_found' : 'read_failed' };
       }
 
       if (!result) return { ok: false, refusal: 'not_found' };
@@ -372,13 +449,17 @@ export function createConfirmationEnvelopeStore(
         return { ok: false, refusal: 'too_large' };
       }
 
-      let text: string | null;
+      let bytes: Buffer | null;
       try {
-        text = await readTextUnderLimit(result.stream, CONFIRMATION_ENVELOPE_OBJECT_MAX_BYTES);
+        bytes = await readBytesUnderLimit(result.stream, CONFIRMATION_ENVELOPE_OBJECT_MAX_BYTES);
       } catch {
         return { ok: false, refusal: 'read_failed' };
       }
-      if (text === null) return { ok: false, refusal: 'too_large' };
+      if (bytes === null) return { ok: false, refusal: 'too_large' };
+
+      // Malformed UTF-8 is refused, never repaired into U+FFFD and accepted.
+      const text = decodeStrictUtf8(bytes);
+      if (text === null) return { ok: false, refusal: 'invalid_object' };
 
       let parsed: unknown;
       try {
@@ -409,10 +490,69 @@ export function createConfirmationEnvelopeStore(
       } catch (error) {
         // Absent is success. A delete that must be retried after a partial
         // failure cannot be blocked by the first attempt having worked.
-        if (isNotFound(errorText(error))) return { ok: true, value: null };
+        if (isProvenAbsence(error)) return { ok: true, value: null };
         return { ok: false, refusal: 'delete_failed' };
       }
       return { ok: true, value: null };
+    },
+
+    async verifyStoredBytes(orderId, expectedSerialized) {
+      // Pre-I/O: every refusal here costs zero SDK calls.
+      const objectPath = confirmationEnvelopeObjectPath(orderId, namespace);
+      if (!objectPath) return { ok: false, refusal: 'path_invalid' };
+
+      // UTF-8 encoding maps every lone surrogate to EF BF BD, so distinct
+      // ill-formed strings encode to identical bytes. Only a well-formed
+      // string has exactly one byte image to compare against.
+      if (typeof expectedSerialized !== 'string' || !expectedSerialized.isWellFormed()) {
+        return { ok: false, refusal: 'invalid_object' };
+      }
+      const expected = Buffer.from(expectedSerialized, 'utf8');
+      if (expected.byteLength > CONFIRMATION_ENVELOPE_OBJECT_MAX_BYTES) {
+        return { ok: false, refusal: 'too_large' };
+      }
+      const expectedRefusal = canonicalEnvelopeRefusal(expectedSerialized, orderId);
+      if (expectedRefusal) return { ok: false, refusal: expectedRefusal };
+
+      let result: Awaited<ReturnType<typeof get>> | null;
+      try {
+        result = await getImpl(objectPath, { ...CONFIRMATION_ENVELOPE_READ_OPTIONS, token });
+      } catch (error) {
+        return { ok: false, refusal: isProvenAbsence(error) ? 'not_found' : 'read_failed' };
+      }
+
+      if (!result) return { ok: false, refusal: 'not_found' };
+      const statusCode: number = result.statusCode;
+      if (statusCode === 404) return { ok: false, refusal: 'not_found' };
+      if (statusCode !== 200 || !result.stream) return { ok: false, refusal: 'read_failed' };
+
+      const declaredSize = result.blob?.size;
+      if (typeof declaredSize === 'number' && declaredSize > CONFIRMATION_ENVELOPE_OBJECT_MAX_BYTES) {
+        return { ok: false, refusal: 'too_large' };
+      }
+
+      let stored: Buffer | null;
+      try {
+        stored = await readBytesUnderLimit(result.stream, CONFIRMATION_ENVELOPE_OBJECT_MAX_BYTES);
+      } catch {
+        return { ok: false, refusal: 'read_failed' };
+      }
+      if (stored === null) return { ok: false, refusal: 'too_large' };
+
+      // The comparison is on raw bytes. Stored bytes that differ are never
+      // decoded, parsed, validated, logged or returned.
+      if (stored.byteLength !== expected.byteLength || !stored.equals(expected)) {
+        return { ok: false, refusal: 'object_mismatch' };
+      }
+
+      // Defense in depth, unreachable given the pre-checks: the ok result is
+      // proven from the stored bytes themselves, not only from the expectation.
+      const storedText = decodeStrictUtf8(stored);
+      if (storedText === null || canonicalEnvelopeRefusal(storedText, orderId) !== null) {
+        return { ok: false, refusal: 'invalid_object' };
+      }
+
+      return { ok: true, value: { objectPath, storedBytes: expected.byteLength } };
     },
   };
 

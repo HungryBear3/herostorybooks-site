@@ -31,7 +31,9 @@ import {
   resolveConfirmationEnvelopeStoreCredential,
   type ConfirmationEnvelopeStorageRefusal,
 } from '../src/lib/confirmation-envelope-config.ts';
+import * as envelopeConfig from '../src/lib/confirmation-envelope-config.ts';
 import { CONFIRMATION_ENVELOPE_LIMITS } from '../src/lib/confirmation-email-envelope.ts';
+import { CONFIRMATION_EMAIL_LEGACY_T193_FLOOR_AT } from '../src/lib/confirmation-email-state.ts';
 
 const tokenFor = (storeId: string, secret: string) => `vercel_blob_rw_${storeId}_${secret}`;
 
@@ -330,40 +332,66 @@ test('a Production build with the writer off never requires a credential', () =>
   }
 });
 
+/**
+ * A3-4 R2 (§11.1). The build contract always refuses an armed Vercel
+ * Production build: the snapshot producer alone sends no confirmation email,
+ * and only the accepted frozen dispatcher (A3-5) may lift this interlock. The
+ * epoch and credential validation it used to perform now lives in
+ * `confirmationEnvelopeWriterConfigProblem`, tested directly here.
+ */
+const ACTIVATION_INTERLOCK_PROBLEM =
+  'HSB_CONFIRMATION_ENVELOPE_WRITER cannot be armed on a Vercel deployment until the frozen dispatcher '
+  + '(L-4 A3-5) is accepted: the snapshot producer alone sends no confirmation email';
+
+/** A canonical writer epoch at or after the floor. */
+const VALID_EPOCH = '2026-10-15T12:00:00.000Z';
+
 test('an armed Production build refuses a missing, colliding or unparseable credential', () => {
+  // A3-4 R2 AM-C3 (CA-2): the same assertions, redirected to the writer
+  // configuration problem with a valid epoch; the build contract refuses each
+  // of these environments with the activation interlock.
   const armed = (overrides: Record<string, string | undefined> = {}) =>
     baseEnv({
       VERCEL: '1',
       VERCEL_ENV: 'production',
       [CONFIRMATION_ENVELOPE_WRITER_ENV]: 'true',
+      HSB_CONFIRMATION_ENVELOPE_WRITER_EPOCH: VALID_EPOCH,
       ...overrides,
     });
+  const problemOf = (env: NodeJS.ProcessEnv) => envelopeConfig.confirmationEnvelopeWriterConfigProblem(env);
 
   const missing = armed();
   delete missing[CONFIRMATION_ENVELOPE_TOKEN_ENV];
-  const missingProblem = confirmationEnvelopeBuildContractProblem(missing);
+  const missingProblem = problemOf(missing);
   assert.match(String(missingProblem), /HSB_CONFIRMATION_ENVELOPE_BLOB_TOKEN is not set/);
 
   const colliding = armed({
     [CONFIRMATION_ENVELOPE_TOKEN_ENV]: tokenFor('OrderStore001', 'adifferentsecret'),
   });
-  assert.match(String(confirmationEnvelopeBuildContractProblem(colliding)), /Blob store of its own/);
+  assert.match(String(problemOf(colliding)), /Blob store of its own/);
 
   const malformed = armed({ [CONFIRMATION_ENVELOPE_TOKEN_ENV]: 'nope' });
-  assert.ok(confirmationEnvelopeBuildContractProblem(malformed));
+  assert.ok(problemOf(malformed));
 
   const badNamespace = armed({ HSB_BLOB_NAMESPACE: 'two/segments' });
-  assert.match(String(confirmationEnvelopeBuildContractProblem(badNamespace)), /HSB_BLOB_NAMESPACE/);
+  assert.match(String(problemOf(badNamespace)), /HSB_BLOB_NAMESPACE/);
+
+  for (const env of [missing, colliding, malformed, badNamespace]) {
+    assert.equal(confirmationEnvelopeBuildContractProblem(env), ACTIVATION_INTERLOCK_PROBLEM);
+  }
 });
 
-test('an armed Production build passes on a correct configuration', () => {
+test('an armed Production build is refused by the A3-4 activation interlock even on a correct configuration', () => {
+  // A3-4 R2 AM-C2 (CA-1).
+  const env = baseEnv({
+    VERCEL: '1',
+    VERCEL_ENV: 'production',
+    [CONFIRMATION_ENVELOPE_WRITER_ENV]: 'true',
+  });
+  assert.equal(confirmationEnvelopeBuildContractProblem(env), ACTIVATION_INTERLOCK_PROBLEM);
   assert.equal(
-    confirmationEnvelopeBuildContractProblem(
-      baseEnv({
-        VERCEL: '1',
-        VERCEL_ENV: 'production',
-        [CONFIRMATION_ENVELOPE_WRITER_ENV]: 'true',
-      }),
+    envelopeConfig.confirmationEnvelopeWriterConfigProblem(
+      asEnv({ ...env, HSB_CONFIRMATION_ENVELOPE_WRITER_EPOCH: VALID_EPOCH }),
     ),
     null,
   );
@@ -374,18 +402,27 @@ test('no build-gate output can contain a credential value', () => {
     VERCEL: '1',
     VERCEL_ENV: 'production',
     [CONFIRMATION_ENVELOPE_WRITER_ENV]: 'true',
+    HSB_CONFIRMATION_ENVELOPE_WRITER_EPOCH: VALID_EPOCH,
   });
   const cases = [
     { ...armed, [CONFIRMATION_ENVELOPE_TOKEN_ENV]: 'nope' },
     { ...armed, [CONFIRMATION_ENVELOPE_TOKEN_ENV]: tokenFor('OrderStore001', 'adifferentsecret') },
     { ...armed, HSB_BLOB_NAMESPACE: 'two/segments' },
   ];
+  // A3-4 R2 AM-C4 (CA-3): both the build contract and the writer
+  // configuration problem are held to the leak assertions.
+  const gates: Array<[string, (env: NodeJS.ProcessEnv) => string | null]> = [
+    ['build contract', confirmationEnvelopeBuildContractProblem],
+    ['writer configuration', (env) => envelopeConfig.confirmationEnvelopeWriterConfigProblem(env)],
+  ];
   for (const env of cases) {
-    const problem = String(confirmationEnvelopeBuildContractProblem(asEnv(env)));
-    assert.ok(problem.length > 0);
-    assert.doesNotMatch(problem, /vercel_blob_rw_/);
-    for (const secret of ['envelopesecret01', 'adifferentsecret', 'EnvStore0001', 'OrderStore001']) {
-      assert.ok(!problem.includes(secret), `problem string leaked ${secret}`);
+    for (const [label, gate] of gates) {
+      const problem = String(gate(asEnv(env)));
+      assert.ok(problem.length > 0, `${label} must name a problem`);
+      assert.doesNotMatch(problem, /vercel_blob_rw_/);
+      for (const secret of ['envelopesecret01', 'adifferentsecret', 'EnvStore0001', 'OrderStore001']) {
+        assert.ok(!problem.includes(secret), `${label} problem string leaked ${secret}`);
+      }
     }
   }
 });
@@ -409,6 +446,7 @@ test('every closed refusal maps to a printable problem, none of them silence', (
     'invalid_object',
     'too_large',
     'digest_mismatch',
+    'object_mismatch',
   ];
   for (const refusal of closed) {
     const problem = confirmationEnvelopeRefusalProblem(refusal);
@@ -432,4 +470,167 @@ test('the object ceiling is the canonical request ceiling plus a bounded header'
     CONFIRMATION_ENVELOPE_OBJECT_MAX_BYTES - CONFIRMATION_ENVELOPE_LIMITS.canonicalBytes,
     4_096,
   );
+});
+
+// ── A3-4 R2 AM-C5: the writer configuration (CF rows) ───────────────────────
+//
+// `resolveConfirmationEnvelopeWriterConfig` is pure: it reads only the
+// environment object it is given and returns the first failure in the order
+// flag_off, activation_interlock, epoch_missing, epoch_invalid,
+// epoch_before_floor, binding_invalid, namespace_invalid.
+
+const EPOCH_ENV = 'HSB_CONFIRMATION_ENVELOPE_WRITER_EPOCH';
+const FLOOR_AT = '2026-09-21T12:48:51.665Z';
+
+function writerEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+  return baseEnv({ [CONFIRMATION_ENVELOPE_WRITER_ENV]: 'true', [EPOCH_ENV]: VALID_EPOCH, ...overrides });
+}
+
+/** A proxy over a plain copy that records every key read (names only). */
+function recordingEnv(source: Record<string, string | undefined>) {
+  const reads: string[] = [];
+  const env = new Proxy({ ...source }, {
+    get(target, key, receiver) {
+      if (typeof key === 'string') reads.push(key);
+      return Reflect.get(target, key, receiver);
+    },
+    has(target, key) {
+      if (typeof key === 'string') reads.push(key);
+      return Reflect.has(target, key);
+    },
+  }) as unknown as NodeJS.ProcessEnv;
+  return { env, reads };
+}
+
+const resolveWriter = (env: NodeJS.ProcessEnv, bindings?: { accountLabel: string; templateVersion: string }) =>
+  envelopeConfig.resolveConfirmationEnvelopeWriterConfig(env, bindings);
+const reasonOf = (result: ReturnType<typeof resolveWriter>) => (result.armed === true ? 'armed' : result.reason);
+
+test('CF-1: anything but the exact literal true is flag_off, and nothing else is read', () => {
+  for (const flag of [undefined, '', 'false', 'TRUE', '1', 'yes']) {
+    const { env, reads } = recordingEnv({ [CONFIRMATION_ENVELOPE_WRITER_ENV]: flag, [EPOCH_ENV]: 'garbage' });
+    assert.equal(reasonOf(resolveWriter(env)), 'flag_off', `flag=${JSON.stringify(flag)}`);
+    assert.deepEqual([...new Set(reads)], [CONFIRMATION_ENVELOPE_WRITER_ENV], `flag=${JSON.stringify(flag)} read more than the flag`);
+  }
+});
+
+test('CF-2: an armed writer on any Vercel deployment is activation_interlock, ahead of every later fault', () => {
+  assert.equal(reasonOf(resolveWriter(writerEnv({ VERCEL: '1' }))), 'activation_interlock');
+  for (const vercelEnv of ['production', 'preview', 'development']) {
+    assert.equal(reasonOf(resolveWriter(writerEnv({ VERCEL: '1', VERCEL_ENV: vercelEnv }))), 'activation_interlock');
+  }
+  assert.equal(reasonOf(resolveWriter(writerEnv({ VERCEL: '1', [EPOCH_ENV]: undefined }))), 'activation_interlock');
+});
+
+test('CF-3: a missing epoch is epoch_missing, never a default', () => {
+  assert.equal(reasonOf(resolveWriter(writerEnv({ [EPOCH_ENV]: undefined }))), 'epoch_missing');
+  assert.equal(reasonOf(resolveWriter(writerEnv({ [EPOCH_ENV]: '' }))), 'epoch_missing');
+});
+
+test('CF-4: a noncanonical epoch is epoch_invalid, identically in every time zone', () => {
+  for (const epoch of [
+    '2026-10-15T12:00:00Z',
+    '2026-10-15T12:00:00.000+00:00',
+    '2026-10-15T12:00:00.000',
+    ' 2026-10-15T12:00:00.000Z',
+    '2026-10-15T12:00:00.000Z ',
+    '2026-09-31T00:00:00.000Z',
+    'not-an-instant',
+  ]) {
+    assert.equal(reasonOf(resolveWriter(writerEnv({ [EPOCH_ENV]: epoch }))), 'epoch_invalid', JSON.stringify(epoch));
+  }
+});
+
+test('CF-5 / CF-6: the epoch floor is inclusive', () => {
+  const before = new Date(Date.parse(FLOOR_AT) - 1).toISOString();
+  assert.equal(reasonOf(resolveWriter(writerEnv({ [EPOCH_ENV]: before }))), 'epoch_before_floor');
+  const atFloor = resolveWriter(writerEnv({ [EPOCH_ENV]: FLOOR_AT }));
+  assert.equal(reasonOf(atFloor), 'armed');
+  assert.equal(atFloor.armed === true && atFloor.epochMs, Date.parse(FLOOR_AT));
+  assert.equal(atFloor.armed === true && atFloor.epochAt, FLOOR_AT);
+});
+
+test('CF-7: the writer epoch floor restates the legacy T193 floor exactly', () => {
+  assert.equal(envelopeConfig.CONFIRMATION_ENVELOPE_WRITER_EPOCH_FLOOR_AT, CONFIRMATION_EMAIL_LEGACY_T193_FLOOR_AT);
+  assert.equal(envelopeConfig.CONFIRMATION_ENVELOPE_WRITER_EPOCH_FLOOR_AT, FLOOR_AT);
+  assert.equal(envelopeConfig.CONFIRMATION_ENVELOPE_WRITER_EPOCH_ENV, EPOCH_ENV);
+});
+
+test('CF-8: an unusable account label or template version is binding_invalid', () => {
+  const good = {
+    accountLabel: envelopeConfig.CONFIRMATION_ENVELOPE_ACCOUNT_LABEL,
+    templateVersion: envelopeConfig.CONFIRMATION_ENVELOPE_TEMPLATE_VERSION,
+  };
+  for (const bad of ['', 'x'.repeat(257), 'bad\n', 'UPPER']) {
+    assert.equal(reasonOf(resolveWriter(writerEnv(), { ...good, accountLabel: bad })), 'binding_invalid', JSON.stringify(bad));
+    assert.equal(reasonOf(resolveWriter(writerEnv(), { ...good, templateVersion: bad })), 'binding_invalid', JSON.stringify(bad));
+  }
+  assert.equal(reasonOf(resolveWriter(writerEnv(), good)), 'armed');
+});
+
+test('CF-10: both binding constants satisfy both grammars', () => {
+  for (const value of [envelopeConfig.CONFIRMATION_ENVELOPE_ACCOUNT_LABEL, envelopeConfig.CONFIRMATION_ENVELOPE_TEMPLATE_VERSION]) {
+    assert.match(value, /^[\x20-\x7E]{1,256}$/);
+    assert.match(value, /^[a-z0-9][a-z0-9.-]{0,63}$/);
+  }
+  assert.equal(envelopeConfig.CONFIRMATION_ENVELOPE_ACCOUNT_LABEL, 'hsb-resend-primary-v1');
+  assert.equal(envelopeConfig.CONFIRMATION_ENVELOPE_TEMPLATE_VERSION, 'hsb-order-confirmation-v1');
+});
+
+test('CF-namespace: an armed configuration carries the namespace of the environment it was given', () => {
+  const armed = resolveWriter(writerEnv({ HSB_BLOB_NAMESPACE: 'ns-a' }));
+  assert.equal(armed.armed === true && armed.namespace, 'ns-a');
+  const flat = resolveWriter(writerEnv());
+  assert.equal(flat.armed === true && flat.namespace, '');
+  assert.equal(reasonOf(resolveWriter(writerEnv({ HSB_BLOB_NAMESPACE: 'a/b' }))), 'namespace_invalid');
+  assert.equal(reasonOf(resolveWriter(writerEnv({ VERCEL_ENV: 'preview' }))), 'namespace_invalid');
+});
+
+test('CF-14: writer-configuration and build-contract problems name the fault and never a value', () => {
+  const problems = [
+    envelopeConfig.confirmationEnvelopeWriterConfigProblem(writerEnv({ [EPOCH_ENV]: undefined })),
+    envelopeConfig.confirmationEnvelopeWriterConfigProblem(writerEnv({ [EPOCH_ENV]: 'garbage' })),
+    envelopeConfig.confirmationEnvelopeWriterConfigProblem(writerEnv({ [EPOCH_ENV]: '2026-01-01T00:00:00.000Z' })),
+    envelopeConfig.confirmationEnvelopeWriterConfigProblem(writerEnv({ [CONFIRMATION_ENVELOPE_TOKEN_ENV]: 'nope' })),
+    envelopeConfig.confirmationEnvelopeWriterConfigProblem(
+      writerEnv({ [CONFIRMATION_ENVELOPE_TOKEN_ENV]: tokenFor('OrderStore001', 'adifferentsecret') }),
+    ),
+    confirmationEnvelopeBuildContractProblem(writerEnv({ VERCEL: '1', VERCEL_ENV: 'production' })),
+  ];
+  for (const problem of problems) {
+    assert.ok(typeof problem === 'string' && problem.length > 0);
+    assert.doesNotMatch(problem!, /vercel_blob_rw_/);
+    for (const secret of ['envelopesecret01', 'adifferentsecret', 'EnvStore0001', 'OrderStore001', 'garbage']) {
+      assert.ok(!problem!.includes(secret), `problem leaked ${secret}`);
+    }
+  }
+  assert.match(String(problems[0]), /HSB_CONFIRMATION_ENVELOPE_WRITER_EPOCH/);
+  assert.equal(envelopeConfig.confirmationEnvelopeWriterConfigProblem(baseEnv()), null, 'writer off: no problem');
+});
+
+test('CF-18: the writer namespace resolver is pure and agrees with getBlobNamespace', () => {
+  const cases: Array<[Record<string, string | undefined>, { ok: true; namespace: string } | { ok: false }]> = [
+    [{}, { ok: true, namespace: '' }],
+    [{ HSB_BLOB_NAMESPACE: 'ns-a' }, { ok: true, namespace: 'ns-a' }],
+    [{ VERCEL_ENV: 'development' }, { ok: true, namespace: 'development' }],
+    [{ HSB_BLOB_NAMESPACE: ' ns-a' }, { ok: false }],
+    [{ HSB_BLOB_NAMESPACE: 'a/b' }, { ok: false }],
+    [{ VERCEL_ENV: 'preview' }, { ok: false }],
+  ];
+  const ambient = process.env;
+  const ambientReads: string[] = [];
+  process.env = new Proxy({ ...ambient }, {
+    get(target, key, receiver) {
+      if (typeof key === 'string') ambientReads.push(key);
+      return Reflect.get(target, key, receiver);
+    },
+  }) as NodeJS.ProcessEnv;
+  try {
+    for (const [values, expected] of cases) {
+      assert.deepEqual(envelopeConfig.resolveConfirmationEnvelopeWriterNamespace(asEnv(values)), expected, JSON.stringify(values));
+    }
+  } finally {
+    process.env = ambient;
+  }
+  assert.deepEqual(ambientReads, [], 'the resolver must read only the environment it is given');
 });
