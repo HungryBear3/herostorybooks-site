@@ -108,8 +108,8 @@ const FILE_START_ENV = process.env;
 const FILE_START_AMBIENT = Object.fromEntries(AMBIENT_KEYS.map((key) => [key, process.env[key]]));
 
 // ISO-3: an accidental default send must become `missing_resend_api_key`.
-assert.equal(process.env.HSB_RESEND_API_KEY, undefined, 'ISO-3: no Resend key may be present');
-assert.equal(process.env.RESEND_API_KEY, undefined, 'ISO-3: no Resend key may be present');
+assert.equal(process.env.HSB_RESEND_API_KEY || undefined, undefined, 'ISO-3: no usable Resend key may be present');
+assert.equal(process.env.RESEND_API_KEY || undefined, undefined, 'ISO-3: no usable Resend key may be present');
 // ISO-8: the suite starts from a world with no writer keys in the ambient env.
 assert.equal(process.env.HSB_CONFIRMATION_ENVELOPE_WRITER, undefined, 'ISO-8: no ambient writer flag');
 

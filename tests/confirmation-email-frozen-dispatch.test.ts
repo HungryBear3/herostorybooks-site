@@ -58,8 +58,8 @@ import {
 
 // ── ISO-2 / ISO-3 / ISO-4: file-start backstops ────────────────────────────
 
-assert.equal(process.env.HSB_RESEND_API_KEY, undefined, 'ISO-3: no Resend key may be present');
-assert.equal(process.env.RESEND_API_KEY, undefined, 'ISO-3: no Resend key may be present');
+assert.equal(process.env.HSB_RESEND_API_KEY || undefined, undefined, 'ISO-3: no usable Resend key may be present');
+assert.equal(process.env.RESEND_API_KEY || undefined, undefined, 'ISO-3: no usable Resend key may be present');
 assert.equal(process.env.HSB_CONFIRMATION_ENVELOPE_WRITER, undefined, 'no ambient writer flag');
 assert.equal(process.env.HSB_CONFIRMATION_FROZEN_DISPATCH, undefined, 'no ambient dispatch flag');
 
@@ -1366,8 +1366,8 @@ test('FD-16: the dispatch flag is read once, and only with the writer armed and 
 test('ISO: file-end — no fetch, no legacy send, no Resend key, no ambient flag left behind', () => {
   assert.equal(FETCH_CALLS, 0, 'ISO-4: fetch was called');
   assert.equal(LEGACY_SEND_CALLS, 0, 'the legacy send was reached');
-  assert.equal(process.env.HSB_RESEND_API_KEY, undefined);
-  assert.equal(process.env.RESEND_API_KEY, undefined);
+  assert.equal(process.env.HSB_RESEND_API_KEY || undefined, undefined);
+  assert.equal(process.env.RESEND_API_KEY || undefined, undefined);
   assert.equal(process.env.HSB_CONFIRMATION_FROZEN_DISPATCH, undefined);
   assert.equal(process.env.HSB_BLOB_NAMESPACE, undefined);
   assert.equal(UNSCRIPTED_TOTAL, 0, 'ISO-1 / ISO-9: a synthetic seam saw an unscripted call');

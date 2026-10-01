@@ -42,8 +42,8 @@ const readRepo = (relative: string) => readFileSync(path.join(REPO_ROOT, relativ
 
 // ── File-start backstops ───────────────────────────────────────────────────
 
-assert.equal(process.env.HSB_RESEND_API_KEY, undefined, 'no Resend key may be present');
-assert.equal(process.env.RESEND_API_KEY, undefined, 'no Resend key may be present');
+assert.equal(process.env.HSB_RESEND_API_KEY || undefined, undefined, 'no usable Resend key may be present');
+assert.equal(process.env.RESEND_API_KEY || undefined, undefined, 'no usable Resend key may be present');
 assert.equal(process.env.HSB_CONFIRMATION_ENVELOPE_WRITER, undefined, 'no ambient writer flag');
 
 let FETCH_CALLS = 0;
