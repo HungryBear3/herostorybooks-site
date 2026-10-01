@@ -12,6 +12,7 @@
  * refund state are none of its business.
  */
 import {
+  CONFIRMATION_EMAIL_AWAITING_FROZEN_DISPATCH,
   CONFIRMATION_EMAIL_CLAIM_STALE_MS,
   classifyConfirmationEmailError,
   deliverOrderConfirmationEmail,
@@ -61,6 +62,9 @@ export interface ConfirmationEmailSweepEligibilityConfig {
   claimStaleMs: number;
   /** Fixed floor on `paidAt`; see CONFIRMATION_EMAIL_SWEEP_ACTIVATION_PAID_AT. */
   activationPaidAtMs: number;
+  /** A3-5: admit records waiting for the frozen dispatcher. Absent or not
+   *  exactly `true`: they stay ineligible, as before. */
+  admitAwaitingFrozenDispatch?: boolean;
 }
 
 export interface ConfirmationEmailSweepDeps {
@@ -74,6 +78,9 @@ export interface ConfirmationEmailSweepDeps {
   /** Pre-sanitized lines only — see `classifyConfirmationEmailError`. */
   errorLog: (line: string) => void;
   maxDeliveries?: number;
+  /** A3-5: see `ConfirmationEmailSweepEligibilityConfig`. The default deps
+   *  leave it out. */
+  admitAwaitingFrozenDispatch?: boolean;
 }
 
 export interface ConfirmationEmailSweepResult {
@@ -105,7 +112,10 @@ export function evaluateConfirmationEmailSweepEligibility(
     nowMs: cfg.nowMs,
     claimStaleMs: cfg.claimStaleMs,
   });
-  if (blocked) return { eligible: false, reason: blocked };
+  // A3-5: an opted-in sweep admits a frozen record past the shared fence, and
+  // only that one reason; the paidAt rules below still apply to it.
+  const admitted = blocked === CONFIRMATION_EMAIL_AWAITING_FROZEN_DISPATCH && cfg.admitAwaitingFrozenDispatch === true;
+  if (blocked && !admitted) return { eligible: false, reason: blocked };
 
   if (!order.paidAt) return { eligible: false, reason: 'missing_paidat' };
   const paidAtMs = Date.parse(order.paidAt);
@@ -156,6 +166,7 @@ export async function runConfirmationEmailSweep(
       graceMs: deps.graceMs,
       claimStaleMs: deps.claimStaleMs,
       activationPaidAtMs: deps.activationPaidAtMs,
+      admitAwaitingFrozenDispatch: deps.admitAwaitingFrozenDispatch,
     });
     if (!verdict.eligible) continue;
 

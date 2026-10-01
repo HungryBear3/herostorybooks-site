@@ -1745,3 +1745,283 @@ test('PA-4: with the writer absent no envelope key other than the flag is read',
     assert.deepEqual(envelopeKeys.filter((key) => key !== WRITER_FLAG), []);
   }));
 });
+
+// ── A3-5: frozen-dispatch parity (RP-1 … RP-4) ──────────────────────────────
+//
+// The frozen dispatcher arms only on top of an armed writer, with the dispatch
+// flag exactly `true` in the writer's supplied environment and a transport
+// injected. Every other combination is the A3-4 tree, byte for byte: the PA-2
+// goldens above are re-asserted under the dispatch flag and an injected
+// transport, and a frozen record keeps waiting.
+
+const DISPATCH_FLAG = 'HSB_CONFIRMATION_FROZEN_DISPATCH';
+
+/** A transport that cannot be touched quietly. */
+function untouchableFrozenTransport() {
+  let calls = 0;
+  let readies = 0;
+  return {
+    transport: {
+      ready: () => { readies += 1; return true; },
+      send: async (): Promise<never> => { calls += 1; throw new Error('TransportTouched: frozen dispatch reached'); },
+    },
+    calls: () => calls,
+    readies: () => readies,
+  };
+}
+
+test('RP-1 / RP-2: with the writer absent, the dispatch flag and an injected transport change nothing (PA-2 goldens)', async () => {
+  for (const flag of ['true', '1', 'TRUE', undefined]) {
+    await withEnv({ [WRITER_FLAG]: undefined, [DISPATCH_FLAG]: flag }, () => localStore(async () => {
+      const frozen = untouchableFrozenTransport();
+      const observed: typeof PA2_GOLDEN = {};
+      for (const [label, overrides] of PA2_CASES) {
+        const id = `ord_pa2_${label.replace(/-/g, '_')}`;
+        await persistOrder(makePaidOrder(id, overrides));
+        const transport = recordingTransport();
+        const logs: string[] = [];
+        const errors: string[] = [];
+        const outcome = await deliverOrderConfirmationEmail(id, {
+          send: transport.send,
+          now: () => NOW_MS,
+          newClaimId: () => 'claim-pa2',
+          log: (line) => { logs.push(line); },
+          errorLog: (line) => { errors.push(line); },
+          frozenDispatch: { transport: frozen.transport },
+        });
+        observed[label] = { outcome, calls: transport.calls(), logs, errors, record: recordDigest(await getOrderAuthoritative(id)) };
+      }
+      assert.deepEqual(observed, PA2_GOLDEN, `dispatch flag ${String(flag)}`);
+      assert.equal(frozen.calls(), 0);
+      assert.equal(frozen.readies(), 0, 'the dispatcher must not even be consulted with the writer off');
+    }));
+  }
+});
+
+test('RP-2: with the writer absent the dispatch flag is never read', async () => {
+  await withEnv({ [WRITER_FLAG]: undefined, [DISPATCH_FLAG]: 'true' }, () => localStore(async () => {
+    await persistOrder(makePaidOrder('ord_rp2_reads'));
+    const ambient = process.env;
+    const reads: string[] = [];
+    process.env = new Proxy({ ...ambient }, {
+      get(target, key, receiver) {
+        if (typeof key === 'string') reads.push(key);
+        return Reflect.get(target, key, receiver);
+      },
+    }) as NodeJS.ProcessEnv;
+    try {
+      await deliverOrderConfirmationEmail('ord_rp2_reads', {
+        send: recordingTransport().send,
+        now: () => NOW_MS,
+        log: () => {},
+        errorLog: () => {},
+        frozenDispatch: { transport: untouchableFrozenTransport().transport },
+      });
+    } finally {
+      process.env = ambient;
+    }
+    assert.equal(reads.includes(DISPATCH_FLAG), false);
+  }));
+});
+
+/** The raw NBT pair over a map; the flat namespace. */
+function rpOrderIo(seed: OrderRecord[]) {
+  const cells = new Map<string, string>();
+  for (const order of seed) cells.set(`orders/${order.id}.json`, JSON.stringify(order));
+  const provenance = (recordPath: string, outcome: string, commits: number) => ({
+    namespace: '', recordPath, readPaths: [recordPath], commitPaths: Array.from({ length: commits }, () => recordPath), attempts: 1, outcome,
+  });
+  return {
+    io: {
+      read: async (_binding: unknown, orderId: string) => {
+        const recordPath = `orders/${orderId}.json`;
+        const body = cells.get(recordPath);
+        return body === undefined
+          ? { found: null, provenance: provenance(recordPath, 'not_found', 0) }
+          : { found: { order: JSON.parse(body) as OrderRecord, version: 'v' }, provenance: provenance(recordPath, 'read', 0) };
+      },
+      transact: async (_binding: unknown, orderId: string, mutate: (order: OrderRecord) => unknown, opts: { notFound: () => unknown; beforeCommit?: () => boolean }) => {
+        const recordPath = `orders/${orderId}.json`;
+        const body = cells.get(recordPath);
+        if (body === undefined) return { status: 'not_found', result: opts.notFound(), provenance: provenance(recordPath, 'not_found', 0) };
+        const outcome = mutate(JSON.parse(body) as OrderRecord) as { abort?: unknown; commit?: OrderRecord; result?: unknown };
+        if ('abort' in outcome) return { status: 'aborted', result: outcome.abort, provenance: provenance(recordPath, 'aborted', 0) };
+        if (opts.beforeCommit && opts.beforeCommit() !== true) return { status: 'commit_refused', provenance: provenance(recordPath, 'commit_refused', 0) };
+        cells.set(recordPath, JSON.stringify(outcome.commit));
+        return { status: 'committed', result: outcome.result, provenance: provenance(recordPath, 'committed', 1) };
+      },
+    },
+    body: (orderId: string) => cells.get(`orders/${orderId}.json`),
+  };
+}
+
+function rpStoreIo() {
+  let calls = 0;
+  const refuse = async (): Promise<never> => { calls += 1; throw new Error('SyntheticUnscriptedCall'); };
+  return { io: { put: refuse, get: refuse, del: refuse }, calls: () => calls };
+}
+
+function rpWriterEnv(dispatch: string | undefined): NodeJS.ProcessEnv {
+  const env: Record<string, string> = {
+    [WRITER_FLAG]: 'true',
+    HSB_CONFIRMATION_ENVELOPE_WRITER_EPOCH: '2026-09-22T00:00:00.000Z',
+    HSB_CONFIRMATION_ENVELOPE_BLOB_TOKEN: 'vercel_blob_rw_SYNTHETICenvStore01_SYNTHETICsecret000001',
+  };
+  if (dispatch !== undefined) env[DISPATCH_FLAG] = dispatch;
+  return env as NodeJS.ProcessEnv;
+}
+
+const RP_FROZEN_STATES = ['SNAPSHOTTED', 'PROVABLY_PRE_DISPATCH_FAILED'] as const;
+
+test('RP-1 / RP-2: with the writer armed, a frozen record keeps waiting unless the flag is exactly true AND a transport is injected', async () => {
+  await withEnv({ [WRITER_FLAG]: undefined, [DISPATCH_FLAG]: undefined, HSB_BLOB_NAMESPACE: undefined, VERCEL: undefined, VERCEL_ENV: undefined, BLOB_READ_WRITE_TOKEN: undefined }, async () => {
+    const variants: Array<[string, string | undefined, (valid: ReturnType<typeof untouchableFrozenTransport>['transport']) => unknown]> = [
+      ['flag absent', undefined, (valid) => ({ transport: valid })],
+      ['flag 1', '1', (valid) => ({ transport: valid })],
+      ['flag TRUE', 'TRUE', (valid) => ({ transport: valid })],
+      ['flag " true"', ' true', (valid) => ({ transport: valid })],
+      ['no transport', 'true', () => undefined],
+      ['empty deps', 'true', () => ({})],
+      ['ready missing', 'true', (valid) => ({ transport: { send: valid.send } })],
+      ['send missing', 'true', (valid) => ({ transport: { ready: valid.ready } })],
+      ['send not a function', 'true', (valid) => ({ transport: { ready: valid.ready, send: 'yes' } })],
+    ];
+    for (const state of RP_FROZEN_STATES) {
+      for (const [label, flag, frozenDispatchOf] of variants) {
+        // A record the dispatcher would act on: it carries a (synthetic) ref,
+        // so an armed dispatcher would read the store and touch the record.
+        const order = makePaidOrder(`ord_rp_${label.replace(/\W+/g, '_')}`, {
+          confirmationEmailState: state,
+          confirmationEmailEnvelopeRef: { envelopeVersion: 1, purgedAt: null },
+        } as unknown as Partial<OrderRecord>);
+        const orderIo = rpOrderIo([order]);
+        const store = rpStoreIo();
+        const frozen = untouchableFrozenTransport();
+        const frozenDispatch = frozenDispatchOf(frozen.transport);
+        const before = orderIo.body(order.id);
+        const legacy = throwingTransport();
+        const errors: string[] = [];
+        const outcome = await deliverOrderConfirmationEmail(order.id, {
+          send: legacy.send,
+          now: () => NOW_MS,
+          log: () => {},
+          errorLog: (line) => { errors.push(line); },
+          envelopeWriter: { env: rpWriterEnv(flag), storeIo: store.io, orderIo: orderIo.io } as never,
+          ...(frozenDispatch === undefined ? {} : { frozenDispatch: frozenDispatch as never }),
+        });
+        assert.deepEqual(outcome, { status: 'blocked', reason: 'awaiting_frozen_dispatch' }, `${state} / ${label}`);
+        assert.equal(legacy.calls(), 0);
+        assert.equal(frozen.readies(), 0, `${state} / ${label}: the dispatcher was consulted`);
+        assert.equal(frozen.calls(), 0);
+        assert.equal(store.calls(), 0, `${state} / ${label}: the envelope store was touched`);
+        assert.deepEqual(errors, []);
+        assert.equal(orderIo.body(order.id), before, `${state} / ${label}: the record moved`);
+      }
+    }
+  });
+});
+
+test('RP-2: a disarmed writer (no store adapters) never arms the dispatcher', async () => {
+  await withEnv({ [WRITER_FLAG]: undefined, [DISPATCH_FLAG]: undefined, HSB_BLOB_NAMESPACE: undefined, VERCEL: undefined, VERCEL_ENV: undefined, BLOB_READ_WRITE_TOKEN: undefined }, async () => {
+    const frozen = untouchableFrozenTransport();
+    for (const state of RP_FROZEN_STATES) {
+      const order = makePaidOrder(`ord_rp_disarmed_${state.toLowerCase()}`, { confirmationEmailState: state } as Partial<OrderRecord>);
+      const orderIo = rpOrderIo([order]);
+      const outcome = await deliverOrderConfirmationEmail(order.id, {
+        send: throwingTransport().send,
+        now: () => NOW_MS,
+        log: () => {},
+        errorLog: () => {},
+        envelopeWriter: { env: rpWriterEnv('true'), orderIo: orderIo.io } as never,
+        frozenDispatch: { transport: frozen.transport },
+      });
+      assert.deepEqual(outcome, { status: 'blocked', reason: 'awaiting_frozen_dispatch' });
+    }
+    assert.equal(frozen.calls(), 0);
+    assert.equal(frozen.readies(), 0);
+  });
+});
+
+test('RP-3: the sweep leaves frozen records ineligible by default and admits them only on opt-in', () => {
+  const cfg = { nowMs: NOW_MS, graceMs: 0, claimStaleMs: CONFIRMATION_EMAIL_CLAIM_STALE_MS, activationPaidAtMs: ACTIVATION_MS };
+  for (const state of RP_FROZEN_STATES) {
+    const order = makePaidOrder(`ord_rp3_${state.toLowerCase()}`, { confirmationEmailState: state } as Partial<OrderRecord>);
+    assert.deepEqual(evaluateConfirmationEmailSweepEligibility(order, cfg), { eligible: false, reason: 'awaiting_frozen_dispatch' });
+    assert.deepEqual(
+      evaluateConfirmationEmailSweepEligibility(order, { ...cfg, admitAwaitingFrozenDispatch: false }),
+      { eligible: false, reason: 'awaiting_frozen_dispatch' },
+    );
+    assert.deepEqual(
+      evaluateConfirmationEmailSweepEligibility(order, { ...cfg, admitAwaitingFrozenDispatch: true }),
+      { eligible: true, ageMs: NOW_MS - Date.parse(order.paidAt!) },
+    );
+    // The opt-in admits a frozen record past the shared fence, not past the
+    // sweep's own paidAt rules.
+    assert.deepEqual(
+      evaluateConfirmationEmailSweepEligibility(order, { ...cfg, graceMs: 60 * 60 * 1000, admitAwaitingFrozenDispatch: true }),
+      { eligible: false, reason: 'below_grace' },
+    );
+    // And it admits nothing else.
+    for (const [overrides, reason] of [
+      [{ confirmationEmailState: 'RECONCILIATION_REQUIRED' }, 'held_for_reconciliation'],
+      [{ confirmationEmailState: 'DISPATCH_INTENT_RECORDED' }, 'held_for_reconciliation'],
+      [{ confirmationEmailState: 'ACCEPTED' }, 'already_sent'],
+      [{ refundedAt: '2026-09-21T17:50:00.000Z' }, 'refunded'],
+    ] as const) {
+      assert.deepEqual(
+        evaluateConfirmationEmailSweepEligibility(makePaidOrder('ord_rp3_other', overrides as Partial<OrderRecord>), { ...cfg, admitAwaitingFrozenDispatch: true }),
+        { eligible: false, reason },
+      );
+    }
+  }
+  assert.equal('admitAwaitingFrozenDispatch' in buildDefaultConfirmationEmailSweepDeps(), false, 'the default sweep never opts in');
+});
+
+test('RP-3: an opted-in sweep counts frozen dispatch outcomes as sent, held and deferred', async () => {
+  const ids = ['ord_rp3_sent', 'ord_rp3_held', 'ord_rp3_deferred'];
+  const orders = ids.map((id) => makePaidOrder(id, { confirmationEmailState: 'SNAPSHOTTED' } as Partial<OrderRecord>));
+  const outcomes: Record<string, unknown> = {
+    ord_rp3_sent: { status: 'sent' },
+    ord_rp3_held: { status: 'held', reason: 'ambiguous_dispatch' },
+    ord_rp3_deferred: { status: 'snapshot_deferred', reason: 'transport_not_ready' },
+  };
+  const run = (admit: boolean | undefined) => runConfirmationEmailSweep({
+    listOrders: async () => orders,
+    deliver: async (orderId) => outcomes[orderId] as never,
+    now: () => NOW_MS,
+    graceMs: 0,
+    claimStaleMs: CONFIRMATION_EMAIL_CLAIM_STALE_MS,
+    activationPaidAtMs: ACTIVATION_MS,
+    log: () => {},
+    errorLog: () => {},
+    ...(admit === undefined ? {} : { admitAwaitingFrozenDispatch: admit }),
+  });
+  assert.deepEqual(await run(undefined), { ok: true, scanned: 3, eligible: 0, sent: 0, skipped: 0, blocked: 0, failed: 0, snapshotted: 0, held: 0, deferred: 0 });
+  assert.deepEqual(await run(true), { ok: false, scanned: 3, eligible: 3, sent: 1, skipped: 0, blocked: 0, failed: 0, snapshotted: 0, held: 1, deferred: 1 });
+});
+
+test('RP-4 (RL-3): the legacy receipt-failure release still fires with the dispatch flag on and a transport injected', async () => {
+  await withEnv({ [WRITER_FLAG]: undefined, [DISPATCH_FLAG]: 'true' }, () => localStore(async () => {
+    await persistOrder(makePaidOrder('ord_rp4_release'));
+    let transactions = 0;
+    const transact: OrderTransactImpl = (orderId, mutate, opts) => {
+      transactions += 1;
+      if (transactions === 2) return Promise.reject(new Error('durable store unavailable'));
+      return withOrderTransaction(orderId, mutate, opts);
+    };
+    const frozen = untouchableFrozenTransport();
+    const outcome = await deliverOrderConfirmationEmail('ord_rp4_release', {
+      send: acceptedSend('msg_rp4'),
+      transact,
+      now: () => NOW_MS,
+      log: () => {},
+      errorLog: () => {},
+      frozenDispatch: { transport: frozen.transport },
+    });
+    assert.deepEqual(outcome, { status: 'receipt_unrecorded', reason: 'write_failed' });
+    assert.equal(transactions, 3, 'claim, failed receipt, then the release');
+    const stored = await getOrderAuthoritative('ord_rp4_release');
+    assert.equal(stored?.emailResendClaimId ?? null, null, 'the legacy release must still land');
+    assert.equal(frozen.calls(), 0);
+  }));
+});

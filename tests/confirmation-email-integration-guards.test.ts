@@ -65,13 +65,20 @@
  *   GA-12 the "still reaches transport" proof uses a stateless record, and a
  *         sibling proves the frozen states never reach transport;
  *   GA-13 every checker is a pure function exercised on synthetic offenders.
+ *
+ * A3-5 amends this file to admit the frozen dispatcher as one more runtime
+ * reader with its own per-file rules and field grant, adds its two suites to
+ * `CANDIDATE_TESTS`, and pins it (GD-1 … GD-5, RL-2) at the end of the file.
  */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+
+import ts from 'typescript';
 
 import {
   CONFIRMATION_EMAIL_CLAIM_STALE_MS,
@@ -378,9 +385,22 @@ const RUNTIME_IMPORT_ALLOWLIST: Record<string, RuntimeRule[]> = {
       bindings: ['classifyLegacyConfirmationRecord', 'evaluateConfirmationEmailTransition'],
     },
   ],
+  // A3-5: the frozen dispatcher asks the model, carries the first-intent
+  // instant, appends the attempt and recomputes the request digest.
+  'src/lib/confirmation-email-dispatch.ts': [
+    {
+      specifier: /confirmation-email-envelope(?:\.ts)?$/,
+      bindings: ['digestConfirmationRequest'],
+    },
+    {
+      specifier: /confirmation-email-state(?:\.ts)?$/,
+      bindings: ['appendConfirmationEmailAttempt', 'evaluateConfirmationEmailTransition', 'evaluateFirstDispatchIntentWrite'],
+    },
+  ],
 };
 
 const PRODUCER = 'src/lib/confirmation-envelope-producer.ts';
+const DISPATCH = 'src/lib/confirmation-email-dispatch.ts';
 const DELIVERY = 'src/lib/confirmation-email-delivery.ts';
 const KICKOFF = 'src/lib/order-confirmation-kickoff.ts';
 const SWEEP = 'src/lib/confirmation-email-sweep.ts';
@@ -405,6 +425,10 @@ const CANDIDATE_TESTS = new Set([
   // A3-4 R2 GA-5: the producer suite drives the producer, the store, the ref
   // and the record fields directly.
   'tests/confirmation-envelope-producer.test.ts',
+  // A3-5: the frozen-dispatch suites drive the dispatcher and read the record
+  // fields it commits.
+  'tests/confirmation-email-frozen-dispatch.test.ts',
+  'tests/confirmation-email-dispatch-classification.test.ts',
 ]);
 
 /** A3-4 R2 GA-5: a candidate exemption is only ever a test file. */
@@ -535,6 +559,8 @@ const CONFIRMATION_REF_READER_ALLOWLIST = new Set([
   // A3-4 R2 GA-4: the snapshot producer writes only a ref it has just proven
   // against the private object, byte for byte.
   'src/lib/confirmation-envelope-producer.ts',
+  // A3-5: the frozen dispatcher reads the ref and fences the envelope on it.
+  'src/lib/confirmation-email-dispatch.ts',
   ...CANDIDATE_TESTS,
 ]);
 
@@ -548,6 +574,18 @@ const CONFIRMATION_REF_READER_ALLOWLIST = new Set([
  */
 const RECORD_FIELD_GRANTS: Record<string, readonly string[]> = {
   'src/lib/confirmation-envelope-producer.ts': ['confirmationEmailState', 'confirmationEmailHoldReason'],
+  // A3-5: the dispatcher commits the transition fields. The retired inline
+  // envelope stays out of its reach.
+  'src/lib/confirmation-email-dispatch.ts': [
+    'confirmationEmailState',
+    'confirmationEmailFirstDispatchIntentAt',
+    'confirmationEmailAttemptId',
+    'confirmationEmailDispatchDeadlineAt',
+    'confirmationEmailProviderMessageId',
+    'confirmationEmailAcceptedAt',
+    'confirmationEmailAttempts',
+    'confirmationEmailHoldReason',
+  ],
 };
 
 /**
@@ -1845,4 +1883,265 @@ test('A3-4 R2 GA-13 XN-6: a read that passes the literal read outcome is an offe
   if (existsSync(path.join(REPO_ROOT, PRODUCER))) {
     assert.deepEqual(boundOrderIoOffenders(readRepoFile(PRODUCER)).filter((o) => o.includes("literal 'read'")), []);
   }
+});
+
+// ══ A3-5 — the frozen dispatcher, pinned (GD-1 … GD-5, RL-2, RL-3) ═════════
+//
+// Pure checkers over source text, each also run on a synthetic offender so a
+// checker that has stopped seeing its offender fails here.
+
+const ORDER_EMAIL = 'src/lib/order-email.ts';
+const FROZEN_TRANSPORT_FN = 'dispatchFrozenConfirmationRequest';
+
+/** I5-2: what the frozen transport may never reach, directly or through a helper. */
+const FROZEN_TRANSPORT_FORBIDDEN = [
+  'sendWithFallback', 'getSupportEmail', 'getOrderSenderEmail', 'getFallbackSenderEmail',
+  'buildOrderConfirmationEmail', 'assertResendSuccess', 'formatActionableError', 'order',
+  'buildOrderConfirmationIdempotencyKey', 'sendOrderConfirmationEmail',
+];
+
+/**
+ * GD-1. The identifiers reachable from `root` in `source`: its own body, plus
+ * every module-level function or const it names, transitively. AST-based, so a
+ * name in a comment or a string is not a reference.
+ */
+function reachableIdentifiers(source: string, root: string): { found: boolean; names: Set<string>; envReads: Set<string> } {
+  const file = ts.createSourceFile('m.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const topLevel = new Map<string, ts.Node>();
+  for (const statement of file.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name) topLevel.set(statement.name.text, statement);
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) topLevel.set(declaration.name.text, declaration);
+      }
+    }
+  }
+  const names = new Set<string>();
+  const envReads = new Set<string>();
+  const start = topLevel.get(root);
+  if (!start) return { found: false, names, envReads };
+  const queue: ts.Node[] = [start];
+  const seen = new Set<ts.Node>();
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    if (seen.has(node)) continue;
+    seen.add(node);
+    const visit = (child: ts.Node) => {
+      if (ts.isIdentifier(child)) {
+        names.add(child.text);
+        const target = topLevel.get(child.text);
+        if (target && !seen.has(target)) queue.push(target);
+      }
+      if (ts.isPropertyAccessExpression(child) && child.expression.getText(file) === 'process.env') envReads.add(child.name.text);
+      if (ts.isElementAccessExpression(child) && child.expression.getText(file) === 'process.env') {
+        envReads.add(ts.isStringLiteral(child.argumentExpression) ? child.argumentExpression.text : '<computed>');
+      }
+      if (ts.isVariableDeclaration(child) && ts.isObjectBindingPattern(child.name) && child.initializer?.getText(file) === 'process.env') {
+        envReads.add('<destructured>');
+      }
+      ts.forEachChild(child, visit);
+    };
+    ts.forEachChild(node, visit);
+  }
+  return { found: true, names, envReads };
+}
+
+function frozenTransportOffenders(source: string): string[] {
+  const { found, names, envReads } = reachableIdentifiers(source, FROZEN_TRANSPORT_FN);
+  if (!found) return [`GD-1: ${FROZEN_TRANSPORT_FN} is missing`];
+  const offenders = FROZEN_TRANSPORT_FORBIDDEN.filter((name) => names.has(name)).map((name) => `GD-1: reaches ${name}`);
+  const extraEnv = [...envReads].filter((key) => key !== 'HSB_RESEND_API_KEY' && key !== 'RESEND_API_KEY');
+  if (extraEnv.length > 0) offenders.push(`GD-1: reads process.env.${extraEnv.join(', process.env.')}`);
+  return offenders;
+}
+
+/** GD-2. The dispatcher's runtime and type edges, exactly. */
+const DISPATCH_RUNTIME_IMPORTS: ReadonlyArray<{ specifier: RegExp; bindings: string[] }> = [
+  { specifier: /^\.\/confirmation-email-state\.ts$/, bindings: ['appendConfirmationEmailAttempt', 'evaluateConfirmationEmailTransition', 'evaluateFirstDispatchIntentWrite'] },
+  { specifier: /^\.\/confirmation-email-envelope\.ts$/, bindings: ['digestConfirmationRequest'] },
+];
+const DISPATCH_TYPE_SPECIFIERS: readonly RegExp[] = [
+  /^\.\/confirmation-email-state\.ts$/,
+  /^\.\/confirmation-email-envelope\.ts$/,
+  /^\.\/confirmation-email-delivery\.ts$/,
+  /^\.\/confirmation-envelope-producer\.ts$/,
+  /^\.\/order-email\.ts$/,
+  /^\.\/orders\.ts$/,
+];
+
+function dispatchImportOffenders(source: string): string[] {
+  const offenders: string[] = [];
+  const statements = importStatementsIn(source);
+  for (const statement of statements) {
+    if (statement.kind === 'type') {
+      if (!DISPATCH_TYPE_SPECIFIERS.some((re) => re.test(statement.specifier))) {
+        offenders.push(`GD-2: type edge to ${statement.specifier}`);
+      }
+      continue;
+    }
+    if (statement.kind !== 'named') {
+      offenders.push(`GD-2: ${statement.kind} edge to ${statement.specifier}`);
+      continue;
+    }
+    const row = DISPATCH_RUNTIME_IMPORTS.find((candidate) => candidate.specifier.test(statement.specifier));
+    if (!row) {
+      offenders.push(`GD-2: runtime edge to ${statement.specifier}`);
+      continue;
+    }
+    if (!sameBindings(statement.bindings, row.bindings)) {
+      offenders.push(`GD-2: ${statement.specifier} bindings ${JSON.stringify(statement.bindings)}`);
+    }
+  }
+  for (const row of DISPATCH_RUNTIME_IMPORTS) {
+    const count = statements.filter((statement) => statement.kind === 'named' && row.specifier.test(statement.specifier)).length;
+    if (count !== 1) offenders.push(`GD-2: ${row.specifier} must be reached by exactly one runtime import, found ${count}`);
+  }
+  // AM-S4 / B9 / GA-8: no edge of any kind to the store, its config or the ref.
+  const named = source.match(/['"][^'"]*(?:confirmation-envelope-(?:store|config|ref)|@vercel\/blob|resend)(?:\.ts)?['"]/);
+  if (named) offenders.push(`GD-2: names ${named[0]}`);
+  const transport = source.match(/\bfetch\s*\(|\bnew Resend\b|\bsendWithFallback\b|\bsendOrderConfirmationEmail\b|\bdispatchFrozenConfirmationRequest\b/);
+  if (transport) offenders.push(`GD-2: transport reach ${transport[0]}`);
+  if (countOf(source, /\bprocess\.env\b/) !== 1) offenders.push('GD-2: process.env must appear exactly once (the supplied-environment default)');
+  return offenders;
+}
+
+/** GD-3. No release on any receipt arm: the module never calls the legacy
+ *  release, and neither the receipt-failure commit nor the receipt path that
+ *  writes the hold names a claim field. */
+const RECEIPT_FAILED_COMMIT_FN = 'receiptFailedCommit';
+const RECEIPT_PATH_FN = 'recordFrozenReceipt';
+
+function dispatchReleaseOffenders(source: string): string[] {
+  const offenders: string[] = [];
+  if (/\breleaseConfirmationEmailClaim\b/.test(source)) offenders.push('GD-3: the dispatcher names releaseConfirmationEmailClaim');
+  if (/\brecordConfirmationEmailReceipt\b/.test(source)) offenders.push('GD-3: the dispatcher names recordConfirmationEmailReceipt');
+  const body = moduleLevelDeclarations(source).get(RECEIPT_FAILED_COMMIT_FN);
+  if (body === undefined) return [...offenders, `GD-3: ${RECEIPT_FAILED_COMMIT_FN} is missing`];
+  const reach = body.match(/emailResendClaim\w*|RELEASED_CLAIM|releasedClaim/);
+  if (reach) offenders.push(`GD-3: ${RECEIPT_FAILED_COMMIT_FN} touches the claim through ${reach[0]}`);
+  const path_ = moduleLevelDeclarations(source).get(RECEIPT_PATH_FN);
+  if (path_ === undefined) return [...offenders, `GD-3: ${RECEIPT_PATH_FN} is missing`];
+  const pathReach = path_.match(/emailResendClaim\w*|RELEASED_CLAIM|releasedClaim|decideReleasingCommit/);
+  if (pathReach) offenders.push(`GD-3: ${RECEIPT_PATH_FN} touches the claim through ${pathReach[0]}`);
+  return offenders;
+}
+
+/** GD-4. Delivery reaches the dispatcher through exactly its two entry points. */
+const DISPATCH_SPECIFIER_RE = /confirmation-email-dispatch(?:\.ts)?$/;
+const DELIVERY_DISPATCH_BINDINGS = ['dispatchFrozenConfirmation', 'resolveFrozenDispatcher'];
+
+function deliveryDispatchImportOffenders(source: string): string[] {
+  const edges = importStatementsIn(source).filter((statement) => DISPATCH_SPECIFIER_RE.test(statement.specifier));
+  const runtime = edges.filter((statement) => statement.kind !== 'type');
+  const offenders: string[] = [];
+  if (runtime.length !== 1 || runtime[0].kind !== 'named' || !sameBindings(runtime[0].bindings, DELIVERY_DISPATCH_BINDINGS)) {
+    offenders.push(`GD-4: delivery must import exactly ${DELIVERY_DISPATCH_BINDINGS.join(', ')} from the dispatcher, once`);
+  }
+  if (/\bdispatchFrozenConfirmationRequest\b/.test(source)) offenders.push('GD-4: delivery names the real transport');
+  return offenders;
+}
+
+/** GD-5. Delivery lines 470–542 at 917c909: the legacy claim → send → receipt
+ *  tail, including the receipt-failure release (RL-3). */
+const LEGACY_TAIL_ANCHOR = '  const claimId = newClaimId();';
+const LEGACY_TAIL_LINES = 73;
+const LEGACY_TAIL_SHA256 = 'eae2ebd960ded051af9a0ccd563e0c2a8cb8a067c484c11dd28406be04baf5d1';
+
+function legacyTailDigest(source: string): string | null {
+  const lines = source.split('\n');
+  const start = lines.indexOf(LEGACY_TAIL_ANCHOR);
+  if (start === -1 || lines.indexOf(LEGACY_TAIL_ANCHOR, start + 1) !== -1) return null;
+  return createHash('sha256').update(lines.slice(start, start + LEGACY_TAIL_LINES).join('\n')).digest('hex');
+}
+
+// ── Real-tree pins ──────────────────────────────────────────────────────────
+
+test('A3-5 GD-1: the frozen transport reaches no sender, renderer, fallback or record', () => {
+  assert.deepEqual(frozenTransportOffenders(readRepoFile(ORDER_EMAIL)), []);
+});
+
+test('A3-5 GD-2: the dispatcher import table is exact, and it never names the store, config, ref or SDKs', () => {
+  assert.deepEqual(dispatchImportOffenders(readRepoFile(DISPATCH)), []);
+  assert.deepEqual(runtimeReachOffenders(DISPATCH, findModuleReferences(DISPATCH)), []);
+  assert.deepEqual(fieldNameOffenders(DISPATCH, readRepoFile(DISPATCH)), []);
+  assert.equal(namesRecordField(readRepoFile(DISPATCH), 'confirmationEmailEnvelope'), false, 'the retired inline envelope');
+});
+
+test('A3-5 GD-3: no receipt arm of the dispatcher releases the claim', () => {
+  assert.deepEqual(dispatchReleaseOffenders(readRepoFile(DISPATCH)), []);
+});
+
+test('A3-5 GD-4 (GA-9): delivery reaches the dispatcher through one pinned import, and the producer pin is unchanged', () => {
+  const delivery = readRepoFile(DELIVERY);
+  assert.deepEqual(deliveryDispatchImportOffenders(delivery), []);
+  assert.deepEqual(deliveryProducerImportOffenders(delivery), []);
+  assert.deepEqual(deliveryOrderBindingOffenders(delivery), []);
+});
+
+test('A3-5 GD-5 (RL-3): the legacy claim → send → receipt tail of delivery is byte-identical to 917c909', () => {
+  assert.equal(legacyTailDigest(readRepoFile(DELIVERY)), LEGACY_TAIL_SHA256);
+  assert.match(readRepoFile(DELIVERY), /await release\('receipt_write_failed'\);/);
+});
+
+test('A3-5 RL-2: no default caller injects a frozen transport, and the real binding has no caller', () => {
+  const offenders: string[] = [];
+  for (const file of listSourceFiles()) {
+    if (!file.startsWith('src/') && !file.startsWith('scripts/')) continue;
+    const source = readFileSync(path.join(REPO_ROOT, file), 'utf8');
+    if (file !== ORDER_EMAIL && /\bdispatchFrozenConfirmationRequest\b/.test(source)) offenders.push(`${file} names the real frozen transport`);
+    if (file !== DELIVERY && file !== DISPATCH && /\bfrozenDispatch\b/.test(source)) offenders.push(`${file} injects frozenDispatch`);
+    if (file !== SWEEP && /\badmitAwaitingFrozenDispatch\b/.test(source)) offenders.push(`${file} opts the sweep in`);
+  }
+  assert.deepEqual(offenders, []);
+  const sweep = readRepoFile(SWEEP);
+  const defaults = sweep.slice(sweep.indexOf('export function buildDefaultConfirmationEmailSweepDeps'));
+  assert.doesNotMatch(defaults.slice(0, defaults.indexOf('\n}\n')), /admitAwaitingFrozenDispatch/, 'the default sweep never opts in');
+});
+
+// ── Synthetic offenders (each checker must see its own) ─────────────────────
+
+test('A3-5 GD-1 synthetic: routing through the fallback, rendering, or a second env read is seen', () => {
+  const real = readRepoFile(ORDER_EMAIL);
+  // The first line of the function body, after its signature.
+  const bodyStart = '): Promise<FrozenDispatchTransportResult> {\n';
+  assert.equal(real.split(bodyStart).length, 2, 'the body anchor must be unique');
+  const inject = (source: string, line: string) => source.replace(bodyStart, `${bodyStart}  ${line}\n`);
+  const viaHelper = inject(`${real}\nfunction frozenHelper() {\n  return getOrderSenderEmail();\n}\n`, 'frozenHelper();');
+  assert.ok(frozenTransportOffenders(viaHelper).includes('GD-1: reaches getOrderSenderEmail'));
+  assert.ok(frozenTransportOffenders(inject(real, 'void sendWithFallback;')).includes('GD-1: reaches sendWithFallback'));
+  assert.ok(frozenTransportOffenders(inject(real, 'void buildOrderConfirmationEmail;')).includes('GD-1: reaches buildOrderConfirmationEmail'));
+  assert.ok(frozenTransportOffenders(inject(real, 'void process.env.HSB_EMAIL_FROM;')).some((o) => o.includes('process.env.HSB_EMAIL_FROM')));
+  assert.ok(frozenTransportOffenders(inject(real, "void process.env['HSB_SUPPORT_EMAIL'];")).some((o) => o.includes('HSB_SUPPORT_EMAIL')));
+  assert.ok(frozenTransportOffenders(inject(real, 'const { NEXT_PUBLIC_URL } = process.env;')).some((o) => o.includes('<destructured>')));
+});
+
+test('A3-5 GD-2/GD-3 synthetic: a store edge, a config type edge, a release and a receipt-arm claim write are seen', () => {
+  const real = readRepoFile(DISPATCH);
+  const store = ['./confirmation-envelope', 'store.ts'].join('-');
+  const config = ['./confirmation-envelope', 'config.ts'].join('-');
+  assert.notDeepEqual(dispatchImportOffenders(`import { createConfirmationEnvelopeStore } from '${store}';\n${real}`), []);
+  assert.notDeepEqual(dispatchImportOffenders(`import type { ConfirmationEnvelopeStorageRefusal } from '${config}';\n${real}`), []);
+  assert.notDeepEqual(dispatchImportOffenders(`import { sendOrderConfirmationEmail } from './order-email.ts';\n${real}`), []);
+  assert.notDeepEqual(dispatchImportOffenders(`import { randomUUID } from 'node:crypto';\n${real}`), [], 'node:crypto is not on the §2 allowlist');
+  assert.notDeepEqual(dispatchReleaseOffenders(`${real}\nvoid releaseConfirmationEmailClaim;\n`), []);
+  const body = moduleLevelDeclarations(real).get(RECEIPT_FAILED_COMMIT_FN);
+  assert.ok(body, `${RECEIPT_FAILED_COMMIT_FN} must exist`);
+  const mutated = real.replace(body, body.replace(/\n}$/, '\n  void { emailResendClaimId: null };\n}'));
+  assert.notEqual(mutated, real);
+  assert.ok(dispatchReleaseOffenders(mutated).some((o) => o.startsWith('GD-3')));
+  const receiptPath = moduleLevelDeclarations(real).get(RECEIPT_PATH_FN);
+  assert.ok(receiptPath, `${RECEIPT_PATH_FN} must exist`);
+  const inlineRelease = real.replace(receiptPath, receiptPath.replace('{ commit: held, result: true }', '{ commit: { ...held, ...RELEASED_CLAIM }, result: true }'));
+  assert.notEqual(inlineRelease, real);
+  assert.ok(dispatchReleaseOffenders(inlineRelease).some((o) => o.includes(RECEIPT_PATH_FN)));
+});
+
+test('A3-5 GD-4/GD-5 synthetic: an extra dispatch binding and an edited legacy tail are seen', () => {
+  const delivery = readRepoFile(DELIVERY);
+  const extra = delivery.replace('resolveFrozenDispatcher }', 'resolveFrozenDispatcher, classifyFrozenDispatchResult }');
+  assert.notEqual(extra, delivery);
+  assert.notDeepEqual(deliveryDispatchImportOffenders(extra), []);
+  const edited = delivery.replace("    await release('receipt_write_failed');\n", '');
+  assert.notEqual(edited, delivery);
+  assert.notEqual(legacyTailDigest(edited), LEGACY_TAIL_SHA256);
 });

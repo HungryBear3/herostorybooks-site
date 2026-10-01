@@ -25,6 +25,12 @@
  * is deliberately not compatibility-preserving: the legacy continuation it
  * takes is bound to one frozen namespace, guarded before the claim write and
  * checked again before transport.
+ *
+ * A3-5: only under an armed writer, and only when the frozen dispatcher also
+ * arms (dispatch flag exactly `true` in the writer's supplied environment and
+ * a transport injected by the caller), a record waiting for the frozen
+ * dispatcher — or one this attempt has just snapshotted — is handed to it.
+ * Every other path, including the legacy tail below, is unchanged.
  */
 import { randomUUID } from 'node:crypto';
 
@@ -41,6 +47,13 @@ import {
   type OrderTransactionOutcome,
 } from './orders.ts';
 import { resolveConfirmationEnvelopeWriter, snapshotConfirmationEnvelope } from './confirmation-envelope-producer.ts';
+import { dispatchFrozenConfirmation, resolveFrozenDispatcher } from './confirmation-email-dispatch.ts';
+import type {
+  ConfirmationFrozenDispatchDeferral,
+  ConfirmationFrozenDispatchDeps,
+  ConfirmationFrozenDispatchHoldReason,
+  FrozenDispatcher,
+} from './confirmation-email-dispatch.ts';
 import type {
   BoundOrderIo,
   ConfirmationEnvelopeSnapshotDeferral,
@@ -69,6 +82,10 @@ export type ConfirmationEmailBlockReason =
   // frozen dispatcher (A3-5) may send.
   | 'awaiting_frozen_dispatch';
 
+/** A3-5: the one block reason an opted-in sweep may admit (fence F1). */
+export const CONFIRMATION_EMAIL_AWAITING_FROZEN_DISPATCH: Extract<ConfirmationEmailBlockReason, 'awaiting_frozen_dispatch'> =
+  'awaiting_frozen_dispatch';
+
 /** The only skip reasons this boundary will repeat. A provider-supplied string
  *  is untrusted input at a PII-safe log boundary, so anything else collapses to
  *  a single literal rather than being echoed. */
@@ -84,7 +101,9 @@ export function narrowConfirmationEmailSkipReason(reason: string): ConfirmationE
     : 'unknown_skip_reason';
 }
 
-/** Why a send that the provider accepted has no durable receipt behind it. */
+/** Why a send that the provider accepted has no durable receipt behind it.
+ *  A3-5: also why a frozen dispatch's post-send outcome is not durably
+ *  recorded (the write failed, or the record left the attempt). */
 export type ConfirmationEmailReceiptGap = 'write_failed' | 'claim_lost';
 
 export type ConfirmationEmailDeliveryOutcome =
@@ -96,9 +115,10 @@ export type ConfirmationEmailDeliveryOutcome =
   // A3-4 R2: the envelope was frozen and committed; nothing was sent.
   | { status: 'snapshotted'; via: 'committed' | 'adopted_existing_object' | 'peer_committed' }
   // A3-4 R2: the record was moved to a reconciliation hold; nothing was sent.
-  | { status: 'held'; reason: ConfirmationEnvelopeSnapshotHoldReason }
+  // A3-5: or the frozen dispatcher committed a hold, which is never retried.
+  | { status: 'held'; reason: ConfirmationEnvelopeSnapshotHoldReason | ConfirmationFrozenDispatchHoldReason }
   // A3-4 R2: no state change and no send; a later attempt may retry.
-  | { status: 'snapshot_deferred'; reason: ConfirmationEnvelopeSnapshotDeferral };
+  | { status: 'snapshot_deferred'; reason: ConfirmationEnvelopeSnapshotDeferral | ConfirmationFrozenDispatchDeferral };
 
 export type ConfirmationEmailSendResult =
   | { skipped: true; reason: string }
@@ -133,6 +153,8 @@ export interface DeliverOrderConfirmationEmailDeps extends ConfirmationEmailClai
   /** A3-4 R2: the snapshot writer's supplied environment and injected
    *  adapters. Absent: the gate reads only the ambient writer flag. */
   envelopeWriter?: ConfirmationEnvelopeWriterDeps;
+  /** A3-5: the frozen dispatcher's injected transport. Absent: it never arms. */
+  frozenDispatch?: ConfirmationFrozenDispatchDeps;
 }
 
 /**
@@ -377,7 +399,13 @@ export async function deliverOrderConfirmationEmail(
       }
       return runBoundConfirmationEmailDelivery(orderId, deps, gate.orderIo, null);
     case 'armed':
-      return runBoundConfirmationEmailDelivery(orderId, deps, gate.orderIo, gate);
+      return runBoundConfirmationEmailDelivery(
+        orderId,
+        deps,
+        gate.orderIo,
+        gate,
+        resolveFrozenDispatcher(deps.envelopeWriter?.env, deps.frozenDispatch, gate),
+      );
   }
 }
 
@@ -393,6 +421,7 @@ async function runBoundConfirmationEmailDelivery(
   deps: DeliverOrderConfirmationEmailDeps,
   orderIo: BoundOrderIo,
   armedGate: Extract<ConfirmationEnvelopeWriterGate, { kind: 'armed' }> | null,
+  dispatcher: FrozenDispatcher | null = null,
 ): Promise<ConfirmationEmailDeliveryOutcome> {
   try {
     return await runConfirmationEmailDelivery(orderId, deps, {
@@ -400,7 +429,7 @@ async function runBoundConfirmationEmailDelivery(
       claimTransact: orderIo.guardedTransact,
       postTransportTransact: orderIo.postTransportTransact,
       beforeTransport: orderIo.beforeTransport,
-    }, armedGate);
+    }, armedGate, dispatcher);
   } catch (error) {
     const fault = orderIo.classifyFault(error);
     if (fault === null) throw error;
@@ -417,6 +446,7 @@ async function runConfirmationEmailDelivery(
   deps: DeliverOrderConfirmationEmailDeps,
   io: DeliveryOrderIo,
   armedGate: Extract<ConfirmationEnvelopeWriterGate, { kind: 'armed' }> | null,
+  dispatcher: FrozenDispatcher | null = null,
 ): Promise<ConfirmationEmailDeliveryOutcome> {
   const send = deps.send ?? defaultSendOrderConfirmationEmail;
   const newClaimId = deps.newClaimId ?? randomUUID;
@@ -435,6 +465,17 @@ async function runConfirmationEmailDelivery(
   const observed = await io.read(orderId);
   if (!observed) return { status: 'blocked', reason: 'order_not_found' };
   const preBlocked = evaluateConfirmationEmailClaimability(observed, { nowMs, claimStaleMs });
+  // A3-5: a dispatcher is armed only under an armed writer.
+  const dispatchFrozen = (armed: Extract<FrozenDispatcher, { kind: 'armed' }>) => dispatchFrozenConfirmation(orderId, armed, {
+    nowMs,
+    claimStaleMs,
+    evaluateClaimability: (order) => evaluateConfirmationEmailClaimability(order, { nowMs, claimStaleMs }),
+    newClaimId,
+    newAttemptId: randomUUID,
+    log,
+    errorLog,
+  });
+  if (preBlocked === CONFIRMATION_EMAIL_AWAITING_FROZEN_DISPATCH && dispatcher?.kind === 'armed') return dispatchFrozen(dispatcher);
   if (preBlocked) return { status: 'blocked', reason: preBlocked };
 
   if (armedGate) {
@@ -455,6 +496,7 @@ async function runConfirmationEmailDelivery(
         break;
       case 'snapshotted':
         log(`[confirmation-envelope] snapshotted orderId=${orderId} via=${produced.via}`);
+        if (dispatcher?.kind === 'armed') return dispatchFrozen(dispatcher);
         return { status: 'snapshotted', via: produced.via };
       case 'held':
         errorLog(`[confirmation-envelope] held orderId=${orderId} reason=${produced.reason} cause=${produced.cause}`);

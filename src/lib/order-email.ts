@@ -309,6 +309,117 @@ export async function sendOrderConfirmationEmail(order: OrderRecord) {
   return { skipped: false as const, id: result.data.id };
 }
 
+// ── Frozen confirmation dispatch (L-4 A3-5) ──────────────────────────────────
+
+/** The six stored request fields, exactly as the frozen envelope holds them. */
+export interface FrozenConfirmationRequest {
+  readonly from: string;
+  readonly to: readonly [string];
+  readonly subject: string;
+  readonly html: string;
+  readonly text: string;
+  readonly replyTo: string;
+}
+
+/**
+ * What one frozen dispatch did, as closed codes. `not_submitted` is the only
+ * arm that proves the request never reached the SDK; everything after the
+ * submission point is reported as the provider status and a name-shaped class.
+ */
+export type FrozenDispatchTransportResult =
+  | { kind: 'accepted'; id: string }
+  | { kind: 'not_submitted'; cause: 'missing_resend_api_key' | 'client_construction' | 'argument_invalid' }
+  | { kind: 'provider_error'; statusCode: number | null; providerErrorClass: string }
+  | { kind: 'no_message_id' }
+  | { kind: 'submit_threw'; errorClass: string };
+
+/** A provider message id that may be written to the public record and logs. */
+const FROZEN_DISPATCH_MESSAGE_ID_RE = /^[A-Za-z0-9-]{1,128}$/;
+
+function frozenDispatchClassName(value: unknown): string {
+  return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value) ? value : 'unknown';
+}
+
+function isFrozenConfirmationRequest(value: unknown): value is FrozenConfirmationRequest {
+  if (!value || typeof value !== 'object') return false;
+  const request = value as Record<string, unknown>;
+  return typeof request.from === 'string'
+    && Array.isArray(request.to)
+    && request.to.length === 1
+    && typeof request.to[0] === 'string'
+    && typeof request.subject === 'string'
+    && typeof request.html === 'string'
+    && typeof request.text === 'string'
+    && typeof request.replyTo === 'string';
+}
+
+/**
+ * Present one stored request to the provider, verbatim, under the stored key:
+ * one SDK call at most, no sender resolution, no rendering, no record read and
+ * no fallback. Never throws, and no provider message crosses the boundary.
+ *
+ * Resend's SDK turns every fetch failure into an error return, so nothing the
+ * SDK reports can prove the request never left. Only a failure in this
+ * function before `emails.send` is called is `not_submitted`.
+ */
+export async function dispatchFrozenConfirmationRequest(
+  request: FrozenConfirmationRequest,
+  idempotencyKey: string,
+  deps: { createClient?: (apiKey: string) => Pick<Resend, 'emails'> } = {},
+): Promise<FrozenDispatchTransportResult> {
+  let valid = false;
+  try {
+    valid = isFrozenConfirmationRequest(request) && typeof idempotencyKey === 'string' && idempotencyKey.length > 0;
+  } catch {
+    // A throwing getter on the input: nothing was submitted.
+  }
+  if (!valid) return { kind: 'not_submitted', cause: 'argument_invalid' };
+  const apiKey = process.env.HSB_RESEND_API_KEY || process.env.RESEND_API_KEY;
+  if (!apiKey) return { kind: 'not_submitted', cause: 'missing_resend_api_key' };
+
+  let client: Pick<Resend, 'emails'>;
+  try {
+    client = (deps.createClient ?? ((key: string) => new Resend(key)))(apiKey);
+  } catch {
+    return { kind: 'not_submitted', cause: 'client_construction' };
+  }
+
+  // Set immediately before the SDK call: a throw before it is ours and proven
+  // pre-submit; a throw after it may follow a request that left.
+  let submitted = false;
+  try {
+    const payload = {
+      from: request.from,
+      to: [request.to[0]],
+      subject: request.subject,
+      html: request.html,
+      text: request.text,
+      replyTo: request.replyTo,
+    };
+    submitted = true;
+    const result = await client.emails.send(payload, { idempotencyKey });
+    if (result.error) {
+      return {
+        kind: 'provider_error',
+        statusCode: typeof result.error.statusCode === 'number' ? result.error.statusCode : null,
+        providerErrorClass: frozenDispatchClassName(result.error.name),
+      };
+    }
+    const id = result.data?.id;
+    if (typeof id !== 'string' || !FROZEN_DISPATCH_MESSAGE_ID_RE.test(id)) return { kind: 'no_message_id' };
+    return { kind: 'accepted', id };
+  } catch (error) {
+    if (!submitted) return { kind: 'not_submitted', cause: 'argument_invalid' };
+    let errorClass = 'unknown';
+    try {
+      errorClass = frozenDispatchClassName(error instanceof Error ? error.name : typeof error);
+    } catch {
+      // A hostile getter is still a submitted request; the class stays unknown.
+    }
+    return { kind: 'submit_threw', errorClass };
+  }
+}
+
 // ── Lifecycle email builders ──────────────────────────────────────────────────
 
 export function buildPreviewReadyEmail(
