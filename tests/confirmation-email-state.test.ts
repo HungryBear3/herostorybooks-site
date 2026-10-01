@@ -1465,10 +1465,19 @@ test('A3-3 R2: the held set is deliberately not modified', () => {
 test('A3-3 R2: no other state disposition moved', () => {
   // Every non-ACCEPTED, non-held state stays claimable, so the new line refuses
   // exactly one thing.
+  //
+  // A3-4 R2 AM-ST1 (fence F1, the same move AM-R1 and GA-11 make):
+  // SNAPSHOTTED and PROVABLY_PRE_DISPATCH_FAILED hold a frozen envelope that
+  // only the frozen dispatcher (A3-5) may send, so the legacy path refuses both
+  // as awaiting_frozen_dispatch — never as a hold. R2's ACCEPTED line is unchanged.
   for (const state of CONFIRMATION_EMAIL_STATES) {
     const expected = state === 'ACCEPTED'
       ? 'already_sent'
-      : isConfirmationEmailHeldState(state) ? 'held_for_reconciliation' : null;
+      : isConfirmationEmailHeldState(state)
+        ? 'held_for_reconciliation'
+        : state === 'SNAPSHOTTED' || state === 'PROVABLY_PRE_DISPATCH_FAILED'
+          ? 'awaiting_frozen_dispatch'
+          : null;
     assert.equal(
       evaluateConfirmationEmailClaimability(r2Order({ confirmationEmailState: state }), R2_FENCE_CFG),
       expected,

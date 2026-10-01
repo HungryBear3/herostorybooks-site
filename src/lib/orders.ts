@@ -1,7 +1,7 @@
 import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 
-import { BlobNamespaceError, getBlobNamespace, withBlobNamespace } from './blob-namespace.ts';
+import { applyBlobNamespace, BlobNamespaceError, getBlobNamespace, withBlobNamespace } from './blob-namespace.ts';
 import { normalizeEtag, normalizeEtagForIfMatch } from './blob-etag.ts';
 import {
   BlobNotFoundError,
@@ -1960,7 +1960,7 @@ function scrubRetiredPrivateFields(order: OrderRecord): OrderRecord {
  * closed problem code, because an `OrderPersistenceError` message is routinely
  * handed to a log sink and the thing being refused may be customer content.
  */
-export function assertNoConfirmationRequestBytes(order: OrderRecord): void {
+export function assertNoConfirmationRequestBytes(order: OrderRecord, boundNamespace?: string): void {
   if (order === null || typeof order !== 'object') {
     throw new OrderPersistenceError('unknown', 'confirmation_envelope_boundary:record_not_object');
   }
@@ -1987,7 +1987,7 @@ export function assertNoConfirmationRequestBytes(order: OrderRecord): void {
   // itself — a deployment that cannot say which keyspace it owns must not write.
   const problem = validateConfirmationEmailEnvelopeRef(ref, {
     orderId,
-    namespace: getBlobNamespace(),
+    namespace: boundNamespace ?? getBlobNamespace(),
   });
   if (problem) {
     throw new OrderPersistenceError(orderId, `confirmation_envelope_boundary:${problem}`);
@@ -2012,14 +2012,14 @@ export function assertNoConfirmationRequestBytes(order: OrderRecord): void {
  * read and the assignment mutates nothing the caller holds. Refusal throws with
  * the same fixed-string-plus-code message as the boundary, for the same reason.
  */
-function sealConfirmationEnvelopeRefForWrite(write: OrderRecord): void {
+function sealConfirmationEnvelopeRefForWrite(write: OrderRecord, boundNamespace?: string): void {
   const candidate = write as OrderRecord & Record<string, unknown>;
   const ref = candidate[CONFIRMATION_ENVELOPE_REF_FIELD];
   if (ref === undefined || ref === null) return;
   const orderId = typeof candidate.id === 'string' ? candidate.id : 'unknown';
   const result = materializeConfirmationEmailEnvelopeRef(ref, {
     orderId,
-    namespace: getBlobNamespace(),
+    namespace: boundNamespace ?? getBlobNamespace(),
   });
   if ('problem' in result) {
     throw new OrderPersistenceError(orderId, `confirmation_envelope_boundary:${result.problem}`);
@@ -2114,7 +2114,7 @@ export function checkoutIntakeOrderContractDigest(order: OrderRecord): string | 
   }
 }
 
-function assertCheckoutIntakeOrderContract(order: OrderRecord): void {
+function assertCheckoutIntakeOrderContract(order: OrderRecord, boundNamespace?: string): void {
   // Provider-Session bookkeeping is validated for EVERY order, legacy public
   // path included, and BEFORE the no-intake early return below. A malformed
   // candidate must not degrade to "absent": absent means "no Session exists,
@@ -2158,7 +2158,7 @@ function assertCheckoutIntakeOrderContract(order: OrderRecord): void {
     || !Array.isArray(binding.selection)
     || binding.selection.length > 16) throw new Error('invalid checkout intake order contract');
 
-  const namespace = getBlobNamespace();
+  const namespace = boundNamespace ?? getBlobNamespace();
   const selection = binding.selection.map((entry) => parseSelectionEntry(entry, binding.intakeId, namespace));
   const slots = new Set<string>();
   const assets = new Set<string>();
@@ -2229,9 +2229,9 @@ function assertCheckoutIntakeOrderContract(order: OrderRecord): void {
   order.checkoutIntake = { ...binding, selection };
 }
 
-function parseOrderRecord(serialized: string): OrderRecord {
+function parseOrderRecord(serialized: string, boundNamespace?: string): OrderRecord {
   const order = scrubRetiredPrivateFields(JSON.parse(serialized) as OrderRecord);
-  assertCheckoutIntakeOrderContract(order);
+  assertCheckoutIntakeOrderContract(order, boundNamespace);
   return order;
 }
 
@@ -4024,6 +4024,291 @@ export async function withOrderTransaction<T>(
   }
   throw new OrderVersionConflictError(orderId, maxAttempts);
 }
+
+// ── NBT: the namespace-bound order transaction substrate (architecture §N) ──
+//
+// Every function above resolves the Blob namespace from the ambient
+// environment at each call, so a transaction that starts in one namespace can
+// read, retry or commit in another if the environment moves underneath it. The
+// functions below take the namespace as DATA instead: a branded, frozen
+// binding fixes the record path once per call, and every read, every CAS retry
+// read, the conditional commit, the ref boundary and seal, the checkout-intake
+// contract and the returned provenance use it. They are additive. No existing
+// function calls them, and every existing caller keeps its ambient behaviour.
+//
+// Invariants (architecture §N.8), stated once for the whole block:
+//   INB-1  One path per call: `recordPath` is computed once from
+//          (binding.namespace, orderId) at entry, and every readVersioned and
+//          every replaceIfVersion of the call receives exactly that string.
+//   INB-2  No ambient namespace: nothing here reads the environment or derives
+//          a namespace or path from it.
+//   INB-3  Bound validation: the checkout-intake contract (read and commit) and
+//          the ref boundary and ref seal (commit) evaluate against the binding.
+//   INB-4  No cache: bound reads never consult the id-keyed read-your-own-writes
+//          cache and bound commits never publish to it; they claim, evict and
+//          retract write generations like a writer that does not publish.
+//   INB-5  Adapter once: the order-store adapter is resolved once per call.
+//   INB-6  Guard: `beforeCommit` runs once per commit attempt, synchronously,
+//          after `mutate` returned and after the boundary checks, with no await
+//          before the adapter write; anything but `true` means zero writes and
+//          `commit_refused`.
+//   INB-7  Provenance truth: provenance lists the pathnames actually passed to
+//          the adapter, recorded at the call site.
+//   INB-8  Branded bindings: only objects returned by `bindOrderNamespace`.
+//   INB-9  Commit identity: `commit.id === orderId`, or nothing is written.
+//   INB-10 Existing API unchanged.
+
+/** Frozen. Accepted only if produced by `bindOrderNamespace` (module-private brand). */
+export interface OrderNamespaceBinding {
+  readonly namespace: string;
+}
+
+export type OrderNamespaceBindingResult =
+  | { ok: true; binding: OrderNamespaceBinding }
+  | { ok: false; problem: 'namespace_invalid' };
+
+/** The brand. A forged, copied or proxied binding is not in it. */
+const orderNamespaceBindings = new WeakSet<object>();
+
+/**
+ * Bind a namespace for the NBT functions.
+ *
+ * The grammar is the one in `blob-namespace.ts` (`''` for flat, otherwise one
+ * canonical path segment), re-used rather than copied: the candidate is
+ * accepted only if `getBlobNamespace` evaluated on an object literal holding
+ * it — never on `process.env` — returns it unchanged.
+ */
+export function bindOrderNamespace(namespace: string): OrderNamespaceBindingResult {
+  if (typeof namespace !== 'string') return { ok: false, problem: 'namespace_invalid' };
+  let resolved: string;
+  try {
+    // The casts are type-only: the argument is this object literal, never the ambient environment.
+    resolved = getBlobNamespace({ HSB_BLOB_NAMESPACE: namespace } as Partial<NodeJS.ProcessEnv> as NodeJS.ProcessEnv);
+  } catch {
+    return { ok: false, problem: 'namespace_invalid' };
+  }
+  if (resolved !== namespace) return { ok: false, problem: 'namespace_invalid' };
+  const binding: OrderNamespaceBinding = Object.freeze({ namespace });
+  orderNamespaceBindings.add(binding);
+  return { ok: true, binding };
+}
+
+/** The record path for `orderId` under the binding: the order store's join, with the namespace as data. */
+export function orderRecordPathInNamespace(binding: OrderNamespaceBinding, orderId: string): string {
+  if (!orderNamespaceBindings.has(binding)) {
+    throw new OrderPersistenceError(orderId, 'order_namespace_binding:binding_invalid');
+  }
+  return applyBlobNamespace(`orders/${orderId}.json`, binding.namespace);
+}
+
+export interface OrderNamespaceProvenance {
+  /** `binding.namespace`. */
+  readonly namespace: string;
+  /** Computed once, at entry, from (binding.namespace, orderId). */
+  readonly recordPath: string;
+  /** The pathname actually passed to every `adapter.readVersioned`. */
+  readonly readPaths: readonly string[];
+  /** The pathname actually passed to every `adapter.replaceIfVersion`. */
+  readonly commitPaths: readonly string[];
+  /** The number of reads. */
+  readonly attempts: number;
+  readonly outcome: 'read' | 'not_found' | 'aborted' | 'committed' | 'commit_refused';
+}
+
+export type BoundOrderRead = Readonly<{
+  found: VersionedOrder | null;
+  provenance: OrderNamespaceProvenance;
+}>;
+
+export type BoundOrderTransactionResult<T> = Readonly<
+  | { status: 'committed' | 'aborted' | 'not_found'; result: T; provenance: OrderNamespaceProvenance }
+  | { status: 'commit_refused'; provenance: OrderNamespaceProvenance }
+>;
+
+/**
+ * The fourth writer at the record boundary, after `persistOrderUnsafe`,
+ * `persistNewOrder` and `commitOrderConditional`. Private: the only way to
+ * reach it is `withOrderTransactionInNamespace`.
+ *
+ * It enforces the same boundary as `commitOrderConditional`, in the same order,
+ * against the bound namespace; serializes BEFORE the guard so no
+ * caller-reachable code (a `toJSON`, say) runs between the guard and the
+ * write; and then lets the caller's guard refuse, with nothing but the
+ * `commitPaths` append between the guard's return and the adapter call.
+ *
+ * It never publishes to the id-keyed cache: that cache is keyed by order id
+ * only, and a record committed under one namespace must never be served to an
+ * ambient transaction running under another. It still claims a generation
+ * first, evicts what it has authority over when the write may have landed, and
+ * retracts when the write provably did not.
+ */
+async function commitOrderConditionalInNamespace(
+  adapter: OrderStoreAdapter,
+  binding: OrderNamespaceBinding,
+  recordPath: string,
+  orderId: string,
+  order: OrderRecord,
+  expectedVersion: string,
+  beforeCommit: (() => boolean) | undefined,
+  commitPaths: string[],
+): Promise<ConditionalCommitResult | 'refused'> {
+  // Claimed synchronously, before any await.
+  const generation = beginOrderWrite(orderId);
+  let result: ConditionalCommitResult;
+  try {
+    assertNoConfirmationRequestBytes(order, binding.namespace);
+    const sanitized = scrubRetiredPrivateFields(order);
+    sealConfirmationEnvelopeRefForWrite(sanitized, binding.namespace);
+    assertCheckoutIntakeOrderContract(sanitized, binding.namespace);
+    const body = JSON.stringify(sanitized, null, 2);
+    if (beforeCommit !== undefined) {
+      // Caller code that can only refuse: anything but a returned `true` — a
+      // `false`, a thenable, any other value, or a throw — is a provable
+      // no-write, and a guard throw is not rethrown.
+      let allowed: unknown;
+      try {
+        allowed = beforeCommit();
+      } catch {
+        allowed = false;
+      }
+      if (allowed !== true) {
+        retractOrderWrite(orderId, generation);
+        return 'refused';
+      }
+    }
+    commitPaths.push(recordPath);
+    result = await adapter.replaceIfVersion(recordPath, body, expectedVersion);
+  } catch (error) {
+    // Ambiguous: the write may or may not have landed.
+    forgetRecentConditionalCommit(orderId, generation);
+    throw error;
+  }
+  // Landed: evict what this write has authority over, and publish nothing.
+  if (result.ok) forgetRecentConditionalCommit(orderId, generation);
+  // Lost CAS: a provable no-write gives its claim back.
+  else retractOrderWrite(orderId, generation);
+  return result;
+}
+
+/**
+ * Read an order and its CAS version at the bound record path (INB-1…INB-10).
+ *
+ * Exactly one adapter read, never the id-keyed cache. The body goes through
+ * the single deserialization site, `parseOrderRecord`, so the retired-field
+ * scrub and the checkout-intake contract both run, the contract against the
+ * bound namespace.
+ */
+export async function readOrderVersionedInNamespace(
+  binding: OrderNamespaceBinding,
+  orderId: string,
+): Promise<BoundOrderRead> {
+  if (!orderNamespaceBindings.has(binding)) {
+    throw new OrderPersistenceError(orderId, 'order_namespace_binding:binding_invalid');
+  }
+  if (typeof orderId !== 'string' || orderId === '' || orderId.includes('/') || orderId.includes('\\')) {
+    throw new OrderPersistenceError('unknown', 'order_namespace_binding:order_id_invalid');
+  }
+  const recordPath = orderRecordPathInNamespace(binding, orderId);
+  const adapter = resolveOrderStoreAdapter();
+  const readPaths: string[] = [];
+  const provenance = (outcome: 'read' | 'not_found'): OrderNamespaceProvenance => Object.freeze({
+    namespace: binding.namespace,
+    recordPath,
+    readPaths: Object.freeze([...readPaths]),
+    commitPaths: Object.freeze([] as string[]),
+    attempts: readPaths.length,
+    outcome,
+  });
+
+  readPaths.push(recordPath);
+  const raw = await adapter.readVersioned(recordPath);
+  if (raw === null) return Object.freeze({ found: null, provenance: provenance('not_found') });
+  let parsed: OrderRecord;
+  try {
+    parsed = parseOrderRecord(raw.body, binding.namespace);
+  } catch (error) {
+    throw new OrderPersistenceError(orderId, 'Stored order record is not valid JSON', error);
+  }
+  return Object.freeze({ found: { order: parsed, version: raw.version }, provenance: provenance('read') });
+}
+
+/**
+ * `withOrderTransaction`, bound to one namespace (INB-1…INB-10).
+ *
+ * Every attempt — the first and every CAS retry — reads the adapter at the one
+ * record path computed at entry; the id-keyed cache is never consulted. The
+ * decision is recomputed against each fresh read, a commit for any other order
+ * id is refused before anything is written, and the commit goes through the
+ * private bound writer with the caller's synchronous `beforeCommit` guard.
+ * Returns the frozen provenance of the pathnames actually used; on conflict
+ * exhaustion it throws the existing `OrderVersionConflictError`.
+ */
+export async function withOrderTransactionInNamespace<T>(
+  binding: OrderNamespaceBinding,
+  orderId: string,
+  mutate: (order: OrderRecord) => Promise<OrderTransactionOutcome<T>> | OrderTransactionOutcome<T>,
+  opts: { notFound: () => T; maxAttempts?: number; beforeCommit?: () => boolean },
+): Promise<BoundOrderTransactionResult<T>> {
+  if (!orderNamespaceBindings.has(binding)) {
+    throw new OrderPersistenceError(orderId, 'order_namespace_binding:binding_invalid');
+  }
+  if (typeof orderId !== 'string' || orderId === '' || orderId.includes('/') || orderId.includes('\\')) {
+    throw new OrderPersistenceError('unknown', 'order_namespace_binding:order_id_invalid');
+  }
+  const recordPath = orderRecordPathInNamespace(binding, orderId);
+  const adapter = resolveOrderStoreAdapter();
+  const readPaths: string[] = [];
+  const commitPaths: string[] = [];
+  const provenance = (outcome: OrderNamespaceProvenance['outcome']): OrderNamespaceProvenance => Object.freeze({
+    namespace: binding.namespace,
+    recordPath,
+    readPaths: Object.freeze([...readPaths]),
+    commitPaths: Object.freeze([...commitPaths]),
+    attempts: readPaths.length,
+    outcome,
+  });
+  const maxAttempts = opts.maxAttempts ?? ORDER_TRANSACTION_MAX_ATTEMPTS;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    readPaths.push(recordPath);
+    const raw = await adapter.readVersioned(recordPath);
+    if (raw === null) {
+      return Object.freeze({ status: 'not_found', result: opts.notFound(), provenance: provenance('not_found') });
+    }
+    let current: OrderRecord;
+    try {
+      current = parseOrderRecord(raw.body, binding.namespace);
+    } catch (error) {
+      throw new OrderPersistenceError(orderId, 'Stored order record is not valid JSON', error);
+    }
+    const outcome = await mutate(current);
+    if ('abort' in outcome) {
+      return Object.freeze({ status: 'aborted', result: outcome.abort, provenance: provenance('aborted') });
+    }
+    if (outcome.commit.id !== orderId) {
+      throw new OrderPersistenceError(orderId, 'order_namespace_binding:commit_id_mismatch');
+    }
+    const committed = await commitOrderConditionalInNamespace(
+      adapter,
+      binding,
+      recordPath,
+      orderId,
+      outcome.commit,
+      raw.version,
+      opts.beforeCommit,
+      commitPaths,
+    );
+    if (committed === 'refused') {
+      return Object.freeze({ status: 'commit_refused', provenance: provenance('commit_refused') });
+    }
+    if (committed.ok) {
+      return Object.freeze({ status: 'committed', result: outcome.result, provenance: provenance('committed') });
+    }
+  }
+  throw new OrderVersionConflictError(orderId, maxAttempts);
+}
+
+// ── end NBT ──
 
 /**
  * Atomically retire an exact expired+unpaid checkout attempt after Stripe has

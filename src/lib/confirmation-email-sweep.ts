@@ -84,6 +84,12 @@ export interface ConfirmationEmailSweepResult {
   skipped: number;
   blocked: number;
   failed: number;
+  /** A3-4 R2: envelopes frozen and committed; nothing was sent. */
+  snapshotted: number;
+  /** A3-4 R2: records moved to a reconciliation hold; nothing was sent. */
+  held: number;
+  /** A3-4 R2: attempts that changed nothing and sent nothing; the next tick retries. */
+  deferred: number;
 }
 
 /**
@@ -139,6 +145,9 @@ export async function runConfirmationEmailSweep(
   let skipped = 0;
   let blocked = 0;
   let failed = 0;
+  let snapshotted = 0;
+  let held = 0;
+  let deferred = 0;
 
   for (const order of orders) {
     if (eligible >= maxDeliveries) break;
@@ -153,21 +162,23 @@ export async function runConfirmationEmailSweep(
     eligible += 1;
     try {
       const outcome = await deps.deliver(order.id);
+      // A3-4 R2: exhaustive — every arm ends the iteration, and the never
+      // check below fails `tsc` the moment an outcome has no arm.
       switch (outcome.status) {
         case 'sent':
           sent += 1;
           deps.log(`[confirmation-email-sweep] sent orderId=${order.id}`);
-          break;
+          continue;
         case 'skipped':
           skipped += 1;
           deps.log(`[confirmation-email-sweep] skipped orderId=${order.id} reason=${outcome.reason}`);
-          break;
+          continue;
         case 'blocked':
           // Lost the race with a concurrent sender — the expected, benign
           // outcome of webhook/sweep overlap.
           blocked += 1;
           deps.log(`[confirmation-email-sweep] blocked orderId=${order.id} reason=${outcome.reason}`);
-          break;
+          continue;
         case 'receipt_unrecorded':
           // The provider accepted but nothing durable records it. That is a
           // failure, not a delivery: it must be visible and it must not be
@@ -176,15 +187,33 @@ export async function runConfirmationEmailSweep(
           deps.errorLog(
             `[confirmation-email-sweep] receipt unrecorded orderId=${order.id} reason=${outcome.reason}`,
           );
-          break;
-        default:
+          continue;
+        case 'failed':
           failed += 1;
           deps.errorLog(
             `[confirmation-email-sweep] delivery failed orderId=${order.id}`
               + ` reason=${outcome.reason} errorClass=${outcome.errorClass}`,
           );
-          break;
+          continue;
+        case 'snapshotted':
+          // Frozen, not sent: neither a delivery nor a failure.
+          snapshotted += 1;
+          deps.log(`[confirmation-email-sweep] snapshotted orderId=${order.id} via=${outcome.via}`);
+          continue;
+        case 'held':
+          // A hold is the designed, durable outcome; it does not fail the run.
+          held += 1;
+          deps.errorLog(`[confirmation-email-sweep] held orderId=${order.id} reason=${outcome.reason}`);
+          continue;
+        case 'snapshot_deferred':
+          // Nothing changed and nothing was sent; the run is not ok so the
+          // deferral stays visible, and the next tick retries.
+          deferred += 1;
+          deps.errorLog(`[confirmation-email-sweep] deferred orderId=${order.id} reason=${outcome.reason}`);
+          continue;
       }
+      const _exhaustive: never = outcome;
+      void _exhaustive;
     } catch (err) {
       failed += 1;
       deps.errorLog(
@@ -195,12 +224,15 @@ export async function runConfirmationEmailSweep(
   }
 
   return {
-    ok: failed === 0,
+    ok: failed === 0 && deferred === 0,
     scanned: orders.length,
     eligible,
     sent,
     skipped,
     blocked,
     failed,
+    snapshotted,
+    held,
+    deferred,
   };
 }
