@@ -397,6 +397,12 @@ const RUNTIME_IMPORT_ALLOWLIST: Record<string, RuntimeRule[]> = {
       bindings: ['appendConfirmationEmailAttempt', 'evaluateConfirmationEmailTransition', 'evaluateFirstDispatchIntentWrite'],
     },
   ],
+  // A3-6: the reaper and the operator doors ask the model, append the attempt
+  // and close the projected state over the model's own list.
+  'src/lib/confirmation-email-reconciliation.ts': [{
+    specifier: /confirmation-email-state(?:\.ts)?$/,
+    bindings: ['CONFIRMATION_EMAIL_STATES', 'appendConfirmationEmailAttempt', 'evaluateConfirmationEmailTransition'],
+  }],
 };
 
 const PRODUCER = 'src/lib/confirmation-envelope-producer.ts';
@@ -429,6 +435,9 @@ const CANDIDATE_TESTS = new Set([
   // fields it commits.
   'tests/confirmation-email-frozen-dispatch.test.ts',
   'tests/confirmation-email-dispatch-classification.test.ts',
+  // A3-6: the reaper and operator suites seed and read the transition fields.
+  'tests/confirmation-email-reaper.test.ts',
+  'tests/confirmation-email-operator-reconciliation.test.ts',
 ]);
 
 /** A3-4 R2 GA-5: a candidate exemption is only ever a test file. */
@@ -561,6 +570,8 @@ const CONFIRMATION_REF_READER_ALLOWLIST = new Set([
   'src/lib/confirmation-envelope-producer.ts',
   // A3-5: the frozen dispatcher reads the ref and fences the envelope on it.
   'src/lib/confirmation-email-dispatch.ts',
+  // A3-6: door 2 refuses without a valid ref; the projection shows its view.
+  'src/lib/confirmation-email-reconciliation.ts',
   ...CANDIDATE_TESTS,
 ]);
 
@@ -577,6 +588,18 @@ const RECORD_FIELD_GRANTS: Record<string, readonly string[]> = {
   // A3-5: the dispatcher commits the transition fields. The retired inline
   // envelope stays out of its reach.
   'src/lib/confirmation-email-dispatch.ts': [
+    'confirmationEmailState',
+    'confirmationEmailFirstDispatchIntentAt',
+    'confirmationEmailAttemptId',
+    'confirmationEmailDispatchDeadlineAt',
+    'confirmationEmailProviderMessageId',
+    'confirmationEmailAcceptedAt',
+    'confirmationEmailAttempts',
+    'confirmationEmailHoldReason',
+  ],
+  // A3-6: the reaper (T9) and the operator doors (T10-T12) commit the
+  // transition fields. The retired inline envelope stays out of reach.
+  'src/lib/confirmation-email-reconciliation.ts': [
     'confirmationEmailState',
     'confirmationEmailFirstDispatchIntentAt',
     'confirmationEmailAttemptId',

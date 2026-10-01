@@ -1021,6 +1021,9 @@ test('B9: the ref module is reached at runtime only by the files that need it (A
     'tests/confirmation-envelope-record-boundary.test.ts',
     // A3-4 R2 AM-B1: the snapshot producer materializes the ref it writes.
     'src/lib/confirmation-envelope-producer.ts',
+    // A3-6: the reconciliation module validates the ref for door 2 and the
+    // operator projection, and owns the order-id grammar for the route.
+    'src/lib/confirmation-email-reconciliation.ts',
   ]);
   const offenders = files.filter((file) => {
     if (allowed.has(file)) return false;

@@ -20,6 +20,10 @@ import {
   type ConfirmationEmailBlockReason,
   type ConfirmationEmailDeliveryOutcome,
 } from './confirmation-email-delivery.ts';
+import {
+  runConfirmationEmailReaper,
+  type ConfirmationEmailReaperResult,
+} from './confirmation-email-reconciliation.ts';
 import { listOrdersAuthoritative, type OrderRecord } from './orders.ts';
 
 /** How long after payment the sweep starts caring. The in-process path has the
@@ -81,6 +85,9 @@ export interface ConfirmationEmailSweepDeps {
   /** A3-5: see `ConfirmationEmailSweepEligibilityConfig`. The default deps
    *  leave it out. */
   admitAwaitingFrozenDispatch?: boolean;
+  /** A3-6: the separate reaper pass over the same listing, run before the
+   *  delivery loop with its own budget. It writes holds only and never sends. */
+  reap?: (orders: readonly OrderRecord[], nowMs: number) => Promise<ConfirmationEmailReaperResult>;
 }
 
 export interface ConfirmationEmailSweepResult {
@@ -97,6 +104,10 @@ export interface ConfirmationEmailSweepResult {
   held: number;
   /** A3-4 R2: attempts that changed nothing and sent nothing; the next tick retries. */
   deferred: number;
+  /** A3-6 (R-3): present only when a reaper ran. Leases turned into holds. */
+  reaped?: number;
+  /** A3-6 (R-3): present only when a reaper ran. Due leases left unreaped. */
+  reapDeferred?: number;
 }
 
 /**
@@ -140,6 +151,12 @@ export function buildDefaultConfirmationEmailSweepDeps(): ConfirmationEmailSweep
     log: (line: string) => console.log(line),
     errorLog: (line: string) => console.error(line),
     maxDeliveries: CONFIRMATION_EMAIL_SWEEP_MAX_DELIVERIES,
+    // A3-6: the ambient writer gate. Unset — the default — it reaps nothing.
+    reap: (orders, nowMs) => runConfirmationEmailReaper(orders, {
+      nowMs,
+      log: (line: string) => console.log(line),
+      errorLog: (line: string) => console.error(line),
+    }),
   };
 }
 
@@ -158,6 +175,21 @@ export async function runConfirmationEmailSweep(
   let snapshotted = 0;
   let held = 0;
   let deferred = 0;
+
+  // A3-6: the reaper pass. Not a branch of the eligibility filter, which can
+  // never surface a record holding dispatch intent (R1).
+  let reaped = 0;
+  let reapDeferred = 0;
+  if (deps.reap) {
+    try {
+      const reap = await deps.reap(orders, nowMs);
+      reaped = reap.reaped;
+      reapDeferred = reap.deferred + reap.unbound;
+    } catch (err) {
+      reapDeferred += 1;
+      deps.errorLog(`[confirmation-email-sweep] reaper threw errorClass=${classifyConfirmationEmailError(err)}`);
+    }
+  }
 
   for (const order of orders) {
     if (eligible >= maxDeliveries) break;
@@ -235,7 +267,7 @@ export async function runConfirmationEmailSweep(
   }
 
   return {
-    ok: failed === 0 && deferred === 0,
+    ok: failed === 0 && deferred === 0 && reapDeferred === 0,
     scanned: orders.length,
     eligible,
     sent,
@@ -245,5 +277,6 @@ export async function runConfirmationEmailSweep(
     snapshotted,
     held,
     deferred,
+    ...(deps.reap ? { reaped, reapDeferred } : {}),
   };
 }
