@@ -1,24 +1,31 @@
 /**
  * Offline analytics governance CLI. No network, no credentials, no env reads.
  *
- *   node --experimental-strip-types scripts/analytics-governance.ts check \
+ *   node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/analytics-governance.ts check \
  *     [--registry FILE] [--previous FILE] [--checklist FILE] [--mapping FILE]
  *       Validates the experiment registry (and, with --previous, the change
  *       from the prior version), the GA4 Admin checklist, the decision-packet
  *       mapping contract, and the Meta DEFERRED invariants. Defaults are the
  *       checked-in files under config/analytics/.
- *   node --experimental-strip-types scripts/analytics-governance.ts fixture
+ *   node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/analytics-governance.ts fixture
  *       Prints the deterministic synthetic GA4-behavior export fixture.
- *   node --experimental-strip-types scripts/analytics-governance.ts schema
+ *   node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/analytics-governance.ts schema
  *       Prints the generated JSON Schema for that export.
- *   node --experimental-strip-types scripts/analytics-governance.ts packet-export FILE
+ *   node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/analytics-governance.ts packet-export FILE
  *       Converts one HSB GA4-behavior export into the offline decision
  *       packet's own `decision_packet.ga4_behavior` document through the
  *       checked-in mapping, or refuses: any value the pinned packet cannot
  *       represent rejects the whole export (nothing is collapsed into `other`).
- *   node --experimental-strip-types scripts/analytics-governance.ts packet-fixture
+ *   node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/analytics-governance.ts packet-fixture
  *       Prints the synthetic packet document (the export of the
  *       packet-representable synthetic fixture).
+ *   node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/analytics-governance.ts link EXPERIMENT_ID [--registry FILE]
+ *       Prints the one canonical governed link for exactly one validated
+ *       registry entry whose status is `planned` or `running`, or refuses:
+ *       unknown, inactive, ambiguous or invalid entries print no link.
+ *
+ * The warning flag suppresses only Node's typeless-module path diagnostic;
+ * it does not change module semantics or suppress other warnings/errors.
  *
  * Output is value-free: `OK <artifact>` or `REJECTED <artifact> CODE@$.path`;
  * a packet document is printed only on success.
@@ -36,7 +43,11 @@ import {
   serializeDecisionPacketDocument,
   validateDecisionPacketMapping,
 } from '../src/lib/analytics-decision-export.ts';
-import { validateExperimentRegistry, validateExperimentRegistryTransition } from '../src/lib/campaign-governance.ts';
+import {
+  resolveRegistryCampaignLink,
+  validateExperimentRegistry,
+  validateExperimentRegistryTransition,
+} from '../src/lib/campaign-governance.ts';
 import { validateGa4AdminChecklist } from '../src/lib/ga4-admin-checklist.ts';
 import { META_SERVER_PURCHASE_STATUS, metaDeferredContractViolations } from '../src/lib/meta-capi-status.ts';
 
@@ -54,7 +65,8 @@ class UsageError extends Error {}
 
 function usage(): never {
   throw new UsageError(
-    'usage: analytics-governance.ts check [--registry F] [--previous F] [--checklist F] [--mapping F] | fixture | schema | packet-fixture | packet-export F',
+    'usage: analytics-governance.ts check [--registry F] [--previous F] [--checklist F] [--mapping F] | fixture | schema | packet-fixture | packet-export F'
+      + ' | link EXPERIMENT_ID [--registry F]',
   );
 }
 
@@ -155,6 +167,22 @@ function packetFixture(): number {
   return 0;
 }
 
+function link(args: string[]): number {
+  const [experimentId, ...flags] = args;
+  if (experimentId === undefined || experimentId.startsWith('--')) usage();
+  if (flags.length !== 0 && (flags.length !== 2 || flags[0] !== '--registry' || flags[1].startsWith('--'))) usage();
+  const registry = readJson(flags[1] ?? DEFAULTS.registry);
+  const result = registry.ok ? resolveRegistryCampaignLink(registry.value, experimentId) : { ok: false as const, issues: ['JSON_INVALID@$'] };
+  if (result.ok === false) {
+    const lines: string[] = [];
+    report('campaign_link', result.issues, '', lines);
+    process.stdout.write(`${lines.join('\n')}\n`);
+    return 3;
+  }
+  process.stdout.write(`${result.url}\n`);
+  return 0;
+}
+
 function main(argv: string[]): number {
   const [command, ...rest] = argv;
   if (command === 'check') return check(rest);
@@ -168,6 +196,7 @@ function main(argv: string[]): number {
   }
   if (command === 'packet-fixture' && rest.length === 0) return packetFixture();
   if (command === 'packet-export' && rest.length === 1 && !rest[0].startsWith('--')) return packetExport(rest[0]);
+  if (command === 'link') return link(rest);
   return usage();
 }
 

@@ -354,7 +354,7 @@ function segmentKey(experiment: GovernedExperiment): string {
   return JSON.stringify([experiment.source, experiment.medium, experiment.campaign, experiment.content, experiment.landingPath]);
 }
 
-interface ParsedRegistry {
+export interface ParsedRegistry {
   issues: string[];
   experiments: GovernedExperiment[];
 }
@@ -415,6 +415,12 @@ function parseRegistry(doc: unknown): ParsedRegistry {
 /** Value-free `CODE@$.path` issues; an empty array means the registry is governed. */
 export function validateExperimentRegistry(doc: unknown): string[] {
   return parseRegistry(doc).issues;
+}
+
+/** The parsed experiments of a registry that validates, or its issues and none. */
+export function parseGovernedRegistry(doc: unknown): ParsedRegistry {
+  const parsed = parseRegistry(doc);
+  return parsed.issues.length > 0 ? { issues: parsed.issues, experiments: [] } : parsed;
 }
 
 /** Fields that define what an experiment measures; frozen once it leaves `planned`. */
@@ -501,4 +507,34 @@ export function buildGovernedCampaignUrl(experiment: unknown): string | null {
     && touch.term === null
     && touch.landingPath === governed.landingPath;
   return exact ? url.toString() : null;
+}
+
+const LINKABLE_STATUSES: ReadonlySet<string> = new Set(['planned', 'running']);
+
+/**
+ * The one canonical link for one registry entry, found by its exact
+ * experiment id, or value-free issues. The whole registry must validate (an
+ * invalid sibling or a duplicate id refuses every link), the entry must be
+ * unique and still `planned` or `running`, and its link must round-trip
+ * exactly through the Phase-A capture (`buildGovernedCampaignUrl`).
+ */
+export function resolveRegistryCampaignLink(registry: unknown, experimentId: unknown):
+  | { ok: true; url: string }
+  | { ok: false; issues: string[] } {
+  const parsed = parseRegistry(registry);
+  if (parsed.issues.length > 0) return { ok: false, issues: parsed.issues };
+  if (typeof experimentId !== 'string' || !EXPERIMENT_ID_RE.test(experimentId)) {
+    return { ok: false, issues: ['EXPERIMENT_ID_FORMAT@$.experiment_id'] };
+  }
+  const matches = parsed.experiments
+    .map((experiment, index) => ({ experiment, index }))
+    .filter(({ experiment }) => experiment.experimentId === experimentId);
+  if (matches.length === 0) return { ok: false, issues: ['EXPERIMENT_UNKNOWN@$.experiment_id'] };
+  if (matches.length > 1) return { ok: false, issues: ['EXPERIMENT_AMBIGUOUS@$.experiment_id'] };
+  const [{ experiment, index }] = matches;
+  if (!LINKABLE_STATUSES.has(experiment.status)) {
+    return { ok: false, issues: [`EXPERIMENT_NOT_LINKABLE@$.experiments[${index}].status`] };
+  }
+  const url = buildGovernedCampaignUrl((registry as { experiments: unknown[] }).experiments[index]);
+  return url === null ? { ok: false, issues: [`LINK_NOT_EXACT@$.experiments[${index}]`] } : { ok: true, url };
 }
