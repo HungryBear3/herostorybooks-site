@@ -44,7 +44,7 @@ collection. Remounting requires a new privacy review of `dp` and `r`.
 Check everything offline:
 
 ```bash
-node --experimental-strip-types scripts/analytics-governance.ts check
+node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/analytics-governance.ts check
 ```
 
 Exit 0 = accepted, 3 = rejected (value-free `CODE@$.path` lines), 2 = usage
@@ -353,7 +353,7 @@ Check a change against the previous version:
 
 ```bash
 git show HEAD:config/analytics/experiment-registry.v1.json > /tmp/registry.prev.json
-node --experimental-strip-types scripts/analytics-governance.ts check --previous /tmp/registry.prev.json
+node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/analytics-governance.ts check --previous /tmp/registry.prev.json
 ```
 
 Transitions: `planned → running|cancelled`, `running → paused|completed|cancelled`,
