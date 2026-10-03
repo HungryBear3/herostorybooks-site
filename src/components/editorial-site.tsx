@@ -256,6 +256,22 @@ const digitalStorySamples = [kindDragonSample, frenchFryCitySample] as const;
 
 const showcaseBooks = [
   {
+    id: 'big-family-day',
+    eyebrow: 'Printed book sample',
+    title: "Lukas' Big Family Day",
+    summary:
+      'A warm day-in-the-life story built from real family details: imagination, Brody, small adventures, holidays, and time together.',
+    leadPage: '15',
+    pages: [
+      { page: '1', title: 'The Story Idea', note: 'Imagination begins', image: '/assets/showcase/big-family-day/page-01.jpg' },
+      { page: '6', title: 'The First Roll', note: 'Everyday adventure', image: '/assets/showcase/big-family-day/page-06.jpg' },
+      { page: '8', title: 'A Quiet Afternoon', note: 'Lukas and Brody', image: '/assets/showcase/big-family-day/page-08.jpg' },
+      { page: '13', title: 'A Good Day at School', note: 'Kindness in action', image: '/assets/showcase/big-family-day/page-13.jpg' },
+      { page: '15', title: 'Christmas Together', note: 'Family keepsake moment', image: '/assets/showcase/big-family-day/page-15.jpg' },
+      { page: '17', title: 'Family Game Night', note: 'Made from real details', image: '/assets/showcase/big-family-day/page-17.jpg' },
+    ],
+  },
+  {
     id: 'dog-city',
     eyebrow: 'Recent watercolor proof',
     title: 'Lukas Was a Dog in Dog City',
@@ -675,7 +691,7 @@ function SamplePreviewSection() {
   return (
     <section className="bg-[#fff8ec]/45 pt-4 pb-20 md:pt-6 md:pb-20">
       <div className="mx-auto max-w-6xl px-5 md:px-8">
-        <SectionHeader eyebrow="Website samples" title="Two imaginative worlds, made personal." sub="These recent watercolor proofs show the level of story, art, and proof review parents can expect. Each new paid book still gets its own proof and approval pass." />
+        <SectionHeader eyebrow="Website samples" title="Three personalized worlds, made for one child." sub="These finished-book and watercolor samples show the level of story, art, and proof review parents can expect. Each new paid book still gets its own proof and approval pass." />
         <div className="space-y-10">
           {showcaseBooks.map((book, index) => (
             <ShowcaseBookFeature key={book.id} book={book} reverse={index % 2 === 1} />

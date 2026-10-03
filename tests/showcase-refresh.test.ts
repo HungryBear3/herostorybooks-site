@@ -7,6 +7,12 @@ const root = process.cwd();
 const source = readFileSync(join(root, 'src/components/editorial-site.tsx'), 'utf8');
 
 const expectedAssets = [
+  'big-family-day/page-01.jpg',
+  'big-family-day/page-06.jpg',
+  'big-family-day/page-08.jpg',
+  'big-family-day/page-13.jpg',
+  'big-family-day/page-15.jpg',
+  'big-family-day/page-17.jpg',
   'dog-city/page-05.jpg',
   'dog-city/page-08.jpg',
   'dog-city/page-17.jpg',
@@ -17,7 +23,7 @@ const expectedAssets = [
   'pasta-planet/page-24.jpg',
 ] as const;
 
-test('the approved eight-page showcase is complete and locally bundled', () => {
+test('the approved fourteen-page showcase is complete and locally bundled', () => {
   for (const asset of expectedAssets) {
     const publicPath = `/assets/showcase/${asset}`;
     assert.match(source, new RegExp(publicPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
@@ -25,7 +31,8 @@ test('the approved eight-page showcase is complete and locally bundled', () => {
   }
 });
 
-test('Dog City page 17 and Pasta Planet page 19 remain the homepage leads', () => {
+test('each showcase keeps its selected homepage lead', () => {
+  assert.match(source, /id: 'big-family-day'[\s\S]*?leadPage: '15'/);
   assert.match(source, /id: 'dog-city'[\s\S]*?leadPage: '17'/);
   assert.match(source, /id: 'pasta-planet'[\s\S]*?leadPage: '19'/);
 });
