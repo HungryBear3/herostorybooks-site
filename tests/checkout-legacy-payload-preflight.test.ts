@@ -37,6 +37,8 @@ import { checkoutSubmitAttemptRisk } from '../src/lib/checkout-saved-draft.ts';
 
 const MIB = 1024 * 1024;
 const FORM = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+const FLOW = readFileSync('src/lib/checkout-intake-client-flow.ts', 'utf8');
+const SUBMIT = FLOW.slice(FLOW.indexOf('export async function submitCheckoutIntakeOrder<'));
 
 /** Run the real preflight and hand back whatever it threw. */
 function preflightFailure(payload: FormData): LegacyCheckoutPayloadTooLargeError {
@@ -228,8 +230,18 @@ test('the form runs the preflight after every legacy media append and before the
   const preflightAt = FORM.indexOf('assertLegacyCheckoutPayloadWithinLimit(payload)');
   assert.ok(preflightAt > 0, 'checkout-form.tsx must run the final-FormData preflight');
 
+  const boundaryAt = FORM.indexOf('const { response } = await submitCheckoutIntakeOrder({');
+  const legacyCallbackAt = FORM.indexOf('applyLegacyMedia: (payload) => {', boundaryAt);
+  const dispatchCallbackAt = FORM.indexOf('dispatchOrder: async (payload) => {', legacyCallbackAt);
+  assert.ok(boundaryAt > 0 && legacyCallbackAt > boundaryAt && preflightAt > legacyCallbackAt);
+  assert.ok(dispatchCallbackAt > preflightAt);
+  const primaryAt = SUBMIT.indexOf('applyPrimaryAndSupportingMediaToOrderPayload(payload, {');
+  const legacyAt = SUBMIT.indexOf('else applyLegacyMedia(payload);');
+  const dispatchAt = SUBMIT.indexOf('const response = await dispatchOrder(payload);');
+  assert.ok(primaryAt > 0 && legacyAt > primaryAt && dispatchAt > legacyAt,
+    'primary/supporting payload application must precede legacy assembly and dispatch');
+
   const legacyAppends = [
-    'applyPrimaryAndSupportingMediaToOrderPayload(payload',
     'payload.set("voice", attachedStoryFile)',
     'payload.set("document", attachedStoryFile)',
     'appendGuidedCaptureToFormData(payload, guidedFrames)',
@@ -262,29 +274,21 @@ function braceDepthBetween(from: number, to: number): number {
 }
 
 test('the preflight is gated on the legacy lane only', () => {
+  assert.match(SUBMIT, /const prepared = await prepareOrReuseDirectIntakeSubmission\(/);
+  assert.match(SUBMIT, /directSubmission: prepared\?\.submission \?\? null/);
+  assert.match(SUBMIT, /if \(prepared\) refs\.completed\.current = prepared\.cache;\s*else applyLegacyMedia\(payload\);/);
+  assert.equal(SUBMIT.match(/applyLegacyMedia\(payload\)/g)?.length, 1,
+    'legacy callback must only run for a null direct-intake preparation');
+  const legacyBodyAt = FORM.indexOf('applyLegacyMedia: (payload) => {') + 'applyLegacyMedia: (payload) => {'.length;
   const preflightAt = FORM.indexOf('assertLegacyCheckoutPayloadWithinLimit(payload)');
-  const legacyBranchAt = FORM.indexOf('if (directIntakeSubmission && preparedDirectIntake) {');
-  assert.ok(legacyBranchAt > 0 && legacyBranchAt < preflightAt);
-  const elseAt = FORM.indexOf('} else {', legacyBranchAt);
-  assert.ok(
-    elseAt > 0 && elseAt < preflightAt,
-    'the preflight must live inside the no-direct-submission branch',
-  );
-  const elseBodyAt = elseAt + '} else {'.length;
-
-  // Still INSIDE the `else` when the preflight runs: a direct-intake
-  // submission therefore never reaches it, and direct upload is untouched.
-  assert.ok(
-    braceDepthBetween(elseBodyAt, preflightAt) >= 0,
-    'the preflight must not sit after the legacy branch closed',
-  );
-  // …and the branch has closed by the time the attempt is marked sent, which
-  // is what makes the assertion above discriminating rather than vacuous.
+  const dispatchAt = FORM.indexOf('dispatchOrder: async (payload) => {');
   const sentMarkerAt = FORM.indexOf('if (!serverLeaseBacked && !markCheckoutAttemptSent(');
-  assert.ok(sentMarkerAt > preflightAt);
-  assert.equal(
-    braceDepthBetween(elseBodyAt, sentMarkerAt),
-    -1,
-    'the sent marker runs after the legacy branch closes, on both lanes',
-  );
+  assert.ok(legacyBodyAt > 'applyLegacyMedia: (payload) => {'.length && preflightAt > legacyBodyAt);
+  assert.equal(braceDepthBetween(legacyBodyAt, preflightAt), 0,
+    'preflight must remain inside the legacy callback, after all conditional appends');
+  assert.ok(dispatchAt > preflightAt && sentMarkerAt > dispatchAt);
+  assert.equal(braceDepthBetween(legacyBodyAt, dispatchAt), -1,
+    'legacy callback must close before the dispatcher callback');
+  assert.equal(braceDepthBetween(dispatchAt + 'dispatchOrder: async (payload) => {'.length, sentMarkerAt), 0,
+    'sent marker must remain in the dispatcher shared by both lanes');
 });

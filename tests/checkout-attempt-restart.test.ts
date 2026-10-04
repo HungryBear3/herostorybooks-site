@@ -261,8 +261,12 @@ test('production wiring checks an old sent marker before uploads, clears only on
   const form = fs.readFileSync(path.join(root, 'src/app/checkout/checkout-form.tsx'), 'utf8');
   const route = fs.readFileSync(path.join(root, 'src/app/api/order/attempt-restart/route.ts'), 'utf8');
 
-  const preflightAt = form.indexOf('resolveStoredCheckoutAttemptForNewPurchase');
-  const uploadAt = form.indexOf('prepareOrReuseDirectIntakeSubmission');
+  const preflightAt = form.indexOf('const restart = await resolveStoredCheckoutAttemptForNewPurchase(checkoutAttemptId)');
+  const uploadAt = form.indexOf('const { response } = await submitCheckoutIntakeOrder({');
+  const flow = fs.readFileSync(path.join(root, 'src/lib/checkout-intake-client-flow.ts'), 'utf8');
+  const submit = flow.slice(flow.indexOf('export async function submitCheckoutIntakeOrder<'));
+  assert.match(submit, /const prepared = await prepareOrReuseDirectIntakeSubmission\(/);
+  assert.match(form, /submitCheckoutIntakeOrder,[\s\S]*from "@\/lib\/checkout-intake-client-flow"/);
   assert.ok(preflightAt >= 0, 'checkout must run the restart preflight');
   assert.ok(uploadAt >= 0 && preflightAt < uploadAt, 'restart preflight must happen before any private upload');
   const decisionAt = form.indexOf('const continueDecision = decideCheckoutAttemptContinue({');
