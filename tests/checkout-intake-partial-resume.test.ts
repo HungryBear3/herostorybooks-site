@@ -43,6 +43,7 @@ import {
   assertDirectIntakeAttemptAuthorityIsCurrent,
   assertDirectIntakeResultIsCurrent,
   captureDirectIntakeAttemptAuthority,
+  submitCheckoutIntakeOrder,
   createCheckoutIntakeSession,
   createDirectIntakePreparation,
   createSlotStateStore,
@@ -86,6 +87,8 @@ interface Rig {
   beforeNextCommit(hook: (slotKey: string) => void | Promise<void>): void;
   /** Runs once while the next intake call of `action` is still in flight. */
   duringIntake(action: string, hook: () => void | Promise<void>): void;
+  /** Runs once at the start of the next Blob PUT for `slotKey`, before any byte lands. */
+  duringUpload(slotKey: string, hook: () => void | Promise<void>): void;
   uploads: number;
   reserves: number;
   creates: number;
@@ -101,6 +104,7 @@ function rig(): Rig {
   const uploadedSlotKeys: string[] = [];
   const failures = new Map<string, UploadFailureMode>();
   const duringIntake = new Map<string, () => void | Promise<void>>();
+  const duringUpload = new Map<string, () => void | Promise<void>>();
   let beforeCommit: ((slotKey: string) => void | Promise<void>) | null = null;
 
   const transport: IntakeClientTransport = {
@@ -130,6 +134,11 @@ function rig(): Rig {
         intakeId: string; capability: string; slotKey: string; generation: number; reservationId: string;
       };
       uploadedSlotKeys.push(payload.slotKey);
+      const inFlight = duringUpload.get(payload.slotKey);
+      if (inFlight) {
+        duringUpload.delete(payload.slotKey);
+        await inFlight();
+      }
       const mode = failures.get(payload.slotKey);
       if (mode) failures.delete(payload.slotKey);
       if (mode === 'before_bytes') throw new Error('network lost before any bytes');
@@ -165,6 +174,7 @@ function rig(): Rig {
     failUploadForSlot(slotKey, mode) { failures.set(slotKey, mode); },
     beforeNextCommit(hook) { beforeCommit = hook; },
     duringIntake(action, hook) { duringIntake.set(action, hook); },
+    duringUpload(slotKey, hook) { duringUpload.set(slotKey, hook); },
     get uploads() { return counters.uploads; },
     get reserves() { return counters.reserves; },
     get creates() { return counters.creates; },
@@ -694,8 +704,8 @@ test('the checkout page holds a single preparation controller and clears it with
   const form = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
   assert.ok(form.includes('createDirectIntakePreparation'), 'the page creates a preparation controller');
   assert.ok(
-    /preparation:\s*directIntakePreparationRef\.current/.test(form),
-    'the controller is handed to the preparation call',
+    /refs: \{ completed: intakeSessionRef, preparation: directIntakePreparationRef \}/.test(form),
+    'the live controller and cache refs are handed to the submit boundary',
   );
   const resets = form.match(/directIntakePreparationRef\.current\?\.reset\(\)/g) ?? [];
   const cacheClears = form.match(/intakeSessionRef\.current = null/g) ?? [];
@@ -831,14 +841,13 @@ test('a preparation reset after the submission was built refuses the order hand-
   assertDirectIntakeResultIsCurrent(again, preparation);
 });
 
-test('the checkout page refuses an obsolete preparation result before it posts an order', () => {
-  const form = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
-  const guard = form.indexOf('assertDirectIntakeResultIsCurrent(preparedDirectIntake');
-  const payload = form.indexOf('applyPrimaryAndSupportingMediaToOrderPayload(payload');
-  const order = form.indexOf('fetch("/api/order"');
-  assert.ok(guard > 0, 'the page checks the preparation result it was handed');
-  assert.ok(payload > guard, 'a cancelled result never reaches the order payload');
-  assert.ok(order > guard, 'and never reaches /api/order');
+test('the checkout page delegates its order dispatch to the production submit boundary', () => {
+  const submit = namedHandlerSource('handleSubmit');
+  assert.match(submit, /await submitCheckoutIntakeOrder\(/);
+  assert.match(submit, /refs: \{ completed: intakeSessionRef, preparation: directIntakePreparationRef \}/);
+  assert.match(submit, /authority: submitDirectIntakeAuthority/);
+  assert.match(submit, /dispatchOrder: async \(payload\) => \{/);
+  assert.doesNotMatch(submit, /prepareOrReuseDirectIntakeSubmission|applyPrimaryAndSupportingMediaToOrderPayload/);
 });
 
 test('a reset preparation cannot resume the intake it was holding', async () => {
@@ -1207,17 +1216,154 @@ test('submit ownership captured before attempt resolution is revoked by a media 
   );
 });
 
-test('the checkout page captures submit media ownership before its first await and rechecks it before upload and order dispatch', () => {
+test('the checkout page captures submit media ownership before its first await and checks it before the boundary', () => {
   const submit = namedHandlerSource('handleSubmit');
   const capture = submit.indexOf('captureDirectIntakeAttemptAuthority(');
   const firstAwait = submit.indexOf('await ');
-  const prepare = submit.indexOf('prepareOrReuseDirectIntakeSubmission(');
-  const order = submit.indexOf('fetch("/api/order"');
-  const checks = [...submit.matchAll(/assertDirectIntakeAttemptAuthorityIsCurrent\(/g)]
-    .map((match) => match.index ?? -1);
+  const boundary = submit.indexOf('await submitCheckoutIntakeOrder(');
+  const check = submit.indexOf('assertDirectIntakeAttemptAuthorityIsCurrent(');
+  assert.ok(capture > 0 && capture < firstAwait);
+  assert.ok(check > firstAwait && boundary > check);
+});
 
-  assert.ok(capture > 0 && capture < firstAwait, 'submit ownership must be captured before attempt-resolution awaits');
-  assert.ok(prepare > firstAwait && order > prepare);
-  assert.ok(checks.some((index) => index > firstAwait && index < prepare), 'superseded submit must stop before direct upload');
-  assert.ok(checks.some((index) => index > prepare && index < order), 'superseded submit must stop before /api/order');
+// ---------------------------------------------------------------------------
+// (k) The production submit boundary, driven with the real intake handler.
+//     The test adapter only supplies refs, payload and a counting dispatcher;
+//     it contains no copy of the page's authority or cache/payload logic.
+// ---------------------------------------------------------------------------
+
+interface PageRefs {
+  completed: { current: DirectIntakeSubmissionCache | null };
+  preparation: { current: DirectIntakePreparation | null };
+}
+
+function pageRefs(): PageRefs {
+  return { completed: { current: null }, preparation: { current: createDirectIntakePreparation() } };
+}
+
+function intakeIdOf(payload: FormData): string {
+  return (JSON.parse(String(payload.get('checkoutIntake'))) as { intakeId: string }).intakeId;
+}
+
+async function submitThroughProductionBoundary(
+  params: PrepareDirectIntakeSubmissionParams,
+  refs: PageRefs,
+  orderCalls: FormData[],
+): Promise<PreparedDirectIntake | null> {
+  const authority = captureDirectIntakeAttemptAuthority(refs.preparation.current);
+  const { prepared } = await submitCheckoutIntakeOrder({
+    params,
+    refs,
+    authority,
+    payload: new FormData(),
+    familyPhotos: params.familyPhotos.map((entry) => entry.file),
+    applyLegacyMedia: () => {},
+    dispatchOrder: (payload) => { orderCalls.push(payload); },
+  });
+  return prepared;
+}
+
+test('production submit boundary: a reset during intake creation resurrects nothing and calls /api/order zero times', async () => {
+  const r = rig();
+  const refs = pageRefs();
+  const orderCalls: FormData[] = [];
+  const files = freshFiveFiles();
+  const params = fiveAssetParams(r, files);
+  const preparation = refs.preparation.current!;
+  // The buyer clears a photo through the page's one invalidation boundary
+  // while `action: create` is still outstanding.
+  r.duringIntake('create', () => { invalidateDirectIntakeMediaSelection(refs); });
+
+  await assert.rejects(
+    submitThroughProductionBoundary(params, refs, orderCalls),
+    /direct_upload_preparation_cancelled/,
+  );
+
+  assert.equal(orderCalls.length, 0, 'zero /api/order calls');
+  assert.equal(preparation.session, null, 'the dropped session/capability is not restored');
+  assert.equal(preparation.media, null);
+  assert.equal(preparation.saved.size, 0, 'no saved slot is repopulated');
+  assert.equal(preparation.inFlight, null);
+  assert.equal(refs.completed.current, null, 'no frozen batch is left for a later submit to reuse');
+  assert.equal(r.uploads, 0, 'the obsolete run uploads nothing');
+  assert.equal(r.reserves, 0);
+  assert.equal(totalActiveAssets(r), 0);
+
+  // A genuine new Continue still checks out: one fresh intake, five uploads,
+  // one order.
+  const fresh = await submitThroughProductionBoundary(params, refs, orderCalls);
+  assert.ok(fresh);
+  assert.equal(r.creates, 2);
+  assert.equal(r.uploads, 5);
+  assert.equal(orderCalls.length, 1);
+  assert.equal(intakeIdOf(orderCalls[0]!), fresh!.submission.session.intakeId);
+});
+
+test('production submit boundary: a reset while a file is mid-upload resurrects nothing and calls /api/order zero times', async () => {
+  const r = rig();
+  const refs = pageRefs();
+  const orderCalls: FormData[] = [];
+  const files = freshFiveFiles();
+  const params = fiveAssetParams(r, files);
+  const preparation = refs.preparation.current!;
+  // Start over lands while the third file's PUT is on the wire.
+  r.duringUpload(`family_pet_reference:${UNCLE}`, () => { invalidateDirectIntakeMediaSelection(refs); });
+
+  await assert.rejects(
+    submitThroughProductionBoundary(params, refs, orderCalls),
+    /direct_upload_preparation_cancelled/,
+  );
+
+  assert.equal(orderCalls.length, 0, 'zero /api/order calls');
+  assert.equal(preparation.session, null, 'the dropped session/capability is not restored');
+  assert.equal(preparation.media, null);
+  assert.equal(preparation.saved.size, 0, 'neither the two finished files nor the third are remembered');
+  assert.deepEqual(preparation.slots.get().slots, {}, 'the fresh slot store the reset installed stays empty');
+  assert.equal(refs.completed.current, null);
+  assert.equal(r.uploads, 3, 'no file after the reset point is sent to the abandoned intake');
+  assert.equal(r.creates, 1);
+});
+
+test('production submit boundary: four photos plus a failed voice note retry only the voice note, then dispatch once', async () => {
+  const r = rig();
+  const refs = pageRefs();
+  const orderCalls: FormData[] = [];
+  const params = fiveAssetParams(r, freshFiveFiles());
+  r.failUploadForSlot('voice_inspiration', 'before_bytes');
+
+  await assert.rejects(submitThroughProductionBoundary(params, refs, orderCalls), /upload_failed/);
+  assert.equal(orderCalls.length, 0, 'a failed batch is never handed to /api/order');
+
+  const retry = await submitThroughProductionBoundary(params, refs, orderCalls);
+  assert.ok(retry);
+  assert.equal(r.creates, 1);
+  assert.deepEqual(r.uploadedSlotKeys.slice(5), ['voice_inspiration']);
+  assert.equal(orderCalls.length, 1);
+  assert.equal(intakeIdOf(orderCalls[0]!), retry!.submission.session.intakeId);
+  assert.deepEqual(
+    [...orderCalls[0]!.keys()].sort(),
+    ['checkoutIntake', 'checkoutIntakeCapability'],
+    'the order request is a lightweight pointer: no photo, voice or document bytes',
+  );
+});
+
+test('A/B/B with the full four-photo plus voice batch: one B intake, one B upload sequence, both B callers converge', async () => {
+  const r = rig();
+  const preparation = createDirectIntakePreparation();
+  const a = fiveAssetParams(r, freshFiveFiles());
+  const b = fiveAssetParams(r, freshFiveFiles());
+
+  const [, b1, b2] = await Promise.all([
+    prepareOrReuseDirectIntakeSubmission(a, null, { preparation }),
+    prepareOrReuseDirectIntakeSubmission(b, null, { preparation }),
+    prepareOrReuseDirectIntakeSubmission(b, null, { preparation }),
+  ]);
+
+  assert.ok(b1 && b2);
+  assert.equal(r.creates, 2, 'one intake for A, exactly one for B');
+  assert.equal(r.uploads, 10, 'five uploads for A, exactly five for B');
+  assert.equal(r.reserves, 10);
+  assert.equal(b1!.submission, b2!.submission, 'both B callers receive the same submission');
+  assertDirectIntakeResultIsCurrent(b1, preparation);
+  assertDirectIntakeResultIsCurrent(b2, preparation);
 });

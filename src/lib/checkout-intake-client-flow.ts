@@ -1322,3 +1322,38 @@ export function applyPrimaryAndSupportingMediaToOrderPayload(
     if (file) payload.set(`familyCharacterPhoto_${index}`, file);
   });
 }
+
+
+/**
+ * The page's intake-to-order hand-off. Read live refs after the intake await;
+ * cancelled work must not apply its payload, commit its cache, or dispatch.
+ * Legacy media assembly and order transport stay injected and page-owned.
+ */
+export async function submitCheckoutIntakeOrder<TResponse>({
+  params, refs, authority, payload, familyPhotos, applyLegacyMedia, dispatchOrder,
+}: {
+  params: PrepareDirectIntakeSubmissionParams;
+  refs: DirectIntakeAuthorityRefs;
+  authority: DirectIntakeAttemptAuthority;
+  payload: FormData;
+  familyPhotos: readonly (Blob | null)[];
+  applyLegacyMedia: (payload: FormData) => void;
+  dispatchOrder: (payload: FormData) => TResponse | Promise<TResponse>;
+}): Promise<{ prepared: PreparedDirectIntake | null; response: TResponse }> {
+  assertDirectIntakeAttemptAuthorityIsCurrent(authority, refs.preparation.current);
+  const prepared = await prepareOrReuseDirectIntakeSubmission(
+    params, refs.completed.current, { preparation: refs.preparation.current },
+  );
+  assertDirectIntakeAttemptAuthorityIsCurrent(authority, refs.preparation.current);
+  assertDirectIntakeResultIsCurrent(prepared, refs.preparation.current);
+  applyPrimaryAndSupportingMediaToOrderPayload(payload, {
+    directSubmission: prepared?.submission ?? null,
+    heroPhoto: params.heroPhoto,
+    familyPhotos,
+  });
+  if (prepared) refs.completed.current = prepared.cache;
+  else applyLegacyMedia(payload);
+  assertDirectIntakeAttemptAuthorityIsCurrent(authority, refs.preparation.current);
+  const response = await dispatchOrder(payload);
+  return { prepared, response };
+}

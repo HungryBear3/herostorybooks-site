@@ -229,10 +229,17 @@ test('order route: no uploaded media is handed to generation, proof, print, or e
 test('checkout form delegates mutually-exclusive direct and legacy media shape to the tested helper', () => {
   assert.match(FORM, /directUploadEnabled/);
   assert.doesNotMatch(FORM, /isDirectUploadClientEnabled/);
-  const prepared = FORM.indexOf('const directIntakeSubmission = preparedDirectIntake?.submission ?? null');
-  const applied = FORM.indexOf('applyPrimaryAndSupportingMediaToOrderPayload(payload, {', prepared);
-  const fetchOrder = FORM.indexOf('fetch("/api/order"', applied);
-  assert.ok(prepared > -1 && applied > prepared && fetchOrder > applied);
+  const boundary = FORM.indexOf('await submitCheckoutIntakeOrder(');
+  const dispatch = FORM.indexOf('dispatchOrder: async (payload) => {', boundary);
+  const fetchOrder = FORM.indexOf('fetch("/api/order"', dispatch);
+  assert.ok(boundary > -1 && dispatch > boundary && fetchOrder > dispatch);
+  assert.doesNotMatch(FORM, /prepareOrReuseDirectIntakeSubmission|applyPrimaryAndSupportingMediaToOrderPayload/);
+  const flow = readFileSync('src/lib/checkout-intake-client-flow.ts', 'utf8');
+  const helper = flow.slice(flow.indexOf('export async function submitCheckoutIntakeOrder'));
+  assert.match(helper, /applyPrimaryAndSupportingMediaToOrderPayload\(payload/);
+  assert.match(helper, /assertDirectIntakeResultIsCurrent\(prepared, refs.preparation.current\)/);
+  assert.match(helper, /assertDirectIntakeAttemptAuthorityIsCurrent\(authority, refs.preparation.current\)/);
+  assert.match(helper, /await dispatchOrder\(payload\)/);
   assert.doesNotMatch(FORM, /payload\.set\(`familyCharacterPhoto_/);
   assert.doesNotMatch(FORM, /payload\.set\("photo", form\.photoFile\)/);
 });

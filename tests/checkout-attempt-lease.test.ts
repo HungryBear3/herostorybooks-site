@@ -239,6 +239,10 @@ test('production route sets a secure HttpOnly same-site cookie and checkout uses
   assert.match(orderHandler, /checkoutAttemptLeaseHeaderMatchesCookie/);
   assert.match(form, /['"]x-hsb-checkout-attempt['"]:\s*checkoutAttemptId/);
   const leaseAt = form.indexOf('resolveCheckoutAttemptSubmitLease({');
-  const uploadAt = form.indexOf('prepareOrReuseDirectIntakeSubmission(');
+  const uploadAt = form.indexOf('const { response } = await submitCheckoutIntakeOrder({');
+  const flow = fs.readFileSync(path.join(root, 'src/lib/checkout-intake-client-flow.ts'), 'utf8');
+  const submit = flow.slice(flow.indexOf('export async function submitCheckoutIntakeOrder<'));
+  assert.match(submit, /const prepared = await prepareOrReuseDirectIntakeSubmission\(/);
+  assert.match(form, /submitCheckoutIntakeOrder,[\s\S]*from "@\/lib\/checkout-intake-client-flow"/);
   assert.ok(leaseAt >= 0 && uploadAt > leaseAt, 'server lease must be resolved before private uploads');
 });

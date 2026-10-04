@@ -707,7 +707,11 @@ test('checkout resolves local conflicts or a server lease before private intake 
   const reservation = formSource.indexOf('markCheckoutAttemptReserved(checkoutAttemptId)', conflictGuard);
   const reservedReadback = formSource.indexOf('const reservedAttempt = serverLeaseBacked ? null : readStoredCheckoutAttempt()', reservation);
   const reservedGuard = formSource.indexOf('if (!serverLeaseBacked', reservedReadback);
-  const intake = formSource.indexOf('prepareOrReuseDirectIntakeSubmission(', reservedGuard);
+  const intake = formSource.indexOf('const { response } = await submitCheckoutIntakeOrder({', reservedGuard);
+  const flow = fs.readFileSync('src/lib/checkout-intake-client-flow.ts', 'utf8');
+  const submit = flow.slice(flow.indexOf('export async function submitCheckoutIntakeOrder<'));
+  assert.match(submit, /const prepared = await prepareOrReuseDirectIntakeSubmission\(/);
+  assert.match(formSource, /submitCheckoutIntakeOrder,[\s\S]*from "@\/lib\/checkout-intake-client-flow"/);
   assert.ok(snapshotRead > -1 && identityReconcile > snapshotRead);
   assert.ok(identityConflict > identityReconcile && conflictAbort > identityConflict);
   assert.ok(conflictRecovery > conflictAbort && riskRepair > conflictRecovery,

@@ -98,13 +98,11 @@ import {
 } from "@/lib/checkout-saved-draft";
 import {
   DirectIntakePreparationError,
-  applyPrimaryAndSupportingMediaToOrderPayload,
   assertDirectIntakeAttemptAuthorityIsCurrent,
-  assertDirectIntakeResultIsCurrent,
   captureDirectIntakeAttemptAuthority,
   createDirectIntakePreparation,
   invalidateDirectIntakeMediaSelection,
-  prepareOrReuseDirectIntakeSubmission,
+  submitCheckoutIntakeOrder,
   type DirectIntakePreparation,
   type DirectIntakeSubmissionCache,
   type IntakeClientTransport,
@@ -1614,97 +1612,85 @@ export function CheckoutForm({
       }
       const attachedStoryFile = isCustomStorySelected ? form.voiceFile : null;
       const attachedStoryFileIsAudio = isStoryAudioFile(attachedStoryFile);
-      const preparedDirectIntake = await prepareOrReuseDirectIntakeSubmission({
-        enabled: directUploadEnabled && directMediaFilesPresent,
-        transport: directIntakeTransport,
-        heroPhoto: form.photoFile,
-        familyCharacterIds: familyCharactersForOrder.map((character) => character.id),
-        familyPhotos: familyCharactersForOrder.flatMap((character) =>
-          character.photoFile
-            ? [{
-                familyCharacterId: character.id,
-                file: character.photoFile,
-                mimeType: character.photoFile.type,
-              }]
-            : [],
-        ),
-        guidedStills:
-          guidedCaptureEnabled && guidedConsent
-            ? guidedFrames.map((frame) => ({ file: frame.file, mimeType: frame.file.type }))
-            : [],
-        voice:
-          attachedStoryFile && attachedStoryFileIsAudio && form.voiceSource
-            ? {
-                file: attachedStoryFile,
-                source: form.voiceSource,
-                consent: form.voiceConsent,
-                mimeType: attachedStoryFile.type,
-              }
-            : null,
-        document:
-          attachedStoryFile && !attachedStoryFileIsAudio
-            ? {
-                file: attachedStoryFile,
-                consent: form.voiceConsent,
-                mimeType: attachedStoryFile.type,
-              }
-            : null,
-      }, intakeSessionRef.current, { preparation: directIntakePreparationRef.current });
-      // Start over — or clearing a photo — can land while the call above is
-      // still awaiting. Both reset the preparation, and a result from the run
-      // they cancelled is an order built on a capability this page has already
-      // dropped. Refused here, before the payload exists and long before
-      // /api/order: the buyer gets a plain "we couldn't start your order", not
-      // a book assembled from media they just discarded.
-      assertDirectIntakeResultIsCurrent(preparedDirectIntake, directIntakePreparationRef.current);
-      const directIntakeSubmission = preparedDirectIntake?.submission ?? null;
-      applyPrimaryAndSupportingMediaToOrderPayload(payload, {
-        directSubmission: directIntakeSubmission,
-        heroPhoto: form.photoFile,
+      const { response } = await submitCheckoutIntakeOrder({
+        params: {
+          enabled: directUploadEnabled && directMediaFilesPresent,
+          transport: directIntakeTransport,
+          heroPhoto: form.photoFile,
+          familyCharacterIds: familyCharactersForOrder.map((character) => character.id),
+          familyPhotos: familyCharactersForOrder.flatMap((character) =>
+            character.photoFile
+              ? [{
+                  familyCharacterId: character.id,
+                  file: character.photoFile,
+                  mimeType: character.photoFile.type,
+                }]
+              : [],
+          ),
+          guidedStills:
+            guidedCaptureEnabled && guidedConsent
+              ? guidedFrames.map((frame) => ({ file: frame.file, mimeType: frame.file.type }))
+              : [],
+          voice:
+            attachedStoryFile && attachedStoryFileIsAudio && form.voiceSource
+              ? {
+                  file: attachedStoryFile,
+                  source: form.voiceSource,
+                  consent: form.voiceConsent,
+                  mimeType: attachedStoryFile.type,
+                }
+              : null,
+          document:
+            attachedStoryFile && !attachedStoryFileIsAudio
+              ? {
+                  file: attachedStoryFile,
+                  consent: form.voiceConsent,
+                  mimeType: attachedStoryFile.type,
+                }
+              : null,
+        },
+        refs: { completed: intakeSessionRef, preparation: directIntakePreparationRef },
+        authority: submitDirectIntakeAuthority,
+        payload,
         familyPhotos: familyCharactersForOrder.map((character) => character.photoFile),
-      });
-      if (directIntakeSubmission && preparedDirectIntake) {
-        intakeSessionRef.current = preparedDirectIntake.cache;
-      } else {
-        if (attachedStoryFile && attachedStoryFileIsAudio) {
-          payload.set("voice", attachedStoryFile);
-          payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
-          if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
-        } else if (attachedStoryFile) {
-          payload.set("document", attachedStoryFile);
-          payload.set("documentConsent", form.voiceConsent ? "true" : "false");
-        }
-        // Optional guided child stills. Appends only parent-approved still photos; no video.
-        if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
-          appendGuidedCaptureToFormData(payload, guidedFrames);
-        }
-        // Measure the final legacy multipart media before the sent marker. A
-        // platform-edge body rejection otherwise leaves no /api/order log and
-        // looks like an ambiguous possible payment to the browser. Direct
-        // intake bypasses this branch and keeps its own per-asset limits.
-        assertLegacyCheckoutPayloadWithinLimit(payload);
-      }
-
-      assertDirectIntakeAttemptAuthorityIsCurrent(
-        submitDirectIntakeAuthority,
-        directIntakePreparationRef.current,
-      );
-
-      if (!serverLeaseBacked && !markCheckoutAttemptSent(checkoutAttemptId)) {
-        throw new CheckoutSubmitDiagnosticError(
-          "attempt_storage_unavailable",
-          "This browser could not safely preserve your checkout attempt. No order request was sent. Please reload this page and press Continue again.",
-        );
-      }
-      if (!serverLeaseBacked) checkoutAttemptSentRef.current = checkoutAttemptId;
-      diagnosticPhase = "order";
-      requestSent = true;
-      const response = await fetch("/api/order", {
-        method: "POST",
-        headers: serverLeaseBacked
-          ? { "x-hsb-checkout-attempt": checkoutAttemptId }
-          : undefined,
-        body: payload,
+        applyLegacyMedia: (payload) => {
+          if (attachedStoryFile && attachedStoryFileIsAudio) {
+            payload.set("voice", attachedStoryFile);
+            payload.set("voiceConsent", form.voiceConsent ? "true" : "false");
+            if (form.voiceSource) payload.set("voiceSource", form.voiceSource);
+          } else if (attachedStoryFile) {
+            payload.set("document", attachedStoryFile);
+            payload.set("documentConsent", form.voiceConsent ? "true" : "false");
+          }
+          // Optional guided child stills. Appends only parent-approved still photos; no video.
+          if (guidedCaptureEnabled && guidedConsent && guidedFrames.length > 0) {
+            appendGuidedCaptureToFormData(payload, guidedFrames);
+          }
+          // Measure the final legacy multipart media before the sent marker. A
+          // platform-edge body rejection otherwise leaves no /api/order log and
+          // looks like an ambiguous possible payment to the browser. Direct
+          // intake bypasses this branch and keeps its own per-asset limits.
+          assertLegacyCheckoutPayloadWithinLimit(payload);
+        },
+        dispatchOrder: async (payload) => {
+          if (!serverLeaseBacked && !markCheckoutAttemptSent(checkoutAttemptId)) {
+            throw new CheckoutSubmitDiagnosticError(
+              "attempt_storage_unavailable",
+              "This browser could not safely preserve your checkout attempt. No order request was sent. Please reload this page and press Continue again.",
+            );
+          }
+          if (!serverLeaseBacked) checkoutAttemptSentRef.current = checkoutAttemptId;
+          diagnosticPhase = "order";
+          requestSent = true;
+          const response = await fetch("/api/order", {
+            method: "POST",
+            headers: serverLeaseBacked
+              ? { "x-hsb-checkout-attempt": checkoutAttemptId }
+              : undefined,
+            body: payload,
+          });
+          return response;
+        },
       });
 
       if (!response.ok) {
