@@ -7,12 +7,12 @@ const root = process.cwd();
 const source = readFileSync(join(root, 'src/components/editorial-site.tsx'), 'utf8');
 
 const expectedAssets = [
-  'big-family-day/page-01.jpg',
-  'big-family-day/page-06.jpg',
-  'big-family-day/page-08.jpg',
-  'big-family-day/page-13.jpg',
-  'big-family-day/page-15.jpg',
-  'big-family-day/page-17.jpg',
+  'biggest-day-ever/page-01.jpg',
+  'biggest-day-ever/page-06.jpg',
+  'biggest-day-ever/page-13.jpg',
+  'biggest-day-ever/page-17.jpg',
+  'biggest-day-ever/page-19.jpg',
+  'biggest-day-ever/page-24.jpg',
   'dog-city/page-05.jpg',
   'dog-city/page-08.jpg',
   'dog-city/page-17.jpg',
@@ -32,9 +32,13 @@ test('the approved fourteen-page showcase is complete and locally bundled', () =
 });
 
 test('each showcase keeps its selected homepage lead', () => {
-  assert.match(source, /id: 'big-family-day'[\s\S]*?leadPage: '15'/);
+  assert.match(source, /id: 'biggest-day-ever'[\s\S]*?leadPage: '19'/);
   assert.match(source, /id: 'dog-city'[\s\S]*?leadPage: '17'/);
   assert.match(source, /id: 'pasta-planet'[\s\S]*?leadPage: '19'/);
+});
+
+test('the superseded Big Family Day showcase is removed', () => {
+  assert.doesNotMatch(source, /Big Family Day|big-family-day/);
 });
 
 test('Pasta Planet crops keep Lukas in frame', () => {
