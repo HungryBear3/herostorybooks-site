@@ -256,19 +256,19 @@ const digitalStorySamples = [kindDragonSample, frenchFryCitySample] as const;
 
 const showcaseBooks = [
   {
-    id: 'big-family-day',
+    id: 'biggest-day-ever',
     eyebrow: 'Printed book sample',
-    title: "Lukas' Big Family Day",
+    title: 'Lukas and the Biggest Day Ever',
     summary:
-      'A warm day-in-the-life story built from real family details: imagination, Brody, small adventures, holidays, and time together.',
-    leadPage: '15',
+      'A personalized adventure with family and Brody, from Gingerbread City to a brave day on Lake Michigan.',
+    leadPage: '19',
     pages: [
-      { page: '1', title: 'The Story Idea', note: 'Imagination begins', image: '/assets/showcase/big-family-day/page-01.jpg' },
-      { page: '6', title: 'The First Roll', note: 'Everyday adventure', image: '/assets/showcase/big-family-day/page-06.jpg' },
-      { page: '8', title: 'A Quiet Afternoon', note: 'Lukas and Brody', image: '/assets/showcase/big-family-day/page-08.jpg' },
-      { page: '13', title: 'A Good Day at School', note: 'Kindness in action', image: '/assets/showcase/big-family-day/page-13.jpg' },
-      { page: '15', title: 'Christmas Together', note: 'Family keepsake moment', image: '/assets/showcase/big-family-day/page-15.jpg' },
-      { page: '17', title: 'Family Game Night', note: 'Made from real details', image: '/assets/showcase/big-family-day/page-17.jpg' },
+      { page: '1', title: 'Gingerbread City', note: 'The adventure begins', image: '/assets/showcase/biggest-day-ever/page-01.jpg' },
+      { page: '6', title: 'The Caramel Volcano', note: 'A surprising turn', image: '/assets/showcase/biggest-day-ever/page-06.jpg' },
+      { page: '13', title: 'A Clever Save', note: 'Lukas saves the day', image: '/assets/showcase/biggest-day-ever/page-13.jpg' },
+      { page: '17', title: 'Bowling in Chicago', note: 'A family outing', image: '/assets/showcase/biggest-day-ever/page-17.jpg' },
+      { page: '19', title: 'The Megalodon', note: 'A lake adventure', image: '/assets/showcase/biggest-day-ever/page-19.jpg' },
+      { page: '24', title: 'Home Together', note: 'A warm ending', image: '/assets/showcase/biggest-day-ever/page-24.jpg' },
     ],
   },
   {
