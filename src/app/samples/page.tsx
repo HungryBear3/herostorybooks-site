@@ -7,12 +7,12 @@ const siteOrigin = getSiteOrigin();
 export const metadata: Metadata = {
   title: 'Sample Personalized Story Books | HeroStoryBooks',
   description:
-    'Explore Dog City and Pasta Planet through eight selected watercolor storybook illustrations, with proof-first review before delivery or print.',
+    'Explore personalized story pages and photos of real printed softcover and hardcover books, with proof-first review before delivery or print.',
   alternates: { canonical: '/samples' },
   openGraph: {
-    title: 'HeroStoryBooks digital sample story proofs',
+    title: 'HeroStoryBooks story and printed-book samples',
     description:
-      'See illustrated sample pages from proof-first personalized children’s books before starting your own.',
+      'See illustrated story pages and real softcover and hardcover book photos before starting your own.',
     url: `${siteOrigin}/samples`,
     images: [
       {
@@ -25,9 +25,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'HeroStoryBooks digital sample story proofs',
+    title: 'HeroStoryBooks story and printed-book samples',
     description:
-      'See illustrated sample pages from proof-first personalized children’s books before starting your own.',
+      'See illustrated story pages and real softcover and hardcover book photos before starting your own.',
     images: ['/assets/showcase/dog-city/page-17.jpg'],
   },
 };
