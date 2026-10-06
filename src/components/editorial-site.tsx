@@ -301,33 +301,32 @@ const showcaseBooks = [
   },
 ] as const;
 
-const hardcoverPhotoSample = {
-  source: 'Recent printed hardcover sample',
-  framing: 'Real printed book photos',
-  lead: '/assets/hsb-lukas-dino-photo-cover.jpg',
-  photos: [
-    {
-      title: 'Cover in hand',
-      image: '/assets/hsb-lukas-dino-photo-cover.jpg',
-      imageAlt: 'Photo of a printed Lukas dinosaur hardcover sample cover',
-    },
-    {
-      title: 'Feast spread',
-      image: '/assets/hsb-lukas-dino-photo-feast.jpg',
-      imageAlt: 'Photo of an open printed hardcover sample showing a dinosaur feast spread',
-    },
-    {
-      title: 'Story spread',
-      image: '/assets/hsb-lukas-dino-photo-hands-1.jpg',
-      imageAlt: 'Photo of an open printed hardcover sample showing hands holding a story spread',
-    },
-    {
-      title: 'Parade spread',
-      image: '/assets/hsb-lukas-dino-photo-parade.jpg',
-      imageAlt: 'Photo of an open printed hardcover sample showing a dinosaur parade spread',
-    },
-  ],
-};
+const physicalBookPhotos = [
+  {
+    title: 'Lukas, King of the Dinosaurs',
+    edition: 'Softcover',
+    photos: [
+      { title: 'Story spread', image: '/assets/hsb-lukas-dino-photo-hands-1.jpg', imageAlt: 'A real softcover dinosaur book opened to a Lukas story spread' },
+      { title: 'Dinosaur feast', image: '/assets/hsb-lukas-dino-photo-feast.jpg', imageAlt: 'A real softcover dinosaur book opened to an illustrated feast spread' },
+    ],
+  },
+  {
+    title: 'Lukas and the Biggest Day Ever',
+    edition: 'Softcover',
+    photos: [
+      { title: 'Printed cover', image: '/assets/physical-books/biggest-day-softcover-cover.jpg', imageAlt: 'The printed softcover of Lukas and the Biggest Day Ever on a table' },
+      { title: 'Bowling spread', image: '/assets/physical-books/biggest-day-softcover-bowling.jpg', imageAlt: 'The real softcover opened to a family bowling story spread' },
+    ],
+  },
+  {
+    title: 'Lukas and the Pasta Planet',
+    edition: 'Hardcover',
+    photos: [
+      { title: 'Bridge spread', image: '/assets/physical-books/pasta-planet-hardcover-bridge.jpg', imageAlt: 'A real casewrap hardcover opened to the pasta bridge story spread' },
+      { title: 'Space spread', image: '/assets/physical-books/pasta-planet-hardcover-space.jpg', imageAlt: 'A real casewrap hardcover opened to the illustrated pasta space spread' },
+    ],
+  },
+] as const;
 
 
 const comparisonRows = [
@@ -849,34 +848,33 @@ function KindDragonFeature({ compact = false }: { compact?: boolean }) {
   return <DigitalStoryFeature sample={kindDragonSample} compact={compact} />;
 }
 
-function HardcoverPhotoSection({ compact = false }: { compact?: boolean }) {
-  const shownPhotos = compact ? hardcoverPhotoSample.photos.slice(0, 3) : hardcoverPhotoSample.photos;
+function PhysicalBookPhotoSection() {
   return (
-    <section className={cx('rounded-[2rem] border border-[#d8c6a2] bg-[#f5ead2] shadow-[0_24px_70px_-56px_rgba(31,26,22,0.35)]', compact ? 'p-4 md:p-6' : 'p-5 md:p-8')}>
-      <div className="grid gap-7 lg:grid-cols-[0.85fr_1.15fr]">
-        <div>
-          <div className="mb-4 flex flex-wrap gap-2">
-            <span className="rounded-full border border-[#d8c6a2] bg-[#fff8ec] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-[#695f54]">{hardcoverPhotoSample.source}</span>
-            <span className="rounded-full bg-[#1f1a16] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-[#fff8ec]">{hardcoverPhotoSample.framing}</span>
-          </div>
-          <h3 className="font-serif text-3xl font-medium leading-tight text-[#1f1a16] md:text-4xl">Printed hardcover photos</h3>
-          <p className="mt-3 text-sm leading-6 text-[#695f54] md:text-base md:leading-7">
-            These are real photos from a recent printed sample, included to show the object in hand: cover texture, open spreads, and the way illustrated pages read as a keepsake book. They are supporting sample photos, not a guarantee that every book will look identical.
-          </p>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-3">
-          {shownPhotos.map((photo, index) => (
-            <figure key={photo.image} className={cx('overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec]', !compact && index === 0 && 'sm:col-span-2')}>
-              <img
-                src={photo.image}
-                alt={photo.imageAlt}
-                className={cx('w-full object-cover', !compact && index === 0 ? 'aspect-[4/3]' : 'aspect-square')}
-                loading="lazy"
-              />
-              <figcaption className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-[#695f54]">{photo.title}</figcaption>
-            </figure>
-          ))}
-        </div>
+    <section className="rounded-[2rem] border border-[#d8c6a2] bg-[#f5ead2] p-5 shadow-[0_24px_70px_-56px_rgba(31,26,22,0.35)] md:p-8">
+      <div className="max-w-3xl">
+        <span className="rounded-full border border-[#d8c6a2] bg-[#fff8ec] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-[#695f54]">Real printed book photos</span>
+        <h3 className="mt-4 font-serif text-3xl font-medium leading-tight text-[#1f1a16] md:text-4xl">Softcover and hardcover, in hand</h3>
+        <p className="mt-3 text-sm leading-6 text-[#695f54] md:text-base md:leading-7">
+          These photos show actual softcover and casewrap hardcover books we printed. They give a feel for the covers and interior pages; each new book has its own artwork and customer proof before printing.
+        </p>
+      </div>
+      <div className="mt-7 grid gap-5 lg:grid-cols-3">
+        {physicalBookPhotos.map((book) => (
+          <article key={book.title} className="overflow-hidden rounded-2xl border border-[#d8c6a2] bg-[#fff8ec]">
+            <div className="p-4">
+              <span className="rounded-full bg-[#1f1a16] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-[#fff8ec]">{book.edition}</span>
+              <h4 className="mt-3 font-serif text-xl font-semibold leading-tight text-[#1f1a16]">{book.title}</h4>
+            </div>
+            <div className="grid gap-3 px-4 pb-4 sm:grid-cols-2 lg:grid-cols-1">
+              {book.photos.map((photo) => (
+                <figure key={photo.image} className="overflow-hidden rounded-xl border border-[#d8c6a2] bg-[#f5ead2]">
+                  <img src={photo.image} alt={photo.imageAlt} className="aspect-[4/3] w-full object-contain" loading="lazy" />
+                  <figcaption className="bg-[#fff8ec] px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-[#695f54]">{photo.title}</figcaption>
+                </figure>
+              ))}
+            </div>
+          </article>
+        ))}
       </div>
     </section>
   );
@@ -1139,13 +1137,13 @@ export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Samples" title="A closer look inside two personalized adventures." sub="Eight selected watercolor illustrations show the story depth, art direction, and page design parents can expect. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
+        <SectionHeader eyebrow="Samples" title="A closer look inside personalized adventures." sub="Selected story pages and photos of real printed books show the art, page design, and softcover and hardcover formats. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
         <ShowcaseGallery />
         <div className="mt-14">
-          <HardcoverPhotoSection />
+          <PhysicalBookPhotoSection />
         </div>
         <div className="mt-14">
-          <SectionHeader eyebrow="More sample art" title="A dinosaur book example." sub="Additional artwork from a printed sample shows another theme direction and how interior story pages can look in a finished book." />
+          <SectionHeader eyebrow="More sample art" title="A dinosaur book example." sub="Additional artwork from the printed dinosaur softcover shows another theme direction and how interior story pages can look in a finished book." />
         </div>
         <div className="grid items-start gap-8 md:grid-cols-[0.9fr_1.1fr]">
           <div className="rounded-3xl border border-[#d8c6a2] bg-[#fff8ec] p-6 shadow-[0_20px_60px_-50px_rgba(31,26,22,0.35)]">
