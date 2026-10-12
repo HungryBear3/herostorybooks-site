@@ -35,7 +35,15 @@ export async function POST(req: Request) {
       { status: 403, headers: GROUP_BOOK_PRIVATE_HEADERS },
     );
   }
-  const record = await findGroupBookSubmission(invite);
+  let record: Awaited<ReturnType<typeof findGroupBookSubmission>>;
+  try {
+    record = await findGroupBookSubmission(invite);
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: 'storage_unavailable' },
+      { status: 503, headers: GROUP_BOOK_PRIVATE_HEADERS },
+    );
+  }
   if (!record) {
     return NextResponse.json(
       { ok: false, error: 'not_submitted' },

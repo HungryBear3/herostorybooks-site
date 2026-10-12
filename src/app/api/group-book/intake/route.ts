@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
 
 import { extractGroupBookToken, resolveGroupBookInvite } from '@/lib/group-book/config';
-import { resolveGroupBookImage } from '@/lib/group-book/image-type';
+import { normalizeGroupBookImage } from '@/lib/group-book/image-type';
 import { GROUP_BOOK_PRIVATE_HEADERS, setGroupBookAccessCookie } from '@/lib/group-book/session';
 import {
   buildGroupBookSubmission,
-  createGroupBookSubmission,
+  createOrReconcileGroupBookSubmission,
   deleteGroupBookPhotos,
   findGroupBookSubmission,
   groupBookStorageReady,
@@ -66,7 +66,15 @@ export async function POST(req: Request) {
       { status: 403, headers: GROUP_BOOK_PRIVATE_HEADERS },
     );
   }
-  if (await findGroupBookSubmission(invite)) return success(token, true);
+  try {
+    if (await findGroupBookSubmission(invite)) return success(token, true);
+  } catch (err) {
+    console.error('[group-book/intake] private record read failed:', err instanceof Error ? err.name : 'unknown');
+    return NextResponse.json(
+      { ok: false, error: 'storage_unavailable' },
+      { status: 503, headers: GROUP_BOOK_PRIVATE_HEADERS },
+    );
+  }
 
   const parentName = text(form, 'parentName', 80);
   const parentEmail = text(form, 'parentEmail', 200);
@@ -104,14 +112,16 @@ export async function POST(req: Request) {
         { status: 413, headers: GROUP_BOOK_PRIVATE_HEADERS },
       );
     }
-    const type = await resolveGroupBookImage(file);
-    if (!type) {
+    // Only server-decoded, re-encoded bytes are persisted; the original upload
+    // (metadata, trailing payload, extra frames) is never stored.
+    const image = await normalizeGroupBookImage(file);
+    if (image.ok === false) {
       return NextResponse.json(
-        { ok: false, error: 'unsupported_image' },
-        { status: 415, headers: GROUP_BOOK_PRIVATE_HEADERS },
+        { ok: false, error: image.error },
+        { status: image.error === 'unsupported_image' ? 415 : 422, headers: GROUP_BOOK_PRIVATE_HEADERS },
       );
     }
-    prepared.push({ bytes: Buffer.from(await file.arrayBuffer()), ...type });
+    prepared.push({ bytes: image.bytes, mime: image.mime, ext: image.ext });
   }
 
   const uploaded: GroupBookPhotoAsset[] = [];
@@ -137,14 +147,22 @@ export async function POST(req: Request) {
     characterNotes,
     photos: uploaded,
   });
-  if (await createGroupBookSubmission(record)) return success(token, false);
+  const created = await createOrReconcileGroupBookSubmission(invite, record);
+  if (created.outcome === 'created' || created.outcome === 'committed') return success(token, false);
 
-  // A concurrent request may have won the create-only family record. Never
-  // overwrite it; clean up only this request's random-path assets.
-  await deleteGroupBookPhotos(uploaded);
-  if (await findGroupBookSubmission(invite)) return success(token, true);
+  if (created.outcome === 'conflict') {
+    // A concurrent request provably won the create-only family record. Never
+    // overwrite it; clean up only this request's random-path assets.
+    const winnerPaths = new Set(created.winner.photos.map((photo) => photo.pathname));
+    await deleteGroupBookPhotos(uploaded.filter((photo) => !winnerPaths.has(photo.pathname)));
+    return success(token, true);
+  }
+
+  // Durability unknown: the record may reference these photos, so keep them
+  // and do not claim success. A later invite check reconciles.
+  console.error('[group-book/intake] record persistence unconfirmed; photos retained');
   return NextResponse.json(
-    { ok: false, error: 'record_persist_failed' },
-    { status: 502, headers: GROUP_BOOK_PRIVATE_HEADERS },
+    { ok: false, error: 'record_persist_unconfirmed' },
+    { status: 503, headers: GROUP_BOOK_PRIVATE_HEADERS },
   );
 }

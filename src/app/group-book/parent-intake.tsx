@@ -77,9 +77,11 @@ export default function GroupBookPortal() {
       return;
     }
     setError(
-      response.status === 503
+      body.error === 'storage_disabled'
         ? 'Private group-book intake is not enabled in this environment.'
-        : 'That private family invite was not recognized.',
+        : body.error === 'storage_unavailable'
+          ? 'Private storage could not be checked right now. Please try again later.'
+          : 'That private family invite was not recognized.',
     );
   }
 
@@ -120,7 +122,11 @@ export default function GroupBookPortal() {
         ? 'That private family invite was not recognized.'
         : body.error === 'storage_disabled'
           ? 'Private group-book intake is not enabled in this environment.'
-          : 'The submission was not saved. Please review the fields and try again.',
+          : body.error === 'record_persist_unconfirmed'
+            ? 'We could not confirm whether your submission was saved. Re-enter your invite later to check before submitting again.'
+            : body.error === 'unsupported_image' || body.error === 'invalid_image'
+              ? 'One of the photos could not be read. Try a JPG, PNG, or WEBP photo.'
+              : 'The submission was not saved. Please review the fields and try again.',
     );
   }
 

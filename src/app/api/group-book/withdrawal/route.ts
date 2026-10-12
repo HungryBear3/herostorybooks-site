@@ -12,6 +12,9 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+// The browser posts to /group-book/family/withdraw, which re-exports this
+// handler so the /group-book-scoped access cookie is actually sent. This API
+// path stays for compatibility; a browser never sends the cookie here.
 export async function POST() {
   if (!groupBookStorageReady()) {
     return NextResponse.json(
@@ -21,7 +24,16 @@ export async function POST() {
   }
   const token = (await cookies()).get(GROUP_BOOK_ACCESS_COOKIE)?.value ?? '';
   const invite = resolveGroupBookInvite(token);
-  if (!invite || !(await findGroupBookSubmission(invite))) {
+  let submitted = false;
+  try {
+    submitted = Boolean(invite && (await findGroupBookSubmission(invite)));
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: 'storage_unavailable' },
+      { status: 503, headers: GROUP_BOOK_PRIVATE_HEADERS },
+    );
+  }
+  if (!invite || !submitted) {
     return NextResponse.json(
       { ok: false, error: 'not_found' },
       { status: 404, headers: GROUP_BOOK_PRIVATE_HEADERS },

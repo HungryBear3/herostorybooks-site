@@ -12,7 +12,8 @@ export default function WithdrawButton({ alreadyWithdrawn }: { alreadyWithdrawn:
     if (!window.confirm('Withdraw your child and mark them for omission from proof and print?')) return;
     setBusy(true);
     setError(null);
-    const response = await fetch('/api/group-book/withdrawal', { method: 'POST' });
+    // Must stay under /group-book: the access cookie is scoped to that path.
+    const response = await fetch('/group-book/family/withdraw', { method: 'POST' });
     const body = await response.json().catch(() => ({})) as { omitFromProofAndPrint?: boolean };
     setBusy(false);
     if (response.ok && body.omitFromProofAndPrint) {

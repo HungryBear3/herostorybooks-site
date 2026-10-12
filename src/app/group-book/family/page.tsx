@@ -15,7 +15,9 @@ export default async function GroupBookFamilyPage() {
   if (!invite) redirect('/group-book');
   const submission = await loadEffectiveGroupBookSubmission(invite);
   if (!submission) redirect('/group-book');
-  const withdrawn = submission.effectiveOmitFromProofAndPrint;
+  const omitted = submission.effectiveOmitFromProofAndPrint;
+  const withdrawn = submission.effectiveStatus === 'withdrawal_requested';
+  const unverified = submission.effectiveStatus === 'withdrawal_unverified';
 
   return (
     <>
@@ -33,8 +35,11 @@ export default async function GroupBookFamilyPage() {
             <div className="fr-row-between"><span className="meta">Age range</span><span>{submission.child.ageRange}</span></div>
             <div className="fr-row-between"><span className="meta">Private photos received</span><span>{submission.photos.length}</span></div>
             <div className="fr-row-between"><span className="meta">Shared-book consent</span><span>Recorded</span></div>
-            <div className="fr-row-between"><span className="meta">Proof/print status</span><strong>{withdrawn ? 'OMIT' : 'Eligible pending separate approval'}</strong></div>
+            <div className="fr-row-between"><span className="meta">Proof/print status</span><strong>{omitted ? 'OMIT' : 'Eligible pending separate approval'}</strong></div>
           </div>
+          {unverified && (
+            <p className="help" style={{ color: 'var(--err)' }}>Your withdrawal status could not be verified right now, so this child is treated as omitted. Please check again later.</p>
+          )}
           <div className="card card-quiet" style={{ padding: 16 }}>
             <p className="help">Participating families may receive the final private group book containing approved children&apos;s first names and illustrated likenesses. They do not receive source photos, parent contact details, or access to this page.</p>
           </div>

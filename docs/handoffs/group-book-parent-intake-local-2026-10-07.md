@@ -32,8 +32,9 @@ Base: `origin/main` at `baf00cfb0b65f1bca3465ea801a57af3c552f74e`.
    is represented or implied. Source photos remain private to HSB operators and
    are not a family gallery.
 5. The server validates the invite, consent, field limits, byte signatures,
-   count, and size before storage. It writes only to a dedicated private store.
-   Original filenames are discarded.
+   count, and size before storage, then fully decodes each photo on the server
+   and stores only a re-encoded JPEG (see Remediation below). It writes only to
+   a dedicated private store. Original filenames are discarded.
 6. The same high-entropy family token is the family's private access
    capability. `/group-book/family/{token}` shows only that family's sanitized
    submission summary. There is no cohort listing and no room-parent/admin
@@ -50,9 +51,9 @@ Base: `origin/main` at `baf00cfb0b65f1bca3465ea801a57af3c552f74e`.
   call.
 - An existing family record is returned as `already_submitted` without a new
   upload.
-- The family record is create-only. A concurrent loser deletes its newly
-  uploaded orphan assets best-effort and resolves to the already-created
-  record; it never overwrites another submission.
+- The family record is create-only. A failed create is reconciled against the
+  stored record before any cleanup (see Remediation below); it never
+  overwrites another submission.
 - Withdrawal markers are create-only and repeated withdrawal is idempotent.
 - Parent API misses return 404 rather than distinguishing unknown cohort,
   family, or token.
@@ -66,7 +67,43 @@ Base: `origin/main` at `baf00cfb0b65f1bca3465ea801a57af3c552f74e`.
   workflows, each with a withdrawal recheck.
 - Real-parent invitation, upload, email, proof, print, or production deploy.
 
-## Local verification
+## Remediation 2026-10-08 (four reproduced defects; base c3a6ea29)
+
+Status: code changed, NOT_RUN by the author (no execution tools). Real
+`@vercel/blob` SDK behaviour: NOT_RUN. Full browser journey: NOT_RUN.
+
+- Withdrawal route: the browser now posts to `/group-book/family/withdraw`
+  (`src/app/group-book/family/withdraw/route.ts`, which re-exports the
+  existing handler). The access cookie stays at `Path=/group-book`. The old
+  `/api/group-book/withdrawal` handler remains; a browser never sends the
+  cookie there, so it answers 404.
+- Photos: `normalizeGroupBookImage` (`src/lib/group-book/image-type.ts`)
+  checks the signature against the declared type, refuses HEIC (the server
+  HEIC codec is not qualified), decodes fully with sharp `failOn:'error'`,
+  enforces 12,000 px per side, 40 MP and a single frame, applies orientation,
+  and stores only re-encoded JPEG bytes. EXIF/XMP/IPTC metadata and trailing
+  payloads are not stored. The 10 MiB byte limit (413) and MIME mismatch
+  (415) are unchanged. Decode or limit failures return 422 `invalid_image`.
+- Private reads: only a 404, an empty result (as in
+  `confirmation-envelope-store.ts`) or an instance of the SDK's
+  `BlobNotFoundError` (but not `BlobStoreNotFoundError`) counts as absence.
+  Any other status, a missing stream, unparseable JSON or a record that fails
+  validation or identity checks counts as unreadable. Other thrown errors
+  propagate. An unreadable family record refuses with 503
+  `storage_unavailable`. An unreadable withdrawal marker yields
+  `effectiveStatus: 'withdrawal_unverified'` with omission true, never
+  eligible.
+- Create: `createOrReconcileGroupBookSubmission` rereads the stored record
+  after any create error. If the stored record has our id, every photo is
+  kept and the route returns success. If a valid different record is stored,
+  only this request's unreferenced photos are deleted. If the result is
+  absent, unreadable or thrown, nothing is deleted and the route returns 503
+  `record_persist_unconfirmed` with no cookie.
+- Not addressed (out of scope): binding the withdrawal marker to a submission
+  id, Origin/Sec-Fetch-Site checks, an orphan sweeper, the `rg` test
+  dependency, the consent/recipient/cutoff owner decisions.
+
+## Local verification (original 2026-10-07 lane, before remediation)
 
 - New synthetic group-book privacy/storage suite: 6/6 PASS.
 - New suite plus existing Family Review privacy/access/token/store suites:
