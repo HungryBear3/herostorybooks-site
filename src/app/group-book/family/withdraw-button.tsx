@@ -13,7 +13,16 @@ export default function WithdrawButton({ alreadyWithdrawn }: { alreadyWithdrawn:
     setBusy(true);
     setError(null);
     // Must stay under /group-book: the access cookie is scoped to that path.
-    const response = await fetch('/group-book/family/withdraw', { method: 'POST' });
+    let response: Response;
+    try {
+      response = await fetch('/group-book/family/withdraw', { method: 'POST' });
+    } catch {
+      // The marker may already be written. Do not claim failure and do not
+      // retry the POST: the server-rendered family page is the authoritative status.
+      setBusy(false);
+      setError('We could not confirm whether your withdrawal was recorded because the connection was interrupted. Reload this page to check its status before trying again.');
+      return;
+    }
     const body = await response.json().catch(() => ({})) as { omitFromProofAndPrint?: boolean };
     setBusy(false);
     if (response.ok && body.omitFromProofAndPrint) {
@@ -35,7 +44,7 @@ export default function WithdrawButton({ alreadyWithdrawn }: { alreadyWithdrawn:
           {busy ? 'Recording withdrawal…' : 'Withdraw my child before proof or print'}
         </button>
       )}
-      {error && <p className="help" style={{ color: 'var(--err)' }}>{error}</p>}
+      {error && <p className="help" role="alert" style={{ color: 'var(--err)' }}>{error}</p>}
     </div>
   );
 }

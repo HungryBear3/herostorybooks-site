@@ -58,20 +58,32 @@ export default function GroupBookPortal() {
   const [sharedBook, setSharedBook] = useState(false);
   const [schoolDisclaimer, setSchoolDisclaimer] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
 
   async function continueFromGate(e: React.FormEvent) {
     e.preventDefault();
+    if (checking) return;
     setError(null);
-    const response = await fetch('/api/group-book/access', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ invite }),
-    });
+    setChecking(true);
+    let response: Response;
+    try {
+      response = await fetch('/api/group-book/access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invite }),
+      });
+    } catch {
+      // Transport failure: the invite was neither accepted nor rejected.
+      setChecking(false);
+      setError('Your invite could not be checked because the connection failed. Please try again.');
+      return;
+    }
     const body = await response.json().catch(() => ({})) as { accessUrl?: string; error?: string };
     if (response.ok && body.accessUrl) {
       window.location.assign(body.accessUrl);
       return;
     }
+    setChecking(false);
     if (response.status === 404 && body.error === 'not_submitted') {
       setPhase('form');
       return;
@@ -109,7 +121,17 @@ export default function GroupBookPortal() {
       setError('One of the photos could not be prepared. Try a JPG, PNG, WEBP, or HEIC image.');
       return;
     }
-    const response = await fetch('/api/group-book/intake', { method: 'POST', body: form });
+    let response: Response;
+    try {
+      response = await fetch('/api/group-book/intake', { method: 'POST', body: form });
+    } catch {
+      // The request may or may not have reached the server, so the record may
+      // already exist. Never claim it was not saved, and never retry the POST here:
+      // re-entering the invite is the server-side reconciliation path.
+      setPhase('form');
+      setError('We could not confirm whether your submission was saved because the connection was interrupted. Re-enter your invite to check whether it was received before submitting again.');
+      return;
+    }
     const body = await response.json().catch(() => ({})) as { accessUrl?: string; error?: string };
     if (response.ok && body.accessUrl) {
       setFiles([]);
@@ -155,9 +177,9 @@ export default function GroupBookPortal() {
                 <span className="field-label">Your private family invite</span>
                 <input className="input" value={invite} onChange={(e) => setInvite(e.target.value)} autoComplete="off" />
               </label>
-              {error && <p className="help" style={{ color: 'var(--err)' }}>{error}</p>}
-              <button className="btn btn-forest btn-block btn-lg" type="submit" disabled={!invite.trim()}>
-                Continue <Icon name="arrow-right" size={16} color="#f7f1e3" />
+              {error && <p className="help" role="alert" style={{ color: 'var(--err)' }}>{error}</p>}
+              <button className="btn btn-forest btn-block btn-lg" type="submit" disabled={!invite.trim() || checking}>
+                {checking ? 'Checking…' : 'Continue'} <Icon name="arrow-right" size={16} color="#f7f1e3" />
               </button>
             </form>
           </section>
@@ -195,7 +217,7 @@ export default function GroupBookPortal() {
               <p className="help">Before proof or print, you can use your private family access to withdraw your child. A withdrawal marks the child for omission from proof and print.</p>
             </section>
 
-            {error && <p className="help" style={{ color: 'var(--err)' }}>{error}</p>}
+            {error && <p className="help" role="alert" style={{ color: 'var(--err)' }}>{error}</p>}
             <button className="btn btn-forest btn-block btn-lg" type="submit" disabled={!ready || phase === 'submitting'}>
               {phase === 'submitting' ? 'Saving privately…' : 'Submit my child privately'}
             </button>
