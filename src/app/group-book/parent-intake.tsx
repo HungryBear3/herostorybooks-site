@@ -65,36 +65,34 @@ export default function GroupBookPortal() {
     if (checking) return;
     setError(null);
     setChecking(true);
-    let response: Response;
     try {
-      response = await fetch('/api/group-book/access', {
+      const response = await fetch('/api/group-book/access', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ invite }),
       });
+      const body = await response.json() as { accessUrl?: string; error?: string };
+      if (!body || typeof body !== 'object') throw new Error('Unconfirmed response');
+      if (response.ok && body.accessUrl) {
+        window.location.assign(body.accessUrl);
+        return;
+      }
+      if (response.status === 404 && body.error === 'not_submitted') {
+        setPhase('form');
+        return;
+      }
+      setError(
+        body.error === 'storage_disabled'
+          ? 'Private group-book intake is not enabled in this environment.'
+          : body.error === 'storage_unavailable'
+            ? 'Private storage could not be checked right now. Please try again later.'
+            : 'That private family invite was not recognized.',
+      );
     } catch {
-      // Transport failure: the invite was neither accepted nor rejected.
+      setError('Your invite could not be checked because the connection or response was interrupted. Please try again.');
+    } finally {
       setChecking(false);
-      setError('Your invite could not be checked because the connection failed. Please try again.');
-      return;
     }
-    const body = await response.json().catch(() => ({})) as { accessUrl?: string; error?: string };
-    if (response.ok && body.accessUrl) {
-      window.location.assign(body.accessUrl);
-      return;
-    }
-    setChecking(false);
-    if (response.status === 404 && body.error === 'not_submitted') {
-      setPhase('form');
-      return;
-    }
-    setError(
-      body.error === 'storage_disabled'
-        ? 'Private group-book intake is not enabled in this environment.'
-        : body.error === 'storage_unavailable'
-          ? 'Private storage could not be checked right now. Please try again later.'
-          : 'That private family invite was not recognized.',
-    );
   }
 
   async function submit(e: React.FormEvent) {
@@ -121,35 +119,32 @@ export default function GroupBookPortal() {
       setError('One of the photos could not be prepared. Try a JPG, PNG, WEBP, or HEIC image.');
       return;
     }
-    let response: Response;
     try {
-      response = await fetch('/api/group-book/intake', { method: 'POST', body: form });
+      const response = await fetch('/api/group-book/intake', { method: 'POST', body: form });
+      const body = await response.json() as { accessUrl?: string; error?: string };
+      if (!body || typeof body !== 'object') throw new Error('Unconfirmed response');
+      if (response.ok && body.accessUrl) {
+        setFiles([]);
+        window.location.assign(body.accessUrl);
+        return;
+      }
+      setError(
+        body.error === 'invalid_invite'
+          ? 'That private family invite was not recognized.'
+          : body.error === 'storage_disabled'
+            ? 'Private group-book intake is not enabled in this environment.'
+            : body.error === 'record_persist_unconfirmed'
+              ? 'We could not confirm whether your submission was saved. Re-enter your invite later to check before submitting again.'
+              : body.error === 'unsupported_image' || body.error === 'invalid_image'
+                ? 'One of the photos could not be read. Try a JPG, PNG, or WEBP photo.'
+                : 'We could not confirm whether your submission was saved. Re-enter your invite to check before submitting again.',
+      );
     } catch {
-      // The request may or may not have reached the server, so the record may
-      // already exist. Never claim it was not saved, and never retry the POST here:
-      // re-entering the invite is the server-side reconciliation path.
+      // A lost response does not establish whether the write reached storage.
+      setError('We could not confirm whether your submission was saved because the connection or response was interrupted. Re-enter your invite to check whether it was received before submitting again.');
+    } finally {
       setPhase('form');
-      setError('We could not confirm whether your submission was saved because the connection was interrupted. Re-enter your invite to check whether it was received before submitting again.');
-      return;
     }
-    const body = await response.json().catch(() => ({})) as { accessUrl?: string; error?: string };
-    if (response.ok && body.accessUrl) {
-      setFiles([]);
-      window.location.assign(body.accessUrl);
-      return;
-    }
-    setPhase('form');
-    setError(
-      body.error === 'invalid_invite'
-        ? 'That private family invite was not recognized.'
-        : body.error === 'storage_disabled'
-          ? 'Private group-book intake is not enabled in this environment.'
-          : body.error === 'record_persist_unconfirmed'
-            ? 'We could not confirm whether your submission was saved. Re-enter your invite later to check before submitting again.'
-            : body.error === 'unsupported_image' || body.error === 'invalid_image'
-              ? 'One of the photos could not be read. Try a JPG, PNG, or WEBP photo.'
-              : 'The submission was not saved. Please review the fields and try again.',
-    );
   }
 
   const ready = guardian && sharedBook && schoolDisclaimer && files.length >= 1 && files.length <= 5;

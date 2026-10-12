@@ -61,6 +61,30 @@ function withdrawContext() {
 
 const event = { preventDefault() {} };
 
+for (const kind of ['rejected-json', 'null-json'] as const) {
+  for (const target of ['submit', 'withdraw', 'continueFromGate'] as const) {
+    test(`${target} releases transient state and reports uncertainty after ${kind}`, async () => {
+      const { state, ctx } = target === 'withdraw' ? withdrawContext() : portalContext();
+      let calls = 0;
+      Object.assign(ctx, { fetch: async () => {
+        calls += 1;
+        return { ok: true, status: 200, json: async () => {
+          if (kind === 'rejected-json') throw new SyntaxError('interrupted response');
+          return null;
+        } };
+      } });
+      await callback(target === 'withdraw' ? WITHDRAW : PORTAL, target, ctx)(event);
+      assert.equal(calls, 1);
+      if ('phase' in state && target === 'submit') assert.equal(state.phase, 'form');
+      if ('busy' in state) assert.equal(state.busy, false);
+      if ('checking' in state) assert.equal(state.checking, false);
+      assert.ok(state.error);
+      assert.doesNotMatch(state.error, /not saved|not recognized/i);
+      assert.match(state.error, /could not|whether|unconfirmed/i);
+    });
+  }
+}
+
 test('interrupted submit returns to the form with a truthful uncertain-write message', async () => {
   const { state, ctx } = portalContext();
   await callback(PORTAL, 'submit', ctx)(event);
