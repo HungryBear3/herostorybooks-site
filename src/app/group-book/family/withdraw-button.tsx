@@ -13,14 +13,20 @@ export default function WithdrawButton({ alreadyWithdrawn }: { alreadyWithdrawn:
     setBusy(true);
     setError(null);
     // Must stay under /group-book: the access cookie is scoped to that path.
-    const response = await fetch('/group-book/family/withdraw', { method: 'POST' });
-    const body = await response.json().catch(() => ({})) as { omitFromProofAndPrint?: boolean };
-    setBusy(false);
-    if (response.ok && body.omitFromProofAndPrint) {
-      setWithdrawn(true);
-      return;
+    try {
+      const response = await fetch('/group-book/family/withdraw', { method: 'POST' });
+      const body = await response.json() as { omitFromProofAndPrint?: boolean };
+      if (response.ok && body?.omitFromProofAndPrint) {
+        setWithdrawn(true);
+        return;
+      }
+      setError('We could not confirm whether your withdrawal was recorded. Reload this page to check its status before trying again.');
+    } catch {
+      // The marker may already be written; never automatically retry the POST.
+      setError('We could not confirm whether your withdrawal was recorded because the connection or response was interrupted. Reload this page to check its status before trying again.');
+    } finally {
+      setBusy(false);
     }
-    setError('The withdrawal request was not saved. Please try again.');
   }
 
   return (
@@ -35,7 +41,7 @@ export default function WithdrawButton({ alreadyWithdrawn }: { alreadyWithdrawn:
           {busy ? 'Recording withdrawal…' : 'Withdraw my child before proof or print'}
         </button>
       )}
-      {error && <p className="help" style={{ color: 'var(--err)' }}>{error}</p>}
+      {error && <p className="help" role="alert" style={{ color: 'var(--err)' }}>{error}</p>}
     </div>
   );
 }

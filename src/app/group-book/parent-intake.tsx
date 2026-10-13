@@ -58,31 +58,41 @@ export default function GroupBookPortal() {
   const [sharedBook, setSharedBook] = useState(false);
   const [schoolDisclaimer, setSchoolDisclaimer] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
 
   async function continueFromGate(e: React.FormEvent) {
     e.preventDefault();
+    if (checking) return;
     setError(null);
-    const response = await fetch('/api/group-book/access', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ invite }),
-    });
-    const body = await response.json().catch(() => ({})) as { accessUrl?: string; error?: string };
-    if (response.ok && body.accessUrl) {
-      window.location.assign(body.accessUrl);
-      return;
+    setChecking(true);
+    try {
+      const response = await fetch('/api/group-book/access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invite }),
+      });
+      const body = await response.json() as { accessUrl?: string; error?: string };
+      if (!body || typeof body !== 'object') throw new Error('Unconfirmed response');
+      if (response.ok && body.accessUrl) {
+        window.location.assign(body.accessUrl);
+        return;
+      }
+      if (response.status === 404 && body.error === 'not_submitted') {
+        setPhase('form');
+        return;
+      }
+      setError(
+        body.error === 'storage_disabled'
+          ? 'Private group-book intake is not enabled in this environment.'
+          : body.error === 'storage_unavailable'
+            ? 'Private storage could not be checked right now. Please try again later.'
+            : 'That private family invite was not recognized.',
+      );
+    } catch {
+      setError('Your invite could not be checked because the connection or response was interrupted. Please try again.');
+    } finally {
+      setChecking(false);
     }
-    if (response.status === 404 && body.error === 'not_submitted') {
-      setPhase('form');
-      return;
-    }
-    setError(
-      body.error === 'storage_disabled'
-        ? 'Private group-book intake is not enabled in this environment.'
-        : body.error === 'storage_unavailable'
-          ? 'Private storage could not be checked right now. Please try again later.'
-          : 'That private family invite was not recognized.',
-    );
   }
 
   async function submit(e: React.FormEvent) {
@@ -109,25 +119,32 @@ export default function GroupBookPortal() {
       setError('One of the photos could not be prepared. Try a JPG, PNG, WEBP, or HEIC image.');
       return;
     }
-    const response = await fetch('/api/group-book/intake', { method: 'POST', body: form });
-    const body = await response.json().catch(() => ({})) as { accessUrl?: string; error?: string };
-    if (response.ok && body.accessUrl) {
-      setFiles([]);
-      window.location.assign(body.accessUrl);
-      return;
+    try {
+      const response = await fetch('/api/group-book/intake', { method: 'POST', body: form });
+      const body = await response.json() as { accessUrl?: string; error?: string };
+      if (!body || typeof body !== 'object') throw new Error('Unconfirmed response');
+      if (response.ok && body.accessUrl) {
+        setFiles([]);
+        window.location.assign(body.accessUrl);
+        return;
+      }
+      setError(
+        body.error === 'invalid_invite'
+          ? 'That private family invite was not recognized.'
+          : body.error === 'storage_disabled'
+            ? 'Private group-book intake is not enabled in this environment.'
+            : body.error === 'record_persist_unconfirmed'
+              ? 'We could not confirm whether your submission was saved. Re-enter your invite later to check before submitting again.'
+              : body.error === 'unsupported_image' || body.error === 'invalid_image'
+                ? 'One of the photos could not be read. Try a JPG, PNG, or WEBP photo.'
+                : 'We could not confirm whether your submission was saved. Re-enter your invite to check before submitting again.',
+      );
+    } catch {
+      // A lost response does not establish whether the write reached storage.
+      setError('We could not confirm whether your submission was saved because the connection or response was interrupted. Re-enter your invite to check whether it was received before submitting again.');
+    } finally {
+      setPhase('form');
     }
-    setPhase('form');
-    setError(
-      body.error === 'invalid_invite'
-        ? 'That private family invite was not recognized.'
-        : body.error === 'storage_disabled'
-          ? 'Private group-book intake is not enabled in this environment.'
-          : body.error === 'record_persist_unconfirmed'
-            ? 'We could not confirm whether your submission was saved. Re-enter your invite later to check before submitting again.'
-            : body.error === 'unsupported_image' || body.error === 'invalid_image'
-              ? 'One of the photos could not be read. Try a JPG, PNG, or WEBP photo.'
-              : 'The submission was not saved. Please review the fields and try again.',
-    );
   }
 
   const ready = guardian && sharedBook && schoolDisclaimer && files.length >= 1 && files.length <= 5;
@@ -155,9 +172,9 @@ export default function GroupBookPortal() {
                 <span className="field-label">Your private family invite</span>
                 <input className="input" value={invite} onChange={(e) => setInvite(e.target.value)} autoComplete="off" />
               </label>
-              {error && <p className="help" style={{ color: 'var(--err)' }}>{error}</p>}
-              <button className="btn btn-forest btn-block btn-lg" type="submit" disabled={!invite.trim()}>
-                Continue <Icon name="arrow-right" size={16} color="#f7f1e3" />
+              {error && <p className="help" role="alert" style={{ color: 'var(--err)' }}>{error}</p>}
+              <button className="btn btn-forest btn-block btn-lg" type="submit" disabled={!invite.trim() || checking}>
+                {checking ? 'Checking…' : 'Continue'} <Icon name="arrow-right" size={16} color="#f7f1e3" />
               </button>
             </form>
           </section>
@@ -195,7 +212,7 @@ export default function GroupBookPortal() {
               <p className="help">Before proof or print, you can use your private family access to withdraw your child. A withdrawal marks the child for omission from proof and print.</p>
             </section>
 
-            {error && <p className="help" style={{ color: 'var(--err)' }}>{error}</p>}
+            {error && <p className="help" role="alert" style={{ color: 'var(--err)' }}>{error}</p>}
             <button className="btn btn-forest btn-block btn-lg" type="submit" disabled={!ready || phase === 'submitting'}>
               {phase === 'submitting' ? 'Saving privately…' : 'Submit my child privately'}
             </button>
