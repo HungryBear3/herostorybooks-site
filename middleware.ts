@@ -58,6 +58,7 @@ import {
  */
 
 const FAMILY_REVIEW_PATH = /^\/(?:api\/)?family-review(?:\/|$)/;
+const GROUP_BOOK_PATH = /^\/(?:api\/)?group-book(?:\/|$)/;
 const CUSTOMER_REVIEW_PRIVATE_PATH = /^\/(?:review\/|api\/order\/[^/]+\/(?:review|review-session|review-asset\/))/;
 const OPERATIONAL_NOINDEX_PATH = /^\/(?:admin|api|checkout|order|partner|review|status|thank-you)(?:\/|$)/;
 const ORDER_BEARER_REFERRER_PATH = /^\/(?:status|thank-you)(?:\/|$)/;
@@ -112,8 +113,9 @@ function applyCustomerReviewPrivacyHeaders(response: NextResponse): void {
 export function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const isFamilyReview = FAMILY_REVIEW_PATH.test(pathname);
+  const isGroupBook = GROUP_BOOK_PATH.test(pathname);
 
-  if (isFamilyReview) {
+  if (isFamilyReview || isGroupBook) {
     const response = NextResponse.next();
     applyFamilyReviewPrivacyHeaders(response);
     return response;
@@ -163,7 +165,7 @@ export function middleware(request: NextRequest) {
 export const config = {
   // Hit ALL paths (including api routes) so /api/family-review/* gets the
   // privacy headers too. The cover-variant code skips them via the
-  // isFamilyReview branch.
+  // private-intake branch.
   matcher: [
     '/((?!_next/static|_next/image|favicon.ico|assets|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|txt|xml)).*)',
   ],

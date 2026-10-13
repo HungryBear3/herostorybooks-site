@@ -150,7 +150,7 @@ jobs:
           # so a fork PR cannot write a cache that a later main run reads.
           cache: 'npm'
 
-      - name: Install poppler-utils (pdftotext, pdffonts)
+      - name: Install test system dependencies (poppler-utils, ripgrep)
         # tests/pdf-builder.test.ts shells out to poppler's `pdftotext` (page
         # text assertions, 6 tests) and `pdffonts` (font-embedding assertions
         # for commercial printing, 2 tests). Both ship in poppler-utils and are
@@ -164,9 +164,11 @@ jobs:
         # has passwordless sudo either way, so this is hygiene, not a privilege
         # boundary.) The update is retried once so a transient mirror failure
         # does not red a gate that is meant to be authoritative.
+        # tests/group-book-parent-intake.test.ts requires ripgrep (`rg`) to
+        # enumerate route files; install it so the boundary assertion executes.
         run: |
           sudo apt-get update || (sleep 5 && sudo apt-get update)
-          sudo apt-get install -y --no-install-recommends poppler-utils
+          sudo apt-get install -y --no-install-recommends poppler-utils ripgrep
 
       - name: Install dependencies
         run: npm ci
