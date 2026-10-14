@@ -22,6 +22,8 @@ import { quotePrintUpgradeAtCost, type PrintCostQuoteProvider } from '../src/lib
 import {
   PRINT_UPGRADE_CHECKOUT_SESSION_TTL_MS,
   PRINT_UPGRADE_STRIPE_KIND,
+  PrintUpgradeCheckoutCreateRejectedError,
+  checkoutCreateWasRejected,
   openPrintUpgradeCheckout,
   printPurchaseApprovalIsCurrent,
   printUpgradeCheckoutIdempotencyKey,
@@ -31,6 +33,16 @@ import {
   type PrintUpgradeCheckoutSessionCreate,
   type PrintUpgradeCheckoutSessionLike,
 } from '../src/lib/print-upgrade-checkout.ts';
+import { isPrintUpgradeLockLive } from '../src/lib/print-upgrade-lock.ts';
+
+function minutesAfter(iso: string, minutes: number): string {
+  return new Date(Date.parse(iso) + minutes * 60 * 1000).toISOString();
+}
+
+/** A failure that proves Stripe created nothing (shape of stripe-node's StripeInvalidRequestError). */
+function stripeRejection(): Error {
+  return Object.assign(new Error('Invalid expires_at'), { type: 'StripeInvalidRequestError', statusCode: 400 });
+}
 
 const APPROVED_SHA = '97312217e67bdc8845f5c03cd0d06533a1fe9a84bd030ce8fb25460e79f2ba38';
 const NOW = '2026-10-14T12:00:00.000Z';
@@ -135,6 +147,8 @@ test('open: creates one price-locked Session for the chosen quote and binds it b
   const { params, idempotencyKey } = created[0];
   assert.equal(idempotencyKey, printUpgradeCheckoutIdempotencyKey(ORDER_ID, premium.quoteId));
   assert.equal(params.mode, 'payment');
+  // Card only: no delayed-notification method can complete the Session unpaid.
+  assert.deepEqual(params.payment_method_types, ['card']);
   assert.equal(params.client_reference_id, ORDER_ID);
   assert.equal(params.customer_email, 'parent@example.com');
   assert.equal(params.allow_promotion_codes, false);
@@ -212,7 +226,7 @@ test('open: a duplicate click reuses the open Session without a second provider 
   assert.equal(created.length, 1);
 }));
 
-test('open: a provider failure leaves no payable lock behind and a retry can succeed', withLocalStore(async () => {
+test('open: an ambiguous provider failure leaves no payable lock behind; the same quote retries the same idempotency key without extending the Session', withLocalStore(async () => {
   const { token, premium } = await quotedOffer();
   const failed: { params: PrintUpgradeCheckoutSessionCreate; idempotencyKey: string }[] = [];
   const result = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: premium.quoteId }, { createCheckoutSession: fakeStripe(failed, { fail: true }), baseUrl: BASE_URL, now: NOW });
@@ -221,12 +235,179 @@ test('open: a provider failure leaves no payable lock behind and a retry can suc
   assert.notEqual(afterFailure.printUpgradeStatus, 'checkout_open');
   assert.equal(afterFailure.printUpgradeStripeSessionId ?? null, null);
   assert.equal(afterFailure.printUpgradeLock?.status, 'provisioning');
+  const failures = (afterFailure.auditEvents ?? []).filter((e) => e.type === 'print_upgrade_checkout_create_failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].meta?.outcome, 'ambiguous');
+  assert.equal(failures[0].meta?.lockReleased, false);
+  assert.equal(JSON.stringify(failures[0]).includes('stripe down'), false, 'provider error text is not persisted');
 
   const created: { params: PrintUpgradeCheckoutSessionCreate; idempotencyKey: string }[] = [];
-  const retry = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: premium.quoteId }, { createCheckoutSession: fakeStripe(created), baseUrl: BASE_URL, now: NOW });
+  const retry = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: premium.quoteId }, { createCheckoutSession: fakeStripe(created), baseUrl: BASE_URL, now: minutesAfter(NOW, 2) });
   assert.equal(retry.ok, true);
-  assert.equal(created[0]?.idempotencyKey, printUpgradeCheckoutIdempotencyKey(ORDER_ID, premium.quoteId));
-  assert.equal((await getOrder(ORDER_ID))!.printUpgradeLock?.status, 'open');
+  assert.equal(created.length, 1);
+  assert.equal(created[0].idempotencyKey, printUpgradeCheckoutIdempotencyKey(ORDER_ID, premium.quoteId));
+  assert.equal(created[0].idempotencyKey, failed[0].idempotencyKey, 'retry reuses the exact key the failed attempt used');
+  assert.deepEqual(created[0].params, failed[0].params, 'retry sends byte-identical parameters so Stripe replays, never duplicates');
+  assert.equal(created[0].params.expires_at, Math.floor((Date.parse(NOW) + PRINT_UPGRADE_CHECKOUT_SESSION_TTL_MS) / 1000), 'the original Session expiry is not extended');
+  const bound = (await getOrder(ORDER_ID))!;
+  assert.equal(bound.printUpgradeLock?.status, 'open');
+  assert.equal(bound.printUpgradeLock?.expiresAt, minutesAfter(NOW, 60));
+}));
+
+test('open: while a create outcome is ambiguous, a different quote, a re-quote and a re-offer are refused until the Session TTL passes — then all proceed, and no second create happens before that', withLocalStore(async () => {
+  const { token, premium, classic } = await quotedOffer();
+  await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: premium.quoteId }, { createCheckoutSession: fakeStripe([], { fail: true }), baseUrl: BASE_URL, now: NOW });
+  const lock = (await getOrder(ORDER_ID))!.printUpgradeLock!;
+  assert.equal(lock.status, 'provisioning');
+  assert.equal(isPrintUpgradeLockLive(lock, Date.parse(minutesAfter(NOW, 59))), true);
+  assert.equal(isPrintUpgradeLockLive(lock, Date.parse(minutesAfter(NOW, 60))), false);
+
+  const created: { params: PrintUpgradeCheckoutSessionCreate; idempotencyKey: string }[] = [];
+  for (const at of [minutesAfter(NOW, 1), minutesAfter(NOW, 59)]) {
+    const other = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: classic.quoteId }, { createCheckoutSession: fakeStripe(created), baseUrl: BASE_URL, now: at });
+    assert.deepEqual(other, { ok: false, reason: 'checkout_busy' }, at);
+    assert.deepEqual(await quotePrintUpgradeAtCost(ORDER_ID, { token, shippingAddress: ADDRESS }, { provider, now: at }), { ok: false, reason: 'quote_unavailable' }, at);
+    assert.deepEqual(await prepareCustomerPrintUpgradeOffer(ORDER_ID, { approvedSourceSha256: APPROVED_SHA, approvedSourcePageCount: 25, now: at }), { ok: false, reason: 'checkout_already_open' }, at);
+  }
+  assert.equal(created.length, 0, 'no second payable Session while the first may exist');
+
+  // Past the mirrored `expires_at`, any Session the failed call did create is
+  // itself expired at Stripe, so the lock no longer blocks anything.
+  const later = minutesAfter(NOW, 60);
+  const requoted = await quotePrintUpgradeAtCost(ORDER_ID, { token, shippingAddress: ADDRESS }, { provider, now: later });
+  assert.ok(requoted.ok);
+  const next = requoted.quotes.find((q) => q.targetFormat === 'classic')!;
+  const reopened = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: next.quoteId }, { createCheckoutSession: fakeStripe(created), baseUrl: BASE_URL, now: minutesAfter(NOW, 61) });
+  assert.ok(reopened.ok);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].idempotencyKey, printUpgradeCheckoutIdempotencyKey(ORDER_ID, next.quoteId));
+  assert.notEqual(created[0].idempotencyKey, lock.idempotencyKey);
+  const stored = (await getOrder(ORDER_ID))!;
+  assert.equal(stored.printUpgradeLock?.status, 'open');
+  assert.equal(stored.printUpgradeLock?.quoteId, next.quoteId);
+  assert.deepEqual(stored.printUpgradeLock?.supersededStripeSessionIds, [], 'a never-bound lock has no Session id to supersede');
+
+  // The operator can also re-offer once that second Session's TTL has passed.
+  const reoffered = await prepareCustomerPrintUpgradeOffer(ORDER_ID, { approvedSourceSha256: APPROVED_SHA, approvedSourcePageCount: 25, now: minutesAfter(NOW, 121) });
+  assert.ok(reoffered.ok);
+  assert.equal((await getOrder(ORDER_ID))!.printUpgradeLock ?? null, null);
+}));
+
+test('open: a definite provider rejection releases the lock in the same commit, so a different format, a re-quote and a re-offer proceed immediately', withLocalStore(async () => {
+  const { token, premium, classic } = await quotedOffer();
+  let rejections = 0;
+  const result = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: premium.quoteId }, {
+    createCheckoutSession: async () => { rejections += 1; throw stripeRejection(); }, baseUrl: BASE_URL, now: NOW,
+  });
+  assert.deepEqual(result, { ok: false, reason: 'provider_failed' });
+  assert.equal(rejections, 1);
+  const released = (await getOrder(ORDER_ID))!;
+  assert.equal(released.printUpgradeLock?.status, 'expired');
+  assert.equal(released.printUpgradeLock?.stripeSessionId, null);
+  assert.equal(released.printUpgradeLock?.checkoutUrl, null);
+  assert.notEqual(released.printUpgradeStatus, 'checkout_open');
+  const failures = (released.auditEvents ?? []).filter((e) => e.type === 'print_upgrade_checkout_create_failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].meta?.outcome, 'rejected');
+  assert.equal(failures[0].meta?.lockReleased, true);
+  assert.equal(isPrintUpgradeLockLive(released.printUpgradeLock, Date.parse(NOW)), false);
+
+  // Same instant: the other format opens with its own key; nothing waits.
+  const created: { params: PrintUpgradeCheckoutSessionCreate; idempotencyKey: string }[] = [];
+  const other = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: classic.quoteId }, { createCheckoutSession: fakeStripe(created), baseUrl: BASE_URL, now: minutesAfter(NOW, 1) });
+  assert.ok(other.ok);
+  assert.equal(created[0].idempotencyKey, printUpgradeCheckoutIdempotencyKey(ORDER_ID, classic.quoteId));
+  assert.equal((await getOrder(ORDER_ID))!.printUpgradeLock?.targetFormat, 'classic');
+
+  // And on a fresh order with the same rejection, re-quote and re-offer are not blocked either.
+  await persistOrder(makePaidDigitalOrder());
+  const again = await quotedOffer();
+  await openPrintUpgradeCheckout(ORDER_ID, { token: again.token, quoteId: again.premium.quoteId }, { createCheckoutSession: async () => { throw new PrintUpgradeCheckoutCreateRejectedError('adapter says: not created'); }, baseUrl: BASE_URL, now: NOW });
+  assert.equal((await getOrder(ORDER_ID))!.printUpgradeLock?.status, 'expired');
+  const requoted = await quotePrintUpgradeAtCost(ORDER_ID, { token: again.token, shippingAddress: ADDRESS }, { provider, now: minutesAfter(NOW, 1) });
+  assert.ok(requoted.ok);
+  const reoffered = await prepareCustomerPrintUpgradeOffer(ORDER_ID, { approvedSourceSha256: APPROVED_SHA, approvedSourcePageCount: 25, now: minutesAfter(NOW, 1) });
+  assert.ok(reoffered.ok);
+}));
+
+test('liveness: an open Session whose expiry webhook never arrives stops blocking re-quote, re-offer and a new checkout once its TTL passes', withLocalStore(async () => {
+  const { token, premium } = await quotedOffer();
+  const created: { params: PrintUpgradeCheckoutSessionCreate; idempotencyKey: string }[] = [];
+  const opened = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: premium.quoteId }, { createCheckoutSession: fakeStripe(created), baseUrl: BASE_URL, now: NOW });
+  assert.ok(opened.ok);
+
+  // Still live: everything that could mint a second payable Session is refused.
+  const mid = minutesAfter(NOW, 30);
+  assert.deepEqual(await quotePrintUpgradeAtCost(ORDER_ID, { token, shippingAddress: ADDRESS }, { provider, now: mid }), { ok: false, reason: 'quote_unavailable' });
+  assert.deepEqual(await prepareCustomerPrintUpgradeOffer(ORDER_ID, { approvedSourceSha256: APPROVED_SHA, approvedSourcePageCount: 25, now: mid }), { ok: false, reason: 'checkout_already_open' });
+  assert.deepEqual(printUpgradeCheckoutStatusView((await getOrder(ORDER_ID))!, 'cs_test_upgrade_1', new Date(mid)), { status: 'pending', targetFormat: 'premium' });
+
+  // TTL passed, no `checkout.session.expired` delivered: the lock is still
+  // recorded `open`, but it can no longer be paid and no longer blocks.
+  const later = minutesAfter(NOW, 60);
+  const stale = (await getOrder(ORDER_ID))!;
+  assert.equal(stale.printUpgradeLock?.status, 'open');
+  assert.deepEqual(printUpgradeCheckoutStatusView(stale, 'cs_test_upgrade_1', new Date(later)), { status: 'expired' });
+  const requoted = await quotePrintUpgradeAtCost(ORDER_ID, { token, shippingAddress: ADDRESS }, { provider, now: later });
+  assert.ok(requoted.ok);
+  const next = requoted.quotes.find((q) => q.targetFormat === 'classic')!;
+  const reopened = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: next.quoteId }, { createCheckoutSession: fakeStripe(created), baseUrl: BASE_URL, now: minutesAfter(NOW, 61) });
+  assert.ok(reopened.ok);
+  assert.equal(reopened.reused, false);
+  assert.notEqual(reopened.stripeSessionId, 'cs_test_upgrade_1');
+  const superseded = (await getOrder(ORDER_ID))!;
+  assert.deepEqual(superseded.printUpgradeLock?.supersededStripeSessionIds, ['cs_test_upgrade_1']);
+
+  // The old Session can neither settle nor, arriving late, disturb the new lock.
+  const late = await settlePrintUpgradeAtCostSession(paidSession({ metadata: { kind: PRINT_UPGRADE_STRIPE_KIND, orderId: ORDER_ID, targetFormat: 'premium', quoteId: premium.quoteId } }), { now: minutesAfter(NOW, 62) });
+  assert.equal(late.outcome, 'conflict_recorded');
+  assert.equal((await recordPrintUpgradeCheckoutExpired({ id: 'cs_test_upgrade_1', metadata: { kind: PRINT_UPGRADE_STRIPE_KIND, orderId: ORDER_ID } }, { now: minutesAfter(NOW, 62) })).outcome, 'ignored');
+  assert.equal((await getOrder(ORDER_ID))!.printUpgradeLock?.stripeSessionId, reopened.stripeSessionId);
+
+  // Re-offer likewise waits only for the new lock's TTL.
+  assert.deepEqual(await prepareCustomerPrintUpgradeOffer(ORDER_ID, { approvedSourceSha256: APPROVED_SHA, approvedSourcePageCount: 25, now: minutesAfter(NOW, 90) }), { ok: false, reason: 'checkout_already_open' });
+  const reoffered = await prepareCustomerPrintUpgradeOffer(ORDER_ID, { approvedSourceSha256: APPROVED_SHA, approvedSourcePageCount: 25, now: minutesAfter(NOW, 121) });
+  assert.ok(reoffered.ok);
+}));
+
+test('create failure classification: only Stripe rejections that prove nothing was created release the lock', () => {
+  for (const type of ['StripeInvalidRequestError', 'StripeAuthenticationError', 'StripePermissionError']) {
+    assert.equal(checkoutCreateWasRejected(Object.assign(new Error(type), { type })), true, type);
+  }
+  for (const type of ['StripeConnectionError', 'StripeAPIError', 'StripeIdempotencyError', 'StripeCardError', 'SomethingElse']) {
+    assert.equal(checkoutCreateWasRejected(Object.assign(new Error(type), { type })), false, type);
+  }
+  assert.equal(checkoutCreateWasRejected(new PrintUpgradeCheckoutCreateRejectedError('adapter-asserted')), true);
+  assert.equal(checkoutCreateWasRejected(Object.assign(new Error('rate limited'), { type: 'StripeRateLimitError' })), false);
+  assert.equal(checkoutCreateWasRejected(new Error('ETIMEDOUT')), false);
+  assert.equal(checkoutCreateWasRejected('stripe down'), false);
+  assert.equal(checkoutCreateWasRejected(null), false);
+});
+
+test('settle: a completed Session that is not yet paid never settles, and the later paid event for the same Session still does', withLocalStore(async () => {
+  const { token, premium } = await quotedOffer();
+  await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: premium.quoteId }, { createCheckoutSession: fakeStripe([]), baseUrl: BASE_URL, now: NOW });
+  const metadata = { kind: PRINT_UPGRADE_STRIPE_KIND, orderId: ORDER_ID, targetFormat: 'premium', quoteId: premium.quoteId };
+
+  // What a delayed-notification method would deliver first (unreachable with
+  // card-only Checkout, but the settlement must still refuse it).
+  const pending = await settlePrintUpgradeAtCostSession(paidSession({ metadata, payment_status: 'unpaid' }), { now: minutesAfter(NOW, 5) });
+  assert.equal(pending.outcome, 'conflict_recorded');
+  const untouched = (await getOrder(ORDER_ID))!;
+  assert.equal(untouched.bookFormat, 'digital');
+  assert.equal(untouched.printUpgradeStatus, 'checkout_open');
+  assert.equal(untouched.printUpgradeLock?.status, 'open');
+  assert.equal(untouched.printUpgradeOffer?.consumedAt ?? null, null);
+  assert.equal((untouched.printCopyPurchases ?? []).length, 0);
+  assert.deepEqual(printUpgradeCheckoutStatusView(untouched, 'cs_test_upgrade_1', new Date(minutesAfter(NOW, 5))), { status: 'pending', targetFormat: 'premium' });
+
+  const paid = await settlePrintUpgradeAtCostSession(paidSession({ metadata }), { now: minutesAfter(NOW, 10) });
+  assert.equal(paid.outcome, 'paid');
+  const settled = (await getOrder(ORDER_ID))!;
+  assert.equal(settled.printUpgradeStatus, 'paid');
+  assert.equal(settled.bookFormat, 'premium');
+  assert.equal((settled.printCopyPurchases ?? []).length, 1);
+  assert.equal((settled.auditEvents ?? []).filter((e) => e.type === 'print_upgrade_at_cost_paid').length, 1);
 }));
 
 test('settle: the exact bound Session with the exact locked amount flips the order to the chosen print format and consumes the offer', withLocalStore(async () => {

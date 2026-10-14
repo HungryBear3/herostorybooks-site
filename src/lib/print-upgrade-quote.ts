@@ -22,6 +22,7 @@ import {
   type PrintUpgradeQuoteV1,
   type ShippingAddress,
 } from './orders.ts';
+import { isPrintUpgradeLockLive } from './print-upgrade-lock.ts';
 import {
   authorizePrintUpgradeOffer,
   type PrintUpgradeOfferDenial,
@@ -230,7 +231,10 @@ export async function quotePrintUpgradeAtCost(
     (current) => {
       const access = authorizePrintUpgradeOffer(current, input.token, nowDate);
       if (access.ok === false) return { abort: { ok: false, reason: access.reason } };
-      if (current.printUpgradeLock?.status === 'open' || current.printUpgradeLock?.status === 'provisioning') {
+      // While a payable Session may still exist for an earlier quote, a new
+      // quote could only lead to a second one. Once the lock's Session TTL
+      // has passed (webhook or not), re-quoting is allowed again.
+      if (isPrintUpgradeLockLive(current.printUpgradeLock, nowDate.getTime())) {
         return { abort: { ok: false, reason: 'quote_unavailable' } };
       }
       return { abort: { ok: true, quotes: [] as never[], order: current } };

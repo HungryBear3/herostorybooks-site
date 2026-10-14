@@ -71,7 +71,9 @@ Lulu's published API guidance identifies HTTP 403/error 1010 as Cloudflare Brows
 
 ## Residual design notes
 
-- Quote validity 60 min; Stripe Session validity 60 min (Stripe minimum 30, max 24 h). A `provisioning` lock for a different quote blocks for 15 min.
+- Quote validity 60 min; Stripe Session validity 60 min (Stripe minimum 30, max 24 h). Checkout is pinned to `payment_method_types: ['card']`, so a completed Session is always `paid` synchronously; no delayed-notification method (bank debit, voucher, BNPL) can complete unpaid and settle later.
+- Lock liveness (`src/lib/print-upgrade-lock.ts`): an `open` or `provisioning` lock blocks re-quote, re-offer and a different-quote checkout only until its `expiresAt` (the Session TTL mirrored into Stripe's `expires_at`). A missing `checkout.session.expired` delivery therefore delays recovery by at most one hour instead of stranding the order.
+- Stripe create failure: a definite rejection (invalid request, auth, permission, rate limit) releases the lock in the same commit (`print_upgrade_checkout_create_failed`, `lockReleased: true`). An ambiguous failure (timeout, 5xx, unknown) keeps the `provisioning` lock and its idempotency key: retrying the **same** quote reuses that key (Stripe returns the earlier Session if one exists, never a second); a **different** quote answers `checkout_busy` until the lock's TTL passes.
 - The shipping address is collected on our private page (the provider needs it to price) and **not** re-collected by Stripe, so quoted and shipped destinations cannot diverge.
 - `priceCents` / `settledAmountCents` of the original digital purchase are never rewritten; the upgrade amount lives in `printUpgradeAmountCents` and the lock.
 

@@ -486,6 +486,7 @@ export type ReviewAuditEventType =
   | 'print_upgrade_quote_issued'
   | 'print_upgrade_quote_unavailable'
   | 'print_upgrade_checkout_opened'
+  | 'print_upgrade_checkout_create_failed'
   | 'print_upgrade_checkout_expired'
   | 'print_upgrade_at_cost_paid'
   // PRINT_COMMERCE_ADDITIVE_END_EVENTS

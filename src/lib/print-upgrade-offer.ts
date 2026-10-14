@@ -20,6 +20,7 @@ import {
   type OrderRecord,
   type PrintUpgradeOfferV1,
 } from './orders.ts';
+import { isPrintUpgradeLockLive } from './print-upgrade-lock.ts';
 
 export const PRINT_UPGRADE_OFFER_DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 export const PRINT_UPGRADE_OFFER_MAX_TTL_MS = 60 * 24 * 60 * 60 * 1000;
@@ -187,7 +188,9 @@ export async function prepareCustomerPrintUpgradeOffer(
   return withOrderTransaction<PrepareCustomerPrintUpgradeOfferResult>(
     orderId,
     (current) => {
-      if (current.printUpgradeLock?.status === 'open' || current.printUpgradeLock?.status === 'provisioning') {
+      // Rotating the offer nulls the lock, so refuse only while a payable
+      // Session may still exist for it (bounded by the Session TTL).
+      if (isPrintUpgradeLockLive(current.printUpgradeLock, Date.parse(now))) {
         return { abort: { ok: false, reason: 'checkout_already_open' } };
       }
       const ineligible = printUpgradeOfferIneligibility(current, purchaseKind);

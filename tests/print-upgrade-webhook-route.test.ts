@@ -244,6 +244,45 @@ test('checkout.session.expired for the bound Session reopens the offer; other ex
   }
 });
 
+test('delayed payment: a completed-but-unpaid Session is refused and recorded, an async success event settles nothing, and the eventual paid completion still settles exactly once', async () => {
+  const cleanup = setupStore();
+  try {
+    const { premium } = await seedOpenCheckout();
+
+    const unpaid = await runWebhook(signed(completedEvent(premium.quoteId, { payment_status: 'unpaid' })));
+    assert.equal(unpaid.response.status, 200);
+    assert.deepEqual(await unpaid.response.json(), { received: true, printUpgradeAtCost: 'conflict_recorded' });
+    let stored = (await getOrder(ORDER_ID))!;
+    assert.equal(stored.bookFormat, 'digital');
+    assert.equal(stored.printUpgradeStatus, 'checkout_open');
+    assert.equal(stored.printUpgradeLock?.status, 'open');
+    assert.equal(stored.printUpgradeOffer?.consumedAt ?? null, null);
+    assert.equal((stored.printCopyPurchases ?? []).length, 0);
+    assert.ok(!unpaid.lines.some((l) => /kickoff|fulfillment|confirmation-email|lulu/i.test(l)), unpaid.lines.join('\n'));
+
+    // Checkout is pinned to card, so Stripe cannot send this for the at-cost
+    // kind; if it ever did, it is acknowledged and settles nothing.
+    const asyncSuccess = await runWebhook(signed({ ...completedEvent(premium.quoteId), id: 'evt_async_success', type: 'checkout.session.async_payment_succeeded' }));
+    assert.equal(asyncSuccess.response.status, 200);
+    assert.deepEqual(await asyncSuccess.response.json(), { received: true });
+    stored = (await getOrder(ORDER_ID))!;
+    assert.equal(stored.printUpgradeStatus, 'checkout_open');
+    assert.equal((stored.printCopyPurchases ?? []).length, 0);
+
+    const paid = await runWebhook(signed({ ...completedEvent(premium.quoteId), id: 'evt_paid_completion' }));
+    assert.equal(paid.response.status, 200);
+    assert.deepEqual(await paid.response.json(), { received: true, printUpgradeAtCost: 'paid' });
+    stored = (await getOrder(ORDER_ID))!;
+    assert.equal(stored.printUpgradeStatus, 'paid');
+    assert.equal(stored.bookFormat, 'premium');
+    assert.equal((stored.printCopyPurchases ?? []).length, 1);
+    assert.equal((stored.auditEvents ?? []).filter((e) => e.type === 'print_upgrade_at_cost_paid').length, 1);
+    assert.equal((stored.auditEvents ?? []).filter((e) => e.type === 'print_upgrade_settlement_conflict').length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
 test('webhook source: the at-cost branch delegates to the lib settlement and never reaches fulfillment, email or print', () => {
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
   const start = src.indexOf('PRINT_UPGRADE_STRIPE_KIND');
