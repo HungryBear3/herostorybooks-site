@@ -1,6 +1,6 @@
-# Customer digital-to-print upgrade at provider cost
+# Approved-book print purchases at provider cost
 
-Status: implemented locally on `feat/owner-print-upgrade-20261014`; **not deployed, not exercised against production, no live Stripe Session or email has been created**. This runbook is the operator contract for the first (owner) test and for later eligible digital orders.
+Status: draft PR #207 on `feat/owner-print-upgrade-20261014`; CI and Vercel Preview checks pass. **Not deployed to Production, not exercised against Production, and no live Stripe Session or email has been created.** This runbook is the operator contract for the first (owner) test and later eligible approved books.
 
 ## What it is
 
@@ -26,13 +26,13 @@ Print files are prepared manually **after** the customer has chosen and paid, fo
 | Customer pages | `/upgrade/[orderId]` (chooser, token in `#token=`), `/upgrade/[orderId]/done`, `/upgrade/[orderId]/cancelled` |
 | Email draft / gated send | `src/lib/print-upgrade-email.ts` |
 | Operator script | `scripts/prepare-print-upgrade-offer.ts` |
-| Order fields | `printUpgradeOffer`, `printUpgradeQuotes`, `printUpgradeLock` (+ existing `printUpgradeStatus` et al.) |
+| Order fields | `printUpgradeOffer`, `printUpgradeQuotes`, `printUpgradeLock`, `printCopyPurchases[]` (+ existing `printUpgradeStatus` et al.) |
 
 The legacy admin preview route `POST /api/admin/orders/[orderId]/print-upgrade` (retail delta, dry-run only, checkout retired) is unchanged and is **not** used by this flow.
 
 ## Eligibility (fail-closed)
 
-An order can be offered / quoted / charged only while all of these hold: `paymentStatus === 'paid'`; no `refundedAt`, `stripeRefundId`, `refundClaimId`; `bookFormat === 'digital'`; `printUpgradeStatus !== 'paid'`; no `printJobId`; no `internalDisposition`; and the offer exists, matches the presented token (constant-time hash compare), is unexpired, unrevoked and unconsumed. The customer sees the same 404 for every denial.
+An order can be offered / quoted / charged only while paid, not refunded, and not internally disposed. A first `upgrade` additionally requires a digital original and no prior paid upgrade or print job. An `extra_copy` may follow an approved printed book or paid upgrade. In both cases, the offer must match the current approved source/version and presented token (constant-time hash compare), remain unexpired, unrevoked and unconsumed, and have no conflicting open Checkout Session. The customer sees the same 404 for every denial.
 
 ## Operator sequence
 
@@ -44,8 +44,8 @@ An order can be offered / quoted / charged only while all of these hold: `paymen
      --pages 25 --label "private-review-v5.pdf"
    ```
    or `POST /api/admin/orders/<orderId>/print-upgrade-offer` with the ops key and `{ approvedSourceSha256, approvedSourcePageCount, approvedSourceLabel }`. Both return the one-time chooser URL and the email draft. Only the token **hash** is stored; re-running rotates the token.
-3. **Read back the draft**, then send it. Sending requires `HSB_PRINT_UPGRADE_OFFER_EMAIL_ENABLED=true` and a Resend key; `sendPrintUpgradeOfferEmail` is idempotent per (order, offer). There is deliberately no UI button for sending in this slice.
-4. Customer pays. Watch for the webhook log line `at-cost print upgrade paid for <orderId>` and `auditEvents[].type === 'print_upgrade_at_cost_paid'` (amounts, quote id, Session id; no PII).
+3. **Read back the draft**, then send it only after the release and live-price gates below pass. Sending requires `HSB_PRINT_UPGRADE_OFFER_EMAIL_ENABLED=true` and a Resend key; `sendPrintUpgradeOfferEmail` is idempotent per (order, offer). There is deliberately no UI button for sending in this slice.
+4. Customer pays. Confirm the signed webhook recorded exactly one `printCopyPurchases[]` receipt for the Session, with the bound kind, quantity, format, source/version, amount and destination. Replayed webhook events must not create another receipt or print job.
 5. **Prepare print files for the chosen format only**, from the approved content, through the existing print-readiness / certification gates. Then the existing separately-approved print-go path. The quoted interior page counts are `printUpgradeOffer.quotePageCounts` (softcover 32 / hardcover 26 for a 25-page book — provider minimums, blank end pages); the print interior must match the quoted page count or be re-quoted.
 
 ## Stop conditions
@@ -64,7 +64,8 @@ None of these were done in this session (all are owner / production actions):
 4. The order record for the owner's existing paid digital order must exist in the production Blob store with `paymentStatus: 'paid'` and `bookFormat: 'digital'`; if it was built outside the app it may be missing fields — run `scripts/order-status.ts <orderId>` first.
 5. Run the Lulu cost calculation against the **sandbox** first (`LULU_API_URL=https://api.sandbox.lulu.com`) and compare to the production price before offering a real customer.
 6. Deploy the branch; the chooser needs `NEXT_PUBLIC_URL` / `VERCEL_PROJECT_PRODUCTION_URL` for correct `success_url` / `cancel_url`.
-7. Decide whether the site's own sales-tax obligation on the at-cost charge needs handling in Stripe Tax; this flow passes through the **provider's** tax only and says so.
+7. Determine the site's own sales-tax obligation on the at-cost charge and whether/how Stripe Tax applies; the current code passes through the **provider's** tax only. Keep live payable checkout disabled until this is resolved and the displayed total is accurate.
+8. Provide a current, documented production-plus-transit estimate for both offered SKUs/shipping level and configure `HSB_PRINT_DELIVERY_MIN_DAYS` / `HSB_PRINT_DELIVERY_MAX_DAYS`; absent those values, payable checkout remains disabled.
 
 ## Residual design notes
 
