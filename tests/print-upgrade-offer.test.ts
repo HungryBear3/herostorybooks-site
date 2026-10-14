@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { createOrderRecord, getOrder, persistOrder, type OrderRecord } from '../src/lib/orders.ts';
+import { createOrderRecord, getOrder, persistOrder, type OrderRecord, type PrintUpgradeLockV1 } from '../src/lib/orders.ts';
 import {
   PRINT_UPGRADE_OFFER_DEFAULT_TTL_MS,
   authorizePrintUpgradeOffer,
@@ -157,6 +157,32 @@ test('prepare: re-preparing an open offer rotates the token and invalidates the 
   const stored = (await getOrder('ord_offer_test_0001'))!;
   assert.equal(authorizePrintUpgradeOffer(stored, first.token, new Date(NOW)).ok, false);
   assert.equal(authorizePrintUpgradeOffer(stored, second.token, new Date(NOW)).ok, true);
+}));
+
+test('prepare: refuses while a checkout lock may still be payable, and proceeds once its Session TTL has passed — for open and provisioning locks alike', withLocalStore(async () => {
+  const lockAt = (status: 'open' | 'provisioning', openedAt: string): PrintUpgradeLockV1 => ({
+    version: 1, quoteId: 'puq_lock_test', purchaseKind: 'upgrade', quantity: 1, approvedSourceSha256: APPROVED_SHA, offerId: 'puo_prior',
+    targetFormat: 'premium', totalCents: 2832, currency: 'usd', status,
+    stripeSessionId: status === 'open' ? 'cs_test_prior' : null, checkoutUrl: status === 'open' ? 'https://checkout.stripe.test/prior' : null,
+    idempotencyKey: 'print-upgrade-at-cost:ord_offer_test_0001:puq_lock_test', recipientName: 'A', openedAt,
+    expiresAt: new Date(Date.parse(openedAt) + 60 * 60 * 1000).toISOString(), paidAt: null, stripePaymentIntentId: null, supersededStripeSessionIds: [],
+  });
+  const input = { approvedSourceSha256: APPROVED_SHA, approvedSourcePageCount: 25 };
+  for (const status of ['open', 'provisioning'] as const) {
+    await persistOrder(makePaidDigitalOrder({ printUpgradeStatus: 'checkout_open', printUpgradeLock: lockAt(status, NOW) }));
+    const live = await prepareCustomerPrintUpgradeOffer('ord_offer_test_0001', { ...input, now: new Date(Date.parse(NOW) + 59 * 60 * 1000).toISOString() });
+    assert.deepEqual(live, { ok: false, reason: 'checkout_already_open' }, status);
+    assert.equal((await getOrder('ord_offer_test_0001'))!.printUpgradeLock?.status, status);
+    const after = await prepareCustomerPrintUpgradeOffer('ord_offer_test_0001', { ...input, now: new Date(Date.parse(NOW) + 60 * 60 * 1000).toISOString() });
+    assert.equal(after.ok, true, status);
+    const stored = (await getOrder('ord_offer_test_0001'))!;
+    assert.equal(stored.printUpgradeLock ?? null, null, status);
+    assert.equal(stored.printUpgradeStatus, 'offered', status);
+    assert.equal(stored.printUpgradeStripeSessionId ?? null, null, status);
+  }
+  // Expired and paid locks never block an (otherwise eligible) offer.
+  await persistOrder(makePaidDigitalOrder({ printUpgradeLock: { ...lockAt('open', NOW), status: 'expired' } }));
+  assert.equal((await prepareCustomerPrintUpgradeOffer('ord_offer_test_0001', { ...input, now: NOW })).ok, true);
 }));
 
 test('authorize: fails closed on missing offer, wrong token, expiry, revocation, consumption, and lost eligibility', withLocalStore(async () => {

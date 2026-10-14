@@ -153,6 +153,10 @@ export default function UpgradeClient({ orderId }: { orderId: string }) {
         setQuoteError('That price has expired. Please confirm your address again for a fresh live price.');
         return;
       }
+      if (status === 409 && body.error === 'checkout_busy') {
+        setCheckoutError('An earlier attempt to open a payment page for the other format is still being confirmed with Stripe. Choose that format again to continue, or wait up to an hour before switching. Nothing has been charged.');
+        return;
+      }
       if (status === 503) {
         setCheckoutError('We could not open the payment page just now. Nothing was charged. Please try again in a moment.');
         return;

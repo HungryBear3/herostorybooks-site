@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { createOrderRecord, getOrder, persistOrder, type OrderRecord } from '../src/lib/orders.ts';
+import { createOrderRecord, getOrder, persistOrder, type OrderRecord, type PrintUpgradeLockV1 } from '../src/lib/orders.ts';
 import { prepareCustomerPrintUpgradeOffer } from '../src/lib/print-upgrade-offer.ts';
 import {
   PRINT_UPGRADE_QUOTE_TTL_MS,
@@ -248,6 +248,32 @@ test('quote: a wrong, expired or missing token never reaches the provider and ne
 
   assert.equal(calls.length, 0);
   assert.equal((await getOrder(ORDER_ID))!.printUpgradeQuotes ?? null, null);
+}));
+
+test('quote: refused while a checkout lock may still be payable, allowed once its Session TTL has passed — the provider is never called while blocked', withLocalStore(async () => {
+  const prepared = await preparedOffer();
+  const calls: PrintCostQuoteRequest[] = [];
+  const provider = fakeProvider({ classic: { printCents: 812, shippingCents: 449, fulfillmentCents: 150, taxCents: 140 }, premium: { printCents: 1973, shippingCents: 449, fulfillmentCents: 150, taxCents: 260 } }, calls);
+  const lockAt = (status: 'open' | 'provisioning'): PrintUpgradeLockV1 => ({
+    version: 1, quoteId: 'puq_lock_test', purchaseKind: 'upgrade', quantity: 1, approvedSourceSha256: APPROVED_SHA, offerId: prepared.offer.offerId,
+    targetFormat: 'premium', totalCents: 2832, currency: 'usd', status,
+    stripeSessionId: status === 'open' ? 'cs_test_prior' : null, checkoutUrl: status === 'open' ? 'https://checkout.stripe.test/prior' : null,
+    idempotencyKey: `print-upgrade-at-cost:${ORDER_ID}:puq_lock_test`, recipientName: 'A', openedAt: NOW,
+    expiresAt: new Date(Date.parse(NOW) + 60 * 60 * 1000).toISOString(), paidAt: null, stripePaymentIntentId: null, supersededStripeSessionIds: [],
+  });
+  for (const status of ['open', 'provisioning'] as const) {
+    const base = (await getOrder(ORDER_ID))!;
+    await persistOrder({ ...base, printUpgradeQuotes: null, printUpgradeLock: lockAt(status) });
+    const live = await quotePrintUpgradeAtCost(ORDER_ID, { token: prepared.token, shippingAddress: ADDRESS }, { provider, now: new Date(Date.parse(NOW) + 59 * 60 * 1000).toISOString() });
+    assert.deepEqual(live, { ok: false, reason: 'quote_unavailable' }, status);
+    assert.equal(calls.length, 0, status);
+    assert.equal((await getOrder(ORDER_ID))!.printUpgradeQuotes ?? null, null, status);
+    const after = await quotePrintUpgradeAtCost(ORDER_ID, { token: prepared.token, shippingAddress: ADDRESS }, { provider, now: new Date(Date.parse(NOW) + 60 * 60 * 1000).toISOString() });
+    assert.equal(after.ok, true, status);
+    assert.equal(calls.length, 2, status);
+    assert.equal((await getOrder(ORDER_ID))!.printUpgradeQuotes?.length, 2, status);
+    calls.length = 0;
+  }
 }));
 
 test('quote: provider failure for either format blocks the whole quote and records an unavailable event', withLocalStore(async () => {

@@ -30,14 +30,56 @@ import {
   type PrintUpgradeOfferDenial,
   type PrintUpgradeTargetFormat,
 } from './print-upgrade-offer.ts';
+import { isPrintUpgradeLockLive } from './print-upgrade-lock.ts';
 import { isQuoteLive } from './print-upgrade-quote.ts';
 import { recordPrintUpgradeSettlementConflict } from './print-upgrades.ts';
 
 export const PRINT_UPGRADE_STRIPE_KIND = 'print_upgrade_at_cost';
 /** Stripe allows 30 minutes to 24 hours. */
 export const PRINT_UPGRADE_CHECKOUT_SESSION_TTL_MS = 60 * 60 * 1000;
-/** How long a `provisioning` lock blocks a DIFFERENT quote from opening. */
-export const PRINT_UPGRADE_PROVISIONING_GRACE_MS = 15 * 60 * 1000;
+/**
+ * Card only. Every payment method that can leave `checkout.session.completed`
+ * with `payment_status: 'unpaid'` and settle later through
+ * `checkout.session.async_payment_succeeded` (bank debits, vouchers, BNPL) is
+ * excluded, so the one settlement path here — exact `paid` facts on the
+ * completed event — is the only path Stripe can take.
+ */
+export const PRINT_UPGRADE_PAYMENT_METHOD_TYPES: readonly ['card'] = ['card'];
+
+/**
+ * Stripe error `type`s that mean the create request was REJECTED before any
+ * Session could be made (bad params, bad key, no permission). A rate-limit
+ * response is treated as ambiguous, since the outcome of a retried request
+ * should never be used to justify opening a second payable Session.
+ * Everything else — connection errors, 5xx, idempotency-key conflicts, unknown
+ * throwables — is AMBIGUOUS: the Session may exist, so its lock stays put
+ * until a same-key retry resolves it or its `expires_at` passes.
+ */
+const STRIPE_CREATE_REJECTED_TYPES: ReadonlySet<string> = new Set([
+  'StripeInvalidRequestError',
+  'StripeAuthenticationError',
+  'StripePermissionError',
+]);
+
+/**
+ * Adapters may throw this to assert that the provider definitely did not
+ * create a Session (the lib then releases the lock at once).
+ */
+export class PrintUpgradeCheckoutCreateRejectedError extends Error {
+  readonly sessionCreated = false as const;
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'PrintUpgradeCheckoutCreateRejectedError';
+  }
+}
+
+/** Pure: did this create failure prove that no Session was created? */
+export function checkoutCreateWasRejected(error: unknown): boolean {
+  if (error instanceof PrintUpgradeCheckoutCreateRejectedError) return true;
+  if (!error || typeof error !== 'object') return false;
+  const type = (error as { type?: unknown }).type;
+  return typeof type === 'string' && STRIPE_CREATE_REJECTED_TYPES.has(type);
+}
 
 export interface PrintUpgradeCheckoutLineItem {
   price_data: {
@@ -51,6 +93,7 @@ export interface PrintUpgradeCheckoutLineItem {
 /** Exactly the Stripe `checkout.sessions.create` params the adapter forwards. */
 export interface PrintUpgradeCheckoutSessionCreate {
   mode: 'payment';
+  payment_method_types: ['card'];
   allow_promotion_codes: false;
   customer_email: string;
   client_reference_id: string;
@@ -145,6 +188,59 @@ function supersededIds(lock: PrintUpgradeLockV1 | null | undefined): string[] {
 }
 
 /**
+ * Durable record of a failed provider create for one `provisioning` lock.
+ *
+ * - `rejected`: the provider proved no Session was created. The lock is
+ *   released (`expired`, no Session id) in the same commit, so re-quote,
+ *   re-offer and a different-quote checkout are possible immediately.
+ * - `ambiguous`: the Session may exist. The lock stays `provisioning` and
+ *   keeps its idempotency key; only a same-key retry or the Session TTL may
+ *   end it. Nothing else may open a payable Session for this offer meanwhile.
+ *
+ * Best-effort: a persistence failure here is logged and never masks the
+ * `provider_failed` answer the customer already gets.
+ */
+async function recordCheckoutCreateFailure(
+  orderId: string,
+  lock: PrintUpgradeLockV1,
+  outcome: 'rejected' | 'ambiguous',
+  now: string,
+): Promise<void> {
+  try {
+    await withOrderTransaction<null>(
+      orderId,
+      (current) => {
+        const pending = current.printUpgradeLock ?? null;
+        if (!pending || pending.status !== 'provisioning' || pending.quoteId !== lock.quoteId || pending.idempotencyKey !== lock.idempotencyKey) {
+          return { abort: null };
+        }
+        const released: PrintUpgradeLockV1 | null = outcome === 'rejected' ? { ...pending, status: 'expired' } : null;
+        return {
+          commit: {
+            ...current,
+            ...(released ? { printUpgradeLock: released } : {}),
+            auditEvents: [
+              ...(current.auditEvents ?? []),
+              {
+                at: now,
+                type: 'print_upgrade_checkout_create_failed',
+                meta: { offerId: pending.offerId, quoteId: pending.quoteId, targetFormat: pending.targetFormat, outcome, lockReleased: Boolean(released) },
+              },
+            ],
+            updatedAt: now,
+          },
+          result: null,
+        };
+      },
+      { notFound: () => null },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[print-upgrade] could not record checkout create failure for ${orderId}: ${message.slice(0, 200)}`);
+  }
+}
+
+/**
  * Opens (or reuses) the payable Session for one quote. Two guarded commits
  * bracket the provider call: a `provisioning` claim that fixes the price and
  * idempotency key, then a bind that releases the URL only once the Session id
@@ -192,21 +288,26 @@ export async function openPrintUpgradeCheckout(
             },
           };
         }
-        if (existing.status === 'provisioning') {
-          if (existing.quoteId === quote.quoteId) {
-            // Retry the SAME Stripe idempotency key without extending the
-            // original Session expiry or changing its locked parameters.
-            return {
-              abort: { kind: 'proceed', lock: existing, quote, order: current },
-            };
-          }
-          if (Date.parse(existing.openedAt) + PRINT_UPGRADE_PROVISIONING_GRACE_MS > nowMs) {
-            return { abort: { kind: 'done', result: { ok: false, reason: 'checkout_busy' } } };
-          }
+        if (existing.status === 'provisioning' && existing.quoteId === quote.quoteId) {
+          // Retry the SAME Stripe idempotency key without extending the
+          // original Session expiry or changing its locked parameters. If the
+          // earlier attempt did create a Session, Stripe hands back that one;
+          // it never mints a second.
+          return {
+            abort: { kind: 'proceed', lock: existing, quote, order: current },
+          };
+        }
+        if (existing.status === 'provisioning' && isPrintUpgradeLockLive(existing, nowMs)) {
+          // A different quote while an earlier create's outcome is unknown:
+          // a payable Session for the earlier quote may exist until its
+          // `expires_at`. Opening another would risk two payable Sessions.
+          return { abort: { kind: 'done', result: { ok: false, reason: 'checkout_busy' } } };
         }
         if (existing.status === 'paid') {
           return { abort: { kind: 'done', result: { ok: false, reason: 'print_upgrade_already_paid' } } };
         }
+        // `expired`, or `open`/`provisioning` past the Session TTL: no payable
+        // Session can come of it any more, so a fresh lock supersedes it.
       }
 
       const lock: PrintUpgradeLockV1 = {
@@ -242,6 +343,7 @@ export async function openPrintUpgradeCheckout(
   const { lock, quote, order } = claim;
   const params: PrintUpgradeCheckoutSessionCreate = {
     mode: 'payment',
+    payment_method_types: [...PRINT_UPGRADE_PAYMENT_METHOD_TYPES],
     allow_promotion_codes: false,
     customer_email: order.email,
     client_reference_id: orderId,
@@ -267,11 +369,16 @@ export async function openPrintUpgradeCheckout(
     session = await deps.createCheckoutSession(params, lock.idempotencyKey);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[print-upgrade] checkout create failed for ${orderId}: ${message.slice(0, 200)}`);
+    const outcome = checkoutCreateWasRejected(error) ? 'rejected' : 'ambiguous';
+    console.error(`[print-upgrade] checkout create failed (${outcome}) for ${orderId}: ${message.slice(0, 200)}`);
+    await recordCheckoutCreateFailure(orderId, lock, outcome, now);
     return { ok: false, reason: 'provider_failed' };
   }
   if (!session?.id || !/^cs_[A-Za-z0-9_]{1,255}$/.test(session.id) || !session.url) {
+    // Something may have been created; treat as ambiguous so the same-key
+    // retry (or the Session TTL) resolves it rather than a second create.
     console.error(`[print-upgrade] checkout create returned an unusable Session for ${orderId}`);
+    await recordCheckoutCreateFailure(orderId, lock, 'ambiguous', now);
     return { ok: false, reason: 'provider_failed' };
   }
   const url = session.url;
@@ -567,7 +674,7 @@ export type PrintUpgradeCheckoutStatusView =
   | { status: 'unknown' };
 
 /** Never includes names, emails or addresses; the Session id is the only key. */
-export function printUpgradeCheckoutStatusView(order: OrderRecord, sessionId: string | null | undefined): PrintUpgradeCheckoutStatusView {
+export function printUpgradeCheckoutStatusView(order: OrderRecord, sessionId: string | null | undefined, now: Date = new Date()): PrintUpgradeCheckoutStatusView {
   const prior = (order.printCopyPurchases ?? []).find((purchase) => purchase.stripeSessionId === sessionId);
   if (prior) return { status: 'paid', targetFormat: prior.targetFormat, amountTotalCents: prior.totalCents };
   const lock = order.printUpgradeLock ?? null;
@@ -575,7 +682,9 @@ export function printUpgradeCheckoutStatusView(order: OrderRecord, sessionId: st
   if (lock.status === 'paid' && order.printUpgradeStatus === 'paid' && order.printUpgradeStripeSessionId === sessionId) {
     return { status: 'paid', targetFormat: lock.targetFormat, amountTotalCents: order.printUpgradeAmountCents ?? lock.totalCents };
   }
-  if (lock.status === 'open') return { status: 'pending', targetFormat: lock.targetFormat };
-  if (lock.status === 'expired') return { status: 'expired' };
+  // An `open` lock past the Session TTL is expired even if the
+  // `checkout.session.expired` webhook never reached us.
+  if (lock.status === 'open' && isPrintUpgradeLockLive(lock, now.getTime())) return { status: 'pending', targetFormat: lock.targetFormat };
+  if (lock.status === 'open' || lock.status === 'expired') return { status: 'expired' };
   return { status: 'unknown' };
 }
