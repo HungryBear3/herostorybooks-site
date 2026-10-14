@@ -56,7 +56,7 @@ An order can be offered / quoted / charged only while paid, not refunded, and no
 
 ## Exact remaining live prerequisites
 
-None of these were done in this session (all are owner / production actions):
+These are release checks; the October 14 owner-only Lulu quote probe is noted below and did not deploy or charge anything:
 
 1. `LULU_CLIENT_KEY`, `LULU_CLIENT_SECRET` (+ optional `LULU_API_URL` for sandbox), `LULU_SHIPPING_LEVEL`, `LULU_FALLBACK_PHONE` (real phone; the cost calculation and print job both send it), `LULU_SOFTCOVER_POD_PACKAGE_ID` / `LULU_HARDCOVER_POD_PACKAGE_ID` confirmed for the 8.5×8.5 products actually certified.
 2. Stripe: the production webhook endpoint must subscribe to `checkout.session.expired` in addition to `checkout.session.completed` (new for this flow). `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` as today.
@@ -64,8 +64,10 @@ None of these were done in this session (all are owner / production actions):
 4. The order record for the owner's existing paid digital order must exist in the production Blob store with `paymentStatus: 'paid'` and `bookFormat: 'digital'`; if it was built outside the app it may be missing fields — run `scripts/order-status.ts <orderId>` first.
 5. Run the Lulu cost calculation against the **sandbox** first (`LULU_API_URL=https://api.sandbox.lulu.com`) and compare to the production price before offering a real customer.
 6. Deploy the branch; the chooser needs `NEXT_PUBLIC_URL` / `VERCEL_PROJECT_PRODUCTION_URL` for correct `success_url` / `cancel_url`.
-7. Determine the site's own sales-tax obligation on the at-cost charge and whether/how Stripe Tax applies; the current code passes through the **provider's** tax only. Keep live payable checkout disabled until this is resolved and the displayed total is accurate.
+7. The October 14 owner-only test is scoped to passing through Lulu's tax-inclusive print, fulfillment and shipping total, with no Stripe Tax added. Do not generalize that owner-test decision into a policy for public/customer sales; determine the site's separate sales-tax obligations before broader release.
 8. Provide a current, documented production-plus-transit estimate for both offered SKUs/shipping level and configure `HSB_PRINT_DELIVERY_MIN_DAYS` / `HSB_PRINT_DELIVERY_MAX_DAYS`; absent those values, payable checkout remains disabled.
+
+Lulu's published API guidance identifies HTTP 403/error 1010 as Cloudflare Browser Integrity Check blocking generic HTTP-library User-Agents. The adapter now sends `HeroStoryBooks/1.0 (Lulu Print API integration)` on auth and API calls. A read-only Production cost probe with this header returned 201 for both configured formats on October 14; prior 1010 failures were not an account/credential denial. The probe used a previously known owner destination, 32-page softcover and 26-page hardcover, quantity one and MAIL; totals including Lulu tax were $11.74 and $21.08 respectively. These are time- and address-specific evidence, **not** a locked checkout quote or a substitute for re-quoting the customer's final address and quantity. No support ticket was sent because the documented header correction resolved the error.
 
 ## Residual design notes
 

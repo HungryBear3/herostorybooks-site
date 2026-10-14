@@ -89,6 +89,9 @@ test('calculatePrintJobCost: posts the documented request shape with bearer auth
   const costCall = seen.find((s) => s.url.endsWith('/print-job-cost-calculations/'))!;
   assert.equal(costCall.url, 'https://api.sandbox.lulu.com/print-job-cost-calculations/');
   assert.equal((costCall.init.headers as Record<string, string>).Authorization, 'Bearer tok_test');
+  assert.match((costCall.init.headers as Record<string, string>)['User-Agent'], /^HeroStoryBooks\//);
+  const authCall = seen.find((call) => call.url.includes('/openid-connect/token'))!;
+  assert.match((authCall.init.headers as Record<string, string>)['User-Agent'], /^HeroStoryBooks\//);
   assert.equal(result.total_cost_incl_tax, '17.33');
 }));
 

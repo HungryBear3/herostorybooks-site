@@ -44,6 +44,9 @@ function getAuthBaseUrl() {
 }
 
 const TOKEN_PATH = '/auth/realms/glasstree/protocol/openid-connect/token';
+// Lulu's Browser Integrity Check can reject generic Node/Python User-Agents with 1010.
+// Identify this integration on every API request, including cost calculations.
+const LULU_USER_AGENT = 'HeroStoryBooks/1.0 (Lulu Print API integration)';
 
 export function podPackageIdForFormat(bookFormat: string): string {
   return podPackageId(bookFormat);
@@ -107,6 +110,7 @@ async function fetchAccessToken(
     headers: {
       Authorization: `Basic ${credentials}`,
       'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': LULU_USER_AGENT,
     },
     body: 'grant_type=client_credentials',
   });
@@ -140,6 +144,7 @@ export async function calculateCoverDimensions(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
+      'User-Agent': LULU_USER_AGENT,
     },
     body: JSON.stringify({
       pod_package_id: podPackageId(order.bookFormat),
@@ -222,6 +227,7 @@ export async function submitPrintJob(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
+      'User-Agent': LULU_USER_AGENT,
     },
     body: JSON.stringify(body),
   });
@@ -305,6 +311,7 @@ export async function calculatePrintJobCost(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
+      'User-Agent': LULU_USER_AGENT,
     },
     body: JSON.stringify(body),
   });
