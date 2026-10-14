@@ -48,8 +48,8 @@ test('calculatePrintUpgrade: paid digital to premium charges only hardcover delt
 test('calculatePrintUpgrade: uses actual settled total and fails closed without it', () => {
   const discounted = calculatePrintUpgrade(makeDigitalOrder({ settledAmountCents: 950 }), 'premium');
   const free = calculatePrintUpgrade(makeDigitalOrder({ settledAmountCents: 0 }), 'premium');
-  assert.equal(discounted.ok && discounted.amountCents, 5450);
-  assert.equal(free.ok && free.amountCents, 6400);
+  assert.equal(discounted.ok === true && discounted.amountCents, 5450);
+  assert.equal(free.ok === true && free.amountCents, 6400);
   assert.deepEqual(calculatePrintUpgrade(makeDigitalOrder({ settledAmountCents: null }), 'premium'), {
     ok: false,
     status: 409,

@@ -480,6 +480,15 @@ export type ReviewAuditEventType =
   | 'whole_book_approval_rejected'
   | 'print_upgrade_paid'
   | 'print_upgrade_settlement_conflict'
+  // PRINT_COMMERCE_ADDITIVE_START_EVENTS
+  | 'print_upgrade_offer_prepared'
+  | 'print_upgrade_offer_revoked'
+  | 'print_upgrade_quote_issued'
+  | 'print_upgrade_quote_unavailable'
+  | 'print_upgrade_checkout_opened'
+  | 'print_upgrade_checkout_expired'
+  | 'print_upgrade_at_cost_paid'
+  // PRINT_COMMERCE_ADDITIVE_END_EVENTS
   | 'payment_settlement_conflict'
   | 'payment_terminal_state_recorded'
   | 'refund_issued'
@@ -849,9 +858,126 @@ export interface OrderRecord extends OrderInput {
   printUpgradePaidAt?: string | null;
   printUpgradeOfferedAt?: string | null;
   printUpgradePrintProvider?: 'rpi' | 'lulu' | string | null;
+  // PRINT_COMMERCE_ADDITIVE_START_FIELDS
+  /** Customer-facing at-cost digital-to-print upgrade (see
+   *  print-upgrade-offer.ts / print-upgrade-quote.ts / print-upgrade-checkout.ts).
+   *  All additive and optional. The offer carries only a token HASH; quotes are
+   *  bounded and bound to the offer; the lock is the exact price the open
+   *  Stripe Checkout Session was created for and the only amount the webhook
+   *  may settle against. None of these release a proof or submit a print job. */
+  printUpgradeOffer?: PrintUpgradeOfferV1 | null;
+  printUpgradeQuotes?: PrintUpgradeQuoteV1[] | null;
+  printUpgradeLock?: PrintUpgradeLockV1 | null;
+  /** Settled print purchases remain distinct from the original story order. */
+  printCopyPurchases?: PrintCopyPurchaseV1[] | null;
+  // PRINT_COMMERCE_ADDITIVE_END_FIELDS
   createdAt: string;
   updatedAt: string;
 }
+
+// PRINT_COMMERCE_ADDITIVE_START_TYPES
+/** One-use, order-bound, expiring customer chooser capability. */
+export interface PrintUpgradeOfferV1 {
+  version: 1;
+  offerId: string;
+  purchaseKind: 'upgrade' | 'extra_copy';
+  /** SHA-256 hex of the bearer token. The token itself is never stored. */
+  tokenHash: string;
+  issuedAt: string;
+  expiresAt: string;
+  /** Set exactly once, by the settlement that consumed the offer. */
+  consumedAt?: string | null;
+  revokedAt?: string | null;
+  revokedReason?: string | null;
+  /** Operator-verified approved digital content this offer prints from. */
+  approvedSource: { sha256: string; pageCount: number; label: string | null };
+  /** If the order has a native proof revision, changing it invalidates this offer. */
+  approvedProofVersion: string | null;
+  approvedProofAt: string | null;
+  /** Interior page counts the provider is quoted for, per target format. */
+  quotePageCounts: { classic: number; premium: number };
+  provider: 'lulu';
+}
+
+/** A provider cost quote for one target format and one destination. */
+export interface PrintUpgradeQuoteV1 {
+  version: 1;
+  quoteId: string;
+  quantity: number;
+  offerId: string;
+  targetFormat: Extract<BookFormat, 'classic' | 'premium'>;
+  provider: 'lulu';
+  podPackageId: string;
+  shippingLevel: string;
+  pageCount: number;
+  currency: 'usd';
+  /** Exact provider-derived components in integer cents. */
+  printCents: number;
+  shippingCents: number;
+  fulfillmentCents: number;
+  taxCents: number;
+  totalCents: number;
+  /** Operator-verified delivery window; absent blocks payable checkout. */
+  estimatedDeliveryStart: string | null;
+  estimatedDeliveryEnd: string | null;
+  /** Destination the provider priced; shipped to exactly this address. */
+  shippingAddress: ShippingAddress & { name: string };
+  issuedAt: string;
+  expiresAt: string;
+}
+
+/** The price-locked binding between one quote and one Stripe Checkout Session. */
+export interface PrintUpgradeLockV1 {
+  version: 1;
+  quoteId: string;
+  purchaseKind: 'upgrade' | 'extra_copy';
+  quantity: number;
+  approvedSourceSha256: string;
+  offerId: string;
+  targetFormat: Extract<BookFormat, 'classic' | 'premium'>;
+  /** The ONLY amount the webhook may settle this upgrade against. */
+  totalCents: number;
+  currency: 'usd';
+  /** `provisioning` = provider create entered, not yet bound; `open` = payable;
+   *  `expired` = Session expired unpaid; `paid` = settled by the signed webhook. */
+  status: 'provisioning' | 'open' | 'expired' | 'paid';
+  /** Null only while provisioning. */
+  stripeSessionId: string | null;
+  checkoutUrl: string | null;
+  /** Provider-side idempotency key used to create (or re-create) the Session. */
+  idempotencyKey: string;
+  recipientName: string;
+  openedAt: string;
+  /** Local expiry mirrored into the Session's `expires_at`. */
+  expiresAt: string;
+  paidAt?: string | null;
+  stripePaymentIntentId?: string | null;
+  /** Session ids earlier locks on this offer superseded after expiring unpaid. */
+  supersededStripeSessionIds?: string[] | null;
+}
+
+export interface PrintCopyPurchaseV1 {
+  version: 1;
+  kind: 'upgrade' | 'extra_copy';
+  offerId: string;
+  quoteId: string;
+  approvedSourceSha256: string;
+  approvedProofVersion: string | null;
+  approvedProofAt: string | null;
+  targetFormat: Extract<BookFormat, 'classic' | 'premium'>;
+  quantity: number;
+  totalCents: number;
+  currency: 'usd';
+  stripeSessionId: string;
+  stripePaymentIntentId: string | null;
+  shippingAddress: ShippingAddress & { name: string };
+  estimatedDeliveryStart: string;
+  estimatedDeliveryEnd: string;
+  paidAt: string;
+  printJobId: string | null;
+  printStatus: 'awaiting_files' | 'ready_for_print' | 'submitted' | 'shipped';
+}
+// PRINT_COMMERCE_ADDITIVE_END_TYPES
 
 export type PrintUpgradeStatus =
   | 'pending'

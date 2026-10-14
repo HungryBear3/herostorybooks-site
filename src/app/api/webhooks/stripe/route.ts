@@ -14,6 +14,11 @@ import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgrad
 import { isExactSettledCheckoutSession } from '../../../../lib/checkout-session-confirmation.ts';
 import { scheduleTrustedPurchaseAnalytics } from '../../../../lib/purchase-analytics.ts';
 import { recordShadowCheckoutSettlement } from '../../../../lib/hsb-control-plane-runtime/shadow-settlement.ts';
+import {
+  PRINT_UPGRADE_STRIPE_KIND,
+  recordPrintUpgradeCheckoutExpired,
+  settlePrintUpgradeAtCostSession,
+} from '../../../../lib/print-upgrade-checkout.ts';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -112,9 +117,81 @@ export async function POST(request: Request) {
     }
   }
 
+  if (event.type === 'checkout.session.expired') {
+    const expiredSession = event.data.object as StripeCheckoutSession;
+    if (expiredSession.metadata?.kind === PRINT_UPGRADE_STRIPE_KIND) {
+      // An unpaid at-cost upgrade Session lapsed: release the price lock so the
+      // customer can re-quote. Idempotent; unrelated Sessions fall through.
+      try {
+        const expired = await recordPrintUpgradeCheckoutExpired(expiredSession);
+        return NextResponse.json({ received: true, printUpgradeAtCost: expired.outcome });
+      } catch (err) {
+        console.error(`Stripe webhook: at-cost print upgrade expiry failed for session ${expiredSession.id}:`, err);
+        return NextResponse.json({ error: 'Processing failed' }, { status: 500 });
+      }
+    }
+  }
+
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as StripeCheckoutSession;
     const kind = session.metadata?.kind ?? null;
+
+    if (kind === PRINT_UPGRADE_STRIPE_KIND) {
+      // Customer at-cost digital-to-print upgrade. The whole decision lives in
+      // settlePrintUpgradeAtCostSession: exact bound Session, exact locked
+      // amount, one-use offer consumed in the same commit. It records payment
+      // and the confirmed shipping address ONLY — no fulfillment kickoff, no
+      // confirmation email, no print-file preparation, no provider call.
+      let settled: Awaited<ReturnType<typeof settlePrintUpgradeAtCostSession>>;
+      try {
+        settled = await settlePrintUpgradeAtCostSession(session);
+      } catch (err) {
+        console.error(`Stripe webhook: at-cost print upgrade settlement threw for session ${session.id}:`, err);
+        return NextResponse.json({ error: 'Processing failed' }, { status: 500 });
+      }
+      switch (settled.outcome) {
+        case 'paid':
+          console.warn(
+            `Stripe webhook: at-cost print upgrade paid for ${settled.order.id} session=${session.id}; ` +
+              'print files are prepared manually for the chosen format and no print job is submitted here',
+          );
+          scheduleTrustedPurchaseAnalytics({
+            transactionId: session.id,
+            amountCents: session.amount_total,
+            currency: session.currency,
+            paymentStatus: session.payment_status,
+            itemId: `${session.metadata?.purchaseKind === 'extra_copy' ? 'extra_copy' : 'print_upgrade'}_at_cost_${settled.order.printUpgradeTargetFormat ?? 'unknown'}`,
+            metadata: session.metadata,
+          }, { afterImpl: after });
+          return NextResponse.json({ received: true, printUpgradeAtCost: 'paid' });
+        case 'replay':
+          return NextResponse.json({ received: true, printUpgradeAtCost: 'replay' });
+        case 'conflict_recorded':
+          console.error(`Stripe webhook: at-cost print upgrade settlement refused for session ${session.id}: ${settled.reason}`);
+          return NextResponse.json({ received: true, printUpgradeAtCost: 'conflict_recorded' });
+        case 'conflict_unrecorded':
+          return NextResponse.json({ error: 'Print upgrade conflict persistence failed' }, { status: 500 });
+        case 'order_not_found': {
+          console.error(`[webhook] CRITICAL: at-cost print upgrade session ${session.id} names an order that is not in the durable store`);
+          try {
+            await recordUnmatchedPaymentSettlement({
+              stripeSessionId: session.id,
+              claimedOrderId: session.metadata?.orderId ?? null,
+              amountSubtotalCents: session.amount_subtotal ?? null,
+              amountTotalCents: session.amount_total ?? null,
+              reason: 'order_not_found',
+            });
+          } catch {
+            return NextResponse.json({ error: 'Payment recovery persistence failed' }, { status: 500 });
+          }
+          return NextResponse.json({ error: 'Order not found; recovery recorded' }, { status: 409 });
+        }
+        case 'invalid_metadata':
+        default:
+          console.error('Stripe webhook: invalid at-cost print upgrade metadata', { sessionId: session.id });
+          return NextResponse.json({ error: 'Invalid print upgrade metadata' }, { status: 409 });
+      }
+    }
 
     if (kind === 'print_upgrade') {
       const upgradeOrderId = (session.metadata?.orderId ?? session.client_reference_id) || null;

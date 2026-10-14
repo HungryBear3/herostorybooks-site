@@ -60,8 +60,11 @@ import {
 const FAMILY_REVIEW_PATH = /^\/(?:api\/)?family-review(?:\/|$)/;
 const GROUP_BOOK_PATH = /^\/(?:api\/)?group-book(?:\/|$)/;
 const CUSTOMER_REVIEW_PRIVATE_PATH = /^\/(?:review\/|api\/order\/[^/]+\/(?:review|review-session|review-asset\/))/;
-const OPERATIONAL_NOINDEX_PATH = /^\/(?:admin|api|checkout|order|partner|review|status|thank-you)(?:\/|$)/;
-const ORDER_BEARER_REFERRER_PATH = /^\/(?:status|thank-you)(?:\/|$)/;
+const OPERATIONAL_NOINDEX_PATH = /^\/(?:admin|api|checkout|order|partner|review|status|thank-you|upgrade)(?:\/|$)/;
+// `/upgrade/<orderId>` is the customer print-upgrade chooser: its token rides
+// in the URL fragment and its done page carries a Stripe Session id, so it
+// gets the same referrer containment as the other order-bearer documents.
+const ORDER_BEARER_REFERRER_PATH = /^\/(?:status|thank-you|upgrade)(?:\/|$)/;
 
 const FAMILY_REVIEW_CSP = [
   "default-src 'self'",
