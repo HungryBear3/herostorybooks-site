@@ -1,4 +1,12 @@
 import type { OrderRecord } from './orders.ts';
+import {
+  luluCostCalculationToQuote,
+  type LuluCostCalculationResponse,
+  type PrintCostQuoteProvider,
+  type PrintCostQuoteRequest,
+  type PrintCostQuoteResult,
+  type PrintUpgradeShippingAddress,
+} from './print-upgrade-quote.ts';
 
 export interface PrintArtifactBundle {
   interiorUrl: string;
@@ -36,6 +44,13 @@ function getAuthBaseUrl() {
 }
 
 const TOKEN_PATH = '/auth/realms/glasstree/protocol/openid-connect/token';
+// Lulu's Browser Integrity Check can reject generic Node/Python User-Agents with 1010.
+// Identify this integration on every API request, including cost calculations.
+const LULU_USER_AGENT = 'HeroStoryBooks/1.0 (Lulu Print API integration)';
+
+export function podPackageIdForFormat(bookFormat: string): string {
+  return podPackageId(bookFormat);
+}
 
 function podPackageId(bookFormat: string): string {
   if (bookFormat === 'premium') {
@@ -95,6 +110,7 @@ async function fetchAccessToken(
     headers: {
       Authorization: `Basic ${credentials}`,
       'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': LULU_USER_AGENT,
     },
     body: 'grant_type=client_credentials',
   });
@@ -128,6 +144,7 @@ export async function calculateCoverDimensions(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
+      'User-Agent': LULU_USER_AGENT,
     },
     body: JSON.stringify({
       pod_package_id: podPackageId(order.bookFormat),
@@ -210,6 +227,7 @@ export async function submitPrintJob(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
+      'User-Agent': LULU_USER_AGENT,
     },
     body: JSON.stringify(body),
   });
@@ -236,5 +254,105 @@ export async function submitPrintJob(
     ...(data.estimated_shipping_dates?.earliest
       ? { estimatedShipDate: data.estimated_shipping_dates.earliest }
       : {}),
+  };
+}
+
+// ── Print-job cost calculation (no print job is created) ──────────────────────
+
+export interface LuluCostCalculationInput {
+  podPackageId: string;
+  pageCount: number;
+  quantity?: number;
+  shippingAddress: PrintUpgradeShippingAddress;
+  shippingLevel: string;
+}
+
+/**
+ * POST /print-job-cost-calculations/ — "calculate product and shipping cost
+ * without creating a Print-Job". The documented request requires street1,
+ * city, country_code, postcode and phone_number; the phone falls back to the
+ * same LULU_FALLBACK_PHONE the print-job submission uses.
+ */
+export async function calculatePrintJobCost(
+  input: LuluCostCalculationInput,
+  deps: LuluDeps = {},
+): Promise<LuluCostCalculationResponse> {
+  const clientKey = process.env.LULU_CLIENT_KEY;
+  const clientSecret = process.env.LULU_CLIENT_SECRET;
+  if (!clientKey || !clientSecret) {
+    throw new Error('LULU_CLIENT_KEY and LULU_CLIENT_SECRET are required — configure the Lulu integration first.');
+  }
+  if (!Number.isInteger(input.pageCount) || input.pageCount <= 0) {
+    throw new Error('Lulu cost calculation requires a positive integer page count');
+  }
+  const quantity = input.quantity ?? 1;
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10) {
+    throw new Error('Lulu cost calculation requires a quantity from 1 to 10');
+  }
+  const _fetch = deps.fetch ?? globalThis.fetch;
+  const accessToken = await fetchAccessToken(clientKey, clientSecret, _fetch);
+  const address = input.shippingAddress;
+  const body = {
+    line_items: [{ pod_package_id: input.podPackageId, page_count: input.pageCount, quantity }],
+    shipping_address: {
+      name: address.name,
+      street1: address.line1,
+      ...(address.line2 ? { street2: address.line2 } : {}),
+      city: address.city,
+      state_code: address.state,
+      postcode: address.zip,
+      country_code: address.country,
+      phone_number: process.env.LULU_FALLBACK_PHONE ?? '000-000-0000',
+    },
+    shipping_option: input.shippingLevel,
+  };
+  const res = await _fetch(`${getBaseUrl()}/print-job-cost-calculations/`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      'User-Agent': LULU_USER_AGENT,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Lulu cost calculation error ${res.status}: ${text.slice(0, 200)}`);
+  }
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error('Lulu cost calculation returned a non-JSON body');
+  }
+  if (!data || typeof data !== 'object') throw new Error('Lulu cost calculation returned an empty body');
+  return data as LuluCostCalculationResponse;
+}
+
+/** Provider adapter for the customer at-cost print upgrade quote. */
+export function createLuluPrintCostQuoteProvider(deps: LuluDeps = {}): PrintCostQuoteProvider {
+  return {
+    async quote(request: PrintCostQuoteRequest): Promise<PrintCostQuoteResult> {
+      const shippingLevel = process.env.LULU_SHIPPING_LEVEL ?? 'MAIL';
+      const pod = podPackageId(request.targetFormat);
+      const response = await calculatePrintJobCost({
+        podPackageId: pod,
+        pageCount: request.pageCount,
+        quantity: request.quantity ?? 1,
+        shippingAddress: request.shippingAddress,
+        shippingLevel,
+      }, deps);
+      const quote = luluCostCalculationToQuote(response, { podPackageId: pod, shippingLevel, quantity: request.quantity ?? 1 });
+      // The cost API has no reliable delivery date. Only publish a window when
+      // operations has verified a current production+transit range for this SKU.
+      const minDays = Number(process.env.HSB_PRINT_DELIVERY_MIN_DAYS);
+      const maxDays = Number(process.env.HSB_PRINT_DELIVERY_MAX_DAYS);
+      if (!Number.isInteger(minDays) || !Number.isInteger(maxDays) || minDays < 1 || maxDays < minDays || maxDays > 90) {
+        return quote;
+      }
+      const now = new Date();
+      const dateAfter = (days: number) => new Date(now.getTime() + days * 86400_000).toISOString().slice(0, 10);
+      return { ...quote, estimatedDeliveryStart: dateAfter(minDays), estimatedDeliveryEnd: dateAfter(maxDays) };
+    },
   };
 }

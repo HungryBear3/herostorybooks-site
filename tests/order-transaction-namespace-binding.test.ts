@@ -1416,16 +1416,38 @@ const NT20_BASE_HASHES: Record<string, string> = {
 };
 const NT20_BASE_FILE_SHA256 = '8c0498d42c750f1d5835f103c8b3f239b657e8a8b3beafebe036bd122d01d218';
 
+/** Remove only the explicitly fenced, additive print-commerce declarations.
+ * NT-20 still checks every pre-existing byte against its original baseline. */
+function withoutPrintCommerceAdditions(source: string): string {
+  let result = source;
+  for (const section of ['EVENTS', 'FIELDS', 'TYPES']) {
+    const start = `// PRINT_COMMERCE_ADDITIVE_START_${section}`;
+    const end = `// PRINT_COMMERCE_ADDITIVE_END_${section}`;
+    const first = result.indexOf(start);
+    const last = result.indexOf(end, first);
+    assert.ok(first >= 0 && last > first, `missing print-commerce ${section} fence`);
+    assert.equal(result.indexOf(start, first + 1), -1, `duplicate print-commerce ${section} fence`);
+    let lineStart = result.lastIndexOf('\n', first - 1) + 1;
+    if (section === 'TYPES' && result.slice(result.lastIndexOf('\n', lineStart - 2) + 1, lineStart).trim() === '') {
+      lineStart = result.lastIndexOf('\n', lineStart - 2) + 1;
+    }
+    const lineEnd = result.indexOf('\n', last) + 1;
+    result = result.slice(0, lineStart) + result.slice(lineEnd);
+  }
+  return result;
+}
+
 test('NT-20: every existing declaration is source-identical to base; the four bound helpers differ only by the permitted hunks', () => {
   const actual: Record<string, string> = {};
-  for (const head of UNCHANGED_DECLARATIONS) actual[head] = sha(declarationText(ORDERS_SOURCE, head));
-  for (const [head, hunks] of BOUND_HELPERS) actual[head] = sha(revertHunks(declarationText(ORDERS_SOURCE, head), hunks));
+  const normalized = withoutPrintCommerceAdditions(ORDERS_SOURCE);
+  for (const head of UNCHANGED_DECLARATIONS) actual[head] = sha(declarationText(normalized, head));
+  for (const [head, hunks] of BOUND_HELPERS) actual[head] = sha(revertHunks(declarationText(normalized, head), hunks));
   assert.deepEqual(actual, NT20_BASE_HASHES);
 
   // The whole file: remove the one NBT block, undo the permitted hunks, and
   // the result must be the base file byte for byte. This is what makes "every
   // other function in the file" a checked claim rather than a list.
-  let whole = ORDERS_SOURCE;
+  let whole = normalized;
   const blockStart = whole.indexOf(NBT_BLOCK_START);
   if (blockStart >= 0) {
     const blockEnd = whole.indexOf(NBT_BLOCK_END, blockStart);

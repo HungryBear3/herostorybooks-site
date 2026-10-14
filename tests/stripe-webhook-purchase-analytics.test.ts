@@ -390,7 +390,7 @@ test('hostile or stale signed metadata is dropped; the verified purchase still c
 test('the webhook source has no remaining direct GA4 scheduler and no replay-path purchase', () => {
   const route = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
   assert.doesNotMatch(route, /scheduleGa4Purchase/);
-  assert.equal(route.match(/scheduleTrustedPurchaseAnalytics\(/g)?.length, 2, 'print-upgrade settlement + newly-paid transition');
+  assert.equal(route.match(/scheduleTrustedPurchaseAnalytics\(/g)?.length, 3, 'at-cost print-upgrade settlement + legacy print-upgrade settlement + newly-paid transition');
   const replay = route.slice(route.indexOf('already processed'), route.indexOf("paymentStatus === 'refunded' || existing.refundedAt"));
   assert.ok(replay.length > 0);
   assert.doesNotMatch(replay, /scheduleTrustedPurchaseAnalytics/);
