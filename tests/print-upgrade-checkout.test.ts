@@ -16,7 +16,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { createOrderRecord, getOrder, persistOrder, type OrderRecord } from '../src/lib/orders.ts';
+import { checkoutIntakeOrderContractDigest, createOrderRecord, getOrder, persistOrder, type OrderRecord } from '../src/lib/orders.ts';
+import { finalizationFingerprint } from '../src/lib/checkout-intake.ts';
 import { prepareCustomerPrintUpgradeOffer } from '../src/lib/print-upgrade-offer.ts';
 import { quotePrintUpgradeAtCost, type PrintCostQuoteProvider } from '../src/lib/print-upgrade-quote.ts';
 import {
@@ -405,13 +406,31 @@ test('settle: a completed Session that is not yet paid never settles, and the la
   assert.equal(paid.outcome, 'paid');
   const settled = (await getOrder(ORDER_ID))!;
   assert.equal(settled.printUpgradeStatus, 'paid');
-  assert.equal(settled.bookFormat, 'premium');
+  assert.equal(settled.bookFormat, 'digital');
+  assert.equal(settled.printUpgradeTargetFormat, 'premium');
   assert.equal((settled.printCopyPurchases ?? []).length, 1);
   assert.equal((settled.auditEvents ?? []).filter((e) => e.type === 'print_upgrade_at_cost_paid').length, 1);
 }));
 
-test('settle: the exact bound Session with the exact locked amount flips the order to the chosen print format and consumes the offer', withLocalStore(async () => {
+test('settle: the exact bound Session records the chosen print format without changing the original checkout contract', withLocalStore(async () => {
   const { token, premium } = await quotedOffer();
+  // A real digital checkout may carry a signed intake-order contract. That
+  // contract must still parse after the later print payment is committed.
+  const bound = (await getOrder(ORDER_ID))!;
+  const intakeId = 'intake_11111111111111111111111111111111';
+  bound.checkoutIntake = {
+    intakeId,
+    fingerprint: finalizationFingerprint(intakeId, []),
+    orderContractDigest: '0'.repeat(64),
+    selection: [],
+  };
+  bound.checkoutIntakeMediaRetention = { status: 'active', activatedAt: '2026-09-01T12:00:00.000Z' };
+  bound.checkoutIntake.orderContractDigest = checkoutIntakeOrderContractDigest(bound)!;
+  await persistOrder(bound);
+  const before = (await getOrder(ORDER_ID))!;
+  const originalDigest = checkoutIntakeOrderContractDigest(before);
+  const originalDeliveryExpectation = before.deliveryExpectation;
+  const originalFormatLabel = before.formatLabel;
   const created: { params: PrintUpgradeCheckoutSessionCreate; idempotencyKey: string }[] = [];
   const opened = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: premium.quoteId }, { createCheckoutSession: fakeStripe(created), baseUrl: BASE_URL, now: NOW });
   assert.ok(opened.ok);
@@ -421,8 +440,10 @@ test('settle: the exact bound Session with the exact locked amount flips the ord
   assert.equal(settled.outcome, 'paid');
 
   const stored = (await getOrder(ORDER_ID))!;
-  assert.equal(stored.bookFormat, 'premium');
-  assert.equal(stored.formatLabel, 'Premium hardcover');
+  assert.equal(stored.bookFormat, 'digital');
+  assert.equal(stored.formatLabel, originalFormatLabel);
+  assert.equal(stored.deliveryExpectation, originalDeliveryExpectation);
+  assert.equal(checkoutIntakeOrderContractDigest(stored), originalDigest);
   assert.equal(stored.priceCents, 1900, 'original purchase price is never rewritten');
   assert.equal(stored.settledAmountCents, 1900);
   assert.equal(stored.stripeSessionId, 'cs_original_digital');
@@ -579,7 +600,8 @@ test('extra copies reuse the approved book, bind quantity/destination, and prese
   }, { now: '2026-10-14T12:05:00.000Z' });
   assert.equal(firstPaid.outcome, 'paid');
   const afterFirst = (await getOrder(ORDER_ID))!;
-  assert.equal(afterFirst.bookFormat, 'premium');
+  assert.equal(afterFirst.bookFormat, 'digital');
+  assert.equal(afterFirst.printUpgradeTargetFormat, 'premium');
   assert.equal(afterFirst.printCopyPurchases?.length, 1);
 
   const extra = await prepareCustomerPrintUpgradeOffer(ORDER_ID, {
@@ -609,7 +631,7 @@ test('extra copies reuse the approved book, bind quantity/destination, and prese
   }, { now: '2026-10-14T12:13:00.000Z' });
   assert.equal(extraPaid.outcome, 'paid');
   const final = (await getOrder(ORDER_ID))!;
-  assert.equal(final.bookFormat, 'premium', 'extra copies do not mutate the original format');
+  assert.equal(final.bookFormat, 'digital', 'print purchases do not mutate the original format');
   assert.equal(final.printCopyPurchases?.length, 2);
   assert.deepEqual(final.printCopyPurchases?.map((p) => [p.kind, p.targetFormat, p.quantity]), [['upgrade', 'premium', 1], ['extra_copy', 'classic', 3]]);
   assert.equal(final.printCopyPurchases?.[1].shippingAddress.zip, ADDRESS.zip);

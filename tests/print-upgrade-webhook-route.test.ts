@@ -153,7 +153,8 @@ test('signed completed Session settles the at-cost upgrade exactly once; replay 
     assert.deepEqual(await first.response.json(), { received: true, printUpgradeAtCost: 'paid' });
     const stored = (await getOrder(ORDER_ID))!;
     assert.equal(stored.printUpgradeStatus, 'paid');
-    assert.equal(stored.bookFormat, 'premium');
+    assert.equal(stored.bookFormat, 'digital');
+    assert.equal(stored.printUpgradeTargetFormat, 'premium');
     assert.equal(stored.printUpgradeAmountCents, 2832);
     assert.equal(stored.printUpgradeOffer?.consumedAt != null, true);
     assert.equal(stored.fulfillmentStatus, 'not_started');
@@ -274,7 +275,8 @@ test('delayed payment: a completed-but-unpaid Session is refused and recorded, a
     assert.deepEqual(await paid.response.json(), { received: true, printUpgradeAtCost: 'paid' });
     stored = (await getOrder(ORDER_ID))!;
     assert.equal(stored.printUpgradeStatus, 'paid');
-    assert.equal(stored.bookFormat, 'premium');
+    assert.equal(stored.bookFormat, 'digital');
+    assert.equal(stored.printUpgradeTargetFormat, 'premium');
     assert.equal((stored.printCopyPurchases ?? []).length, 1);
     assert.equal((stored.auditEvents ?? []).filter((e) => e.type === 'print_upgrade_at_cost_paid').length, 1);
     assert.equal((stored.auditEvents ?? []).filter((e) => e.type === 'print_upgrade_settlement_conflict').length, 1);
