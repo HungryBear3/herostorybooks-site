@@ -1,5 +1,6 @@
 import { getOrder } from '@/lib/orders';
 import { printUpgradeCheckoutStatusView } from '@/lib/print-upgrade-checkout';
+import { PendingPrintPaymentRefresh } from './pending-refresh';
 
 // Honest about payment state: the view is derived from the persisted record
 // keyed by the Session id Stripe redirected with, never from the URL alone.
@@ -45,8 +46,8 @@ export default async function UpgradeDonePage({
         )}
         {view.status === 'pending' && (
           <>
-            <h1 className="font-serif text-3xl font-bold text-forest">Confirming your payment…</h1>
-            <p className="text-gray-700">Stripe is still confirming this payment. Refresh this page in a moment. If you did not complete payment, nothing was charged.</p>
+            <h1 className="font-serif text-3xl font-bold text-forest">Confirming your order…</h1>
+            <PendingPrintPaymentRefresh />
           </>
         )}
         {view.status === 'expired' && (
