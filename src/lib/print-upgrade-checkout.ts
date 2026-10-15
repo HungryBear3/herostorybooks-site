@@ -16,7 +16,6 @@
  * print-upgrades.ts is not consulted anywhere here.
  */
 import {
-  getBookFormatMeta,
   withOrderTransaction,
   type OrderRecord,
   type PrintCopyPurchaseV1,
@@ -521,7 +520,6 @@ export async function settlePrintUpgradeAtCostSession(
       const checked = settlementMismatch(current, session, orderId, quoteId, targetFormat);
       if ('reason' in checked) return { abort: { kind: 'conflict', reason: checked.reason } };
       const { lock, quote } = checked;
-      const label = getBookFormatMeta(targetFormat).label;
       const purchase = {
         version: 1 as const,
         kind: lock.purchaseKind,
@@ -545,10 +543,10 @@ export async function settlePrintUpgradeAtCostSession(
       };
       const updated: OrderRecord = {
         ...current,
+        // The original checkout format and delivery expectation are part of
+        // the signed intake contract. A later print purchase must not rewrite
+        // them; its format, destination and status live in the purchase receipt.
         ...(lock.purchaseKind === 'upgrade' ? {
-          bookFormat: targetFormat,
-          formatLabel: label,
-          deliveryExpectation: `${label} prints only after you confirm the final print proof by email; we confirm again before anything prints and when it ships.`,
           shippingAddress: stripName(quote.shippingAddress),
         } : {}),
         printCopyPurchases: [...(current.printCopyPurchases ?? []), purchase],
