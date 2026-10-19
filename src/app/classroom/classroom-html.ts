@@ -1,6 +1,6 @@
 // Information-only /classroom page, served verbatim by route.ts.
 // Brief by design: three story choices, a short how-it-works, plain proposed
-// privacy terms and the three approved Pasta Planet samples. Intake is closed;
+// privacy terms and three owner-selected book samples. Intake is closed;
 // no forms, scripts, remote requests or sticky overlays.
 export const CLASSROOM_HTML: string = `<!doctype html>
 <html lang="en">
@@ -78,6 +78,7 @@ h3{font-size:clamp(22px,5.6cqi,27px);letter-spacing:-.015em}
 .samples{display:grid;gap:18px}
 .slot{position:relative;display:grid;border-radius:14px;background:#13261f;border:1px solid var(--line);padding:0 0 58px;min-height:260px;overflow:hidden}
 .slot img{display:block;width:100%;height:100%;min-height:260px;object-fit:cover;object-position:center}
+.sample-photo img{object-fit:contain;background:#f8f4e9}
 .slot .tag{position:absolute;left:12px;right:12px;bottom:10px;justify-content:center;letter-spacing:.08em}
 .slot .tag::before{background:var(--olive)}
 .note{margin-top:18px;font:13.5px/1.6 var(--sans);color:var(--muted);max-width:70ch}
@@ -134,7 +135,7 @@ footer{border-top:1px solid var(--line);padding:22px 0 40px;font:12.5px/1.6 var(
 </section>
 
 <section class="sec" id="stories" aria-labelledby="stories-h">
-<div class="head"><span class="eyebrow">Story choices</span><h2 id="stories-h">What kind of book feels like you?</h2></div>
+<div class="head"><span class="eyebrow">Story choices</span><h2 id="stories-h">What kind of book feels like you?</h2><p>When the private project opens, participating parents can vote on these three directions. The most-voted direction becomes the class book’s story path. Voting is not open yet.</p></div>
 <div class="cards">
 <article class="card">
 <svg viewBox="0 0 64 40" aria-hidden="true"><path d="M4 32 C18 32 18 10 32 10 S46 30 60 8" fill="none" stroke="#5B6B3C" stroke-width="2"></path><circle cx="4" cy="32" r="3.5" fill="#5B6B3C"></circle><circle cx="60" cy="8" r="5" fill="#D6A443"></circle></svg>
@@ -150,29 +151,29 @@ footer{border-top:1px solid var(--line);padding:22px 0 40px;font:12.5px/1.6 var(
 </section>
 
 <section class="sec" id="book" aria-labelledby="book-h">
-<div class="head"><span class="eyebrow">Made for the bookshelf</span><h2 id="book-h">A story to hold.</h2><p>The examples below show approved illustration samples from a different Hero Story Books title—not a finished classroom book or a promise of its final art.</p></div>
+<div class="head"><span class="eyebrow">Made for the bookshelf</span><h2 id="book-h">A story to hold.</h2><p>These samples show a printed book and illustrated pages from different Hero Story Books titles—not a finished classroom book or a promise of its final art.</p></div>
 <div class="samples">
 <figure class="slot sample sample-primary">
-<img src="/classroom/assets/pasta-planet-page-19-art-only.png" alt="Illustration sample from Pasta Planet: a child exploring a colorful imagined planet landscape.">
+<img src="/classroom/assets/lukas-biggest-day-page-09.jpg" alt="Illustrated page from Lukas and the Biggest Day Ever: Lukas helps in a colorful gingerbread rescue.">
 <figcaption class="tag">Digital sample — illustrative only</figcaption>
 </figure>
 <figure class="slot sample">
-<img src="/classroom/assets/pasta-planet-page-20-art-only.png" alt="Illustration sample from Pasta Planet: a child in a playful outer-space scene.">
+<img src="/classroom/assets/lukas-biggest-day-page-19.jpg" alt="Illustrated page from Lukas and the Biggest Day Ever: Lukas and his family on a boat near Chicago.">
 <figcaption class="tag">Digital sample — illustrative only</figcaption>
 </figure>
-<figure class="slot sample">
-<img src="/classroom/assets/pasta-planet-page-24-art-only.png" alt="Illustration sample from Pasta Planet: a bright storybook scene with a child and fantastical surroundings.">
-<figcaption class="tag">Digital sample — illustrative only</figcaption>
+<figure class="slot sample sample-photo">
+<img src="/classroom/assets/pasta-planet-printed-book.jpg" alt="Photograph of an open printed Pasta Planet book, a separate sample title.">
+<figcaption class="tag">Printed book sample — different title</figcaption>
 </figure>
 </div>
-<p class="note">These three art-only images are approved examples from <em>Pasta Planet</em>. They illustrate a general visual standard only; they do not depict this classroom, an actual classroom book or a current deliverable. Binding, dimensions, page count, illustration approach and available print options are still to be confirmed.</p>
+<p class="note">The illustrated pages are from <em>Lukas and the Biggest Day Ever</em>; the printed-book photo is from <em>Pasta Planet</em>. These are different sample books. They do not depict this classroom or an actual classroom deliverable. Binding, dimensions, page count, illustration approach and available print options for a classroom book are still to be confirmed.</p>
 </section>
 
 <section class="sec" id="how" aria-labelledby="how-h">
 <div class="how">
 <div class="head"><span class="eyebrow">Simple steps</span><h2 id="how-h">How it works</h2></div>
 <ol class="steps">
-<li class="step"><div><h3>Choose a story direction</h3><p>Pick the story choice that fits your class.</p></div></li>
+<li class="step"><div><h3>Parents vote on a story direction</h3><p>Once voting opens privately, participating parents choose among the three ideas. We select the most-voted direction for the book.</p></div></li>
 <li class="step"><div><h3>Families share details privately</h3><p>Only once a project opens, each family privately shares approved details about their own child. Nothing is collected now.</p></div></li>
 <li class="step"><div><h3>Review the proof</h3><p>The proof is reviewed and approved first. Printing is a separate release that happens only after that approval.</p></div></li>
 </ol>
