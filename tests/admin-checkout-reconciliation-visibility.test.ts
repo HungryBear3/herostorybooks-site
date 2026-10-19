@@ -382,14 +382,24 @@ function withoutStoryMediaSizeExtraction(candidate: string): string {
   return normalized;
 }
 
-/** The one sanctioned schedule addition: the confirmation-email recovery sweep.
- *  Declared here as exact bytes so every other schedule in `vercel.json` — the
- *  fulfillment sweep and the intake cleanup — stays frozen to the base commit. */
+/** Exact sanctioned schedule additions and branch-only Preview suppression.
+ *  Every other byte, including all other Git configuration and schedules,
+ *  stays frozen to the base commit after these reversible transformations. */
 const VERCEL_SANCTIONED_TRANSFORMS: ReadonlyArray<{
   description: string;
   candidate: string;
   base: string;
 }> = [
+  {
+    description: 'only the approved literal release branch disables Preview deployment',
+    candidate: `  "git": {
+    "deploymentEnabled": {
+      "rex/hsb-safeoff-20261019-jrm7sg1b": false
+    }
+  },
+`,
+    base: '',
+  },
   {
     // Successor group-book lifecycle redesign: the scheduled source-photo
     // retention pass, appended after every existing schedule.
@@ -421,6 +431,9 @@ const VERCEL_SANCTIONED_TRANSFORMS: ReadonlyArray<{
 ];
 
 function withoutConfirmationEmailSweepSchedule(candidate: string): string {
+  assert.deepEqual(JSON.parse(candidate).git, {
+    deploymentEnabled: { 'rex/hsb-safeoff-20261019-jrm7sg1b': false },
+  }, 'the exact suppression must be the top-level Git configuration');
   let normalized = candidate;
   for (const rule of VERCEL_SANCTIONED_TRANSFORMS) {
     const occurrences = normalized.split(rule.candidate).length - 1;
@@ -484,6 +497,45 @@ test('the runbook documents read-only verification and forbids automatic retry',
   assert.match(runbook, /Checkout reconciliation required/);
   assert.match(runbook, /Do not retry payment automatically/);
   assert.match(runbook, /read-only/i);
+});
+
+test('freeze oracle rejects Git, schedule, incident, and stranded-scan deviations', () => {
+  const vercel = src('vercel.json');
+  const branch = 'rex/hsb-safeoff-20261019-jrm7sg1b';
+  const gitBlock = VERCEL_SANCTIONED_TRANSFORMS[0].candidate;
+  const cases: Array<[string, string, string]> = [
+    ['nested git block', 'vercel.json', vercel.replace(gitBlock, '').replace('          "type": "host",', gitBlock + '          "type": "host",')],
+    ['wrong branch', 'vercel.json', vercel.replace(branch, `${branch}-other`)],
+    ['main disabled', 'vercel.json', vercel.replace(branch, 'main')],
+    ['wildcard disabled', 'vercel.json', vercel.replace(branch, '*')],
+    ['global deployment disabled', 'vercel.json', vercel.replace(gitBlock, '  "git": { "deploymentEnabled": false },\n')],
+    ['git false', 'vercel.json', vercel.replace(gitBlock, '  "git": false,\n')],
+    ['branch enabled', 'vercel.json', vercel.replace(`"${branch}": false`, `"${branch}": true`)],
+    ['extra main rule', 'vercel.json', vercel.replace(`"${branch}": false`, `"${branch}": false, "main": false`)],
+    ['extra git setting', 'vercel.json', vercel.replace('"deploymentEnabled": {', '"extra": false, "deploymentEnabled": {')],
+    ['missing git rule', 'vercel.json', vercel.replace(gitBlock, '')],
+    ['duplicate git block', 'vercel.json', vercel.replace(gitBlock, gitBlock + gitBlock)],
+    ['existing schedule changed', 'vercel.json', vercel.replace('*/10 * * * *', '*/11 * * * *')],
+    ['confirmation schedule changed', 'vercel.json', vercel.replace('7,22,37,52 * * * *', '8,23,38,53 * * * *')],
+    ['retention schedule changed', 'vercel.json', vercel.replace('41 5 * * *', '42 5 * * *')],
+    ...[
+      'src/lib/order-incident.ts',
+      'src/lib/stranded-order-detector.ts',
+      'src/lib/stranded-order-detector-runtime.ts',
+    ].map((path): [string, string, string] => [path, path, src(path) + '\n// unauthorized change\n']),
+  ];
+  for (const [label, path, candidate] of cases) {
+    const committed = execFileSync('git', ['show', `${BASE_SHA}:${path}`], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    const normalize = FREEZE_NORMALIZERS[path] ?? ((source: string) => source);
+    // Positive control uses the very same oracle, before each negative control.
+    assert.equal(normalize(src(path)), committed, `${label}: conforming control`);
+    assert.notEqual(candidate, src(path), `${label}: mutation must actually change bytes`);
+    assert.throws(() => assert.equal(normalize(candidate), committed),
+      { code: 'ERR_ASSERTION' }, `${label}: unauthorized change must be rejected`);
+  }
 });
 
 test('incident classification, stranded-order scans, and schedules are unchanged from the base commit', () => {
