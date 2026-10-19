@@ -1,4 +1,9 @@
 {
+  "git": {
+    "deploymentEnabled": {
+      "rex/hsb-safeoff-20261019-jrm7sg1b": false
+    }
+  },
   "redirects": [
     {
       "source": "/",
@@ -35,6 +40,10 @@
     {
       "path": "/api/cron/confirmation-email-sweep",
       "schedule": "7,22,37,52 * * * *"
+    },
+    {
+      "path": "/api/cron/group-book-retention-sweep",
+      "schedule": "41 5 * * *"
     }
   ]
 }

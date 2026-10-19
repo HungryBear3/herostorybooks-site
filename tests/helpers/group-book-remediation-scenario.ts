@@ -7,17 +7,21 @@ import { readFileSync } from 'node:fs';
 import { crc32 } from 'node:zlib';
 import sharp from 'sharp';
 
+const fixture = await import('./group-book-policy-fixture.mjs');
+fixture.openSyntheticAdmission();
 const A = {
   token: 'SyntheticFamilyAlphaToken000000001',
   cohortId: 'synthetic_cohort',
   familySlotId: 'synthetic_family_a',
   cohortLabel: 'Synthetic classroom',
+  expiresAt: fixture.SYNTHETIC_EXPIRES_AT,
 };
 const B = {
   token: 'SyntheticFamilyBravoToken000000002',
   cohortId: 'synthetic_cohort',
   familySlotId: 'synthetic_family_b',
   cohortLabel: 'Synthetic classroom',
+  expiresAt: fixture.SYNTHETIC_EXPIRES_AT,
 };
 process.env.GROUP_BOOK_BLOB_READ_WRITE_TOKEN = 'vercel_blob_rw_groupbookfixture_synthetic';
 process.env.GROUP_BOOK_INVITES_JSON = JSON.stringify([A, B]);
@@ -51,6 +55,8 @@ function intakeRequest(invite: Invite, uploads: Upload[] = [{ bytes: jpeg, mime:
     sharedWithParticipatingFamilies: 'true',
     sourcePhotosRemainPrivate: 'true',
     schoolApprovalNotRepresentedOrImplied: 'true',
+    policyVersion: String(fixture.SYNTHETIC_POLICY_STAMP.version),
+    policyDigest: fixture.SYNTHETIC_POLICY_STAMP.digest,
   };
   for (const [key, value] of Object.entries(fields)) form.set(key, value);
   for (const upload of uploads) form.append('photos', new File([upload.bytes], 'synthetic-upload', { type: upload.mime }));
@@ -380,6 +386,7 @@ await step('proven foreign winner: only the losing request photos are deleted', 
     ageRange: '5-6',
     characterNotes: '',
     photos: [winnerPhoto],
+    policy: fixture.SYNTHETIC_POLICY_STAMP,
   });
   blob.faults.preemptFamily = JSON.stringify(winner);
   const response = await intake(intakeRequest(A));

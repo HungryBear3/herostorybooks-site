@@ -8,7 +8,17 @@ export interface GroupBookInvite {
   cohortId: string;
   familySlotId: string;
   cohortLabel: string;
+  /** Server-enforced capability expiry (required). Cookie lifetime is not expiry. */
+  expiresAt: string;
+  /** Operator revocation; once set the capability grants nothing. */
+  revokedAt?: string;
 }
+
+export type GroupBookInviteState =
+  | { state: 'active'; invite: GroupBookInvite }
+  | { state: 'expired'; invite: GroupBookInvite }
+  | { state: 'revoked'; invite: GroupBookInvite }
+  | { state: 'unknown' };
 
 const TOKEN_RE = /^[A-Za-z0-9_-]{32,64}$/;
 const ID_RE = /^[A-Za-z0-9_-]{3,64}$/;
@@ -17,11 +27,18 @@ export function isWellFormedGroupBookToken(value: unknown): boolean {
   return typeof value === 'string' && TOKEN_RE.test(value);
 }
 
+/**
+ * Only a bare pasted token is accepted. Invites are never distributed or
+ * recognized as URLs, so a token cannot leak through history, referrers,
+ * logs or analytics page paths.
+ */
 export function extractGroupBookToken(value: string): string | null {
   const trimmed = value.trim();
-  if (isWellFormedGroupBookToken(trimmed)) return trimmed;
-  const candidates = trimmed.match(/[A-Za-z0-9_-]{32,64}/g) ?? [];
-  return candidates.find((candidate) => isWellFormedGroupBookToken(candidate)) ?? null;
+  return isWellFormedGroupBookToken(trimmed) ? trimmed : null;
+}
+
+function isTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value));
 }
 
 function parseInvite(value: unknown): GroupBookInvite | null {
@@ -33,11 +50,15 @@ function parseInvite(value: unknown): GroupBookInvite | null {
   if (typeof row.cohortLabel !== 'string') return null;
   const cohortLabel = row.cohortLabel.trim();
   if (!cohortLabel || cohortLabel.length > 100) return null;
+  if (!isTimestamp(row.expiresAt)) return null;
+  if (row.revokedAt !== undefined && !isTimestamp(row.revokedAt)) return null;
   return {
     token: row.token,
     cohortId: row.cohortId,
     familySlotId: row.familySlotId,
     cohortLabel,
+    expiresAt: row.expiresAt,
+    ...(row.revokedAt !== undefined ? { revokedAt: row.revokedAt as string } : {}),
   };
 }
 
@@ -66,9 +87,24 @@ export function groupBookInvites(
   return invites;
 }
 
+export function resolveGroupBookInviteState(token: string, now = Date.now()): GroupBookInviteState {
+  if (!isWellFormedGroupBookToken(token)) return { state: 'unknown' };
+  const invite = groupBookInvites().find((row) => row.token === token);
+  if (!invite) return { state: 'unknown' };
+  if (invite.revokedAt !== undefined && Date.parse(invite.revokedAt) <= now) return { state: 'revoked', invite };
+  if (Date.parse(invite.expiresAt) <= now) return { state: 'expired', invite };
+  return { state: 'active', invite };
+}
+
+/** Only an active (configured, unexpired, unrevoked) capability resolves. */
 export function resolveGroupBookInvite(token: string): GroupBookInvite | null {
-  if (!isWellFormedGroupBookToken(token)) return null;
-  return groupBookInvites().find((invite) => invite.token === token) ?? null;
+  const resolved = resolveGroupBookInviteState(token);
+  return resolved.state === 'active' ? resolved.invite : null;
+}
+
+/** Typed refusal for a capability that does not resolve to an active invite. */
+export function inviteRefusal(state: GroupBookInviteState['state']): 'invalid_invite' | 'invite_expired' | 'invite_revoked' {
+  return state === 'expired' ? 'invite_expired' : state === 'revoked' ? 'invite_revoked' : 'invalid_invite';
 }
 
 /** Opaque stable key used only inside the dedicated private store. */

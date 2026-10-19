@@ -36,7 +36,10 @@ Base: `origin/main` at `baf00cfb0b65f1bca3465ea801a57af3c552f74e`.
    and stores only a re-encoded JPEG (see Remediation below). It writes only to
    a dedicated private store. Original filenames are discarded.
 6. The same high-entropy family token is the family's private access
-   capability. `/group-book/family/{token}` shows only that family's sanitized
+   capability. (SUPERSEDED 2026-10-19: tokens are never placed in URLs; the
+   bare token is pasted at `/group-book` and held in a `/group-book`-scoped
+   HttpOnly cookie; see `group-book-portal-readiness-2026-10-19.md`.)
+   `/group-book/family` shows only that family's sanitized
    submission summary. There is no cohort listing and no room-parent/admin
    surface in this lane.
 7. Before proof/print, the family can create an append-only withdrawal marker.

@@ -8,6 +8,7 @@ import {
   familyStorageKey,
   groupBookBlobToken,
   groupBookBlobTokenProblem,
+  resolveGroupBookInviteState,
   type GroupBookInvite,
 } from './config.ts';
 
@@ -22,8 +23,25 @@ export interface GroupBookPhotoAsset {
   storage: 'private';
 }
 
+/** Legacy (schema 1) consent: fixed strings, no adopted-policy stamp. */
+export interface GroupBookLegacyConsent {
+  version: 'group-book-v1';
+  agreedAt: string;
+  guardianAuthority: true;
+  sharedWithParticipatingFamilies: true;
+  sourcePhotosRemainPrivate: true;
+  schoolApprovalNotRepresentedOrImplied: true;
+}
+
+/** Schema 2 consent: server-stamped against one exact adopted policy record. */
+export interface GroupBookPolicyConsent extends Omit<GroupBookLegacyConsent, 'version'> {
+  version: 'group-book-v2';
+  actor: 'invite_capability_holder_self_attested';
+  policy: { version: string; digest: string };
+}
+
 export interface GroupBookSubmission {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   id: string;
   familyStorageKey: string;
   cohort: { id: string; label: string; familySlotId: string };
@@ -33,14 +51,7 @@ export interface GroupBookSubmission {
     ageRange: GroupBookAgeRange;
     characterNotes: string;
   };
-  consent: {
-    version: 'group-book-v1';
-    agreedAt: string;
-    guardianAuthority: true;
-    sharedWithParticipatingFamilies: true;
-    sourcePhotosRemainPrivate: true;
-    schoolApprovalNotRepresentedOrImplied: true;
-  };
+  consent: GroupBookLegacyConsent | GroupBookPolicyConsent;
   photos: GroupBookPhotoAsset[];
   status: 'submitted';
   omitFromProofAndPrint: false;
@@ -72,7 +83,7 @@ export class GroupBookStoreReadError extends Error {
   }
 }
 
-type PrivateRead =
+export type PrivateRead =
   | { state: 'found'; value: unknown }
   | { state: 'absent' }
   | { state: 'unreadable' };
@@ -83,7 +94,7 @@ export type GroupBookCreateOutcome =
   | { outcome: 'conflict'; winner: GroupBookSubmission }
   | { outcome: 'unconfirmed' };
 
-function requireToken(): string {
+export function requireToken(): string {
   const token = groupBookBlobToken();
   if (!token) throw new Error(groupBookBlobTokenProblem() ?? 'group_book_storage_disabled');
   return token;
@@ -93,12 +104,41 @@ export function groupBookStorageReady(): boolean {
   return groupBookBlobTokenProblem() === null;
 }
 
-export function groupBookRecordPath(invite: GroupBookInvite): string {
+/** Durable family identity; the invite capability is not required to read storage. */
+export type GroupBookFamilyIdentity = Pick<GroupBookInvite, 'cohortId' | 'familySlotId'>;
+
+export function groupBookRecordPath(invite: GroupBookFamilyIdentity): string {
   return `group-book/families/${familyStorageKey(invite)}.json`;
 }
 
 export function groupBookWithdrawalPath(invite: GroupBookInvite): string {
   return `group-book/withdrawals/${familyStorageKey(invite)}.json`;
+}
+
+/**
+ * Durable owner of a submission attempt, written create-only BEFORE any photo
+ * write. Every photo path the attempt may write is listed here first, so a
+ * photo that survives an interrupted attempt is always attributable to its
+ * family. This is attribution, not cleanup: nothing deletes these records.
+ */
+export interface GroupBookAttempt {
+  schemaVersion: 1;
+  attemptId: string;
+  familyStorageKey: string;
+  /** Durable owner identity: retention discovers orphans without config. */
+  cohortId: string;
+  familySlotId: string;
+  submissionId: string;
+  photoPaths: string[];
+  createdAt: string;
+  /** Server clock at admission; the writer's lifetime starts here. */
+  admittedAt: string;
+  /** No photo put or record commit is started after this instant. */
+  writeDeadline: string;
+}
+
+export function groupBookAttemptPath(invite: GroupBookInvite, attemptId: string): string {
+  return `group-book/attempts/${familyStorageKey(invite)}/${attemptId}.json`;
 }
 
 export function groupBookPhotoPath(invite: GroupBookInvite, assetId: string, ext: string): string {
@@ -133,7 +173,7 @@ function isProvenAbsence(error: unknown): boolean {
  * or the SDK's not-found error is absence. Any other status, a missing stream
  * or an unparseable body is 'unreadable'. Transport exceptions are rethrown.
  */
-async function readPrivateObject(pathname: string): Promise<PrivateRead> {
+export async function readPrivateObject(pathname: string): Promise<PrivateRead> {
   let result: Awaited<ReturnType<typeof get>>;
   try {
     result = await get(pathname, {
@@ -186,9 +226,25 @@ function parsePhoto(value: unknown, key: string): GroupBookPhotoAsset | null {
  * requested invite's: a matching key with contradictory identifiers is
  * corrupt, never a proven record.
  */
-function parseSubmission(value: unknown, invite: GroupBookInvite): GroupBookSubmission | null {
+function parseConsent(consent: unknown, schemaVersion: 1 | 2): boolean {
+  if (
+    !isObject(consent) || !isTimestamp(consent.agreedAt) ||
+    consent.guardianAuthority !== true || consent.sharedWithParticipatingFamilies !== true ||
+    consent.sourcePhotosRemainPrivate !== true || consent.schoolApprovalNotRepresentedOrImplied !== true
+  ) {
+    return false;
+  }
+  if (schemaVersion === 1) return consent.version === 'group-book-v1';
+  const policy = consent.policy;
+  return consent.version === 'group-book-v2' &&
+    consent.actor === 'invite_capability_holder_self_attested' &&
+    isObject(policy) && isText(policy.version) && policy.version.length > 0 && policy.version.length <= 100 &&
+    isText(policy.digest) && /^[0-9a-f]{64}$/.test(policy.digest);
+}
+
+export function parseSubmission(value: unknown, invite: GroupBookFamilyIdentity): GroupBookSubmission | null {
   const key = familyStorageKey(invite);
-  if (!isObject(value) || value.schemaVersion !== 1) return null;
+  if (!isObject(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) return null;
   if (!isText(value.id) || !/^gbs_[A-Za-z0-9_-]+$/.test(value.id)) return null;
   if (value.familyStorageKey !== key) return null;
   const { cohort, parent, child, consent, photos } = value;
@@ -198,13 +254,7 @@ function parseSubmission(value: unknown, invite: GroupBookInvite): GroupBookSubm
   if (!isObject(parent) || !isText(parent.name) || !isText(parent.email)) return null;
   if (!isObject(child) || !isText(child.firstName) || !isText(child.characterNotes)) return null;
   if (!isText(child.ageRange) || !AGE_RANGES.has(child.ageRange)) return null;
-  if (
-    !isObject(consent) || consent.version !== 'group-book-v1' || !isTimestamp(consent.agreedAt) ||
-    consent.guardianAuthority !== true || consent.sharedWithParticipatingFamilies !== true ||
-    consent.sourcePhotosRemainPrivate !== true || consent.schoolApprovalNotRepresentedOrImplied !== true
-  ) {
-    return null;
-  }
+  if (!parseConsent(consent, value.schemaVersion)) return null;
   if (!Array.isArray(photos) || photos.length < 1 || photos.some((photo) => !parsePhoto(photo, key))) return null;
   if (value.status !== 'submitted' || value.omitFromProofAndPrint !== false || !isTimestamp(value.receivedAt)) {
     return null;
@@ -220,7 +270,7 @@ function parseWithdrawal(value: unknown, key: string): GroupBookWithdrawal | nul
 }
 
 async function readGroupBookSubmissionState(
-  invite: GroupBookInvite,
+  invite: GroupBookFamilyIdentity,
 ): Promise<{ state: 'found'; record: GroupBookSubmission } | { state: 'absent' } | { state: 'unreadable' }> {
   const read = await readPrivateObject(groupBookRecordPath(invite));
   if (read.state !== 'found') return read;
@@ -233,7 +283,7 @@ async function readGroupBookSubmissionState(
  * GroupBookStoreReadError; transport exceptions propagate unchanged.
  */
 export async function findGroupBookSubmission(
-  invite: GroupBookInvite,
+  invite: GroupBookFamilyIdentity,
 ): Promise<GroupBookSubmission | null> {
   const read = await readGroupBookSubmissionState(invite);
   if (read.state === 'unreadable') throw new GroupBookStoreReadError();
@@ -260,6 +310,129 @@ export async function loadEffectiveGroupBookSubmission(
   }
   // A marker that may exist but cannot be verified must never read as eligible.
   return { ...record, effectiveStatus: 'withdrawal_unverified', effectiveOmitFromProofAndPrint: true };
+}
+
+export type OwnFamilySubmission =
+  | { state: 'found'; submission: EffectiveGroupBookSubmission; invite: GroupBookInvite }
+  | { state: 'not_submitted'; invite: GroupBookInvite }
+  | { state: 'unauthorized' };
+
+/**
+ * Own-family read for a presented capability. Only an active invite reads,
+ * and only its own family's record; withdrawn (OMIT) families keep reading.
+ * Store uncertainty throws (GroupBookStoreReadError or transport errors).
+ */
+export async function loadOwnFamilySubmission(token: string): Promise<OwnFamilySubmission> {
+  const resolved = resolveGroupBookInviteState(token);
+  if (resolved.state !== 'active') return { state: 'unauthorized' };
+  const submission = await loadEffectiveGroupBookSubmission(resolved.invite);
+  return submission
+    ? { state: 'found', submission, invite: resolved.invite }
+    : { state: 'not_submitted', invite: resolved.invite };
+}
+
+export interface PlannedGroupBookPhoto {
+  assetId: string;
+  pathname: string;
+  bytes: Buffer;
+  mime: string;
+}
+
+export function planGroupBookPhotos(
+  invite: GroupBookInvite,
+  prepared: { bytes: Buffer; mime: string; ext: string }[],
+): PlannedGroupBookPhoto[] {
+  return prepared.map((photo) => {
+    const assetId = newOpaqueId('gbp', 12);
+    return { assetId, pathname: groupBookPhotoPath(invite, assetId, photo.ext), bytes: photo.bytes, mime: photo.mime };
+  });
+}
+
+export function newGroupBookSubmissionId(): string {
+  return newOpaqueId('gbs');
+}
+
+/**
+ * Create-only owner record. true only when acknowledged; any failure (even
+ * one that may have committed) stops the attempt before photo writes. A
+ * committed-but-unacknowledged owner record references no stored photo yet,
+ * so it is harmless and never retried automatically.
+ */
+export async function createGroupBookAttempt(
+  invite: GroupBookInvite,
+  submissionId: string,
+  photos: PlannedGroupBookPhoto[],
+  window: { admittedAt: number; writeDeadline: number },
+  now = new Date(),
+): Promise<GroupBookAttempt | null> {
+  const attempt: GroupBookAttempt = {
+    schemaVersion: 1,
+    attemptId: newOpaqueId('gba'),
+    familyStorageKey: familyStorageKey(invite),
+    cohortId: invite.cohortId,
+    familySlotId: invite.familySlotId,
+    submissionId,
+    photoPaths: photos.map((photo) => photo.pathname),
+    createdAt: now.toISOString(),
+    admittedAt: new Date(window.admittedAt).toISOString(),
+    writeDeadline: new Date(window.writeDeadline).toISOString(),
+  };
+  try {
+    await put(groupBookAttemptPath(invite, attempt.attemptId), JSON.stringify(attempt), {
+      access: 'private',
+      token: requireToken(),
+      addRandomSuffix: false,
+      allowOverwrite: false,
+      cacheControlMaxAge: 0,
+      contentType: 'application/json',
+    });
+    return attempt;
+  } catch {
+    return null;
+  }
+}
+
+export async function writePlannedGroupBookPhoto(
+  photo: PlannedGroupBookPhoto,
+  abortSignal: AbortSignal,
+): Promise<GroupBookPhotoAsset> {
+  const result = await put(photo.pathname, photo.bytes, {
+    abortSignal,
+    access: 'private',
+    token: requireToken(),
+    addRandomSuffix: false,
+    allowOverwrite: false,
+    cacheControlMaxAge: 0,
+    contentType: photo.mime,
+  });
+  if (result.pathname && result.pathname !== photo.pathname) throw new Error('group_book_photo_path_mismatch');
+  return {
+    assetId: photo.assetId,
+    pathname: photo.pathname,
+    mime: photo.mime,
+    size: photo.bytes.byteLength,
+    uploadedAt: new Date().toISOString(),
+    storage: 'private',
+  };
+}
+
+/**
+ * Presence probe for a binary private object. 'unknown' covers every status
+ * other than 200/404 and every thrown error except proven SDK absence.
+ */
+export async function probePrivateObject(
+  pathname: string,
+): Promise<{ state: 'present'; bytes: Buffer } | { state: 'absent' } | { state: 'unknown' }> {
+  try {
+    const result = await get(pathname, { access: 'private', token: requireToken(), useCache: false });
+    if (!result) return { state: 'absent' };
+    const statusCode: number = result.statusCode;
+    if (statusCode === 404) return { state: 'absent' };
+    if (statusCode !== 200 || !result.stream) return { state: 'unknown' };
+    return { state: 'present', bytes: Buffer.from(await new Response(result.stream).arrayBuffer()) };
+  } catch (err) {
+    return isProvenAbsence(err) ? { state: 'absent' } : { state: 'unknown' };
+  }
 }
 
 export async function uploadGroupBookPhoto(args: {
@@ -305,12 +478,14 @@ export function buildGroupBookSubmission(args: {
   ageRange: GroupBookAgeRange;
   characterNotes: string;
   photos: GroupBookPhotoAsset[];
+  policy: { version: string; digest: string };
+  id?: string;
   now?: Date;
 }): GroupBookSubmission {
   const at = (args.now ?? new Date()).toISOString();
   return {
-    schemaVersion: 1,
-    id: newOpaqueId('gbs'),
+    schemaVersion: 2,
+    id: args.id ?? newOpaqueId('gbs'),
     familyStorageKey: familyStorageKey(args.invite),
     cohort: {
       id: args.invite.cohortId,
@@ -324,7 +499,9 @@ export function buildGroupBookSubmission(args: {
       characterNotes: args.characterNotes,
     },
     consent: {
-      version: 'group-book-v1',
+      version: 'group-book-v2',
+      actor: 'invite_capability_holder_self_attested',
+      policy: { version: args.policy.version, digest: args.policy.digest },
       agreedAt: at,
       guardianAuthority: true,
       sharedWithParticipatingFamilies: true,

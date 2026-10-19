@@ -33,6 +33,8 @@ function portalContext() {
     invite: 'SyntheticFamilyAlphaToken000000001', checking: false,
     parentName: 'Synthetic', parentEmail: 'synthetic@example.invalid', childFirstName: 'Synthetic',
     ageRange: '5-6', characterNotes: '', guardian: true, sharedBook: true, schoolDisclaimer: true,
+    phase: 'form', policy: { version: 'synthetic-v1', digest: 'a'.repeat(64) }, setPolicy: () => {},
+    unresolvedSave: false, setUnresolvedSave: (v: boolean) => { (state as Record<string, unknown>).unresolvedSave = v; },
     files: [new Blob(['synthetic'])],
     preparePhoto: async (f: unknown) => f,
     FormData,
@@ -136,4 +138,54 @@ test('rendered error paragraphs are live-region alerts', () => {
   assert.equal(alerts(portal), 2, 'gate and form error paragraphs announce');
   assert.equal(alerts(button), 1, 'withdrawal error paragraph announces');
   assert.match(portal, /disabled=\{!invite\.trim\(\) \|\| checking\}/, 'gate Continue is disabled while checking');
+});
+
+test('platform 413 (non-JSON body) is reported as not saved without parsing the body', async () => {
+  const { state, ctx } = portalContext();
+  let parsed = 0;
+  Object.assign(ctx, { fetch: async () => ({ ok: false, status: 413, json: async () => { parsed += 1; throw new SyntaxError('Request Entity Too Large'); } }) });
+  await callback(PORTAL, 'submit', ctx)(event);
+  assert.equal(parsed, 0);
+  assert.equal(state.phase, 'form');
+  assert.match(state.error!, /too large/i);
+  assert.match(state.error!, /this attempt was not accepted/i);
+  assert.doesNotMatch(state.error!, /nothing was saved/i, 'a 413 speaks only for this attempt');
+});
+
+test('an ambiguous save marks the whole operation unresolved (recovery-first) and keeps the invite', async () => {
+  const { state, ctx } = portalContext();
+  await callback(PORTAL, 'submit', ctx)(event);
+  assert.equal((state as Record<string, unknown>).unresolvedSave, true);
+  assert.equal(state.phase, 'form');
+});
+
+test('while an earlier save is unresolved, submit re-checks the invite first and never re-posts intake', async () => {
+  const { state, ctx } = portalContext();
+  const urls: string[] = [];
+  Object.assign(ctx, {
+    unresolvedSave: true,
+    fetch: async (url: string) => { urls.push(url); return { ok: false, status: 413, json: async () => ({}) }; },
+  });
+  await callback(PORTAL, 'submit', ctx)(event);
+  assert.ok(!urls.includes('/api/group-book/intake'), 'no intake POST while unresolved');
+  assert.ok(state.error);
+  assert.match(state.error!, /earlier|may have been saved|check/i);
+  assert.doesNotMatch(state.error!, /nothing was saved/i);
+});
+
+test('submit without server-offered policy terms sends nothing', async () => {
+  const { state, ctx } = portalContext();
+  let calls = 0;
+  Object.assign(ctx, { policy: null, fetch: async () => { calls += 1; throw new Error('must not send'); } });
+  await callback(PORTAL, 'submit', ctx)(event);
+  assert.equal(calls, 0);
+  assert.equal(state.phase, 'form');
+});
+
+test('browser preparer always re-encodes and never falls back to the original file', () => {
+  const portal = readFileSync(PORTAL, 'utf8');
+  const prepare = portal.slice(portal.indexOf('async function preparePhoto'), portal.indexOf('export default function'));
+  assert.doesNotMatch(prepare, /return file|resolve\(blob \?\? file\)/);
+  assert.match(prepare, /MAX_PREPARED_PHOTO_BYTES/);
+  assert.match(prepare, /throw new Error\('prepared_photo_too_large'\)/);
 });

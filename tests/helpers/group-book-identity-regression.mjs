@@ -6,7 +6,9 @@ import * as store from '../../src/lib/group-book/store.ts';
 import { familyStorageKey } from '../../src/lib/group-book/config.ts';
 import { POST as intake } from '../../src/app/api/group-book/intake/route.ts';
 
-const A = {token:'SyntheticFamilyAlphaToken000000001',cohortId:'synthetic_cohort',familySlotId:'synthetic_family_a',cohortLabel:'Synthetic classroom'};
+const admissionFixture = await import('./group-book-policy-fixture.mjs');
+admissionFixture.openSyntheticAdmission();
+const A = {token:'SyntheticFamilyAlphaToken000000001',cohortId:'synthetic_cohort',familySlotId:'synthetic_family_a',cohortLabel:'Synthetic classroom',expiresAt:admissionFixture.SYNTHETIC_EXPIRES_AT};
 process.env.GROUP_BOOK_BLOB_READ_WRITE_TOKEN = 'vercel_blob_rw_groupbookfixture_synthetic';
 process.env.GROUP_BOOK_INVITES_JSON = JSON.stringify([A]);
 const jpeg = await sharp({create:{width:8,height:8,channels:3,background:'#456789'}}).jpeg().toBuffer();
@@ -15,7 +17,7 @@ async function fixture() {
   await blob.reset();
   const photo = {assetId:'gbp_winner',pathname:`group-book/photos/${key}/gbp_winner.jpg`,mime:'image/jpeg',size:jpeg.length,uploadedAt:new Date().toISOString(),storage:'private'};
   await blob.seed(photo.pathname,jpeg);
-  const record = store.buildGroupBookSubmission({invite:A,parentName:'Synthetic',parentEmail:'synthetic@example.invalid',childFirstName:'Synthetic',ageRange:'5-6',characterNotes:'',photos:[photo]});
+  const record = store.buildGroupBookSubmission({invite:A,parentName:'Synthetic',parentEmail:'synthetic@example.invalid',childFirstName:'Synthetic',ageRange:'5-6',characterNotes:'',photos:[photo],policy:admissionFixture.SYNTHETIC_POLICY_STAMP});
   return record;
 }
 function contradict(record, kind) {
@@ -26,7 +28,7 @@ function contradict(record, kind) {
 }
 async function post() {
   const form = new FormData();
-  for (const [k,v] of Object.entries({invite:A.token,parentName:'Synthetic',parentEmail:'synthetic@example.invalid',childFirstName:'Synthetic',ageRange:'5-6',guardianAuthority:'true',sharedWithParticipatingFamilies:'true',sourcePhotosRemainPrivate:'true',schoolApprovalNotRepresentedOrImplied:'true'})) form.set(k,v);
+  for (const [k,v] of Object.entries({invite:A.token,parentName:'Synthetic',parentEmail:'synthetic@example.invalid',childFirstName:'Synthetic',ageRange:'5-6',guardianAuthority:'true',sharedWithParticipatingFamilies:'true',sourcePhotosRemainPrivate:'true',schoolApprovalNotRepresentedOrImplied:'true',policyVersion:String(admissionFixture.SYNTHETIC_POLICY_STAMP.version),policyDigest:admissionFixture.SYNTHETIC_POLICY_STAMP.digest})) form.set(k,v);
   form.set('photos',new File([jpeg],'synthetic.jpg',{type:'image/jpeg'}));
   const response = await intake(new Request('https://synthetic.invalid/api/group-book/intake',{method:'POST',body:form}));
   return {status:response.status,body:await response.json()};

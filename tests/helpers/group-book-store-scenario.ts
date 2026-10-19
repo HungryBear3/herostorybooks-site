@@ -12,6 +12,7 @@ const invite = {
   cohortId: 'cohort_alpha',
   familySlotId: 'family_one',
   cohortLabel: 'Private classroom keepsake',
+  expiresAt: '2099-01-01T00:00:00.000Z',
 };
 
 const photo = await store.uploadGroupBookPhoto({
@@ -28,6 +29,7 @@ const record = store.buildGroupBookSubmission({
   ageRange: '5-6',
   characterNotes: 'Synthetic-only fixture.',
   photos: [photo],
+  policy: { version: 'synthetic-v1', digest: 'a'.repeat(64) },
   now: new Date('2026-10-07T20:00:00.000Z'),
 });
 assert.equal(await store.createGroupBookSubmission(record), true);
