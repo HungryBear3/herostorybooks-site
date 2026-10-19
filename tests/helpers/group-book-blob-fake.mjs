@@ -8,6 +8,7 @@ function record(op, pathname, options = {}) {
     access: options.access ?? null,
     explicitToken: typeof options.token === 'string',
     allowOverwrite: options.allowOverwrite ?? null,
+    abortSignal: options.abortSignal instanceof AbortSignal,
   });
 }
 
@@ -52,4 +53,12 @@ export async function del(pathnameOrPaths, options = {}) {
 
 export function paths() {
   return [...objects.keys()].sort();
+}
+
+export async function list(options = {}) {
+  record('list', options.prefix ?? '', { access: 'private', token: options.token });
+  if (typeof options.token !== 'string') throw new Error('explicit token required');
+  const prefix = options.prefix ?? '';
+  const blobs = [...objects.keys()].filter((p) => p.startsWith(prefix)).sort().map((pathname) => ({ pathname }));
+  return { blobs, hasMore: false, cursor: undefined };
 }

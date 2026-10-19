@@ -391,6 +391,21 @@ const VERCEL_SANCTIONED_TRANSFORMS: ReadonlyArray<{
   base: string;
 }> = [
   {
+    // Successor group-book lifecycle redesign: the scheduled source-photo
+    // retention pass, appended after every existing schedule.
+    description: 'group-book retention sweep schedule',
+    candidate: `    },
+    {
+      "path": "/api/cron/group-book-retention-sweep",
+      "schedule": "41 5 * * *"
+    }
+  ]
+`,
+    base: `    }
+  ]
+`,
+  },
+  {
     description: 'confirmation-email recovery sweep schedule',
     candidate: `    },
     {

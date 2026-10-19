@@ -2,11 +2,45 @@
 
 import { useState } from 'react';
 import { Icon, WatercolorCrest, Wordmark } from '@/components/family-review/atoms';
+import {
+  GROUP_BOOK_ACCEPTED_PHOTO_TYPES,
+  MAX_GROUP_BOOK_PHOTOS,
+  MAX_PREPARED_PHOTO_BYTES,
+  PREPARED_PHOTO_MAX_DIMENSION,
+} from '@/lib/group-book/limits';
 
 type Phase = 'gate' | 'form' | 'submitting';
 
+/** Owner-adopted terms exactly as the server returned them; never defaulted here. */
+interface PolicyView {
+  version: string;
+  digest: string;
+  finishedBookRecipients: string;
+  withdrawalCutoff: string;
+  sourcePhotoRetention: string;
+  depictedAdultPermission: string;
+  guardianReviewScope: string;
+  wholeBookApproval: string;
+}
+
+const POLICY_LABELS: [keyof PolicyView, string][] = [
+  ['finishedBookRecipients', 'Who receives the finished book'],
+  ['guardianReviewScope', 'What you can review'],
+  ['wholeBookApproval', 'Whole-book approval'],
+  ['depictedAdultPermission', 'Adults shown in photos'],
+  ['withdrawalCutoff', 'Withdrawal'],
+  ['sourcePhotoRetention', 'Source photo retention'],
+];
+
+function isPolicyView(value: unknown): value is PolicyView {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.version === 'string' && typeof row.digest === 'string' &&
+    POLICY_LABELS.every(([key]) => typeof row[key] === 'string' && (row[key] as string).length > 0);
+}
+
 const AGE_RANGES = ['2-3', '3-4', '5-6', '7-8', '9-10', '10+'] as const;
-const PHOTO_UPLOAD_MAX_DIMENSION = 1600;
+const ENCODE_ATTEMPTS: [number, number][] = [[PREPARED_PHOTO_MAX_DIMENSION, 0.82], [1280, 0.75], [1024, 0.7]];
 
 async function decodePhoto(file: File): Promise<ImageBitmap | HTMLImageElement> {
   if ('createImageBitmap' in window) {
@@ -28,21 +62,27 @@ async function decodePhoto(file: File): Promise<ImageBitmap | HTMLImageElement> 
   }
 }
 
+/**
+ * Every photo is decoded and re-encoded in the browser as a canonical JPEG,
+ * which drops location and other metadata before upload and bounds its size.
+ * The original file is never uploaded. A photo that cannot be decoded or
+ * fit under the prepared cap is refused here rather than sent.
+ */
 async function preparePhoto(file: File): Promise<Blob> {
-  if (file.size <= 1_500_000 && ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(file.type)) {
-    return file;
-  }
   const image = await decodePhoto(file);
-  const scale = Math.min(1, PHOTO_UPLOAD_MAX_DIMENSION / Math.max(image.width, image.height));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(image.width * scale));
-  canvas.height = Math.max(1, Math.round(image.height * scale));
-  const context = canvas.getContext('2d');
-  if (!context) return file;
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  return await new Promise<Blob>((resolve) => {
-    canvas.toBlob((blob) => resolve(blob ?? file), 'image/jpeg', 0.82);
-  });
+  for (const [maxDimension, quality] of ENCODE_ATTEMPTS) {
+    const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('canvas_unavailable');
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+    if (!blob) throw new Error('encode_failed');
+    if (blob.size <= MAX_PREPARED_PHOTO_BYTES) return blob;
+  }
+  throw new Error('prepared_photo_too_large');
 }
 
 export default function GroupBookPortal() {
@@ -59,6 +99,11 @@ export default function GroupBookPortal() {
   const [schoolDisclaimer, setSchoolDisclaimer] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
+  const [policy, setPolicy] = useState<PolicyView | null>(null);
+  // Operation-wide: once any save attempt had an unknown outcome, no later
+  // attempt may claim "nothing saved", and no new intake POST is sent until
+  // the server has been re-checked for this invite (recovery first).
+  const [unresolvedSave, setUnresolvedSave] = useState(false);
 
   async function continueFromGate(e: React.FormEvent) {
     e.preventDefault();
@@ -78,15 +123,24 @@ export default function GroupBookPortal() {
         return;
       }
       if (response.status === 404 && body.error === 'not_submitted') {
+        const offered = (body as { policy?: unknown }).policy;
+        if (!isPolicyView(offered)) throw new Error('Unconfirmed policy');
+        // The server authoritatively found no saved submission for this invite.
+        setUnresolvedSave(false);
+        setPolicy(offered);
         setPhase('form');
         return;
       }
       setError(
-        body.error === 'storage_disabled'
-          ? 'Private group-book intake is not enabled in this environment.'
+        body.error === 'storage_disabled' || body.error === 'intake_closed' || body.error === 'policy_not_adopted'
+          ? 'Family submissions are not open.'
           : body.error === 'storage_unavailable'
             ? 'Private storage could not be checked right now. Please try again later.'
-            : 'That private family invite was not recognized.',
+            : body.error === 'invite_expired'
+              ? 'This private family invite has expired.'
+              : body.error === 'invite_revoked'
+                ? 'This private family invite is no longer active.'
+                : 'That private family invite was not recognized.',
       );
     } catch {
       setError('Your invite could not be checked because the connection or response was interrupted. Please try again.');
@@ -97,6 +151,14 @@ export default function GroupBookPortal() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (phase === 'submitting' || !policy) return;
+    if (unresolvedSave) {
+      // Recovery first: an earlier attempt may have been saved. Send the
+      // parent back to the invite check (invite kept) instead of re-posting.
+      setPhase('gate');
+      setError('An earlier attempt may have been saved. Press Continue to check your invite before submitting again.');
+      return;
+    }
     setError(null);
     setPhase('submitting');
     const form = new FormData();
@@ -110,19 +172,31 @@ export default function GroupBookPortal() {
     form.set('sharedWithParticipatingFamilies', sharedBook ? 'true' : 'false');
     form.set('sourcePhotosRemainPrivate', sharedBook ? 'true' : 'false');
     form.set('schoolApprovalNotRepresentedOrImplied', schoolDisclaimer ? 'true' : 'false');
+    form.set('policyVersion', String(policy.version));
+    form.set('policyDigest', policy.digest);
     try {
       for (const file of files) {
         form.append('photos', await preparePhoto(file), 'reference-photo.jpg');
       }
     } catch {
       setPhase('form');
-      setError('One of the photos could not be prepared. Try a JPG, PNG, WEBP, or HEIC image.');
+      setError('One of the photos could not be prepared on this device. Nothing was sent. Try a different JPG, PNG, or WEBP photo.');
       return;
     }
     try {
       const response = await fetch('/api/group-book/intake', { method: 'POST', body: form });
+      if (response.status === 413) {
+        // Includes the platform's own non-JSON body-limit refusal: the request
+        // was rejected before the handler ran, so nothing was written.
+        setError('The photos were too large to send, so this attempt was not accepted. Try fewer or smaller photos.');
+        return;
+      }
       const body = await response.json() as { accessUrl?: string; error?: string };
       if (!body || typeof body !== 'object') throw new Error('Unconfirmed response');
+      const definitive = ['invalid_invite', 'invite_expired', 'invite_revoked', 'storage_disabled', 'intake_closed',
+        'policy_not_adopted', 'policy_consent_stale', 'unsupported_image', 'invalid_image', 'photo_too_large',
+        'request_too_large', 'invalid_photo_count', 'missing_or_invalid_fields', 'owner_record_unconfirmed', 'invalid_form'];
+      if (!(response.ok && body.accessUrl) && !definitive.includes(body.error ?? '')) setUnresolvedSave(true);
       if (response.ok && body.accessUrl) {
         setFiles([]);
         window.location.assign(body.accessUrl);
@@ -131,8 +205,10 @@ export default function GroupBookPortal() {
       setError(
         body.error === 'invalid_invite'
           ? 'That private family invite was not recognized.'
-          : body.error === 'storage_disabled'
-            ? 'Private group-book intake is not enabled in this environment.'
+          : body.error === 'storage_disabled' || body.error === 'intake_closed' || body.error === 'policy_not_adopted'
+            ? 'Family submissions are not open, so this attempt was not accepted.'
+            : body.error === 'policy_consent_stale'
+              ? 'The group-book terms changed, so this attempt was not accepted. Re-enter your invite to read the current terms.'
             : body.error === 'record_persist_unconfirmed'
               ? 'We could not confirm whether your submission was saved. Re-enter your invite later to check before submitting again.'
               : body.error === 'unsupported_image' || body.error === 'invalid_image'
@@ -141,13 +217,14 @@ export default function GroupBookPortal() {
       );
     } catch {
       // A lost response does not establish whether the write reached storage.
+      setUnresolvedSave(true);
       setError('We could not confirm whether your submission was saved because the connection or response was interrupted. Re-enter your invite to check whether it was received before submitting again.');
     } finally {
       setPhase('form');
     }
   }
 
-  const ready = guardian && sharedBook && schoolDisclaimer && files.length >= 1 && files.length <= 5;
+  const ready = Boolean(policy) && guardian && sharedBook && schoolDisclaimer && files.length >= 1 && files.length <= MAX_GROUP_BOOK_PHOTOS;
 
   return (
     <>
@@ -198,18 +275,27 @@ export default function GroupBookPortal() {
               <label className="field"><span className="field-label">Age range</span><select className="input" value={ageRange} onChange={(e) => setAgeRange(e.target.value)} required><option value="">Choose one</option>{AGE_RANGES.map((age) => <option key={age} value={age}>{age}</option>)}</select></label>
               <label className="field"><span className="field-label">Appearance or character notes <span className="opt">optional</span></span><textarea className="input" rows={4} value={characterNotes} onChange={(e) => setCharacterNotes(e.target.value)} maxLength={600} placeholder="Details that help us represent your child accurately." /></label>
               <label className="field">
-                <span className="field-label">1–5 private reference photos</span>
-                <input className="input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" multiple onChange={(e) => setFiles(Array.from(e.target.files ?? []).slice(0, 5))} required />
-                <span className="help">{files.length ? `${files.length} photo${files.length === 1 ? '' : 's'} selected` : 'Original filenames are discarded. Source photos are never shown to participating families.'}</span>
+                <span className="field-label">1–{MAX_GROUP_BOOK_PHOTOS} private reference photos (JPG, PNG, or WEBP)</span>
+                <input className="input" type="file" accept={GROUP_BOOK_ACCEPTED_PHOTO_TYPES.join(',')} multiple onChange={(e) => setFiles(Array.from(e.target.files ?? []).slice(0, MAX_GROUP_BOOK_PHOTOS))} required />
+                <span className="help">{files.length ? `${files.length} photo${files.length === 1 ? '' : 's'} selected` : 'Each photo is resized and re-saved on this device before sending; location data and original filenames are not sent.'}</span>
               </label>
             </section>
+
+            {policy && (
+              <section className="card stack-12" style={{ padding: 18 }}>
+                <div className="eyebrow forest">Group-book terms · version {policy.version}</div>
+                {POLICY_LABELS.map(([key, label]) => (
+                  <div key={key} className="stack-6"><strong className="help">{label}</strong><p className="help" style={{ whiteSpace: 'pre-wrap' }}>{policy[key]}</p></div>
+                ))}
+              </section>
+            )}
 
             <section className="card card-warm stack-12" style={{ padding: 18 }}>
               <div className="eyebrow forest">Explicit group-book consent</div>
               <label className="fr-row" style={{ alignItems: 'flex-start' }}><input type="checkbox" checked={guardian} onChange={(e) => setGuardian(e.target.checked)} /><span className="help"><strong>I am this child&apos;s parent or legal guardian</strong> and I am submitting only my own child&apos;s details and photos.</span></label>
-              <label className="fr-row" style={{ alignItems: 'flex-start' }}><input type="checkbox" checked={sharedBook} onChange={(e) => setSharedBook(e.target.checked)} /><span className="help"><strong>I agree that my child&apos;s first name and illustrated likeness may appear in this private group book shared with participating families.</strong> Source photos stay private to authorized HeroStoryBooks operators and are not placed in a family gallery.</span></label>
+              <label className="fr-row" style={{ alignItems: 'flex-start' }}><input type="checkbox" checked={sharedBook} onChange={(e) => setSharedBook(e.target.checked)} /><span className="help"><strong>I have read the group-book terms above and agree that my child&apos;s first name and illustrated likeness may appear in this private group book, shared only with the recipients those terms name.</strong> Source photos are not placed in a family gallery.</span></label>
               <label className="fr-row" style={{ alignItems: 'flex-start' }}><input type="checkbox" checked={schoolDisclaimer} onChange={(e) => setSchoolDisclaimer(e.target.checked)} /><span className="help"><strong>I understand this parent-run group book does not represent or imply school, teacher, district, or administrator approval.</strong></span></label>
-              <p className="help">Before proof or print, you can use your private family access to withdraw your child. A withdrawal marks the child for omission from proof and print.</p>
+              <p className="help">After saving, your private family access lets you request withdrawal, which marks your child to be left out of the book. Withdrawal timing is as stated in the terms above. Withdrawal does not delete your saved details or photos.</p>
             </section>
 
             {error && <p className="help" role="alert" style={{ color: 'var(--err)' }}>{error}</p>}

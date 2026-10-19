@@ -21,9 +21,13 @@ test('server-only invite config requires unique strong family capabilities', () 
     cohortId: 'cohort_alpha',
     familySlotId: 'family_one',
     cohortLabel: 'Private classroom keepsake',
+    expiresAt: '2099-01-01T00:00:00.000Z',
   }]));
   assert.equal(parsed.length, 1);
-  assert.equal(extractGroupBookToken(`Private link: https://example.test/group-book/${token}`), token);
+  // Invites are bare tokens only; a URL-shaped paste is never mined for one.
+  assert.equal(extractGroupBookToken(`Private link: https://example.test/group-book/${token}`), null);
+  assert.equal(extractGroupBookToken(` ${token} `), token);
+  assert.equal(groupBookInvites(JSON.stringify([{ ...parsed[0], expiresAt: undefined }])).length, 0);
   assert.equal(groupBookInvites(JSON.stringify([{ ...parsed[0] }, { ...parsed[0] }])).length, 0);
   assert.equal(groupBookInvites(JSON.stringify([{ ...parsed[0], token: 'weak-code' }])).length, 0);
   assert.match(familyStorageKey(parsed[0]), /^[0-9a-f]{64}$/);
@@ -81,7 +85,8 @@ test('portal copy and source enforce separate semantics and hard external-action
   const all = [portal, familyPage, intake, store].join('\n');
 
   assert.match(portal, /submitting only my own child/i);
-  assert.match(portal, /shared with participating families/i);
+  assert.match(portal, /shared only with the recipients those terms name/i);
+  assert.doesNotMatch(portal, /heic|heif/i, 'HEIC is not advertised');
   assert.match(portal, /does not represent or imply school, teacher, district, or administrator approval/i);
   assert.match(portal, /Room parents\s+cannot see submissions/i);
   assert.match(familyPage, /No room parent or participating family can open this submission/i);

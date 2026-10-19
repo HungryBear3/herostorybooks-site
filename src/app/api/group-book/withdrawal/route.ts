@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 
-import { resolveGroupBookInvite } from '@/lib/group-book/config';
 import { GROUP_BOOK_ACCESS_COOKIE, GROUP_BOOK_PRIVATE_HEADERS } from '@/lib/group-book/session';
+import { loadGroupBookReleaseState } from '@/lib/group-book/retention';
 import {
-  findGroupBookSubmission,
   groupBookStorageReady,
+  loadOwnFamilySubmission,
   requestGroupBookWithdrawal,
 } from '@/lib/group-book/store';
 
@@ -23,24 +23,37 @@ export async function POST() {
     );
   }
   const token = (await cookies()).get(GROUP_BOOK_ACCESS_COOKIE)?.value ?? '';
-  const invite = resolveGroupBookInvite(token);
-  let submitted = false;
+  // Only an active (unexpired, unrevoked) capability may act, on its own family.
+  let own: Awaited<ReturnType<typeof loadOwnFamilySubmission>>;
   try {
-    submitted = Boolean(invite && (await findGroupBookSubmission(invite)));
+    own = await loadOwnFamilySubmission(token);
   } catch {
     return NextResponse.json(
       { ok: false, error: 'storage_unavailable' },
       { status: 503, headers: GROUP_BOOK_PRIVATE_HEADERS },
     );
   }
-  if (!invite || !submitted) {
+  if (own.state !== 'found') {
     return NextResponse.json(
       { ok: false, error: 'not_found' },
       { status: 404, headers: GROUP_BOOK_PRIVATE_HEADERS },
     );
   }
+  // Adopted policy: withdrawal guarantees OMIT only until the FIRST final
+  // release to printing or distribution (the recorded release, never the
+  // later delivery). Released copies are not recalled. An existing withdrawal
+  // stays recorded; an unknown release state refuses.
+  if (own.submission.effectiveStatus !== 'withdrawal_requested') {
+    const release = await loadGroupBookReleaseState(own.invite.cohortId);
+    if (release.state !== 'none') {
+      return NextResponse.json(
+        { ok: false, error: release.state === 'recorded' ? 'edition_already_released' : 'storage_unavailable' },
+        { status: release.state === 'recorded' ? 409 : 503, headers: GROUP_BOOK_PRIVATE_HEADERS },
+      );
+    }
+  }
   try {
-    const result = await requestGroupBookWithdrawal(invite);
+    const result = await requestGroupBookWithdrawal(own.invite);
     return NextResponse.json(
       { ok: true, omitFromProofAndPrint: true, requestedAt: result.requestedAt },
       { status: 200, headers: GROUP_BOOK_PRIVATE_HEADERS },
