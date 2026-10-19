@@ -1,7 +1,7 @@
 /**
  * /classroom is a brief, information-only page: three story choices, a short
- * how-it-works, plain proposed privacy terms and the three approved Pasta
- * Planet samples. Intake is closed. These tests pin the content contract and
+ * how-it-works, plain proposed privacy terms and three owner-selected book
+ * samples. Intake and voting are closed. These tests pin the content contract and
  * security posture rather than the exact bytes, so copy can be simplified
  * without loosening what the page may do.
  */
@@ -22,17 +22,17 @@ const META_CSP =
   "base-uri 'none'; form-action 'none'";
 
 const ASSETS: Record<string, { hash: string; alt: string }> = {
-  'pasta-planet-page-19-art-only.png': {
-    hash: '64b64bc9ee5c7c82a4d00d7b8971c501c9e9a2d6112541189f8290f59e3271ba',
-    alt: 'Illustration sample from Pasta Planet: a child exploring a colorful imagined planet landscape.',
+  'lukas-biggest-day-page-09.jpg': {
+    hash: 'a8087f1dc9755e0b33a07acbd81b4129b3eaf729ba30aa21fa60d7a35b9e163e',
+    alt: 'Illustrated page from Lukas and the Biggest Day Ever: Lukas helps in a colorful gingerbread rescue.',
   },
-  'pasta-planet-page-20-art-only.png': {
-    hash: '0b957e5a72713921c618b14c94104175d13d10a05a89a6da670374d750fa1221',
-    alt: 'Illustration sample from Pasta Planet: a child in a playful outer-space scene.',
+  'lukas-biggest-day-page-19.jpg': {
+    hash: '83f6f3a5f54603383743d0e0809349b98d6359690c15cd0b8b10b322a42b20f4',
+    alt: 'Illustrated page from Lukas and the Biggest Day Ever: Lukas and his family on a boat near Chicago.',
   },
-  'pasta-planet-page-24-art-only.png': {
-    hash: '525c73509cd9abd463f73c33b3d84c1a86e901f2779ed5895ee4ae4e2216d141',
-    alt: 'Illustration sample from Pasta Planet: a bright storybook scene with a child and fantastical surroundings.',
+  'pasta-planet-printed-book.jpg': {
+    hash: 'a40f21ba2229a135a88d9fe97b77dd5ac79b103315722d169de49d9ee54bb079',
+    alt: 'Photograph of an open printed Pasta Planet book, a separate sample title.',
   },
 };
 
@@ -81,15 +81,16 @@ test('sample assets are the exact approved bytes with their approved framing', (
     assert.equal(sha256(readFileSync(path.join(dir, name))), hash, name);
     assert.equal(count(CLASSROOM_HTML, `<img src="/classroom/assets/${name}" alt="${alt}">`), 1, `${name} referenced`);
   }
-  assert.equal(count(CLASSROOM_HTML, '<figcaption class="tag">Digital sample — illustrative only</figcaption>'), 3);
+  assert.equal(count(CLASSROOM_HTML, '<figcaption class="tag">Digital sample — illustrative only</figcaption>'), 2);
+  assert.equal(count(CLASSROOM_HTML, '<figcaption class="tag">Printed book sample — different title</figcaption>'), 1);
   assert.ok(
     CLASSROOM_HTML.includes(
-      'The examples below show approved illustration samples from a different Hero Story Books title—not a finished classroom book or a promise of its final art.',
+      'These samples show a printed book and illustrated pages from different Hero Story Books titles—not a finished classroom book or a promise of its final art.',
     ),
   );
   assert.ok(
     CLASSROOM_HTML.includes(
-      'These three art-only images are approved examples from <em>Pasta Planet</em>. They illustrate a general visual standard only; they do not depict this classroom, an actual classroom book or a current deliverable. Binding, dimensions, page count, illustration approach and available print options are still to be confirmed.',
+      'The illustrated pages are from <em>Lukas and the Biggest Day Ever</em>; the printed-book photo is from <em>Pasta Planet</em>. These are different sample books. They do not depict this classroom or an actual classroom deliverable. Binding, dimensions, page count, illustration approach and available print options for a classroom book are still to be confirmed.',
     ),
   );
   assert.ok(CLASSROOM_HTML.includes('Concept layout only — not a book or illustration sample'));
@@ -115,6 +116,13 @@ test('page is information-only: no forms, inputs, scripts or remote requests', (
   }
   const srcs = [...CLASSROOM_HTML.matchAll(/src="([^"]*)"/g)].map((m) => m[1]);
   for (const src of srcs) assert.ok(src.startsWith('/classroom/assets/'), `unexpected src ${src}`);
+});
+
+test('parent voting is described as future and is not open on the preview page', () => {
+  assert.ok(CLASSROOM_HTML.includes('participating parents can vote on these three directions'));
+  assert.ok(CLASSROOM_HTML.includes('The most-voted direction becomes the class book’s story path. Voting is not open yet.'));
+  assert.ok(CLASSROOM_HTML.includes('We select the most-voted direction for the book.'));
+  assert.doesNotMatch(CLASSROOM_HTML, /<form\b|<input\b|<script\b/i);
 });
 
 test('intake is closed: one disabled CTA, no checkout, prices or contact invitations', () => {
@@ -198,7 +206,7 @@ test('how it works, privacy and proposed-terms truths are stated plainly', () =>
   const how = section('how');
   assert.deepEqual(
     [...how.matchAll(/<h3>([^<]*)<\/h3>/g)].map((m) => m[1]),
-    ['Choose a story direction', 'Families share details privately', 'Review the proof'],
+    ['Parents vote on a story direction', 'Families share details privately', 'Review the proof'],
   );
   assert.ok(how.includes('Only once a project opens, each family privately shares approved details about their own child.'));
   assert.ok(how.includes('Printing is a separate release that happens only after that approval.'));
