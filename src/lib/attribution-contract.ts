@@ -61,16 +61,16 @@ export const ATTRIBUTION_VALUE_MAX_LENGTH: Readonly<Record<AttributionUtmKey, nu
 /**
  * Governed HSB tags, after trim/lowercase normalization:
  * source/medium: exactly the alternatives below.
- * campaign: launch, or YYYY-MM-{gifts|holiday|birthdays|launch}, years
+ * campaign: launch, the approved Fleccas october_2026 label, or YYYY-MM-{gifts|holiday|birthdays|launch}, years
  * 2026–2029 and months 01–12, optionally .v1 through .v9.
  * content: {video|image|carousel|text}-{a|b|c} creative variants only.
  * term: unsupported; free-text/search-keyword dimensions are always dropped.
  * Add new marketing labels by reviewed code change, never by user input.
  */
 const VALUE_GRAMMARS: Readonly<Record<AttributionUtmKey, RegExp | null>> = {
-  utm_source: /^(?:facebook|instagram|google|bing|newsletter|pinterest|youtube|tiktok|telegram)$/,
-  utm_medium: /^(?:paid_social|social|email|cpc|organic|referral)$/,
-  utm_campaign: /^(?:launch|202[6-9]-(?:0[1-9]|1[0-2])-(?:gifts|holiday|birthdays|launch)(?:\.v[1-9])?)$/,
+  utm_source: /^(?:facebook|instagram|google|bing|newsletter|pinterest|youtube|tiktok|telegram|fleccas)$/,
+  utm_medium: /^(?:paid_social|social|email|cpc|organic|referral|podcast)$/,
+  utm_campaign: /^(?:launch|october_2026|202[6-9]-(?:0[1-9]|1[0-2])-(?:gifts|holiday|birthdays|launch)(?:\.v[1-9])?)$/,
   utm_content: /^(?:video|image|carousel|text)-[abc]$/,
   utm_term: null,
 };

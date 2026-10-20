@@ -415,3 +415,15 @@ test('server acceptance outlasts the browser window by the Checkout Session and 
   const tooOld: AttributionState = { version: 1, firstTouch: campaign('facebook', '2026-08-01T12:00:00.000Z'), lastNonDirectTouch: null };
   assert.equal(attributionFromStripeMetadata(attributionToStripeMetadata(tooOld), { now: NOW }), null);
 });
+
+
+test('approved Fleccas short-link tags survive capture, storage and Stripe metadata roundtrip', () => {
+  const storage = memoryStorage();
+  const state = recordAttributionLanding({ storage, search: '?utm_source=fleccas&utm_medium=podcast&utm_campaign=october_2026', pathname: '/', now: NOW });
+  assert.equal(state?.lastNonDirectTouch?.source, 'fleccas');
+  assert.equal(state?.lastNonDirectTouch?.medium, 'podcast');
+  assert.equal(state?.lastNonDirectTouch?.campaign, 'october_2026');
+  assert.deepEqual(attributionFromStripeMetadata(attributionToStripeMetadata(state), { now: NOW }), state);
+  assert.equal(sanitizeAttributionValue('utm_source', 'fleccas-anything'), null);
+  assert.equal(sanitizeAttributionValue('utm_campaign', 'october_2026-personal-data'), null);
+});
