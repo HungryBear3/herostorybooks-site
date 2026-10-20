@@ -26,6 +26,11 @@
       ],
       "destination": "https://herostorybooks.com/:path*",
       "permanent": true
+    },
+    {
+      "source": "/fleccas",
+      "destination": "https://herostorybooks.com/?utm_source=fleccas&utm_medium=podcast&utm_campaign=october_2026",
+      "permanent": false
     }
   ],
   "crons": [

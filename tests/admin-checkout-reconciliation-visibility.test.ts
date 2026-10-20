@@ -401,6 +401,20 @@ const VERCEL_SANCTIONED_TRANSFORMS: ReadonlyArray<{
     base: '',
   },
   {
+    description: 'approved Fleccas short-link redirect',
+    candidate: `    },
+    {
+      "source": "/fleccas",
+      "destination": "https://herostorybooks.com/?utm_source=fleccas&utm_medium=podcast&utm_campaign=october_2026",
+      "permanent": false
+    }
+  ],
+`,
+    base: `    }
+  ],
+`,
+  },
+  {
     // Successor group-book lifecycle redesign: the scheduled source-photo
     // retention pass, appended after every existing schedule.
     description: 'group-book retention sweep schedule',
@@ -515,6 +529,7 @@ test('freeze oracle rejects Git, schedule, incident, and stranded-scan deviation
     ['extra git setting', 'vercel.json', vercel.replace('"deploymentEnabled": {', '"extra": false, "deploymentEnabled": {')],
     ['missing git rule', 'vercel.json', vercel.replace(gitBlock, '')],
     ['duplicate git block', 'vercel.json', vercel.replace(gitBlock, gitBlock + gitBlock)],
+    ['Fleccas destination changed', 'vercel.json', vercel.replace('utm_source=fleccas', 'utm_source=other')],
     ['existing schedule changed', 'vercel.json', vercel.replace('*/10 * * * *', '*/11 * * * *')],
     ['confirmation schedule changed', 'vercel.json', vercel.replace('7,22,37,52 * * * *', '8,23,38,53 * * * *')],
     ['retention schedule changed', 'vercel.json', vercel.replace('41 5 * * *', '42 5 * * *')],
