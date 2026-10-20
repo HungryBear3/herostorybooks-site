@@ -5,6 +5,7 @@ import { notFound } from 'next/navigation';
 import { EditorialPageShell } from '@/components/editorial-site';
 import { GIFT_OCCASIONS, getGiftOccasion, giftCheckoutHref } from '@/lib/gift-occasions';
 import { PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
+import { PRODUCTION_ORIGIN } from '@/lib/site-url';
 
 export function generateStaticParams() {
   return GIFT_OCCASIONS.map(({ id }) => ({ occasion: id }));
@@ -18,6 +19,28 @@ export async function generateMetadata({ params }: { params: Promise<{ occasion:
     title: `${occasion.title} | HeroStoryBooks`,
     description: occasion.description,
     alternates: { canonical: `/gifts/${occasion.id}` },
+    openGraph: {
+      title: occasion.title,
+      description: occasion.description,
+      url: `${PRODUCTION_ORIGIN}/gifts/${occasion.id}`,
+      siteName: 'HeroStoryBooks',
+      locale: 'en_US',
+      type: 'website',
+      images: [
+        {
+          url: '/assets/og-social-share.png',
+          width: 1200,
+          height: 630,
+          alt: 'HeroStoryBooks social share image',
+        },
+      ],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title: occasion.title,
+      description: occasion.description,
+      images: ['/assets/og-social-share.png'],
+    },
   };
 }
 
