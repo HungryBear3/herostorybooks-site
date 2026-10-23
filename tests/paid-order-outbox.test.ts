@@ -1,9 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { paidEvent, mutateOutbox, deliverClaim, validWorkFence, events } from '../src/lib/paid-order-outbox.ts';
+import { paidEvent as schemaPaidEvent, pendingDelivery } from '../src/lib/paid-order-event.ts';
 import { handoffRequest } from '../src/lib/paid-order-handoff-route.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
 const base = () => { const o = { id: 'ord_test', paymentStatus: 'paid', status: 'order_received', fulfillmentMode:'manual_hold', stripeSessionId: 'cs_test', settledAmountCents: 3900 } as OrderRecord; o.workOutbox = [paidEvent(o, '2026-10-20')]; return o; };
+test('paid-event schema module is the one constructor, deterministic, and depends on nothing but node:crypto', () => {
+  const o = base();
+  // The transport module re-exports the pure module's constructor: one function, not a copy.
+  assert.equal(schemaPaidEvent, paidEvent);
+  assert.deepEqual(schemaPaidEvent(o, '2026-10-20'), o.workOutbox![0]);
+  assert.equal(schemaPaidEvent({ id: o.id, stripeSessionId: o.stripeSessionId, settledAmountCents: 3900 }, 'x').id, o.workOutbox![0].id);
+  assert.deepEqual(pendingDelivery(), { status: 'pending', attempts: 0 });
+  // Structural independence: the schema module names no sibling module at all.
+  const source = readFileSync(fileURLToPath(new URL('../src/lib/paid-order-event.ts', import.meta.url)), 'utf8');
+  const specifiers = [...source.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(m => m[1]);
+  assert.deepEqual(specifiers, ['node:crypto']);
+  assert.doesNotMatch(source, /\bimport\s*\(/);
+});
 test('stable identity, zero-total label, no historical replay', () => { const o = base(); assert.equal(paidEvent(o, 'later').id, o.workOutbox![0].id); assert.equal(paidEvent({...o, settledAmountCents:0}, '').revenue, 'zero_total'); assert.deepEqual(events({...o,workOutbox:undefined}),[]); });
 test('lease is exclusive and stale/expired acknowledgements fail', () => { let o = base(); const id = o.workOutbox![0].id; const a = mutateOutbox(o,{action:'claim',eventId:id,lane:'agent',worker:'a'},0); o=a.order; assert.throws(()=>mutateOutbox(o,{action:'claim',eventId:id,lane:'agent',worker:'b'},1)); const b=mutateOutbox(o,{action:'claim',eventId:id,lane:'agent',worker:'b'},600001); assert.equal(b.delivery.status,'ambiguous'); assert.throws(()=>mutateOutbox(b.order,{action:'ack',eventId:id,lane:'agent',token:a.delivery.token!,receipt:'run1'},600002)); assert.equal(validWorkFence(b.order,id,a.delivery.workToken!,600002),true); });
 test('refund/disposition and version changes fence active work', () => { const o=base(); const id=o.workOutbox![0].id; const a=mutateOutbox(o,{action:'claim',eventId:id,lane:'agent',worker:'a'},0); for (const change of [{paymentStatus:'refunded'}, {refundedAt:'now'}, {internalDisposition:'test'}, {characterReview:{version:'new'}}]) { const altered={...a.order,...change} as OrderRecord; assert.equal(validWorkFence(altered,id,a.delivery.workToken!,1),false); assert.throws(()=>mutateOutbox(altered,{action:'ack',eventId:id,lane:'agent',token:a.delivery.token!,receipt:'run1'},1)); } });

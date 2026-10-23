@@ -1,19 +1,12 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { OrderRecord } from './orders.ts';
-export type Lane = 'owner' | 'agent';
-/** Same-run recovery audit. Core writes `{ at, receipt }`; the enrolled store adds the
- * server-derived actor, the consumed requestId, the revision it expected, operator-supplied
- * (NOT provider-verified) evidence, the granted lease expiry and a request fingerprint. */
-export type RecoveryAudit = { at: number; receipt: string; actor?: string; requestId?: string; expectedRevision?: number; evidence?: string;
-  evidenceSource?: 'operator_supplied_unverified'; expiresAt?: number; fingerprint?: string };
-export type Delivery = { status: 'pending' | 'leased' | 'ambiguous' | 'delivered' | 'dead_letter'; attempts: number; worker?: string; token?: string; workToken?: string; expiresAt?: number; receipt?: string; recoveries?: RecoveryAudit[] };
-export type WorkEvent = { id: string; kind: 'new_paid_order' | 'revise_character' | 'character_approved'; version: string | null; at: string; revenue: 'paid' | 'zero_total' | 'unknown'; owner: Delivery; agent: Delivery };
+import { paidEvent, pendingDelivery as pending, type Delivery, type Lane, type RecoveryAudit, type WorkEvent } from './paid-order-event.ts';
+/** The record schema and the paid-event constructor live in the pure
+ * `paid-order-event` module (no store, transport or lease dependency). They are
+ * re-exported here so the store, route, fake and existing suites keep one import;
+ * the order module reaches them through the pure module only. */
+export { paidEvent, type Delivery, type Lane, type RecoveryAudit, type WorkEvent };
 export const WORK_LEASE_MS = 10 * 60 * 1000; // exceeds 300s adoption route + margin
-const pending = (): Delivery => ({ status: 'pending', attempts: 0 });
-export function paidEvent(order: OrderRecord, now: string): WorkEvent {
-  return { id: createHash('sha256').update(`new_paid_order:${order.id}:${order.stripeSessionId}`).digest('hex'), kind: 'new_paid_order', version: order.characterReview?.version ?? null, at: now,
-    revenue: order.settledAmountCents == null ? 'unknown' : order.settledAmountCents === 0 ? 'zero_total' : 'paid', owner: pending(), agent: pending() };
-}
 /** No historical paid-order backfill. Only already durable character decisions are projected. */
 export function events(order: OrderRecord): WorkEvent[] {
   const existing = order.workOutbox ?? [];

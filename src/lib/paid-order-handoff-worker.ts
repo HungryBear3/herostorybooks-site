@@ -2,6 +2,11 @@ import { deliverClaim, type HandoffTransport, type Lane } from './paid-order-out
 import type { HandoffEventStore } from './paid-order-handoff-store.ts';
 /** One bounded, explicitly invoked pass over caller-named orders. No discovery
  * scan, loop, scheduler, route or real adapter. Default OFF. */
+/** The store capability this worker consumes: exactly the three methods it binds
+ * and calls. The admin discovery (`listAll`) and recovery (`recover`) surfaces of
+ * the full event store are deliberately not part of it, so a caller can hand the
+ * worker a store that cannot enumerate or recover anything. */
+export type HandoffWorkerStore = Pick<HandoffEventStore, 'command' | 'validate' | 'listEvents'>;
 export const MAX_WORKER_ORDERS = 100;
 export const MAX_WORKER_ATTEMPTS = 200;
 export const MAX_TRANSPORT_TIMEOUT_MS = 30_000;
@@ -12,7 +17,7 @@ export type WorkerStatus = 'delivered' | 'ambiguous' | 'dead_letter' | 'busy' | 
 export type WorkerResult = { orderId: string; eventId?: string; lane?: Lane; status: WorkerStatus };
 export type WorkerOutcome = { status: 'disabled' | 'invalid_input' | 'completed'; attempts: number; results: WorkerResult[] };
 export type WorkerInput = {
-  enabled?: boolean; store: HandoffEventStore; transports: Partial<Record<Lane, HandoffTransport>>; orderIds: string[]; worker: string;
+  enabled?: boolean; store: HandoffWorkerStore; transports: Partial<Record<Lane, HandoffTransport>>; orderIds: string[]; worker: string;
   lanes?: Lane[]; maxAttempts?: number; transportTimeoutMs?: number; maxEventsPerOrder?: number;
 };
 // Only known store/core codes surface; any other error text is replaced, never echoed.
@@ -41,7 +46,7 @@ function snapshot(value: unknown, max: number): unknown[] | undefined {
   for (let i = 0; i < length; i++) { if (!Object.hasOwn(value, i)) return undefined; copy.push(value[i]); }
   return copy;
 }
-type Parsed = { store: HandoffEventStore; wrapped: Record<Lane, HandoffTransport>; orderIds: string[]; wanted: Lane[]; worker: string; maxAttempts: number; maxEventsPerOrder: number };
+type Parsed = { store: HandoffWorkerStore; wrapped: Record<Lane, HandoffTransport>; orderIds: string[]; wanted: Lane[]; worker: string; maxAttempts: number; maxEventsPerOrder: number };
 // The entire input is snapshotted and validated before any store or transport effect.
 // Callers may throw from getters/Proxy traps; runBoundedHandoffWorker maps that to invalid_input.
 function parse(input: WorkerInput): Parsed | undefined {
@@ -69,7 +74,7 @@ export async function runBoundedHandoffWorker(input: WorkerInput): Promise<Worke
   const results: WorkerResult[] = [];
   let attempts = 0;
   for (const orderId of orderIds) {
-    let listing: Awaited<ReturnType<HandoffEventStore['listEvents']>>;
+    let listing: Awaited<ReturnType<HandoffWorkerStore['listEvents']>>;
     try { listing = await store.listEvents(orderId, maxEventsPerOrder, wanted); } catch (error) { results.push({ orderId, status: classify(error) }); continue; }
     for (const event of listing.events) for (const lane of wanted) {
       const summary = event[lane];

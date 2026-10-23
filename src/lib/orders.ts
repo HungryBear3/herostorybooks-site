@@ -1,7 +1,7 @@
 import { link, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import os from 'node:os';
-import { paidEvent } from './paid-order-outbox.ts';
+import { paidEvent } from './paid-order-event.ts';
 
 import { applyBlobNamespace, BlobNamespaceError, getBlobNamespace, withBlobNamespace } from './blob-namespace.ts';
 import { normalizeEtag, normalizeEtagForIfMatch } from './blob-etag.ts';
@@ -616,7 +616,7 @@ export interface PageArtifact {
 export type FulfillmentMode = 'auto' | 'manual_hold';
 
 export interface OrderRecord extends OrderInput {
-  workOutbox?: import('./paid-order-outbox.ts').WorkEvent[];
+  workOutbox?: import('./paid-order-event.ts').WorkEvent[];
   characterReview?: import('./character-review.ts').CharacterReview;
   id: string;
   checkoutAttemptId?: string | null;

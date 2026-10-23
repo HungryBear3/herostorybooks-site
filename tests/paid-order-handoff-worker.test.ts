@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { paidEvent, mutateOutbox, validWorkFence, WORK_LEASE_MS, type WorkEvent } from '../src/lib/paid-order-outbox.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
+import type { HandoffWorkerStore } from '../src/lib/paid-order-handoff-worker.ts';
 // Synthetic in-memory store and fake transports only: no production store, real orders, credentials or network.
 type StoreModule = typeof import('../src/lib/paid-order-handoff-store.ts');
 type WorkerModule = typeof import('../src/lib/paid-order-handoff-worker.ts');
@@ -283,6 +284,29 @@ test('synthetic store isolates callers with deep clones', async () => {
   assert.equal((await h.store.listEvents('ord_w1', 10)).events[0].agent.status, 'leased');
   assert.equal(h.memory.snapshot('ord_missing'), undefined);
   assert.equal(validWorkFence(h.memory.snapshot('ord_w1')!, eventId, claim.delivery.workToken!, 1_000_001), true);
+});
+
+test('worker consumes only command, validate and listEvents; a store without listAll/recover is accepted and delivers', async () => {
+  const h = await harness([order('ord_n1')]);
+  const full = h.store;
+  // Exactly the three capabilities the worker binds. Discovery and recovery are
+  // absent as properties, so any reach for them would throw inside the worker and
+  // surface as store_error rather than delivered. Typed without a cast: the input
+  // type must admit this object or compilation fails.
+  const narrow: HandoffWorkerStore = { command: full.command, validate: full.validate, listEvents: full.listEvents };
+  assert.equal('listAll' in narrow, false); assert.equal('recover' in narrow, false);
+  const r = await h.W.runBoundedHandoffWorker({ enabled: true, store: narrow, transports: { owner: h.owner, agent: h.agent }, orderIds: ['ord_n1'], worker: 'w1' });
+  assert.deepEqual(r.results.map(x => [x.lane, x.status]), [['owner', 'delivered'], ['agent', 'delivered']]);
+  assert.equal(sends(h.owner), 1); assert.equal(sends(h.agent), 1);
+  const stored = h.memory.snapshot('ord_n1')!.workOutbox![0];
+  assert.equal(stored.owner.status, 'delivered'); assert.equal(stored.agent.status, 'delivered');
+  // Dropping any one of the three is still rejected before any store or transport effect.
+  const tx = h.memory.stats().transactions;
+  for (const omit of ['command', 'validate', 'listEvents'] as const) {
+    const { [omit]: _dropped, ...partial } = narrow;
+    assert.deepEqual(await h.run({ store: partial }), { status: 'invalid_input', attempts: 0, results: [] }, omit);
+  }
+  assert.equal(h.memory.stats().transactions, tx); assert.equal(h.owner.calls.length + h.agent.calls.length, 2);
 });
 
 test('worker results are sanitized: no tokens, receipts payloads or exception text', async () => {

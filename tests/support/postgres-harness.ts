@@ -92,7 +92,7 @@ function sleepSync(milliseconds: number): void {
 
 function shortTempRoot(): string {
   // The Unix socket path has a hard ~103 byte limit, so prefer a short root.
-  const base = existsSync('/tmp') && statSync('/tmp').isDirectory() ? '/tmp' : (process.env.TMPDIR ?? '/tmp');
+  const base = process.env.TMPDIR ?? '/tmp';
   return mkdtempSync(path.join(base, 'hsb-cp-'));
 }
 

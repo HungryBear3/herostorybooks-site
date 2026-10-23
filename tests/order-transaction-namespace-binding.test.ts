@@ -1555,6 +1555,12 @@ function nt20ExactInverse(source: string, hunks: ReadonlyArray<readonly [string,
 function nt20HistoricalReconstruction(source: string): string {
   // Presence chooses a lane, NOT a waiver: exact literals and historical pins
   // below enforce every byte, including newly added helpers and non-hunk bytes.
+  // Complete-source successor: reverse only the two mandatory pure-event
+  // dependency lines. Existing v2 and historical literal/hash pins stay intact.
+  source = nt20ExactInverse(source, [
+    ["import { paidEvent } from './paid-order-event.ts';\n", "import { paidEvent } from './paid-order-outbox.ts';\n"],
+    ["  workOutbox?: import('./paid-order-event.ts').WorkEvent[];\n", "  workOutbox?: import('./paid-order-outbox.ts').WorkEvent[];\n"],
+  ]);
   let frozen = source;
   if (source.includes('async function persistOrderLocalFenced(')) {
     for (const [head, expected] of Object.entries(NT20_LOCAL_CAS_CANDIDATE_DECLARATIONS)) {
