@@ -1578,6 +1578,21 @@ test('NT-20: every historical declaration and whole-file pin holds after exact i
   assert.equal(sha(historical), NT20_BASE_FILE_SHA256);
 });
 
+test('NT-20: pure-event dependency inverse rejects missing, duplicated and unrelated byte drift', () => {
+  const check = (source: string) => assert.equal(sha(nt20HistoricalReconstruction(source)), NT20_BASE_FILE_SHA256);
+  check(ORDERS_SOURCE);
+  const line = "import { paidEvent } from './paid-order-event.ts';\n";
+  for (const source of [
+    ORDERS_SOURCE.replace(line, ''),
+    line + ORDERS_SOURCE,
+    ORDERS_SOURCE.replace("import('./paid-order-event.ts').WorkEvent[]", "import('./paid-order-outbox.ts').WorkEvent[]"),
+    ORDERS_SOURCE + '\n// unrelated drift\n',
+  ]) {
+    assert.notEqual(source, ORDERS_SOURCE);
+    assert.throws(() => check(source), { code: 'ERR_ASSERTION' });
+  }
+});
+
 const NBT_DECLARATIONS = [
   'export function bindOrderNamespace(',
   'export function orderRecordPathInNamespace(',

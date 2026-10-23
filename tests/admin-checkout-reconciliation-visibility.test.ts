@@ -462,8 +462,33 @@ function withoutConfirmationEmailSweepSchedule(candidate: string): string {
   return normalized;
 }
 
+/** Only the accepted paid/manual fences are reversible; all other bytes stay frozen. */
+const PAID_MANUAL_FENCE = "      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null || (current.workOutbox?.length || current.characterReview)) {";
+const HISTORICAL_AUTO_FENCE = "      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {";
+function withoutPaidManualFences(source: string): string {
+  assert.equal(source.split(PAID_MANUAL_FENCE).length - 1, 2, 'exactly both paid/manual fences must remain');
+  return source.split(PAID_MANUAL_FENCE).join(HISTORICAL_AUTO_FENCE);
+}
+
+test('paid/manual freeze inverse rejects missing, duplicate, altered fences and unrelated drift', () => {
+  const source = src('src/lib/fulfillment.ts');
+  const historical = execFileSync('git', ['show', `${BASE_SHA}:src/lib/fulfillment.ts`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const check = (candidate: string) => assert.equal(withoutPaidManualFences(candidate), historical);
+  check(source);
+  for (const candidate of [
+    source.replace(PAID_MANUAL_FENCE, HISTORICAL_AUTO_FENCE),
+    source + '\n' + PAID_MANUAL_FENCE,
+    source.replace('current.workOutbox?.length || current.characterReview', 'current.workOutbox?.length && current.characterReview'),
+    source + '\n// unrelated drift\n',
+  ]) {
+    assert.notEqual(candidate, source);
+    assert.throws(() => check(candidate), { code: 'ERR_ASSERTION' });
+  }
+});
+
 /** Files frozen except for a declared, reversible transformation. */
 const FREEZE_NORMALIZERS: Readonly<Record<string, (source: string) => string>> = {
+  'src/lib/fulfillment.ts': withoutPaidManualFences,
   'src/lib/orders.ts': withoutStoryMediaSizeExtraction,
   'vercel.json': withoutConfirmationEmailSweepSchedule,
 };
