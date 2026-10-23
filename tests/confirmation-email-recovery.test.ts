@@ -43,10 +43,10 @@ import {
   type ConfirmationEmailSweepDeps,
 } from '../src/lib/confirmation-email-sweep.ts';
 import {
-  GET as getConfirmationEmailSweepRoute,
   __resetConfirmationEmailSweepRouteDepsForTests,
   __setConfirmationEmailSweepRouteDepsForTests,
-} from '../src/app/api/cron/confirmation-email-sweep/route.ts';
+} from '../src/lib/confirmation-email-sweep-route-deps.ts';
+import { GET as getConfirmationEmailSweepRoute } from '../src/app/api/cron/confirmation-email-sweep/route.ts';
 import {
   buildOrderConfirmationIdempotencyKey,
   sendOrderConfirmationEmail,

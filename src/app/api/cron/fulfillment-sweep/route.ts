@@ -1,36 +1,9 @@
 import { evaluateCronAuth } from '../../../../lib/cron-auth.ts';
-import {
-  buildDefaultFulfillmentSweepDeps,
-  runFulfillmentSweep,
-  type FulfillmentSweepResult,
-} from '../../../../lib/fulfillment-sweep.ts';
+import { getRouteDeps } from '../../../../lib/fulfillment-sweep-route-deps.ts';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
-
-type RouteDeps = {
-  runSweep: () => Promise<FulfillmentSweepResult>;
-};
-
-let routeDepsOverride: RouteDeps | null = null;
-
-export function __setFulfillmentSweepRouteDepsForTests(deps: Partial<RouteDeps>): void {
-  routeDepsOverride = {
-    runSweep: deps.runSweep ?? (() => runFulfillmentSweep(buildDefaultFulfillmentSweepDeps())),
-  };
-}
-
-export function __resetFulfillmentSweepRouteDepsForTests(): void {
-  routeDepsOverride = null;
-}
-
-function getRouteDeps(): RouteDeps {
-  if (routeDepsOverride) return routeDepsOverride;
-  return {
-    runSweep: () => runFulfillmentSweep(buildDefaultFulfillmentSweepDeps()),
-  };
-}
 
 async function handle(request: Request): Promise<Response> {
   const denied = evaluateCronAuth(request.headers.get('authorization'), process.env.CRON_SECRET);

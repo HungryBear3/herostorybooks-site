@@ -140,7 +140,10 @@ export async function retryOrderFulfillment(
   // On Vercel/serverless a fire-and-forget promise gets dropped when the
   // request returns, leaving the order stuck at not_started.
   try {
-    await triggerFulfillment(orderId, fulfillmentDeps);
+    const kickoff = await triggerFulfillment(orderId, fulfillmentDeps);
+    if (('fulfillmentStatus' in kickoff && kickoff.fulfillmentStatus === 'policy_not_auto') || kickoff.status === 'not_found') {
+      return { ok: false, status: 409, error: 'Fulfillment policy refused retry' };
+    }
   } catch (err) {
     console.error(`[admin] retry trigger failed for ${orderId}:`, err);
     const message = err instanceof Error ? err.message : String(err);
@@ -148,11 +151,11 @@ export async function retryOrderFulfillment(
   }
 
   const afterRetry = await getOrder(orderId);
-  if (afterRetry?.fulfillmentStatus === 'failed_manual_review') {
+  if (!afterRetry || !afterRetry.fulfillmentStatus || ['not_started', 'failed_manual_review'].includes(afterRetry.fulfillmentStatus)) {
     return {
       ok: false,
       status: 502,
-      error: `Fulfillment retry failed: ${(afterRetry.fulfillmentLastError ?? 'manual review required').slice(0, 240)}`,
+      error: `Fulfillment retry failed: ${(afterRetry?.fulfillmentLastError ?? 'manual review required').slice(0, 240)}`,
     };
   }
   return { ok: true };

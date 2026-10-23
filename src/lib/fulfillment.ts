@@ -147,7 +147,7 @@ async function claimFulfillmentKickoff(orderId: string): Promise<KickoffClaimRes
       ) {
         return { abort: { kind: 'payment_no_longer_paid' } };
       }
-      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {
+      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null || (current.workOutbox?.length || current.characterReview)) {
         return { abort: { kind: 'policy_not_auto' } };
       }
       if (hasMediaBackedCustomStorySource(current)) {
@@ -208,7 +208,7 @@ async function startClaimedFulfillment(
       if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
         return { abort: null };
       }
-      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {
+      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null || (current.workOutbox?.length || current.characterReview)) {
         return { abort: null };
       }
       if (hasMediaBackedCustomStorySource(current)) return { abort: null };

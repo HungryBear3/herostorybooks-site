@@ -19,6 +19,7 @@ import {
 } from '@/lib/checkout-provisioning-evidence';
 
 import OrderDetailActions from './detail-client';
+import CharacterReviewPanel from './character-review-panel';
 import PageReviewGrid from './page-review-grid';
 
 export const dynamic = 'force-dynamic';
@@ -575,6 +576,7 @@ export default async function AdminOrderDetail({ params, searchParams }: Props) 
           </section>
         )}
 
+        <CharacterReviewPanel orderId={order.id} />
         <OrderDetailActions
           orderId={order.id}
           isPrint={isPrint}

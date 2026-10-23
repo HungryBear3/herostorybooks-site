@@ -1,5 +1,7 @@
-import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
+import os from 'node:os';
+import { paidEvent } from './paid-order-outbox.ts';
 
 import { applyBlobNamespace, BlobNamespaceError, getBlobNamespace, withBlobNamespace } from './blob-namespace.ts';
 import { normalizeEtag, normalizeEtagForIfMatch } from './blob-etag.ts';
@@ -614,6 +616,8 @@ export interface PageArtifact {
 export type FulfillmentMode = 'auto' | 'manual_hold';
 
 export interface OrderRecord extends OrderInput {
+  workOutbox?: import('./paid-order-outbox.ts').WorkEvent[];
+  characterReview?: import('./character-review.ts').CharacterReview;
   id: string;
   checkoutAttemptId?: string | null;
   checkoutFingerprint?: string | null;
@@ -2444,11 +2448,42 @@ async function persistOrderUnsafe(order: OrderRecord) {
     );
   }
 
-  // Local-dev / explicit override path only.
-  const dir = getOrderStoreDir();
-  await mkdir(dir, { recursive: true });
-  await writeFile(`${dir}/${order.id}.json`, `${serialized}\n`, 'utf8');
+  // Local-dev / explicit override path only. The write goes through the SAME
+  // claim/fence boundary as guarded commits (never a bare overwrite), so it can
+  // neither clobber a commit in flight nor be clobbered by a revoked owner.
+  await persistOrderLocalFenced(order.id, `${serialized}\n`);
   return sanitized;
+}
+
+/**
+ * Unconditional local write, serialized through localOrderStoreAdapter: create
+ * when absent, otherwise replace the version just read. A lost race is retried
+ * from a fresh read (bounded, no timers). A refusal — live/unknown/foreign owner,
+ * legacy claim, exhausted slots, or contention past the bound — throws with no
+ * write. It never takes over another writer's claim. Dev/test-only store.
+ * Unlike a guarded no-op commit, re-persisting identical bytes consumes no claim slot.
+ */
+async function persistOrderLocalFenced(orderId: string, body: string): Promise<void> {
+  const store = localOrderStoreAdapter();
+  const pathname = getOrderBlobPath(orderId);
+  await mkdir(getOrderStoreDir(), { recursive: true });
+  for (let attempt = 1; attempt <= ORDER_TRANSACTION_MAX_ATTEMPTS; attempt += 1) {
+    const current = await store.readVersioned(pathname);
+    if (current && current.body === body) {
+      // Already exactly these bytes: linearize at this read. No claim consumed.
+      noteLocalCas('unconditional_already_current');
+      return;
+    }
+    const result = current
+      ? await store.replaceIfVersion(pathname, body, current.version)
+      : await store.createIfAbsent(pathname, body);
+    if (result.ok) {
+      noteLocalCas('unconditional_committed');
+      return;
+    }
+  }
+  noteLocalCas('unconditional_refused');
+  throw new OrderPersistenceError(orderId, 'Local order write refused (local_unconditional_write_refused)');
 }
 
 /**
@@ -2843,7 +2878,7 @@ export async function prepareOrderForAdminFulfillmentRetry(
       // This low-level exported mutation boundary is fail-closed. Callers must
       // supply the current release policy; omitting it can never opt an order
       // back into automatic fulfillment.
-      if (!eligible || !eligible(current)) return { abort: null };
+      if (!eligible || !eligible(current) || current.workOutbox?.length || current.characterReview) return { abort: null };
       if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
         return { abort: null };
       }
@@ -3222,6 +3257,135 @@ function parentDirOf(p: string) {
   return i === -1 ? '.' : p.slice(0, i);
 }
 
+// ── Local CAS claim ownership (crash recovery with fencing) ─────────────────
+//
+// DEV/TEST-ONLY STORE. The local adapter is selected only without a Blob token
+// outside production-like mode; nothing here qualifies Blob persistence.
+//
+// A local claim `.cas/<record>.<version>[.<slot>].claim` is the exclusive right
+// to advance the record FROM that version. Before this change a writer killed
+// between the claim hardlink and the rename left the claim behind forever, and
+// every later writer for that version got version_conflict (route 409).
+//
+// Recovery here is NOT "delete old locks" and NOT a TTL. Safety comes from
+// FENCING, and liveness evidence only decides WHEN to fence:
+//
+//  1. A writer stages its body at `<record>.<token>.tmp` BEFORE it publishes its
+//     claim, and the claim names that token. Publishing is `rename(tmp, record)`,
+//     so the staged tmp file is the writer's one and only right to publish.
+//  2. An occupied slot whose owner's tmp is already gone is INERT: that owner has
+//     committed, aborted or been fenced, and can never publish again (tokens are
+//     unique and a tmp is never recreated). A contender steps to the next slot.
+//  3. An occupied slot whose tmp still exists is stepped past ONLY when the owner
+//     is provably dead on THIS host (same hostname; ESRCH for its pid, or our own
+//     pid with a different process instance). The contender first REVOKES the
+//     owner by renaming its tmp away. rename() of one source succeeds at most once,
+//     so either the owner already published (the version check below then fails)
+//     or the owner can never publish (its own rename gets ENOENT => no-write).
+//  4. Slots are created only with link() (exclusive) and are never unlinked or
+//     reused, so a slot can never be "re-won" by a second writer. Every slot below
+//     the one a writer holds was inert or revoked when it was passed, and any slot
+//     above it can only be created after passing (i.e. revoking) it, so at most one
+//     writer per version can still publish. Claims are therefore APPEND-ONLY: one
+//     per attempt that reaches a free slot (commit, no-op commit, late loser), plus
+//     `<slot>.revoked` bodies and the killed owner's own claim staging file.
+//  5. Anything not provable — another host, a live or unknown pid (incl. PID reuse
+//     and unreaped zombies), EPERM, a legacy/unparseable claim — is refused as
+//     version_conflict with no write, no unlink and no revoke. Nothing reads a clock.
+//  6. At most LOCAL_CAS_MAX_SLOTS claims per version. When all are occupied by
+//     inert/revoked owners the write is refused (`refused_slots_exhausted`) with no
+//     write; the record needs a reviewed manual repair. No GC exists by design.
+//
+// The externally visible linearization point is the rename (publication). A claim
+// is exclusive INTENT, not a commit: readers keep seeing the previous version until
+// the rename, and a claim whose owner died before renaming never committed.
+//
+// Scope: one host, one local POSIX filesystem with atomic link/rename, process
+// death/restart only. Not NFS, not multi-host, not power-loss durable (no fsync).
+const LOCAL_CAS_CLAIM_SCHEMA = 'hsb-local-cas-claim/v1';
+const LOCAL_CAS_MAX_SLOTS = 64;
+const LOCAL_CAS_HEX32 = /^[a-f0-9]{32}$/;
+
+/**
+ * Finite diagnostic vocabulary for the local adapter. Codes only: never a path,
+ * record body, host, pid, token or order identifier.
+ */
+export const LOCAL_CAS_DIAGNOSTIC_CODES = [
+  'committed',
+  'version_mismatch',
+  'fenced_own_publish',
+  'passed_inert_slot',
+  'revoked_dead_owner',
+  'refused_live_owner',
+  'refused_unverifiable_owner',
+  'refused_foreign_host',
+  'refused_legacy_claim',
+  'refused_unreadable_claim',
+  'refused_slots_exhausted',
+  'unconditional_committed',
+  'unconditional_already_current',
+  'unconditional_refused',
+] as const;
+export type LocalCasDiagnosticCode = (typeof LOCAL_CAS_DIAGNOSTIC_CODES)[number];
+
+const localCasDiagnosticCounts = new Map<LocalCasDiagnosticCode, number>();
+
+function noteLocalCas(code: LocalCasDiagnosticCode): void {
+  localCasDiagnosticCounts.set(code, (localCasDiagnosticCounts.get(code) ?? 0) + 1);
+}
+
+/** Process-local counters per diagnostic code (a snapshot; fixed key set). */
+export function readLocalCasDiagnostics(): Record<LocalCasDiagnosticCode, number> {
+  const out = {} as Record<LocalCasDiagnosticCode, number>;
+  for (const code of LOCAL_CAS_DIAGNOSTIC_CODES) out[code] = localCasDiagnosticCounts.get(code) ?? 0;
+  return out;
+}
+
+interface LocalCasClaim {
+  schema: typeof LOCAL_CAS_CLAIM_SCHEMA;
+  expectedVersion: string;
+  token: string;
+  host: string;
+  pid: number;
+  instance: string;
+}
+
+/** Per-process (not per-module-copy) random identity; distinguishes PID reuse by this process. */
+function localCasProcessInstance(): string {
+  const key = Symbol.for('hsb.orders.localCasProcessInstance');
+  const g = globalThis as unknown as Record<symbol, unknown>;
+  if (typeof g[key] !== 'string') g[key] = crypto.randomBytes(16).toString('hex');
+  return g[key] as string;
+}
+
+function parseLocalCasClaim(raw: string, expectedVersion: string): LocalCasClaim | null {
+  try {
+    const c = JSON.parse(raw) as Partial<LocalCasClaim>;
+    if (c.schema !== LOCAL_CAS_CLAIM_SCHEMA || c.expectedVersion !== expectedVersion) return null;
+    if (typeof c.token !== 'string' || !LOCAL_CAS_HEX32.test(c.token)) return null;
+    if (typeof c.instance !== 'string' || !LOCAL_CAS_HEX32.test(c.instance)) return null;
+    if (typeof c.host !== 'string' || c.host.length === 0) return null;
+    if (typeof c.pid !== 'number' || !Number.isSafeInteger(c.pid) || c.pid <= 0) return null;
+    return c as LocalCasClaim;
+  } catch {
+    return null;
+  }
+}
+
+/** 'dead' only on positive evidence the owner process no longer exists on this host. */
+function localCasOwnerVerdict(owner: LocalCasClaim): 'dead' | LocalCasDiagnosticCode {
+  if (owner.host !== os.hostname()) return 'refused_foreign_host';
+  if (owner.pid === process.pid) {
+    return owner.instance !== localCasProcessInstance() ? 'dead' : 'refused_live_owner';
+  }
+  try {
+    process.kill(owner.pid, 0);
+    return 'refused_live_owner'; // alive — or a reused pid / zombie; either way not provably dead
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'dead' : 'refused_unverifiable_owner';
+  }
+}
+
 function localOrderStoreAdapter(): OrderStoreAdapter {
   // MUST mirror the layout persistOrder()/getOrder() use for the local store:
   // the blob pathname is `<namespace>/orders/<id>.json`, and on disk that same
@@ -3230,6 +3394,9 @@ function localOrderStoreAdapter(): OrderStoreAdapter {
   const fileFor = (pathname: string) => `${getOrderStoreDir()}/${basenameOf(pathname)}`;
   const claimFor = (pathname: string, version: string) =>
     `${getOrderStoreDir()}/.cas/${basenameOf(pathname)}.${version.replace(/[^a-z0-9]/gi, '')}.claim`;
+  // Slot 0 keeps the pre-existing name, so an old-format claim still excludes us.
+  const claimSlot = (claim: string, slot: number) =>
+    (slot === 0 ? claim : `${claim.slice(0, -'.claim'.length)}.${slot}.claim`);
 
   const readRaw = async (file: string): Promise<string | null> => {
     try {
@@ -3238,6 +3405,38 @@ function localOrderStoreAdapter(): OrderStoreAdapter {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
     }
+  };
+
+  /**
+   * May a contender step past this occupied claim slot? Only when its owner can
+   * never publish: already inert, or provably dead AND revoked here. Anything
+   * else is a refusal code, and nothing on disk is changed.
+   */
+  const passOccupiedSlot = async (
+    file: string,
+    slotPath: string,
+    expectedVersion: string,
+  ): Promise<'passed_inert_slot' | 'revoked_dead_owner' | LocalCasDiagnosticCode> => {
+    const raw = await readRaw(slotPath);
+    if (raw === null) return 'refused_unreadable_claim'; // vanished (legacy writer released it): retry from a fresh read
+    const owner = parseLocalCasClaim(raw, expectedVersion);
+    if (!owner) return raw === expectedVersion ? 'refused_legacy_claim' : 'refused_unreadable_claim'; // fail closed
+    const ownerTmp = `${file}.${owner.token}.tmp`;
+    try {
+      await stat(ownerTmp);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'passed_inert_slot';
+      throw error;
+    }
+    const verdict = localCasOwnerVerdict(owner);
+    if (verdict !== 'dead') return verdict; // never steal a live, unknown or foreign writer
+    try {
+      await rename(ownerTmp, `${slotPath}.revoked`); // the fence: at most one rename of ownerTmp wins
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return 'passed_inert_slot'; // another recoverer fenced it, or it published, first
+    }
+    return 'revoked_dead_owner';
   };
 
   return {
@@ -3268,32 +3467,67 @@ function localOrderStoreAdapter(): OrderStoreAdapter {
       await mkdir(parentDirOf(claim), { recursive: true });
       await mkdir(parentDirOf(file), { recursive: true });
 
-      // Exclusively claim the right to advance FROM `expectedVersion`. Two
-      // writers holding the same expected version cannot both claim it.
-      const claimTmp = `${claim}.${crypto.randomBytes(8).toString('hex')}.tmp`;
-      await writeFile(claimTmp, expectedVersion, 'utf8');
-      let claimed = false;
+      // Stage the body FIRST: once our claim is visible, our tmp must already
+      // exist, because a revoker fences us by moving exactly this file away.
+      const token = crypto.randomBytes(16).toString('hex');
+      const tmp = `${file}.${token}.tmp`;
+      const claimTmp = `${claim}.${token}.tmp`;
+      const record: LocalCasClaim = {
+        schema: LOCAL_CAS_CLAIM_SCHEMA,
+        expectedVersion,
+        token,
+        host: os.hostname(),
+        pid: process.pid,
+        instance: localCasProcessInstance(),
+      };
       try {
+        await writeFile(tmp, body, 'utf8');
+        await writeFile(claimTmp, JSON.stringify(record), 'utf8');
+        // Exclusively claim the right to advance FROM `expectedVersion`. Two
+        // writers holding the same expected version cannot both claim a slot.
+        let held = false;
+        for (let slot = 0; slot < LOCAL_CAS_MAX_SLOTS && !held; slot += 1) {
+          const slotPath = claimSlot(claim, slot);
+          try {
+            await link(claimTmp, slotPath);
+            held = true;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+            const passed = await passOccupiedSlot(file, slotPath, expectedVersion);
+            noteLocalCas(passed);
+            if (passed !== 'passed_inert_slot' && passed !== 'revoked_dead_owner') {
+              return { ok: false, reason: 'version_conflict' };
+            }
+          }
+        }
+        if (!held) {
+          // Every slot for this version is occupied by an inert or revoked owner.
+          // Fail closed: nothing was written, nothing is deleted or reused.
+          noteLocalCas('refused_slots_exhausted');
+          return { ok: false, reason: 'version_conflict' };
+        }
+        const current = await readRaw(file);
+        if (current === null || orderVersionOf(current) !== expectedVersion) {
+          noteLocalCas('version_mismatch');
+          return { ok: false, reason: 'version_conflict' };
+        }
         try {
-          await link(claimTmp, claim);
-          claimed = true;
+          await rename(tmp, file);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          // Our staged body was revoked by a recoverer: provably nothing written.
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            noteLocalCas('fenced_own_publish');
             return { ok: false, reason: 'version_conflict' };
           }
           throw error;
         }
-        const current = await readRaw(file);
-        if (current === null || orderVersionOf(current) !== expectedVersion) {
-          return { ok: false, reason: 'version_conflict' };
-        }
-        const tmp = `${file}.${crypto.randomBytes(8).toString('hex')}.tmp`;
-        await writeFile(tmp, body, 'utf8');
-        await rename(tmp, file);
+        noteLocalCas('committed');
         return { ok: true, version: orderVersionOf(body) };
       } finally {
+        // Removing our own tmp (absent after a successful rename) makes our slot
+        // inert. The slot itself is deliberately never unlinked: see header.
+        await unlink(tmp).catch(() => {});
         await unlink(claimTmp).catch(() => {});
-        if (claimed) await unlink(claim).catch(() => {});
       }
     },
   };
@@ -4132,16 +4366,20 @@ export const ORDER_TRANSACTION_MAX_ATTEMPTS = 5;
  * capability and payment invariants are re-evaluated on the latest state, and
  * unrelated concurrent changes are carried forward rather than clobbered), and
  * the result is committed conditionally on that version.
+ *
+ * `fresh: true` skips the read-your-own-writes cache on the first attempt too, so
+ * an abort-only decision (validate/list) is never made from a cached record.
+ * Omitted, behaviour is unchanged for every existing caller.
  */
 export async function withOrderTransaction<T>(
   orderId: string,
   mutate: (order: OrderRecord) => Promise<OrderTransactionOutcome<T>> | OrderTransactionOutcome<T>,
-  opts: { maxAttempts?: number; notFound?: () => T } = {},
+  opts: { maxAttempts?: number; notFound?: () => T; fresh?: boolean } = {},
 ): Promise<T> {
   const maxAttempts = opts.maxAttempts ?? ORDER_TRANSACTION_MAX_ATTEMPTS;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const current = await readOrderVersioned(orderId, { preferRecentCommit: attempt === 1 });
+    const current = await readOrderVersioned(orderId, { preferRecentCommit: attempt === 1 && opts.fresh !== true });
     if (!current) {
       if (opts.notFound) return opts.notFound();
       throw new OrderPersistenceError(orderId, 'Order not found for guarded commit');
@@ -4549,6 +4787,10 @@ async function updateOrderPaymentResult(
         ...(paymentStatus === 'paid' && !current.paidAt ? { paidAt: now } : {}),
         updatedAt: now,
       };
+      if (process.env.HSB_PAID_ORDER_OUTBOX_ENABLED === 'true' && paymentStatus === 'paid' && current.paymentStatus === 'pending') {
+        updated.fulfillmentMode = 'manual_hold'; // Enrolled workflow always requires character approval.
+        updated.workOutbox = [...(current.workOutbox ?? []), paidEvent(updated, now)];
+      }
       return { commit: updated, result: {
         order: updated,
         transitionedToPaid: paymentStatus === 'paid' && current.paymentStatus === 'pending',

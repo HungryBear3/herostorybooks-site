@@ -26,6 +26,7 @@ export const IDENTIFIER_ROUTES: readonly IdentifierRoute[] = [
   { pattern: '/family-review/review/*', template: '/family-review/review/[reviewToken]' },
   { pattern: '/status/*', template: '/status/[orderId]' },
   { pattern: '/review/*', template: '/review/[orderId]' },
+  { pattern: '/character-review/*', template: '/character-review/[orderId]' },
   { pattern: '/admin/orders/*', template: '/admin/orders/[orderId]' },
 ];
 

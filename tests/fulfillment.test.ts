@@ -673,3 +673,12 @@ test('triggerFulfillment returns not_found for a missing order', async () => {
     assert.equal(result.status, 'not_found');
   } finally { cleanupTmpDir(dir); }
 });
+test('webhook replay kickoff cannot auto-generate enrolled or approved-character orders',async()=>{
+ const dir=makeTmpDir();try {
+ for(const mode of ['enrolled','approved']){
+ const order=await makeOrder({paymentStatus:'paid',bookFormat:'digital',fulfillmentMode:'auto',fulfillmentStatus:'not_started',...(mode==='approved'?{characterReview:{version:'v1',status:'approved',workQueue:[]} as any}:{workOutbox:[{id:'event'}] as any})},dir);
+ let calls=0;const result=await triggerFulfillment(order.id,{...PASS_DEPS,generateStoryWithMeta:async()=>{calls++;throw Error('must not run');},sleep:async()=>{}});
+ assert.deepEqual(result,{status:'skipped_already_running',fulfillmentStatus:'policy_not_auto'});assert.equal(calls,0);
+ }
+ }finally{cleanupTmpDir(dir);}
+});

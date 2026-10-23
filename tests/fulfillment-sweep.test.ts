@@ -20,10 +20,10 @@ import {
   type FulfillmentSweepDeps,
 } from '../src/lib/fulfillment-sweep.ts';
 import {
-  GET as getFulfillmentSweepRoute,
   __setFulfillmentSweepRouteDepsForTests,
   __resetFulfillmentSweepRouteDepsForTests,
-} from '../src/app/api/cron/fulfillment-sweep/route.ts';
+} from '../src/lib/fulfillment-sweep-route-deps.ts';
+import { GET as getFulfillmentSweepRoute } from '../src/app/api/cron/fulfillment-sweep/route.ts';
 
 function withEnv<T>(env: Record<string, string | undefined>, fn: () => Promise<T> | T): Promise<T> {
   const previous: Record<string, string | undefined> = {};
