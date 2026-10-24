@@ -6,6 +6,7 @@ import { GROUP_BOOK_ACCESS_COOKIE } from '@/lib/group-book/session';
 import { groupBookPhotoAvailability } from '@/lib/group-book/retention';
 import { loadOwnFamilySubmission } from '@/lib/group-book/store';
 import WithdrawButton from './withdraw-button';
+import SignOutButton from '../sign-out-button';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +16,7 @@ export default async function GroupBookFamilyPage() {
   // family. Withdrawn (OMIT) families keep reading their retained submission.
   let own: Awaited<ReturnType<typeof loadOwnFamilySubmission>> | null = null;
   try {
-    own = await loadOwnFamilySubmission(token);
+    own = await loadOwnFamilySubmission(token, (await cookies()).toString());
   } catch {
     own = null;
   }
@@ -29,7 +30,7 @@ export default async function GroupBookFamilyPage() {
       </main>
     );
   }
-  if (own.state !== 'found') redirect('/group-book');
+  if (own.state !== 'found') redirect((await cookies()).has('hsb_classroom_auth') ? '/group-book/sign-in' : '/group-book');
   const submission = own.submission;
   const stampedPolicy = submission.consent.version === 'group-book-v2' ? submission.consent.policy.version : null;
   const photos = await groupBookPhotoAvailability(submission.cohort.id, Date.now());
@@ -69,6 +70,7 @@ export default async function GroupBookFamilyPage() {
             <p className="help">Who receives a finished book is set by the group-book terms you agreed to. This page and your source photos are not shared with other families. Withdrawal marks your child to be left out; it does not delete your saved details or photos. Viewing this page requires a valid, unexpired family invite; kept storage is not unconditional access, and an expired or revoked invite must be reissued by the operator.</p>
           </div>
           <WithdrawButton alreadyWithdrawn={withdrawn} />
+          <SignOutButton />
           <p className="help" style={{ textAlign: 'center' }}>This page does not create a payment, send email, generate art, approve a proof, print, or distribute a book.</p>
         </section>
       </main>

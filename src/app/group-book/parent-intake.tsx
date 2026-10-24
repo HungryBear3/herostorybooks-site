@@ -111,7 +111,7 @@ export default function GroupBookPortal() {
     setError(null);
     setChecking(true);
     try {
-      const response = await fetch('/api/group-book/access', {
+      const response = await fetch('/group-book/access', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ invite }),
@@ -140,7 +140,7 @@ export default function GroupBookPortal() {
               ? 'This private family invite has expired.'
               : body.error === 'invite_revoked'
                 ? 'This private family invite is no longer active.'
-                : 'That private family invite was not recognized.',
+                : 'That code could not be opened. For classroom access, use Classroom email sign-in, then return and enter the code again. Private invites must still be valid.',
       );
     } catch {
       setError('Your invite could not be checked because the connection or response was interrupted. Please try again.');
@@ -184,7 +184,7 @@ export default function GroupBookPortal() {
       return;
     }
     try {
-      const response = await fetch('/api/group-book/intake', { method: 'POST', body: form });
+      const response = await fetch('/group-book/intake', { method: 'POST', body: form });
       if (response.status === 413) {
         // Includes the platform's own non-JSON body-limit refusal: the request
         // was rejected before the handler ran, so nothing was written.
@@ -204,7 +204,7 @@ export default function GroupBookPortal() {
       }
       setError(
         body.error === 'invalid_invite'
-          ? 'That private family invite was not recognized.'
+          ? 'That code could not be opened. For classroom access, use Classroom email sign-in, then return and enter the code again. Private invites must still be valid.'
           : body.error === 'storage_disabled' || body.error === 'intake_closed' || body.error === 'policy_not_adopted'
             ? 'Family submissions are not open, so this attempt was not accepted.'
             : body.error === 'policy_consent_stale'

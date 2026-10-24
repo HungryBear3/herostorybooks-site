@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ownsGroupBookInvite, type VerifiedGroupBookPrincipal } from './ownership.ts';
 
 export const GROUP_BOOK_INVITES_ENV = 'GROUP_BOOK_INVITES_JSON';
 export const GROUP_BOOK_BLOB_TOKEN_ENV = 'GROUP_BOOK_BLOB_READ_WRITE_TOKEN';
@@ -12,6 +13,8 @@ export interface GroupBookInvite {
   expiresAt: string;
   /** Operator revocation; once set the capability grants nothing. */
   revokedAt?: string;
+  /** Additive managed identity binding; never inferred from a submitted email. */
+  owner?: { issuer: string; subject: string };
 }
 
 export type GroupBookInviteState =
@@ -52,6 +55,14 @@ function parseInvite(value: unknown): GroupBookInvite | null {
   if (!cohortLabel || cohortLabel.length > 100) return null;
   if (!isTimestamp(row.expiresAt)) return null;
   if (row.revokedAt !== undefined && !isTimestamp(row.revokedAt)) return null;
+  let owner: GroupBookInvite['owner'];
+  if ('owner' in row) {
+    if (!row.owner || typeof row.owner !== 'object' || Array.isArray(row.owner)) return null;
+    const binding = row.owner as Record<string, unknown>;
+    if (typeof binding.issuer !== 'string' || typeof binding.subject !== 'string') return null;
+    if (!/^https:\/\/[^\s?#]+$/.test(binding.issuer) || !/^[A-Za-z0-9_-]{1,128}$/.test(binding.subject)) return null;
+    owner = { issuer: binding.issuer, subject: binding.subject };
+  }
   return {
     token: row.token,
     cohortId: row.cohortId,
@@ -59,6 +70,7 @@ function parseInvite(value: unknown): GroupBookInvite | null {
     cohortLabel,
     expiresAt: row.expiresAt,
     ...(row.revokedAt !== undefined ? { revokedAt: row.revokedAt as string } : {}),
+    ...(owner ? { owner } : {}),
   };
 }
 
@@ -87,10 +99,13 @@ export function groupBookInvites(
   return invites;
 }
 
-export function resolveGroupBookInviteState(token: string, now = Date.now()): GroupBookInviteState {
+export function resolveGroupBookInviteState(token: string, now = Date.now(), principal: VerifiedGroupBookPrincipal | null = null): GroupBookInviteState {
   if (!isWellFormedGroupBookToken(token)) return { state: 'unknown' };
   const invite = groupBookInvites().find((row) => row.token === token);
   if (!invite) return { state: 'unknown' };
+  // All existing callers fail closed for bound records until they supply a
+  // provider-verified principal. A classroom selector is never authentication.
+  if (!ownsGroupBookInvite(invite, principal)) return { state: 'unknown' };
   if (invite.revokedAt !== undefined && Date.parse(invite.revokedAt) <= now) return { state: 'revoked', invite };
   if (Date.parse(invite.expiresAt) <= now) return { state: 'expired', invite };
   return { state: 'active', invite };

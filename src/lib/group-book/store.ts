@@ -3,12 +3,12 @@ import { del, get, put } from '@vercel/blob';
 // test fakes export only get/put/del.
 import * as blobSdk from '@vercel/blob';
 import { randomBytes } from 'node:crypto';
+import { resolveGroupBookSessionInvite } from './identity-access.ts';
 
 import {
   familyStorageKey,
   groupBookBlobToken,
   groupBookBlobTokenProblem,
-  resolveGroupBookInviteState,
   type GroupBookInvite,
 } from './config.ts';
 
@@ -322,8 +322,8 @@ export type OwnFamilySubmission =
  * and only its own family's record; withdrawn (OMIT) families keep reading.
  * Store uncertainty throws (GroupBookStoreReadError or transport errors).
  */
-export async function loadOwnFamilySubmission(token: string): Promise<OwnFamilySubmission> {
-  const resolved = resolveGroupBookInviteState(token);
+export async function loadOwnFamilySubmission(token: string, cookieHeader = ''): Promise<OwnFamilySubmission> {
+  const resolved = await resolveGroupBookSessionInvite(token, cookieHeader);
   if (resolved.state !== 'active') return { state: 'unauthorized' };
   const submission = await loadEffectiveGroupBookSubmission(resolved.invite);
   return submission
