@@ -1,3 +1,4 @@
+import { RealBookVideos } from '@/components/real-book-videos';
 import Link from 'next/link';
 import { NamePreview } from '@/components/name-preview';
 import { getFathersDayCountdown, type FathersDayCountdown } from '@/lib/fathers-day';
@@ -529,6 +530,7 @@ export function EditorialHomePage() {
       <NamePreview />
       <HowItWorksSection />
       <SamplePreviewSection />
+      <RealBookVideos compact />
       <PrivacyBand />
       <PricingPreviewSection />
       <SeasonalCallout />
@@ -1136,6 +1138,7 @@ export function EditorialAboutPage() {
 export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
+      <RealBookVideos />
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
         <SectionHeader eyebrow="Samples" title="A closer look inside personalized adventures." sub="Selected story pages and photos of real printed books show the art, page design, and softcover and hardcover formats. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
         <ShowcaseGallery />
