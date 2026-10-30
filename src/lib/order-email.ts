@@ -3,6 +3,8 @@ import { Resend } from 'resend';
 import type { OrderRecord } from './orders';
 import { renderDeliveryExpectation } from './orders.ts';
 import {
+  PRINT_ARRIVAL_NOTE,
+  PRINT_TIMING_AFTER_APPROVAL,
   PROOF_DELAY_SUPPORT_NOTE,
   PROOF_REVIEW_ASSURANCE,
   PROOF_TURNAROUND_WINDOW,
@@ -444,7 +446,7 @@ export function buildPreviewReadyEmail(
 
   const nextStepText = isDigital
     ? ''
-    : `<p style="margin:0 0 12px;color:#6b7280;font-size:14px;">Once approved: we print and ship in 5–7 business days.</p>`;
+    : `<p style="margin:0 0 12px;color:#6b7280;font-size:14px;">${escapeHtml(PRINT_TIMING_AFTER_APPROVAL)} ${escapeHtml(PRINT_ARRIVAL_NOTE)}</p>`;
 
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937;line-height:1.5;">
@@ -473,7 +475,7 @@ export function buildPreviewReadyEmail(
         `Look for our separate "proof is ready" email — it has the link to review each illustrated page and approve the book before printing.`,
         `If you don't see it within a few minutes, check your spam folder or reply here and we'll resend it.`,
         '',
-        `Once approved: printed and shipped in 5–7 business days.`,
+        `${PRINT_TIMING_AFTER_APPROVAL} ${PRINT_ARRIVAL_NOTE}`,
         '',
         `Questions? ${supportEmail}`,
         `Order ID: ${order.id}`,
@@ -498,7 +500,7 @@ export function buildPrintInProductionEmail(
       <p style="margin:0 0 16px;">The approved proof has been sent to the printer. ${escapeHtml(name)}'s book is in production — we'll send another update when it ships.</p>
       <div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:16px;padding:20px;margin-bottom:20px;">
         <p style="margin:0 0 8px;"><strong>Format:</strong> ${escapeHtml(formatLabel)}</p>
-        <p style="margin:0 0 8px;"><strong>Expected shipping:</strong> 5–7 business days</p>
+        <p style="margin:0 0 8px;"><strong>Timing:</strong> ${escapeHtml(PRINT_TIMING_AFTER_APPROVAL)} ${escapeHtml(PRINT_ARRIVAL_NOTE)}</p>
         <p style="margin:0;"><strong>Order ID:</strong> ${escapeHtml(order.id)}</p>
       </div>
       <p style="margin:0 0 12px;">Questions? Reply to this email or contact <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>.</p>
@@ -512,7 +514,7 @@ export function buildPrintInProductionEmail(
     `The approved proof is in production. We'll send another update when it ships.`,
     '',
     `Format: ${formatLabel}`,
-    `Expected shipping: 5–7 business days`,
+    `Timing: ${PRINT_TIMING_AFTER_APPROVAL} ${PRINT_ARRIVAL_NOTE}`,
     `Order ID: ${order.id}`,
     '',
     `Questions? ${supportEmail}`,
@@ -779,7 +781,7 @@ export function buildProofReadyEmail(
     '',
     `Revision policy: review the full proof, then send one complete list. One consolidated revision round is included, followed by a final check limited to anything we missed from that request. We also correct genuine identity, anatomy, text, and continuity errors we introduced.`,
     `New photos, characters, scenes, major story changes, or a new creative direction after production begins require a $19 restart fee and reset the timeline. Once approved, later changes require a paid restart and cannot be made after printing begins.`,
-    `Once approved, we'll print and ship in 5–7 business days.`,
+    `${PRINT_TIMING_AFTER_APPROVAL} ${PRINT_ARRIVAL_NOTE}`,
     '',
     `Questions? ${supportEmail}`,
     `Order ID: ${order.id}`,

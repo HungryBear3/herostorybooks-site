@@ -401,6 +401,22 @@ const VERCEL_SANCTIONED_TRANSFORMS: ReadonlyArray<{
     base: '',
   },
   {
+    description: 'public FAQ route redirects to the rendered homepage FAQ anchor',
+    candidate: `    },
+    {
+      "source": "/faq",
+      "destination": "/#faq",
+      "permanent": true
+    },
+    {
+      "source": "/fleccas",
+`,
+    base: `    },
+    {
+      "source": "/fleccas",
+`,
+  },
+  {
     description: 'approved Fleccas short-link redirect',
     candidate: `    },
     {

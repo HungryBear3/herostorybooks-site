@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from "@/lib/checkout-flow";
 import {
+  PRINT_TIMING_AFTER_APPROVAL,
   PROOF_REVIEW_ASSURANCE,
   PROOF_TURNAROUND_WINDOW,
   PROOF_VOLUME_NOTE,
@@ -186,7 +187,7 @@ const FORMATS = [
     priceNum: 39,
     delivery: "Proof first, then softcover ships after approval",
     deliveryDetail:
-      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · Softcover ships 5–7 business days after approval · Digital PDF included`,
+      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · ${PRINT_TIMING_AFTER_APPROVAL} · Digital PDF included`,
   },
   {
     id: "premium",
@@ -196,7 +197,7 @@ const FORMATS = [
     priceNum: 64,
     delivery: "Proof first, then hardcover ships after approval",
     deliveryDetail:
-      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · Hardcover ships 5–7 business days after approval · Digital PDF included`,
+      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · ${PRINT_TIMING_AFTER_APPROVAL} · Digital PDF included`,
   },
 ];
 
@@ -3573,14 +3574,14 @@ export function CheckoutForm({
                   <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">2</span>
                   <span>
                     <strong className="block text-[#241914]">You review and reply</strong>
-                    Approve it as-is or ask us to revise wording, photo placement, or art.
+                    Approve it as-is or use the one consolidated revision round included before approval. We also correct genuine identity, anatomy, text, and continuity errors we introduced.
                   </span>
                 </li>
                 <li className="flex gap-3">
                   <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">3</span>
                   <span>
                     <strong className="block text-[#241914]">Then we print or deliver</strong>
-                    Print books ship after approval; digital books are delivered right away.
+                    The full Digital PDF comes with the proof email. Printed books proceed only after approval, with timing confirmed separately for the provider, destination, and shipping option.
                   </span>
                 </li>
               </ol>

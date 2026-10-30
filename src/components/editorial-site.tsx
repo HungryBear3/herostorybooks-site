@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { NamePreview } from '@/components/name-preview';
 import { getFathersDayCountdown, type FathersDayCountdown } from '@/lib/fathers-day';
 import {
+  PRINT_TIMING_AFTER_APPROVAL,
   PROOF_REVIEW_ASSURANCE,
   PROOF_TURNAROUND_WINDOW,
   PROOF_VOLUME_NOTE,
@@ -641,7 +642,7 @@ function BookFace({ title, star, tag }: { title: string; star: string; tag: stri
 function TrustStrip() {
   const items = [
     'Full digital proof before any printing',
-    'Revisions included before approval',
+    'One consolidated revision round before approval',
     'You review every page before approving',
     'US shipping included on printed books',
     'Your photos stay private — never used to train AI',
@@ -670,7 +671,7 @@ function HowItWorksSection() {
   const steps = [
     ['1', 'Tell us about your child', 'Their name, one photo, and a few details — age, interests, anything special. Voice note optional.'],
     ['2', 'We craft a 32-page book', 'Your child becomes the hero through 24 illustrated story pages, writing personalized to their details, and keepsake front and back matter.'],
-    ['3', 'You approve, then we print', 'We email a full digital proof. Nothing prints until you approve. Revisions are free.'],
+    ['3', 'You approve, then we print', 'We email a full digital proof. Nothing prints until you approve. One consolidated revision round is included before approval, and we correct genuine identity, anatomy, text, and continuity errors we introduced.'],
   ];
   return (
     <section id="how" className="mx-auto max-w-6xl px-5 pt-10 pb-4 md:px-8 md:pt-16 md:pb-6">
@@ -999,7 +1000,7 @@ function SeasonalCallout() {
         <div className="rounded-2xl bg-[#f5ead2] p-6 text-center">
           <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Delivery timing</div>
           <h3 className="font-serif text-3xl">Digital is fastest. Print is optional.</h3>
-          <p className="mt-3 text-sm leading-6 text-[#695f54]">Your proof (usually in {PROOF_TURNAROUND_WINDOW}) arrives with the full Digital PDF — no shipping step at all. Printed books ship 5–7 business days after you approve, so order early for dated gifts.</p>
+          <p className="mt-3 text-sm leading-6 text-[#695f54]">Your proof (usually in {PROOF_TURNAROUND_WINDOW}) arrives with the full Digital PDF — no shipping step at all. {PRINT_TIMING_AFTER_APPROVAL} Printed-book arrival dates are estimates and are not guaranteed.</p>
         </div>
       </div>
     </section>
@@ -1039,7 +1040,7 @@ export function EditorialPricingPage() {
   return (
     <EditorialPageShell active="pricing">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub={`Digital $19, Classic softcover $39, Premium hardcover $64. US shipping included for printed books. Digital proofs are usually ready in ${PROOF_TURNAROUND_WINDOW}; printed books ship 5–7 business days after approval.`} centered />
+        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub={`Digital $19, Classic softcover $39, Premium hardcover $64. US shipping included for printed books. Digital proofs are usually ready in ${PROOF_TURNAROUND_WINDOW}. ${PRINT_TIMING_AFTER_APPROVAL}`} centered />
         <TierCards />
         <div className="mt-12 overflow-x-auto rounded-2xl border border-[#d8c6a2] bg-[#fff8ec]">
           <div className="grid min-w-[560px] grid-cols-[1.3fr_repeat(3,0.8fr)] border-b border-[#d8c6a2] bg-[#f5ead2] text-sm font-semibold text-[#1f1a16]">

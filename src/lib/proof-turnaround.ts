@@ -55,3 +55,16 @@ export const PROOF_VOLUME_NOTE =
 /** Support path for an unusually delayed order. Exposes no private order data. */
 export const PROOF_DELAY_SUPPORT_NOTE =
   'If your proof is taking longer than you expected, reply to any Hero Story Books email or write to support@herostorybooks.com and we will check on it.';
+
+/**
+ * Honest printed-book timing after proof approval.
+ *
+ * We do not publish a numeric print or arrival SLA without current provider
+ * and actual-delivery evidence. The estimate necessarily depends on the
+ * provider, destination, and shipping option selected for the order.
+ */
+export const PRINT_TIMING_AFTER_APPROVAL =
+  'After proof approval, timing depends on the print provider, destination, and shipping option; we confirm the estimate separately.';
+
+export const PRINT_ARRIVAL_NOTE =
+  'Printed-book arrival dates are estimates and are not guaranteed.';

@@ -4,7 +4,7 @@ import React from 'react';
 const metrics = [
   { value: '50,000+', label: 'Books Created' },
   { value: '4.8/5', label: 'Avg Rating' },
-  { value: '5–7 days', label: 'Fast Delivery' },
+  { value: 'Proof first', label: 'Approve Before Print' },
   { value: '100%', label: 'Satisfaction' },
 ];
 

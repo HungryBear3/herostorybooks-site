@@ -279,7 +279,7 @@ test('the catalog reads no environment variable, directly or transitively', () =
   );
 });
 
-test('the catalog does not source src/lib/pricing.ts, which is dead and stale', () => {
+test('the catalog does not source the unreachable legacy pricing module', () => {
   // tests/digital-pdf-timing-truthfulness.test.ts holds pricing.ts to the dead
   // pricing section precisely because it still carries the retired
   // "final PDF delivered after approval" claim. Importing it here would ship

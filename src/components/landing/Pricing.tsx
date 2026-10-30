@@ -2,7 +2,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import Link from 'next/link';
-import { PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
+import { PRINT_TIMING_AFTER_APPROVAL, PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 30 },
@@ -18,7 +18,7 @@ const plans = [
     id: 'starter',
     title: 'Digital',
     price: '$19',
-    description: 'Personalized PDF after proof approval',
+    description: 'Personalized PDF with the proof email',
     features: [
       'Personalized PDF storybook',
       'Read on any device',
@@ -37,7 +37,7 @@ const plans = [
     features: [
       'Premium softcover book',
       'Professional printing',
-      'Ships 5-7 business days after proof approval',
+      PRINT_TIMING_AFTER_APPROVAL,
       'AI-assisted illustration',
       'Includes digital PDF',
     ],
@@ -53,7 +53,7 @@ const plans = [
     features: [
       'Premium hardcover book',
       'Museum-quality printing',
-      'Ships 5-7 business days after proof approval',
+      PRINT_TIMING_AFTER_APPROVAL,
       'Includes digital PDF',
       'Best for gifts and keepsakes',
     ],

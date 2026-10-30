@@ -49,17 +49,16 @@ function withoutComments(src: string): string {
 }
 
 /**
- * Files carrying the claim that are NOT served, verified by importer count in
- * the reachability test below. They are left untouched on purpose: editing dead
- * components is out of scope for a truthfulness repair, and the reachability
- * assertion means wiring one up fails this suite instead of shipping the claim.
+ * Legacy components that are NOT served, verified by importer count below.
+ * Their copy is nevertheless kept truthful so accidentally mounting one cannot
+ * resurrect a retired approval-first or numeric-delivery claim.
  */
-const UNREACHABLE_WITH_STALE_CLAIM: string[] = [
+const UNREACHABLE_LEGACY_COMPONENTS: string[] = [
   'src/components/landing/FAQ.tsx',
   'src/components/landing/Pricing.tsx',
   'src/components/pricing-section.tsx',
 ];
-const EXCLUDED = new Set([...UNREACHABLE_WITH_STALE_CLAIM, 'src/lib/pricing.ts']);
+const EXCLUDED = new Set([...UNREACHABLE_LEGACY_COMPONENTS, 'src/lib/pricing.ts']);
 
 /**
  * Grammar of the banned claim.
@@ -451,9 +450,13 @@ test('approval still gates printing, and that language is preserved', () => {
   const editorial = homepageCopy();
   assert.match(editorial, /not printed until you approve/i, 'print-gating claim must survive');
   assert.match(read('src/app/checkout/checkout-form.tsx'), /Nothing prints until/i);
-  // Print formats legitimately describe shipping as following approval.
+  // Print formats must still make approval the gate, while avoiding an
+  // unsupported numeric print or arrival SLA.
   for (const format of ['classic', 'premium']) {
-    assert.match(buildDeliveryExpectation(format), /After approval,[^.]*ships/i, `${format}: shipping still follows approval`);
+    const expectation = buildDeliveryExpectation(format);
+    assert.match(expectation, /After proof approval/i, `${format}: print timing still follows approval`);
+    assert.match(expectation, /provider.*destination.*shipping option/i, `${format}: timing remains evidence-dependent`);
+    assert.doesNotMatch(expectation, /5[–-]7|3[–-]5|9[–-]12/i, `${format}: no unverified numeric SLA`);
   }
 });
 
@@ -497,8 +500,8 @@ function directImporters(targetFile: string): string[] {
   });
 }
 
-test('files still carrying the stale claim are genuinely unserved by direct import proof', () => {
-  for (const file of UNREACHABLE_WITH_STALE_CLAIM) {
+test('legacy components remain unserved by direct import proof', () => {
+  for (const file of UNREACHABLE_LEGACY_COMPONENTS) {
     const importers = directImporters(file);
     assert.deepEqual(
       importers, [],

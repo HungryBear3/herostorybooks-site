@@ -25,11 +25,11 @@
  * values equal orders.ts FORMAT_META.priceCents, so the duplication cannot
  * drift from what Stripe actually charges.
  *
- * NOT src/lib/pricing.ts. That module is unreachable dead code that still
- * carries the retired "final PDF delivered after approval" claim, and
+ * NOT src/lib/pricing.ts. That module is unreachable legacy code, and
  * tests/digital-pdf-timing-truthfulness.ts holds a standing assertion that it
- * stays confined to the dead pricing section. It is deliberately not a source
- * here.
+ * stays confined to the legacy pricing section. Its copy is kept truthful as a
+ * defense against accidental remounting, but it is deliberately not a source
+ * for this contract.
  *
  * DELIBERATE OMISSIONS (open adjudication items — do not fill these in without
  * an owner decision):
@@ -43,6 +43,8 @@
  *     homepage refund answers, which are the ones represented below.
  */
 import {
+  PRINT_ARRIVAL_NOTE,
+  PRINT_TIMING_AFTER_APPROVAL,
   PROOF_TURNAROUND_WINDOW,
   PROOF_VOLUME_NOTE,
 } from './proof-turnaround.ts';
@@ -63,7 +65,7 @@ export const PUBLIC_CATALOG_ID = 'hsb-public-catalog';
  * deterministic contract, and a freshness date that advances on its own is a
  * lie about review having happened.
  */
-export const PUBLIC_CATALOG_LAST_REVIEWED = '2026-09-06';
+export const PUBLIC_CATALOG_LAST_REVIEWED = '2026-10-30';
 
 export type PublicProductId = 'digital' | 'classic' | 'premium';
 
@@ -182,11 +184,9 @@ export const PUBLIC_CATALOG = deepFreeze({
     proofTurnaroundNote: `Digital proofs are usually ready in ${PROOF_TURNAROUND_WINDOW}.`,
     highVolumeNote: PROOF_VOLUME_NOTE,
     revisionsBeforeApproval:
-      'Revisions requested before approval are included, not an upsell. Nothing is printed until the buyer approves.',
-    printDispatchAfterApproval:
-      'Printed books ship 5–7 business days after the buyer approves the proof.',
-    usDeliveryAfterDispatch:
-      'Once a printed book ships, US delivery is typically 3–5 days. Specific delivery dates are not guaranteed because carrier timing varies.',
+      'One consolidated revision round is included before approval. We also correct genuine identity, anatomy, text, and continuity errors we introduced. Nothing is printed until the buyer approves.',
+    printDispatchAfterApproval: PRINT_TIMING_AFTER_APPROVAL,
+    usDeliveryAfterDispatch: PRINT_ARRIVAL_NOTE,
     shippingGeography:
       'For launch, printed books ship within the United States only. Buyers outside the US can order the Digital PDF from anywhere with a US-billed payment method.',
     shippingIncluded:

@@ -110,8 +110,9 @@ test('turnaround change adds no guaranteed/instant/same-day/holiday-delivery pro
   // pre-existing, carrier-qualified "digital arrives same-day after proof
   // approval" note is factual and out of scope for the proof-timing change.)
   assert.doesNotMatch(checkoutForm, /instant delivery|guaranteed delivery|guaranteed to arrive|holiday delivery guarantee/i);
-  // Carrier/ship timing stays qualified, not promised.
-  assert.match(checkoutForm, /5–7 business days after approval/);
+  // Print timing stays approval-gated and evidence-dependent, not numeric.
+  assert.match(checkoutForm, /PRINT_TIMING_AFTER_APPROVAL/);
+  assert.doesNotMatch(checkoutForm, /5[–-]7 business days|3[–-]5 days|9[–-]12 days/i);
 });
 
 // ── 5. Server-side non-child gate preserved (not weakened by copy changes) ────
