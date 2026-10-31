@@ -116,6 +116,10 @@ const APPROVAL_FIRST_DELIVERY: Array<[string, RegExp]> = [
   ['file follows approval', new RegExp(String.raw`${FILE}[^.;!?]{0,40}\bfollows?\b[^.;!?]{0,20}(?:your\s+|the\s+)?${APPROVAL}\b`, 'i')],
   // "PDF is delivered the same day after approval"
   ['same-day file on approval', new RegExp(String.raw`(?:${APPROVAL}[^.;!?]{0,90}${FILE}|${FILE}[^.;!?]{0,90}${APPROVAL})[^.;!?]{0,40}same[- ]day`, 'i')],
+  // "Digital arrives same-day after proof approval" — checkout previously used
+  // "Digital" as a standalone noun, so requiring a PDF/file/download token
+  // left this approval-gated delivery claim invisible to the broader scanner.
+  ['same-day digital on approval', /(?:\bapprov(?:e|es|ed|al|als|ing)\b[^.;!?]{0,90}\bdigital\b[^.;!?]{0,60}same[- ]day|\bdigital\b[^.;!?]{0,60}same[- ]day[^.;!?]{0,60}\bapprov(?:e|es|ed|al|als|ing)\b)/i],
   ['approval grants access to file', new RegExp(String.raw`\b${APPROVAL}\b[^.;!?]{0,40}\b(?:grants?\s+access\s+to|makes?)\b[^.;!?]{0,30}${FILE}[^.;!?]{0,20}\b(?:accessible|available)?\b`, 'i')],
   ['file becomes accessible after approval', new RegExp(String.raw`${FILE}[^.;!?]{0,40}\bbecomes?\s+accessible\b[^.;!?]{0,30}(?:after|upon|following)\s+(?:your\s+|the\s+)?${APPROVAL}\b`, 'i')],
 ];
@@ -160,6 +164,7 @@ const BANNED_FIXTURES: Array<[string, string]> = [
   ['unlock phrasing', 'Approval unlocks the high-resolution PDF.'],
   ['following approval', 'Following approval, the digital download becomes available.'],
   ['same-day after approval', 'After approval, digital PDFs are delivered the same day.'],
+  ['checkout standalone Digital exact', 'Digital arrives same-day after proof approval; printed books depend on proof timing and carrier delivery.'],
   ['sent on approval', 'The PDF is sent on approval.'],
   ['passive access after approval', 'The final PDF can be accessed after approval.'],
   ['provide before file token', 'We provide the final PDF after approval.'],

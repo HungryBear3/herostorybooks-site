@@ -3172,7 +3172,7 @@ export function CheckoutForm({
               {showFathersDayReminder && (
                 <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
                   <strong>Father&apos;s Day order-by date: {fathersDay.safeOrderDateLabel}.</strong>{" "}
-                  Digital arrives same-day after proof approval; printed books depend on proof timing and carrier delivery.
+                  The full Digital PDF comes with the proof email; printed books depend on proof timing and carrier delivery.
                 </div>
               )}
               <div className="rounded-lg border border-deep-gold/30 bg-deep-gold/5 px-3 py-2 text-xs text-forest">

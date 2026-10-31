@@ -106,10 +106,9 @@ test('turnaround change adds no guaranteed/instant/same-day/holiday-delivery pro
   // Gift surfaces (fully in scope) carry no delivery promise at all.
   const giftSurfaces = [giftIndex, giftDetail].join('\n');
   assert.doesNotMatch(giftSurfaces, /same-day|instant delivery|guaranteed delivery|guaranteed to arrive|holiday delivery/i);
-  // Checkout must not introduce guaranteed/instant delivery promises. (A
-  // pre-existing, carrier-qualified "digital arrives same-day after proof
-  // approval" note is factual and out of scope for the proof-timing change.)
-  assert.doesNotMatch(checkoutForm, /instant delivery|guaranteed delivery|guaranteed to arrive|holiday delivery guarantee/i);
+  // Checkout must not introduce guaranteed/instant delivery promises or make
+  // approval the gate for receiving the Digital PDF.
+  assert.doesNotMatch(checkoutForm, /same-day after proof approval|instant delivery|guaranteed delivery|guaranteed to arrive|holiday delivery guarantee/i);
   // Print timing stays approval-gated and evidence-dependent, not numeric.
   assert.match(checkoutForm, /PRINT_TIMING_AFTER_APPROVAL/);
   assert.doesNotMatch(checkoutForm, /5[–-]7 business days|3[–-]5 days|9[–-]12 days/i);
