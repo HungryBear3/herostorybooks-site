@@ -17,7 +17,7 @@ export default function TermsPage() {
       <section className="mx-auto max-w-3xl px-5 py-16 md:px-8 md:py-24">
         <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-[#a64c4c]">Terms</div>
         <h1 className="font-serif text-5xl font-medium leading-tight tracking-[-0.02em] text-[#1f1a16]">Terms of Service</h1>
-        <p className="mt-4 text-sm text-[#695f54]">Last updated September 21, 2026</p>
+        <p className="mt-4 text-sm text-[#695f54]">Last updated October 31, 2026</p>
         <div className="mt-10 space-y-7 text-base leading-8 text-[#695f54]">
           <p>These terms explain how HeroStoryBooks creates personalized books and how orders, proofs, revisions, printing, and refunds work.</p>
           <section><h2 className="font-serif text-2xl text-[#1f1a16]">Ordering authorization</h2><p className="mt-2">By placing an order, you confirm that you are an adult and that you are the parent, guardian, or an authorized adult with permission to provide the names, relationship details, photos, appearance notes, story notes, and any optional voice recording or document used for the book. If uploaded media includes another identifiable person, you confirm you have that person&apos;s permission or, for a minor, permission from their parent or guardian.</p></section>

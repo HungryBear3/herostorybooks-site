@@ -38,6 +38,8 @@ const reviewedClaims = REVIEWED_PUBLIC_CLAIM_FILES
   .map((file) => `${file}\n${readFileSync(file, 'utf8')}`)
   .join('\n');
 
+const familyReview = readFileSync('src/app/family-review/portal-flow.tsx', 'utf8');
+
 test('customer copy contains no retired print or arrival numeric SLA', () => {
   assert.doesNotMatch(copy, /5[–-]7 business days|3[–-]5 days|9[–-]12 (?:business )?days/i);
 });
@@ -66,6 +68,11 @@ test('public product counts are format-specific illustrated-story counts', () =>
 test('privacy copy discloses provider processing without an unverified training guarantee', () => {
   assert.doesNotMatch(reviewedClaims, /(?:never|not|won(?:'|&apos;)t)[^\n.]{0,100}\b(?:train|training)\b|\b(?:train|training)\b[^\n.]{0,100}(?:never|not|won(?:'|&apos;)t)/i);
   assert.match(reviewedClaims, /service providers may process/i);
+  assert.equal(
+    (familyReview.match(/Service providers may process/g) ?? []).length,
+    3,
+    'each family-review photo-upload disclosure must state provider processing',
+  );
 });
 
 test('gift FAQ avoids instant-sharing delivery language', () => {
