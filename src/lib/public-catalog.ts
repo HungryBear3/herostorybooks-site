@@ -65,7 +65,7 @@ export const PUBLIC_CATALOG_ID = 'hsb-public-catalog';
  * deterministic contract, and a freshness date that advances on its own is a
  * lie about review having happened.
  */
-export const PUBLIC_CATALOG_LAST_REVIEWED = '2026-10-30';
+export const PUBLIC_CATALOG_LAST_REVIEWED = '2026-10-31';
 
 export type PublicProductId = 'digital' | 'classic' | 'premium';
 
@@ -102,7 +102,7 @@ export const PUBLIC_CATALOG = deepFreeze({
     name: 'Hero Story Books',
     url: SOURCES.home,
     description:
-      'Hero Story Books makes personalized 32-page illustrated children’s storybooks in which the child is the hero. Every order starts with a digital proof the buyer reviews and approves before anything is printed.',
+      'Hero Story Books makes personalized illustrated children’s storybooks in which the child is the hero. Every order starts with a digital proof the buyer reviews and approves before anything is printed.',
     supportContact: 'support@herostorybooks.com',
   },
 
@@ -111,7 +111,7 @@ export const PUBLIC_CATALOG = deepFreeze({
       id: 'digital' as PublicProductId,
       name: 'Digital PDF',
       description:
-        'A personalized 32-page storybook delivered as a high-resolution PDF. The digital proof and the full PDF arrive in the same email, so there is no printing or shipping step.',
+        'A personalized storybook with 24 illustrated story pages, delivered as a high-resolution PDF. The digital proof and the full PDF arrive in the same email, so there is no printing or shipping step.',
       currency: 'USD',
       priceMinorUnits: 1900,
       priceDisplay: '$19',
@@ -120,7 +120,7 @@ export const PUBLIC_CATALOG = deepFreeze({
       canonicalUrl: SOURCES.home,
       imageUrl: PRODUCT_IMAGE_URL,
       features: [
-        '32-page personalized book',
+        '24 illustrated story pages',
         'Full-color illustrated spreads',
         'Digital proof included',
         'High-resolution PDF delivered with the proof email',
@@ -131,7 +131,7 @@ export const PUBLIC_CATALOG = deepFreeze({
       id: 'classic' as PublicProductId,
       name: 'Classic softcover',
       description:
-        'A personalized 32-page 8.5 in × 8.5 in perfect-bound softcover book, printed only after the buyer approves the digital proof.',
+        'A personalized 8.5 in × 8.5 in perfect-bound softcover with 24 illustrated story pages, printed only after the buyer approves the digital proof.',
       currency: 'USD',
       priceMinorUnits: 3900,
       priceDisplay: '$39',
@@ -140,7 +140,7 @@ export const PUBLIC_CATALOG = deepFreeze({
       canonicalUrl: SOURCES.home,
       imageUrl: PRODUCT_IMAGE_URL,
       features: [
-        '32-page personalized book',
+        '24 illustrated story pages',
         'Full-color illustrated spreads',
         'Digital proof reviewed and approved before print',
         'Perfect-bound softcover, 8.5 in × 8.5 in',
@@ -151,7 +151,7 @@ export const PUBLIC_CATALOG = deepFreeze({
       id: 'premium' as PublicProductId,
       name: 'Premium hardcover',
       description:
-        'A personalized 32-page 8.5 in × 8.5 in case-bound hardcover keepsake book, printed only after the buyer approves the digital proof.',
+        'A personalized 8.5 in × 8.5 in case-bound hardcover keepsake with 32 illustrated story pages, printed only after the buyer approves the digital proof.',
       currency: 'USD',
       priceMinorUnits: 6400,
       priceDisplay: '$64',
@@ -160,7 +160,7 @@ export const PUBLIC_CATALOG = deepFreeze({
       canonicalUrl: SOURCES.home,
       imageUrl: PRODUCT_IMAGE_URL,
       features: [
-        '32-page personalized book',
+        '32 illustrated story pages',
         'Full-color illustrated spreads',
         'Digital proof reviewed and approved before print',
         'Case-bound hardcover, 8.5 in × 8.5 in',

@@ -443,7 +443,7 @@ function WelcomeScreen({ onNext }: { onNext: () => void }) {
           },
           {
             t: 'Upload one to five private reference photos',
-            d: 'Clear faces, mixed angles. Used only by your reviewer for manual beta sample prep — never public, never sold, never used to train models, original filenames not stored.',
+            d: 'Clear faces, mixed angles. Used by your reviewer for manual beta sample prep — never public, never sold, and original filenames are not stored.',
           },
           {
             t: 'Pick a story direction',
@@ -622,7 +622,7 @@ function InfoScreen({
 const CONSENT_ITEMS: { t: string; d: string }[] = [
   {
     t: 'Your reference photos are used only for beta sample prep.',
-    d: 'Two named reviewers look at them to hand-prepare your samples. Never public, never sold, never used to train models by us. Original filenames are stripped on upload.',
+    d: 'Two named reviewers look at them to hand-prepare your samples. Never public, never sold. Original filenames are stripped on upload.',
   },
   {
     t: 'You can ask us to delete everything at any time.',
@@ -1070,8 +1070,7 @@ function UploadScreen({
       <p className="help" style={{ textAlign: 'center' }}>
         <Icon name="shield" size={11} color="var(--forest)" /> &nbsp;Photos
         are uploaded privately when you submit and stored only for your
-        own reviewer. Original filenames are stripped. Nothing is public,
-        nothing trains a model.
+        own reviewer. Original filenames are stripped. Nothing is public.
       </p>
 
       <div className="fr-row-between">

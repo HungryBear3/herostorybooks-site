@@ -160,8 +160,8 @@ test('typed Custom Story refuses generic template fallback when no model path is
 test('custom story intake presents distinct honest source copy', () => {
   assert.match(checkout, /Type it, say it, or attach a file\. One is enough\./);
   assert.match(checkout, /Built from your written memory, voice note, or document, plus family details\./);
-  assert.match(checkout, /Your typed story, voice note, and files are read by our team and used only to write this book\./);
-  assert.match(checkout, /Never used for voice cloning or AI training\./);
+  assert.match(checkout, /Your typed story, voice note, and files are used to write and support this book\./);
+  assert.match(checkout, /Service providers may process them as described in our Privacy Policy\./);
 });
 
 test('empty-MIME accepted documents keep the validated filename extension', () => {

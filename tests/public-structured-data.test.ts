@@ -124,7 +124,7 @@ test('no availability claim is stated anywhere in the catalog or the graph', () 
 });
 
 test('the catalog review date covers the facts this candidate adds', () => {
-  assert.equal(PUBLIC_CATALOG_LAST_REVIEWED, '2026-10-30');
+  assert.equal(PUBLIC_CATALOG_LAST_REVIEWED, '2026-10-31');
   assert.equal(PUBLIC_CATALOG.lastReviewed, PUBLIC_CATALOG_LAST_REVIEWED);
 });
 

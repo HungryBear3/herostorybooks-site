@@ -64,7 +64,7 @@ export const PROOF_DELAY_SUPPORT_NOTE =
  * provider, destination, and shipping option selected for the order.
  */
 export const PRINT_TIMING_AFTER_APPROVAL =
-  'After proof approval, timing depends on the print provider, destination, and shipping option; we confirm the estimate separately.';
+  'After proof approval, timing depends on the print provider, destination, and shipping option.';
 
 export const PRINT_ARRIVAL_NOTE =
   'Printed-book arrival dates are estimates and are not guaranteed.';

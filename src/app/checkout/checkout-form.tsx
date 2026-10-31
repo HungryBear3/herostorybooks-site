@@ -177,7 +177,7 @@ const FORMATS = [
     badge: "Most flexible",
     delivery: `Digital proof usually ready in ${PROOF_TURNAROUND_WINDOW}`,
     deliveryDetail:
-      "32-page proof first · Full high-res PDF included with the proof email · No printing or shipping step",
+      "Full book proof first · High-res PDF included with the proof email · No printing or shipping step",
   },
   {
     id: "classic",
@@ -202,8 +202,11 @@ const FORMATS = [
 ];
 
 const DEFAULT_BOOK_FORMAT = "digital";
-const TOTAL_BOOK_PAGE_COUNT = 32;
-const ILLUSTRATED_STORY_PAGE_COUNT = 24;
+const ILLUSTRATED_STORY_PAGE_COUNTS: Record<string, number> = {
+  digital: 24,
+  classic: 24,
+  premium: 32,
+};
 
 const SUPPORTING_CHARACTER_LIMIT = 4;
 const PRIMARY_HERO_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === "true";
@@ -927,8 +930,9 @@ export function CheckoutForm({
   const heroName = form.childName || "Your child";
   const printFormat = selectedFormat?.label ?? "Choose a format";
   const totalPrice = selectedFormat ? selectedFormat.price : "—";
-  const bookPageCount = TOTAL_BOOK_PAGE_COUNT;
-  const illustratedStoryPageCount = ILLUSTRATED_STORY_PAGE_COUNT;
+  const illustratedStoryPageCount = selectedFormat
+    ? ILLUSTRATED_STORY_PAGE_COUNTS[selectedFormat.id]
+    : null;
   const coverTitle = selectedTheme
     ? `${heroName}'s ${selectedTheme.label}`
     : "Your Wonderful Story";
@@ -2118,8 +2122,8 @@ export function CheckoutForm({
 
                   <p className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-4 py-3 text-xs leading-5 text-[#695f54]">
                     {storyMediaEnabled
-                      ? "Your typed story, voice note, and files are read by our team and used only to write this book. Never used for voice cloning or AI training."
-                      : "Your typed story is read by our team and used only to write this book. Never used for AI training."}
+                      ? "Your typed story, voice note, and files are used to write and support this book. Service providers may process them as described in our Privacy Policy. We do not use them for voice cloning."
+                      : "Your typed story is used to write and support this book. Service providers may process it as described in our Privacy Policy."}
                   </p>
                 </div>
               )}
@@ -3122,7 +3126,7 @@ export function CheckoutForm({
               )}
 
               <p className="order-3 text-center text-xs leading-5 text-[#8a7b6a]">
-                🔒 Photos stay private — used only to illustrate your book, never to train AI. You can review before print.
+                🔒 Photos are used to illustrate and support your order. Service providers may process them as described in our Privacy Policy. You can review before print.
               </p>
 
               {guidedCaptureEnabled && (
@@ -3304,10 +3308,10 @@ export function CheckoutForm({
                   </div>
                   <div>
                     <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
-                      Book pages
+                      Illustrated story pages
                     </dt>
                     <dd className="mt-1 font-semibold text-[#241914]">
-                      {bookPageCount} total · {illustratedStoryPageCount} illustrated
+                      {illustratedStoryPageCount ?? "Choose a format"}
                     </dd>
                   </div>
                   <div>
@@ -3364,12 +3368,9 @@ export function CheckoutForm({
                     </span>
                   </div>
                   <div className="flex justify-between gap-3">
-                      <span>Book pages</span>
+                      <span>Illustrated story pages</span>
                     <span className="font-semibold text-[#241914]">
-                      {bookPageCount} total
-                      <span className="ml-1 font-normal text-[#6e6154]">
-                        ({illustratedStoryPageCount} illustrated story pages)
-                      </span>
+                      {illustratedStoryPageCount ?? "Choose a format"}
                     </span>
                   </div>
                   {form.familyCharacters.length > 0 && (

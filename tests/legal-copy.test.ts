@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-test('terms include adult authorization, no-training/no-cloning, deletion, and primary hero preview copy', () => {
+test('terms include adult authorization, provider-processing/no-cloning disclosure, deletion, and primary hero preview copy', () => {
   const src = readFileSync('src/app/terms/page.tsx', 'utf8');
   assert.match(src, /you are an adult/);
   assert.match(src, /permission from their parent or guardian/);
   assert.match(src, /do <strong>not<\/strong> use uploaded media for voice cloning/);
-  assert.match(src, /AI model training/);
+  assert.match(src, /service providers may process uploaded media/i);
+  assert.doesNotMatch(src, /AI model training/);
   assert.match(src, /request deletion of uploaded photos, voice files, or documents/);
   assert.match(src, /Primary hero preview features/);
   assert.match(src, /concierge intake confirmation/);
