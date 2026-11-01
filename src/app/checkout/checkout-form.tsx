@@ -3528,8 +3528,8 @@ export function CheckoutForm({
                   : `Continue to secure payment${selectedFormat ? ` — ${selectedFormat.price}` : ""}`}
               </button>
               <p className="text-center text-xs leading-5 text-[#8a7b6a]">
-                Secured by Stripe · Proof approval before printing · Your data
-                is never shared
+                Secured by Stripe · Proof approval before printing · Our Privacy Policy
+                explains how your data is used
               </p>
             </div>
 
@@ -3560,7 +3560,7 @@ export function CheckoutForm({
                   <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">3</span>
                   <span>
                     <strong className="block text-[#241914]">Then we print or deliver</strong>
-                    The full Digital PDF comes with the proof email. Printed books proceed only after approval, with timing confirmed separately for the provider, destination, and shipping option.
+                    The full Digital PDF comes with the proof email. Printed books proceed only after approval, and timing depends on the print provider, destination, and shipping option.
                   </span>
                 </li>
               </ol>

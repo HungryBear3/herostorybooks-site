@@ -57,6 +57,21 @@ test('printed-book timing is approval-gated and evidence-dependent', () => {
   assert.doesNotMatch(timing, /confirm(?:s|ed|ing)? the estimate separately/i);
 });
 
+test('checkout print step drops the unsupported separate timing confirmation', () => {
+  const checkout = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  const printStep = checkout.match(/Then we print or deliver<\/strong>([\s\S]*?)<\/span>/)?.[1] ?? '';
+  assert.ok(printStep.trim(), 'checkout must keep the "Then we print or deliver" step');
+  assert.doesNotMatch(checkout, /timing confirmed separately/i);
+  assert.doesNotMatch(printStep, /confirm(?:s|ed|ing|ation)?[\s\S]{0,80}separately|separately[\s\S]{0,80}confirm/i);
+  assert.match(printStep, /full Digital PDF comes with the proof email/i);
+  assert.match(printStep, /only after (?:proof )?approval/i);
+  assert.match(
+    printStep,
+    /\{PRINT_TIMING_AFTER_APPROVAL\}|provider, destination, and shipping option/i,
+  );
+  assert.doesNotMatch(printStep, /\d|guarantee/i);
+});
+
 test('public marketing distinguishes formats without universal numeric page entitlements', () => {
   const catalog = readFileSync('src/lib/public-catalog.ts', 'utf8');
   const checkout = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
@@ -97,4 +112,41 @@ test('/faq permanently redirects to the rendered homepage FAQ anchor', () => {
     redirect.source === '/faq'
     && redirect.destination === '/#faq'
     && redirect.permanent === true));
+});
+
+// Collapse JSX source to rendered-equivalent text: `{" "}` spacers and line
+// breaks between JSX text become single spaces, and entities become quotes.
+const renderedJsxText = (source: string) => source
+  .replace(/\{\s*(["'`])\s*\1\s*\}/g, ' ')
+  .replace(/&apos;|&#39;|&rsquo;/g, "'")
+  .replace(/\s+/g, ' ');
+
+test('checkout footer drops the absolute data-sharing promise split across JSX lines', () => {
+  const checkout = renderedJsxText(readFileSync('src/app/checkout/checkout-form.tsx', 'utf8'));
+  const sharingPromise = checkout.match(
+    /\b(?:never|not|won['’]t|don['’]t)\s+(?:be\s+|ever\s+)?(?:(?:sold|sell|rented|rent)\s+(?:or|and)\s+)?shar(?:e|ed|es|ing)\b/i,
+  )?.[0];
+  assert.equal(
+    sharingPromise,
+    undefined,
+    `checkout must not promise data is never shared while disclosing provider processing (found: "${sharingPromise}")`,
+  );
+  assert.ok(/Service providers may process/.test(checkout), 'checkout must keep its provider-processing disclosure');
+  assert.ok(/Proof approval before printing/.test(checkout), 'checkout footer must keep the approval-before-print note');
+});
+
+test('trust badges drop unsupported volume, rating, and satisfaction metrics', () => {
+  const badges = readFileSync('src/components/landing/TrustBadges.tsx', 'utf8');
+  const unsupportedMetrics: Array<[string, RegExp]> = [
+    ['books-created volume count', /\b\d{1,3}(?:,\d{3})+\s*\+|\b\d+(?:\.\d+)?\s*[km]\s*\+|\bBooks\s+Created\b/i],
+    ['average star rating', /\b\d(?:\.\d+)?\s*\/\s*5\b|\bAv(?:g\.?|erage)\s+Rating\b/i],
+    ['satisfaction rate', /\b100\s*%|\bSatisfaction\b/i],
+  ];
+  for (const [claim, pattern] of unsupportedMetrics) {
+    assert.ok(!pattern.test(badges), `TrustBadges must not show an unsupported ${claim}`);
+  }
+  assert.ok(
+    /Proof first/.test(badges) && /Approve Before Print/i.test(badges),
+    'TrustBadges must keep the approval-before-print badge',
+  );
 });
