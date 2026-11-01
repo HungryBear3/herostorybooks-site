@@ -58,14 +58,14 @@ const tiers: Tier[] = [
     name: 'Classic softcover',
     price: catalogPrice('softcover'),
     sub: '8.5″ × 8.5″ · perfect-bound',
-    blurb: 'Full-color matte pages, perfect-bound spine, and a keepsake feel without the hardcover price. The interior includes 24 illustrated story pages plus keepsake front and back matter.',
+    blurb: 'Full-color matte pages, a perfect-bound spine, and a keepsake feel without the hardcover price. You review the complete personalized interior before anything prints.',
   },
   {
     id: 'hardcover',
     name: 'Premium hardcover',
     price: catalogPrice('hardcover'),
     sub: '8.5″ × 8.5″ · keepsake gift finish',
-    blurb: 'Premium full-color pages, sturdy case binding, and a gift-ready finish for grandparents and big occasions. The interior includes 32 illustrated story pages plus keepsake front and back matter.',
+    blurb: 'Premium full-color pages, sturdy case binding, and a gift-ready finish for grandparents and big occasions. You review the complete personalized interior before anything prints.',
   },
 ];
 

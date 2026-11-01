@@ -57,12 +57,20 @@ test('printed-book timing is approval-gated and evidence-dependent', () => {
   assert.doesNotMatch(timing, /confirm(?:s|ed|ing)? the estimate separately/i);
 });
 
-test('public product counts are format-specific illustrated-story counts', () => {
+test('public marketing distinguishes formats without universal numeric page entitlements', () => {
   const catalog = readFileSync('src/lib/public-catalog.ts', 'utf8');
   const checkout = readFileSync('src/app/checkout/checkout-form.tsx', 'utf8');
+  const editorial = readFileSync('src/components/editorial-site.tsx', 'utf8');
   assert.doesNotMatch(reviewedClaims, /32-page (?:personalized |illustrated )?(?:book|storybook|proof)/i);
-  assert.match(catalog, /24 illustrated story pages[\s\S]*?Classic softcover[\s\S]*?24 illustrated story pages[\s\S]*?Premium hardcover[\s\S]*?32 illustrated story pages/);
-  assert.match(checkout, /ILLUSTRATED_STORY_PAGE_COUNTS[\s\S]*?digital: 24[\s\S]*?classic: 24[\s\S]*?premium: 32/);
+  for (const [surface, source] of Object.entries({ catalog, checkout, editorial })) {
+    assert.doesNotMatch(
+      source,
+      /\b(?:24|32)\s+(?:illustrated\s+)?(?:story\s+)?pages?\b/i,
+      `${surface} must not market a universal numeric page entitlement`,
+    );
+  }
+  assert.doesNotMatch(checkout, /ILLUSTRATED_STORY_PAGE_COUNTS/);
+  assert.match(catalog, /Digital PDF[\s\S]*?Classic softcover[\s\S]*?Premium hardcover/);
 });
 
 test('privacy copy discloses provider processing without an unverified training guarantee', () => {

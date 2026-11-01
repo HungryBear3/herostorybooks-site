@@ -202,11 +202,6 @@ const FORMATS = [
 ];
 
 const DEFAULT_BOOK_FORMAT = "digital";
-const ILLUSTRATED_STORY_PAGE_COUNTS: Record<string, number> = {
-  digital: 24,
-  classic: 24,
-  premium: 32,
-};
 
 const SUPPORTING_CHARACTER_LIMIT = 4;
 const PRIMARY_HERO_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === "true";
@@ -930,9 +925,6 @@ export function CheckoutForm({
   const heroName = form.childName || "Your child";
   const printFormat = selectedFormat?.label ?? "Choose a format";
   const totalPrice = selectedFormat ? selectedFormat.price : "—";
-  const illustratedStoryPageCount = selectedFormat
-    ? ILLUSTRATED_STORY_PAGE_COUNTS[selectedFormat.id]
-    : null;
   const coverTitle = selectedTheme
     ? `${heroName}'s ${selectedTheme.label}`
     : "Your Wonderful Story";
@@ -3308,14 +3300,6 @@ export function CheckoutForm({
                   </div>
                   <div>
                     <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
-                      Illustrated story pages
-                    </dt>
-                    <dd className="mt-1 font-semibold text-[#241914]">
-                      {illustratedStoryPageCount ?? "Choose a format"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
                       Photos
                     </dt>
                     <dd className="mt-1 font-semibold text-[#241914]">
@@ -3365,12 +3349,6 @@ export function CheckoutForm({
                     <span>{printFormat}</span>
                     <span className="font-semibold text-[#241914]">
                       {selectedFormat?.price ?? "—"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                      <span>Illustrated story pages</span>
-                    <span className="font-semibold text-[#241914]">
-                      {illustratedStoryPageCount ?? "Choose a format"}
                     </span>
                   </div>
                   {form.familyCharacters.length > 0 && (
