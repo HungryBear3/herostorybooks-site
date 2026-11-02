@@ -122,7 +122,18 @@ export async function recordGroupBookFinalDelivery(args: {
   now: number;
 }): Promise<DeliveryOutcome> {
   const { cohortId } = args;
-  if (typeof cohortId !== 'string' || !groupBookInvites().some((invite) => invite.cohortId === cohortId)) {
+  // Lifecycle recognition is independent of selector expiry/auth activation:
+  // families still need the existing retention anchor after intake closes.
+  const legacy = groupBookInvites();
+  let classroomCohorts: GroupBookInvite[] = [];
+  try {
+    const rows: unknown = JSON.parse(process.env.HSB_CLASSROOM_CODES_JSON ?? '[]');
+    if (Array.isArray(rows) && rows.every(row => row && typeof row === 'object' && !('owner' in row) && !('familySlotId' in row))) {
+      const parsed = groupBookInvites(JSON.stringify(rows.map(row => ({...row, familySlotId: 'classroom_selector'}))));
+      if (parsed.length === rows.length && !parsed.some(row => legacy.some(invite => invite.token === row.token))) classroomCohorts = parsed;
+    }
+  } catch { /* Malformed selector configuration never establishes a cohort. */ }
+  if (typeof cohortId !== 'string' || ![...legacy, ...classroomCohorts].some((invite) => invite.cohortId === cohortId)) {
     return { outcome: 'invalid', error: 'unknown_cohort' };
   }
   const recordedBy = typeof args.recordedBy === 'string' ? args.recordedBy.trim() : '';

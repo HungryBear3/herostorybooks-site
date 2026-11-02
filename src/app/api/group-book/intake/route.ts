@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
-import { extractGroupBookToken, inviteRefusal, resolveGroupBookInviteState } from '@/lib/group-book/config';
+import { extractGroupBookToken, inviteRefusal } from '@/lib/group-book/config';
+import { resolveGroupBookSessionInvite, classroomOriginAllowed } from '@/lib/group-book/identity-access';
 import { normalizeGroupBookImage } from '@/lib/group-book/image-type';
 import {
   GROUP_BOOK_INTAKE_WRITE_WINDOW_MS,
@@ -61,6 +62,7 @@ function success(token: string, expiresAt: string, alreadySubmitted: boolean) {
 }
 
 export async function POST(req: Request) {
+  if (!classroomOriginAllowed(req)) return refuse('invalid_origin', 403);
   if (!groupBookStorageReady()) return refuse('storage_disabled', 503);
   // Writer lifetime starts at arrival on the server clock (DESIGN I2).
   const admittedAt = Date.now();
@@ -78,7 +80,7 @@ export async function POST(req: Request) {
   }
 
   const token = extractGroupBookToken(text(form, 'invite', 200) ?? '');
-  const resolved = token ? resolveGroupBookInviteState(token) : { state: 'unknown' as const };
+  const resolved = token ? await resolveGroupBookSessionInvite(token, req.headers.get('cookie') ?? '', true) : { state: 'unknown' as const };
   if (!token || resolved.state !== 'active') return refuse(inviteRefusal(resolved.state), 403);
   const invite = resolved.invite;
 

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
-import { extractGroupBookToken, inviteRefusal, resolveGroupBookInviteState } from '@/lib/group-book/config';
+import { extractGroupBookToken, inviteRefusal } from '@/lib/group-book/config';
+import { resolveGroupBookSessionInvite, classroomOriginAllowed } from '@/lib/group-book/identity-access';
 import { groupBookAdmission, publicPolicyView } from '@/lib/group-book/release';
 import { GROUP_BOOK_PRIVATE_HEADERS, setGroupBookAccessCookie } from '@/lib/group-book/session';
 import { findGroupBookSubmission, groupBookStorageReady } from '@/lib/group-book/store';
@@ -13,6 +14,7 @@ function refuse(error: string, status: number, extra: Record<string, unknown> = 
 }
 
 export async function POST(req: Request) {
+  if (!classroomOriginAllowed(req)) return refuse('invalid_origin', 403);
   if (!groupBookStorageReady()) return refuse('storage_disabled', 503);
   let raw: unknown;
   try {
@@ -25,7 +27,7 @@ export async function POST(req: Request) {
       ? (raw as { invite: string }).invite
       : '',
   );
-  const resolved = token ? resolveGroupBookInviteState(token) : { state: 'unknown' as const };
+  const resolved = token ? await resolveGroupBookSessionInvite(token, req.headers.get('cookie') ?? '', true) : { state: 'unknown' as const };
   if (!token || resolved.state !== 'active') return refuse(inviteRefusal(resolved.state), 403);
   let record: Awaited<ReturnType<typeof findGroupBookSubmission>>;
   try {
