@@ -464,7 +464,7 @@ test('voice section never auto-starts the microphone (only on Record tap)', () =
 });
 
 test('voice section copy explicitly disclaims voice cloning', () => {
-  assert.match(VOICE_UI_SRC, /won&apos;t be used for voice cloning/i);
+  assert.match(VOICE_UI_SRC, /We do not use it for voice cloning/i);
 });
 
 test('voice section avoids beta/data-loss confidence killers', () => {
@@ -500,5 +500,6 @@ test('voice and document inputs stay keyboard reachable with visible focus treat
 test('consent wording switches by attached media type', () => {
   assert.match(VOICE_UI_SRC, /I have the right to share this document/);
   assert.match(VOICE_UI_SRC, /parent\/guardian or an authorized adult for everyone in this recording/);
-  assert.match(VOICE_UI_SRC, /won&apos;t be used for AI training and won&apos;t be shared/);
+  assert.match(VOICE_UI_SRC, /service providers may process it to create and support this book/);
+  assert.doesNotMatch(VOICE_UI_SRC, /AI training/);
 });

@@ -92,7 +92,9 @@ test('current digital, classic, and premium values pass through byte-identical',
 test('print expectations are never rewritten, even mentioning approval', () => {
   for (const format of ['classic', 'premium']) {
     const value = buildDeliveryExpectation(format);
-    assert.match(value, /After approval,[^.]*ships/i, `${format} legitimately ties shipping to approval`);
+    assert.match(value, /After proof approval/i, `${format} legitimately ties print timing to approval`);
+    assert.match(value, /provider.*destination.*shipping option/i);
+    assert.doesNotMatch(value, /5[–-]7|3[–-]5|9[–-]12/i);
     assert.equal(renderDeliveryExpectation(value), value);
   }
 });

@@ -1,4 +1,4 @@
-import { PROOF_TURNAROUND_WINDOW } from './proof-turnaround.ts';
+import { PRINT_TIMING_AFTER_APPROVAL, PROOF_TURNAROUND_WINDOW } from './proof-turnaround.ts';
 
 export interface PublicPricingPlan {
   id: 'digital' | 'classic' | 'premium';
@@ -17,8 +17,8 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
     id: 'digital',
     name: 'Digital PDF',
     price: '$19',
-    description: 'Digital proof first, then high-resolution PDF',
-    promise: `Digital proof usually ready in ${PROOF_TURNAROUND_WINDOW}; final high-res PDF delivered after approval. No printing or shipping step.`,
+    description: 'Digital proof with high-resolution PDF',
+    promise: `Digital proof usually ready in ${PROOF_TURNAROUND_WINDOW}; the full high-resolution PDF comes with the proof email. No printing or shipping step.`,
     features: [
       'Personalized digital storybook PDF',
       'Read on any device',
@@ -32,7 +32,7 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
     name: 'Classic softcover',
     price: '$39',
     description: 'Softcover keepsake with digital preview',
-    promise: `Digital preview/proof usually ready in ${PROOF_TURNAROUND_WINDOW}. You approve before it prints; after approval, ships in 5–7 business days. Free shipping included for US orders.`,
+    promise: `Digital preview/proof usually ready in ${PROOF_TURNAROUND_WINDOW}. You approve before it prints. ${PRINT_TIMING_AFTER_APPROVAL} Free shipping included for US orders.`,
     features: [
       'Premium softcover printed book',
       'Free shipping included for US orders',
@@ -47,7 +47,7 @@ export const PUBLIC_PRICING_PLANS: PublicPricingPlan[] = [
     name: 'Premium hardcover',
     price: '$64',
     description: 'Hardcover keepsake edition',
-    promise: `Digital preview/proof usually ready in ${PROOF_TURNAROUND_WINDOW}. You approve before it prints; after approval, ships in 5–7 business days. Free shipping included for US orders.`,
+    promise: `Digital preview/proof usually ready in ${PROOF_TURNAROUND_WINDOW}. You approve before it prints. ${PRINT_TIMING_AFTER_APPROVAL} Free shipping included for US orders.`,
     features: [
       'Beautiful hardcover printed book',
       'Free shipping included for US orders',

@@ -328,7 +328,9 @@ test('proof readiness stays distinct from printing and shipping in the persisted
       assert.doesNotMatch(expectation, /after approval/i, `${format}: PDF must not be gated on approval`);
       assert.ok(!/ships/i.test(expectation), 'digital must not claim a shipping step');
     } else {
-      assert.match(expectation, /After approval,[^.]*ships/i, `${format}: shipping must be gated on approval`);
+      assert.match(expectation, /After proof approval/i, `${format}: print timing must be gated on approval`);
+      assert.match(expectation, /provider.*destination.*shipping option/i, `${format}: timing must remain evidence-dependent`);
+      assert.doesNotMatch(expectation, /5[–-]7|3[–-]5|9[–-]12/i, `${format}: no unsupported numeric SLA`);
     }
   }
 });

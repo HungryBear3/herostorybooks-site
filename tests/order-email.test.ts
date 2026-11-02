@@ -96,7 +96,8 @@ test('buildOrderConfirmationEmail includes the promised order details and suppor
   assert.match(email.html, /support@herostorybooks.com/);
   assert.match(email.html, /digital preview.*before it prints/i);
   assert.match(email.text, /Premium/);
-  assert.match(email.text, /Hardcover ships in 5–7 business days/i);
+  assert.match(email.text, /After proof approval.*print provider.*destination.*shipping option/i);
+  assert.doesNotMatch(email.text, /5[–-]7|3[–-]5|9[–-]12/i);
   assert.match(email.text, /support@herostorybooks.com/);
 });
 
@@ -184,12 +185,14 @@ test('buildPrintInProductionEmail does not claim the book has shipped', () => {
   assert.doesNotMatch(email.text, /has shipped/i);
 });
 
-test('buildPrintInProductionEmail mentions expected shipping timeframe', () => {
+test('buildPrintInProductionEmail gives qualified provider-dependent timing', () => {
   const order = { ...makeClassicOrder(), status: 'print_in_production' as const };
   const email = buildPrintInProductionEmail(order, { supportEmail: SUPPORT });
 
-  assert.match(email.html, /5.7 business days/i);
-  assert.match(email.text, /5.7 business days/i);
+  assert.match(email.html, /print provider.*destination.*shipping option/i);
+  assert.match(email.text, /print provider.*destination.*shipping option/i);
+  assert.match(email.text, /arrival dates are estimates and are not guaranteed/i);
+  assert.doesNotMatch(`${email.html}\n${email.text}`, /5[–-]7|3[–-]5|9[–-]12/i);
 });
 
 // ── buildShippedEmail ─────────────────────────────────────────────────────────

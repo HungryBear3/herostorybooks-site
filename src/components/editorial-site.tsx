@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { NamePreview } from '@/components/name-preview';
 import { getFathersDayCountdown, type FathersDayCountdown } from '@/lib/fathers-day';
 import {
+  PRINT_TIMING_AFTER_APPROVAL,
   PROOF_REVIEW_ASSURANCE,
   PROOF_TURNAROUND_WINDOW,
   PROOF_VOLUME_NOTE,
@@ -56,15 +57,15 @@ const tiers: Tier[] = [
     id: 'softcover',
     name: 'Classic softcover',
     price: catalogPrice('softcover'),
-    sub: '32-page 8.5″ × 8.5″ · perfect-bound',
-    blurb: 'Full-color matte pages, perfect-bound spine, and a keepsake feel without the hardcover price. The interior includes 24 illustrated story pages plus keepsake front and back matter.',
+    sub: '8.5″ × 8.5″ · perfect-bound',
+    blurb: 'Full-color matte pages, a perfect-bound spine, and a keepsake feel without the hardcover price. You review the complete personalized interior before anything prints.',
   },
   {
     id: 'hardcover',
     name: 'Premium hardcover',
     price: catalogPrice('hardcover'),
-    sub: '32-page 8.5″ × 8.5″ · keepsake gift finish',
-    blurb: 'Premium full-color pages, sturdy case binding, and a gift-ready finish for grandparents and big occasions. The interior includes 24 illustrated story pages plus keepsake front and back matter.',
+    sub: '8.5″ × 8.5″ · keepsake gift finish',
+    blurb: 'Premium full-color pages, sturdy case binding, and a gift-ready finish for grandparents and big occasions. You review the complete personalized interior before anything prints.',
   },
 ];
 
@@ -331,7 +332,7 @@ const physicalBookPhotos = [
 
 
 const comparisonRows = [
-  ['32-page personalized book', true, true, true],
+  ['Personalized illustrated story', true, true, true],
   ['Full-color illustrated spreads', true, true, true],
   ['Digital proof before print', true, true, true],
   ['US shipping included', false, true, true],
@@ -641,10 +642,10 @@ function BookFace({ title, star, tag }: { title: string; star: string; tag: stri
 function TrustStrip() {
   const items = [
     'Full digital proof before any printing',
-    'Revisions included before approval',
+    'One consolidated revision round before approval',
     'You review every page before approving',
     'US shipping included on printed books',
-    'Your photos stay private — never used to train AI',
+    'Photo and data handling explained in our Privacy Policy',
     'Stripe-secured checkout',
   ];
   return (
@@ -669,8 +670,8 @@ function SectionHeader({ eyebrow, title, sub, centered = false }: { eyebrow: str
 function HowItWorksSection() {
   const steps = [
     ['1', 'Tell us about your child', 'Their name, one photo, and a few details — age, interests, anything special. Voice note optional.'],
-    ['2', 'We craft a 32-page book', 'Your child becomes the hero through 24 illustrated story pages, writing personalized to their details, and keepsake front and back matter.'],
-    ['3', 'You approve, then we print', 'We email a full digital proof. Nothing prints until you approve. Revisions are free.'],
+    ['2', 'We craft their illustrated story', 'Your child becomes the hero through a format-specific illustrated story, writing personalized to their details, and keepsake front and back matter.'],
+    ['3', 'You approve, then we print', 'We email a full digital proof. Nothing prints until you approve. One consolidated revision round is included before approval, and we correct genuine identity, anatomy, text, and continuity errors we introduced.'],
   ];
   return (
     <section id="how" className="mx-auto max-w-6xl px-5 pt-10 pb-4 md:px-8 md:pt-16 md:pb-6">
@@ -903,7 +904,7 @@ function PrivacyBand() {
     <section className="mx-auto max-w-6xl px-5 pt-12 pb-5 md:px-8 md:pt-16 md:pb-6">
       <div className="grid gap-5 rounded-3xl border border-[#d8c6a2] bg-[#f5ead2] p-7 md:grid-cols-3 md:p-10">
         {[
-          ['Private by default', 'Your photo and details are used only to make the book. We never sell them or use them to train AI.'],
+          ['Order-focused handling', 'Your photo and details are used to create and support your order. Service providers may process them as described in our Privacy Policy.'],
           ['Proof before print', 'You see the story and art first. We only print once you approve.'],
           ['Small-team care', 'If the photo, name, or story tone feels wrong, we fix it before fulfillment.'],
         ].map(([title, body]) => (
@@ -999,7 +1000,7 @@ function SeasonalCallout() {
         <div className="rounded-2xl bg-[#f5ead2] p-6 text-center">
           <div className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a64c4c]">Delivery timing</div>
           <h3 className="font-serif text-3xl">Digital is fastest. Print is optional.</h3>
-          <p className="mt-3 text-sm leading-6 text-[#695f54]">Your proof (usually in {PROOF_TURNAROUND_WINDOW}) arrives with the full Digital PDF — no shipping step at all. Printed books ship 5–7 business days after you approve, so order early for dated gifts.</p>
+          <p className="mt-3 text-sm leading-6 text-[#695f54]">Your proof (usually in {PROOF_TURNAROUND_WINDOW}) arrives with the full Digital PDF — no shipping step at all. {PRINT_TIMING_AFTER_APPROVAL} Printed-book arrival dates are estimates and are not guaranteed.</p>
         </div>
       </div>
     </section>
@@ -1039,7 +1040,7 @@ export function EditorialPricingPage() {
   return (
     <EditorialPageShell active="pricing">
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
-        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub={`Digital $19, Classic softcover $39, Premium hardcover $64. US shipping included for printed books. Digital proofs are usually ready in ${PROOF_TURNAROUND_WINDOW}; printed books ship 5–7 business days after approval.`} centered />
+        <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub={`Digital $19, Classic softcover $39, Premium hardcover $64. US shipping included for printed books. Digital proofs are usually ready in ${PROOF_TURNAROUND_WINDOW}. ${PRINT_TIMING_AFTER_APPROVAL}`} centered />
         <TierCards />
         <div className="mt-12 overflow-x-auto rounded-2xl border border-[#d8c6a2] bg-[#fff8ec]">
           <div className="grid min-w-[560px] grid-cols-[1.3fr_repeat(3,0.8fr)] border-b border-[#d8c6a2] bg-[#f5ead2] text-sm font-semibold text-[#1f1a16]">
@@ -1121,7 +1122,7 @@ export function EditorialAboutPage() {
             The core promise is simple: you never blindly send a custom book to print. Every order starts with the child&apos;s name, photo, story details, and optional voice note, then we prepare a digital proof for review before any physical copy is printed.
           </p>
           <p>
-            We use AI-assisted illustration as a production tool, and you see a full proof of every page before anything is printed. Uploaded child photos and optional voice notes are used only to create and support the requested order; they are not sold, used to train AI models, or used for voice cloning.
+            We use AI-assisted illustration as a production tool, and you see a full proof of every page before anything is printed. Uploaded child photos and optional voice notes are used to create and support the requested order; service providers may process them as described in our Privacy Policy. We do not use them for voice cloning.
           </p>
         </div>
         <div className="mt-10 rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-6">

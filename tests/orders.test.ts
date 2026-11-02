@@ -36,10 +36,13 @@ test('buildDeliveryExpectation keeps digital-first reassurance for print formats
   assert.equal(buildDeliveryExpectation('digital'), 'Digital proof usually ready in 2–3 business days; the full high-resolution PDF comes with it, and you approve when it is right.');
   assert.match(
     buildDeliveryExpectation('classic'),
-    /Digital proof usually ready in 2–3 business days.*softcover ships in 5–7 business days/i,
+    /Digital proof usually ready in 2–3 business days.*After proof approval.*print provider.*destination.*shipping option/i,
   );
   assert.match(
     buildDeliveryExpectation('premium'),
-    /Digital proof usually ready in 2–3 business days.*hardcover ships in 5–7 business days/i,
+    /Digital proof usually ready in 2–3 business days.*After proof approval.*print provider.*destination.*shipping option/i,
   );
+  for (const format of ['classic', 'premium']) {
+    assert.doesNotMatch(buildDeliveryExpectation(format), /5[–-]7|3[–-]5|9[–-]12/i);
+  }
 });

@@ -1329,6 +1329,43 @@ const A37_RETENTION_HOLD_DECLARATION_HUNK: [string, string] = [
     "  confirmationEmailRetentionHoldUntil?: string | null;\n",
   '',
 ];
+// Owner-approved public-claims correction: keep the NT-20 frozen-order proof
+// exact by reversibly declaring the delivery-expectation import and function
+// changes. No order-storage or transaction behavior is widened.
+const PUBLIC_CLAIMS_DELIVERY_HUNKS: ReadonlyArray<readonly [string, string]> = [
+  [
+    "import { PRINT_TIMING_AFTER_APPROVAL, PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';\n",
+    "import { PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';\n",
+  ],
+  [
+    `export function buildDeliveryExpectation(bookFormat: string): string {
+  const format = normalizeFormat(bookFormat);
+
+  if (format === 'digital') {
+    return \`Digital proof \${PROOF_TURNAROUND_PHRASE}; the full high-resolution PDF comes with it, and you approve when it is right.\`;
+  }
+
+  if (format === 'premium') {
+    return \`Digital proof \${PROOF_TURNAROUND_PHRASE}. \${PRINT_TIMING_AFTER_APPROVAL} Free US shipping is included.\`;
+  }
+
+  return \`Digital proof \${PROOF_TURNAROUND_PHRASE}. \${PRINT_TIMING_AFTER_APPROVAL} Free US shipping is included.\`;
+}`,
+    `export function buildDeliveryExpectation(bookFormat: string): string {
+  const format = normalizeFormat(bookFormat);
+
+  if (format === 'digital') {
+    return \`Digital proof \${PROOF_TURNAROUND_PHRASE}; the full high-resolution PDF comes with it, and you approve when it is right.\`;
+  }
+
+  if (format === 'premium') {
+    return \`Digital proof \${PROOF_TURNAROUND_PHRASE}. After approval, hardcover ships in 5–7 business days — free shipping included.\`;
+  }
+
+  return \`Digital proof \${PROOF_TURNAROUND_PHRASE}. After approval, softcover ships in 5–7 business days — free shipping included.\`;
+}`,
+  ],
+];
 const NBT_BLOCK_START = '// ── NBT: the namespace-bound order transaction substrate';
 const NBT_BLOCK_END = '// ── end NBT ──\n\n';
 
@@ -1458,6 +1495,7 @@ test('NT-20: every existing declaration is source-identical to base; the four bo
   whole = revertHunks(whole, [
     NBT_IMPORT_HUNK,
     A37_RETENTION_HOLD_DECLARATION_HUNK,
+    ...PUBLIC_CLAIMS_DELIVERY_HUNKS,
     ...BOUND_HELPERS.flatMap(([, hunks]) => hunks),
   ]);
   assert.equal(sha(whole), NT20_BASE_FILE_SHA256);

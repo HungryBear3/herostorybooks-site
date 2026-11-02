@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { PRINT_PREVIEW_PROMISE, PROMO_CODE_HELP } from "@/lib/checkout-flow";
 import {
+  PRINT_TIMING_AFTER_APPROVAL,
   PROOF_REVIEW_ASSURANCE,
   PROOF_TURNAROUND_WINDOW,
   PROOF_VOLUME_NOTE,
@@ -176,7 +177,7 @@ const FORMATS = [
     badge: "Most flexible",
     delivery: `Digital proof usually ready in ${PROOF_TURNAROUND_WINDOW}`,
     deliveryDetail:
-      "32-page proof first · Full high-res PDF included with the proof email · No printing or shipping step",
+      "Full book proof first · High-res PDF included with the proof email · No printing or shipping step",
   },
   {
     id: "classic",
@@ -186,7 +187,7 @@ const FORMATS = [
     priceNum: 39,
     delivery: "Proof first, then softcover ships after approval",
     deliveryDetail:
-      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · Softcover ships 5–7 business days after approval · Digital PDF included`,
+      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · ${PRINT_TIMING_AFTER_APPROVAL} · Digital PDF included`,
   },
   {
     id: "premium",
@@ -196,13 +197,11 @@ const FORMATS = [
     priceNum: 64,
     delivery: "Proof first, then hardcover ships after approval",
     deliveryDetail:
-      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · Hardcover ships 5–7 business days after approval · Digital PDF included`,
+      `Proof usually ready in ${PROOF_TURNAROUND_WINDOW} · ${PRINT_TIMING_AFTER_APPROVAL} · Digital PDF included`,
   },
 ];
 
 const DEFAULT_BOOK_FORMAT = "digital";
-const TOTAL_BOOK_PAGE_COUNT = 32;
-const ILLUSTRATED_STORY_PAGE_COUNT = 24;
 
 const SUPPORTING_CHARACTER_LIMIT = 4;
 const PRIMARY_HERO_BETA_ENABLED = process.env.NEXT_PUBLIC_HSB_PRIMARY_HERO_BETA === "true";
@@ -926,8 +925,6 @@ export function CheckoutForm({
   const heroName = form.childName || "Your child";
   const printFormat = selectedFormat?.label ?? "Choose a format";
   const totalPrice = selectedFormat ? selectedFormat.price : "—";
-  const bookPageCount = TOTAL_BOOK_PAGE_COUNT;
-  const illustratedStoryPageCount = ILLUSTRATED_STORY_PAGE_COUNT;
   const coverTitle = selectedTheme
     ? `${heroName}'s ${selectedTheme.label}`
     : "Your Wonderful Story";
@@ -2117,8 +2114,8 @@ export function CheckoutForm({
 
                   <p className="rounded-2xl border border-[#d8c6a2] bg-[#fffaf1] px-4 py-3 text-xs leading-5 text-[#695f54]">
                     {storyMediaEnabled
-                      ? "Your typed story, voice note, and files are read by our team and used only to write this book. Never used for voice cloning or AI training."
-                      : "Your typed story is read by our team and used only to write this book. Never used for AI training."}
+                      ? "Your typed story, voice note, and files are used to write and support this book. Service providers may process them as described in our Privacy Policy. We do not use them for voice cloning."
+                      : "Your typed story is used to write and support this book. Service providers may process it as described in our Privacy Policy."}
                   </p>
                 </div>
               )}
@@ -3121,7 +3118,7 @@ export function CheckoutForm({
               )}
 
               <p className="order-3 text-center text-xs leading-5 text-[#8a7b6a]">
-                🔒 Photos stay private — used only to illustrate your book, never to train AI. You can review before print.
+                🔒 Photos are used to illustrate and support your order. Service providers may process them as described in our Privacy Policy. You can review before print.
               </p>
 
               {guidedCaptureEnabled && (
@@ -3171,7 +3168,7 @@ export function CheckoutForm({
               {showFathersDayReminder && (
                 <div className="rounded-2xl border border-[#a64c4c]/25 bg-[#a64c4c]/10 px-4 py-3 text-sm leading-6 text-[#1f1a16]">
                   <strong>Father&apos;s Day order-by date: {fathersDay.safeOrderDateLabel}.</strong>{" "}
-                  Digital arrives same-day after proof approval; printed books depend on proof timing and carrier delivery.
+                  The full Digital PDF comes with the proof email; printed books depend on proof timing and carrier delivery.
                 </div>
               )}
               <div className="rounded-lg border border-deep-gold/30 bg-deep-gold/5 px-3 py-2 text-xs text-forest">
@@ -3303,14 +3300,6 @@ export function CheckoutForm({
                   </div>
                   <div>
                     <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
-                      Book pages
-                    </dt>
-                    <dd className="mt-1 font-semibold text-[#241914]">
-                      {bookPageCount} total · {illustratedStoryPageCount} illustrated
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#8a7663]">
                       Photos
                     </dt>
                     <dd className="mt-1 font-semibold text-[#241914]">
@@ -3360,15 +3349,6 @@ export function CheckoutForm({
                     <span>{printFormat}</span>
                     <span className="font-semibold text-[#241914]">
                       {selectedFormat?.price ?? "—"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                      <span>Book pages</span>
-                    <span className="font-semibold text-[#241914]">
-                      {bookPageCount} total
-                      <span className="ml-1 font-normal text-[#6e6154]">
-                        ({illustratedStoryPageCount} illustrated story pages)
-                      </span>
                     </span>
                   </div>
                   {form.familyCharacters.length > 0 && (
@@ -3548,8 +3528,8 @@ export function CheckoutForm({
                   : `Continue to secure payment${selectedFormat ? ` — ${selectedFormat.price}` : ""}`}
               </button>
               <p className="text-center text-xs leading-5 text-[#8a7b6a]">
-                Secured by Stripe · Proof approval before printing · Your data
-                is never shared
+                Secured by Stripe · Proof approval before printing · Our Privacy Policy
+                explains how your data is used
               </p>
             </div>
 
@@ -3573,14 +3553,14 @@ export function CheckoutForm({
                   <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">2</span>
                   <span>
                     <strong className="block text-[#241914]">You review and reply</strong>
-                    Approve it as-is or ask us to revise wording, photo placement, or art.
+                    Approve it as-is or use the one consolidated revision round included before approval. We also correct genuine identity, anatomy, text, and continuity errors we introduced.
                   </span>
                 </li>
                 <li className="flex gap-3">
                   <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-[#a64c4c] bg-[#f8f0dd] font-serif text-[#a64c4c]">3</span>
                   <span>
                     <strong className="block text-[#241914]">Then we print or deliver</strong>
-                    Print books ship after approval; digital books are delivered right away.
+                    The full Digital PDF comes with the proof email. Printed books proceed only after approval, and timing depends on the print provider, destination, and shipping option.
                   </span>
                 </li>
               </ol>

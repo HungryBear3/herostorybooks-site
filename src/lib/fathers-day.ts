@@ -8,9 +8,8 @@
  *
  * Constants:
  *   - Father's Day 2026: Sunday, June 21, 2026 (third Sunday of June).
- *   - Last-safe print order date: Friday, June 5, 2026. This leaves a
- *     conservative 5–7 business days for print fulfillment plus 3–5
- *     days of US shipping after proof approval.
+ *   - Last-safe print order date: Friday, June 5, 2026. This legacy campaign
+ *     cutoff is not a reusable print or delivery SLA.
  *
  * If the launch business rule for the last-safe date changes (e.g.
  * shorter print SLA), only `LAST_SAFE_ORDER_DATE` needs updating.
@@ -152,7 +151,7 @@ export const FATHERS_DAY_OFFER = {
   eyebrow: "Father's Day gift",
   headline: "A Father's Day gift with no shipping risk.",
   digitalLead:
-    `The Digital PDF is the safest Father's Day pick. We email your proof first (usually in ${PROOF_TURNAROUND_WINDOW}), and the high-resolution book comes with it — no printing or shipping, so no carrier timing risk. Print it at home, read it on any screen, or share it instantly.`,
+    `The Digital PDF is the safest Father's Day pick. We email your proof first (usually in ${PROOF_TURNAROUND_WINDOW}), and the high-resolution book comes with it — no printing or shipping, so no carrier timing risk. Print it at home, read it on any screen, or share the downloaded file.`,
   printOptional:
     "Want a printed keepsake too? Add a softcover or hardcover as an optional upgrade. Printed books ship after proof approval, and arrival depends on the order-by date and your carrier, so we don't promise a printed book will arrive by Father's Day.",
   proofNote:

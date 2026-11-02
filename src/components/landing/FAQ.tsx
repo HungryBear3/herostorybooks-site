@@ -1,7 +1,7 @@
 'use client';
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
+import { PRINT_ARRIVAL_NOTE, PRINT_TIMING_AFTER_APPROVAL, PROOF_TURNAROUND_WINDOW } from '@/lib/proof-turnaround';
 
 const faqs = [
   {
@@ -17,7 +17,7 @@ const faqs = [
   {
     question: 'How long does delivery take?',
     answer:
-      `We email a digital proof first, usually in ${PROOF_TURNAROUND_WINDOW}. Once you approve the proof, digital orders receive the final high-resolution PDF and printed softcover/hardcover books ship within 5-7 business days via standard US shipping.`,
+      `We email a digital proof first, usually in ${PROOF_TURNAROUND_WINDOW}; the full high-resolution PDF comes with that proof email. ${PRINT_TIMING_AFTER_APPROVAL} ${PRINT_ARRIVAL_NOTE}`,
   },
   {
     question: 'Can I customize the story theme?',
@@ -37,7 +37,7 @@ const faqs = [
   {
     question: 'Is this a good gift?',
     answer:
-      "Yes — personalized storybooks are a popular birthday and holiday gift. Approve the proof at least 9–12 business days before the date you need it to give the printed book the best chance of arriving in time. Carriers vary, so we don't promise specific delivery dates; for tight timing the Digital PDF is a reliable fallback you can print at home or share instantly.",
+      `Yes — personalized storybooks are a popular birthday and holiday gift. We do not promise a printed-book arrival date. ${PRINT_TIMING_AFTER_APPROVAL} ${PRINT_ARRIVAL_NOTE} For tight timing, the Digital PDF is the safer option because it has no printing or shipping step.`,
   },
 ];
 

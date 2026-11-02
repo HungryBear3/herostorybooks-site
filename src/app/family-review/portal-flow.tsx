@@ -443,7 +443,7 @@ function WelcomeScreen({ onNext }: { onNext: () => void }) {
           },
           {
             t: 'Upload one to five private reference photos',
-            d: 'Clear faces, mixed angles. Used only by your reviewer for manual beta sample prep — never public, never sold, never used to train models, original filenames not stored.',
+            d: 'Clear faces, mixed angles. Used for manual beta sample prep — never public or sold. Service providers may process the photos for secure upload, storage, and support as described in our Privacy Policy; original filenames are not stored.',
           },
           {
             t: 'Pick a story direction',
@@ -621,8 +621,8 @@ function InfoScreen({
 
 const CONSENT_ITEMS: { t: string; d: string }[] = [
   {
-    t: 'Your reference photos are used only for beta sample prep.',
-    d: 'Two named reviewers look at them to hand-prepare your samples. Never public, never sold, never used to train models by us. Original filenames are stripped on upload.',
+    t: 'Your reference photos are used for beta sample prep and support.',
+    d: 'Two named reviewers look at them to hand-prepare your samples. Service providers may process them for secure upload, storage, and support as described in our Privacy Policy. Never public, never sold. Original filenames are stripped on upload.',
   },
   {
     t: 'You can ask us to delete everything at any time.',
@@ -1069,9 +1069,9 @@ function UploadScreen({
 
       <p className="help" style={{ textAlign: 'center' }}>
         <Icon name="shield" size={11} color="var(--forest)" /> &nbsp;Photos
-        are uploaded privately when you submit and stored only for your
-        own reviewer. Original filenames are stripped. Nothing is public,
-        nothing trains a model.
+        are uploaded privately when you submit. Service providers may process
+        them for secure upload, storage, and support as described in our
+        Privacy Policy. Original filenames are stripped. Nothing is public.
       </p>
 
       <div className="fr-row-between">

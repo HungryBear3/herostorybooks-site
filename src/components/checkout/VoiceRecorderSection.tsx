@@ -375,11 +375,11 @@ export function VoiceRecorderSection({
           <span>
             {attachedFileIsAudio ? (
               <>
-                I&apos;m the parent/guardian or an authorized adult for everyone in this recording. Hero Story Books may use it only to write this book. It won&apos;t be used for voice cloning or AI training, and won&apos;t be shared.
+                I&apos;m the parent/guardian or an authorized adult for everyone in this recording. Hero Story Books and its service providers may process it to create and support this book, as described in our Privacy Policy. We do not use it for voice cloning.
               </>
             ) : (
               <>
-                I have the right to share this document. Hero Story Books may use it only to write this book. It won&apos;t be used for AI training and won&apos;t be shared.
+                I have the right to share this document. Hero Story Books and its service providers may process it to create and support this book, as described in our Privacy Policy.
               </>
             )}
           </span>

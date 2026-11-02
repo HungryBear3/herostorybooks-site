@@ -35,7 +35,7 @@ import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts';
 import { finalizationFingerprint, parseSelectionEntry, type FinalizedSelectionEntry } from './checkout-intake.ts';
 import { validateOrderPhotoFile } from './photo-file-validation.ts';
-import { PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
+import { PRINT_TIMING_AFTER_APPROVAL, PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
 import { classifyStoryAttachment } from './story-attachment.ts';
 import { STORY_MEDIA_MAX_BYTES } from './story-media-size.ts';
 import {
@@ -1430,10 +1430,10 @@ export function buildDeliveryExpectation(bookFormat: string): string {
   }
 
   if (format === 'premium') {
-    return `Digital proof ${PROOF_TURNAROUND_PHRASE}. After approval, hardcover ships in 5–7 business days — free shipping included.`;
+    return `Digital proof ${PROOF_TURNAROUND_PHRASE}. ${PRINT_TIMING_AFTER_APPROVAL} Free US shipping is included.`;
   }
 
-  return `Digital proof ${PROOF_TURNAROUND_PHRASE}. After approval, softcover ships in 5–7 business days — free shipping included.`;
+  return `Digital proof ${PROOF_TURNAROUND_PHRASE}. ${PRINT_TIMING_AFTER_APPROVAL} Free US shipping is included.`;
 }
 
 /**
