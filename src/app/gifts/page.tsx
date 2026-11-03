@@ -3,12 +3,38 @@ import Link from 'next/link';
 
 import { EditorialPageShell } from '@/components/editorial-site';
 import { GIFT_OCCASIONS } from '@/lib/gift-occasions';
+import { PRODUCTION_ORIGIN } from '@/lib/site-url';
+
+const GIFTS_TITLE = 'Personalized Storybook Gift Ideas | HeroStoryBooks';
+const GIFTS_DESCRIPTION =
+  'Explore proof-first personalized storybook ideas for birthdays, grandparents, siblings, pets, holidays, and everyday child-as-hero gifts.';
 
 export const metadata: Metadata = {
-  title: 'Personalized Storybook Gift Ideas | HeroStoryBooks',
-  description:
-    'Explore proof-first personalized storybook ideas for birthdays, grandparents, siblings, pets, holidays, and everyday child-as-hero gifts.',
+  title: GIFTS_TITLE,
+  description: GIFTS_DESCRIPTION,
   alternates: { canonical: '/gifts' },
+  openGraph: {
+    title: GIFTS_TITLE,
+    description: GIFTS_DESCRIPTION,
+    url: `${PRODUCTION_ORIGIN}/gifts`,
+    siteName: 'HeroStoryBooks',
+    locale: 'en_US',
+    type: 'website',
+    images: [
+      {
+        url: '/assets/og-social-share.png',
+        width: 1200,
+        height: 630,
+        alt: 'HeroStoryBooks social share image',
+      },
+    ],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: GIFTS_TITLE,
+    description: GIFTS_DESCRIPTION,
+    images: ['/assets/og-social-share.png'],
+  },
 };
 
 export default function GiftsPage() {
