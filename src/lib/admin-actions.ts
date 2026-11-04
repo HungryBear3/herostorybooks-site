@@ -560,7 +560,30 @@ export function preprintRefundRefusalReason(order: OrderRecord): string | null {
   if (order.paymentStatus !== 'paid') {
     return 'not_paid';
   }
-  if (order.printUpgradeStatus === 'paid' && order.printUpgradeStripeSessionId) {
+  // Automatic refunds cover the initial payment only. Offer/checkout fields
+  // rotate, so they cannot establish that an older print payment disappeared.
+  // Keep settled and ambiguous/in-flight additional payments on the existing
+  // manual-reconciliation path. This predicate runs again inside the durable
+  // refund claim and before finalization, not just on the initial read.
+  const purchases = order.printCopyPurchases;
+  const audit = order.auditEvents;
+  if (
+    ('legacyPrintUpgradeSettlement' in order && order.legacyPrintUpgradeSettlement != null)
+    || order.printUpgradePaidAt != null
+    || ('printUpgradePaymentIntentId' in order && order.printUpgradePaymentIntentId != null)
+    || order.printUpgradeStatus === 'paid'
+    || order.printUpgradeStatus === 'checkout_open'
+    || order.printUpgradeLock != null
+    || (purchases != null && (!Array.isArray(purchases) || purchases.length > 0))
+    || (audit != null && (
+      !Array.isArray(audit)
+      || audit.some((event) => !event || typeof event !== 'object' || (
+        event.type === 'print_upgrade_paid'
+        || event.type === 'print_upgrade_at_cost_paid'
+        || event.type === 'print_upgrade_settlement_conflict'
+      ))
+    ))
+  ) {
     return 'multi_payment_refund_required';
   }
   if (order.status === 'shipped') return 'already_shipped';
