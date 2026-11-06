@@ -2,7 +2,8 @@
   "git": {
     "deploymentEnabled": {
       "rex/hsb-safeoff-20261019-jrm7sg1b": false,
-      "qa/hsb-private-pilot-67909-20261102": false
+      "qa/hsb-private-pilot-67909-20261102": false,
+      "abigail/hsb-operator-preview-20261106": false
     }
   },
   "redirects": [
