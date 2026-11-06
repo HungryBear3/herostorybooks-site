@@ -504,3 +504,37 @@ test('observability-6: source — kickoff helper imports getOrder for the summar
   assert.match(src, /emitChainExitSummary/);
   assert.match(src, /chain exited: outcome=/);
 });
+
+test('F8: classroom_release_held is a terminal hold: no retry, the fallback joins, the summary names the hold', async () => {
+  _resetInFlightForTest();
+  let triggerCalls = 0;
+  const trigger = async (): Promise<TriggerResult> => { triggerCalls++; return { status: 'classroom_release_held' }; };
+  const setImmediateQ = makeQueue();
+  const afterQ = makeQueue();
+  const timeouts: Array<() => void> = [];
+  const rec = makeRecorder();
+  scheduleFulfillmentKickoff('ord_classroom_held', {
+    trigger,
+    setImmediateImpl: (cb) => { setImmediateQ.push(cb); return null; },
+    afterImpl: (cb) => { afterQ.push(cb); },
+    setTimeoutImpl: (cb) => { timeouts.push(cb); return null; },
+    log: rec.log,
+    errorLog: rec.errorLog,
+    getOrderForSummary: async () => ({ paymentStatus: 'paid', fulfillmentStatus: 'not_started' } as never),
+    kickoffIdFactory: () => 'dddddddd',
+  });
+  await setImmediateQ.drain();
+  await afterQ.drain();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(triggerCalls, 1, 'the second scheduler joins the held result; nothing re-enters');
+  assert.equal(timeouts.length, 0, 'no bounded retry is scheduled for a hold');
+  assert.ok(rec.lines.some((l) => /chain exited: outcome=classroom_release_held/.test(l)), rec.lines.join('\n'));
+  assert.equal(rec.lines.some((l) => /giving up|retrying in/.test(l)), false);
+});
+
+test('F8 source: TriggerResult declares classroom_release_held and no cast bypasses the union', () => {
+  const src = readFileSync('src/lib/fulfillment.ts', 'utf8');
+  const union = src.slice(src.indexOf('export type TriggerResult'), src.indexOf('const DEFAULT_READBACK_MAX_ATTEMPTS'));
+  assert.match(union, /\{ status: 'classroom_release_held' \}/);
+  assert.doesNotMatch(src, /as unknown as TriggerResult/);
+});

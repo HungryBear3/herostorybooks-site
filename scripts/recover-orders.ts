@@ -27,6 +27,7 @@ import path from 'node:path';
 
 import {
   formatRecoverySummary,
+  invalidRecoveryInputMessage,
   recoverOrder,
   type RecoveryInput,
   type RecoverySummary,
@@ -47,8 +48,9 @@ async function main() {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) throw new Error('config must be a JSON array');
     inputs = parsed as RecoveryInput[];
-  } catch (err) {
-    console.error(`Could not parse ${configPath}: ${err instanceof Error ? err.message : err}`);
+  } catch {
+    // A JSON.parse message quotes config bytes, and a config can hold contact.
+    console.error(`Could not parse ${configPath}: expected a JSON array of recovery inputs`);
     process.exit(2);
   }
 
@@ -60,11 +62,9 @@ async function main() {
   const summaries: RecoverySummary[] = [];
   let failures = 0;
 
-  for (const input of inputs) {
+  for (const [index, input] of inputs.entries()) {
     if (!input.id || !input.childName || !input.email || !input.bookFormat) {
-      console.error(
-        `Skipping invalid input (missing id/childName/email/bookFormat): ${JSON.stringify(input)}`,
-      );
+      console.error(invalidRecoveryInputMessage(index));
       failures++;
       continue;
     }

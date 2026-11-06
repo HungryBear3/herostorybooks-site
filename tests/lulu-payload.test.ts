@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { submitPrintJob, clearTokenCache } from '../src/lib/lulu.ts';
+import { submitPrintJob as submitWithContact, clearTokenCache, type LuluPrintDeps } from '../src/lib/lulu.ts';
 import { createOrderRecord } from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
+import { syntheticPrintContact } from './support/print-contact-fixture.ts';
+
+const submitPrintJob = (order: OrderRecord, deps: Omit<LuluPrintDeps, 'contact'> = {}) =>
+  submitWithContact(order, { ...deps, contact: syntheticPrintContact(order) });
 
 const BASE_ORDER: OrderRecord = {
   ...createOrderRecord(

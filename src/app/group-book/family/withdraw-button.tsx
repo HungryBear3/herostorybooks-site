@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 
-export default function WithdrawButton({ alreadyWithdrawn }: { alreadyWithdrawn: boolean }) {
+export default function WithdrawButton({ alreadyWithdrawn, pilot = false }: { alreadyWithdrawn: boolean; pilot?: boolean }) {
   const [withdrawn, setWithdrawn] = useState(alreadyWithdrawn);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,7 +38,7 @@ export default function WithdrawButton({ alreadyWithdrawn }: { alreadyWithdrawn:
       {withdrawn ? (
         <div className="card card-warm" style={{ padding: 16 }}>
           <strong>Withdrawal recorded.</strong>
-          <p className="help">This child is marked to be left out of the group book. Saved details and photos are kept; photos are kept only until the normal deletion 90 days after the book’s final delivery. Viewing them here requires a valid family invite.</p>
+          <p className="help">This child is marked to be left out of the group book. Saved details and consent are kept separately. {pilot ? 'Test-only pilot photos are deleted within 7 days after actual pilot close.' : 'Photos are kept only until the normal deletion 90 days after the book’s final delivery.'} Viewing them here requires a valid family invite.</p>
         </div>
       ) : (
         <button className="btn btn-ghost btn-block" type="button" onClick={withdraw} disabled={busy}>

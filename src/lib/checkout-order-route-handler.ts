@@ -40,6 +40,7 @@ import {
   CheckoutIntentOwnershipError,
   claimCheckoutIntentOrderId,
   createOrderRecord,
+  isPrintFormat,
   MAX_DOCUMENT_BYTES,
   MAX_VOICE_BYTES,
   OrderPersistenceError,
@@ -102,6 +103,7 @@ import {
 } from './checkout-request-fingerprint.ts';
 import { classifyStoryAttachment } from './story-attachment.ts';
 import { isStoryMediaExplicitlyDisabled } from './story-media-store.ts';
+import { printContactStorageProblem } from './print-contact-store.ts';
 
 /**
  * Everything the handler cannot construct for itself under `node:test`.
@@ -634,6 +636,17 @@ export async function handleCheckoutOrderPost<TResponse>(
 
     draftOrder.checkoutLeaseId = crypto.randomUUID();
     draftOrder.checkoutLeaseExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+
+    // Print contact can only ever be held privately, so a print checkout that
+    // could not store it stops before any durable, media or provider work. This
+    // sits ahead of every create, resume and direct-intake branch.
+    if (isPrintFormat(draftOrder.bookFormat) && printContactStorageProblem()) {
+      logError(`[order] ABORT BEFORE MEDIA/PROVIDER: private print contact storage unavailable for ${draftOrder.id}`);
+      return json(
+        { error: CHECKOUT_RECONCILIATION_SUPPORT, code: 'print_contact_storage_unavailable' },
+        503,
+      );
+    }
 
     // Resolve the stable Stripe Product before creating the durable order or
     // uploading customer media. Product-scoped promotion codes depend on this

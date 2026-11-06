@@ -5,6 +5,7 @@ import { getConfiguredAdminKey } from '@/lib/admin-auth';
 import { isAdminAuthedFromCookie } from '@/lib/admin-auth-server';
 import { listAdminIntakeAssets } from '@/lib/admin-intake-asset-route-handler';
 import { getOrder } from '@/lib/orders';
+import { loadAdminPrintContacts } from '@/lib/print-contact-store';
 import { buildOrderDiagnostics, formatDiagnosticsSummary } from '@/lib/order-diagnostics';
 import {
   describeConfirmationEmailOperatorResult,
@@ -55,6 +56,8 @@ export default async function AdminOrderDetail({ params, searchParams }: Props) 
   if (!order) notFound();
 
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
+  // Read only here, after the admin check above; never part of a shared DTO.
+  const printContacts = await loadAdminPrintContacts(order);
   const checkoutEvidence = readCheckoutProvisioningEvidence(order);
   const diagnostics = buildOrderDiagnostics(order);
   const supportSummary = formatDiagnosticsSummary(diagnostics);
@@ -426,6 +429,19 @@ export default async function AdminOrderDetail({ params, searchParams }: Props) 
                 `${order.shippingAddress.line1}${order.shippingAddress.line2 ? ', ' + order.shippingAddress.line2 : ''}, ${order.shippingAddress.city}, ${order.shippingAddress.state} ${order.shippingAddress.zip}, ${order.shippingAddress.country}`
               } />
             )}
+          </Section>
+        )}
+
+        {printContacts.length > 0 && (
+          <Section title="Print recipient (private)">
+            {printContacts.map((contact) => (
+              <div key={contact.stripeSessionId} className="mb-3 rounded-lg border border-gray-100 p-3 last:mb-0">
+                <Row label="Purchase" value={contact.purchase} />
+                <Row label="Contact status" value={contact.status} tone={contact.status === 'complete' ? 'good' : 'bad'} />
+                <Row label="Recipient" value={contact.recipientName ?? '—'} />
+                <Row label="Phone" value={contact.phone ?? '—'} mono={Boolean(contact.phone)} />
+              </div>
+            ))}
           </Section>
         )}
 

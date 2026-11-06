@@ -16,6 +16,7 @@ import { createOrderRecord, persistOrder, getOrder, updateFulfillmentState } fro
 import type { OrderRecord } from '../src/lib/orders.ts';
 import type { StoryContent } from '../src/lib/fulfillment-types.ts';
 import { padPageSet } from './support/full-page-set.ts';
+import { resolveSyntheticPrintContact, SYNTHETIC_SHIPPING } from './support/print-contact-fixture.ts';
 
 // ── Shared test fixtures ──────────────────────────────────────────────────────
 
@@ -50,6 +51,7 @@ const PASS_DEPS: FulfillmentDeps = {
   calculateCoverDimensions: async () => ({ widthPt: 1200, heightPt: 650 }),
   uploadArtifact: async (orderId, _buffer, filename) => `https://cdn.example.com/${orderId}/${filename}`,
   submitPrint: async () => ({ jobId: 'lulu-job-001' }),
+  resolvePrintContact: resolveSyntheticPrintContact,
   sleep: async () => {},
   getBaseUrl: () => 'https://test.herostorybooks.com',
 };
@@ -370,6 +372,8 @@ test('valid token approves proof, creates cover artifact, and triggers print pro
       proofVersion: 'proof-v1',
       proofReviewedAt: '2026-04-23T10:00:00Z',
       proofReviewedVersion: 'proof-v1',
+      stripeSessionId: 'cs_test_print_fixture',
+      shippingAddress: SYNTHETIC_SHIPPING,
     }, dir);
 
     // Persist the identity of the exact approved/acknowledged source. The print

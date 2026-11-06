@@ -23,6 +23,7 @@ function clearFaults() {
     listLoop: false,
     beforeAttemptPut: null,
     hangPhotoPut: false,
+    beforePilotClosePut: null,
   });
   lateCommits.length = 0;
 }
@@ -46,6 +47,11 @@ export async function get(pathname, options) {
 }
 
 export async function put(pathname, body, options) {
+  if (faults.beforePilotClosePut && pathname.startsWith('group-book/pilot-closes/')) {
+    const hook = faults.beforePilotClosePut;
+    faults.beforePilotClosePut = null;
+    await hook();
+  }
   if (faults.beforeAttemptPut && pathname.includes('/attempts/')) {
     const hook = faults.beforeAttemptPut;
     faults.beforeAttemptPut = null;

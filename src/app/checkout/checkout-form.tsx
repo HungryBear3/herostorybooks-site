@@ -3385,6 +3385,11 @@ export function CheckoutForm({
                     <p className="text-sm text-[#695f54]">
                       Enter your email here, then continue directly to secure payment.
                     </p>
+                    {form.bookFormat !== "digital" && (
+                      <p className="text-sm text-[#695f54]">
+                        Your shipping address and delivery phone are collected at Stripe-hosted secure payment.
+                      </p>
+                    )}
                   </div>
                   <label htmlFor="email" className="block text-sm font-semibold text-[#1f1a16]">
                     Email address

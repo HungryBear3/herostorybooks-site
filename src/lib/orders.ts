@@ -1,5 +1,9 @@
-import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
+import os from 'node:os';
+import { resolve as resolveFsPath } from 'node:path';
+import { paidEvent } from './paid-order-event.ts';
+import { getRequiredStripeSecretKey } from './stripe-env.ts';
 
 import { applyBlobNamespace, BlobNamespaceError, getBlobNamespace, withBlobNamespace } from './blob-namespace.ts';
 import { normalizeEtag, normalizeEtagForIfMatch } from './blob-etag.ts';
@@ -614,6 +618,8 @@ export interface PageArtifact {
 export type FulfillmentMode = 'auto' | 'manual_hold';
 
 export interface OrderRecord extends OrderInput {
+  workOutbox?: import('./paid-order-event.ts').WorkEvent[];
+  characterReview?: import('./character-review.ts').CharacterReview;
   id: string;
   checkoutAttemptId?: string | null;
   checkoutFingerprint?: string | null;
@@ -856,6 +862,8 @@ export interface OrderRecord extends OrderInput {
   printUpgradeTargetFormat?: BookFormat | null;
   printUpgradeAmountCents?: number | null;
   printUpgradeStripeSessionId?: string | null;
+  /** Exact PaymentIntent accepted with a legacy retail-delta upgrade Session. */
+  printUpgradePaymentIntentId?: string | null;
   printUpgradePaidAt?: string | null;
   printUpgradeOfferedAt?: string | null;
   printUpgradePrintProvider?: 'rpi' | 'lulu' | string | null;
@@ -871,9 +879,161 @@ export interface OrderRecord extends OrderInput {
   printUpgradeLock?: PrintUpgradeLockV1 | null;
   /** Settled print purchases remain distinct from the original story order. */
   printCopyPurchases?: PrintCopyPurchaseV1[] | null;
+  /** Written once, by the signed legacy retail-delta settlement. Later at-cost
+   *  purchases reuse the printUpgrade* fields above and never touch this. */
+  legacyPrintUpgradeSettlement?: LegacyPrintUpgradeSettlementV1 | null;
   // PRINT_COMMERCE_ADDITIVE_END_FIELDS
+  /** Immutable classroom assembly binding. Never family/photo pointers; the
+   *  manifest path is derived from cohort + digest. Absent on individual orders. */
+  groupBookAssembly?: GroupBookAssemblyBinding;
+  /** Durable classroom checkout dispatch reservation, committed BEFORE any
+   *  provider create. Once present without a bound Session the order is held:
+   *  no automatic second create. Absent on every other order. */
+  classroomCheckoutDispatch?: ClassroomCheckoutDispatchV1 | null;
+  /** Append-once custody; written ONLY by the private classroom commands below. */
+  classroomAcceptedTerms?: Record<string, unknown>;
+  classroomAcceptedSession?: Record<string, unknown>;
+  classroomFinancialReceipt?: Record<string, unknown>;
+  classroomFinancialReconciliation?: Record<string, unknown>[];
+  /** Append-once private local proof adoption. Unreleased; authorizes no customer, print or email effect. */
+  classroomProofAdoption?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ClassroomCheckoutDispatchV1 {
+  schemaVersion: 1;
+  attemptId: string;
+  idempotencyKey: string;
+  reservedAt: string;
+}
+
+export interface GroupBookAssemblyBinding {
+  schemaVersion: 1;
+  cohortId: string;
+  digest: string;
+  participantCount: number;
+  expiresAt: string;
+}
+
+const GROUP_BOOK_ASSEMBLY_BINDING_KEYS = ['cohortId', 'digest', 'expiresAt', 'participantCount', 'schemaVersion'];
+const GROUP_BOOK_ASSEMBLY_BINDING_ERROR = 'invalid group book assembly binding';
+const GROUP_BOOK_ASSEMBLY_IMMUTABLE_ERROR = 'immutable group book assembly binding';
+
+/** Exact minimal binding shape: cohort, digest, 1..100 participants, canonical expiry. */
+export function validateGroupBookAssemblyBinding(value: unknown): value is GroupBookAssemblyBinding {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const binding = value as Record<string, unknown>;
+  const keys = Object.keys(binding).sort();
+  return keys.length === GROUP_BOOK_ASSEMBLY_BINDING_KEYS.length
+    && keys.every((key, index) => key === GROUP_BOOK_ASSEMBLY_BINDING_KEYS[index])
+    && binding.schemaVersion === 1
+    && typeof binding.cohortId === 'string' && /^[A-Za-z0-9_-]{2,64}$/.test(binding.cohortId)
+    && typeof binding.digest === 'string' && /^[a-f0-9]{64}$/.test(binding.digest)
+    && Number.isInteger(binding.participantCount)
+    && (binding.participantCount as number) >= 1 && (binding.participantCount as number) <= 100
+    && canonicalIso(binding.expiresAt);
+}
+
+/** Present (even null) means it must validate; only an absent/undefined field is an unbound order. */
+function assertGroupBookAssemblyBinding(order: OrderRecord): void {
+  if (order.groupBookAssembly === undefined) return;
+  if (!validateGroupBookAssemblyBinding(order.groupBookAssembly)) throw new Error(GROUP_BOOK_ASSEMBLY_BINDING_ERROR);
+}
+
+/** A stored binding can never be added, removed or changed by a later write. */
+function assertGroupBookAssemblyUnchanged(storedBody: string | null, next: OrderRecord): void {
+  // Custody is judged against the raw stored bytes (absent baseline included).
+  assertClassroomCustodyEvidence(classroomCustodyEvidence(storedBody), next);
+  if (storedBody === null) return;
+  assertGroupBookAssemblyEvidence(groupBookAssemblyEvidence(storedBody), next);
+}
+
+/** Canonical binding of exact stored bytes ('null' when unbound). Pure; no I/O. */
+function groupBookAssemblyEvidence(storedBody: string): string {
+  let stored: unknown;
+  try {
+    stored = (JSON.parse(storedBody) as Record<string, unknown>)?.groupBookAssembly;
+  } catch {
+    stored = undefined;
+  }
+  return stableJson(stored ?? null);
+}
+
+function assertGroupBookAssemblyEvidence(evidence: string, next: OrderRecord): void {
+  if (evidence !== stableJson(next.groupBookAssembly ?? null)) {
+    throw new Error(GROUP_BOOK_ASSEMBLY_IMMUTABLE_ERROR);
+  }
+}
+
+// ── Classroom financial custody (append-once, private producer only) ───────
+const CLASSROOM_CUSTODY_FIELDS = [
+  'classroomAcceptedTerms',
+  'classroomAcceptedSession',
+  'classroomFinancialReceipt',
+  'classroomFinancialReconciliation',
+  'classroomProofAdoption',
+] as const;
+const CLASSROOM_CUSTODY_IMMUTABLE_ERROR = 'immutable classroom financial custody';
+
+/** Own-property binding presence (even null/malformed) holds every classroom effect. */
+export function isClassroomReleaseHeld(order: unknown): boolean {
+  return order !== null && typeof order === 'object' && Object.prototype.hasOwnProperty.call(order, 'groupBookAssembly');
+}
+
+/** Canonical custody evidence of a detached plain record: present fields only, plus a bound Session id. */
+function classroomCustodyOf(record: Record<string, unknown> | null): string {
+  const picked: Record<string, unknown> = {};
+  if (record) {
+    for (const field of CLASSROOM_CUSTODY_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(record, field)) picked[field] = record[field];
+    }
+    if (Object.prototype.hasOwnProperty.call(picked, 'classroomAcceptedSession')) picked.stripeSessionId = record.stripeSessionId ?? null;
+  }
+  return stableJson(picked);
+}
+
+function classroomCustodyEvidence(storedBody: string | null): string {
+  if (storedBody === null) return classroomCustodyOf(null);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(storedBody);
+  } catch (error) {
+    // Malformed stored bytes never become an empty (retail) baseline.
+    throw new OrderPersistenceError('unknown', 'classroom custody baseline unreadable', error);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new OrderPersistenceError('unknown', 'classroom custody baseline unreadable');
+  }
+  return classroomCustodyOf(parsed as Record<string, unknown>);
+}
+
+/** Generic writers can never add, remove, edit or append custody; unchanged passes. */
+function assertClassroomCustodyEvidence(evidence: string, next: OrderRecord): void {
+  if (evidence !== classroomCustodyOf(next as unknown as Record<string, unknown>)) {
+    throw new OrderPersistenceError(next.id ?? 'unknown', CLASSROOM_CUSTODY_IMMUTABLE_ERROR);
+  }
+}
+
+/** Rejects accessors/toJSON on binding or custody members BEFORE any caller code runs. */
+function assertNoCustodyAccessors(order: unknown): void {
+  if (order === null || typeof order !== 'object') return;
+  const visit = (value: unknown, depth: number): void => {
+    if (value === null || typeof value !== 'object') return;
+    if (depth > 8) throw new OrderPersistenceError('unknown', 'order_proposal:custody_too_deep');
+    if ('toJSON' in (value as object)) throw new OrderPersistenceError('unknown', 'order_proposal:custody_tojson');
+    for (const key of Object.keys(Object.getOwnPropertyDescriptors(value))) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+      if (!('value' in descriptor)) throw new OrderPersistenceError('unknown', 'order_proposal:custody_accessor');
+      visit(descriptor.value, depth + 1);
+    }
+  };
+  for (const field of [...CLASSROOM_CUSTODY_FIELDS, 'groupBookAssembly', 'stripeSessionId']) {
+    const descriptor = Object.getOwnPropertyDescriptor(order, field);
+    if (!descriptor) continue;
+    if (!('value' in descriptor)) throw new OrderPersistenceError('unknown', 'order_proposal:custody_accessor');
+    visit(descriptor.value, 0);
+  }
 }
 
 // PRINT_COMMERCE_ADDITIVE_START_TYPES
@@ -921,8 +1081,8 @@ export interface PrintUpgradeQuoteV1 {
   /** Operator-verified delivery window; absent blocks payable checkout. */
   estimatedDeliveryStart: string | null;
   estimatedDeliveryEnd: string | null;
-  /** Destination the provider priced; shipped to exactly this address. */
-  shippingAddress: ShippingAddress & { name: string };
+  /** Destination the provider priced. The recipient is held privately. */
+  shippingAddress: ShippingAddress;
   issuedAt: string;
   expiresAt: string;
 }
@@ -947,7 +1107,8 @@ export interface PrintUpgradeLockV1 {
   checkoutUrl: string | null;
   /** Provider-side idempotency key used to create (or re-create) the Session. */
   idempotencyKey: string;
-  recipientName: string;
+  /** Legacy records only. New locks never carry a recipient. */
+  recipientName?: string;
   openedAt: string;
   /** Local expiry mirrored into the Session's `expires_at`. */
   expiresAt: string;
@@ -971,12 +1132,34 @@ export interface PrintCopyPurchaseV1 {
   currency: 'usd';
   stripeSessionId: string;
   stripePaymentIntentId: string | null;
-  shippingAddress: ShippingAddress & { name: string };
+  /** New purchases hold no recipient; see print-contact-store.ts. */
+  shippingAddress: ShippingAddress;
   estimatedDeliveryStart: string;
   estimatedDeliveryEnd: string;
   paidAt: string;
   printJobId: string | null;
   printStatus: 'awaiting_files' | 'ready_for_print' | 'submitted' | 'shipped';
+}
+/**
+ * Delivery contact (2026-10-29). Declaration-merged onto `ShippingAddress`
+ * so the frozen base declaration above stays byte-identical. Both fields are
+ * retained for reading legacy records only. New contact is written to the
+ * private store by print-contact-store.ts and never to a public record;
+ * nothing downstream invents it, and print release refuses without it.
+ */
+export interface ShippingAddress {
+  /** Recipient name as Stripe collected it with the address. */
+  name?: string | null;
+  /** Delivery phone (E.164 when Stripe supplied it). Required by the print provider. */
+  phone?: string | null;
+}
+
+/** Non-PII identity of the one signed legacy upgrade payment. */
+export interface LegacyPrintUpgradeSettlementV1 {
+  version: 1;
+  stripeSessionId: string;
+  stripePaymentIntentId: string | null;
+  paidAt: string;
 }
 // PRINT_COMMERCE_ADDITIVE_END_TYPES
 
@@ -2363,92 +2546,156 @@ function assertCheckoutIntakeOrderContract(order: OrderRecord, boundNamespace?: 
 
 function parseOrderRecord(serialized: string, boundNamespace?: string): OrderRecord {
   const order = scrubRetiredPrivateFields(JSON.parse(serialized) as OrderRecord);
+  assertGroupBookAssemblyBinding(order);
   assertCheckoutIntakeOrderContract(order, boundNamespace);
   return order;
 }
 
 export async function persistOrder(order: OrderRecord) {
+  // The store target is captured FIRST — before any caller property, the id
+  // included, can run caller code — so ambient drift inside that code cannot
+  // move the store, the namespace used for validation/sealing, or the
+  // hosted/local branch decision. Production-like with no token: resolve
+  // nothing (the resolver would refuse with a different message); the
+  // historical refusal below still applies after the raw-argument checks.
+  const token = getBlobToken();
+  const durableTokenMissing = !token && requiresDurablePersistence();
+  const namespace = getBlobNamespace();
+  const target = durableTokenMissing ? null : captureOrderStoreTarget(namespace);
+  const orderId = ownOrderIdForWrite(order);
   // Claim the newest generation up front so any commit already in flight loses
   // its right to publish, then evict unconditionally in the `finally` below.
   // A throwing write does NOT imply nothing was stored — a timeout or reset on
   // the RESPONSE can leave the record written — so success-only invalidation
   // would re-create the exact staleness this guards against. Reading through is
   // always safe; keeping a possibly-superseded entry is not.
-  beginOrderWrite(order.id);
+  const generation = beginOrderWrite(orderId);
+  const writeState = { entered: false, observedCurrent: false };
   try {
-    return await persistOrderUnsafe(order);
+    return await persistOrderUnsafe(order, orderId, token, namespace, target, writeState);
   } finally {
     // Bump AGAIN on completion. The generation orders write STARTS, not write
     // LANDINGS; an unconditional write carries no version token, so a commit
     // that started later but landed earlier would otherwise still hold the
     // newest generation and publish a record this write has just superseded.
     // Re-claiming here strips that right from anything still in flight.
-    forgetRecentConditionalCommit(order.id, beginOrderWrite(order.id));
+    if (writeState.entered) forgetRecentConditionalCommit(orderId, beginOrderWrite(orderId));
+    // Successful no-op observation is knowledge of current bytes, not a
+    // pre-write refusal. Keep this claim and retract only older cache entries;
+    // a newer writer's valid publication still belongs to that writer.
+    else if (writeState.observedCurrent) forgetRecentConditionalCommit(orderId, generation);
+    else retractOrderWrite(orderId, generation);
   }
 }
 
-async function persistOrderUnsafe(order: OrderRecord) {
-  // A3-3: before the scrub, and before anything reads a credential or touches
-  // the store. Refusing on the RAW argument is the point — the scrub below would
-  // delete the retired inline envelope, and a write that repaired itself would
-  // report success for a record whose request bytes had silently vanished.
-  assertNoConfirmationRequestBytes(order);
-  const token = getBlobToken();
-  const sanitized = scrubRetiredPrivateFields(order);
-  sealConfirmationEnvelopeRefForWrite(sanitized);
-  assertCheckoutIntakeOrderContract(sanitized);
-  const serialized = JSON.stringify(sanitized, null, 2);
-  const requireDurable = requiresDurablePersistence();
+async function persistOrderUnsafe(
+  order: OrderRecord,
+  orderId: string,
+  token: ReturnType<typeof getBlobToken>,
+  namespace: string,
+  target: OrderStoreTarget | null,
+  writeState: { entered: boolean; observedCurrent: boolean },
+) {
+  const ctx = target === null ? null : bindOrderOperationContext(target, orderId);
 
-  if (token) {
-    try {
-      await put(getOrderBlobPath(order.id), serialized, {
-        access: getBlobAccessMode(),
-        allowOverwrite: true,
-        addRandomSuffix: false,
-        contentType: 'application/json',
-        // Mutable CAS record: forbid CDN caching so a later read-after-write
-        // (or guarded commit) never observes an overwritten record as stale.
-        cacheControlMaxAge: 0,
-        token,
-      });
-      return sanitized;
-    } catch (err) {
-      // In production-like envs we MUST NOT silently fall back to ephemeral
-      // tmp filesystem — that's how a customer pays Stripe and the webhook
-      // later cannot find the order. Fail loudly. Caller (the order route)
-      // is responsible for aborting BEFORE Stripe Checkout Session creation.
-      if (requireDurable) {
-        console.error(
-          `[orders] persistOrder: blob put failed in production-like env (orderId=${order.id}). ` +
-            `Refusing silent tmp fallback. Cause:`,
-          err,
-        );
-        throw new OrderPersistenceError(
-          order.id,
-          'Durable order persistence failed (blob put error)',
-          err,
-        );
-      }
-      // Local dev: fall through to filesystem fallback below.
-      console.warn(`[orders] persistOrder blob put failed in dev for ${order.id}:`, err);
-    }
-  } else if (requireDurable) {
+  // A3-3: before the scrub, and before anything touches the store. Refusing
+  // on the RAW argument is the point — the scrub would delete the retired
+  // inline envelope, and a write that repaired itself would report success for
+  // a record whose request bytes had silently vanished. The detached proposal
+  // is the only thing validated, written and returned.
+  const proposal = detachOrderProposal(order, orderId, namespace);
+  const sanitized = proposal.record;
+  const serialized = proposal.body;
+
+  if (ctx === null) {
     // Production-like env with no blob token configured at all — hard fail.
     console.error(
-      `[orders] persistOrder: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=${order.id}). Refusing silent tmp fallback.`,
+      `[orders] persistOrder: BLOB_READ_WRITE_TOKEN is not set in a production-like environment (orderId=${orderId}). Refusing silent tmp fallback.`,
     );
     throw new OrderPersistenceError(
-      order.id,
+      orderId,
       'BLOB_READ_WRITE_TOKEN missing in production — cannot durably persist order',
     );
   }
 
-  // Local-dev / explicit override path only.
-  const dir = getOrderStoreDir();
-  await mkdir(dir, { recursive: true });
-  await writeFile(`${dir}/${order.id}.json`, `${serialized}\n`, 'utf8');
+  if (token) {
+    // Hosted: the record is read once and written ONLY through the captured
+    // adapter's conditional primitives against exactly what was read — CAS at
+    // the version read, or create-only when absent — including an existing
+    // record unbound on both sides. A lost race or a transport failure
+    // refuses with no write, no ambient put and no local fallback.
+    let stored: { body: string; version: string } | null;
+    try {
+      stored = await ctx.adapter.readVersioned(ctx.pathname);
+    } catch (err) {
+      throw new OrderPersistenceError(orderId, 'Order binding check read failed', err);
+    }
+    assertGroupBookAssemblyUnchanged(stored?.body ?? null, sanitized);
+    writeState.entered = true;
+    const written = stored
+      ? await ctx.adapter.replaceIfVersion(ctx.pathname, serialized, stored.version)
+      : await ctx.adapter.createIfAbsent(ctx.pathname, serialized);
+    if (!written.ok) {
+      writeState.entered = false;
+      throw new OrderPersistenceError(
+        orderId,
+        'Order write refused: the record changed concurrently (group_book_conditional_write_refused)',
+      );
+    }
+    return sanitized;
+  }
+
+  // Local-dev / explicit override path only, through the SAME captured adapter
+  // the resolver chose (a test override included — never a bypass to disk).
+  // For the local store that adapter's absolute root was fixed at capture, so
+  // a later env or CWD change cannot move the record, claim or staging files.
+  // Writes go through the claim/fence boundary (never a bare overwrite).
+  await persistOrderLocalFenced(ctx, orderId, `${serialized}\n`, sanitized, writeState);
   return sanitized;
+}
+
+/**
+ * Unconditional local write, serialized through the captured context's adapter
+ * (localOrderStoreAdapter with its fixed absolute root, or a test override): create
+ * when absent, otherwise replace the version just read. A lost race is retried
+ * from a fresh read (bounded, no timers). A refusal — live/unknown/foreign owner,
+ * legacy claim, exhausted slots, or contention past the bound — throws with no
+ * write. It never takes over another writer's claim. Dev/test-only store.
+ * Unlike a guarded no-op commit, re-persisting identical bytes consumes no claim slot.
+ */
+async function persistOrderLocalFenced(
+  ctx: OrderOperationContext,
+  orderId: string,
+  body: string,
+  next: OrderRecord,
+  writeState: { entered: boolean; observedCurrent: boolean },
+): Promise<void> {
+  // No separate root mkdir: the adapter's create/replace primitives create
+  // their own parent directories under the captured root.
+  const store = ctx.adapter;
+  const pathname = ctx.pathname;
+  for (let attempt = 1; attempt <= ORDER_TRANSACTION_MAX_ATTEMPTS; attempt += 1) {
+    const current = await store.readVersioned(pathname);
+    // Checked against the exact version the fenced replace below requires.
+    assertGroupBookAssemblyUnchanged(current?.body ?? null, next);
+    if (current && current.body === body) {
+      // Already exactly these bytes: linearize at this read. No claim consumed.
+      writeState.observedCurrent = true;
+      noteLocalCas('unconditional_already_current');
+      return;
+    }
+    writeState.entered = true;
+    const result = current
+      ? await store.replaceIfVersion(pathname, body, current.version)
+      : await store.createIfAbsent(pathname, body);
+    if (result.ok) {
+      noteLocalCas('unconditional_committed');
+      return;
+    }
+    writeState.entered = false;
+  }
+  noteLocalCas('unconditional_refused');
+  throw new OrderPersistenceError(orderId, 'Local order write refused (local_unconditional_write_refused)');
 }
 
 /**
@@ -2843,7 +3090,7 @@ export async function prepareOrderForAdminFulfillmentRetry(
       // This low-level exported mutation boundary is fail-closed. Callers must
       // supply the current release policy; omitting it can never opt an order
       // back into automatic fulfillment.
-      if (!eligible || !eligible(current)) return { abort: null };
+      if (!eligible || !eligible(current) || current.workOutbox?.length || current.characterReview) return { abort: null };
       if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
         return { abort: null };
       }
@@ -3138,15 +3385,21 @@ export async function readAuthoritativeOrderBlobVersioned(
   );
 }
 
-function blobOrderStoreAdapter(token: string): OrderStoreAdapter {
+/**
+ * Token and access mode are fixed at construction: no method re-reads the
+ * environment, so an adapter keeps addressing the store it was built for.
+ */
+function blobOrderStoreAdapter(
+  token: string,
+  access: ReturnType<typeof getBlobAccessMode>,
+): OrderStoreAdapter {
   return {
     kind: 'blob',
     async readVersioned(pathname) {
       try {
-        if (getBlobAccessMode() === 'public') {
+        if (access === 'public') {
           return await readPublicOrderBlobVersioned(pathname, token);
         }
-        const access = getBlobAccessMode();
         // get() returns the body stream AND the etag in a single call, so the
         // version token always describes exactly the bytes we read. This SDK
         // path is private-store only; public-store reads use the helper above.
@@ -3175,7 +3428,7 @@ function blobOrderStoreAdapter(token: string): OrderStoreAdapter {
     async createIfAbsent(pathname, body) {
       try {
         const res = await put(pathname, body, {
-          access: getBlobAccessMode(),
+          access,
           token,
           allowOverwrite: false,
           addRandomSuffix: false,
@@ -3195,7 +3448,7 @@ function blobOrderStoreAdapter(token: string): OrderStoreAdapter {
         // THE atomic primitive: the store compares the stored ETag with
         // `ifMatch` and performs the write only if they are equal.
         const res = await put(pathname, body, {
-          access: getBlobAccessMode(),
+          access,
           token,
           allowOverwrite: true,
           addRandomSuffix: false,
@@ -3222,14 +3475,148 @@ function parentDirOf(p: string) {
   return i === -1 ? '.' : p.slice(0, i);
 }
 
-function localOrderStoreAdapter(): OrderStoreAdapter {
+// ── Local CAS claim ownership (crash recovery with fencing) ─────────────────
+//
+// DEV/TEST-ONLY STORE. The local adapter is selected only without a Blob token
+// outside production-like mode; nothing here qualifies Blob persistence.
+//
+// A local claim `.cas/<record>.<version>[.<slot>].claim` is the exclusive right
+// to advance the record FROM that version. Before this change a writer killed
+// between the claim hardlink and the rename left the claim behind forever, and
+// every later writer for that version got version_conflict (route 409).
+//
+// Recovery here is NOT "delete old locks" and NOT a TTL. Safety comes from
+// FENCING, and liveness evidence only decides WHEN to fence:
+//
+//  1. A writer stages its body at `<record>.<token>.tmp` BEFORE it publishes its
+//     claim, and the claim names that token. Publishing is `rename(tmp, record)`,
+//     so the staged tmp file is the writer's one and only right to publish.
+//  2. An occupied slot whose owner's tmp is already gone is INERT: that owner has
+//     committed, aborted or been fenced, and can never publish again (tokens are
+//     unique and a tmp is never recreated). A contender steps to the next slot.
+//  3. An occupied slot whose tmp still exists is stepped past ONLY when the owner
+//     is provably dead on THIS host (same hostname; ESRCH for its pid, or our own
+//     pid with a different process instance). The contender first REVOKES the
+//     owner by renaming its tmp away. rename() of one source succeeds at most once,
+//     so either the owner already published (the version check below then fails)
+//     or the owner can never publish (its own rename gets ENOENT => no-write).
+//  4. Slots are created only with link() (exclusive) and are never unlinked or
+//     reused, so a slot can never be "re-won" by a second writer. Every slot below
+//     the one a writer holds was inert or revoked when it was passed, and any slot
+//     above it can only be created after passing (i.e. revoking) it, so at most one
+//     writer per version can still publish. Claims are therefore APPEND-ONLY: one
+//     per attempt that reaches a free slot (commit, no-op commit, late loser), plus
+//     `<slot>.revoked` bodies and the killed owner's own claim staging file.
+//  5. Anything not provable — another host, a live or unknown pid (incl. PID reuse
+//     and unreaped zombies), EPERM, a legacy/unparseable claim — is refused as
+//     version_conflict with no write, no unlink and no revoke. Nothing reads a clock.
+//  6. At most LOCAL_CAS_MAX_SLOTS claims per version. When all are occupied by
+//     inert/revoked owners the write is refused (`refused_slots_exhausted`) with no
+//     write; the record needs a reviewed manual repair. No GC exists by design.
+//
+// The externally visible linearization point is the rename (publication). A claim
+// is exclusive INTENT, not a commit: readers keep seeing the previous version until
+// the rename, and a claim whose owner died before renaming never committed.
+//
+// Scope: one host, one local POSIX filesystem with atomic link/rename, process
+// death/restart only. Not NFS, not multi-host, not power-loss durable (no fsync).
+const LOCAL_CAS_CLAIM_SCHEMA = 'hsb-local-cas-claim/v1';
+const LOCAL_CAS_MAX_SLOTS = 64;
+const LOCAL_CAS_HEX32 = /^[a-f0-9]{32}$/;
+
+/**
+ * Finite diagnostic vocabulary for the local adapter. Codes only: never a path,
+ * record body, host, pid, token or order identifier.
+ */
+export const LOCAL_CAS_DIAGNOSTIC_CODES = [
+  'committed',
+  'version_mismatch',
+  'fenced_own_publish',
+  'passed_inert_slot',
+  'revoked_dead_owner',
+  'refused_live_owner',
+  'refused_unverifiable_owner',
+  'refused_foreign_host',
+  'refused_legacy_claim',
+  'refused_unreadable_claim',
+  'refused_slots_exhausted',
+  'unconditional_committed',
+  'unconditional_already_current',
+  'unconditional_refused',
+] as const;
+export type LocalCasDiagnosticCode = (typeof LOCAL_CAS_DIAGNOSTIC_CODES)[number];
+
+const localCasDiagnosticCounts = new Map<LocalCasDiagnosticCode, number>();
+
+function noteLocalCas(code: LocalCasDiagnosticCode): void {
+  localCasDiagnosticCounts.set(code, (localCasDiagnosticCounts.get(code) ?? 0) + 1);
+}
+
+/** Process-local counters per diagnostic code (a snapshot; fixed key set). */
+export function readLocalCasDiagnostics(): Record<LocalCasDiagnosticCode, number> {
+  const out = {} as Record<LocalCasDiagnosticCode, number>;
+  for (const code of LOCAL_CAS_DIAGNOSTIC_CODES) out[code] = localCasDiagnosticCounts.get(code) ?? 0;
+  return out;
+}
+
+interface LocalCasClaim {
+  schema: typeof LOCAL_CAS_CLAIM_SCHEMA;
+  expectedVersion: string;
+  token: string;
+  host: string;
+  pid: number;
+  instance: string;
+}
+
+/** Per-process (not per-module-copy) random identity; distinguishes PID reuse by this process. */
+function localCasProcessInstance(): string {
+  const key = Symbol.for('hsb.orders.localCasProcessInstance');
+  const g = globalThis as unknown as Record<symbol, unknown>;
+  if (typeof g[key] !== 'string') g[key] = crypto.randomBytes(16).toString('hex');
+  return g[key] as string;
+}
+
+function parseLocalCasClaim(raw: string, expectedVersion: string): LocalCasClaim | null {
+  try {
+    const c = JSON.parse(raw) as Partial<LocalCasClaim>;
+    if (c.schema !== LOCAL_CAS_CLAIM_SCHEMA || c.expectedVersion !== expectedVersion) return null;
+    if (typeof c.token !== 'string' || !LOCAL_CAS_HEX32.test(c.token)) return null;
+    if (typeof c.instance !== 'string' || !LOCAL_CAS_HEX32.test(c.instance)) return null;
+    if (typeof c.host !== 'string' || c.host.length === 0) return null;
+    if (typeof c.pid !== 'number' || !Number.isSafeInteger(c.pid) || c.pid <= 0) return null;
+    return c as LocalCasClaim;
+  } catch {
+    return null;
+  }
+}
+
+/** 'dead' only on positive evidence the owner process no longer exists on this host. */
+function localCasOwnerVerdict(owner: LocalCasClaim): 'dead' | LocalCasDiagnosticCode {
+  if (owner.host !== os.hostname()) return 'refused_foreign_host';
+  if (owner.pid === process.pid) {
+    return owner.instance !== localCasProcessInstance() ? 'dead' : 'refused_live_owner';
+  }
+  try {
+    process.kill(owner.pid, 0);
+    return 'refused_live_owner'; // alive — or a reused pid / zombie; either way not provably dead
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'dead' : 'refused_unverifiable_owner';
+  }
+}
+
+function localOrderStoreAdapter(root: string = resolveFsPath(getOrderStoreDir())): OrderStoreAdapter {
   // MUST mirror the layout persistOrder()/getOrder() use for the local store:
   // the blob pathname is `<namespace>/orders/<id>.json`, and on disk that same
-  // record lives at `<storeDir>/<id>.json`.
+  // record lives at `<storeDir>/<id>.json`. `root` is absolute and fixed at
+  // construction, so record, claim and staging paths never follow a later
+  // env or CWD change.
   const basenameOf = (pathname: string) => pathname.slice(pathname.lastIndexOf('/') + 1);
-  const fileFor = (pathname: string) => `${getOrderStoreDir()}/${basenameOf(pathname)}`;
+  const fileFor = (pathname: string) => `${root}/${basenameOf(pathname)}`;
   const claimFor = (pathname: string, version: string) =>
-    `${getOrderStoreDir()}/.cas/${basenameOf(pathname)}.${version.replace(/[^a-z0-9]/gi, '')}.claim`;
+    `${root}/.cas/${basenameOf(pathname)}.${version.replace(/[^a-z0-9]/gi, '')}.claim`;
+  // Slot 0 keeps the pre-existing name, so an old-format claim still excludes us.
+  const claimSlot = (claim: string, slot: number) =>
+    (slot === 0 ? claim : `${claim.slice(0, -'.claim'.length)}.${slot}.claim`);
 
   const readRaw = async (file: string): Promise<string | null> => {
     try {
@@ -3238,6 +3625,38 @@ function localOrderStoreAdapter(): OrderStoreAdapter {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
     }
+  };
+
+  /**
+   * May a contender step past this occupied claim slot? Only when its owner can
+   * never publish: already inert, or provably dead AND revoked here. Anything
+   * else is a refusal code, and nothing on disk is changed.
+   */
+  const passOccupiedSlot = async (
+    file: string,
+    slotPath: string,
+    expectedVersion: string,
+  ): Promise<'passed_inert_slot' | 'revoked_dead_owner' | LocalCasDiagnosticCode> => {
+    const raw = await readRaw(slotPath);
+    if (raw === null) return 'refused_unreadable_claim'; // vanished (legacy writer released it): retry from a fresh read
+    const owner = parseLocalCasClaim(raw, expectedVersion);
+    if (!owner) return raw === expectedVersion ? 'refused_legacy_claim' : 'refused_unreadable_claim'; // fail closed
+    const ownerTmp = `${file}.${owner.token}.tmp`;
+    try {
+      await stat(ownerTmp);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'passed_inert_slot';
+      throw error;
+    }
+    const verdict = localCasOwnerVerdict(owner);
+    if (verdict !== 'dead') return verdict; // never steal a live, unknown or foreign writer
+    try {
+      await rename(ownerTmp, `${slotPath}.revoked`); // the fence: at most one rename of ownerTmp wins
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return 'passed_inert_slot'; // another recoverer fenced it, or it published, first
+    }
+    return 'revoked_dead_owner';
   };
 
   return {
@@ -3268,48 +3687,86 @@ function localOrderStoreAdapter(): OrderStoreAdapter {
       await mkdir(parentDirOf(claim), { recursive: true });
       await mkdir(parentDirOf(file), { recursive: true });
 
-      // Exclusively claim the right to advance FROM `expectedVersion`. Two
-      // writers holding the same expected version cannot both claim it.
-      const claimTmp = `${claim}.${crypto.randomBytes(8).toString('hex')}.tmp`;
-      await writeFile(claimTmp, expectedVersion, 'utf8');
-      let claimed = false;
+      // Stage the body FIRST: once our claim is visible, our tmp must already
+      // exist, because a revoker fences us by moving exactly this file away.
+      const token = crypto.randomBytes(16).toString('hex');
+      const tmp = `${file}.${token}.tmp`;
+      const claimTmp = `${claim}.${token}.tmp`;
+      const record: LocalCasClaim = {
+        schema: LOCAL_CAS_CLAIM_SCHEMA,
+        expectedVersion,
+        token,
+        host: os.hostname(),
+        pid: process.pid,
+        instance: localCasProcessInstance(),
+      };
       try {
+        await writeFile(tmp, body, 'utf8');
+        await writeFile(claimTmp, JSON.stringify(record), 'utf8');
+        // Exclusively claim the right to advance FROM `expectedVersion`. Two
+        // writers holding the same expected version cannot both claim a slot.
+        let held = false;
+        for (let slot = 0; slot < LOCAL_CAS_MAX_SLOTS && !held; slot += 1) {
+          const slotPath = claimSlot(claim, slot);
+          try {
+            await link(claimTmp, slotPath);
+            held = true;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+            const passed = await passOccupiedSlot(file, slotPath, expectedVersion);
+            noteLocalCas(passed);
+            if (passed !== 'passed_inert_slot' && passed !== 'revoked_dead_owner') {
+              return { ok: false, reason: 'version_conflict' };
+            }
+          }
+        }
+        if (!held) {
+          // Every slot for this version is occupied by an inert or revoked owner.
+          // Fail closed: nothing was written, nothing is deleted or reused.
+          noteLocalCas('refused_slots_exhausted');
+          return { ok: false, reason: 'version_conflict' };
+        }
+        const current = await readRaw(file);
+        if (current === null || orderVersionOf(current) !== expectedVersion) {
+          noteLocalCas('version_mismatch');
+          return { ok: false, reason: 'version_conflict' };
+        }
         try {
-          await link(claimTmp, claim);
-          claimed = true;
+          await rename(tmp, file);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          // Our staged body was revoked by a recoverer: provably nothing written.
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            noteLocalCas('fenced_own_publish');
             return { ok: false, reason: 'version_conflict' };
           }
           throw error;
         }
-        const current = await readRaw(file);
-        if (current === null || orderVersionOf(current) !== expectedVersion) {
-          return { ok: false, reason: 'version_conflict' };
-        }
-        const tmp = `${file}.${crypto.randomBytes(8).toString('hex')}.tmp`;
-        await writeFile(tmp, body, 'utf8');
-        await rename(tmp, file);
+        noteLocalCas('committed');
         return { ok: true, version: orderVersionOf(body) };
       } finally {
+        // Removing our own tmp (absent after a successful rename) makes our slot
+        // inert. The slot itself is deliberately never unlinked: see header.
+        await unlink(tmp).catch(() => {});
         await unlink(claimTmp).catch(() => {});
-        if (claimed) await unlink(claim).catch(() => {});
       }
     },
   };
 }
 
 let orderStoreAdapterFactoryOverride: ((token: string | undefined) => OrderStoreAdapter) | null = null;
+let orderStoreOverrideGeneration = 0;
 
 /** Test seam: substitute the versioned store to exercise exact CAS semantics. */
 export function __setOrderStoreAdapterFactoryForTests(
   factory: ((token: string | undefined) => OrderStoreAdapter) | null,
 ): void {
   orderStoreAdapterFactoryOverride = factory;
+  orderStoreOverrideGeneration += 1;
 }
 
 export function __resetOrderStoreAdapterFactoryForTests(): void {
   orderStoreAdapterFactoryOverride = null;
+  orderStoreOverrideGeneration += 1;
   recentConditionalCommits.clear();
   orderWriteGeneration.clear();
   retractedOrderWrites.clear();
@@ -3318,19 +3775,302 @@ export function __resetOrderStoreAdapterFactoryForTests(): void {
 function resolveOrderStoreAdapter(): OrderStoreAdapter {
   const token = getBlobToken();
   if (orderStoreAdapterFactoryOverride) return orderStoreAdapterFactoryOverride(token);
-  if (token) return blobOrderStoreAdapter(token);
+  if (token) return blobOrderStoreAdapter(token, getBlobAccessMode());
   if (requiresDurablePersistence()) {
     throw new OrderPersistenceError(
       'unknown',
       'BLOB_READ_WRITE_TOKEN missing in production — cannot perform a guarded order commit',
     );
   }
-  return localOrderStoreAdapter();
+  return localOrderStoreAdapter(resolveFsPath(getOrderStoreDir()));
 }
 
-/** A cached commit, tagged with the write generation that published it. */
-interface CachedCommit extends VersionedOrder {
+/**
+ * The operation context: captured synchronously, before the first await, and
+ * carried through every read, validation, retry and write of one logical call.
+ * Stable store identity captures configuration, independently of fresh adapter
+ * objects. `namespace` fixes namespace-dependent validation/sealing.
+ */
+interface OrderOperationContext {
+  readonly adapter: OrderStoreAdapter;
+  readonly pathname: string;
+  readonly namespace: string;
+  readonly storeIdentity?: string;
+}
+
+function captureOrderOperationContext(
+  orderId: string,
+  namespace: string = getBlobNamespace(),
+): OrderOperationContext {
+  return bindOrderOperationContext(captureOrderStoreTarget(namespace), orderId);
+}
+
+/**
+ * The id-free half of an operation context: the actual adapter and namespace.
+ * Record-taking writers capture this BEFORE touching any caller property
+ * (an `id` getter included), then bind the record path to one captured id.
+ */
+interface OrderStoreTarget {
+  readonly adapter: OrderStoreAdapter;
+  readonly namespace: string;
+  readonly storeIdentity: string;
+}
+
+function captureOrderStoreTarget(namespace: string = getBlobNamespace()): OrderStoreTarget {
+  // Capture all selectors before invoking the override factory (caller code).
+  const token = getBlobToken();
+  const access = getBlobAccessMode();
+  const root = resolveFsPath(getOrderStoreDir());
+  const durable = requiresDurablePersistence();
+  const factory = orderStoreAdapterFactoryOverride;
+  const overrideGeneration = orderStoreOverrideGeneration;
+  if (!factory && !token && durable) {
+    throw new OrderPersistenceError('unknown', 'BLOB_READ_WRITE_TOKEN missing in production — cannot perform a guarded order commit');
+  }
+  const adapter = factory ? factory(token) : token ? blobOrderStoreAdapter(token, access) : localOrderStoreAdapter(root);
+  const storeIdentity = JSON.stringify([
+    adapter.kind, token === undefined ? null : crypto.createHash('sha256').update(token).digest('hex'),
+    access, !token || factory ? root : null, namespace, overrideGeneration,
+  ]);
+  return Object.freeze({ adapter, namespace, storeIdentity });
+}
+
+function bindOrderOperationContext(target: OrderStoreTarget, orderId: string): OrderOperationContext {
+  // The record path is derived from the ONE namespace captured with the
+  // adapter (the same join as `getOrderBlobPath`), never from a second ambient read.
+  return Object.freeze({
+    adapter: target.adapter,
+    pathname: applyBlobNamespace(`orders/${orderId}.json`, target.namespace),
+    namespace: target.namespace,
+    storeIdentity: target.storeIdentity,
+  });
+}
+
+/**
+ * The single id of a record-taking write, read once from an own DATA property.
+ * An accessor (or missing/non-string) id is refused WITHOUT invoking it: a
+ * getter would be caller code choosing the path, and re-reading it could split
+ * path, generation, error and publication identity.
+ */
+function ownOrderIdForWrite(order: OrderRecord): string {
+  const descriptor =
+    order !== null && typeof order === 'object' ? Object.getOwnPropertyDescriptor(order, 'id') : undefined;
+  if (!descriptor || !('value' in descriptor) || typeof descriptor.value !== 'string' || !descriptor.value) {
+    throw new OrderPersistenceError('unknown', 'order_proposal:id_not_plain_data');
+  }
+  return descriptor.value;
+}
+
+/**
+ * The ONE detached proposal of a write: `body` is exactly the bytes handed to
+ * create/CAS, and `record` is a fresh object parsed back from those bytes. All
+ * validation (identity, ref boundary/seal, binding, checkout intake) judges
+ * `record`, so no caller getter, `toJSON` (top-level or nested) or shared
+ * object mutated during a later await can make the bytes differ from what was
+ * validated, returned or published.
+ */
+interface DetachedOrderProposal {
+  readonly record: OrderRecord;
+  readonly body: string;
+}
+
+/**
+ * The caller's ref, read once from an own data property and sealed into a
+ * fresh null-prototype copy; null when the record carries no own ref. An
+ * accessor could answer the boundary and the serializer differently, so it is
+ * refused rather than read again.
+ */
+function sealRawConfirmationEnvelopeRef(
+  order: OrderRecord,
+  orderId: string,
+  namespace: string,
+): ConfirmationEmailEnvelopeRefV1 | null {
+  const descriptor = Object.getOwnPropertyDescriptor(order, CONFIRMATION_ENVELOPE_REF_FIELD);
+  if (descriptor === undefined) return null;
+  if (!('value' in descriptor)) {
+    throw new OrderPersistenceError(orderId, 'confirmation_envelope_boundary:ref_not_plain_data');
+  }
+  if (descriptor.value === undefined || descriptor.value === null) return null;
+  const result = materializeConfirmationEmailEnvelopeRef(descriptor.value, { orderId, namespace });
+  if ('problem' in result) {
+    throw new OrderPersistenceError(orderId, 'confirmation_envelope_boundary:' + result.problem);
+  }
+  return result.ref;
+}
+
+/**
+ * Refusal-only C6 privacy exception. Inspect raw record descriptors, never
+ * ordinary properties or serialization hooks. A successful preflight grants
+ * no authority: baseline/version acquisition and detached validation follow.
+ * The ref materializer's entire closure reads only descriptor-copied data and
+ * checks primitive types before field validation; its result is discarded.
+ */
+function assertDescriptorConfirmationPrivacy(order: OrderRecord, orderId: string, namespace: string): void {
+  let refDescriptor: PropertyDescriptor | undefined;
+  const visited = new Set<object>();
+  for (let owner: object | null = order; owner !== null; owner = Object.getPrototypeOf(owner)) {
+    if (visited.has(owner)) {
+      throw new OrderPersistenceError(orderId, 'confirmation_envelope_boundary:ref_not_plain_data');
+    }
+    visited.add(owner);
+    if (Object.getOwnPropertyDescriptor(owner, CONFIRMATION_ENVELOPE_RETIRED_INLINE_FIELD)) {
+      throw new OrderPersistenceError(orderId, 'confirmation_envelope_boundary:retired_inline_envelope_present');
+    }
+    refDescriptor ??= Object.getOwnPropertyDescriptor(owner, CONFIRMATION_ENVELOPE_REF_FIELD);
+  }
+  if (!refDescriptor) return;
+  if (!('value' in refDescriptor)) {
+    throw new OrderPersistenceError(orderId, 'confirmation_envelope_boundary:ref_not_plain_data');
+  }
+  const shell = Object.create(null) as OrderRecord;
+  Object.defineProperty(shell, CONFIRMATION_ENVELOPE_REF_FIELD, { value: refDescriptor.value });
+  sealRawConfirmationEnvelopeRef(shell, orderId, namespace);
+}
+
+/**
+ * What JSON.stringify(order) would serialize, with the caller's ref swapped for
+ * its sealed copy. The record's own toJSON still runs exactly once and every
+ * other member is still read through [[Get]]; only the caller's ref never
+ * reaches the serializer, so no hook on it can run.
+ */
+function serializableOrderWithSealedRef(
+  order: OrderRecord,
+  sealedRef: ConfirmationEmailEnvelopeRefV1 | null,
+): unknown {
+  if (sealedRef === null) return order;
+  const source = order as unknown as Record<string, unknown>;
+  const hook: unknown = source.toJSON;
+  const top: unknown = typeof hook === 'function' ? Reflect.apply(hook, order, ['']) : order;
+  let projected: unknown = top;
+  if (top === order) {
+    const shell = Object.create(null) as Record<string, unknown>;
+    for (const key of Object.keys(source)) {
+      shell[key] = key === CONFIRMATION_ENVELOPE_REF_FIELD ? sealedRef : source[key];
+    }
+    projected = shell;
+  }
+  // Wrapped in a hook of our own, so the projection is serialized exactly as a
+  // toJSON result is: its own hook, if any, is not asked again.
+  return { toJSON: () => projected };
+}
+
+/**
+ * Put the sealed null-prototype ref back on a parsed record whose ref holds
+ * exactly its values, in its key order. A parsed ref inherits Object.prototype,
+ * and with it any hook installed there; the sealed copy inherits nothing.
+ */
+function restoreSealedRef(
+  target: Record<string, unknown>,
+  sealedRef: ConfirmationEmailEnvelopeRefV1 | null,
+): void {
+  if (sealedRef === null) return;
+  const parsed = target[CONFIRMATION_ENVELOPE_REF_FIELD];
+  if (parsed === null || typeof parsed !== 'object') return;
+  const sealed = sealedRef as unknown as Record<string, unknown>;
+  const keys = Object.keys(sealed);
+  const parsedKeys = Object.keys(parsed);
+  if (parsedKeys.length !== keys.length) return;
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (parsedKeys[index] !== key || (parsed as Record<string, unknown>)[key] !== sealed[key]) return;
+  }
+  target[CONFIRMATION_ENVELOPE_REF_FIELD] = sealedRef;
+}
+
+function detachOrderProposal(order: OrderRecord, orderId: string, namespace: string): DetachedOrderProposal {
+  // Custody/binding accessors are refused before ANY caller code can run.
+  assertNoCustodyAccessors(order);
+  // A3-3: refused on the RAW argument, before any scrub (unchanged contract).
+  assertNoConfirmationRequestBytes(order, namespace);
+  // Sealed BEFORE serialization: no hook on the caller's ref ever runs.
+  const sealedRef = sealRawConfirmationEnvelopeRef(order, orderId, namespace);
+  // The only point where caller serialization runs.
+  let plain: unknown;
+  try {
+    plain = JSON.parse(JSON.stringify(serializableOrderWithSealedRef(order, sealedRef)) ?? 'null');
+  } catch (error) {
+    throw new OrderPersistenceError(orderId, 'order_proposal:not_serializable', error);
+  }
+  if (plain === null || typeof plain !== 'object' || Array.isArray(plain)) {
+    throw new OrderPersistenceError(orderId, 'order_proposal:not_a_record');
+  }
+  // A parsed ref inherits Object.prototype; the sealed copy inherits nothing.
+  restoreSealedRef(plain as Record<string, unknown>, sealedRef);
+  // Same refusal on what serialization produced: a `toJSON` cannot smuggle it in.
+  assertNoConfirmationRequestBytes(plain as OrderRecord, namespace);
+  const sanitized = scrubRetiredPrivateFields(plain as OrderRecord);
+  sealConfirmationEnvelopeRefForWrite(sanitized, namespace);
+  if (sanitized.id !== orderId) {
+    throw new OrderPersistenceError(orderId, 'order_proposal:id_mismatch');
+  }
+  const body = JSON.stringify(sanitized, null, 2);
+  // The one deserializer (scrub, binding, intake contract), then the sealed ref
+  // again, so the returned record inherits no hook on its ref either.
+  const record = parseOrderRecord(body, namespace);
+  restoreSealedRef(record as unknown as Record<string, unknown>, sanitized.confirmationEmailEnvelopeRef ?? null);
+  return { record, body };
+}
+
+/**
+ * Attempt-local evidence: the immutable raw bytes and version of ONE read of
+ * ONE context. Module-private and branded; never handed to caller code. It is
+ * consumed by exactly one write and accepted only for its own adapter/path.
+ */
+interface OrderAttemptEvidence {
+  readonly adapter: OrderStoreAdapter;
+  readonly pathname: string;
+  readonly rawBody: string;
+  readonly version: string;
+  readonly storeIdentity?: string;
+  readonly publicationGeneration?: number;
+}
+
+const liveOrderAttemptEvidence = new WeakSet<object>();
+
+function mintOrderAttemptEvidence(
+  ctx: OrderOperationContext,
+  raw: { body: string; version: string },
+  publicationGeneration?: number,
+): OrderAttemptEvidence {
+  const evidence: OrderAttemptEvidence = Object.freeze({
+    adapter: ctx.adapter,
+    pathname: ctx.pathname,
+    rawBody: String(raw.body),
+    version: String(raw.version),
+    storeIdentity: ctx.storeIdentity,
+    publicationGeneration,
+  });
+  liveOrderAttemptEvidence.add(evidence);
+  return evidence;
+}
+
+function consumeOrderAttemptEvidence(
+  evidence: OrderAttemptEvidence,
+  ctx: OrderOperationContext,
+  orderId: string,
+): OrderAttemptEvidence {
+  if (!liveOrderAttemptEvidence.has(evidence)
+    || evidence.adapter !== ctx.adapter
+    || evidence.storeIdentity !== ctx.storeIdentity
+    || evidence.pathname !== ctx.pathname) {
+    throw new OrderPersistenceError(orderId, 'order_operation_context:evidence_invalid');
+  }
+  liveOrderAttemptEvidence.delete(evidence);
+  return evidence;
+}
+
+/**
+ * A cached commit, tagged with the write generation that published it and the
+ * stable store identity/path it was written to. Process-local read-your-writes
+ * only: eligible ambient attempt-one reads mint private evidence from these
+ * bytes, and every consumer receives a fresh parse.
+ */
+interface CachedCommit {
+  body: string;
+  version: string;
   generation: number;
+  storeIdentity: string;
+  pathname: string;
 }
 
 const recentConditionalCommits = new Map<string, CachedCommit>();
@@ -3421,9 +4161,10 @@ function retractOrderWrite(orderId: string, generation: number): void {
  * Evicting is not free. `getBlobAccessMode()` defaults to `'public'`, so a
  * guarded read that misses the cache goes through `readPublicOrderBlobVersioned`,
  * which FAILS CLOSED by throwing when the CDN validator moves under it. The
- * cache is therefore not a latency optimisation — it is what lets a follow-up
- * mutation skip a read that can hard-fail. Every unnecessary eviction converts a
- * guaranteed-correct cache hit into a possible 5xx (the shape PR #137 fixed).
+ * cache is non-authoritative read-your-writes only, served solely to a
+ * recent read of the exact same store and path. Independent commits and
+ * retries read the store. Unnecessary eviction still costs such a reader a
+ * store read that can fail closed.
  *
  * So a writer may only clear what it has authority over: its own record, or one
  * older than it. Omitting `generation` means "clear unconditionally", which is
@@ -3450,10 +4191,12 @@ function forgetRecentConditionalCommit(orderId: string, generation?: number): vo
  */
 function publishConditionalCommit(
   order: OrderRecord,
+  body: string,
   version: string,
   generation: number,
+  ctx?: OrderOperationContext,
 ): void {
-  if (!isNewestOrderWrite(order.id, generation)) {
+  if (!ctx?.storeIdentity || !isNewestOrderWrite(order.id, generation) || !cacheEligibleOrderBody(body)) {
     forgetRecentConditionalCommit(order.id, generation);
     return;
   }
@@ -3464,27 +4207,47 @@ function publishConditionalCommit(
   const existing = recentConditionalCommits.get(order.id);
   if (existing && existing.generation > generation) return;
   recentConditionalCommits.set(order.id, {
-    order: scrubRetiredPrivateFields(order),
+    body,
     version,
     generation,
+    storeIdentity: ctx.storeIdentity,
+    pathname: ctx.pathname,
   });
 }
 
-/** Read an order together with its CAS version token. */
+/** Only ordinary retail bytes may supply process-local attempt evidence. */
+function cacheEligibleOrderBody(body: string): boolean {
+  const record = JSON.parse(body) as Record<string, unknown>;
+  return !['groupBookAssembly', ...CLASSROOM_CUSTODY_FIELDS].some(field => Object.prototype.hasOwnProperty.call(record, field));
+}
+
+function recentOrderBytes(orderId: string, ctx: OrderOperationContext): { body: string; version: string } | null {
+  const recent = recentConditionalCommits.get(orderId);
+  return recent && recent.storeIdentity === ctx.storeIdentity && recent.pathname === ctx.pathname && cacheEligibleOrderBody(recent.body)
+    ? { body: recent.body, version: recent.version } : null;
+}
+
+/**
+ * Read an order together with its CAS version token. The context is captured
+ * first; a recent entry is served only for that exact adapter and path, and
+ * the result carries no hidden authority — a later commit always rereads.
+ */
 export async function readOrderVersioned(
   orderId: string,
   opts: { preferRecentCommit?: boolean } = {},
 ): Promise<VersionedOrder | null> {
+  const ctx = captureOrderOperationContext(orderId);
   if (opts.preferRecentCommit) {
-    const recent = recentConditionalCommits.get(orderId);
-    if (recent) return recent;
+    const recent = recentOrderBytes(orderId, ctx);
+    if (recent) {
+      return { order: parseOrderRecord(recent.body, ctx.namespace), version: recent.version };
+    }
   }
-  const adapter = resolveOrderStoreAdapter();
-  const raw = await adapter.readVersioned(getOrderBlobPath(orderId));
+  const raw = await ctx.adapter.readVersioned(ctx.pathname);
   if (!raw) return null;
   let parsed: OrderRecord;
   try {
-    parsed = parseOrderRecord(raw.body);
+    parsed = parseOrderRecord(raw.body, ctx.namespace);
   } catch (error) {
     throw new OrderPersistenceError(orderId, 'Stored order record is not valid JSON', error);
   }
@@ -3493,13 +4256,19 @@ export async function readOrderVersioned(
 
 /** Create a new order only when its deterministic record path is absent. */
 export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> {
+  // Captured FIRST — before validation, scrub or serialization can run caller
+  // code — and used for every check, the seal and the target. A create
+  // publishes no evidence: a later commit rereads its own captured target.
+  // The store target precedes the id read; the id is one own data property.
+  const target = captureOrderStoreTarget();
+  const orderId = ownOrderIdForWrite(order);
+  const ctx = bindOrderOperationContext(target, orderId);
   // A3-3: independently enforced here, not inherited from persistOrder. This is
-  // a separate entry point with its own adapter call.
-  assertNoConfirmationRequestBytes(order);
-  const sanitized = scrubRetiredPrivateFields(order);
-  sealConfirmationEnvelopeRefForWrite(sanitized);
-  assertCheckoutIntakeOrderContract(sanitized);
-  const adapter = resolveOrderStoreAdapter();
+  // a separate entry point with its own adapter call. The detached proposal's
+  // bytes are exactly what is validated, created and returned.
+  const proposal = detachOrderProposal(order, orderId, ctx.namespace);
+  // A fresh record can never be created holding financial custody.
+  assertClassroomCustodyEvidence(classroomCustodyEvidence(null), proposal.record);
   // NO up-front generation claim here, unlike persistOrder. A create that loses
   // to an existing record is a provable no-write, and an up-front claim would
   // suppress the publish of a commit already in flight — destroying a valid
@@ -3518,21 +4287,18 @@ export async function persistNewOrder(order: OrderRecord): Promise<OrderRecord> 
   // A THROW, by contrast, stays ambiguous and must still evict.
   let mayHaveWritten = true;
   try {
-    const created = await adapter.createIfAbsent(
-      getOrderBlobPath(order.id),
-      JSON.stringify(sanitized, null, 2),
-    );
+    const created = await ctx.adapter.createIfAbsent(ctx.pathname, proposal.body);
     if (!created.ok) {
       // ONLY `exists` is provable. The adapter type permits other failure
       // reasons, and a test double may return one; anything else stays
       // ambiguous and must still evict.
       if ('reason' in created && created.reason === 'exists') mayHaveWritten = false;
-      throw new OrderPersistenceError(order.id, 'Refusing to overwrite an existing order during creation');
+      throw new OrderPersistenceError(orderId, 'Refusing to overwrite an existing order during creation');
     }
-    return sanitized;
+    return proposal.record;
   } finally {
     // Same reasoning as persistOrder: re-claim on completion.
-    if (mayHaveWritten) forgetRecentConditionalCommit(order.id, beginOrderWrite(order.id));
+    if (mayHaveWritten) forgetRecentConditionalCommit(orderId, beginOrderWrite(orderId));
   }
 }
 
@@ -4034,39 +4800,51 @@ export async function commitOrderConditional(
   order: OrderRecord,
   expectedVersion: string,
 ): Promise<ConditionalCommitResult> {
-  const adapter = resolveOrderStoreAdapter();
+  // Captured before any await and before any caller property (the id getter
+  // included): the actual adapter and namespace, then the path from one id.
+  const target = captureOrderStoreTarget();
+  const orderId = ownOrderIdForWrite(order);
+  const ctx = bindOrderOperationContext(target, orderId);
   // Claimed synchronously, before any await, so a concurrent writer cannot
   // interleave between the claim and the write.
-  const generation = beginOrderWrite(order.id);
+  const generation = beginOrderWrite(orderId);
   let result: ConditionalCommitResult;
+  let proposal: DetachedOrderProposal;
+  let writeEntered = false;
   try {
+    assertDescriptorConfirmationPrivacy(order, orderId, ctx.namespace);
     // A3-3: the CAS path is enforced independently of the two unconditional
     // writers. It is the path a legacy read-modify-write reaches, and the one a
-    // future dispatch commit will use.
-    assertNoConfirmationRequestBytes(order);
-    const sanitized = scrubRetiredPrivateFields(order);
-    sealConfirmationEnvelopeRefForWrite(sanitized);
-    assertCheckoutIntakeOrderContract(sanitized);
-    result = await adapter.replaceIfVersion(
-      getOrderBlobPath(order.id),
-      JSON.stringify(sanitized, null, 2),
-      expectedVersion,
-    );
+    // future dispatch commit will use. The immutable authoritative baseline
+    // precedes proposal serialization, including every caller hook.
+    // An independent public commit inherits nothing from any earlier read,
+    // create or commit: it makes ONE authoritative read of its own captured
+    // target and judges immutability against those bytes. A failed read
+    // refuses with no write. The CAS uses the caller's version only — a
+    // different stored version is a conflict, never a substitute.
+    const stored = await ctx.adapter.readVersioned(ctx.pathname);
+    if (!stored || stored.version !== expectedVersion) {
+      retractOrderWrite(orderId, generation);
+      return { ok: false, reason: 'version_conflict' };
+    }
+    const baseline = Object.freeze({ body: String(stored.body), version: String(stored.version) });
+    proposal = detachOrderProposal(order, orderId, ctx.namespace);
+    assertGroupBookAssemblyUnchanged(baseline.body, proposal.record);
+    writeEntered = true;
+    result = await ctx.adapter.replaceIfVersion(ctx.pathname, proposal.body, baseline.version);
   } catch (error) {
     // Ambiguous: the write may or may not have landed, so anything this write
     // or an older one published is suspect. A newer writer's entry is not.
-    forgetRecentConditionalCommit(order.id, generation);
+    if (writeEntered) forgetRecentConditionalCommit(orderId, generation);
+    else retractOrderWrite(orderId, generation);
     throw error;
   }
-  if (result.ok) {
-    publishConditionalCommit(order, result.version, generation);
-  }
+  if (result.ok) publishConditionalCommit(proposal.record, proposal.body, result.version, generation, ctx);
   // A LOST CAS deliberately evicts nothing. This write did not land, so it
   // learned nothing about current truth — and the entry it would have evicted
   // belongs to the writer that WON and is still correct. Evicting here is what
   // reopens the fail-closed public-blob read (see forgetRecentConditionalCommit).
-  // The transaction retry does not need it either: attempt 2+ reads with
-  // preferRecentCommit: false and so always re-reads authoritative state.
+  // Retries re-read authoritative state through their captured context.
   //
   // It must also give its CLAIM back. A lost CAS is a provable no-write, so
   // holding the newest generation can suppress the publish of the writer that
@@ -4079,7 +4857,7 @@ export async function commitOrderConditional(
   // answer: the read path retries with backoff and the store is authoritative.
   // Recovering it would mean stashing the suppressed record and replaying it on
   // fold-down, which is a fourth structure; deliberately not built here.
-  else retractOrderWrite(order.id, generation);
+  else retractOrderWrite(orderId, generation);
   return result;
 }
 
@@ -4132,37 +4910,99 @@ export const ORDER_TRANSACTION_MAX_ATTEMPTS = 5;
  * capability and payment invariants are re-evaluated on the latest state, and
  * unrelated concurrent changes are carried forward rather than clobbered), and
  * the result is committed conditionally on that version.
+ *
+ * Attempt one may use exact committed retail bytes in the captured store.
+ * Explicit `fresh` and every retry read the store authoritatively. Private
+ * single-use evidence is minted before the callback can mutate its fresh copy.
  */
 export async function withOrderTransaction<T>(
   orderId: string,
   mutate: (order: OrderRecord) => Promise<OrderTransactionOutcome<T>> | OrderTransactionOutcome<T>,
-  opts: { maxAttempts?: number; notFound?: () => T } = {},
+  opts: { maxAttempts?: number; notFound?: () => T; fresh?: boolean } = {},
 ): Promise<T> {
+  // One context for the whole logical transaction, captured before the first
+  // await AND before any caller option is read (a `maxAttempts` getter is
+  // caller code): every attempt reads and writes the SAME adapter and path,
+  // however the ambient selectors move during `mutate` or a retry.
+  const ctx = captureOrderOperationContext(orderId);
   const maxAttempts = opts.maxAttempts ?? ORDER_TRANSACTION_MAX_ATTEMPTS;
+  const fresh = opts.fresh === true;
+  const publicationGeneration = orderWriteGeneration.get(orderId) ?? 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const current = await readOrderVersioned(orderId, { preferRecentCommit: attempt === 1 });
-    if (!current) {
+    const raw = (attempt === 1 && !fresh ? recentOrderBytes(orderId, ctx) : null)
+      ?? await ctx.adapter.readVersioned(ctx.pathname);
+    if (!raw) {
       if (opts.notFound) return opts.notFound();
       throw new OrderPersistenceError(orderId, 'Order not found for guarded commit');
     }
-    const outcome = await mutate(current.order);
+    const evidence = mintOrderAttemptEvidence(ctx, raw, publicationGeneration);
+    let current: OrderRecord;
+    try {
+      current = parseOrderRecord(evidence.rawBody, ctx.namespace);
+    } catch (error) {
+      throw new OrderPersistenceError(orderId, 'Stored order record is not valid JSON', error);
+    }
+    const outcome = await mutate(current);
     if ('abort' in outcome) return outcome.abort;
-    // commitOrderConditional owns the cache: it publishes the committed record
-    // when this write is still the newest, and evicts otherwise. Doing it here
-    // as well would re-introduce an unguarded `set` after the await.
-    const committed = await commitOrderConditional(outcome.commit, current.version);
+    if (outcome.commit.id !== orderId) {
+      // Never write another record's body into this transaction's fixed path.
+      throw new OrderPersistenceError(orderId, 'order_transaction:commit_id_mismatch');
+    }
+    const committed = await commitOrderAttempt(ctx, evidence, orderId, outcome.commit);
     if (committed.ok) return outcome.result;
   }
   throw new OrderVersionConflictError(orderId, maxAttempts);
 }
 
+/**
+ * The ambient transaction's private writer. Same boundary and cache discipline
+ * as `commitOrderConditional`, but it takes the attempt's own branded evidence
+ * instead of reading again: immutability is judged against the raw bytes of
+ * that read (never the parsed record the callback may have mutated), the CAS
+ * uses that read's version, and the evidence is consumed by this one write.
+ */
+async function commitOrderAttempt(
+  ctx: OrderOperationContext,
+  evidence: OrderAttemptEvidence,
+  orderId: string,
+  order: OrderRecord,
+): Promise<ConditionalCommitResult> {
+  // Claimed synchronously, before any await.
+  const generation = beginOrderWrite(orderId);
+  let result: ConditionalCommitResult;
+  let proposal: DetachedOrderProposal;
+  let writeEntered = false;
+  try {
+    const observed = consumeOrderAttemptEvidence(evidence, ctx, orderId);
+    // Validated, written and published: the one detached proposal.
+    proposal = detachOrderProposal(order, orderId, ctx.namespace);
+    assertGroupBookAssemblyUnchanged(observed.rawBody, proposal.record);
+    writeEntered = true;
+    result = await ctx.adapter.replaceIfVersion(ctx.pathname, proposal.body, observed.version);
+  } catch (error) {
+    // Ambiguous: the write may or may not have landed.
+    if (writeEntered) forgetRecentConditionalCommit(orderId, generation);
+    else retractOrderWrite(orderId, generation);
+    throw error;
+  }
+  // A completion reclaim between the attempt's read and its writer claim
+  // also withdraws publication rights. CAS may still succeed; the next call
+  // then reads the store. This preserves direct-write completion invalidation.
+  if (result.ok && evidence.publicationGeneration === generation - 1) {
+    publishConditionalCommit(proposal.record, proposal.body, result.version, generation, ctx);
+  } else if (result.ok) forgetRecentConditionalCommit(orderId, generation);
+  // Lost CAS: a provable no-write gives its claim back and evicts nothing.
+  else retractOrderWrite(orderId, generation);
+  return result;
+}
+
 // ── NBT: the namespace-bound order transaction substrate (architecture §N) ──
 //
-// Every function above resolves the Blob namespace from the ambient
-// environment at each call, so a transaction that starts in one namespace can
-// read, retry or commit in another if the environment moves underneath it. The
-// functions below take the namespace as DATA instead: a branded, frozen
+// Every function above captures its operation context (adapter, namespace,
+// record path) from the ambient environment ONCE, at entry, before its first
+// await, and keeps it for the whole call. The functions below take the
+// namespace as DATA instead: a branded, frozen
 // binding fixes the record path once per call, and every read, every CAS retry
 // read, the conditional commit, the ref boundary and seal, the checkout-intake
 // contract and the returned provenance use it. They are additive. No existing
@@ -4275,24 +5115,28 @@ export type BoundOrderTransactionResult<T> = Readonly<
  * retracts when the write provably did not.
  */
 async function commitOrderConditionalInNamespace(
-  adapter: OrderStoreAdapter,
-  binding: OrderNamespaceBinding,
-  recordPath: string,
+  ctx: OrderOperationContext,
   orderId: string,
   order: OrderRecord,
-  expectedVersion: string,
+  evidence: OrderAttemptEvidence,
   beforeCommit: (() => boolean) | undefined,
   commitPaths: string[],
 ): Promise<ConditionalCommitResult | 'refused'> {
   // Claimed synchronously, before any await.
   const generation = beginOrderWrite(orderId);
   let result: ConditionalCommitResult;
+  let writeEntered = false;
   try {
-    assertNoConfirmationRequestBytes(order, binding.namespace);
-    const sanitized = scrubRetiredPrivateFields(order);
-    sealConfirmationEnvelopeRefForWrite(sanitized, binding.namespace);
-    assertCheckoutIntakeOrderContract(sanitized, binding.namespace);
-    const body = JSON.stringify(sanitized, null, 2);
+    const observed = consumeOrderAttemptEvidence(evidence, ctx, orderId);
+    const recordPath = ctx.pathname;
+    const expectedVersion = observed.version;
+    // Serialized ONCE, before the guard: the detached proposal's bytes are what
+    // is validated and written. Judged against the immutable bytes read at
+    // `expectedVersion`, never the record the callback received (it may have
+    // been mutated in place).
+    const proposal = detachOrderProposal(order, orderId, ctx.namespace);
+    assertGroupBookAssemblyUnchanged(observed.rawBody, proposal.record);
+    const body = proposal.body;
     if (beforeCommit !== undefined) {
       // Caller code that can only refuse: anything but a returned `true` — a
       // `false`, a thenable, any other value, or a throw — is a provable
@@ -4309,10 +5153,12 @@ async function commitOrderConditionalInNamespace(
       }
     }
     commitPaths.push(recordPath);
-    result = await adapter.replaceIfVersion(recordPath, body, expectedVersion);
+    writeEntered = true;
+    result = await ctx.adapter.replaceIfVersion(recordPath, body, expectedVersion);
   } catch (error) {
     // Ambiguous: the write may or may not have landed.
-    forgetRecentConditionalCommit(orderId, generation);
+    if (writeEntered) forgetRecentConditionalCommit(orderId, generation);
+    else retractOrderWrite(orderId, generation);
     throw error;
   }
   // Landed: evict what this write has authority over, and publish nothing.
@@ -4388,7 +5234,12 @@ export async function withOrderTransactionInNamespace<T>(
     throw new OrderPersistenceError('unknown', 'order_namespace_binding:order_id_invalid');
   }
   const recordPath = orderRecordPathInNamespace(binding, orderId);
-  const adapter = resolveOrderStoreAdapter();
+  // One context for the whole call, captured before the first await.
+  const ctx: OrderOperationContext = Object.freeze({
+    adapter: resolveOrderStoreAdapter(),
+    pathname: recordPath,
+    namespace: binding.namespace,
+  });
   const readPaths: string[] = [];
   const commitPaths: string[] = [];
   const provenance = (outcome: OrderNamespaceProvenance['outcome']): OrderNamespaceProvenance => Object.freeze({
@@ -4402,14 +5253,15 @@ export async function withOrderTransactionInNamespace<T>(
   const maxAttempts = opts.maxAttempts ?? ORDER_TRANSACTION_MAX_ATTEMPTS;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    readPaths.push(recordPath);
-    const raw = await adapter.readVersioned(recordPath);
+    readPaths.push(ctx.pathname);
+    const raw = await ctx.adapter.readVersioned(ctx.pathname);
     if (raw === null) {
       return Object.freeze({ status: 'not_found', result: opts.notFound(), provenance: provenance('not_found') });
     }
+    const evidence = mintOrderAttemptEvidence(ctx, raw);
     let current: OrderRecord;
     try {
-      current = parseOrderRecord(raw.body, binding.namespace);
+      current = parseOrderRecord(evidence.rawBody, ctx.namespace);
     } catch (error) {
       throw new OrderPersistenceError(orderId, 'Stored order record is not valid JSON', error);
     }
@@ -4421,12 +5273,10 @@ export async function withOrderTransactionInNamespace<T>(
       throw new OrderPersistenceError(orderId, 'order_namespace_binding:commit_id_mismatch');
     }
     const committed = await commitOrderConditionalInNamespace(
-      adapter,
-      binding,
-      recordPath,
+      ctx,
       orderId,
       outcome.commit,
-      raw.version,
+      evidence,
       opts.beforeCommit,
       commitPaths,
     );
@@ -4481,6 +5331,10 @@ interface PaymentUpdateOptions {
   stripePaymentIntentId?: string;
   shippingAddress?: ShippingAddress;
   settledAmountCents?: number;
+  /** Optional per-attempt eligibility, evaluated inside the committing
+   *  callback immediately before every commit (replay included) and again on
+   *  every CAS retry. False aborts with no write. Absent: unchanged behaviour. */
+  eligibilityGuard?: (current: OrderRecord) => Promise<boolean> | boolean;
 }
 
 export async function updateOrderPayment(
@@ -4504,7 +5358,7 @@ async function updateOrderPaymentResult(
   const now = new Date().toISOString();
   return withOrderTransaction<{ order: OrderRecord; transitionedToPaid: boolean } | null>(
     orderId,
-    (current) => {
+    async (current) => {
       if (paymentStatus === 'paid') {
         if (
           current.paymentStatus === 'paid'
@@ -4526,6 +5380,7 @@ async function updateOrderPaymentResult(
               : {}),
             updatedAt: now,
           };
+          if (opts.eligibilityGuard && !(await opts.eligibilityGuard(current))) return { abort: null };
           return { commit: replay, result: { order: replay, transitionedToPaid: false } };
         }
         if (
@@ -4549,6 +5404,11 @@ async function updateOrderPaymentResult(
         ...(paymentStatus === 'paid' && !current.paidAt ? { paidAt: now } : {}),
         updatedAt: now,
       };
+      if (process.env.HSB_PAID_ORDER_OUTBOX_ENABLED === 'true' && paymentStatus === 'paid' && current.paymentStatus === 'pending') {
+        updated.fulfillmentMode = 'manual_hold'; // Enrolled workflow always requires character approval.
+        updated.workOutbox = [...(current.workOutbox ?? []), paidEvent(updated, now)];
+      }
+      if (opts.eligibilityGuard && !(await opts.eligibilityGuard(current))) return { abort: null };
       return { commit: updated, result: {
         order: updated,
         transitionedToPaid: paymentStatus === 'paid' && current.paymentStatus === 'pending',
@@ -5191,4 +6051,682 @@ export async function updatePrintUpgradePayment(
     },
     { notFound: () => null },
   );
+}
+
+// ── Classroom zero-total custody commands (private commit, no caller authority) ──
+
+const CLASSROOM_KIND = 'hsb_classroom_zero_total_test';
+const CLASSROOM_ORDER_ID = /^ord_[a-f0-9]{16}$/;
+
+type CustodyDecision<R> = { abort: R } | { next: OrderRecord; result: R };
+
+/**
+ * The ONLY writer of classroom custody. Module-private: never exported, never
+ * handed to caller code. Each attempt captures the raw bytes/version first,
+ * computes the next record from those detached bytes with module code, and
+ * CASes exactly that detached body at that version in the captured namespace.
+ */
+async function commitClassroomCustody<R>(
+  orderId: string,
+  decide: (current: OrderRecord, rawBody: string) => Promise<CustodyDecision<R>>,
+  onNotFound: () => R,
+): Promise<R> {
+  const ctx = captureOrderOperationContext(orderId);
+  for (let attempt = 1; attempt <= ORDER_TRANSACTION_MAX_ATTEMPTS; attempt += 1) {
+    const raw = await ctx.adapter.readVersioned(ctx.pathname);
+    if (!raw) return onNotFound();
+    const rawBody = String(raw.body);
+    const version = String(raw.version);
+    const current = parseOrderRecord(rawBody, ctx.namespace);
+    const decision = await decide(current, rawBody);
+    if ('abort' in decision) return decision.abort;
+    const proposal = detachOrderProposal(decision.next, orderId, ctx.namespace);
+    assertGroupBookAssemblyEvidence(groupBookAssemblyEvidence(rawBody), proposal.record);
+    const generation = beginOrderWrite(orderId);
+    let result: ConditionalCommitResult;
+    try {
+      result = await ctx.adapter.replaceIfVersion(ctx.pathname, proposal.body, version);
+    } catch (error) {
+      forgetRecentConditionalCommit(orderId, generation);
+      throw error;
+    }
+    if (result.ok) {
+      forgetRecentConditionalCommit(orderId, generation);
+      return decision.result;
+    }
+    retractOrderWrite(orderId, generation);
+  }
+  throw new OrderVersionConflictError(orderId, ORDER_TRANSACTION_MAX_ATTEMPTS);
+}
+
+const detachedCopy = (order: OrderRecord): OrderRecord => JSON.parse(JSON.stringify(order)) as OrderRecord;
+
+/** Full classroom checkout eligibility, re-run at every entry and every CAS retry. */
+export function classroomCheckoutEligible(order: OrderRecord): boolean {
+  return isClassroomReleaseHeld(order)
+    && validateGroupBookAssemblyBinding(order.groupBookAssembly)
+    && order.paymentStatus === 'pending'
+    && order.fulfillmentMode === 'manual_hold'
+    && order.status === 'order_received'
+    && order.bookFormat === 'digital'
+    && Number.isSafeInteger(order.priceCents) && order.priceCents > 0
+    && !order.refundedAt && !order.stripeRefundId && !order.refundClaimId;
+}
+
+const CLASSROOM_TERMS_KEYS = [
+  'bookFormat', 'cohortId', 'currency', 'discountAmountCents', 'dispatchAttemptId', 'expectedAmountTotalCents',
+  'groupBookAssembly', 'idempotencyKey', 'livemode', 'manifestDigest', 'manifestExpiresAt', 'metadataKind', 'mode',
+  'orderId', 'priceCents', 'provider', 'providerAccount', 'reservedAt', 'schemaVersion', 'sessionBindingPolicy',
+];
+const CLASSROOM_SESSION_KEYS = ['dispatchAttemptId', 'livemode', 'orderId', 'providerAccount', 'schemaVersion', 'sessionId'];
+
+/** Strict accepted-terms schema: exact keys, literals and full identity; never partial. */
+function validClassroomTerms(value: unknown, orderId: string): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const t = value as Record<string, unknown>;
+  const binding = t.groupBookAssembly as GroupBookAssemblyBinding | undefined;
+  return exactObjectKeys(t, CLASSROOM_TERMS_KEYS)
+    && t.schemaVersion === 1 && t.orderId === orderId && validateGroupBookAssemblyBinding(binding)
+    && t.cohortId === binding!.cohortId && t.manifestDigest === binding!.digest && t.manifestExpiresAt === binding!.expiresAt
+    && t.bookFormat === 'digital' && Number.isSafeInteger(t.priceCents) && (t.priceCents as number) > 0
+    && t.currency === 'usd' && t.discountAmountCents === t.priceCents && t.expectedAmountTotalCents === 0
+    && t.provider === 'stripe' && t.providerAccount === 'platform' && t.livemode === false && t.mode === 'payment'
+    && t.metadataKind === CLASSROOM_KIND && typeof t.dispatchAttemptId === 'string' && !!t.dispatchAttemptId
+    && t.idempotencyKey === checkoutProviderIdempotencyKey(orderId) && canonicalIso(t.reservedAt)
+    && t.sessionBindingPolicy === 'single_session_for_dispatch';
+}
+
+function validClassroomSession(value: unknown, orderId: string, terms: Record<string, unknown>): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const s = value as Record<string, unknown>;
+  return exactObjectKeys(s, CLASSROOM_SESSION_KEYS) && s.schemaVersion === 1 && s.orderId === orderId
+    && s.dispatchAttemptId === terms.dispatchAttemptId && typeof s.sessionId === 'string' && s.sessionId.startsWith('cs_test_')
+    && s.providerAccount === 'platform' && s.livemode === false;
+}
+
+const CLASSROOM_RECEIPT_KEYS = [
+  'amountSubtotalCents', 'amountTotalCents', 'bookFormat', 'cohortId', 'currency', 'discountAmountCents',
+  'dispatchAttemptId', 'livemode', 'manifestDigest', 'manifestExpiresAt', 'mode', 'orderId', 'paymentIntent',
+  'paymentStatus', 'provider', 'providerAccount', 'providerEventCreated', 'providerEventId', 'providerEventType',
+  'schemaVersion', 'sessionId', 'sessionStatus',
+];
+const CLASSROOM_RECONCILIATION_KEYS = [
+  'amountSubtotalCents', 'amountTotalCents', 'currency', 'discountAmountCents', 'livemode', 'metadata', 'mode',
+  'orderId', 'paymentIntent', 'paymentStatus', 'providerAccount', 'providerEventCreated', 'providerEventId',
+  'reason', 'schemaVersion', 'sessionId', 'sessionStatus',
+];
+const CLASSROOM_RECONCILIATION_REASONS = new Set(['missing_accepted_terms', 'missing_accepted_session', 'receipt_conflict', 'accepted_context_mismatch']);
+const CLASSROOM_OBSERVATION_METADATA_KEYS = ['cohortId', 'kind', 'manifestDigest', 'manifestExpiresAt', 'orderId'];
+
+/** Strict stored receipt schema: exact keys and literals, full identity. */
+function validClassroomReceipt(value: unknown, orderId: string): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const r = value as Record<string, unknown>;
+  return exactObjectKeys(r, CLASSROOM_RECEIPT_KEYS) && r.schemaVersion === 1 && r.provider === 'stripe'
+    && typeof r.providerEventId === 'string' && r.providerEventId.startsWith('evt_')
+    && r.providerEventType === 'checkout.session.completed' && Number.isSafeInteger(r.providerEventCreated)
+    && typeof r.sessionId === 'string' && r.sessionId.startsWith('cs_test_') && r.providerAccount === 'platform'
+    && r.livemode === false && r.orderId === orderId && typeof r.dispatchAttemptId === 'string'
+    && typeof r.cohortId === 'string' && typeof r.manifestDigest === 'string' && canonicalIso(r.manifestExpiresAt)
+    && r.bookFormat === 'digital' && Number.isSafeInteger(r.amountSubtotalCents) && (r.amountSubtotalCents as number) > 0
+    && r.discountAmountCents === r.amountSubtotalCents && r.amountTotalCents === 0 && r.currency === 'usd'
+    && r.mode === 'payment' && r.sessionStatus === 'complete' && r.paymentStatus === 'no_payment_required'
+    && r.paymentIntent === null;
+}
+
+/** Strict reconciliation array: every entry exact keys, known reason, plain metadata subset. */
+function validClassroomReconciliation(value: unknown, orderId: string): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const e = entry as Record<string, unknown>;
+    const metadata = e.metadata as Record<string, unknown> | null;
+    return exactObjectKeys(e, CLASSROOM_RECONCILIATION_KEYS) && e.schemaVersion === 1
+      && CLASSROOM_RECONCILIATION_REASONS.has(String(e.reason)) && e.orderId === orderId
+      && typeof e.providerEventId === 'string' && e.providerEventId.startsWith('evt_')
+      && Number.isSafeInteger(e.providerEventCreated) && typeof e.sessionId === 'string'
+      && !!metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+      && exactObjectKeys(metadata, CLASSROOM_OBSERVATION_METADATA_KEYS);
+  });
+}
+
+/** Actual current assembly validity (module import kept lazy: assembly.ts imports this module). */
+async function classroomAssemblyRefusal(order: OrderRecord): Promise<string | null> {
+  const { assertClassroomAssemblyCurrent } = await import('./group-book/assembly.ts');
+  const check = await assertClassroomAssemblyCurrent(order.groupBookAssembly);
+  return check.ok === false ? String((check as { reason?: unknown }).reason ?? 'assembly_refused') : null;
+}
+
+/** Terms still describe the current durable order exactly (price/format/binding/dispatch). */
+function termsMatchCurrent(order: OrderRecord, terms: Record<string, unknown>): boolean {
+  // Complete canonical dispatch: exact keys, then every member equal to the frozen terms.
+  const dispatch = order.classroomCheckoutDispatch as unknown;
+  const canonicalDispatch = !!dispatch && typeof dispatch === 'object' && !Array.isArray(dispatch)
+    && exactObjectKeys(dispatch as Record<string, unknown>, ['attemptId', 'idempotencyKey', 'reservedAt', 'schemaVersion']);
+  const d = dispatch as ClassroomCheckoutDispatchV1;
+  return terms.orderId === order.id
+    && stableJson(terms.groupBookAssembly ?? null) === stableJson(order.groupBookAssembly ?? null)
+    && terms.priceCents === order.priceCents
+    && terms.bookFormat === order.bookFormat
+    && canonicalDispatch
+    && d.schemaVersion === 1
+    && d.attemptId === terms.dispatchAttemptId
+    && d.idempotencyKey === terms.idempotencyKey
+    && d.reservedAt === terms.reservedAt;
+}
+
+export type ClassroomCustodyResult = { ok: true; order: OrderRecord } | { ok: false; reason: string };
+
+/** Reserve dispatch AND append immutable accepted terms in one CAS, before any provider create. */
+export async function reserveClassroomCheckoutTerms(
+  orderId: string,
+  input: { dispatch: ClassroomCheckoutDispatchV1; guard: (current: OrderRecord) => Promise<string | null> },
+): Promise<ClassroomCustodyResult> {
+  const dispatch = input.dispatch;
+  if (!dispatch || dispatch.schemaVersion !== 1 || typeof dispatch.attemptId !== 'string' || !dispatch.attemptId
+    || dispatch.idempotencyKey !== checkoutProviderIdempotencyKey(orderId) || !canonicalIso(dispatch.reservedAt)) {
+    return { ok: false, reason: 'dispatch_invalid' };
+  }
+  const fixed: ClassroomCheckoutDispatchV1 = Object.freeze({
+    schemaVersion: 1, attemptId: String(dispatch.attemptId), idempotencyKey: String(dispatch.idempotencyKey), reservedAt: String(dispatch.reservedAt),
+  });
+  const guard = input.guard;
+  return commitClassroomCustody<ClassroomCustodyResult>(orderId, async (current) => {
+    if (!classroomCheckoutEligible(current)) return { abort: { ok: false, reason: 'not_eligible' } };
+    if (current.stripeSessionId || current.classroomCheckoutDispatch || current.classroomAcceptedTerms
+      || current.classroomAcceptedSession || current.classroomFinancialReceipt) return { abort: { ok: false, reason: 'held' } };
+    const refusal = await guard(detachedCopy(current));
+    if (refusal) return { abort: { ok: false, reason: refusal } };
+    // The caller guard cannot waive the actual assembly validity check.
+    const assemblyRefusal = await classroomAssemblyRefusal(current);
+    if (assemblyRefusal) return { abort: { ok: false, reason: assemblyRefusal } };
+    const binding = current.groupBookAssembly!;
+    const terms = {
+      schemaVersion: 1, orderId: current.id, groupBookAssembly: JSON.parse(JSON.stringify(binding)),
+      cohortId: binding.cohortId, manifestDigest: binding.digest, manifestExpiresAt: binding.expiresAt,
+      bookFormat: 'digital', priceCents: current.priceCents, currency: 'usd', discountAmountCents: current.priceCents,
+      expectedAmountTotalCents: 0, provider: 'stripe', providerAccount: 'platform', livemode: false, mode: 'payment',
+      metadataKind: CLASSROOM_KIND, dispatchAttemptId: fixed.attemptId, idempotencyKey: fixed.idempotencyKey,
+      reservedAt: fixed.reservedAt, sessionBindingPolicy: 'single_session_for_dispatch',
+    };
+    const next: OrderRecord = { ...current, classroomCheckoutDispatch: fixed, classroomAcceptedTerms: terms, updatedAt: new Date().toISOString() };
+    return { next, result: { ok: true, order: detachedCopy(next) } };
+  }, () => ({ ok: false, reason: 'not_found' }));
+}
+
+/** Guarded bind: append the accepted Session atomically with stripeSessionId. */
+export async function bindClassroomCheckoutSession(
+  orderId: string,
+  input: { dispatchAttemptId: string; sessionId: string; guard: (current: OrderRecord) => Promise<string | null> },
+): Promise<ClassroomCustodyResult> {
+  // Scalar identities frozen once, before any await or caller code.
+  const sessionId = typeof input.sessionId === 'string' ? input.sessionId : '';
+  const dispatchAttemptId = typeof input.dispatchAttemptId === 'string' ? input.dispatchAttemptId : '';
+  const guard = input.guard;
+  if (!/^cs_test_[A-Za-z0-9_]{1,200}$/.test(sessionId) || !dispatchAttemptId) return { ok: false, reason: 'session_invalid' };
+  return commitClassroomCustody<ClassroomCustodyResult>(orderId, async (current) => {
+    const terms = current.classroomAcceptedTerms;
+    if (!validClassroomTerms(terms, current.id) || terms.dispatchAttemptId !== dispatchAttemptId || current.stripeSessionId || current.classroomAcceptedSession) {
+      return { abort: { ok: false, reason: 'reservation_changed' } };
+    }
+    if (!classroomCheckoutEligible(current) || !termsMatchCurrent(current, terms)) return { abort: { ok: false, reason: 'context_changed' } };
+    const refusal = await guard(detachedCopy(current));
+    if (refusal) return { abort: { ok: false, reason: refusal } };
+    const assemblyRefusal = await classroomAssemblyRefusal(current);
+    if (assemblyRefusal) return { abort: { ok: false, reason: assemblyRefusal } };
+    const next: OrderRecord = {
+      ...current,
+      stripeSessionId: sessionId,
+      classroomAcceptedSession: {
+        schemaVersion: 1, orderId: current.id, dispatchAttemptId: terms.dispatchAttemptId, sessionId,
+        providerAccount: 'platform', livemode: false,
+      },
+      updatedAt: new Date().toISOString(),
+    };
+    return { next, result: { ok: true, order: detachedCopy(next) } };
+  }, () => ({ ok: false, reason: 'not_found' }));
+}
+
+/** Replay eligibility for an already bound checkout: full context, terms and accepted Session. */
+export function classroomCheckoutReplayEligible(order: OrderRecord): boolean {
+  const terms = order.classroomAcceptedTerms;
+  const accepted = order.classroomAcceptedSession;
+  return validClassroomTerms(terms, order.id) && validClassroomSession(accepted, order.id, terms)
+    && classroomCheckoutEligible(order) && termsMatchCurrent(order, terms)
+    && accepted.sessionId === order.stripeSessionId && accepted.dispatchAttemptId === terms.dispatchAttemptId;
+}
+
+export interface ClassroomFinancialOutcome {
+  status: number;
+  body: Record<string, unknown>;
+}
+
+const financialRefused = (reason: string): ClassroomFinancialOutcome =>
+  ({ status: 409, body: { received: true, classroomSettlement: 'refused', reason } });
+const financialHold = (reason: string): ClassroomFinancialOutcome =>
+  ({ status: 409, body: { received: true, classroomSettlement: 'reconciliation_hold', error: 'classroom_reconciliation_hold', reason } });
+
+/**
+ * Classroom payment-QA Preview policy. Server env only, never a request or an
+ * Event body. `HSB_CLASSROOM_PAYMENT_QA_SCOPE_JSON` is a singleton allowlist:
+ *   {"schemaVersion":1,"enabled":true,"orderId","cohortId","manifestDigest",
+ *    "manifestExpiresAt","orderNamespace","couponId"}
+ * with exactly those keys. It is honoured only inside an armed Preview
+ * (HSB_CLASSROOM_QA_ONLY + VERCEL_ENV=preview + HSB_CLASSROOM_PAYMENT_QA_ONLY,
+ * all literal) and only when it names the existing server checkout target, the
+ * existing server TEST coupon and the actually resolved blob namespace.
+ */
+export const CLASSROOM_PAYMENT_QA_SCOPE_ENV = 'HSB_CLASSROOM_PAYMENT_QA_SCOPE_JSON';
+const CLASSROOM_PAYMENT_QA_KEYS = 'cohortId,couponId,enabled,manifestDigest,manifestExpiresAt,orderId,orderNamespace,schemaVersion';
+const CLASSROOM_PAYMENT_QA_COHORT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const CLASSROOM_PAYMENT_QA_DIGEST = /^[a-f0-9]{64}$/;
+const CLASSROOM_PAYMENT_QA_COUPON = /^[A-Za-z0-9_-]{1,64}$/;
+const CLASSROOM_PAYMENT_QA_NAMESPACE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const CLASSROOM_PAYMENT_QA_TEST_KEY = /^sk_test_[A-Za-z0-9_]{8,247}$/;
+
+export interface ClassroomPaymentQaPolicy {
+  orderId: string;
+  cohortId: string;
+  manifestDigest: string;
+  manifestExpiresAt: string;
+  orderNamespace: string;
+  couponId: string;
+}
+
+/** Classroom-QA Preview (the existing literal pair): retail webhook handling never runs here. */
+export function isClassroomQaDeployment(): boolean {
+  return process.env.HSB_CLASSROOM_QA_ONLY === 'true' && process.env.VERCEL_ENV === 'preview';
+}
+
+export function isClassroomPaymentQaArmed(): boolean {
+  return process.env.HSB_CLASSROOM_QA_ONLY === 'true' && process.env.VERCEL_ENV === 'preview'
+    && process.env.HSB_CLASSROOM_PAYMENT_QA_ONLY === 'true';
+}
+
+/** Well-shaped secret TEST key, checked before any SDK client exists; otherwise null. */
+export function classroomPaymentQaTestKey(): string | null {
+  try {
+    const key = getRequiredStripeSecretKey();
+    return CLASSROOM_PAYMENT_QA_TEST_KEY.test(key) ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+function strictJsonObject(raw: unknown, max: number): Record<string, unknown> | null {
+  if (typeof raw !== 'string' || !raw || raw.length > max) return null;
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The armed, fully cross-checked policy, or null. Re-read on every call. */
+export function readClassroomPaymentQaPolicy(): ClassroomPaymentQaPolicy | null {
+  if (!isClassroomPaymentQaArmed()) return null;
+  const value = strictJsonObject(process.env[CLASSROOM_PAYMENT_QA_SCOPE_ENV], 2048);
+  if (!value || Object.keys(value).sort().join(',') !== CLASSROOM_PAYMENT_QA_KEYS) return null;
+  if (value.schemaVersion !== 1 || value.enabled !== true) return null;
+  const { orderId, cohortId, manifestDigest, manifestExpiresAt, orderNamespace, couponId } = value;
+  if (typeof orderId !== 'string' || !CLASSROOM_ORDER_ID.test(orderId)) return null;
+  if (typeof cohortId !== 'string' || !CLASSROOM_PAYMENT_QA_COHORT.test(cohortId)) return null;
+  if (typeof manifestDigest !== 'string' || !CLASSROOM_PAYMENT_QA_DIGEST.test(manifestDigest)) return null;
+  if (typeof couponId !== 'string' || !CLASSROOM_PAYMENT_QA_COUPON.test(couponId)) return null;
+  if (typeof orderNamespace !== 'string' || !CLASSROOM_PAYMENT_QA_NAMESPACE.test(orderNamespace)) return null;
+  if (typeof manifestExpiresAt !== 'string' || manifestExpiresAt.length > 64) return null;
+  const expires = Date.parse(manifestExpiresAt);
+  if (!Number.isFinite(expires) || new Date(expires).toISOString() !== manifestExpiresAt) return null;
+  // Fail closed unless the current clock is finite and strictly before expiry.
+  const now = Date.now();
+  if (!Number.isFinite(now) || !(expires > now)) return null;
+  // Same server target the checkout route consumes.
+  const target = strictJsonObject(process.env.HSB_CLASSROOM_CHECKOUT_TARGET_JSON, 1024);
+  if (!target || Object.keys(target).sort().join(',') !== 'enabled,orderId,schemaVersion'
+    || target.schemaVersion !== 1 || target.enabled !== true || target.orderId !== orderId) return null;
+  // Same server TEST coupon, byte for byte.
+  if (process.env.HSB_CLASSROOM_TEST_COUPON_ID !== couponId) return null;
+  // The explicit configured namespace, byte for byte, AND the one actually
+  // resolved for storage; never a request value or a fallback.
+  if (process.env.HSB_BLOB_NAMESPACE !== orderNamespace) return null;
+  let namespace: string;
+  try {
+    namespace = getBlobNamespace();
+  } catch {
+    return null;
+  }
+  if (namespace !== orderNamespace) return null;
+  return { orderId, cohortId, manifestDigest, manifestExpiresAt, orderNamespace, couponId };
+}
+
+/** The order's own native assembly identity is exactly the policy's. */
+export function classroomOrderMatchesPaymentQaPolicy(order: OrderRecord, policy: ClassroomPaymentQaPolicy): boolean {
+  const binding = order.groupBookAssembly;
+  return order.id === policy.orderId && !!binding && binding.cohortId === policy.cohortId
+    && binding.digest === policy.manifestDigest && binding.expiresAt === policy.manifestExpiresAt;
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/** Provider-only facts, independent of any order state. Null when acceptable. */
+function classroomProviderFactRefusal(session: any, pointer: string): string | null {
+  if (!session || session.id !== pointer) return 'session_identity';
+  if (session.livemode !== false) return 'session_livemode';
+  if (session.mode !== 'payment') return 'mode';
+  if (session.status !== 'complete') return 'status';
+  if (session.payment_status !== 'no_payment_required') return 'payment_status';
+  if (session.amount_total !== 0) return 'amount_total';
+  if (session.currency !== 'usd') return 'currency';
+  if (session.payment_intent !== null && session.payment_intent !== undefined) return 'payment_intent';
+  if (!Number.isSafeInteger(session.amount_subtotal) || session.amount_subtotal <= 0) return 'amount_subtotal';
+  if (session.total_details?.amount_discount !== session.amount_subtotal) return 'discount';
+  const metadata = session.metadata ?? {};
+  if (metadata.kind !== CLASSROOM_KIND) return 'metadata_kind';
+  if (typeof metadata.orderId !== 'string' || !CLASSROOM_ORDER_ID.test(metadata.orderId)) return 'metadata_orderId';
+  if (session.client_reference_id !== metadata.orderId) return 'client_reference';
+  return null;
+}
+
+/**
+ * Authenticated classroom financial command. Accepts ONLY an Event id; builds
+ * its own client from the fixed platform credential, retrieves the Event and
+ * then the Session it points at, and records append-once evidence. Returns
+ * outcome facts only, never authority. No outbox/email/analytics scheduling.
+ */
+export async function recordClassroomFinancialEvent(eventId: string): Promise<ClassroomFinancialOutcome> {
+  if (typeof eventId !== 'string' || !/^evt_[A-Za-z0-9_]{1,250}$/.test(eventId)) return financialRefused('event_identity');
+  // Classroom-QA deployments: armed strict policy and a TEST key before any SDK client.
+  let paymentQa: ClassroomPaymentQaPolicy | null = null;
+  if (isClassroomQaDeployment()) {
+    paymentQa = readClassroomPaymentQaPolicy();
+    if (!paymentQa) return financialRefused('payment_qa_unavailable');
+    if (!classroomPaymentQaTestKey()) return financialRefused('payment_qa_key');
+  }
+  let event: any;
+  let session: any;
+  try {
+    const { default: Stripe } = await import('stripe');
+    const stripe = new Stripe(paymentQa ? classroomPaymentQaTestKey()! : getRequiredStripeSecretKey());
+    event = await stripe.events.retrieve(eventId);
+    if (!event || event.id !== eventId) return financialRefused('event_identity');
+    if (event.type !== 'checkout.session.completed') return financialRefused('event_type');
+    if (event.livemode !== false) return financialRefused('event_livemode');
+    if (event.account !== undefined && event.account !== null) return financialRefused('event_account');
+    if (!Number.isSafeInteger(event.created)) return financialRefused('event_created');
+    const pointer = event.data?.object?.id;
+    if (typeof pointer !== 'string' || !pointer.startsWith('cs_test_')) return financialRefused('missing_session');
+    session = await stripe.checkout.sessions.retrieve(pointer);
+    const factRefusal = classroomProviderFactRefusal(session, pointer);
+    if (factRefusal) return financialRefused(factRefusal);
+  } catch {
+    return { status: 500, body: { error: 'classroom_provider_unavailable' } };
+  }
+  // Fetched native Session (never the signed body) must be the policy's exact
+  // order/cohort/manifest before any custody or reconciliation.
+  if (paymentQa) {
+    const m = session.metadata;
+    if (m.orderId !== paymentQa.orderId || m.cohortId !== paymentQa.cohortId || m.manifestDigest !== paymentQa.manifestDigest
+      || m.manifestExpiresAt !== paymentQa.manifestExpiresAt) {
+      return financialRefused('payment_qa_scope');
+    }
+  }
+  const paymentQaPinned = paymentQa ? stableJson(paymentQa) : null;
+  const orderId: string = session.metadata.orderId;
+  const metadata = session.metadata;
+  const observation = (reason: string): Record<string, unknown> => ({
+    schemaVersion: 1, reason, providerEventId: event.id, providerEventCreated: event.created, sessionId: session.id,
+    providerAccount: 'platform', livemode: false, orderId, amountSubtotalCents: session.amount_subtotal,
+    discountAmountCents: session.total_details.amount_discount, amountTotalCents: session.amount_total,
+    currency: session.currency, mode: session.mode, sessionStatus: session.status, paymentStatus: session.payment_status,
+    paymentIntent: session.payment_intent ?? null,
+    metadata: {
+      kind: metadata.kind, orderId: metadata.orderId, cohortId: metadata.cohortId ?? null,
+      manifestDigest: metadata.manifestDigest ?? null, manifestExpiresAt: metadata.manifestExpiresAt ?? null,
+    },
+  });
+  const observe = (current: OrderRecord, reason: string): CustodyDecision<ClassroomFinancialOutcome> => {
+    const entry = observation(reason);
+    const existing = current.classroomFinancialReconciliation ?? [];
+    if (existing.some((e) => stableJson(e) === stableJson(entry))) return { abort: financialHold(reason) };
+    return {
+      next: { ...current, classroomFinancialReconciliation: [...existing, entry], updatedAt: new Date().toISOString() },
+      result: financialHold(reason),
+    };
+  };
+  // Every CAS attempt: same deployment context, same live policy, same native order identity.
+  const paymentQaRefusal = (current: OrderRecord): ClassroomFinancialOutcome | null => {
+    if (paymentQaPinned === null && !isClassroomQaDeployment()) return null;
+    const live = readClassroomPaymentQaPolicy();
+    if (!live || stableJson(live) !== paymentQaPinned || !classroomPaymentQaTestKey()) return financialRefused('payment_qa_unavailable');
+    return classroomOrderMatchesPaymentQaPolicy(current, live) ? null : financialRefused('payment_qa_scope');
+  };
+  try {
+    return await commitClassroomCustody<ClassroomFinancialOutcome>(orderId, async (current) => {
+      const qaRefusal = paymentQaRefusal(current);
+      if (qaRefusal) return { abort: qaRefusal };
+      if (!isClassroomReleaseHeld(current)) return { abort: financialRefused('order_not_bound') };
+      // Malformed stored evidence fails closed before any replay/append decision.
+      if ((current.classroomFinancialReconciliation !== undefined
+        && !validClassroomReconciliation(current.classroomFinancialReconciliation, current.id))
+        || (current.classroomFinancialReceipt !== undefined && !validClassroomReceipt(current.classroomFinancialReceipt, current.id))) {
+        return { abort: financialHold('malformed_custody') };
+      }
+      const terms = current.classroomAcceptedTerms;
+      const accepted = current.classroomAcceptedSession;
+      if (!terms) {
+        if (current.stripeSessionId !== session.id) return { abort: financialRefused('session_binding') };
+        return observe(current, 'missing_accepted_terms');
+      }
+      if (!accepted) {
+        if (current.stripeSessionId !== session.id) return { abort: financialRefused('session_binding') };
+        return observe(current, 'missing_accepted_session');
+      }
+      if (!validClassroomTerms(terms, orderId) || !validClassroomSession(accepted, orderId, terms)) {
+        // Malformed custody is a hold, never a receipt or retail.
+        return { abort: financialHold('malformed_custody') };
+      }
+      if (accepted.sessionId !== session.id) return { abort: financialRefused('session_binding') };
+      if (terms.orderId !== orderId || accepted.orderId !== orderId || accepted.dispatchAttemptId !== terms.dispatchAttemptId
+        || metadata.cohortId !== terms.cohortId || metadata.manifestDigest !== terms.manifestDigest
+        || metadata.manifestExpiresAt !== terms.manifestExpiresAt || session.amount_subtotal !== terms.priceCents
+        || session.total_details.amount_discount !== terms.discountAmountCents) {
+        return observe(current, 'accepted_context_mismatch');
+      }
+      const receipt = {
+        schemaVersion: 1, provider: 'stripe', providerEventId: event.id, providerEventType: 'checkout.session.completed',
+        providerEventCreated: event.created, sessionId: session.id, providerAccount: 'platform', livemode: false, orderId,
+        dispatchAttemptId: terms.dispatchAttemptId, cohortId: terms.cohortId, manifestDigest: terms.manifestDigest,
+        manifestExpiresAt: terms.manifestExpiresAt, bookFormat: 'digital', amountSubtotalCents: terms.priceCents,
+        discountAmountCents: terms.discountAmountCents, amountTotalCents: 0, currency: 'usd', mode: 'payment',
+        sessionStatus: 'complete', paymentStatus: 'no_payment_required', paymentIntent: null,
+      };
+      if (current.classroomFinancialReceipt) {
+        if (stableJson(current.classroomFinancialReceipt) === stableJson(receipt)) {
+          return { abort: { status: 200, body: { received: true, classroomSettlement: 'receipt_replay_held' } } };
+        }
+        return observe(current, 'receipt_conflict');
+      }
+      // Receipt is recorded regardless of current lifecycle; paid projection only when fully current.
+      let project = classroomCheckoutEligible(current) && termsMatchCurrent(current, terms)
+        && current.stripeSessionId === accepted.sessionId;
+      if (project) project = (await classroomAssemblyRefusal(current)) === null;
+      // The assembly read awaited: the QA scope must still be live before this attempt commits.
+      const lateQaRefusal = paymentQaRefusal(current);
+      if (lateQaRefusal) return { abort: lateQaRefusal };
+      const now = new Date().toISOString();
+      const next: OrderRecord = {
+        ...current,
+        classroomFinancialReceipt: receipt,
+        ...(project ? { paymentStatus: 'paid' as PaymentStatus, settledAmountCents: 0, ...(current.paidAt ? {} : { paidAt: now }) } : {}),
+        updatedAt: now,
+      };
+      return { next, result: { status: 200, body: { received: true, classroomSettlement: 'receipt_recorded_held' } } };
+    }, () => ({ status: 500, body: { error: 'classroom_order_unresolved' } }));
+  } catch {
+    return { status: 500, body: { error: 'classroom_persistence_failed' } };
+  }
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+// ── Classroom local proof: settled-zero authority and append-once adoption ──
+
+export const CLASSROOM_PROOF_ADOPTION_KIND = 'hsb-classroom-local-proof-adoption-v1';
+export const CLASSROOM_PROOF_ADOPTION_STATUS = 'adopted_unreleased_local_proof';
+export const CLASSROOM_PROOF_MAX_BYTES = 64 * 1024 * 1024;
+const CLASSROOM_PROOF_ADOPTION_KEYS = [
+  'adoptedAt', 'artifact', 'assetSha256', 'cohortId', 'contentDigest', 'customerReleaseAuthorized', 'kind',
+  'manifestDigest', 'manifestExpiresAt', 'orderId', 'participantCount', 'schemaVersion', 'settlement', 'status',
+];
+const CLASSROOM_PROOF_ARTIFACT_KEYS = ['bytes', 'contentType', 'createdAt', 'pathname', 'retentionUntil', 'sha256'];
+const CLASSROOM_PROOF_SETTLEMENT_KEYS = ['amountTotalCents', 'dispatchAttemptId', 'providerEventId', 'sessionId'];
+const CLASSROOM_PROOF_HEX64 = /^[a-f0-9]{64}$/;
+
+export interface ClassroomSettlementIdentity {
+  providerEventId: string;
+  sessionId: string;
+  dispatchAttemptId: string;
+  cohortId: string;
+  manifestDigest: string;
+  manifestExpiresAt: string;
+}
+
+export type ClassroomSettlementAuthority =
+  | { ok: true; identity: ClassroomSettlementIdentity }
+  | { ok: false; reason: string };
+
+/**
+ * The settled-zero authority: the producer-written receipt, accepted terms and
+ * accepted Session, all current and mutually bound. paymentStatus alone is
+ * never authority, because a generic writer can set it.
+ */
+export function classroomSettlementAuthority(order: OrderRecord): ClassroomSettlementAuthority {
+  const refuse = (reason: string): ClassroomSettlementAuthority => ({ ok: false, reason });
+  if (!isClassroomReleaseHeld(order) || !validateGroupBookAssemblyBinding(order.groupBookAssembly)) return refuse('order_not_bound');
+  const terms = order.classroomAcceptedTerms;
+  const accepted = order.classroomAcceptedSession;
+  const receipt = order.classroomFinancialReceipt;
+  if (!validClassroomTerms(terms, order.id) || !validClassroomSession(accepted, order.id, terms)) return refuse('accepted_custody_invalid');
+  if (receipt === undefined) return refuse('receipt_missing');
+  if (!validClassroomReceipt(receipt, order.id)) return refuse('receipt_invalid');
+  if ((order.classroomFinancialReconciliation?.length ?? 0) > 0) return refuse('reconciliation_open');
+  if (!termsMatchCurrent(order, terms)) return refuse('terms_changed');
+  if (order.stripeSessionId !== accepted.sessionId || receipt.sessionId !== accepted.sessionId
+    || receipt.dispatchAttemptId !== terms.dispatchAttemptId || receipt.cohortId !== terms.cohortId
+    || receipt.manifestDigest !== terms.manifestDigest || receipt.manifestExpiresAt !== terms.manifestExpiresAt
+    || receipt.amountSubtotalCents !== terms.priceCents || receipt.discountAmountCents !== terms.discountAmountCents) {
+    return refuse('receipt_identity_mismatch');
+  }
+  if (order.paymentStatus !== 'paid' || order.settledAmountCents !== 0 || !canonicalIso(order.paidAt)) return refuse('payment_not_settled');
+  if (order.stripePaymentIntentId) return refuse('payment_intent_present');
+  if (order.refundedAt || order.stripeRefundId || order.refundClaimId) return refuse('refund_present');
+  if (order.fulfillmentMode !== 'manual_hold' || order.status !== 'order_received' || order.bookFormat !== 'digital'
+    || (order.fulfillmentStatus && order.fulfillmentStatus !== 'not_started') || order.internalDisposition
+    || order.fulfillmentKickoffId || order.printJobId || order.printSubmissionAttemptedAt
+    || order.customerProofReleasedAt || order.proofApprovedAt || order.printApprovedAt
+    || order.privateStoryArtifact || order.storyArtifactUrl || order.proofVersion
+    || order.proofApprovalToken || order.proofApprovalTokenHash || (order.pageArtifacts?.length ?? 0) > 0) {
+    return refuse('lifecycle_changed');
+  }
+  return {
+    ok: true,
+    identity: {
+      providerEventId: receipt.providerEventId as string,
+      sessionId: receipt.sessionId as string,
+      dispatchAttemptId: receipt.dispatchAttemptId as string,
+      cohortId: receipt.cohortId as string,
+      manifestDigest: receipt.manifestDigest as string,
+      manifestExpiresAt: receipt.manifestExpiresAt as string,
+    },
+  };
+}
+
+/** Strict adoption schema: exact keys and literals, derived pathname, never partial. */
+function validClassroomProofAdoption(value: unknown, orderId: string): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const a = value as Record<string, unknown>;
+  const artifact = a.artifact as Record<string, unknown> | null;
+  const settlement = a.settlement as Record<string, unknown> | null;
+  if (!exactObjectKeys(a, CLASSROOM_PROOF_ADOPTION_KEYS) || a.schemaVersion !== 1 || a.kind !== CLASSROOM_PROOF_ADOPTION_KIND
+    || a.status !== CLASSROOM_PROOF_ADOPTION_STATUS || a.customerReleaseAuthorized !== false || a.orderId !== orderId
+    || typeof a.cohortId !== 'string' || !/^[A-Za-z0-9_-]{2,64}$/.test(a.cohortId)
+    || typeof a.manifestDigest !== 'string' || !CLASSROOM_PROOF_HEX64.test(a.manifestDigest)
+    || typeof a.contentDigest !== 'string' || !CLASSROOM_PROOF_HEX64.test(a.contentDigest)
+    || !canonicalIso(a.manifestExpiresAt) || !canonicalIso(a.adoptedAt) || !Number.isInteger(a.participantCount)
+    || !Array.isArray(a.assetSha256) || a.assetSha256.length < 1 || a.assetSha256.length > 16
+    || !a.assetSha256.every((digest) => typeof digest === 'string' && CLASSROOM_PROOF_HEX64.test(digest))) return false;
+  if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact) || !exactObjectKeys(artifact, CLASSROOM_PROOF_ARTIFACT_KEYS)
+    || typeof artifact.sha256 !== 'string' || !CLASSROOM_PROOF_HEX64.test(artifact.sha256)
+    || artifact.pathname !== `group-book/proofs/${a.cohortId}/${orderId}/${artifact.sha256}.pdf`
+    || artifact.contentType !== 'application/pdf' || !Number.isSafeInteger(artifact.bytes)
+    || (artifact.bytes as number) < 1 || (artifact.bytes as number) > CLASSROOM_PROOF_MAX_BYTES
+    || !canonicalIso(artifact.createdAt) || !canonicalIso(artifact.retentionUntil)) return false;
+  return !!settlement && typeof settlement === 'object' && !Array.isArray(settlement)
+    && exactObjectKeys(settlement, CLASSROOM_PROOF_SETTLEMENT_KEYS) && settlement.amountTotalCents === 0
+    && typeof settlement.providerEventId === 'string' && typeof settlement.sessionId === 'string'
+    && typeof settlement.dispatchAttemptId === 'string';
+}
+
+/** The stored adoption when it validates for this order; otherwise null. */
+export function classroomProofAdoptionOf(order: OrderRecord): Record<string, unknown> | null {
+  const adoption = order.classroomProofAdoption;
+  return validClassroomProofAdoption(adoption, order.id) ? adoption : null;
+}
+
+/** Current settled-zero authority AND exact adoption identity, or the refusal reason. */
+export function classroomProofAdoptionRefusal(adoption: Record<string, unknown>, order: OrderRecord): string | null {
+  const authority = classroomSettlementAuthority(order);
+  if (authority.ok === false) return (authority as { reason: string }).reason;
+  const identity = (authority as { identity: ClassroomSettlementIdentity }).identity;
+  const binding = order.groupBookAssembly!;
+  const settlement = adoption.settlement as Record<string, unknown>;
+  const same = adoption.orderId === order.id && adoption.cohortId === binding.cohortId
+    && adoption.manifestDigest === binding.digest && adoption.manifestExpiresAt === binding.expiresAt
+    && adoption.participantCount === binding.participantCount
+    && settlement.providerEventId === identity.providerEventId && settlement.sessionId === identity.sessionId
+    && settlement.dispatchAttemptId === identity.dispatchAttemptId;
+  return same ? null : 'adoption_identity';
+}
+
+/** Stored artifact verification (lazy: the store module must not load with every order read). */
+async function classroomAdoptedArtifactRefusal(adoption: Record<string, unknown>): Promise<string | null> {
+  const { classroomProofArtifactRefusal } = await import('./group-book/proof-store.ts');
+  return await classroomProofArtifactRefusal(adoption.artifact as Parameters<typeof classroomProofArtifactRefusal>[0]);
+}
+
+/**
+ * Append-once private proof adoption through the classroom custody writer.
+ * Every CAS attempt re-derives settlement authority, then the caller guard,
+ * then checks the actual assembly and the exact stored bytes, neither of which
+ * the caller guard can waive. Writes no retail proof field and releases nothing.
+ */
+export async function adoptClassroomProofCustody(
+  orderId: string,
+  input: { adoption: unknown; guard: (current: OrderRecord) => Promise<string | null> },
+): Promise<ClassroomCustodyResult> {
+  let detached: unknown;
+  try {
+    detached = JSON.parse(JSON.stringify(input.adoption));
+  } catch {
+    return { ok: false, reason: 'adoption_invalid' };
+  }
+  if (!validClassroomProofAdoption(detached, orderId)) return { ok: false, reason: 'adoption_invalid' };
+  const fixed: Record<string, unknown> = detached;
+  const guard = input.guard;
+  return commitClassroomCustody<ClassroomCustodyResult>(orderId, async (current) => {
+    const refusal = classroomProofAdoptionRefusal(fixed, current);
+    if (refusal) return { abort: { ok: false, reason: refusal } };
+    if (current.classroomProofAdoption !== undefined) {
+      return stableJson(current.classroomProofAdoption) === stableJson(fixed)
+        ? { abort: { ok: true, order: detachedCopy(current) } }
+        : { abort: { ok: false, reason: 'adoption_conflict' } };
+    }
+    const guardRefusal = await guard(detachedCopy(current));
+    if (guardRefusal) return { abort: { ok: false, reason: guardRefusal } };
+    const assemblyRefusal = await classroomAssemblyRefusal(current);
+    if (assemblyRefusal) return { abort: { ok: false, reason: assemblyRefusal } };
+    const artifactRefusal = await classroomAdoptedArtifactRefusal(fixed);
+    if (artifactRefusal) return { abort: { ok: false, reason: artifactRefusal } };
+    const next: OrderRecord = { ...current, classroomProofAdoption: fixed, updatedAt: new Date().toISOString() };
+    return { next, result: { ok: true, order: detachedCopy(next) } };
+  }, () => ({ ok: false, reason: 'not_found' }));
 }

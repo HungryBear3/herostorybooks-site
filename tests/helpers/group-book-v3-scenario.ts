@@ -172,7 +172,7 @@ await step('new intake refused after first final release; existing recovery stil
   assert.equal((await refused.json()).error, 'edition_already_released');
   assert.equal(puts('/'), 0);
   assert.equal((await intake(intakeRequest(A))).status, 200, 'existing family recovery');
-  assert.equal((await access({ json: async () => ({ invite: A.token }) } as unknown as Request)).status, 200);
+  assert.equal((await access(new Request('https://synthetic.invalid/group-book/access', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({invite:A.token})}))).status, 200);
 });
 
 await step('new intake refused when release state is unknown', async () => {

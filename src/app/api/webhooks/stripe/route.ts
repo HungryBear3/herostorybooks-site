@@ -1,7 +1,7 @@
 import { NextResponse, after } from 'next/server.js';
 import Stripe from 'stripe';
 
-import { getOrder, isPrintFormat, recordPaymentSettlementConflict, settleOrderPayment, updateOrderPayment, type ShippingAddress } from '../../../../lib/orders.ts';
+import { classroomPaymentQaTestKey, getOrder, isClassroomQaDeployment, isPrintFormat, readClassroomPaymentQaPolicy, recordPaymentSettlementConflict, settleOrderPayment, updateOrderPayment, type ShippingAddress } from '../../../../lib/orders.ts';
 import {
   processStripePaymentTerminalEvent,
   recordUnmatchedPaymentSettlement,
@@ -14,6 +14,13 @@ import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgrad
 import { isExactSettledCheckoutSession } from '../../../../lib/checkout-session-confirmation.ts';
 import { scheduleTrustedPurchaseAnalytics } from '../../../../lib/purchase-analytics.ts';
 import { recordShadowCheckoutSettlement } from '../../../../lib/hsb-control-plane-runtime/shadow-settlement.ts';
+import { captureOrderPrintContact, capturePrintUpgradeContact } from '../../../../lib/print-contact-store.ts';
+import {
+  isClassroomZeroTotalEvent,
+  resolveClassroomCheckoutProvider,
+  settleClassroomZeroTotalEvent,
+  type ClassroomProviderSession,
+} from '../../../../lib/group-book/classroom-checkout.ts';
 import {
   PRINT_UPGRADE_STRIPE_KIND,
   recordPrintUpgradeCheckoutExpired,
@@ -36,15 +43,20 @@ interface StripeCheckoutSession {
   mode?: string | null;
   payment_status?: string | null;
   payment_intent?: string | { id?: string | null } | null;
-  shipping_details?: {
-    address?: {
-      line1?: string | null;
-      line2?: string | null;
-      city?: string | null;
-      state?: string | null;
-      postal_code?: string | null;
-      country?: string | null;
-    } | null;
+  shipping_details?: StripeShippingDetails | null;
+  collected_information?: { shipping_details?: StripeShippingDetails | null } | null;
+  customer_details?: { phone?: string | null } | null;
+}
+
+interface StripeShippingDetails {
+  name?: string | null;
+  address?: {
+    line1?: string | null;
+    line2?: string | null;
+    city?: string | null;
+    state?: string | null;
+    postal_code?: string | null;
+    country?: string | null;
   } | null;
 }
 
@@ -53,7 +65,7 @@ function getStripe() {
 }
 
 function extractShipping(session: StripeCheckoutSession): ShippingAddress | undefined {
-  const addr = session.shipping_details?.address;
+  const addr = (session.shipping_details ?? session.collected_information?.shipping_details)?.address;
   if (!addr) return undefined;
   return {
     line1: addr.line1 ?? '',
@@ -71,7 +83,72 @@ function extractPaymentIntentId(session: StripeCheckoutSession): string | undefi
   return typeof id === 'string' && id ? id : undefined;
 }
 
+/**
+ * Runs after payment is durable. False asks Stripe to redeliver, and the replay
+ * branches capture again. Logs carry opaque ids only, never the failure text.
+ */
+async function printContactPersisted(orderId: string, sessionId: string, capture: () => Promise<unknown>): Promise<boolean> {
+  try {
+    await capture();
+    return true;
+  } catch {
+    console.error(`Stripe webhook: print contact persistence failed for ${orderId} session=${sessionId}`);
+    return false;
+  }
+}
+
+const printContactRetry = () => NextResponse.json({ error: 'Print contact persistence failed' }, { status: 500 });
+
+const paymentQaRefused = (reason: string, status = 409) =>
+  NextResponse.json({ received: true, classroomPaymentQa: 'refused', reason }, { status });
+
+/**
+ * Classroom-QA deployments only, and TERMINAL: no signed event of any kind
+ * ever reaches the retail branches below. Unarmed or out-of-policy refuses.
+ * Armed: TEST key before any client, the SDK's own raw-body signature check,
+ * a preliminary body screen, then ONLY the Event id goes to the fixed
+ * producer, which re-reads Event and Session and revalidates the policy.
+ */
+async function classroomPaymentQaWebhook(request: Request): Promise<Response> {
+  const policy = readClassroomPaymentQaPolicy();
+  const key = classroomPaymentQaTestKey();
+  if (!policy || !key) return NextResponse.json({ error: 'classroom_payment_qa_unavailable' }, { status: 503 });
+  let webhookSecret: string;
+  try {
+    webhookSecret = getRequiredStripeWebhookSecret();
+  } catch {
+    return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 500 });
+  }
+  const body = await request.text();
+  const sig = request.headers.get('stripe-signature') ?? '';
+  const stripe = new Stripe(key);
+  let event: ReturnType<typeof stripe.webhooks.constructEvent>;
+  try {
+    event = stripe.webhooks.constructEvent(body, sig, webhookSecret);
+  } catch {
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
+  }
+  // Preliminary only: the producer never trusts these body fields as facts.
+  if (!isClassroomZeroTotalEvent(event as unknown as Parameters<typeof isClassroomZeroTotalEvent>[0])) return paymentQaRefused('event_not_in_scope');
+  if (event.livemode !== false) return paymentQaRefused('event_livemode');
+  if (event.account !== undefined && event.account !== null) return paymentQaRefused('event_account');
+  const object = event.data.object as StripeCheckoutSession;
+  const metadata = object.metadata ?? {};
+  if (metadata.orderId !== policy.orderId
+    || (metadata.cohortId !== undefined && metadata.cohortId !== policy.cohortId)
+    || (metadata.manifestDigest !== undefined && metadata.manifestDigest !== policy.manifestDigest)
+    || (metadata.manifestExpiresAt !== undefined && metadata.manifestExpiresAt !== policy.manifestExpiresAt)) {
+    return paymentQaRefused('event_target');
+  }
+  const outcome = await settleClassroomZeroTotalEvent(
+    event as unknown as Parameters<typeof settleClassroomZeroTotalEvent>[0],
+    null,
+  );
+  return NextResponse.json(outcome.body, { status: outcome.status });
+}
+
 export async function POST(request: Request) {
+  if (isClassroomQaDeployment()) return await classroomPaymentQaWebhook(request);
   const stripe = getStripe();
   let webhookSecret: string;
 
@@ -98,6 +175,20 @@ export async function POST(request: Request) {
       bodyLooksJson: body.trimStart().startsWith('{'),
     });
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
+  }
+
+  if (isClassroomZeroTotalEvent(event as unknown as Parameters<typeof isClassroomZeroTotalEvent>[0])) {
+    // Classroom zero-total TEST settlement: facts are re-read from the
+    // provider Session; manual_hold is kept and no email, fulfillment or
+    // analytics is scheduled from this branch.
+    const outcome = await settleClassroomZeroTotalEvent(
+      event as unknown as Parameters<typeof settleClassroomZeroTotalEvent>[0],
+      resolveClassroomCheckoutProvider(() => ({
+        createZeroTotalSession: async () => { throw new Error('classroom_create_not_available_in_webhook'); },
+        retrieveSession: async (sessionId) => await stripe.checkout.sessions.retrieve(sessionId) as unknown as ClassroomProviderSession,
+      })),
+    );
+    return NextResponse.json(outcome.body, { status: outcome.status });
   }
 
   if (
@@ -163,9 +254,17 @@ export async function POST(request: Request) {
             itemId: `${session.metadata?.purchaseKind === 'extra_copy' ? 'extra_copy' : 'print_upgrade'}_at_cost_${settled.order.printUpgradeTargetFormat ?? 'unknown'}`,
             metadata: session.metadata,
           }, { afterImpl: after });
+          if (!await printContactPersisted(settled.order.id, session.id, () => capturePrintUpgradeContact(settled.order.id, session))) {
+            return printContactRetry();
+          }
           return NextResponse.json({ received: true, printUpgradeAtCost: 'paid' });
-        case 'replay':
+        case 'replay': {
+          const replayOrderId = session.metadata?.orderId ?? '';
+          if (!await printContactPersisted(replayOrderId, session.id, () => capturePrintUpgradeContact(replayOrderId, session))) {
+            return printContactRetry();
+          }
           return NextResponse.json({ received: true, printUpgradeAtCost: 'replay' });
+        }
         case 'conflict_recorded':
           console.error(`Stripe webhook: at-cost print upgrade settlement refused for session ${session.id}: ${settled.reason}`);
           return NextResponse.json({ received: true, printUpgradeAtCost: 'conflict_recorded' });
@@ -210,7 +309,15 @@ export async function POST(request: Request) {
         if (!upgradeOrder) {
           return NextResponse.json({ error: 'Print upgrade order not found' }, { status: 500 });
         }
-        if (upgradeOrder.printUpgradeStripeSessionId === session.id && upgradeOrder.printUpgradeStatus === 'paid') {
+        // The receipt keeps a redelivery recognised after an at-cost purchase has
+        // reused the upgrade fields; capture still revalidates the whole binding.
+        if (
+          upgradeOrder.legacyPrintUpgradeSettlement?.stripeSessionId === session.id
+          || (upgradeOrder.printUpgradeStripeSessionId === session.id && upgradeOrder.printUpgradeStatus === 'paid')
+        ) {
+          if (!await printContactPersisted(upgradeOrderId, session.id, () => captureOrderPrintContact(upgradeOrder, session))) {
+            return printContactRetry();
+          }
           return NextResponse.json({ received: true, printUpgradeRecorded: true, replay: true });
         }
         const upgrade = calculatePrintUpgrade(upgradeOrder, targetFormat);
@@ -244,6 +351,7 @@ export async function POST(request: Request) {
           amountCents: session.amount_total ?? 0,
           targetFormat,
           printProvider: session.metadata?.printProvider ?? 'rpi',
+          ...(extractPaymentIntentId(session) ? { stripePaymentIntentId: extractPaymentIntentId(session) } : {}),
           ...(extractShipping(session) ? { shippingAddress: extractShipping(session) } : {}),
         });
         if (!updated) {
@@ -268,6 +376,9 @@ export async function POST(request: Request) {
           itemId: `print_upgrade_${targetFormat}`,
           metadata: session.metadata,
         }, { afterImpl: after });
+        if (!await printContactPersisted(upgradeOrderId, session.id, () => captureOrderPrintContact(updated, session))) {
+          return printContactRetry();
+        }
       } catch (err) {
         console.error(`Stripe webhook: failed to process print upgrade for ${upgradeOrderId}:`, err);
         return NextResponse.json({ error: 'Processing failed' }, { status: 500 });
@@ -370,6 +481,8 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'PaymentIntent backfill conflict' }, { status: 409 });
           }
           console.warn(`Stripe webhook: session ${session.id} already processed — payment state unchanged`);
+          const replayContactStored = !isPrintFormat(replayOrder.bookFormat)
+            || await printContactPersisted(orderId, session.id, () => captureOrderPrintContact(replayOrder, session));
           // Shadow seam (exact already-paid replay). Best-effort, default-off,
           // non-authoritative evidence only. It never throws and never changes
           // the acknowledgement, email, or fulfillment behaviour below.
@@ -418,6 +531,7 @@ export async function POST(request: Request) {
                 `no kickoff retrigger needed`,
             );
           }
+          if (!replayContactStored) return printContactRetry();
           return NextResponse.json({ received: true });
         }
         if (existing.paymentStatus === 'refunded' || existing.refundedAt) {
@@ -473,6 +587,11 @@ export async function POST(request: Request) {
         );
       }
 
+      // The payment is already durable, so a contact failure below cannot lose
+      // it. Every deferred effect still runs; only the acknowledgement changes.
+      const contactStored = !isPrintFormat(updated.bookFormat)
+        || await printContactPersisted(orderId, session.id, () => captureOrderPrintContact(updated, session));
+
       // Shadow seam (newly-paid transition). The authoritative payment write
       // above has already succeeded; this records best-effort, default-off,
       // non-authoritative evidence and never alters what follows.
@@ -515,6 +634,7 @@ export async function POST(request: Request) {
       //     persistence before running anything (see fulfillment.ts).
       //     If the read does not show paid, fulfillment refuses.
       scheduleFulfillmentKickoff(orderId, { afterImpl: after });
+      if (!contactStored) return printContactRetry();
     } catch (err) {
       console.error(`Stripe webhook: failed to process order ${orderId}:`, err);
       return NextResponse.json({ error: 'Processing failed' }, { status: 500 });

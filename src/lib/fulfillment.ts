@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { put } from '@vercel/blob';
 
-import { applyFulfillmentPatchTo, getOrder, getOrderPhotoUrl, isPrintFormat, OrderVersionConflictError, orderRequiresReferenceImage, readOrderVersioned, updateFulfillmentState, withBlobNamespace, withOrderTransaction } from './orders.ts';
+import { applyFulfillmentPatchTo, getOrder, getOrderPhotoUrl, isClassroomReleaseHeld, isPrintFormat, OrderVersionConflictError, orderRequiresReferenceImage, readOrderVersioned, updateFulfillmentState, withBlobNamespace, withOrderTransaction } from './orders.ts';
 import { buildPagePrompt } from './image-prompt-builder.ts';
 import type { OrderRecord, PageArtifact } from './orders.ts';
 import type { StoryContent } from './fulfillment-types.ts';
@@ -17,6 +17,12 @@ import { generateStoryImageResults, requireCompleteImageResults } from './image-
 import type { GeneratedImageResult } from './image-generator.ts';
 import { buildPdf, buildPrintCoverPdf, buildPrintInteriorPdf, getPrintInteriorPageCount } from './pdf-builder.ts';
 import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';
+import {
+  printContactMatchesOrder,
+  resolveOrderPrintContact,
+  type PrintContactResolution,
+  type ResolvedPrintContact,
+} from './print-contact-store.ts';
 import { sendDigitalDeliveryEmail, sendProofReadyEmail, sendLifecycleEmail, sendOperatorFailureAlert } from './order-email.ts';
 import { proofRenderSourceFingerprint, proofStoryFromPageArtifacts } from './review-source-identity.ts';
 
@@ -90,7 +96,8 @@ export interface FulfillmentDeps {
   buildPrintCoverPdf?: (widthPoints: number, heightPoints: number, title: string, order: OrderRecord) => Buffer;
   calculateCoverDimensions?: (order: OrderRecord, interiorPageCount: number) => Promise<{ widthPt: number; heightPt: number }>;
   uploadArtifact?: (orderId: string, buffer: Buffer, filename: string) => Promise<string>;
-  submitPrint?: (order: OrderRecord) => Promise<{ jobId: string }>;
+  submitPrint?: (order: OrderRecord, contact: ResolvedPrintContact) => Promise<{ jobId: string }>;
+  resolvePrintContact?: (order: OrderRecord) => Promise<PrintContactResolution>;
   sleep?: (ms: number) => Promise<void>;
   getBaseUrl?: () => string;
 }
@@ -106,6 +113,8 @@ function paidFulfillmentPatch(_order: OrderRecord, patch: Partial<OrderRecord>):
 async function assertFulfillmentPaymentCurrent(orderId: string): Promise<void> {
   const current = await getOrder(orderId);
   if (!current) throw new Error('order_not_found');
+  // Resumed/retried work re-checks the classroom hold before every effect.
+  if (isClassroomReleaseHeld(current)) throw new Error('classroom_release_held');
   if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
     const status = current.refundedAt || current.stripeRefundId ? 'refunded' : current.paymentStatus;
     throw new Error(`paymentStatus=${status}`);
@@ -139,6 +148,7 @@ async function claimFulfillmentKickoff(orderId: string): Promise<KickoffClaimRes
   return withOrderTransaction<KickoffClaimResult>(
     orderId,
     (current) => {
+      if (isClassroomReleaseHeld(current)) return { abort: { kind: 'policy_not_auto' } };
       if (
         current.paymentStatus !== 'paid'
         || current.refundedAt
@@ -147,7 +157,7 @@ async function claimFulfillmentKickoff(orderId: string): Promise<KickoffClaimRes
       ) {
         return { abort: { kind: 'payment_no_longer_paid' } };
       }
-      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {
+      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null || (current.workOutbox?.length || current.characterReview)) {
         return { abort: { kind: 'policy_not_auto' } };
       }
       if (hasMediaBackedCustomStorySource(current)) {
@@ -202,13 +212,14 @@ async function startClaimedFulfillment(
   return withOrderTransaction<OrderRecord | null>(
     orderId,
     (current) => {
+      if (isClassroomReleaseHeld(current)) return { abort: null };
       if (current.fulfillmentKickoffId !== claimId) {
         return { abort: null };
       }
       if (current.paymentStatus !== 'paid' || current.refundedAt || current.stripeRefundId) {
         return { abort: null };
       }
-      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {
+      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null || (current.workOutbox?.length || current.characterReview)) {
         return { abort: null };
       }
       if (hasMediaBackedCustomStorySource(current)) return { abort: null };
@@ -908,6 +919,9 @@ function printReleaseRefusal(
   if (order.paymentStatus !== 'paid') return 'order_not_paid';
   if (order.refundedAt) return 'order_refunded';
   if (order.refundClaimId) return 'refund_in_progress';
+  // Bound classroom orders have no print-release authorization: held before
+  // any cover build, upload or provider submission. Unbound orders unchanged.
+  if (order.groupBookAssembly !== undefined) return 'group_book_release_held';
   if (order.printJobId || order.status === 'print_in_production' || order.status === 'shipped') {
     return 'print_already_submitted';
   }
@@ -935,8 +949,9 @@ function printReleaseRefusal(
   return null;
 }
 
-async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Promise<void> {
-  const _submitPrint = deps.submitPrint ?? submitPrintJob;
+async function runPrintProduction(order: OrderRecord, contact: ResolvedPrintContact, deps: FulfillmentDeps): Promise<void> {
+  const _submitPrint = deps.submitPrint
+    ?? ((submission: OrderRecord, bound: ResolvedPrintContact) => submitPrintJob(submission, { contact: bound }));
   const _upload = deps.uploadArtifact ?? defaultUploadArtifact;
   const _calculateCoverDimensions = deps.calculateCoverDimensions ?? calculateCoverDimensions;
   const _buildPrintCoverPdf = deps.buildPrintCoverPdf ?? buildPrintCoverPdf;
@@ -984,6 +999,7 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
       const refusal = printReleaseRefusal(current, ['submitting_to_print']);
       if (
         refusal ||
+        !printContactMatchesOrder(contact, current) ||
         current.proofVersion !== expectedProofVersion ||
         current.printInteriorProofVersion !== expectedProofVersion ||
         current.printSubmissionAttemptedAt
@@ -1003,7 +1019,7 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
   if (!submissionOrder) throw new Error('Refusing print: submission_attempt_fence_failed');
   const expectedSubmissionAt = submissionOrder.printSubmissionAttemptedAt;
 
-  const result = await _submitPrint(submissionOrder);
+  const result = await _submitPrint(submissionOrder, contact);
 
   const afterPrint = await withOrderTransaction<OrderRecord | null>(
     order.id,
@@ -1151,6 +1167,8 @@ export async function buildProofArtifactFromPageArtifacts(
 ): Promise<ProofBuildResult> {
   const order = await getOrder(orderId);
   if (!order) return { ok: false, error: 'order_not_found' };
+  // Before any artifact read, render or upload; cannot rely on kickoff.
+  if (isClassroomReleaseHeld(order)) return { ok: false, error: 'classroom_release_held' };
   if (hasMediaBackedCustomStorySource(order)) {
     return { ok: false, error: 'media_story_manual_review_required' };
   }
@@ -1233,6 +1251,7 @@ export async function rebuildProofFromPageArtifacts(
 ): Promise<{ ok: boolean; proofUrl?: string; error?: string }> {
   const order = await getOrder(orderId);
   if (!order) return { ok: false, error: 'Order not found' };
+  if (isClassroomReleaseHeld(order)) return { ok: false, error: 'classroom_release_held' };
   if (!order.pageArtifacts || order.pageArtifacts.length === 0) {
     return { ok: false, error: 'Order has no page artifacts to rebuild from' };
   }
@@ -1316,7 +1335,10 @@ export type TriggerResult =
   | { status: 'skipped_already_running'; fulfillmentStatus: string }
   | { status: 'skipped_already_complete'; fulfillmentStatus: string }
   | { status: 'not_paid_yet'; attempts: number }
-  | { status: 'not_found' };
+  | { status: 'not_found' }
+  /** Bound classroom order: terminal hold. Callers must not retry, schedule,
+   *  send or print; it is never `started`. */
+  | { status: 'classroom_release_held' };
 
 const DEFAULT_READBACK_MAX_ATTEMPTS = 3;
 const DEFAULT_READBACK_INITIAL_DELAY_MS = 100;
@@ -1379,6 +1401,12 @@ export async function triggerFulfillment(
   // [fulfillment] entered line in the log, the kickoff scheduler
   // (see fulfillment-kickoff.ts) failed before getting here.
   console.log(`[fulfillment] entered for ${orderId}`);
+
+  // Classroom hold on the authoritative record, before any dependency/effect.
+  const authoritative = await getOrder(orderId);
+  if (authoritative && isClassroomReleaseHeld(authoritative)) {
+    return { status: 'classroom_release_held' };
+  }
 
   // Confirm authoritative paid state before doing ANY work. Read-after-
   // write inconsistency on the persistence backend cannot trick us into
@@ -1463,12 +1491,15 @@ export async function approvePrintProof(
   token: string,
   deps: FulfillmentDeps = {},
 ): Promise<{ ok: boolean; error?: string }> {
-  type ClaimResult = { claimed: true; order: OrderRecord } | { claimed: false; ok: boolean; error?: string };
+  type ClaimResult = { claimed: true; order: OrderRecord; contact: ResolvedPrintContact } | { claimed: false; ok: boolean; error?: string };
   let claim: ClaimResult;
   try {
     claim = await withOrderTransaction<ClaimResult>(
       orderId,
-      (order) => {
+      async (order) => {
+        if (isClassroomReleaseHeld(order)) {
+          return { abort: { claimed: false, ok: false, error: 'classroom_release_held' } };
+        }
         if (!order.proofApprovalToken) {
           return { abort: { claimed: false, ok: false, error: 'No proof pending approval' } };
         }
@@ -1490,6 +1521,11 @@ export async function approvePrintProof(
         }
         const refusal = printReleaseRefusal(order, ['proof_ready']);
         if (refusal) return { abort: { claimed: false, ok: false, error: refusal } };
+        // Before the claim, so a refused contact leaves the order at proof_ready.
+        // Read after every hold, so a held order touches no effect seam.
+        const resolvePrintContact = deps.resolvePrintContact ?? resolveOrderPrintContact;
+        const resolved = await resolvePrintContact(order);
+        if (resolved.ok === false) return { abort: { claimed: false, ok: false, error: resolved.reason } };
 
         const claimedOrder: OrderRecord = {
           ...order,
@@ -1499,7 +1535,7 @@ export async function approvePrintProof(
         };
         return {
           commit: claimedOrder,
-          result: { claimed: true, order: claimedOrder },
+          result: { claimed: true, order: claimedOrder, contact: resolved.contact },
         };
       },
       { notFound: () => ({ claimed: false, ok: false, error: 'Order not found' }) },
@@ -1520,7 +1556,7 @@ export async function approvePrintProof(
   // ambiguous response can create a second physical job. A failure is parked
   // for explicit reconciliation against the durable submitting_to_print claim.
   try {
-    await runPrintProduction(claim.order, deps);
+    await runPrintProduction(claim.order, claim.contact, deps);
     return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

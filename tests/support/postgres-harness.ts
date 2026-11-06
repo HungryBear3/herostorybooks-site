@@ -16,7 +16,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import { SQL_DIR, sqlFileNames } from './control-plane-identity.ts';
@@ -90,9 +90,37 @@ function sleepSync(milliseconds: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
-function shortTempRoot(): string {
+/** Test-only base selection; an explicit root is pre-existing and controller-owned. */
+export function selectPostgresTempBase(explicit: string | undefined = process.env.HSB_CP_TEST_ROOT): string {
+  if (explicit !== undefined) {
+    const invalid = (reason: string): never => {
+      throw new Error(`Invalid HSB_CP_TEST_ROOT: ${reason}`);
+    };
+    if (!explicit || /[^\p{L}\p{M}\p{N}/._-]/u.test(explicit)) {
+      invalid('use only Unicode letters, marks, numbers, slash, dot, underscore or hyphen');
+    }
+    if (!path.isAbsolute(explicit) || path.normalize(explicit) !== explicit || path.resolve(explicit) !== explicit) {
+      invalid('must be an absolute canonical path without normalization');
+    }
+    if (realpathSync(explicit) !== explicit) invalid('symlink aliases are not allowed');
+    const info = statSync(explicit);
+    if (!info.isDirectory()) invalid('must be an existing directory');
+    if (typeof process.getuid !== 'function' || info.uid !== process.getuid()) invalid('must be owned by the process uid');
+    if ((info.mode & 0o077) !== 0) invalid('must have no group or other permission bits');
+    const socketLimit = process.platform === 'linux' ? 107 : 103;
+    if (Buffer.byteLength(`${explicit}/hsb-cp-XXXXXX/s/.s.PGSQL.39999`, 'utf8') > socketLimit) {
+      invalid(`full Unix socket path exceeds ${socketLimit} UTF-8 bytes`);
+    }
+    return explicit;
+  }
   // The Unix socket path has a hard ~103 byte limit, so prefer a short root.
   const base = existsSync('/tmp') && statSync('/tmp').isDirectory() ? '/tmp' : (process.env.TMPDIR ?? '/tmp');
+  return base;
+}
+
+/** Test-only root creation; every caller receives a fresh exclusive random child. */
+export function shortTempRoot(): string {
+  const base = selectPostgresTempBase();
   return mkdtempSync(path.join(base, 'hsb-cp-'));
 }
 
@@ -141,6 +169,8 @@ function childEnv(homeDir: string): NodeJS.ProcessEnv {
 }
 
 export function startDisposableCluster(): PostgresCluster {
+  // Fail closed on explicit configuration before tool discovery or any subprocess.
+  selectPostgresTempBase();
   const tools = resolvePostgresTools();
   const root = shortTempRoot();
   const dataDir = path.join(root, 'data');

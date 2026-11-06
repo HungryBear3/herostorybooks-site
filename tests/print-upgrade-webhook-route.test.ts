@@ -21,6 +21,7 @@ import { createOrderRecord, getOrder, persistOrder, type OrderRecord } from '../
 import { prepareCustomerPrintUpgradeOffer } from '../src/lib/print-upgrade-offer.ts';
 import { quotePrintUpgradeAtCost, type PrintCostQuoteProvider } from '../src/lib/print-upgrade-quote.ts';
 import { PRINT_UPGRADE_STRIPE_KIND, openPrintUpgradeCheckout } from '../src/lib/print-upgrade-checkout.ts';
+import { installMemoryPrintContactStore } from './support/print-contact-fixture.ts';
 
 const WEBHOOK_SECRET = 'whsec_hsb_print_upgrade_local_test';
 const STRIPE_KEY = 'sk_test_hsb_print_upgrade_local_test';
@@ -37,6 +38,8 @@ const MANAGED_ENV = [
 ] as const;
 
 function setupStore() {
+  // Every test reuses one Session id under a new quote, so each needs its own store.
+  installMemoryPrintContactStore();
   const saved = new Map(MANAGED_ENV.map((key) => [key, process.env[key]]));
   const root = mkdtempSync(path.join(os.tmpdir(), 'hsb-upgrade-webhook-'));
   for (const key of MANAGED_ENV) delete process.env[key];

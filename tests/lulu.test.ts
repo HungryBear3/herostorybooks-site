@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { submitPrintJob, clearTokenCache } from '../src/lib/lulu.ts';
+import { submitPrintJob as submitWithContact, clearTokenCache, type LuluPrintDeps } from '../src/lib/lulu.ts';
 import { createOrderRecord } from '../src/lib/orders.ts';
 import type { OrderRecord } from '../src/lib/orders.ts';
+import { syntheticPrintContact } from './support/print-contact-fixture.ts';
+
+const submitPrintJob = (order: OrderRecord, deps: Omit<LuluPrintDeps, 'contact'> = {}) =>
+  submitWithContact(order, { ...deps, contact: syntheticPrintContact(order) });
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -251,4 +255,69 @@ test('auth strips /v2 from LULU_API_URL when building token endpoint', withCreds
     else process.env.LULU_API_URL = previous;
     clearTokenCache();
   }
+}));
+
+// Contact-bearing request: real Response bodies and rejections, no provider.
+
+const ECHO_NAME = 'Quill Echoed';
+const ECHO_PHONE = '+13125550188';
+
+const submitWithEcho = (reply: () => Response) => submitWithContact(BASE_ORDER, {
+  contact: { ...syntheticPrintContact(BASE_ORDER), recipientName: ECHO_NAME, phone: ECHO_PHONE },
+  fetch: (async (url: RequestInfo | URL) => (String(url).includes('openid-connect/token')
+    ? new Response(JSON.stringify(TOKEN_RESPONSE))
+    : reply())) as typeof fetch,
+});
+
+async function rejectionOf(run: Promise<unknown>): Promise<Error> {
+  try {
+    await run;
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error('expected a rejection');
+}
+
+function assertNoEcho(error: Error) {
+  const text = `${error.message}\n${error.stack}\n${String(error.cause)}`;
+  for (const value of [ECHO_NAME, 'Quill', ECHO_PHONE, '5550188']) assert.equal(text.includes(value), false, value);
+}
+
+test('submitPrintJob: a 2xx non-JSON body echoing contact throws fixed text', withCreds(async () => {
+  const error = await rejectionOf(submitWithEcho(() => new Response(`${ECHO_NAME} ${ECHO_PHONE}`, { status: 200 })));
+  assert.equal(error.message, 'Lulu API success response was not JSON; outcome requires reconciliation');
+  assertNoEcho(error);
+}));
+
+test('submitPrintJob: a failed transport echoing contact throws fixed text', withCreds(async () => {
+  const error = await rejectionOf(submitWithEcho(() => {
+    throw new TypeError(`fetch failed for ${ECHO_NAME} ${ECHO_PHONE}`, { cause: new Error(`${ECHO_NAME} ${ECHO_PHONE}`) });
+  }));
+  assert.equal(error.message, 'Lulu API transport failed; outcome requires reconciliation');
+  assertNoEcho(error);
+}));
+
+test('submitPrintJob: a 2xx JSON reply with an unusable job id never becomes a job id', withCreds(async () => {
+  for (const body of [
+    { id: ECHO_NAME },
+    { id: ECHO_PHONE },
+    { id: { name: ECHO_NAME } },
+    { id: '   ' },
+    null,
+    ECHO_NAME,
+  ]) {
+    const error = await rejectionOf(submitWithEcho(() => new Response(JSON.stringify(body), { status: 201 })));
+    assert.match(error.message, /missing print job id/, JSON.stringify(body));
+    assertNoEcho(error);
+  }
+}));
+
+test('submitPrintJob: an unusable ship date is dropped', withCreds(async () => {
+  const result = await submitWithEcho(() => new Response(JSON.stringify({ id: 777, estimated_shipping_dates: { earliest: `${ECHO_NAME} ${ECHO_PHONE}` } }), { status: 201 }));
+  assert.deepEqual(result, { jobId: '777', status: 'submitted' });
+}));
+
+test('submitPrintJob: a numeric-string job id and a real date still pass through', withCreds(async () => {
+  const result = await submitWithEcho(() => new Response(JSON.stringify({ id: '98765432', estimated_shipping_dates: { earliest: '2026-05-01' } }), { status: 201 }));
+  assert.deepEqual(result, { jobId: '98765432', status: 'submitted', estimatedShipDate: '2026-05-01' });
 }));

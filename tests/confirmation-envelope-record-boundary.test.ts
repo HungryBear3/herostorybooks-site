@@ -87,6 +87,30 @@ const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), 
 const ORDERS_SOURCE = readFileSync(path.join(REPO_ROOT, 'src/lib/orders.ts'), 'utf8');
 
 /**
+ * One top-level declaration of orders.ts, from its head to its column-0 closing
+ * brace. The writers share their record boundary through `detachOrderProposal`,
+ * so the source pins below follow the real caller -> helper chain.
+ */
+function ordersDeclaration(head: string): string {
+  const start = ORDERS_SOURCE.indexOf(head);
+  assert.ok(start >= 0, `${head} must exist`);
+  assert.equal(ORDERS_SOURCE.indexOf(head, start + 1), -1, `${head} must be unique`);
+  const end = ORDERS_SOURCE.indexOf('\n}\n', start);
+  assert.ok(end > start, `${head} must be closed`);
+  return ORDERS_SOURCE.slice(start, end + 2);
+}
+
+/** Every orders.ts record writer, and the store write its detached proposal must precede. */
+const RECORD_WRITERS: ReadonlyArray<readonly [string, string]> = [
+  ['async function persistOrderUnsafe(', 'ctx.adapter.replaceIfVersion('],
+  ['export async function persistNewOrder(', 'ctx.adapter.createIfAbsent('],
+  ['export async function commitOrderConditional(', 'ctx.adapter.replaceIfVersion('],
+  ['async function commitOrderAttempt(', 'ctx.adapter.replaceIfVersion('],
+  ['async function commitOrderConditionalInNamespace(', 'ctx.adapter.replaceIfVersion('],
+  ['async function commitClassroomCustody<R>(', 'ctx.adapter.replaceIfVersion('],
+];
+
+/**
  * Grammar-valid 16-hex order ids, ASSEMBLED rather than written as literals.
  *
  * The ref grammar requires a real `ord_[a-f0-9]{16}`, and REQ16
@@ -589,22 +613,28 @@ test('B2: the boundary is callable on its own and is exported for the record', (
     ),
     OrderPersistenceError,
   );
-  // Each of the three writers calls it by name, so removing one is visible here
-  // as well as in the behavioural tests above.
+  // Every writer reaches the store only through the one detached proposal, and
+  // that proposal refuses on the RAW record before anything is serialized or
+  // scrubbed. Removing the call from a writer, or moving it after the write, is
+  // visible here as well as in the behavioural tests above.
   assert.equal(
-    (ORDERS_SOURCE.match(/assertNoConfirmationRequestBytes\(order\)/g) ?? []).length,
-    3,
-    'all three write paths must call the boundary on the raw record',
+    ORDERS_SOURCE.split('assertNoConfirmationRequestBytes(order, namespace);').length - 1,
+    1,
+    'the detached proposal is the one write-side caller of the boundary on the raw record',
   );
-  for (const fn of ['persistOrderUnsafe', 'persistNewOrder', 'commitOrderConditional']) {
-    const start = ORDERS_SOURCE.indexOf(`function ${fn}(`);
-    assert.ok(start > 0, `${fn} must exist`);
-    const body = ORDERS_SOURCE.slice(start, start + 2000);
-    const guardAt = body.indexOf('assertNoConfirmationRequestBytes(order)');
-    const scrubAt = body.indexOf('scrubRetiredPrivateFields(order)');
-    assert.ok(guardAt > 0, `${fn} must call the boundary`);
-    assert.ok(scrubAt > 0, `${fn} must still scrub`);
-    assert.ok(guardAt < scrubAt, `${fn} must refuse BEFORE it scrubs`);
+  const detach = ordersDeclaration('function detachOrderProposal(');
+  const guardAt = detach.indexOf('assertNoConfirmationRequestBytes(order, namespace);');
+  const serializeAt = detach.indexOf('JSON.stringify(');
+  const scrubAt = detach.indexOf('scrubRetiredPrivateFields(');
+  assert.ok(guardAt > 0, 'the detached proposal must call the boundary on the raw record');
+  assert.ok(serializeAt > guardAt, 'the boundary must refuse BEFORE any caller serialization');
+  assert.ok(scrubAt > serializeAt, 'and therefore BEFORE it scrubs');
+  for (const [head, write] of RECORD_WRITERS) {
+    const body = ordersDeclaration(head);
+    const detachAt = body.indexOf('detachOrderProposal(');
+    assert.ok(detachAt > 0, `${head} must build its record through the detached proposal`);
+    assert.equal(body.split('detachOrderProposal(').length - 1, 1, `${head} must detach exactly once`);
+    assert.ok(body.indexOf(write) > detachAt, `${head} must detach BEFORE ${write}`);
   }
 });
 
@@ -771,11 +801,12 @@ test('B6: no canary ever reaches the serialized store body, on any write path', 
   // and a body that carries request bytes is the failure mode being excluded.
   const bodies: string[] = [];
   await localStore(async () => {
+    let stored: { body: string; version: string } | null = null;
     const adapter: OrderStoreAdapter = {
       kind: 'body-canary',
-      async readVersioned() { return null; },
-      async createIfAbsent(_pathname, body) { bodies.push(body); return { ok: true, version: 'v1' }; },
-      async replaceIfVersion(_pathname, body) { bodies.push(body); return { ok: true, version: 'v2' }; },
+      async readVersioned() { return stored ? { ...stored } : null; },
+      async createIfAbsent(_pathname, body) { if (stored) return { ok: false, reason: 'exists' }; stored = { body, version: 'v1' }; bodies.push(body); return { ok: true, version: stored.version }; },
+      async replaceIfVersion(_pathname, body, expected) { if (stored?.version !== expected) return { ok: false, reason: 'version_conflict' }; stored = { body, version: 'v2' }; bodies.push(body); return { ok: true, version: stored.version }; },
     };
     __setOrderStoreAdapterFactoryForTests(() => adapter);
 
@@ -1064,14 +1095,15 @@ function prototypeToJsonRef(): ConfirmationEmailEnvelopeRefV1 {
 }
 
 /** An adapter that captures every body handed to the store. */
-function capturingAdapter(): OrderStoreAdapter & { readonly bodies: string[] } {
+function capturingAdapter(baseline: { body: string; version: string } | null = null): OrderStoreAdapter & { readonly bodies: string[] } {
   const bodies: string[] = [];
+  let stored = baseline;
   return {
     kind: 'r3-capturing',
     bodies,
-    async readVersioned() { return null; },
-    async createIfAbsent(_pathname, body) { bodies.push(body); return { ok: true, version: 'v1' }; },
-    async replaceIfVersion(_pathname, body) { bodies.push(body); return { ok: true, version: 'v2' }; },
+    async readVersioned() { return stored ? { ...stored } : null; },
+    async createIfAbsent(_pathname, body) { if (stored) return { ok: false, reason: 'exists' }; stored = { body, version: 'v1' }; bodies.push(body); return { ok: true, version: stored.version }; },
+    async replaceIfVersion(_pathname, body, expected) { if (stored?.version !== expected) return { ok: false, reason: 'version_conflict' }; stored = { body, version: 'v2' }; bodies.push(body); return { ok: true, version: stored.version }; },
   };
 }
 
@@ -1106,16 +1138,20 @@ const WRITE_PATHS: readonly WritePath[] = ['persistOrder', 'persistNewOrder', 'c
 /**
  * Drive one real write path and return every body the store received.
  *
- * `persistOrder` writes to the on-disk store (it has no adapter seam), so its
- * body is read back from the directory; the other two go through a capturing
- * adapter. A refused write returns its error and the bodies (which must be none).
+ * Every writer, including persistOrder's local-store fallback, writes through
+ * the one captured order-store adapter, so bodies come from the capturing
+ * adapter. Anything that still reached the directory would be a bypass and is
+ * counted too. A refused write returns its error and the bodies (which must be
+ * none).
  */
 async function writeThrough(
   pathName: WritePath,
   order: OrderRecord,
 ): Promise<{ bodies: string[]; error: unknown; result: unknown }> {
   return localStore(async (dir) => {
-    const adapter = capturingAdapter();
+    // Clean, independent synthetic baseline: never serialize the hostile proposal here.
+    const adapter = capturingAdapter(pathName === 'commitOrderConditional'
+      ? { body: JSON.stringify(baseOrder(ORDER_ID)), version: 'v-expected' } : null);
     __setOrderStoreAdapterFactoryForTests(() => adapter);
     let error: unknown;
     let result: unknown;
@@ -1126,9 +1162,10 @@ async function writeThrough(
     } catch (caught) {
       error = caught;
     }
-    const bodies = pathName === 'persistOrder'
-      ? storedFiles(dir).map((name) => readFileSync(path.join(dir, name), 'utf8'))
-      : [...adapter.bodies];
+    const bodies = [
+      ...storedFiles(dir).map((name) => readFileSync(path.join(dir, name), 'utf8')),
+      ...adapter.bodies,
+    ];
     return { bodies, error, result };
   });
 }
@@ -1157,6 +1194,26 @@ test('B10: a proxy ref whose [[Get]] answers toJSON is written as its validated 
       const stored = (JSON.parse(body) as OrderRecord).confirmationEmailEnvelopeRef;
       assert.equal(JSON.stringify(stored), JSON.stringify(validRef()), `${pathName} must store the ten values`);
     }
+  }
+});
+
+test('B10: no writer ever asks a caller ref for a serialization hook', async () => {
+  // The behavioural root of the proxy leak: JSON.stringify asks every object it
+  // meets for toJSON through [[Get]]. A writer that serializes the caller's ref
+  // at all hands caller code the chance to answer.
+  for (const pathName of WRITE_PATHS) {
+    const asked: string[] = [];
+    const ref = new Proxy(validRef(), {
+      get(target, key, receiver) {
+        if (key === 'toJSON') asked.push(pathName);
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const order = baseOrder(ORDER_ID, { confirmationEmailEnvelopeRef: ref } as Partial<OrderRecord>);
+    const { bodies, error } = await writeThrough(pathName, order);
+    assert.equal(error, undefined, `${pathName} must accept a valid ref`);
+    assert.equal(bodies.length, 1, `${pathName} must write exactly one body`);
+    assert.deepEqual(asked, [], `${pathName} must never hand the caller ref to the serializer`);
   }
 });
 
@@ -1425,22 +1482,46 @@ test('B10: plain data that is not an Object literal is still accepted and round-
 });
 
 test('B10: each writer seals the ref after the scrub and before it serializes', () => {
-  for (const fn of ['persistOrderUnsafe', 'persistNewOrder', 'commitOrderConditional']) {
-    const start = ORDERS_SOURCE.indexOf(`function ${fn}(`);
-    const body = ORDERS_SOURCE.slice(start, start + 2000);
-    const guardAt = body.indexOf('assertNoConfirmationRequestBytes(order)');
-    const scrubAt = body.indexOf('const sanitized = scrubRetiredPrivateFields(order);');
-    const sealAt = body.indexOf('sealConfirmationEnvelopeRefForWrite(sanitized);');
-    const serializeAt = body.indexOf('JSON.stringify(sanitized');
-    assert.ok(guardAt > 0 && scrubAt > guardAt, `${fn} must refuse before it scrubs`);
-    assert.ok(sealAt > scrubAt, `${fn} must seal the scrubbed copy`);
-    assert.ok(serializeAt > sealAt, `${fn} must serialize only after the seal`);
+  // Every writer shares one detached proposal (B2 pins the caller -> helper
+  // chain). The caller's ref is sealed BEFORE caller serialization, restored
+  // after the parse, and sealed again after the scrub, before the stored bytes.
+  const detach = ordersDeclaration('function detachOrderProposal(');
+  const steps = [
+    'assertNoConfirmationRequestBytes(order, namespace);',
+    'const sealedRef = sealRawConfirmationEnvelopeRef(order, orderId, namespace);',
+    'JSON.stringify(serializableOrderWithSealedRef(order, sealedRef))',
+    'restoreSealedRef(plain as Record<string, unknown>, sealedRef);',
+    'assertNoConfirmationRequestBytes(plain as OrderRecord, namespace);',
+    'const sanitized = scrubRetiredPrivateFields(plain as OrderRecord);',
+    'sealConfirmationEnvelopeRefForWrite(sanitized, namespace);',
+    'const body = JSON.stringify(sanitized, null, 2);',
+    'const record = parseOrderRecord(body, namespace);',
+    'restoreSealedRef(record as unknown as Record<string, unknown>, sanitized.confirmationEmailEnvelopeRef ?? null);',
+  ];
+  let previous = -1;
+  for (const step of steps) {
+    const at = detach.indexOf(step);
+    assert.ok(at > previous, `the detached proposal must run ${step} after the step before it`);
+    previous = at;
   }
   assert.equal(
-    (ORDERS_SOURCE.match(/sealConfirmationEnvelopeRefForWrite\(sanitized\);/g) ?? []).length,
-    3,
-    'exactly the three writers seal',
+    detach.split('JSON.stringify(').length - 1,
+    2,
+    'only the sealed projection and the sealed scrubbed copy are serialized',
   );
+  assert.equal(
+    ORDERS_SOURCE.split('sealConfirmationEnvelopeRefForWrite(sanitized, namespace);').length - 1,
+    1,
+    'exactly the one detached proposal seals the scrubbed copy',
+  );
+  const projection = ordersDeclaration('function serializableOrderWithSealedRef(');
+  assert.ok(
+    projection.includes('shell[key] = key === CONFIRMATION_ENVELOPE_REF_FIELD ? sealedRef : source[key];'),
+    'the projection hands the serializer the sealed ref, never the raw one',
+  );
+  for (const [head] of RECORD_WRITERS) {
+    assert.ok(ordersDeclaration(head).includes('detachOrderProposal('), `${head} must write through the detached proposal`);
+  }
 });
 
 test('B9: there is still no envelope producer, store caller or dispatch wiring', () => {
@@ -1474,32 +1555,40 @@ function boundWriterSource(): string {
 
 test('B2/NBT: the bound writer calls the boundary on the raw record, against the bound namespace, before it scrubs', () => {
   const body = boundWriterSource();
-  const guardAt = body.indexOf('assertNoConfirmationRequestBytes(order, binding.namespace)');
-  const scrubAt = body.indexOf('scrubRetiredPrivateFields(order)');
-  assert.ok(guardAt > 0, 'the bound writer must call the boundary against the bound namespace');
-  assert.ok(scrubAt > 0, 'the bound writer must still scrub');
-  assert.ok(guardAt < scrubAt, 'the bound writer must refuse BEFORE it scrubs');
-  assert.equal(
-    (ORDERS_SOURCE.match(/assertNoConfirmationRequestBytes\(order, binding\.namespace\)/g) ?? []).length,
-    1,
-    'exactly the one bound writer calls the boundary against the bound namespace',
-  );
+  // The bound writer detaches its record against the namespace in its
+  // operation context, which the bound transaction fixes to the binding.
+  const detachAt = body.indexOf('detachOrderProposal(order, orderId, ctx.namespace)');
+  const guardAt = body.indexOf('beforeCommit()');
+  const writeAt = body.indexOf('ctx.adapter.replaceIfVersion(');
+  assert.ok(detachAt > 0, 'the bound writer must detach against its captured namespace');
+  assert.ok(guardAt > detachAt, 'the bound writer must detach BEFORE its guard');
+  assert.ok(writeAt > guardAt, 'and write only after the guard');
+  assert.equal(body.split('detachOrderProposal(').length - 1, 1, 'the bound writer detaches exactly once');
+  const transaction = ordersDeclaration('export async function withOrderTransactionInNamespace<T>(');
+  assert.ok(transaction.includes('    namespace: binding.namespace,\n'), 'the bound context namespace is the binding');
+  // The refusal on the raw record, before the scrub, belongs to the detached proposal (B2).
+  const detach = ordersDeclaration('function detachOrderProposal(');
+  const rawGuardAt = detach.indexOf('assertNoConfirmationRequestBytes(order, namespace);');
+  assert.ok(rawGuardAt > 0, 'the bound writer must call the boundary on the raw record');
+  assert.ok(rawGuardAt < detach.indexOf('scrubRetiredPrivateFields('), 'the bound writer must refuse BEFORE it scrubs');
 });
 
 test('B10/NBT: the bound writer seals the ref against the bound namespace after the scrub and before it serializes', () => {
   const body = boundWriterSource();
-  const guardAt = body.indexOf('assertNoConfirmationRequestBytes(order, binding.namespace)');
-  const scrubAt = body.indexOf('const sanitized = scrubRetiredPrivateFields(order);');
-  const sealAt = body.indexOf('sealConfirmationEnvelopeRefForWrite(sanitized, binding.namespace);');
-  const serializeAt = body.indexOf('JSON.stringify(sanitized');
-  assert.ok(guardAt > 0 && scrubAt > guardAt, 'the bound writer must refuse before it scrubs');
-  assert.ok(sealAt > scrubAt, 'the bound writer must seal the scrubbed copy, against the bound namespace');
-  assert.ok(serializeAt > sealAt, 'the bound writer must serialize only after the seal');
-  assert.equal(
-    (ORDERS_SOURCE.match(/sealConfirmationEnvelopeRefForWrite\(sanitized, binding\.namespace\);/g) ?? []).length,
-    1,
-    'exactly the one bound writer seals against the bound namespace',
-  );
+  // The bound writer stores exactly the detached proposal's sealed bytes,
+  // serialized once, before its guard.
+  const detachAt = body.indexOf('const proposal = detachOrderProposal(order, orderId, ctx.namespace);');
+  const bytesAt = body.indexOf('const body = proposal.body;');
+  const guardAt = body.indexOf('beforeCommit()');
+  assert.ok(detachAt > 0 && bytesAt > detachAt, 'the bound writer must write the detached proposal bytes');
+  assert.ok(guardAt > bytesAt, 'serialized BEFORE the guard, so no caller code runs between guard and write');
+  assert.equal(body.split('JSON.stringify(').length - 1, 0, 'the bound writer serializes nothing of its own');
+  const detach = ordersDeclaration('function detachOrderProposal(');
+  const scrubAt = detach.indexOf('const sanitized = scrubRetiredPrivateFields(plain as OrderRecord);');
+  const sealAt = detach.indexOf('sealConfirmationEnvelopeRefForWrite(sanitized, namespace);');
+  const serializeAt = detach.indexOf('const body = JSON.stringify(sanitized, null, 2);');
+  assert.ok(scrubAt > 0 && sealAt > scrubAt, 'the scrubbed copy is sealed against the bound namespace');
+  assert.ok(serializeAt > sealAt, 'and serialized only after the seal');
 });
 
 /** A store for the bound writer: one seeded record to read, every write body captured. */

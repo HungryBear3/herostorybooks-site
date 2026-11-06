@@ -1,3 +1,4 @@
+import { recordGroupBookPilotClose, registerGroupBookPilot } from './pilot-retention.ts';
 import { NextResponse } from 'next/server';
 
 import { isAdminAuthedFromRequest } from '../admin-auth.ts';
@@ -43,6 +44,48 @@ export async function deliveryResponse(req: Request, now: number) {
   const delivery = { cohortId: result.record.cohortId, deliveredAt: result.record.deliveredAt, recordedAt: result.record.recordedAt, dueAt: result.record.dueAt };
   if (result.outcome === 'conflict') return json({ ok: false, outcome: 'conflict', delivery }, 409);
   return json({ ok: true, outcome: result.outcome, delivery }, 200);
+}
+
+/**
+ * PILOT route (test-only cohorts). `action: 'register'` records the durable,
+ * immutable pilot registration (explicit purpose + exact roster) BEFORE any
+ * pilot photo; default/`action: 'close'` records the pilot close bound to that
+ * registration. Server clock only; any caller lifecycle time is refused; a
+ * cohort with any fullbook lifecycle record is refused, never reclassified.
+ */
+export async function pilotCloseResponse(req: Request, now: number) {
+  if (!isAdminAuthedFromRequest(req)) return json({ error: 'Unauthorized' }, 401);
+  if (!groupBookStorageReady()) return json({ ok: false, error: 'storage_disabled' }, 503);
+  const input = await body(req);
+  if (hasCallerLifecycleTime(input) || input.now !== undefined) return json({ ok: false, error: 'caller_time_rejected' }, 422);
+  if (input.retentionDays !== undefined && input.retentionDays !== 7) return json({ ok: false, error: 'invalid_retention_days' }, 422);
+  const action = input.action === undefined ? 'close' : input.action;
+  if (action === 'register') {
+    const result = await registerGroupBookPilot({
+      cohortId: input.cohortId, purpose: input.purpose, familySlotIds: input.familySlotIds, recordedBy: input.recordedBy, evidence: input.evidence, now,
+    });
+    if (result.outcome === 'invalid') return json({ ok: false, error: result.error }, 422);
+    if (result.outcome === 'unconfirmed') return json({ ok: false, outcome: 'unconfirmed' }, 503);
+    const registration = {
+      cohortId: result.record.cohortId, purpose: result.record.purpose, registrationId: result.record.registrationId,
+      familySlotIds: result.record.familySlotIds, registeredAt: result.record.registeredAt, recordedVia: result.record.recordedVia,
+    };
+    if (result.outcome === 'conflict') return json({ ok: false, outcome: 'conflict', registration }, 409);
+    return json({ ok: true, outcome: result.outcome, registration }, 200);
+  }
+  if (action !== 'close') return json({ ok: false, error: 'invalid_action' }, 422);
+  const result = await recordGroupBookPilotClose({
+    cohortId: input.cohortId, mode: input.mode, familySlotIds: input.familySlotIds, recordedBy: input.recordedBy, evidence: input.evidence, now,
+  });
+  if (result.outcome === 'invalid') return json({ ok: false, error: result.error }, 422);
+  if (result.outcome === 'unconfirmed') return json({ ok: false, outcome: 'unconfirmed' }, 503);
+  const pilot = {
+    cohortId: result.record.cohortId, mode: result.record.mode, registrationId: result.record.registrationId,
+    pilotClosedAt: result.record.pilotClosedAt, closedAt: result.record.closedAt, recordedAt: result.record.recordedAt,
+    cleanupEligibleAt: result.record.cleanupEligibleAt, deadlineAt: result.record.deadlineAt, retentionDays: result.record.retentionDays,
+  };
+  if (result.outcome === 'conflict') return json({ ok: false, outcome: 'conflict', pilot }, 409);
+  return json({ ok: true, outcome: result.outcome, pilot }, 200);
 }
 
 export async function retentionCleanupResponse(req: Request, now: number) {

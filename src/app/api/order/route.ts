@@ -79,7 +79,7 @@ async function createDirectCheckoutSession(request: DirectCheckoutSessionRequest
       quantity: 1,
     }],
     ...(isPrintFormat(order.bookFormat)
-      ? { shipping_address_collection: { allowed_countries: ['US'] as const } }
+      ? { shipping_address_collection: { allowed_countries: ['US'] as const }, phone_number_collection: { enabled: true } }
       : {}),
     success_url: `${baseUrl}/thank-you?${successParams.toString()}&sessionId={CHECKOUT_SESSION_ID}`,
     cancel_url: `${baseUrl}/checkout`,

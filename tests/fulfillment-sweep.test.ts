@@ -19,11 +19,11 @@ import {
   runFulfillmentSweep,
   type FulfillmentSweepDeps,
 } from '../src/lib/fulfillment-sweep.ts';
+import { GET as getFulfillmentSweepRoute } from '../src/app/api/cron/fulfillment-sweep/route.ts';
 import {
-  GET as getFulfillmentSweepRoute,
   __setFulfillmentSweepRouteDepsForTests,
   __resetFulfillmentSweepRouteDepsForTests,
-} from '../src/app/api/cron/fulfillment-sweep/route.ts';
+} from '../src/lib/fulfillment-sweep-route-deps.ts';
 
 function withEnv<T>(env: Record<string, string | undefined>, fn: () => Promise<T> | T): Promise<T> {
   const previous: Record<string, string | undefined> = {};
@@ -423,4 +423,19 @@ test('cron route fails closed: unauthorized request causes zero sweep mutation/c
   assert.equal(response.status, 503);
   assert.deepEqual(body, { ok: false });
   assert.equal(calls, 0);
+});
+
+test('F8: a classroom_release_held trigger result is counted as skipped, never started, and does not fail the sweep', async () => {
+  const results: TriggerResult[] = [{ status: 'classroom_release_held' }, { status: 'started' }];
+  const deps: FulfillmentSweepDeps = {
+    listOrders: async () => [makeSweepOrder({ id: 'ord_held_sweep' }), makeSweepOrder({ id: 'ord_retail_sweep' })],
+    triggerFulfillment: async () => results.shift()!,
+    now: () => Date.parse('2026-08-12T18:00:00.000Z'),
+    graceMs: 10 * 60 * 1000,
+    log: () => {},
+    errorLog: () => {},
+    maxStarts: 2,
+  };
+  const result = await runFulfillmentSweep(deps);
+  assert.deepEqual(result, { ok: true, scanned: 2, eligible: 2, started: 1, skipped: 1, failed: 0 });
 });

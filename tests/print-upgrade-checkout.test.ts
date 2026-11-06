@@ -35,6 +35,9 @@ import {
   type PrintUpgradeCheckoutSessionLike,
 } from '../src/lib/print-upgrade-checkout.ts';
 import { isPrintUpgradeLockLive } from '../src/lib/print-upgrade-lock.ts';
+import { installMemoryPrintContactStore } from './support/print-contact-fixture.ts';
+
+installMemoryPrintContactStore();
 
 function minutesAfter(iso: string, minutes: number): string {
   return new Date(Date.parse(iso) + minutes * 60 * 1000).toISOString();
@@ -177,7 +180,7 @@ test('open: creates one price-locked Session for the chosen quote and binds it b
   assert.equal(stored.printUpgradeLock?.quoteId, premium.quoteId);
   assert.equal(stored.printUpgradeLock?.totalCents, premium.totalCents);
   assert.equal(stored.printUpgradeLock?.stripeSessionId, 'cs_test_upgrade_1');
-  assert.equal(stored.printUpgradeLock?.recipientName, 'Alexy Kaplun');
+  assert.equal('recipientName' in stored.printUpgradeLock!, false);
   assert.equal(stored.bookFormat, 'digital');
   assert.equal(stored.printUpgradeOffer?.consumedAt ?? null, null);
   assert.equal((stored.auditEvents ?? []).filter((e) => e.type === 'print_upgrade_checkout_opened').length, 1);
@@ -688,3 +691,21 @@ test('print-go helper requires the exact approved source and unchanged native pr
   assert.equal(printPurchaseApprovalIsCurrent({ ...order, proofVersion: 'v6' }, purchase, APPROVED_SHA), false);
   assert.equal(printPurchaseApprovalIsCurrent({ ...order, proofApprovedAt: null }, purchase, APPROVED_SHA), false);
 });
+
+test('hosted delivery phone collection is preserved for both print upgrade formats and Session reuse', withLocalStore(async () => {
+  for (const targetFormat of ['classic', 'premium'] as const) {
+    const { token, classic, premium } = await quotedOffer();
+    const quote = targetFormat === 'classic' ? classic : premium;
+    const created: { params: PrintUpgradeCheckoutSessionCreate; idempotencyKey: string }[] = [];
+    const deps = { createCheckoutSession: fakeStripe(created), baseUrl: BASE_URL, now: NOW };
+    const opened = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: quote.quoteId }, deps);
+    assert.ok(opened.ok);
+    assert.deepEqual(created[0].params.phone_number_collection, { enabled: true });
+    assert.equal('shipping_address_collection' in created[0].params, false);
+    const resumed = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: quote.quoteId }, deps);
+    assert.ok(resumed.ok);
+    assert.equal(resumed.reused, true);
+    assert.equal(resumed.stripeSessionId, opened.stripeSessionId);
+    assert.equal(created.length, 1);
+  }
+}));

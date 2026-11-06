@@ -71,11 +71,12 @@ before(() => {
     'BLOB_READ_WRITE_TOKEN', 'HSB_BLOB_ACCESS_MODE', 'HSB_REQUIRE_DURABLE_PERSISTENCE',
     'HSB_CHECKOUT_PAUSED', 'HSB_STORY_MEDIA_INTENT', 'STRIPE_PRODUCT_DIGITAL_ID',
     'STRIPE_PRODUCT_CLASSIC_ID', 'VERCEL_ENV', 'NEXT_PUBLIC_URL',
-    'HSB_CHECKOUT_DIRECT_UPLOAD',
+    'HSB_CHECKOUT_DIRECT_UPLOAD', 'HSB_PRIVATE_READ_WRITE_TOKEN',
   ]) {
     savedEnv[key] = process.env[key];
   }
   process.env.BLOB_READ_WRITE_TOKEN = 'vercel_blob_rw_teststore_testsecret';
+  process.env.HSB_PRIVATE_READ_WRITE_TOKEN = 'vercel_blob_rw_privatestore_testsecret';
   process.env.HSB_BLOB_ACCESS_MODE = 'private';
   process.env.HSB_REQUIRE_DURABLE_PERSISTENCE = 'true';
   delete process.env.HSB_CHECKOUT_PAUSED;

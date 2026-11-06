@@ -3069,12 +3069,38 @@ test('NL-1: writer off follows the ambient namespace at every call, exactly as b
     const result = await deliverOrderConfirmationEmail(ORDER_ID, {
       send: transport.send, now: () => NOW_MS, newClaimId: () => 'claim-synthetic', log: (l) => { logs.push(l); }, errorLog: (l) => { logs.push(l); },
     });
+    // The receipt is its own ambient transaction. C4 permits its first
+    // attempt to reuse the claim's exact committed Z body/version.
     assert.deepEqual(adapter.calls.map((call) => `${call.op}:${call.path}`), [
       `readVersioned:${recordPathIn(A)}`,
       `readVersioned:${recordPathIn(Z)}`,
       `replaceIfVersion:${recordPathIn(Z)}`,
       `replaceIfVersion:${recordPathIn(Z)}`,
-    ], 'the ambient API follows the ambient namespace at every call');
+    ], 'the ambient API captures each call target; the Z receipt uses an attempt-one cache hit');
+    assert.equal(adapter.calls.filter(call => call.op === 'readVersioned').length, 2, 'only the A pre-read and Z claim read reach storage');
+    assert.equal(adapter.bodyAt(recordPathIn(A)), seed[recordPathIn(A)], 'A remains byte-identical');
+    const committedZ = adapter.recordAt(recordPathIn(Z))!;
+    assert.equal(committedZ.id, ORDER_ID);
+    assert.equal(committedZ.confirmationEmailSentAt, new Date(NOW_MS).toISOString());
+    assert.ok(committedZ.confirmationEmailSentAt, 'the receipt values actually landed at Z');
+    const { readOrderVersioned, withOrderTransaction } = await import('../src/lib/orders.ts');
+    const beforeHit = adapter.calls.length;
+    assert.equal(await withOrderTransaction(ORDER_ID, current => ({ abort: current.confirmationEmailSentAt })), new Date(NOW_MS).toISOString());
+    assert.equal(adapter.calls.length, beforeHit, 'same captured Z context positively hits cache');
+    assert.equal(await withOrderTransaction(ORDER_ID, current => ({ abort: current.confirmationEmailSentAt }), { fresh: true }), new Date(NOW_MS).toISOString());
+    assert.deepEqual(adapter.calls.slice(beforeHit).map(call => `${call.op}:${call.path}`), [`readVersioned:${recordPathIn(Z)}`], 'forced fresh uses the authoritative Z path');
+    setAmbient({ HSB_BLOB_NAMESPACE: A });
+    const beforeMiss = adapter.calls.length;
+    const expectedA = JSON.parse(seed[recordPathIn(A)]) as OrderRecord;
+    assert.equal(await withOrderTransaction(ORDER_ID, current => ({ abort: current.confirmationEmailSentAt })), expectedA.confirmationEmailSentAt);
+    assert.deepEqual(adapter.calls.slice(beforeMiss).map(call => `${call.op}:${call.path}`), [`readVersioned:${recordPathIn(A)}`], 'namespace mismatch cannot reuse Z cache bytes');
+    setAmbient({ HSB_BLOB_NAMESPACE: Z });
+    const beforeRestoredHit = adapter.calls.length;
+    const cached = await readOrderVersioned(ORDER_ID, { preferRecentCommit: true });
+    assert.equal(cached?.version, `v3-${sha16(recordPathIn(Z)).slice(0, 8)}`);
+    assert.equal(cached?.order.confirmationEmailSentAt, new Date(NOW_MS).toISOString());
+    assert.deepEqual(cached?.order, committedZ, 'all receipt values are preserved by the cache');
+    assert.equal(adapter.calls.length, beforeRestoredHit, 'equivalent restored Z context retains the exact winner cache');
     return result;
   });
   assert.deepEqual(outcome, { status: 'sent' });

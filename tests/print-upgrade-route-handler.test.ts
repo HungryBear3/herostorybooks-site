@@ -24,6 +24,9 @@ import {
   handlePrintUpgradeQuotePost,
   type PrintUpgradeRouteDeps,
 } from '../src/lib/print-upgrade-route-handler.ts';
+import { installMemoryPrintContactStore } from './support/print-contact-fixture.ts';
+
+installMemoryPrintContactStore();
 
 const APPROVED_SHA = '97312217e67bdc8845f5c03cd0d06533a1fe9a84bd030ce8fb25460e79f2ba38';
 const NOW = '2026-10-14T12:00:00.000Z';

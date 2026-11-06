@@ -28,6 +28,15 @@ import {
   withOrderTransaction,
 } from './orders.ts';
 import type { OrderRecord, PageArtifact, PageFeedbackEntry, PageVersionEntry } from './orders.ts';
+import { isClassroomReleaseHeld } from './orders.ts';
+
+const CLASSROOM_HELD_REFUSAL = { ok: false, status: 409, error: 'classroom_release_held' } as const;
+
+/** Authoritative-record classroom hold, checked before any artifact/provider/capability work. */
+async function classroomHeld(orderId: string): Promise<boolean> {
+  const versioned = await readOrderVersioned(orderId);
+  return !!versioned && isClassroomReleaseHeld(versioned.order);
+}
 import { generatePageImage, type ImageProvider } from './image-generator.ts';
 import { buildRegeneratePrompt } from './image-prompt-builder.ts';
 import {
@@ -113,6 +122,7 @@ export function evaluateReviewMutationEligibility(
   order: OrderRecord,
   actor: ReviewActor = INTERNAL_REVIEW_ACTOR,
 ): ReviewMutationRefusal | null {
+  if (isClassroomReleaseHeld(order)) return { status: 409, error: 'classroom_release_held' } as unknown as ReviewMutationRefusal;
   if (actor.kind === 'customer' && !hasReviewWriteAccess(order, { reviewToken: actor.reviewToken })) {
     return { status: 403, error: 'invalid_or_missing_token' };
   }
@@ -275,6 +285,7 @@ export async function publishProofGuarded(
   built: unknown,
   opts: { actor?: ReviewActor; auditPageIndex?: number } = {},
 ): Promise<ProofPublishResult> {
+  if (await classroomHeld(orderId)) return { ...CLASSROOM_HELD_REFUSAL } as unknown as ProofPublishResult;
   // Fail closed on a claimed-successful build that is missing any identity
   // field. This is a RUNTIME check; the discriminated union alone is not
   // enough, because an injected or future builder can lie about its shape.
@@ -382,6 +393,7 @@ export async function regeneratePage(
   input: RegenerateInput,
   deps: RegenerateDeps = {},
 ): Promise<RegenerateResult> {
+  if (await classroomHeld(input.orderId)) return { ...CLASSROOM_HELD_REFUSAL } as unknown as RegenerateResult;
   // Pre-flight: validate and build the prompt. The provider call must NOT be
   // inside the transaction, so the result is applied to a fresh record after.
   const preOrder = await getOrder(input.orderId);
@@ -614,6 +626,7 @@ export async function regeneratePage(
 }
 
 export async function acceptPage(input: AcceptInput): Promise<AcceptResult> {
+  if (await classroomHeld(input.orderId)) return { ...CLASSROOM_HELD_REFUSAL } as unknown as AcceptResult;
   try {
     return await withOrderTransaction<AcceptResult>(
       input.orderId,
@@ -697,6 +710,7 @@ export async function acknowledgeProofReview(
   orderId: string,
   input: AcknowledgeProofInput,
 ): Promise<AckProofResult> {
+  if (await classroomHeld(orderId)) return { ...CLASSROOM_HELD_REFUSAL } as unknown as AckProofResult;
   const now = input.now ?? new Date();
   try {
     return await withOrderTransaction<AckProofResult>(
@@ -792,6 +806,7 @@ export async function approveWholeBook(
   orderId: string,
   input: ApproveWholeBookInput = {},
 ): Promise<ApproveWholeBookResult> {
+  if (await classroomHeld(orderId)) return { ...CLASSROOM_HELD_REFUSAL } as unknown as ApproveWholeBookResult;
   try {
     return await withOrderTransaction<ApproveWholeBookResult>(
       orderId,
@@ -826,6 +841,11 @@ export async function approveWholeBook(
         const refusal = evaluateReviewMutationEligibility(order, input.actor);
         // An ineligible caller must leave NO trace — abort without committing.
         if (refusal) return { abort: { ok: false, status: refusal.status, error: refusal.error } };
+        // Bound classroom orders: no release authorization exists for them; an
+        // otherwise-eligible actor is held without a commit.
+        if (order.groupBookAssembly !== undefined) {
+          return { abort: { ok: false, status: 409, error: 'group_book_release_held' } };
+        }
 
         if (order.reviewStatus === 'approved') return reject('already_approved');
         if (!order.pageArtifacts || order.pageArtifacts.length === 0) return reject('review_not_ready');
@@ -970,6 +990,7 @@ export async function saveTextChangeRequest(
   input: SaveTextChangeInput,
   deps: { now?: () => Date } = {},
 ): Promise<SaveTextChangeResult> {
+  if (await classroomHeld(input.orderId)) return { ...CLASSROOM_HELD_REFUSAL } as unknown as SaveTextChangeResult;
   if (!Number.isInteger(input.pageIndex) || input.pageIndex < 0) {
     return { ok: false, status: 400, error: 'invalid_page_index' };
   }
@@ -1055,6 +1076,7 @@ export async function resolveTextChangeRequest(
     buildProof?: typeof buildProofArtifactFromPageArtifacts;
   } = {},
 ): Promise<ResolveTextChangeResult> {
+  if (await classroomHeld(input.orderId)) return { ...CLASSROOM_HELD_REFUSAL } as unknown as ResolveTextChangeResult;
   const storyText = typeof input.storyText === 'string' ? input.storyText.trim() : '';
   if (!Number.isInteger(input.pageIndex) || input.pageIndex < 0) {
     return { ok: false, status: 400, error: 'invalid_page_index' };
@@ -1174,6 +1196,10 @@ export async function prepareCustomerReviewLink(
     return await withOrderTransaction<PrepareReviewLinkResult>(
       orderId,
       (order) => {
+        // Bound classroom: no link creation and no existing-link replay.
+        if (isClassroomReleaseHeld(order)) {
+          return { abort: { ok: false, status: 409, error: 'classroom_release_held' } as PrepareReviewLinkResult };
+        }
         if (order.paymentStatus !== 'paid') {
           return { abort: { ok: false, status: 409, error: 'order_not_paid' } };
         }
@@ -1263,19 +1289,22 @@ export interface ReviewSnapshot {
 export function reviewSnapshotFromOrder(order: OrderRecord): ReviewSnapshot {
   const fresh = proofIsFresh(order);
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
+  // A bound classroom snapshot exposes no artifacts, proof or review authority.
+  const held = isClassroomReleaseHeld(order);
+  const visible = fresh && !held;
   return {
     orderId: order.id,
     childName: order.childName,
     reviewStatus: order.reviewStatus ?? 'in_review',
-    pageArtifacts: [...(order.pageArtifacts ?? [])].sort((a, b) => a.pageIndex - b.pageIndex),
+    pageArtifacts: held ? [] : [...(order.pageArtifacts ?? [])].sort((a, b) => a.pageIndex - b.pageIndex),
     // Advertise the proof ONLY when it is complete and current.
-    storyArtifactUrl: fresh ? (order.storyArtifactUrl ?? null) : null,
-    proofVersion: fresh ? (order.proofVersion ?? null) : null,
-    proofSourceFingerprint: fresh ? (order.proofSourceFingerprint ?? null) : null,
+    storyArtifactUrl: visible ? (order.storyArtifactUrl ?? null) : null,
+    proofVersion: visible ? (order.proofVersion ?? null) : null,
+    proofSourceFingerprint: visible ? (order.proofSourceFingerprint ?? null) : null,
     proofReviewedVersion: order.proofReviewedVersion ?? null,
     proofReviewedAt: order.proofReviewedAt ?? null,
-    proofAvailable: fresh,
-    proofFresh: fresh,
+    proofAvailable: visible,
+    proofFresh: visible,
     proofLayoutEditing: evaluateProofLayoutEditCapability(order),
     isPrint,
     bookFormat: order.bookFormat,
@@ -1337,6 +1366,7 @@ export interface ProofLayoutOverrideResult {
 /** Editing closes once the order is approved, print-submitted, in production,
  *  fulfilled, or shipped. (Refund/eligibility handled separately.) */
 export function evaluateProofLayoutMutationLifecycle(order: OrderRecord): { status: 409; error: string } | null {
+  if (isClassroomReleaseHeld(order)) return { status: 409, error: 'classroom_release_held' };
   if (order.reviewStatus === 'approved' || order.proofApprovedAt || order.printApprovedAt) {
     return { status: 409, error: 'order_approved' };
   }
@@ -1382,6 +1412,7 @@ export function evaluateProofLayoutEditCapability(order: OrderRecord): ProofLayo
   // Order-state eligibility, split into TRUTHFUL, distinct reasons — a refunded
   // or not-yet-paid order must NEVER be described as "in production". The
   // per-request token is not order state, so it is checked at mutation time only.
+  if (isClassroomReleaseHeld(order)) return { allowed: false, reason: 'classroom_release_held' as ProofLayoutEditReason };
   if (order.refundedAt || order.stripeRefundId) {
     return { allowed: false, reason: 'order_refunded' };
   }
@@ -1438,6 +1469,7 @@ export interface ProofFitResult {
  * look "fit" where the server renderer would reject it.
  */
 export async function evaluateProofFit(input: ProofFitInput): Promise<ProofFitResult> {
+  if (await classroomHeld(input.orderId)) return { ...CLASSROOM_HELD_REFUSAL } as unknown as ProofFitResult;
   const actor = input.actor ?? INTERNAL_REVIEW_ACTOR;
   if (!isCompleteProofCardGeometry(input.geometry)) {
     return { ok: false, status: 422, error: 'invalid_geometry' };
@@ -1521,6 +1553,7 @@ function resolveAndValidateLayoutColor(
 }
 
 export async function setProofLayoutOverride(input: ProofLayoutOverrideInput): Promise<ProofLayoutOverrideResult> {
+  if (await classroomHeld(input.orderId)) return { ...CLASSROOM_HELD_REFUSAL } as unknown as ProofLayoutOverrideResult;
   if (!Number.isInteger(input.pageIndex) || input.pageIndex < 0) {
     return { ok: false, status: 404, error: 'page_not_found' };
   }
@@ -1681,6 +1714,7 @@ export interface RequestLayoutHelpResult {
  * help request already on record is a no-op.
  */
 export async function requestLayoutHelp(input: RequestLayoutHelpInput): Promise<RequestLayoutHelpResult> {
+  if (await classroomHeld(input.orderId)) return { ...CLASSROOM_HELD_REFUSAL } as unknown as RequestLayoutHelpResult;
   const actor = input.actor ?? INTERNAL_REVIEW_ACTOR;
   if (input.pageIndex != null && (!Number.isInteger(input.pageIndex) || input.pageIndex < 0)) {
     return { ok: false, status: 422, error: 'invalid_page_index' };
@@ -1755,6 +1789,7 @@ export async function getReviewSnapshot(
 /** Public review reads are capability-gated for every order. Operator access
  * belongs on authenticated admin surfaces, never on this public helper. */
 export function hasReviewAccess(order: OrderRecord, input: ReviewAccessInput = {}): boolean {
+  if (isClassroomReleaseHeld(order)) return false;
   if (!hasAnyReviewCapability(order)) return false;
   return hasReviewCapability(order, input.reviewToken ?? '', input.now);
 }
@@ -1765,6 +1800,7 @@ export function hasReviewAccess(order: OrderRecord, input: ReviewAccessInput = {
  * a customer mutation.
  */
 export function hasReviewWriteAccess(order: OrderRecord, input: ReviewAccessInput = {}): boolean {
+  if (isClassroomReleaseHeld(order)) return false;
   if (!hasAnyReviewCapability(order)) return false;
   return hasReviewCapability(order, input.reviewToken ?? '', input.now);
 }

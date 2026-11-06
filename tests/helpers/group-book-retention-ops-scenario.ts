@@ -28,6 +28,7 @@ const setClock = (ms: number) => { offset = ms - realNow(); };
 const blob = await import('./group-book-blob-faults.mjs');
 const headers = await import('./group-book-next-headers.mjs');
 const config = await import('../../src/lib/group-book/config.ts');
+const store = await import('../../src/lib/group-book/store.ts');
 const retention = await import('../../src/lib/group-book/retention.ts');
 const monitor = await import('../../src/lib/group-book/retention-monitor.ts');
 const handlers = await import('../../src/lib/group-book/admin-handlers.ts');
@@ -69,6 +70,10 @@ async function seedDue(invites: Invite[] = [A, B, OTHER]): Promise<number> {
   process.env.GROUP_BOOK_INTAKE_ENABLED = 'true';
   process.env.CRON_SECRET = CRON;
   for (const invite of invites) assert.equal((await intake(intakeRequest(invite))).status, 200);
+  // Declare delayed provider-write keys through the actual admitted owner creator,
+  // before release/delivery; later fixture puts represent owned late commits.
+  const delayed = ["gbp_second","gbp_late"].map(assetId => ({assetId,pathname:store.groupBookPhotoPath(A,assetId,"jpg"),bytes:jpeg,mime:"image/jpeg"}));
+  assert.ok(await store.createGroupBookAttempt(A,store.newGroupBookSubmissionId(),delayed,{admittedAt:BASE,writeDeadline:BASE+45000},new Date(BASE)));
   assert.equal((await handlers.finalReleaseResponse(admin('/api/admin/group-book/final-release', {
     cohortId: A.cohortId, channel: 'printing', attribution: 'Synthetic Operator', evidence: 'SYNTHETIC print ref',
   }), BASE)).status, 200);

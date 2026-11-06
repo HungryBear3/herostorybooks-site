@@ -111,7 +111,7 @@ export default function GroupBookPortal() {
     setError(null);
     setChecking(true);
     try {
-      const response = await fetch('/api/group-book/access', {
+      const response = await fetch('/group-book/access', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ invite }),
@@ -140,7 +140,7 @@ export default function GroupBookPortal() {
               ? 'This private family invite has expired.'
               : body.error === 'invite_revoked'
                 ? 'This private family invite is no longer active.'
-                : 'That private family invite was not recognized.',
+                : 'That code could not be opened. For classroom access, use Classroom email sign-in, then return and enter the code again. Private invites must still be valid.',
       );
     } catch {
       setError('Your invite could not be checked because the connection or response was interrupted. Please try again.');
@@ -184,7 +184,7 @@ export default function GroupBookPortal() {
       return;
     }
     try {
-      const response = await fetch('/api/group-book/intake', { method: 'POST', body: form });
+      const response = await fetch('/group-book/intake', { method: 'POST', body: form });
       if (response.status === 413) {
         // Includes the platform's own non-JSON body-limit refusal: the request
         // was rejected before the handler ran, so nothing was written.
@@ -204,7 +204,7 @@ export default function GroupBookPortal() {
       }
       setError(
         body.error === 'invalid_invite'
-          ? 'That private family invite was not recognized.'
+          ? 'That code could not be opened. For classroom access, use Classroom email sign-in, then return and enter the code again. Private invites must still be valid.'
           : body.error === 'storage_disabled' || body.error === 'intake_closed' || body.error === 'policy_not_adopted'
             ? 'Family submissions are not open, so this attempt was not accepted.'
             : body.error === 'policy_consent_stale'
@@ -292,6 +292,7 @@ export default function GroupBookPortal() {
 
             <section className="card card-warm stack-12" style={{ padding: 18 }}>
               <div className="eyebrow forest">Explicit group-book consent</div>
+              <p className="help">For a test-only pilot with no book, source photos are deleted within 7 days after the actual pilot close is recorded. For a full book, source photos are deleted 90 days after actual final delivery, as stated in the terms above. Submission summaries and consent records are kept separately.</p>
               <label className="fr-row" style={{ alignItems: 'flex-start' }}><input type="checkbox" checked={guardian} onChange={(e) => setGuardian(e.target.checked)} /><span className="help"><strong>I am this child&apos;s parent or legal guardian</strong> and I am submitting only my own child&apos;s details and photos.</span></label>
               <label className="fr-row" style={{ alignItems: 'flex-start' }}><input type="checkbox" checked={sharedBook} onChange={(e) => setSharedBook(e.target.checked)} /><span className="help"><strong>I have read the group-book terms above and agree that my child&apos;s first name and illustrated likeness may appear in this private group book, shared only with the recipients those terms name.</strong> Source photos are not placed in a family gallery.</span></label>
               <label className="fr-row" style={{ alignItems: 'flex-start' }}><input type="checkbox" checked={schoolDisclaimer} onChange={(e) => setSchoolDisclaimer(e.target.checked)} /><span className="help"><strong>I understand this parent-run group book does not represent or imply school, teacher, district, or administrator approval.</strong></span></label>

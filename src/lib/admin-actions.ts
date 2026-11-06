@@ -6,6 +6,7 @@ import { getOptionalStripeSecretKey } from './stripe-env.ts';
 import {
   appendAuditEvent,
   getOrder,
+  isClassroomReleaseHeld,
   prepareOrderForAdminFulfillmentRetry,
   updateFulfillmentState,
   updateOrderStatus,
@@ -98,6 +99,7 @@ export async function retryOrderFulfillment(
 ): Promise<ActionResult> {
   const order = await getOrder(orderId);
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  if (isClassroomReleaseHeld(order)) return { ok: false, status: 409, error: 'classroom_release_held' };
   if (order.paymentStatus !== 'paid') {
     return { ok: false, status: 400, error: 'Cannot retry: payment not confirmed' };
   }
@@ -140,7 +142,10 @@ export async function retryOrderFulfillment(
   // On Vercel/serverless a fire-and-forget promise gets dropped when the
   // request returns, leaving the order stuck at not_started.
   try {
-    await triggerFulfillment(orderId, fulfillmentDeps);
+    const kickoff = await triggerFulfillment(orderId, fulfillmentDeps);
+    if (('fulfillmentStatus' in kickoff && kickoff.fulfillmentStatus === 'policy_not_auto') || kickoff.status === 'not_found') {
+      return { ok: false, status: 409, error: 'Fulfillment policy refused retry' };
+    }
   } catch (err) {
     console.error(`[admin] retry trigger failed for ${orderId}:`, err);
     const message = err instanceof Error ? err.message : String(err);
@@ -148,11 +153,11 @@ export async function retryOrderFulfillment(
   }
 
   const afterRetry = await getOrder(orderId);
-  if (afterRetry?.fulfillmentStatus === 'failed_manual_review') {
+  if (!afterRetry || !afterRetry.fulfillmentStatus || ['not_started', 'failed_manual_review'].includes(afterRetry.fulfillmentStatus)) {
     return {
       ok: false,
       status: 502,
-      error: `Fulfillment retry failed: ${(afterRetry.fulfillmentLastError ?? 'manual review required').slice(0, 240)}`,
+      error: `Fulfillment retry failed: ${(afterRetry?.fulfillmentLastError ?? 'manual review required').slice(0, 240)}`,
     };
   }
   return { ok: true };
@@ -165,8 +170,12 @@ export async function retryOrderFulfillment(
  * order isn't in `delivery_email_failed` (caller should use the regular
  * `retryOrderFulfillment` or `resendProofEmail` paths in that case).
  */
+const CLASSROOM_HELD: ActionResult = { ok: false, status: 409, error: 'classroom_release_held' };
+
 export async function resendDigitalDelivery(orderId: string): Promise<ActionResult> {
-  if (!await getOrder(orderId)) return { ok: false, status: 404, error: 'Order not found' };
+  const found = await getOrder(orderId);
+  if (!found) return { ok: false, status: 404, error: 'Order not found' };
+  if (isClassroomReleaseHeld(found)) return { ...CLASSROOM_HELD };
   const claimed = await claimEmailResend(orderId, 'digital_delivery', (current) => (
     current.bookFormat === 'digital'
     && current.paymentStatus === 'paid'
@@ -227,6 +236,7 @@ export async function markOrderShipped(
 ): Promise<ActionResult> {
   const initial = await getOrder(orderId);
   if (!initial) return { ok: false, status: 404, error: 'Order not found' };
+  if (isClassroomReleaseHeld(initial)) return { ...CLASSROOM_HELD };
   if (initial.bookFormat !== 'classic' && initial.bookFormat !== 'premium') {
     return { ok: false, status: 400, error: 'Only print orders can be marked shipped' };
   }
@@ -303,7 +313,9 @@ export async function resendProofEmail(
   orderId: string,
   baseUrl: string,
 ): Promise<ActionResult> {
-  if (!await getOrder(orderId)) return { ok: false, status: 404, error: 'Order not found' };
+  const found = await getOrder(orderId);
+  if (!found) return { ok: false, status: 404, error: 'Order not found' };
+  if (isClassroomReleaseHeld(found)) return { ...CLASSROOM_HELD };
   const claimed = await claimEmailResend(orderId, 'proof_ready', (current) => (
     (current.bookFormat === 'classic' || current.bookFormat === 'premium')
     && current.paymentStatus === 'paid'
@@ -348,6 +360,7 @@ export async function resendProofEmail(
 export async function manuallyApproveProof(orderId: string): Promise<ActionResult> {
   const order = await getOrder(orderId);
   if (!order) return { ok: false, status: 404, error: 'Order not found' };
+  if (isClassroomReleaseHeld(order)) return { ...CLASSROOM_HELD };
   if (order.fulfillmentStatus !== 'proof_ready') {
     return { ok: false, status: 409, error: `Proof is in state ${order.fulfillmentStatus}` };
   }
@@ -687,7 +700,9 @@ export async function applyLuluStatusUpdate(
     patch.fulfillmentLastError = `Lulu returned ${status}`;
   }
 
-  if (status === 'SHIPPED') {
+  // Bound classroom: authentic history/tracking is recorded below, but the
+  // shipping notification branch (markOrderShipped) is never reached.
+  if (status === 'SHIPPED' && !isClassroomReleaseHeld(order)) {
     return markOrderShipped(orderId, {
       ...tracking,
       printJobStatus: status,

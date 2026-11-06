@@ -29,6 +29,7 @@ import {
   type PrintUpgradeOfferDenial,
   type PrintUpgradeTargetFormat,
 } from './print-upgrade-offer.ts';
+import { printContactStorageProblem } from './print-contact-store.ts';
 import { isPrintUpgradeLockLive } from './print-upgrade-lock.ts';
 import { isQuoteLive } from './print-upgrade-quote.ts';
 import { recordPrintUpgradeSettlementConflict } from './print-upgrades.ts';
@@ -94,6 +95,7 @@ export interface PrintUpgradeCheckoutSessionCreate {
   mode: 'payment';
   payment_method_types: ['card'];
   allow_promotion_codes: false;
+  phone_number_collection: { enabled: true };
   customer_email: string;
   client_reference_id: string;
   metadata: Record<string, string>;
@@ -269,6 +271,9 @@ export async function openPrintUpgradeCheckout(
       if (!quote.estimatedDeliveryStart || !quote.estimatedDeliveryEnd || quote.estimatedDeliveryStart > quote.estimatedDeliveryEnd) {
         return { abort: { kind: 'done', result: { ok: false, reason: 'delivery_unavailable' } } };
       }
+      // Checked after authorization and before any Session is created or reused:
+      // a Session that collects a phone needs somewhere private to keep it.
+      if (printContactStorageProblem()) return { abort: { kind: 'done', result: { ok: false, reason: 'provider_failed' } } };
 
       const existing = current.printUpgradeLock ?? null;
       if (existing && existing.offerId === offer.offerId) {
@@ -323,7 +328,6 @@ export async function openPrintUpgradeCheckout(
         stripeSessionId: null,
         checkoutUrl: null,
         idempotencyKey: printUpgradeCheckoutIdempotencyKey(orderId, quote.quoteId),
-        recipientName: quote.shippingAddress.name,
         openedAt: now,
         expiresAt: new Date(nowMs + PRINT_UPGRADE_CHECKOUT_SESSION_TTL_MS).toISOString(),
         paidAt: null,
@@ -344,6 +348,7 @@ export async function openPrintUpgradeCheckout(
     mode: 'payment',
     payment_method_types: [...PRINT_UPGRADE_PAYMENT_METHOD_TYPES],
     allow_promotion_codes: false,
+    phone_number_collection: { enabled: true },
     customer_email: order.email,
     client_reference_id: orderId,
     metadata: {
@@ -443,7 +448,7 @@ function paymentIntentId(session: PrintUpgradeCheckoutSessionLike): string | nul
   return typeof id === 'string' && id ? id : null;
 }
 
-function stripName(address: ShippingAddress & { name: string }): ShippingAddress {
+function stripName(address: ShippingAddress): ShippingAddress {
   return { line1: address.line1, line2: address.line2 ?? null, city: address.city, state: address.state, zip: address.zip, country: address.country };
 }
 
@@ -534,7 +539,7 @@ export async function settlePrintUpgradeAtCostSession(
         currency: 'usd' as const,
         stripeSessionId: session.id,
         stripePaymentIntentId: paymentIntentId(session),
-        shippingAddress: quote.shippingAddress,
+        shippingAddress: stripName(quote.shippingAddress),
         estimatedDeliveryStart: quote.estimatedDeliveryStart ?? '',
         estimatedDeliveryEnd: quote.estimatedDeliveryEnd ?? '',
         paidAt: now,

@@ -17,6 +17,7 @@ import { publishProofGuarded } from '../src/lib/page-review.ts';
 import { retryOrderFulfillment } from '../src/lib/admin-actions.ts';
 import { validateStoryPageSet } from '../src/lib/story-page-contract.ts';
 import { fillerPage, padPageSet } from './support/full-page-set.ts';
+import { resolveSyntheticPrintContact, SYNTHETIC_SHIPPING } from './support/print-contact-fixture.ts';
 
 const TOKEN = 'synthetic-proof-token';
 const NOW = '2026-08-05T12:00:00.000Z';
@@ -68,6 +69,8 @@ function printOrder(id: string, overrides: Partial<OrderRecord> = {}): OrderReco
     printInteriorPageCount: 32,
     printInteriorProofVersion: 'proof-v1',
     printTitle: 'Synthetic Hero Story',
+    stripeSessionId: 'cs_test_print_fixture',
+    shippingAddress: SYNTHETIC_SHIPPING,
     ...overrides,
   };
   if (overrides.proofSourceFingerprint === undefined) {
@@ -82,6 +85,7 @@ function printDeps(onSubmit?: () => Promise<{ jobId: string }>): FulfillmentDeps
     buildPrintCoverPdf: () => Buffer.from('%PDF synthetic cover'),
     uploadArtifact: async (id, _buffer, filename) => `https://example.invalid/${id}/${filename}`,
     submitPrint: onSubmit ?? (async () => ({ jobId: 'synthetic-print-job' })),
+    resolvePrintContact: resolveSyntheticPrintContact,
     sleep: async () => {},
   };
 }

@@ -66,6 +66,79 @@ const OPERATIONAL_NOINDEX_PATH = /^\/(?:admin|api|checkout|order|partner|review|
 // gets the same referrer containment as the other order-bearer documents.
 const ORDER_BEARER_REFERRER_PATH = /^\/(?:status|thank-you|upgrade)(?:\/|$)/;
 
+// Exactly the paths the pre-containment matcher skipped. The matcher now runs
+// everywhere (so dotted /api paths cannot escape the Preview gate below), and
+// these keep their old untouched behaviour once the gate has had its say.
+// The unescaped `.` in `favicon.ico` is deliberate: the old matcher source had
+// it unescaped too, so it was a regex wildcard there and must stay one here.
+const PREVIOUSLY_UNMATCHED_PATH =
+  /^\/(?:_next\/static|_next\/image|favicon.ico|assets|.*\.(?:png|jpg|jpeg|gif|webp|svg|ico|txt|xml))/;
+
+/**
+ * Preview classroom-QA containment. Active ONLY when the deployment itself
+ * says so: HSB_CLASSROOM_QA_ONLY is the literal 'true' AND VERCEL_ENV is the
+ * literal 'preview'. Production and every other combination are untouched.
+ *
+ * While active, the API surface is exactly two canonical lanes:
+ *   POST     /api/admin/group-book/order        (handler still requires admin)
+ *   GET|HEAD /api/order/<ord_ + 16 lowercase hex> (handler still requires admin)
+ * Everything else under /api, and every non-GET/HEAD non-API request
+ * (including the /group-book/* POST aliases), is refused here with a private
+ * 503 before any route is dispatched. Query and headers never grant anything.
+ *
+ * Matching is on the canonical pathname Next hands middleware. Dot segments
+ * are already erased by then, so a dot alias of an allowed path is that path
+ * (admin auth downstream still applies). Any percent-escape still present in
+ * the pathname (valid, invalid or double-encoded) is refused outright rather
+ * than decoded and guessed at. Other observable spellings — case variants,
+ * repeated or trailing slashes, extensions — never equal an allowed path and
+ * fail closed.
+ *
+ * Payment QA: only inside that same Preview gate, the literal
+ * HSB_CLASSROOM_PAYMENT_QA_ONLY === 'true' adds exactly two more POST lanes,
+ * the existing admin classroom checkout and the canonical Stripe webhook. Each
+ * handler still enforces admin auth / signature and its own payment policy.
+ */
+const PREVIEW_ADMIN_ORDER_PATH = '/api/admin/group-book/order';
+const PREVIEW_ORDER_READ_PATH = /^\/api\/order\/ord_[a-f0-9]{16}$/;
+const PREVIEW_PAYMENT_QA_PATHS = ['/api/admin/group-book/checkout', '/api/webhooks/stripe'];
+const API_PREFIX = /^\/+api(?:\/|$)/i;
+
+function isPreviewClassroomQaOnly(): boolean {
+  return process.env.HSB_CLASSROOM_QA_ONLY === 'true' && process.env.VERCEL_ENV === 'preview';
+}
+
+function isPreviewAllowed(pathname: string, method: string): boolean {
+  if (pathname.includes('%')) return false;
+  const read = method === 'GET' || method === 'HEAD';
+  if (API_PREFIX.test(pathname)) {
+    if (pathname === PREVIEW_ADMIN_ORDER_PATH) return method === 'POST';
+    if (PREVIEW_PAYMENT_QA_PATHS.includes(pathname) && process.env.HSB_CLASSROOM_PAYMENT_QA_ONLY === 'true') {
+      return method === 'POST';
+    }
+    return read && PREVIEW_ORDER_READ_PATH.test(pathname);
+  }
+  return read;
+}
+
+// Refusals carry the strictest existing privacy set (family-review headers),
+// so no denied path loses a protection it had before the gate.
+function previewRefusal(): NextResponse {
+  const response = NextResponse.json(
+    { error: 'preview_classroom_qa_only' },
+    {
+      status: 503,
+      headers: {
+        'Cache-Control': 'private, no-store, max-age=0',
+        'X-Robots-Tag': 'noindex, nofollow, noarchive, nosnippet',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    },
+  );
+  applyFamilyReviewPrivacyHeaders(response);
+  return response;
+}
+
 const FAMILY_REVIEW_CSP = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
@@ -115,6 +188,13 @@ function applyCustomerReviewPrivacyHeaders(response: NextResponse): void {
 
 export function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+  if (isPreviewClassroomQaOnly() && !isPreviewAllowed(pathname, request.method)) {
+    return previewRefusal();
+  }
+  if (PREVIOUSLY_UNMATCHED_PATH.test(pathname)) {
+    return NextResponse.next();
+  }
+
   const isFamilyReview = FAMILY_REVIEW_PATH.test(pathname);
   const isGroupBook = GROUP_BOOK_PATH.test(pathname);
 
@@ -166,10 +246,9 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Hit ALL paths (including api routes) so /api/family-review/* gets the
-  // privacy headers too. The cover-variant code skips them via the
-  // private-intake branch.
-  matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|assets|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|txt|xml)).*)',
-  ],
+  // Hit EVERY path. An extension-excluding matcher let dotted /api paths
+  // (e.g. a dynamic segment ending in `.png`) bypass the Preview gate; the
+  // static paths it used to skip are now passed through untouched by
+  // PREVIOUSLY_UNMATCHED_PATH inside middleware instead.
+  matcher: ['/(.*)'],
 };

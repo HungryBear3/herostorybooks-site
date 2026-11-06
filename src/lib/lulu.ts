@@ -1,4 +1,5 @@
 import type { OrderRecord } from './orders.ts';
+import type { ResolvedPrintContact } from './print-contact-store.ts';
 import {
   luluCostCalculationToQuote,
   type LuluCostCalculationResponse,
@@ -27,6 +28,11 @@ export interface LuluDeps {
   fetch?: typeof globalThis.fetch;
 }
 
+export interface LuluPrintDeps extends LuluDeps {
+  /** Bound private contact. A real print job has no fallback. */
+  contact?: ResolvedPrintContact;
+}
+
 export interface LuluCoverDimensions {
   widthPt: number;
   heightPt: number;
@@ -47,6 +53,9 @@ const TOKEN_PATH = '/auth/realms/glasstree/protocol/openid-connect/token';
 // Lulu's Browser Integrity Check can reject generic Node/Python User-Agents with 1010.
 // Identify this integration on every API request, including cost calculations.
 const LULU_USER_AGENT = 'HeroStoryBooks/1.0 (Lulu Print API integration)';
+// Lulu job ids are integers. Anything else is an unknown reply, not an id to store.
+const LULU_PRINT_JOB_ID = /^[0-9]{1,20}$/;
+const LULU_SHIP_DATE = /^\d{4}-\d{2}-\d{2}(?:T[0-9:.+Z-]+)?$/;
 
 export function podPackageIdForFormat(bookFormat: string): string {
   return podPackageId(bookFormat);
@@ -172,7 +181,7 @@ export async function calculateCoverDimensions(
 
 export async function submitPrintJob(
   order: OrderRecord,
-  deps: LuluDeps = {},
+  deps: LuluPrintDeps = {},
 ): Promise<LuluJobResult> {
   const clientKey = process.env.LULU_CLIENT_KEY;
   const clientSecret = process.env.LULU_CLIENT_SECRET;
@@ -181,6 +190,11 @@ export async function submitPrintJob(
     throw new Error(
       'LULU_CLIENT_KEY and LULU_CLIENT_SECRET are required — configure the Lulu integration first.',
     );
+  }
+
+  const contact = deps.contact;
+  if (!contact || contact.orderId !== order.id || !contact.recipientName || !contact.phone) {
+    throw new Error('print_contact_required');
   }
 
   const artifacts = getPrintArtifacts(order);
@@ -209,51 +223,61 @@ export async function submitPrintJob(
     ],
   };
 
-  if (order.shippingAddress) {
-    body.shipping_address = {
-      name: order.childName,
-      street1: order.shippingAddress.line1,
-      ...(order.shippingAddress.line2 ? { street2: order.shippingAddress.line2 } : {}),
-      city: order.shippingAddress.city,
-      state_code: order.shippingAddress.state,
-      postcode: order.shippingAddress.zip,
-      country_code: order.shippingAddress.country,
-      phone_number: process.env.LULU_FALLBACK_PHONE ?? '000-000-0000',
-    };
-  }
+  body.shipping_address = {
+    name: contact.recipientName,
+    street1: contact.shippingAddress.line1,
+    ...(contact.shippingAddress.line2 ? { street2: contact.shippingAddress.line2 } : {}),
+    city: contact.shippingAddress.city,
+    state_code: contact.shippingAddress.state,
+    postcode: contact.shippingAddress.zip,
+    country_code: contact.shippingAddress.country,
+    phone_number: contact.phone,
+  };
 
-  const res = await _fetch(`${getBaseUrl()}/print-jobs/`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-      'User-Agent': LULU_USER_AGENT,
-    },
-    body: JSON.stringify(body),
-  });
+  // From here on, provider and transport text may echo the recipient, so every
+  // failure is fixed text. The caller's durable fence keeps each one ambiguous.
+  let res: Response;
+  try {
+    res = await _fetch(`${getBaseUrl()}/print-jobs/`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': LULU_USER_AGENT,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error('Lulu API transport failed; outcome requires reconciliation');
+  }
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Lulu API error ${res.status}: ${text.slice(0, 200)}`);
+    // The request carries the recipient, so the provider's reply may echo it.
+    throw new Error(`Lulu API error ${res.status}`);
   }
 
-  const data = await res.json() as {
+  let data: {
     id?: number | string;
     status?: string;
     estimated_shipping_dates?: { earliest?: string };
   };
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error('Lulu API success response was not JSON; outcome requires reconciliation');
+  }
 
-  if (data.id == null || String(data.id).trim() === '') {
+  const providerId = data?.id;
+  const jobId = typeof providerId === 'number' || typeof providerId === 'string' ? String(providerId) : '';
+  if (!LULU_PRINT_JOB_ID.test(jobId)) {
     throw new Error('Lulu API success response missing print job id; outcome requires reconciliation');
   }
-  const jobId = String(data.id);
+  const earliest = data?.estimated_shipping_dates?.earliest;
 
   return {
     jobId,
     status: 'submitted',
-    ...(data.estimated_shipping_dates?.earliest
-      ? { estimatedShipDate: data.estimated_shipping_dates.earliest }
-      : {}),
+    ...(typeof earliest === 'string' && LULU_SHIP_DATE.test(earliest) ? { estimatedShipDate: earliest } : {}),
   };
 }
 
@@ -316,8 +340,8 @@ export async function calculatePrintJobCost(
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Lulu cost calculation error ${res.status}: ${text.slice(0, 200)}`);
+    // The request carries the recipient, so the provider's reply may echo it.
+    throw new Error(`Lulu cost calculation error ${res.status}`);
   }
   let data: unknown;
   try {

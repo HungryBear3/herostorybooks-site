@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ownsGroupBookInvite, type VerifiedGroupBookPrincipal } from './ownership.ts';
 
 export const GROUP_BOOK_INVITES_ENV = 'GROUP_BOOK_INVITES_JSON';
 export const GROUP_BOOK_BLOB_TOKEN_ENV = 'GROUP_BOOK_BLOB_READ_WRITE_TOKEN';
@@ -12,7 +13,13 @@ export interface GroupBookInvite {
   expiresAt: string;
   /** Operator revocation; once set the capability grants nothing. */
   revokedAt?: string;
+  /** Additive managed identity binding; never inferred from a submitted email. */
+  owner?: { issuer: string; subject: string };
+  purpose?: GroupBookCohortPurpose;
 }
+
+export type GroupBookCohortPurpose = 'fullbook' | 'pilot_test_only';
+export const invitePurpose = (invite: Pick<GroupBookInvite, 'purpose'>): GroupBookCohortPurpose => invite.purpose ?? 'fullbook';
 
 export type GroupBookInviteState =
   | { state: 'active'; invite: GroupBookInvite }
@@ -52,6 +59,15 @@ function parseInvite(value: unknown): GroupBookInvite | null {
   if (!cohortLabel || cohortLabel.length > 100) return null;
   if (!isTimestamp(row.expiresAt)) return null;
   if (row.revokedAt !== undefined && !isTimestamp(row.revokedAt)) return null;
+  if (row.purpose !== undefined && row.purpose !== 'fullbook' && row.purpose !== 'pilot_test_only') return null;
+  let owner: GroupBookInvite['owner'];
+  if ('owner' in row) {
+    if (!row.owner || typeof row.owner !== 'object' || Array.isArray(row.owner)) return null;
+    const binding = row.owner as Record<string, unknown>;
+    if (typeof binding.issuer !== 'string' || typeof binding.subject !== 'string') return null;
+    if (!/^https:\/\/[^\s?#]+$/.test(binding.issuer) || !/^[A-Za-z0-9_-]{1,128}$/.test(binding.subject)) return null;
+    owner = { issuer: binding.issuer, subject: binding.subject };
+  }
   return {
     token: row.token,
     cohortId: row.cohortId,
@@ -59,38 +75,61 @@ function parseInvite(value: unknown): GroupBookInvite | null {
     cohortLabel,
     expiresAt: row.expiresAt,
     ...(row.revokedAt !== undefined ? { revokedAt: row.revokedAt as string } : {}),
+    ...(owner ? { owner } : {}),
+    ...(row.purpose !== undefined ? { purpose: row.purpose as GroupBookCohortPurpose } : {}),
   };
 }
 
-export function groupBookInvites(
+/** Strict result: an unset value is absent; anything unparseable, invalid or ambiguous is malformed, never empty. */
+export type GroupBookInviteConfig =
+  | { state: 'absent' }
+  | { state: 'valid'; invites: GroupBookInvite[] }
+  | { state: 'malformed' };
+
+export function groupBookInvitesStrict(
   raw: string | undefined = process.env[GROUP_BOOK_INVITES_ENV],
-): GroupBookInvite[] {
-  if (!raw?.trim()) return [];
+): GroupBookInviteConfig {
+  if (!raw?.trim()) return { state: 'absent' };
   let decoded: unknown;
   try {
     decoded = JSON.parse(raw);
   } catch {
-    return [];
+    return { state: 'malformed' };
   }
-  if (!Array.isArray(decoded)) return [];
+  if (!Array.isArray(decoded)) return { state: 'malformed' };
   const parsed = decoded.map(parseInvite);
-  if (parsed.some((row) => row === null)) return [];
+  if (parsed.some((row) => row === null)) return { state: 'malformed' };
   const invites = parsed as GroupBookInvite[];
   const tokens = new Set<string>();
   const slots = new Set<string>();
+  const purposes = new Map<string, GroupBookCohortPurpose>();
   for (const invite of invites) {
     const slot = `${invite.cohortId}\0${invite.familySlotId}`;
-    if (tokens.has(invite.token) || slots.has(slot)) return [];
+    if (tokens.has(invite.token) || slots.has(slot)) return { state: 'malformed' };
     tokens.add(invite.token);
     slots.add(slot);
+    const purpose = invitePurpose(invite);
+    if (purposes.has(invite.cohortId) && purposes.get(invite.cohortId) !== purpose) return { state: 'malformed' };
+    purposes.set(invite.cohortId, purpose);
   }
-  return invites;
+  return { state: 'valid', invites };
 }
 
-export function resolveGroupBookInviteState(token: string, now = Date.now()): GroupBookInviteState {
+/** Compatibility view: malformed and absent configuration both grant nothing. */
+export function groupBookInvites(
+  raw: string | undefined = process.env[GROUP_BOOK_INVITES_ENV],
+): GroupBookInvite[] {
+  const strict = groupBookInvitesStrict(raw);
+  return strict.state === 'valid' ? strict.invites : [];
+}
+
+export function resolveGroupBookInviteState(token: string, now = Date.now(), principal: VerifiedGroupBookPrincipal | null = null): GroupBookInviteState {
   if (!isWellFormedGroupBookToken(token)) return { state: 'unknown' };
   const invite = groupBookInvites().find((row) => row.token === token);
   if (!invite) return { state: 'unknown' };
+  // All existing callers fail closed for bound records until they supply a
+  // provider-verified principal. A classroom selector is never authentication.
+  if (!ownsGroupBookInvite(invite, principal)) return { state: 'unknown' };
   if (invite.revokedAt !== undefined && Date.parse(invite.revokedAt) <= now) return { state: 'revoked', invite };
   if (Date.parse(invite.expiresAt) <= now) return { state: 'expired', invite };
   return { state: 'active', invite };

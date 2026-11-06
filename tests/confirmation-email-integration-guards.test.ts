@@ -457,6 +457,14 @@ const CANDIDATE_TESTS = new Set([
   // A3-7: the retention suite drives the planner over the record fields and
   // the ref directly.
   'tests/confirmation-envelope-retention.test.ts',
+  // Classroom settlement custody: complete raw OrderRecord fixtures name the
+  // existing record fields. Test files only; no production file gains permission.
+  'tests/classroom-settlement-custody.test.ts',
+  'tests/classroom-settlement-accounting.test.ts',
+  'tests/classroom-settlement-consumers.test.ts',
+  'tests/classroom-settlement-contract-guards.test.ts',
+  // Versioned current-contract settlement suite: same test-file-only grant.
+  'tests/classroom-settlement-current-contract.test.ts',
 ]);
 
 /** A3-4 R2 GA-5: a candidate exemption is only ever a test file. */
@@ -1491,7 +1499,8 @@ function storeImporterOffenders(file: string, source: string): string[] {
 }
 
 const DELIVERY_PRODUCER_BINDINGS = ['resolveConfirmationEnvelopeWriter', 'snapshotConfirmationEnvelope'];
-const DELIVERY_ORDER_BINDINGS = ['getOrderAuthoritative', 'withOrderTransaction'];
+// F3: the claimability fence reads the shared classroom release hold.
+const DELIVERY_ORDER_BINDINGS = ['getOrderAuthoritative', 'isClassroomReleaseHeld', 'withOrderTransaction'];
 
 /** GA-9: one named runtime import of the producer's two entry points, no store
  *  or config reach, no namespace or environment read. */

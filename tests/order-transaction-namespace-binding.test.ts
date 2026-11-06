@@ -1094,7 +1094,7 @@ test('NT-17: bound commits never publish to the id-keyed cache, evict only older
   });
 });
 
-test('NT-18: the adapter is resolved exactly once per bound call (the ambient API per read and per commit)', async () => {
+test('NT-18: the adapter is resolved exactly once per bound and ambient call', async () => {
   await scenario(A, async () => {
     const seed = seedAZ();
     const ns = nsOrderAdapter({ seed, conflictAt: [0, 1, 2] });
@@ -1104,11 +1104,11 @@ test('NT-18: the adapter is resolved exactly once per bound call (the ambient AP
     await nbt(() => orders.readOrderVersionedInNamespace(bindOrThrow(A), ORDER_ID));
     assert.equal(ns.factoryCalls(), 2, 'one resolution for a bound read');
   });
-  // Control: the ambient API resolves per read and per commit.
+  // Accepted C1: the ambient API captures one context across all retries.
   await scenario(A, async () => {
     const ns = nsOrderAdapter({ seed: seedAZ(), conflictAt: [0, 1, 2] });
     await orders.withOrderTransaction(ORDER_ID, (order) => ({ commit: edit(order, 'ambient'), result: null }));
-    assert.equal(ns.factoryCalls(), 8, 'control: 4 reads + 4 commits');
+    assert.equal(ns.factoryCalls(), 1, 'control: one captured context across all retries');
   });
 });
 
@@ -1178,8 +1178,135 @@ const NT19_BASE_TRACE: unknown[] = [
   {"final": [["", "e3b0c44298fc1c14"], ["ns-a", "785ae5a4c0dd55cc"], ["ns-b", "e3b0c44298fc1c14"], ["ns-z", "5762f2e3fa639d32"]]},
 ];
 
-test('NT-19: existing ambient callers produce the identical adapter, cache and publish trace as on the base tree', async () => {
-  assert.deepEqual(await ambientDifferentialTrace(), NT19_BASE_TRACE);
+const NT19_ACCEPTED_TRACE: unknown[] = [
+  {
+    "step": "txn-1 ambient A",
+    "ops": [
+      [
+        "readVersioned",
+        "ns-a/orders/<id>.json",
+        null,
+        null,
+        "v1-064fc094"
+      ],
+      [
+        "replaceIfVersion",
+        "ns-a/orders/<id>.json",
+        "v1-064fc094",
+        "c31b3989a5672455",
+        "ok"
+      ]
+    ],
+    "factory": 1,
+    "value": "seed:ns-a",
+    "error": null
+  },
+  {
+    "step": "txn-2 ambient A, attempt-1 cache hit",
+    "ops": [
+      [
+        "replaceIfVersion",
+        "ns-a/orders/<id>.json",
+        "v2-064fc094",
+        "785ae5a4c0dd55cc",
+        "ok"
+      ]
+    ],
+    "factory": 1,
+    "value": "edit-1",
+    "error": null
+  },
+  {
+    "step": "read ambient Z",
+    "ops": [
+      [
+        "readVersioned",
+        "ns-z/orders/<id>.json",
+        null,
+        null,
+        "v1-c96336b4"
+      ]
+    ],
+    "factory": 1,
+    "value": {
+      "version": "v1-c96336b4",
+      "orderSha": "b0b84a774b9afae6"
+    },
+    "error": null
+  },
+  {
+    "step": "txn-3 ambient Z, cache hit from A, conflict, retry",
+    "ops": [
+      [
+        "readVersioned",
+        "ns-z/orders/<id>.json",
+        null,
+        null,
+        "v1-c96336b4"
+      ],
+      [
+        "replaceIfVersion",
+        "ns-z/orders/<id>.json",
+        "v1-c96336b4",
+        "5762f2e3fa639d32",
+        "ok"
+      ]
+    ],
+    "factory": 1,
+    "value": "seed:ns-z",
+    "error": null
+  },
+  {
+    "step": "direct commit ambient Z, stale version",
+    "ops": [
+      [
+        "readVersioned",
+        "ns-z/orders/<id>.json",
+        null,
+        null,
+        "v2-c96336b4"
+      ]
+    ],
+    "factory": 1,
+    "value": {
+      "ok": false,
+      "reason": "version_conflict"
+    },
+    "error": null
+  },
+  {
+    "step": "cached read ambient Z",
+    "ops": [],
+    "factory": 1,
+    "value": {
+      "version": "v2-c96336b4",
+      "orderSha": "7e1a0a51be94c90b"
+    },
+    "error": null
+  },
+  {
+    "final": [
+      [
+        "",
+        "e3b0c44298fc1c14"
+      ],
+      [
+        "ns-a",
+        "785ae5a4c0dd55cc"
+      ],
+      [
+        "ns-b",
+        "e3b0c44298fc1c14"
+      ],
+      [
+        "ns-z",
+        "5762f2e3fa639d32"
+      ]
+    ]
+  }
+];
+test('NT-19: captured contexts and isolated cache preserve values, versions and committed bytes', async () => {
+  assert.deepEqual(await ambientDifferentialTrace(), NT19_ACCEPTED_TRACE);
 });
 
 // ── Source pins (NT-20, NT-21) ─────────────────────────────────────────────
@@ -1369,6 +1496,145 @@ const PUBLIC_CLAIMS_DELIVERY_HUNKS: ReadonlyArray<readonly [string, string]> = [
 const NBT_BLOCK_START = '// ── NBT: the namespace-bound order transaction substrate';
 const NBT_BLOCK_END = '// ── end NBT ──\n\n';
 
+// Record-boundary ref seal: the detached proposal seals the caller's ref before
+// serialization and restores it after each parse. Declared reversibly, like the
+// hunks above, so NT-20 still proves every other byte against its pinned base.
+const RECORD_BOUNDARY_SEAL_HUNKS: ReadonlyArray<readonly [string, string]> = [
+  [
+    `/**
+ * The caller's ref, read once from an own data property and sealed into a
+ * fresh null-prototype copy; null when the record carries no own ref. An
+ * accessor could answer the boundary and the serializer differently, so it is
+ * refused rather than read again.
+ */
+function sealRawConfirmationEnvelopeRef(
+  order: OrderRecord,
+  orderId: string,
+  namespace: string,
+): ConfirmationEmailEnvelopeRefV1 | null {
+  const descriptor = Object.getOwnPropertyDescriptor(order, CONFIRMATION_ENVELOPE_REF_FIELD);
+  if (descriptor === undefined) return null;
+  if (!('value' in descriptor)) {
+    throw new OrderPersistenceError(orderId, 'confirmation_envelope_boundary:ref_not_plain_data');
+  }
+  if (descriptor.value === undefined || descriptor.value === null) return null;
+  const result = materializeConfirmationEmailEnvelopeRef(descriptor.value, { orderId, namespace });
+  if ('problem' in result) {
+    throw new OrderPersistenceError(orderId, 'confirmation_envelope_boundary:' + result.problem);
+  }
+  return result.ref;
+}
+
+/**
+ * What JSON.stringify(order) would serialize, with the caller's ref swapped for
+ * its sealed copy. The record's own toJSON still runs exactly once and every
+ * other member is still read through [[Get]]; only the caller's ref never
+ * reaches the serializer, so no hook on it can run.
+ */
+function serializableOrderWithSealedRef(
+  order: OrderRecord,
+  sealedRef: ConfirmationEmailEnvelopeRefV1 | null,
+): unknown {
+  if (sealedRef === null) return order;
+  const source = order as unknown as Record<string, unknown>;
+  const hook: unknown = source.toJSON;
+  const top: unknown = typeof hook === 'function' ? Reflect.apply(hook, order, ['']) : order;
+  let projected: unknown = top;
+  if (top === order) {
+    const shell = Object.create(null) as Record<string, unknown>;
+    for (const key of Object.keys(source)) {
+      shell[key] = key === CONFIRMATION_ENVELOPE_REF_FIELD ? sealedRef : source[key];
+    }
+    projected = shell;
+  }
+  // Wrapped in a hook of our own, so the projection is serialized exactly as a
+  // toJSON result is: its own hook, if any, is not asked again.
+  return { toJSON: () => projected };
+}
+
+/**
+ * Put the sealed null-prototype ref back on a parsed record whose ref holds
+ * exactly its values, in its key order. A parsed ref inherits Object.prototype,
+ * and with it any hook installed there; the sealed copy inherits nothing.
+ */
+function restoreSealedRef(
+  target: Record<string, unknown>,
+  sealedRef: ConfirmationEmailEnvelopeRefV1 | null,
+): void {
+  if (sealedRef === null) return;
+  const parsed = target[CONFIRMATION_ENVELOPE_REF_FIELD];
+  if (parsed === null || typeof parsed !== 'object') return;
+  const sealed = sealedRef as unknown as Record<string, unknown>;
+  const keys = Object.keys(sealed);
+  const parsedKeys = Object.keys(parsed);
+  if (parsedKeys.length !== keys.length) return;
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (parsedKeys[index] !== key || (parsed as Record<string, unknown>)[key] !== sealed[key]) return;
+  }
+  target[CONFIRMATION_ENVELOPE_REF_FIELD] = sealedRef;
+}
+
+function detachOrderProposal(order: OrderRecord, orderId: string, namespace: string): DetachedOrderProposal {
+  // Custody/binding accessors are refused before ANY caller code can run.
+  assertNoCustodyAccessors(order);
+  // A3-3: refused on the RAW argument, before any scrub (unchanged contract).
+  assertNoConfirmationRequestBytes(order, namespace);
+  // Sealed BEFORE serialization: no hook on the caller's ref ever runs.
+  const sealedRef = sealRawConfirmationEnvelopeRef(order, orderId, namespace);
+  // The only point where caller serialization runs.
+  let plain: unknown;
+  try {
+    plain = JSON.parse(JSON.stringify(serializableOrderWithSealedRef(order, sealedRef)) ?? 'null');
+  } catch (error) {
+    throw new OrderPersistenceError(orderId, 'order_proposal:not_serializable', error);
+  }
+  if (plain === null || typeof plain !== 'object' || Array.isArray(plain)) {
+    throw new OrderPersistenceError(orderId, 'order_proposal:not_a_record');
+  }
+  // A parsed ref inherits Object.prototype; the sealed copy inherits nothing.
+  restoreSealedRef(plain as Record<string, unknown>, sealedRef);`,
+    `function detachOrderProposal(order: OrderRecord, orderId: string, namespace: string): DetachedOrderProposal {
+  // Custody/binding accessors are refused before ANY caller code can run.
+  assertNoCustodyAccessors(order);
+  // A3-3: refused on the RAW argument, before any scrub (unchanged contract).
+  assertNoConfirmationRequestBytes(order, namespace);
+  // The only point where caller serialization runs.
+  let plain: unknown;
+  try {
+    plain = JSON.parse(JSON.stringify(order) ?? 'null');
+  } catch (error) {
+    throw new OrderPersistenceError(orderId, 'order_proposal:not_serializable', error);
+  }
+  if (plain === null || typeof plain !== 'object' || Array.isArray(plain)) {
+    throw new OrderPersistenceError(orderId, 'order_proposal:not_a_record');
+  }`,
+  ],
+  [
+    `  const sanitized = scrubRetiredPrivateFields(plain as OrderRecord);
+  sealConfirmationEnvelopeRefForWrite(sanitized, namespace);
+  if (sanitized.id !== orderId) {
+    throw new OrderPersistenceError(orderId, 'order_proposal:id_mismatch');
+  }
+  const body = JSON.stringify(sanitized, null, 2);
+  // The one deserializer (scrub, binding, intake contract), then the sealed ref
+  // again, so the returned record inherits no hook on its ref either.
+  const record = parseOrderRecord(body, namespace);
+  restoreSealedRef(record as unknown as Record<string, unknown>, sanitized.confirmationEmailEnvelopeRef ?? null);
+  return { record, body };`,
+    `  const sanitized = scrubRetiredPrivateFields(plain as OrderRecord);
+  sealConfirmationEnvelopeRefForWrite(sanitized, namespace);
+  const body = JSON.stringify(sanitized, null, 2);
+  const record = JSON.parse(body) as OrderRecord;
+  if (record.id !== orderId) {
+    throw new OrderPersistenceError(orderId, 'order_proposal:id_mismatch');
+  }
+  assertGroupBookAssemblyBinding(record);
+  assertCheckoutIntakeOrderContract(record, namespace);
+  return { record, body };`,
+  ],
+];
+
 /**
  * Undo each permitted hunk; anything else stays a difference. A hunk text may
  * occur at most as many times as the list names it (NBT-C2 and NBT-C3 share
@@ -1474,31 +1740,122 @@ function withoutPrintCommerceAdditions(source: string): string {
   return result;
 }
 
-test('NT-20: every existing declaration is source-identical to base; the four bound helpers differ only by the permitted hunks', () => {
-  const actual: Record<string, string> = {};
-  const normalized = withoutPrintCommerceAdditions(ORDERS_SOURCE);
-  for (const head of UNCHANGED_DECLARATIONS) actual[head] = sha(declarationText(normalized, head));
-  for (const [head, hunks] of BOUND_HELPERS) actual[head] = sha(revertHunks(declarationText(normalized, head), hunks));
-  assert.deepEqual(actual, NT20_BASE_HASHES);
-
-  // The whole file: remove the one NBT block, undo the permitted hunks, and
-  // the result must be the base file byte for byte. This is what makes "every
-  // other function in the file" a checked claim rather than a list.
-  let whole = normalized;
-  const blockStart = whole.indexOf(NBT_BLOCK_START);
-  if (blockStart >= 0) {
-    const blockEnd = whole.indexOf(NBT_BLOCK_END, blockStart);
-    assert.ok(blockEnd > blockStart, 'the NBT block must be terminated');
-    assert.equal(whole.indexOf(NBT_BLOCK_START, blockStart + 1), -1, 'exactly one NBT block');
-    whole = whole.slice(0, blockStart) + whole.slice(blockEnd + NBT_BLOCK_END.length);
+// Prospective literal pins under accepted NT-20. Independent controller review
+// must approve the exact replacement declarations; this test grants no approval.
+const NT20_PREDECESSOR_SHA256 = '5a4902bb180a6edcfc92342a214e454f3bf73955d9b2f3d384eb5fa0cceabd0f';
+const NT20_FINAL_SHA256 = '41c262a54abc84cd6cb8833453fe3d5a8e7d08c40ee5c898de7f8f51b7e7bbe3';
+const NT20_REPLACEMENT_ARTIFACT_SHA256 = '2b725d7eceb2cadf99a382bd633d30f0fb1f8067ce51468db9c5d364dc2ec1cb';
+const NT20_COMPLETE_DECLARATIONS: [string, string][] = [
+  [
+    "export async function persistOrder(order: OrderRecord) {",
+    "6518d5b7dd2d27539614ddbd54a25c85437f2f8ec35ba90ec9af34b004d87cea"
+  ],
+  [
+    "async function persistOrderUnsafe(",
+    "e0c4dad5bf4615dd17df29d7908ff65929f68a16248413fa4b7234bc9703d100"
+  ],
+  [
+    "async function persistOrderLocalFenced(",
+    "4827cc369f8b4bdad9d2eaaf8482716b64e60f4d07ee180e53d2f4bebb778a1c"
+  ],
+  [
+    "let orderStoreOverrideGeneration = 0;",
+    "187372af938683870edcdfa08e1a48d0c86142778c145214828f5b8b9b037a75"
+  ],
+  [
+    "export function __setOrderStoreAdapterFactoryForTests(",
+    "db6f9c6324f177f4d3a9d354284d45d6a59cca7c51dbf663df86d0130680ed38"
+  ],
+  [
+    "export function __resetOrderStoreAdapterFactoryForTests(): void {",
+    "d1db735499de410ff4c9c2a40311fc18f6be31cf39eb28394c9d0c53818bbb4b"
+  ],
+  [
+    "interface OrderOperationContext {",
+    "04d5054c9a766c34d6cb803dc8facc3d5fa2416b95ae183bb0dc1b5513371a77"
+  ],
+  [
+    "interface OrderStoreTarget {",
+    "86f6b81a8f513dddacdc59a9f0f268e5f077a06329842e8e1773cf29cb5659cb"
+  ],
+  [
+    "function captureOrderStoreTarget(namespace: string = getBlobNamespace()): OrderStoreTarget {",
+    "92dda3c48fdbdcb532dc9e5db854de5ea31407e33735a47a34110bae66e6aa2b"
+  ],
+  [
+    "function bindOrderOperationContext(target: OrderStoreTarget, orderId: string): OrderOperationContext {",
+    "021915893185bc4375b4d236c459ff38299eba299eea7e0e28487581ffb3b016"
+  ],
+  [
+    "function assertDescriptorConfirmationPrivacy(order: OrderRecord, orderId: string, namespace: string): void {",
+    "b6372e90fecd6aa73fcbc3ca910f75bd01f57aae7a3436b562585bb4887ef806"
+  ],
+  [
+    "interface OrderAttemptEvidence {",
+    "f2fb172a7fa31e994420766d6edd3e8fb59a03209dab511baf04b4644c560310"
+  ],
+  [
+    "function mintOrderAttemptEvidence(",
+    "865aa0666b115eeae9ec895d909fa0d693d3b99efa93479575e10f192df3a9d4"
+  ],
+  [
+    "function consumeOrderAttemptEvidence(",
+    "5313e9cd17f991f9684f759309793c0f5c1d519ebae22b5eb9ad56705d96aa25"
+  ],
+  [
+    "interface CachedCommit {",
+    "85eaf25780804f1d302a696c79979859372b1784b194a6473adda43392f17f0b"
+  ],
+  [
+    "function publishConditionalCommit(",
+    "59fa3b6e7dd6d88fca2a4aef2a81783f2f285011b4f3bd811e856f816f8ef834"
+  ],
+  [
+    "function cacheEligibleOrderBody(body: string): boolean {",
+    "cb0af918c5f7a75f6bb1136fad606ba7e8ef612991fed615311b3f0fa1716936"
+  ],
+  [
+    "function recentOrderBytes(orderId: string, ctx: OrderOperationContext): { body: string; version: string } | null {",
+    "c42b147ee398230c4220451fbae3fa2cb0113d4403895080e8e97fd720381a90"
+  ],
+  [
+    "export async function readOrderVersioned(",
+    "3a4ac72513d7f01a6647a9f31bed7dc1fcb38c2dce6164f3862c509a2be5cfa0"
+  ],
+  [
+    "export async function commitOrderConditional(",
+    "631ead0c0b6cb1b3aced43637b0d6b634e069052c40fe1571d4a287dc596ff8a"
+  ],
+  [
+    "export async function withOrderTransaction<T>(",
+    "0a786474a565c8a1990a0e2394754b4e845bf600361c3251f93c4c4b449c59a6"
+  ],
+  [
+    "async function commitOrderAttempt(",
+    "4dac8e9827675076289cce76992ca348bdf46e6881ebb9d0e033813499008f5c"
+  ],
+  [
+    "async function commitOrderConditionalInNamespace(",
+    "be50d6ecc2dc723d1fa233239e6df0a3a8c41414f9535f79adc131edf813e7aa"
+  ]
+];
+test('NT-20: exact final file and complete replacement declarations retain literal prospective pins', () => {
+  assert.equal(sha(ORDERS_SOURCE), NT20_FINAL_SHA256);
+  const artifactBytes = readFileSync('.repair-evidence/declaration-replacements.json', 'utf8');
+  assert.equal(sha(artifactBytes), NT20_REPLACEMENT_ARTIFACT_SHA256);
+  const artifact = JSON.parse(artifactBytes);
+  assert.equal(artifact.predecessorSHA256, NT20_PREDECESSOR_SHA256);
+  assert.equal(artifact.finalSHA256, NT20_FINAL_SHA256);
+  for (const [head, hash] of NT20_COMPLETE_DECLARATIONS) {
+    // AST full statement bytes include semicolons for declarations that have one.
+    const replacement = artifact.changes.find((c: { replacement?: { head: string } }) => c.replacement?.head === head).replacement;
+    assert.equal(ORDERS_SOURCE.split(head).length - 1, 1, head + ' must be unique');
+    const offset = ORDERS_SOURCE.indexOf(head);
+    const literal = ORDERS_SOURCE.slice(offset, offset + replacement.text.length);
+    assert.equal(literal, replacement.text);
+    assert.equal(Buffer.byteLength(literal), replacement.bytes);
+    assert.equal(sha(literal), hash);
   }
-  whole = revertHunks(whole, [
-    NBT_IMPORT_HUNK,
-    A37_RETENTION_HOLD_DECLARATION_HUNK,
-    ...PUBLIC_CLAIMS_DELIVERY_HUNKS,
-    ...BOUND_HELPERS.flatMap(([, hunks]) => hunks),
-  ]);
-  assert.equal(sha(whole), NT20_BASE_FILE_SHA256);
 });
 
 const NBT_DECLARATIONS = [

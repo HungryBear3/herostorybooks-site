@@ -14,7 +14,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdtempSync, rmSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -415,14 +415,82 @@ const BANNED: Array<{ label: string; pattern: RegExp }> = [
 /** Text files carried by this candidate, including untracked additions. */
 const BINARY = /\.(png|jpe?g|gif|webp|avif|ico|pdf|zip|gz|tgz|woff2?|ttf|otf|eot|mp[34]|mov|mp4|webm|wav|ogg|bin|wasm|node|so|dll|exe|jar|db|sqlite3?|lock)$/i;
 const CANDIDATE_BASE = 'b9db1c32f1c66cd7c36ac2a71609a758d8a064a2';
+function git(args: string[]): string {
+  return execFileSync('git', args, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+}
+
+/** `<mode> <blob id>` of the base tree, read from tree objects alone: no old body is requested. */
+function baseIdentities(): Map<string, string> {
+  const ids = new Map<string, string>();
+  for (const entry of git(['ls-tree', '-r', '-z', '--full-tree', CANDIDATE_BASE]).split('\0').filter(Boolean)) {
+    const tab = entry.indexOf('\t');
+    const [mode, type, id] = entry.slice(0, tab).split(' ');
+    if (type === 'blob') ids.set(entry.slice(tab + 1), `${mode} ${id}`);
+  }
+  return ids;
+}
+
+/** The tree mode Git records for a worktree path. */
+function worktreeMode(file: string): string {
+  const stat = lstatSync(file);
+  if (stat.isSymbolicLink()) return '120000';
+  return stat.mode & 0o100 ? '100755' : '100644';
+}
+
+/** `<mode> <blob id>` of the current worktree files, hashed locally and never written. */
+function worktreeIdentities(paths: string[]): Map<string, string> {
+  const files = paths.filter((f) => {
+    try { return statSync(path.join(REPO, f)).isFile(); } catch { return false; }
+  });
+  const ids = new Map<string, string>();
+  for (let start = 0; start < files.length; start += 256) {
+    const batch = files.slice(start, start + 256);
+    const hashed = git(['hash-object', '--', ...batch]).trim().split('\n');
+    assert.equal(hashed.length, batch.length, 'one blob id per hashed file');
+    batch.forEach((f, i) => ids.set(f, `${worktreeMode(path.join(REPO, f))} ${hashed[i]}`));
+  }
+  return ids;
+}
+
+/** As `git diff` reports them: a different mode, a different blob, or a path on one side only. */
+function changedPaths(candidates: Iterable<string>, base: ReadonlyMap<string, string>, current: ReadonlyMap<string, string>): string[] {
+  return [...new Set(candidates)].filter((f) => base.get(f) !== current.get(f));
+}
+
 function scannedFiles(): string[] {
-  const changed = execFileSync('git', ['diff', '--name-only', '-z', CANDIDATE_BASE],
-    { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split('\0').filter(Boolean);
-  const untracked = execFileSync('git', ['ls-files', '-z', '--others', '--exclude-standard'],
-    { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split('\0').filter(Boolean);
+  const base = baseIdentities();
+  const tracked = git(['ls-files', '-z', '--cached']).split('\0').filter(Boolean);
+  const untracked = git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0').filter(Boolean);
+  const current = worktreeIdentities([...new Set([...tracked, ...untracked])].filter((f) => !BINARY.test(f)));
+  // A deleted base path has no current id, so it stays listed and the scan skips it.
+  const changed = changedPaths([...tracked, ...base.keys()], base, current).filter((f) => !BINARY.test(f));
   return [...new Set([...changed, ...untracked])]
     .filter((f) => !BINARY.test(f)).map((f) => path.join(REPO, f));
 }
+
+test('REQ16: the changed-path inventory reports mode-only, deleted and added paths as git diff would', () => {
+  const base = new Map([['same.ts', '100644 aaaa'], ['mode.ts', '100644 bbbb'], ['gone.ts', '100644 cccc'], ['edited.ts', '100644 dddd']]);
+  const current = new Map([['same.ts', '100644 aaaa'], ['mode.ts', '100755 bbbb'], ['edited.ts', '100644 eeee'], ['added.ts', '100644 ffff']]);
+  assert.deepEqual(
+    changedPaths([...current.keys(), ...base.keys()], base, current).sort(),
+    ['added.ts', 'edited.ts', 'gone.ts', 'mode.ts'],
+  );
+
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-req16-mode-'));
+  try {
+    const file = path.join(dir, 'fixture.txt');
+    writeFileSync(file, 'synthetic');
+    chmodSync(file, 0o644);
+    assert.equal(worktreeMode(file), '100644');
+    chmodSync(file, 0o755);
+    assert.equal(worktreeMode(file), '100755');
+    const link = path.join(dir, 'fixture-link');
+    symlinkSync(file, link);
+    assert.equal(worktreeMode(link), '120000');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('REQ16: no real customer or order identifier appears in anything committable', () => {
   const violations: string[] = [];

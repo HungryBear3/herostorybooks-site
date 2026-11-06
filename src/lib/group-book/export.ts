@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 
-import { familyStorageKey, groupBookInvites, type GroupBookInvite } from './config.ts';
+import { familyStorageKey, type GroupBookInvite } from './config.ts';
 import { groupBookPolicyState } from './release.ts';
 import { groupBookEditionState } from './retention.ts';
+import { loadClassroomRoster, type ClassroomRoster } from './roster.ts';
 import { loadEffectiveGroupBookSubmission, type GroupBookPolicyConsent } from './store.ts';
 
 /**
@@ -91,14 +92,16 @@ async function classify(invite: GroupBookInvite, adoptedDigests: Map<string, str
   };
 }
 
-export async function loadGroupBookAdmission(cohortId: string): Promise<GroupBookAdmissionResult> {
+export async function loadGroupBookAdmission(cohortId: string, loaded?: ClassroomRoster): Promise<GroupBookAdmissionResult> {
   const policy = groupBookPolicyState();
   const adopted = policy.state === 'adopted'
     ? new Map([...policy.byVersion].map(([version, row]) => [version, row.digest]))
     : null;
-  const invites = groupBookInvites()
-    .filter((invite) => invite.cohortId === cohortId)
-    .sort((a, b) => a.familySlotId.localeCompare(b.familySlotId));
+  // Complete managed + legacy roster in code-unit order; an uncertain roster
+  // admits nothing and lists nothing.
+  const roster = loaded ?? await loadClassroomRoster(cohortId);
+  if (roster.state !== 'complete') return { state: 'uncertain', cohortId, families: [], eligible: [] };
+  const invites = roster.invites;
   const families: GroupBookAdmissionResult['families'] = [];
   const eligible: AdmittedParticipant[] = [];
   // A recorded first final release (or delivery), or an unreadable one, means

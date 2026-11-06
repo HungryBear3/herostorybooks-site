@@ -1,7 +1,9 @@
 import { del, list, put } from '@vercel/blob';
+import { fullbookLifecyclePurposeGate, groupBookPilotState, loadGroupBookCohortPurpose, loadGroupBookPilotCloseState, pilotStampMatches } from './pilot-retention.ts';
 import { randomUUID } from 'node:crypto';
 
-import { familyStorageKey, groupBookInvites, type GroupBookInvite } from './config.ts';
+import { familyStorageKey, groupBookInvitesStrict, type GroupBookInvite } from './config.ts';
+import { classroomCodesStrict } from './identity-access.ts';
 import {
   findGroupBookSubmission,
   parseSubmission,
@@ -104,7 +106,7 @@ const sameDelivery = (a: GroupBookDeliveryRecord, b: Pick<GroupBookDeliveryRecor
  * supplied time is refused, never silently replaced, so no operator can
  * believe a backdated (or any other) time was honored.
  */
-const CALLER_TIME_FIELDS = ['releasedAt', 'deliveredAt', 'recordedAt', 'dueAt'] as const;
+const CALLER_TIME_FIELDS = ['releasedAt', 'deliveredAt', 'recordedAt', 'dueAt', 'closedAt', 'pilotClosedAt', 'deadlineAt', 'cleanupEligibleAt', 'registeredAt'] as const;
 export function hasCallerLifecycleTime(input: Record<string, unknown>): boolean {
   return CALLER_TIME_FIELDS.some((field) => input[field] !== undefined);
 }
@@ -122,7 +124,21 @@ export async function recordGroupBookFinalDelivery(args: {
   now: number;
 }): Promise<DeliveryOutcome> {
   const { cohortId } = args;
-  if (typeof cohortId !== 'string' || !groupBookInvites().some((invite) => invite.cohortId === cohortId)) {
+  // Lifecycle recognition is independent of selector expiry/auth activation:
+  // families still need the existing retention anchor after intake closes.
+  // The same strict registry policy roster and trusted-input use: malformed,
+  // non-array, duplicate, owner-bearing or legacy-overlapping configuration
+  // establishes no cohort at all, a valid legacy cohort included. Expiry and
+  // revocation are deliberately not consulted: the retention anchor outlives
+  // intake. Absent configuration contributes nothing.
+  const legacyConfig = groupBookInvitesStrict();
+  const selectorConfig = classroomCodesStrict();
+  if (legacyConfig.state === 'malformed' || selectorConfig.state === 'malformed') {
+    return { outcome: 'invalid', error: 'unknown_cohort' };
+  }
+  const legacy: GroupBookInvite[] = legacyConfig.state === 'valid' ? legacyConfig.invites : [];
+  const classroomCohorts = selectorConfig.state === 'valid' ? selectorConfig.cohorts : [];
+  if (typeof cohortId !== 'string' || ![...legacy, ...classroomCohorts].some((invite) => invite.cohortId === cohortId)) {
     return { outcome: 'invalid', error: 'unknown_cohort' };
   }
   const recordedBy = typeof args.recordedBy === 'string' ? args.recordedBy.trim() : '';
@@ -144,6 +160,9 @@ export async function recordGroupBookFinalDelivery(args: {
       ? { outcome: 'replayed', record: existing.record }
       : { outcome: 'conflict', record: existing.record };
   }
+  const purposeGate = await fullbookLifecyclePurposeGate(cohortId, args.now);
+  if (purposeGate === 'unknown') return { outcome: 'unconfirmed' };
+  if (purposeGate === 'pilot') return { outcome: 'invalid', error: 'pilot_cohort_not_fullbook' };
   const record: GroupBookDeliveryRecord = {
     schemaVersion: 1,
     cohortId,
@@ -227,6 +246,8 @@ export async function loadGroupBookReleaseState(cohortId: string): Promise<Group
 
 /** Edition state for new intake / withdrawal: released if a release OR delivery exists; unknown fails closed. */
 export async function groupBookEditionState(cohortId: string): Promise<'open' | 'released' | 'unknown'> {
+  const pilot = await groupBookPilotState(cohortId, Date.now());
+  if (pilot !== 'open') return pilot === 'closed' ? 'released' : 'unknown';
   const [release, delivery] = await Promise.all([loadGroupBookReleaseState(cohortId), loadGroupBookDeliveryState(cohortId)]);
   if (release.state === 'unknown' || delivery.state === 'unknown') return 'unknown';
   return release.state === 'recorded' || delivery.state === 'recorded' ? 'released' : 'open';
@@ -258,6 +279,9 @@ export async function recordGroupBookFinalRelease(args: {
   };
   const same = (r: GroupBookReleaseRecord) => r.channel === wanted.channel &&
     r.attributionUnverified === wanted.attributionUnverified && r.evidence === wanted.evidence;
+  const purposeGate = await fullbookLifecyclePurposeGate(cohortId, args.now);
+  if (purposeGate === 'unknown') return { outcome: 'unconfirmed' };
+  if (purposeGate === 'pilot') return { outcome: 'invalid', error: 'pilot_cohort_not_fullbook' };
   const existing = await loadGroupBookReleaseState(cohortId);
   if (existing.state === 'unknown') return { outcome: 'unconfirmed' };
   if (existing.state === 'recorded') return { outcome: same(existing.record) ? 'replayed' : 'conflict', record: existing.record };
@@ -284,6 +308,9 @@ export type PhotoAvailability =
   | { state: 'unknown' };
 
 export async function groupBookPhotoAvailability(cohortId: string, now: number): Promise<PhotoAvailability> {
+  const pilot = await loadGroupBookPilotCloseState(cohortId);
+  if (pilot.state === 'unknown') return { state: 'unknown' };
+  if (pilot.state === 'closed') return { state: 'expired', dueAt: pilot.record.deadlineAt };
   const delivery = await loadGroupBookDeliveryState(cohortId);
   if (delivery.state === 'unknown') return { state: 'unknown' };
   if (delivery.state === 'none') return { state: 'no_delivery_recorded' };
@@ -329,16 +356,34 @@ export const GROUP_BOOK_LIST_MAX_PAGES = 50;
 
 class IncompleteScopeError extends Error {}
 
+/**
+ * Complete listing of one prefix, or a throw. Each page is validated at
+ * runtime: object page, array of row objects with in-prefix string pathnames,
+ * at most pageLimit rows, boolean hasMore, and a nonempty never-seen
+ * continuation cursor; page and total-item bounds make it finite.
+ */
 async function listPaths(prefix: string): Promise<string[]> {
+  const pageLimit = 1000;
   const out: string[] = [];
+  const seenCursors = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; ; page += 1) {
     if (page >= GROUP_BOOK_LIST_MAX_PAGES) throw new IncompleteScopeError('list_page_bound');
-    const result = await list({ prefix, token: requireToken(), cursor, limit: 1000 });
-    for (const row of result.blobs) out.push(row.pathname);
-    if (!result.hasMore) return out;
-    if (!result.cursor) throw new IncompleteScopeError('list_cursor_missing');
-    cursor = result.cursor;
+    const result: unknown = await list({ prefix, token: requireToken(), cursor, limit: pageLimit });
+    if (!result || typeof result !== 'object' || Array.isArray(result)) throw new IncompleteScopeError('list_page_malformed');
+    const { blobs, hasMore, cursor: next } = result as { blobs?: unknown; hasMore?: unknown; cursor?: unknown };
+    if (!Array.isArray(blobs) || blobs.length > pageLimit) throw new IncompleteScopeError('list_blobs_malformed');
+    for (const row of blobs) {
+      const pathname = row && typeof row === 'object' && !Array.isArray(row) ? (row as { pathname?: unknown }).pathname : undefined;
+      if (typeof pathname !== 'string' || !pathname.startsWith(prefix)) throw new IncompleteScopeError('list_row_malformed');
+      out.push(pathname);
+    }
+    if (out.length > GROUP_BOOK_LIST_MAX_PAGES * pageLimit) throw new IncompleteScopeError('list_item_bound');
+    if (typeof hasMore !== 'boolean') throw new IncompleteScopeError('list_has_more_malformed');
+    if (!hasMore) return out;
+    if (typeof next !== 'string' || next === '' || seenCursors.has(next)) throw new IncompleteScopeError('list_cursor_invalid');
+    seenCursors.add(next);
+    cursor = next;
   }
 }
 
@@ -398,23 +443,26 @@ export async function discoverCohortFamilies(cohortId: string): Promise<GroupBoo
   }
 }
 
-/** Every canonical source-photo path this family owns, from record, owner records and listing. */
-async function familyPhotoCandidates(invite: GroupBookFamilyIdentity): Promise<string[] | null> {
+/** Canonical source-photo paths declared by validated family/attempt owners. */
+async function familyPhotoCandidates(invite: GroupBookFamilyIdentity, pilot?: PilotAnchorBinding): Promise<string[] | null> {
   const key = familyStorageKey(invite);
   const canonical = new RegExp(`^group-book/photos/${key}/gbp_[A-Za-z0-9_-]+\\.jpg$`);
   const paths = new Set<string>();
   try {
     const record = await findGroupBookSubmission(invite);
+    if (record && pilot && !pilotStampMatches(record.pilot, pilot.registrationId)) return null;
     for (const photo of record?.photos ?? []) paths.add(photo.pathname);
+    const declared = new Set<string>();
     for (const attemptPath of await listPaths(`group-book/attempts/${key}/`)) {
       const read = await readPrivateObject(attemptPath);
       if (read.state === 'unreadable') return null;
-      const value = read.state === 'found' ? (read.value as { familyStorageKey?: unknown; photoPaths?: unknown }) : null;
-      if (value && value.familyStorageKey === key && Array.isArray(value.photoPaths)) {
-        for (const path of value.photoPaths) if (typeof path === 'string') paths.add(path);
-      }
+      const value = read.state === 'found' ? (read.value as Record<string, unknown> | null) : null;
+      if (!value || value.schemaVersion !== 1 || value.familyStorageKey !== key || !Array.isArray(value.photoPaths) || typeof value.attemptId !== 'string' || !/^gba_[A-Za-z0-9_-]+$/.test(value.attemptId) || attemptPath !== `group-book/attempts/${key}/${value.attemptId}.json`) return null;
+      if (!pilot && ((value.cohortId !== undefined && value.cohortId !== invite.cohortId) || (value.familySlotId !== undefined && value.familySlotId !== invite.familySlotId) || (!record && (value.cohortId !== invite.cohortId || value.familySlotId !== invite.familySlotId)))) return null;
+      if (pilot && (value.schemaVersion !== 1 || value.cohortId !== invite.cohortId || value.familySlotId !== invite.familySlotId || typeof value.attemptId !== 'string' || !/^gba_[A-Za-z0-9_-]+$/.test(value.attemptId) || attemptPath !== `group-book/attempts/${key}/${value.attemptId}.json` || !pilotStampMatches({ purpose: value.purpose, registrationId: value.registrationId }, pilot.registrationId) || !value.photoPaths.every((p) => typeof p === 'string' && canonical.test(p)))) return null;
+      for (const path of value.photoPaths) if (typeof path === 'string') { paths.add(path); declared.add(path); }
     }
-    for (const path of await listPaths(`group-book/photos/${key}/`)) paths.add(path);
+    if (pilot && (record?.photos ?? []).some((photo) => !declared.has(photo.pathname))) return null;
   } catch {
     return null;
   }
@@ -422,15 +470,74 @@ async function familyPhotoCandidates(invite: GroupBookFamilyIdentity): Promise<s
   return [...paths].filter((path) => canonical.test(path)).sort();
 }
 
-async function cleanupFamily(invite: GroupBookFamilyIdentity, record: GroupBookDeliveryRecord, now: number) {
+export interface PilotAnchorBinding { registrationId: string }
+/** Cleanup anchor: fullbook delivery (dueAt = deliveredAt + 90d) or pilot close (dueAt = deadlineAt = pilotClosedAt + 7d, bound to its registration/roster). */
+export type CleanupAnchor = Pick<GroupBookDeliveryRecord, 'cohortId' | 'dueAt'> & { pilot?: PilotAnchorBinding };
+
+/**
+ * Pilot anchor for cleanup: eligible from cleanupEligibleAt (close + writer
+ * window); `dueAt` carries the 7-day deadline for receipts/reporting. The
+ * close must be bound to the durable pilot registration. Its roster remains
+ * an audit snapshot; matching stamped canonical ownership governs cleanup.
+ */
+async function loadPilotAnchor(cohortId: string): Promise<{ state: 'none' } | { state: 'unknown' } | { state: 'closed'; eligibleAt: number; anchor: CleanupAnchor }> {
+  const pilot = await loadGroupBookPilotCloseState(cohortId);
+  if (pilot.state !== 'closed') return pilot;
+  const purpose = await loadGroupBookCohortPurpose(cohortId);
+  if (purpose.state !== 'registered' || purpose.record.purpose !== 'pilot_test_only') return { state: 'unknown' };
+  if (purpose.record.registrationId !== pilot.record.registrationId) return { state: 'unknown' };
+  return {
+    state: 'closed',
+    eligibleAt: Date.parse(pilot.record.cleanupEligibleAt),
+    anchor: { cohortId, dueAt: pilot.record.deadlineAt, pilot: { registrationId: pilot.record.registrationId } },
+  };
+}
+
+async function cleanupFamily(invite: GroupBookFamilyIdentity, record: CleanupAnchor, now: number, deleteAllowed = true) {
   const key = familyStorageKey(invite);
   const base = { familySlotId: invite.familySlotId, deleted: 0, remaining: 0 };
-  const candidates = await familyPhotoCandidates(invite);
+  // Close's roster is an audit snapshot, not exclusion authority: enrollment
+  // may finish while close is awaiting its create-only put. Exact canonical
+  // ownership and matching immutable registration stamps below govern deletion.
+  const candidates = await familyPhotoCandidates(invite, record.pilot);
   if (!candidates) return { ...base, status: 'unverified' as const };
+  let unsettled = false;
+  if (record.pilot) {
+    try {
+      for (const path of await listPaths(`group-book/attempts/${key}/`)) {
+        const attemptId = path.match(/\/(gba_[A-Za-z0-9_-]+)\.json$/)?.[1];
+        if (!attemptId) { unsettled = true; continue; }
+        const read = await readPrivateObject(`group-book/attempt-settled/${key}/${attemptId}.json`);
+        const row = read.state === 'found' ? read.value as Record<string, unknown> : null;
+        if (!row || row.schemaVersion !== 1 || row.attemptId !== attemptId || row.familyStorageKey !== key || !isIso(row.settledAt)) unsettled = true;
+      }
+    } catch { unsettled = true; }
+  }
+  // PILOT exact-family enumeration: every object under this family's own photo
+  // prefix that is not a stamped-owner candidate (undeclared look-alike,
+  // malformed or non-canonical pathname) is UNKNOWN. It is never deleted, and
+  // while any such object is present the family is truthfully partial, never
+  // complete, so retained bytes surface as attention instead of a false green.
+  // Fullbook also requires an inventory declaration. Noncanonical fullbook
+  // objects remain outside its historical source-photo scope.
+  let retainedUnknown = 0;
+  try {
+    const known = new Set(candidates);
+    const canonical = new RegExp(`^group-book/photos/${key}/gbp_[A-Za-z0-9_-]+\\.jpg$`);
+    const strangers = (await listPaths(`group-book/photos/${key}/`)).filter((path) => !known.has(path) && (record.pilot || canonical.test(path)));
+    const probes = await Promise.all(strangers.map((path) => probePrivateObject(path)));
+    if (probes.some((probe) => probe.state === 'unknown')) return { ...base, remaining: probes.length, status: 'unverified' as const };
+    retainedUnknown = probes.filter((probe) => probe.state === 'present').length;
+  } catch {
+    return { ...base, status: 'unverified' as const };
+  }
   const before = await Promise.all(candidates.map(async (path) => ({ path, probe: await probePrivateObject(path) })));
   const toDelete = before.filter((row) => row.probe.state !== 'absent').map((row) => row.path);
+  // Verification outside the action budget cannot race a late commit into an
+  // unaccounted deletion. The next scheduled pass will allocate its action.
+  if (toDelete.length && !deleteAllowed) return { ...base, remaining: toDelete.length + retainedUnknown, status: 'unverified' as const };
   const priorReceipt = await probePrivateObject(receiptPath(record.cohortId, key));
-  if (toDelete.length === 0 && priorReceipt.state === 'present') return { ...base, status: 'already_complete' as const };
+  if (toDelete.length === 0 && retainedUnknown === 0 && !unsettled && priorReceipt.state === 'present') return { ...base, status: 'already_complete' as const };
   if (toDelete.length > 0) {
     try {
       await del(toDelete, { token: requireToken() });
@@ -443,8 +550,9 @@ async function cleanupFamily(invite: GroupBookFamilyIdentity, record: GroupBookD
   const remaining = after.filter((probe) => probe.state === 'present').length;
   const unknown = after.filter((probe) => probe.state === 'unknown').length;
   const deleted = after.filter((probe) => probe.state === 'absent').length;
-  if (unknown > 0) return { ...base, deleted, remaining: remaining + unknown, status: 'unverified' as const };
-  if (remaining > 0) return { ...base, deleted, remaining, status: 'partial' as const };
+  if (unsettled) return { ...base, deleted, remaining: remaining + unknown + retainedUnknown, status: 'unverified' as const };
+  if (unknown > 0) return { ...base, deleted, remaining: remaining + unknown + retainedUnknown, status: 'unverified' as const };
+  if (remaining + retainedUnknown > 0) return { ...base, deleted, remaining: remaining + retainedUnknown, status: 'partial' as const };
   if (priorReceipt.state !== 'present') {
     try {
       await put(receiptPath(record.cohortId, key), JSON.stringify({
@@ -469,17 +577,27 @@ async function cleanupFamily(invite: GroupBookFamilyIdentity, record: GroupBookD
 
 /** Idempotent operator cleanup; safe to replay after any partial or ambiguous run. */
 export async function runGroupBookRetentionCleanup(args: { cohortId: string; now: number }): Promise<CleanupResult> {
-  const delivery = await loadGroupBookDeliveryState(args.cohortId);
-  if (delivery.state === 'none') return { outcome: 'no_delivery_recorded', families: [] };
-  if (delivery.state === 'unknown') return { outcome: 'delivery_unknown', families: [] };
-  if (args.now < Date.parse(delivery.record.dueAt)) return { outcome: 'not_due', dueAt: delivery.record.dueAt, families: [] };
+  const [delivery, pilot] = await Promise.all([loadGroupBookDeliveryState(args.cohortId), loadPilotAnchor(args.cohortId)]);
+  if (delivery.state === 'unknown' || pilot.state === 'unknown') return { outcome: 'delivery_unknown', families: [] };
+  let anchor: CleanupAnchor;
+  if (delivery.state === 'recorded') {
+    anchor = delivery.record;
+    if (args.now < Date.parse(anchor.dueAt)) return { outcome: 'not_due', dueAt: anchor.dueAt, families: [] };
+  } else if (pilot.state === 'closed') {
+    anchor = pilot.anchor;
+    if (args.now < pilot.eligibleAt) return { outcome: 'not_due', dueAt: anchor.dueAt, families: [] };
+  } else {
+    return { outcome: 'no_delivery_recorded', families: [] };
+  }
   // Scope from durable storage only; unknown scope is never reported complete.
   const roster = await discoverCohortFamilies(args.cohortId);
-  if (!roster) return { outcome: 'scope_unknown', dueAt: delivery.record.dueAt, families: [] };
+  if (!roster) return { outcome: 'scope_unknown', dueAt: anchor.dueAt, families: [] };
   const families: CleanupResult['families'] = [];
-  for (const identity of roster) families.push(await cleanupFamily(identity, delivery.record, args.now));
+  // Pilot: exact matching registration/ownership stamps are checked per family,
+  // including an acknowledged enrollment racing the close audit snapshot.
+  for (const identity of roster) families.push(await cleanupFamily(identity, anchor, args.now));
   const done = families.every((family) => family.status === 'complete' || family.status === 'already_complete');
-  return { outcome: done ? 'complete' : 'partial', dueAt: delivery.record.dueAt, families };
+  return { outcome: done ? 'complete' : 'partial', dueAt: anchor.dueAt, families };
 }
 
 
@@ -512,7 +630,9 @@ export type RetentionAttention =
   | 'incomplete_budget'
   | 'dispatch_slot_unconfirmed'
   | 'heartbeat_unconfirmed'
-  | 'dispatch_unconfirmed';
+  | 'dispatch_unconfirmed'
+  | 'service_history_continuation'
+  | 'overdue_owned_work';
 
 export interface RetentionSweepCounts {
   cohortsDue: number;
@@ -595,10 +715,89 @@ async function discoverIsolated(): Promise<{ families: GroupBookFamilyIdentity[]
     const key = path.split('/')[2];
     if (!key || !KEY_RE.test(key)) { unrecognized += 1; continue; }
     if (!owners.has(key)) held.add(key); // unowned photo prefix: retained
+    else if (!new RegExp(`^group-book/photos/${key}/gbp_[A-Za-z0-9_-]+\\.jpg$`).test(path)) unrecognized += 1;
   }
   const families = [...owners.entries()].filter(([key]) => !held.has(key)).map(([, identity]) => identity)
     .sort((a, b) => a.cohortId.localeCompare(b.cohortId) || a.familySlotId.localeCompare(b.familySlotId));
   return { families, held: held.size, unrecognized };
+}
+
+const SERVICE_PREFIX = 'group-book/ops/retention-service/';
+/** Append-only queue accounting. Enqueue and service both move a key to the
+ * tail. New arrivals cannot jump ahead of existing pending work. A service
+ * record is durable BEFORE cleanup, so failures/crashes advance fairly too.
+ * The daily dispatch slot supplies normal cross-instance exclusion; a direct
+ * concurrent sweep collides on the next create-only ordinal and stops unless
+ * reread proves that exact reservation belongs to it. No overwrite/CAS assumed.
+ */
+async function serviceQueue() {
+  const turns = new Map<string, number>();
+  let sequence = 0;
+  const blockSize = 256;
+  const checkpointPrefix = 'group-book/ops/retention-service-checkpoints/';
+  const checkpointPath = (block: number) => `${checkpointPrefix}${String(block).padStart(16, '0')}.json`;
+  const checkpoint = async (block: number) => {
+    const read = await readPrivateObject(checkpointPath(block));
+    if (read.state === 'absent') return null;
+    const row = read.state === 'found' ? read.value as Record<string, unknown> : null;
+    if (!row || row.schemaVersion !== 1 || row.sequence !== block * blockSize || !row.turns || typeof row.turns !== 'object' || Array.isArray(row.turns) || Object.entries(row.turns).some(([key, turn]) => !KEY_RE.test(key) || !Number.isSafeInteger(turn) || Number(turn) < 1 || Number(turn) > Number(row.sequence))) throw new IncompleteScopeError('service_checkpoint_unknown');
+    return row as {schemaVersion:1;sequence:number;turns:Record<string,number>};
+  };
+  // Checkpoints are contiguous create-only blocks. Exact exponential/binary
+  // probes find the newest one in logarithmic reads, without listing history.
+  let low = 0, high = 1;
+  while (await checkpoint(high)) {
+    low = high; high *= 2;
+    if (!Number.isSafeInteger(high * blockSize)) throw new IncompleteScopeError('service_sequence_bound');
+  }
+  while (high - low > 1) {
+    const mid = Math.floor((high + low) / 2);
+    if (await checkpoint(mid)) low = mid; else high = mid;
+  }
+  if (low) {
+    const saved = (await checkpoint(low))!;
+    sequence = saved.sequence;
+    for (const [key, turn] of Object.entries(saved.turns)) turns.set(key, turn);
+  }
+  let continuation = false;
+  for (let scanned = 0; scanned <= 512; scanned++) {
+    const turn = sequence + 1;
+    const path = `${SERVICE_PREFIX}${String(turn).padStart(16, '0')}.json`;
+    const read = await readPrivateObject(path);
+    if (read.state === 'absent') break;
+    if (scanned === 512) { continuation = true; break; }
+    const row = read.state === 'found' ? read.value as Record<string, unknown> : null;
+    if (!row || row.schemaVersion !== 1 || !Number.isSafeInteger(turn) || row.turn !== turn || typeof row.familyStorageKey !== 'string' || !KEY_RE.test(row.familyStorageKey) || typeof row.reservation !== 'string') throw new IncompleteScopeError('service_history_unknown');
+    sequence = turn;
+    turns.set(row.familyStorageKey, turn);
+    if (sequence % blockSize === 0) {
+      const snapshot = {schemaVersion:1, sequence, turns:Object.fromEntries(turns)};
+      try {
+        await put(checkpointPath(sequence / blockSize), JSON.stringify(snapshot), {access:'private',token:requireToken(),addRandomSuffix:false,allowOverwrite:false,cacheControlMaxAge:0,contentType:'application/json'});
+      } catch {
+        const existing = await checkpoint(sequence / blockSize);
+        if (!existing || existing.sequence !== sequence || JSON.stringify(existing.turns) !== JSON.stringify(snapshot.turns)) throw new IncompleteScopeError('service_checkpoint_unconfirmed');
+      }
+    }
+  }
+  const advance = async (key: string) => {
+    const turn = sequence + 1;
+    if (!Number.isSafeInteger(turn)) throw new IncompleteScopeError('service_sequence_bound');
+    const reservation = randomUUID();
+    const path = `${SERVICE_PREFIX}${String(turn).padStart(16, '0')}.json`;
+    try {
+      await put(path, JSON.stringify({schemaVersion:1, turn, familyStorageKey:key, reservation}), {
+        access:'private', token:requireToken(), addRandomSuffix:false, allowOverwrite:false, cacheControlMaxAge:0, contentType:'application/json',
+      });
+    } catch {
+      const read = await readPrivateObject(path);
+      const row = read.state === 'found' ? read.value as Record<string, unknown> : null;
+      if (!row || row.reservation !== reservation || row.turn !== turn || row.familyStorageKey !== key) throw new IncompleteScopeError('service_reservation_unknown');
+    }
+    sequence = turn;
+    turns.set(key, turn);
+  };
+  return {turns, advance, continuation};
 }
 
 /**
@@ -611,16 +810,28 @@ export async function runGroupBookRetentionSweep(now: number): Promise<{ attenti
   const counts = zeroCounts();
   const attention = new Set<RetentionAttention>();
   let deliveryPaths: string[];
+  let pilotPaths: string[];
   let discovered: Awaited<ReturnType<typeof discoverIsolated>>;
   try {
     deliveryPaths = await listPaths('group-book/deliveries/');
+    pilotPaths = await listPaths('group-book/pilot-closes/');
     discovered = await discoverIsolated();
   } catch {
     return { attention: ['discovery_unavailable'], counts };
   }
   counts.held = discovered.held;
   counts.unrecognized = discovered.unrecognized;
-  const dueRecords: GroupBookDeliveryRecord[] = [];
+  const dueRecords: CleanupAnchor[] = [];
+  // Pilot (test-only) closes: eligible from close + writer window, deadline close + 7d.
+  for (const path of pilotPaths) {
+    const cohortId = path.match(/^group-book\/pilot-closes\/([A-Za-z0-9_-]{3,64})\.json$/)?.[1];
+    if (!cohortId) { counts.unrecognized += 1; continue; }
+    const pilot = await loadPilotAnchor(cohortId);
+    if (pilot.state !== 'closed') { counts.deliveryUnknown += 1; continue; }
+    if (now < pilot.eligibleAt) { counts.cohortsNotDue += 1; continue; }
+    counts.cohortsDue += 1;
+    dueRecords.push(pilot.anchor);
+  }
   for (const path of deliveryPaths) {
     const cohortId = path.match(/^group-book\/deliveries\/([A-Za-z0-9_-]{3,64})\.json$/)?.[1];
     if (!cohortId) { counts.unrecognized += 1; continue; }
@@ -630,19 +841,47 @@ export async function runGroupBookRetentionSweep(now: number): Promise<{ attenti
     counts.cohortsDue += 1;
     dueRecords.push(delivery.record);
   }
-  // Fair bounded continuation without stored identifiers: the eligible list is
-  // deterministic (sorted) and each UTC day starts at window (dayIndex*budget)
-  // mod N, so consecutive daily dispatches cover consecutive windows and every
-  // eligible family (including already-complete ones, for late arrivals) is
-  // revisited within ceil(N/budget) consecutive daily dispatches while N is stable.
   const byCohort = new Map(dueRecords.map((record) => [record.cohortId, record]));
-  const eligible = discovered.families.filter((family) => byCohort.has(family.cohortId));
-  const budget = Math.min(familyBudget(), eligible.length);
-  const start = eligible.length === 0 ? 0 : (Math.floor(now / DAY_MS) * familyBudget()) % eligible.length;
-  counts.deferred = eligible.length - budget;
-  for (let i = 0; i < budget; i += 1) {
-    const identity = eligible[(start + i) % eligible.length];
+  const eligible: GroupBookFamilyIdentity[] = [];
+  const work: GroupBookFamilyIdentity[] = [];
+  const overdueCandidates: string[][] = [];
+  for (const family of discovered.families) {
+    const record = byCohort.get(family.cohortId);
+    if (!record) continue;
+    const candidates = await familyPhotoCandidates(family, record.pilot);
+    if (candidates === null) { counts.held += 1; continue; }
+    eligible.push(family);
+    const probes = await Promise.all(candidates.map(path => probePrivateObject(path)));
+    if (probes.some(probe => probe.state !== 'absent')) {
+      work.push(family);
+      if (now >= Date.parse(record.dueAt)) overdueCandidates.push(candidates);
+    } else {
+      // No known deletion work: still verify settlement, strangers and receipt.
+      const result = await cleanupFamily(family, record, now, false);
+      if (result.status === 'complete' || result.status === 'already_complete') counts.complete += 1;
+      else counts.incomplete += 1;
+    }
+  }
+  const budget = Math.min(familyBudget(), work.length);
+  // Legacy count: due families not selected for a deletion action, including
+  // verified empty families. Budget attention below concerns actual work only.
+  counts.deferred = Math.max(0, eligible.length - budget);
+  let queue: Awaited<ReturnType<typeof serviceQueue>> | undefined;
+  try {
+    if (work.length) {
+      queue = await serviceQueue();
+      if (queue.continuation) attention.add('service_history_continuation');
+      else {
+        for (const family of work) if (!queue.turns.has(familyStorageKey(family))) await queue.advance(familyStorageKey(family));
+        work.sort((a,b) => queue!.turns.get(familyStorageKey(a))! - queue!.turns.get(familyStorageKey(b))!);
+      }
+    }
+  } catch { attention.add('dispatch_unconfirmed'); }
+  for (let i = 0; i < budget && !attention.has('dispatch_unconfirmed') && !queue?.continuation; i += 1) {
+    const identity = work[i];
     const record = byCohort.get(identity.cohortId)!;
+    try { await queue!.advance(familyStorageKey(identity)); }
+    catch { attention.add('dispatch_unconfirmed'); break; }
     {
       counts.families += 1;
       let result: { status: FamilyCleanupStatus; deleted: number };
@@ -659,7 +898,10 @@ export async function runGroupBookRetentionSweep(now: number): Promise<{ attenti
   if (counts.held > 0 || counts.unrecognized > 0) attention.add('held_unknown_scope');
   if (counts.deliveryUnknown > 0) attention.add('delivery_unknown');
   if (counts.incomplete > 0) attention.add('partial_or_unverified');
-  if (counts.deferred > 0) attention.add('incomplete_budget');
+  if (work.length > counts.families) attention.add('incomplete_budget');
+  for (const candidates of overdueCandidates) {
+    if ((await Promise.all(candidates.map(path => probePrivateObject(path)))).some(probe => probe.state !== 'absent')) attention.add('overdue_owned_work');
+  }
   return { attention: [...attention].sort(), counts };
 }
 
@@ -718,6 +960,8 @@ async function duplicateSummary(day: string, startedAt: string): Promise<Retenti
 const ATTENTION_CODES = new Set<RetentionAttention>([
   'discovery_unavailable', 'held_unknown_scope', 'delivery_unknown', 'partial_or_unverified', 'incomplete_budget',
   'dispatch_slot_unconfirmed', 'heartbeat_unconfirmed', 'dispatch_unconfirmed',
+  'overdue_owned_work',
+  'service_history_continuation',
 ]);
 
 /** Authenticated scheduler entry: single-flight slot, sweep, then sanitized durable heartbeat. */

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
-import { extractGroupBookToken, inviteRefusal, resolveGroupBookInviteState } from '@/lib/group-book/config';
+import { extractGroupBookToken, inviteRefusal } from '@/lib/group-book/config';
+import { resolveGroupBookSessionInvite, classroomOriginAllowed } from '@/lib/group-book/identity-access';
 import { normalizeGroupBookImage } from '@/lib/group-book/image-type';
 import {
   GROUP_BOOK_INTAKE_WRITE_WINDOW_MS,
@@ -9,6 +10,7 @@ import {
   MAX_PREPARED_PHOTO_BYTES,
 } from '@/lib/group-book/limits';
 import { groupBookAdmission } from '@/lib/group-book/release';
+import { admitGroupBookIntakePurpose } from '@/lib/group-book/pilot-retention';
 import { groupBookEditionState } from '@/lib/group-book/retention';
 import { GROUP_BOOK_PRIVATE_HEADERS, setGroupBookAccessCookie } from '@/lib/group-book/session';
 import {
@@ -61,6 +63,7 @@ function success(token: string, expiresAt: string, alreadySubmitted: boolean) {
 }
 
 export async function POST(req: Request) {
+  if (!classroomOriginAllowed(req)) return refuse('invalid_origin', 403);
   if (!groupBookStorageReady()) return refuse('storage_disabled', 503);
   // Writer lifetime starts at arrival on the server clock (DESIGN I2).
   const admittedAt = Date.now();
@@ -78,7 +81,7 @@ export async function POST(req: Request) {
   }
 
   const token = extractGroupBookToken(text(form, 'invite', 200) ?? '');
-  const resolved = token ? resolveGroupBookInviteState(token) : { state: 'unknown' as const };
+  const resolved = token ? await resolveGroupBookSessionInvite(token, req.headers.get('cookie') ?? '', true) : { state: 'unknown' as const };
   if (!token || resolved.state !== 'active') return refuse(inviteRefusal(resolved.state), 403);
   const invite = resolved.invite;
 
@@ -137,6 +140,9 @@ export async function POST(req: Request) {
   // recorded under the family first, so no stored photo is ever unattributed.
   const submissionId = newGroupBookSubmissionId();
   const planned = planGroupBookPhotos(invite, prepared);
+  const purpose = await admitGroupBookIntakePurpose(invite, Date.now());
+  if (purpose.state === 'unconfirmed') return refuse('storage_unavailable', 503);
+  if (purpose.state === 'refused') return refuse(purpose.error, purpose.status);
   if (!windowOpen()) return refuse('write_window_elapsed', 503);
   const owner = await createGroupBookAttempt(invite, submissionId, planned, { admittedAt, writeDeadline });
   if (!owner) {
@@ -177,6 +183,7 @@ export async function POST(req: Request) {
     photos: uploaded,
     policy: { version: admission.policy.record.version, digest: admission.policy.digest },
     id: submissionId,
+    ...(purpose.state === 'pilot' ? {pilot: purpose.stamp} : {}),
   });
   // Recheck immediately before the family record commit: a release recorded
   // while photos were uploading refuses the commit. The photos stay owned by

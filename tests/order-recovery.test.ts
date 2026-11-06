@@ -1,16 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 import {
   buildRecoveryOrderRecord,
+  invalidRecoveryInputMessage,
   recoverOrder,
   formatRecoverySummary,
   uploadOrderPhotoFromPath,
+  type RecoveryInput,
 } from '../src/lib/order-recovery.ts';
-import { createOrderRecord, getOrder, persistOrder } from '../src/lib/orders.ts';
+import { createOrderRecord, getOrder, persistNewOrder, persistOrder } from '../src/lib/orders.ts';
 
 function makeTmp() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-recovery-'));
@@ -27,13 +29,13 @@ function cleanup(dir: string) {
 
 test('buildRecoveryOrderRecord: preserves the supplied id exactly', () => {
   const r = buildRecoveryOrderRecord({
-    id: 'ord_09f2391715a14bc3',
-    childName: 'Lukas',
+    id: 'ord_synthetic_recovery_identity',
+    childName: 'Testkid',
     theme: 'dinosaur-discovery',
     bookFormat: 'classic',
-    email: 'al.laplun@gmail.com',
+    email: 'recovery-fixture@example.invalid',
   });
-  assert.equal(r.id, 'ord_09f2391715a14bc3');
+  assert.equal(r.id, 'ord_synthetic_recovery_identity');
 });
 
 test('buildRecoveryOrderRecord: forces paymentStatus="paid"', () => {
@@ -243,4 +245,52 @@ test('formatRecoverySummary: includes id, child, format, payment status', () => 
   assert.match(text, /classic/);
   assert.match(text, /paid/);
   assert.match(text, /heads up/);
+});
+
+// Private contact: synthetic input through the real builder and store boundary.
+
+const CONTACT_NAME = 'Quill Recoveree';
+const CONTACT_PHONE = '+13125550177';
+const CONTACT_ADDRESS = { line1: '10 Synthetic Way', line2: 'Unit 2', city: 'Testville', state: 'IL', zip: '60601', country: 'US' };
+
+test('buildRecoveryOrderRecord: keeps only the address, whatever contact the input carries', async () => {
+  const dir = makeTmp();
+  try {
+    const id = 'ord_recovery_contact';
+    const input: RecoveryInput = {
+      id,
+      childName: 'Mia',
+      bookFormat: 'classic',
+      email: 'a@b.com',
+      stripeSessionId: 'cs_test_recovery_contact',
+      shippingAddress: {
+        ...CONTACT_ADDRESS,
+        name: CONTACT_NAME,
+        phone: CONTACT_PHONE,
+        recipientPhone: CONTACT_PHONE,
+        attention: CONTACT_NAME,
+      } as RecoveryInput['shippingAddress'],
+      ...{ name: CONTACT_NAME, phone: CONTACT_PHONE },
+    };
+    const record = buildRecoveryOrderRecord(input);
+    assert.deepEqual(record.shippingAddress, CONTACT_ADDRESS);
+    await persistNewOrder(record);
+    const raw = readFileSync(path.join(dir, `${id}.json`), 'utf8');
+    for (const text of [JSON.stringify(record), raw]) {
+      assert.equal(text.includes(CONTACT_NAME), false);
+      assert.equal(text.includes(CONTACT_PHONE), false);
+    }
+    assert.deepEqual((await getOrder(id))?.shippingAddress, CONTACT_ADDRESS);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('invalid recovery input log: fixed text and position only, never the raw entry or parser text', () => {
+  assert.equal(invalidRecoveryInputMessage(2), 'Skipping invalid input #3 (missing id/childName/email/bookFormat)');
+  const script = readFileSync('scripts/recover-orders.ts', 'utf8');
+  assert.doesNotMatch(script, /JSON\.stringify/);
+  assert.match(script, /console\.error\(invalidRecoveryInputMessage\(index\)\)/);
+  assert.match(script, /Could not parse \$\{configPath\}: expected a JSON array of recovery inputs/);
+  assert.doesNotMatch(script, /Could not parse[^\n]*err/);
 });

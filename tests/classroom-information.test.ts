@@ -104,13 +104,13 @@ test('page is information-only: no forms, inputs, scripts or remote requests', (
   assert.doesNotMatch(CLASSROOM_HTML, /\son[a-z]+\s*=/i, 'no inline event handlers');
   assert.doesNotMatch(CLASSROOM_HTML, /javascript:|mailto:|tel:/i);
   assert.doesNotMatch(CLASSROOM_HTML, /\bsrcset=/i);
-  assert.doesNotMatch(CLASSROOM_HTML, /group-book/);
+  assert.doesNotMatch(CLASSROOM_HTML.replace('href="/group-book/sign-in"', ''), /group-book/, 'only the invitation sign-in link');
   assert.doesNotMatch(style, /url\(|@import/i, 'stylesheet loads nothing');
   assert.equal((CLASSROOM_HTML.match(/<link\b/g) ?? []).length, 1, 'canonical is the only <link>');
 
   const hrefs = [...CLASSROOM_HTML.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
   for (const href of hrefs) {
-    if (href === 'https://herostorybooks.com/classroom') continue;
+    if (href === 'https://herostorybooks.com/classroom' || href === '/group-book/sign-in') continue;
     assert.ok(href.startsWith('#'), `unexpected link ${href}`);
     assert.ok(CLASSROOM_HTML.includes(`id="${href.slice(1)}"`), `anchor target ${href} exists`);
   }

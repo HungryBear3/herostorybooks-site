@@ -1,7 +1,8 @@
 {
   "git": {
     "deploymentEnabled": {
-      "rex/hsb-safeoff-20261019-jrm7sg1b": false
+      "rex/hsb-safeoff-20261019-jrm7sg1b": false,
+      "qa/hsb-private-pilot-67909-20261102": false
     }
   },
   "redirects": [

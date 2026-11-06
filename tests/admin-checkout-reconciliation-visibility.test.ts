@@ -391,10 +391,11 @@ const VERCEL_SANCTIONED_TRANSFORMS: ReadonlyArray<{
   base: string;
 }> = [
   {
-    description: 'only the approved literal release branch disables Preview deployment',
+    description: 'only the approved literal release and private-pilot branches disable Preview deployment',
     candidate: `  "git": {
     "deploymentEnabled": {
-      "rex/hsb-safeoff-20261019-jrm7sg1b": false
+      "rex/hsb-safeoff-20261019-jrm7sg1b": false,
+      "qa/hsb-private-pilot-67909-20261102": false
     }
   },
 `,
@@ -462,7 +463,10 @@ const VERCEL_SANCTIONED_TRANSFORMS: ReadonlyArray<{
 
 function withoutConfirmationEmailSweepSchedule(candidate: string): string {
   assert.deepEqual(JSON.parse(candidate).git, {
-    deploymentEnabled: { 'rex/hsb-safeoff-20261019-jrm7sg1b': false },
+    deploymentEnabled: {
+      'rex/hsb-safeoff-20261019-jrm7sg1b': false,
+      'qa/hsb-private-pilot-67909-20261102': false,
+    },
   }, 'the exact suppression must be the top-level Git configuration');
   let normalized = candidate;
   for (const rule of VERCEL_SANCTIONED_TRANSFORMS) {
@@ -478,10 +482,218 @@ function withoutConfirmationEmailSweepSchedule(candidate: string): string {
   return normalized;
 }
 
+/**
+ * The declared changes to `fulfillment.ts` since the base commit, reversed in
+ * order: first the private print-contact release gate, then the accepted
+ * classroom and outbox safety holds. Each rule restores one exact hunk once,
+ * and the result must equal the base commit, so any other byte is a failure.
+ */
+const FULFILLMENT_SANCTIONED_TRANSFORMS: ReadonlyArray<{
+  description: string;
+  candidate: string;
+  base: string;
+}> = [
+  {
+    description: 'print-contact import',
+    candidate: `import {
+  printContactMatchesOrder,
+  resolveOrderPrintContact,
+  type PrintContactResolution,
+  type ResolvedPrintContact,
+} from './print-contact-store.ts';
+`,
+    base: '',
+  },
+  {
+    description: 'print dependencies carrying the bound contact',
+    candidate: `  submitPrint?: (order: OrderRecord, contact: ResolvedPrintContact) => Promise<{ jobId: string }>;
+  resolvePrintContact?: (order: OrderRecord) => Promise<PrintContactResolution>;
+`,
+    base: `  submitPrint?: (order: OrderRecord) => Promise<{ jobId: string }>;
+`,
+  },
+  {
+    description: 'print production taking the bound contact',
+    candidate: `async function runPrintProduction(order: OrderRecord, contact: ResolvedPrintContact, deps: FulfillmentDeps): Promise<void> {
+  const _submitPrint = deps.submitPrint
+    ?? ((submission: OrderRecord, bound: ResolvedPrintContact) => submitPrintJob(submission, { contact: bound }));
+`,
+    base: `async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Promise<void> {
+  const _submitPrint = deps.submitPrint ?? submitPrintJob;
+`,
+  },
+  {
+    description: 'submission fence rechecking the exact binding',
+    candidate: `        refusal ||
+        !printContactMatchesOrder(contact, current) ||
+`,
+    base: `        refusal ||
+`,
+  },
+  {
+    description: 'provider submission carrying the bound contact',
+    candidate: `  const result = await _submitPrint(submissionOrder, contact);
+`,
+    base: `  const result = await _submitPrint(submissionOrder);
+`,
+  },
+  {
+    description: 'claim result carrying the bound contact',
+    candidate: `  type ClaimResult = { claimed: true; order: OrderRecord; contact: ResolvedPrintContact } | { claimed: false; ok: boolean; error?: string };
+`,
+    base: `  type ClaimResult = { claimed: true; order: OrderRecord } | { claimed: false; ok: boolean; error?: string };
+`,
+  },
+  {
+    description: 'asynchronous claim callback',
+    candidate: `      async (order) => {
+        if (isClassroomReleaseHeld(order)) {
+`,
+    base: `      (order) => {
+        if (isClassroomReleaseHeld(order)) {
+`,
+  },
+  {
+    description: 'contact resolved before the claim',
+    candidate: `        if (refusal) return { abort: { claimed: false, ok: false, error: refusal } };
+        // Before the claim, so a refused contact leaves the order at proof_ready.
+        // Read after every hold, so a held order touches no effect seam.
+        const resolvePrintContact = deps.resolvePrintContact ?? resolveOrderPrintContact;
+        const resolved = await resolvePrintContact(order);
+        if (resolved.ok === false) return { abort: { claimed: false, ok: false, error: resolved.reason } };
+`,
+    base: `        if (refusal) return { abort: { claimed: false, ok: false, error: refusal } };
+`,
+  },
+  {
+    description: 'claim commit carrying the bound contact',
+    candidate: `          result: { claimed: true, order: claimedOrder, contact: resolved.contact },
+`,
+    base: `          result: { claimed: true, order: claimedOrder },
+`,
+  },
+  {
+    description: 'print production call carrying the bound contact',
+    candidate: `    await runPrintProduction(claim.order, claim.contact, deps);
+`,
+    base: `    await runPrintProduction(claim.order, deps);
+`,
+  },
+  {
+    description: 'classroom hold import',
+    candidate: 'getOrderPhotoUrl, isClassroomReleaseHeld, isPrintFormat,',
+    base: 'getOrderPhotoUrl, isPrintFormat,',
+  },
+  {
+    description: 'classroom hold rechecked before resumed work',
+    candidate: `  // Resumed/retried work re-checks the classroom hold before every effect.
+  if (isClassroomReleaseHeld(current)) throw new Error('classroom_release_held');
+`,
+    base: '',
+  },
+  {
+    description: 'classroom hold in the kickoff claim',
+    candidate: `      if (isClassroomReleaseHeld(current)) return { abort: { kind: 'policy_not_auto' } };
+`,
+    base: '',
+  },
+  {
+    description: 'kickoff claim refusing outbox and character-review work',
+    candidate: `      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null || (current.workOutbox?.length || current.characterReview)) {
+        return { abort: { kind: 'policy_not_auto' } };
+`,
+    base: `      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {
+        return { abort: { kind: 'policy_not_auto' } };
+`,
+  },
+  {
+    description: 'classroom hold in the claimed start',
+    candidate: `      if (isClassroomReleaseHeld(current)) return { abort: null };
+`,
+    base: '',
+  },
+  {
+    description: 'claimed start refusing outbox and character-review work',
+    candidate: `      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null || (current.workOutbox?.length || current.characterReview)) {
+        return { abort: null };
+`,
+    base: `      if (current.fulfillmentMode !== 'auto' || current.internalDisposition != null) {
+        return { abort: null };
+`,
+  },
+  {
+    description: 'bound classroom print-release hold',
+    candidate: `  // Bound classroom orders have no print-release authorization: held before
+  // any cover build, upload or provider submission. Unbound orders unchanged.
+  if (order.groupBookAssembly !== undefined) return 'group_book_release_held';
+`,
+    base: '',
+  },
+  {
+    description: 'classroom hold before a proof build',
+    candidate: `  // Before any artifact read, render or upload; cannot rely on kickoff.
+  if (isClassroomReleaseHeld(order)) return { ok: false, error: 'classroom_release_held' };
+`,
+    base: '',
+  },
+  {
+    description: 'classroom hold before a proof rebuild',
+    candidate: `  if (!order) return { ok: false, error: 'Order not found' };
+  if (isClassroomReleaseHeld(order)) return { ok: false, error: 'classroom_release_held' };
+`,
+    base: `  if (!order) return { ok: false, error: 'Order not found' };
+`,
+  },
+  {
+    description: 'typed classroom hold trigger result',
+    candidate: `  | { status: 'not_found' }
+  /** Bound classroom order: terminal hold. Callers must not retry, schedule,
+   *  send or print; it is never \`started\`. */
+  | { status: 'classroom_release_held' };
+`,
+    base: `  | { status: 'not_found' };
+`,
+  },
+  {
+    description: 'classroom hold at the trigger entry',
+    candidate: `  // Classroom hold on the authoritative record, before any dependency/effect.
+  const authoritative = await getOrder(orderId);
+  if (authoritative && isClassroomReleaseHeld(authoritative)) {
+    return { status: 'classroom_release_held' };
+  }
+
+`,
+    base: '',
+  },
+  {
+    description: 'classroom hold in the print claim',
+    candidate: `        if (isClassroomReleaseHeld(order)) {
+          return { abort: { claimed: false, ok: false, error: 'classroom_release_held' } };
+        }
+`,
+    base: '',
+  },
+];
+
+function withoutDeclaredFulfillmentHunks(candidate: string): string {
+  let normalized = candidate;
+  for (const rule of FULFILLMENT_SANCTIONED_TRANSFORMS) {
+    const occurrences = normalized.split(rule.candidate).length - 1;
+    assert.equal(
+      occurrences,
+      1,
+      `src/lib/fulfillment.ts must carry the ${rule.description} exactly once, found ${occurrences}`,
+    );
+    normalized = normalized.replace(rule.candidate, () => rule.base);
+  }
+  return normalized;
+}
+
 /** Files frozen except for a declared, reversible transformation. */
 const FREEZE_NORMALIZERS: Readonly<Record<string, (source: string) => string>> = {
   'src/lib/orders.ts': withoutStoryMediaSizeExtraction,
   'vercel.json': withoutConfirmationEmailSweepSchedule,
+  'src/lib/fulfillment.ts': withoutDeclaredFulfillmentHunks,
 };
 
 test('the operator copy says what the state is and forbids automatic retry', () => {
@@ -532,6 +744,7 @@ test('the runbook documents read-only verification and forbids automatic retry',
 test('freeze oracle rejects Git, schedule, incident, and stranded-scan deviations', () => {
   const vercel = src('vercel.json');
   const branch = 'rex/hsb-safeoff-20261019-jrm7sg1b';
+  const protectedBranch = 'qa/hsb-private-pilot-67909-20261102';
   const gitBlock = VERCEL_SANCTIONED_TRANSFORMS[0].candidate;
   const cases: Array<[string, string, string]> = [
     ['nested git block', 'vercel.json', vercel.replace(gitBlock, '').replace('          "type": "host",', gitBlock + '          "type": "host",')],
@@ -543,6 +756,9 @@ test('freeze oracle rejects Git, schedule, incident, and stranded-scan deviation
     ['branch enabled', 'vercel.json', vercel.replace(`"${branch}": false`, `"${branch}": true`)],
     ['extra main rule', 'vercel.json', vercel.replace(`"${branch}": false`, `"${branch}": false, "main": false`)],
     ['extra git setting', 'vercel.json', vercel.replace('"deploymentEnabled": {', '"extra": false, "deploymentEnabled": {')],
+    ['wrong protected branch', 'vercel.json', vercel.replace(protectedBranch, `${protectedBranch}-other`)],
+    ['protected branch enabled', 'vercel.json', vercel.replace(`"${protectedBranch}": false`, `"${protectedBranch}": true`)],
+    ['missing protected branch', 'vercel.json', vercel.replace(`,\n      "${protectedBranch}": false`, '')],
     ['missing git rule', 'vercel.json', vercel.replace(gitBlock, '')],
     ['duplicate git block', 'vercel.json', vercel.replace(gitBlock, gitBlock + gitBlock)],
     ['Fleccas destination changed', 'vercel.json', vercel.replace('utm_source=fleccas', 'utm_source=other')],
@@ -567,6 +783,49 @@ test('freeze oracle rejects Git, schedule, incident, and stranded-scan deviation
     assert.throws(() => assert.equal(normalize(candidate), committed),
       { code: 'ERR_ASSERTION' }, `${label}: unauthorized change must be rejected`);
   }
+});
+
+test('fulfillment.ts reverses to the real base commit only through each declared hunk, exactly once', () => {
+  const path = 'src/lib/fulfillment.ts';
+  const normalize = FREEZE_NORMALIZERS[path];
+  const committed = execFileSync('git', ['show', `${BASE_SHA}:${path}`], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const current = src(path);
+  assert.equal(normalize(current), committed);
+
+  for (const rule of FULFILLMENT_SANCTIONED_TRANSFORMS) {
+    assert.equal(current.split(rule.candidate).length - 1, 1, `${rule.description}: present exactly once`);
+    for (const mutated of [
+      current.replace(rule.candidate, () => ''),
+      current.replace(rule.candidate, () => rule.candidate + rule.candidate),
+    ]) {
+      assert.notEqual(mutated, current, `${rule.description}: mutation must actually change bytes`);
+      assert.throws(() => normalize(mutated), { code: 'ERR_ASSERTION' }, `${rule.description}: must not normalize`);
+    }
+  }
+
+  // Bytes outside every declared hunk stay frozen to the real base.
+  for (const mutated of [
+    `${current}\n// unauthorized change\n`,
+    current.replace('const BASE_BACKOFF_MS = 5_000;', 'const BASE_BACKOFF_MS = 5_001;'),
+    current.replace("  if (order.refundClaimId) return 'refund_in_progress';\n", ''),
+  ]) {
+    assert.notEqual(mutated, current, 'mutation must actually change bytes');
+    assert.throws(() => assert.equal(normalize(mutated), committed), { code: 'ERR_ASSERTION' });
+  }
+
+  // The private contact gate cannot lose its fence or move ahead of the holds.
+  const withoutFence = current.replace('        !printContactMatchesOrder(contact, current) ||\n', '');
+  assert.notEqual(withoutFence, current);
+  assert.throws(() => normalize(withoutFence), { code: 'ERR_ASSERTION' });
+  const selection = 'const resolvePrintContact = deps.resolvePrintContact ?? resolveOrderPrintContact;\n';
+  const resolverFirst = current
+    .replace(`        ${selection}`, '')
+    .replace('  let claim: ClaimResult;\n', `  ${selection}  let claim: ClaimResult;\n`);
+  assert.notEqual(resolverFirst, current);
+  assert.throws(() => normalize(resolverFirst), { code: 'ERR_ASSERTION' });
 });
 
 test('incident classification, stranded-order scans, and schedules are unchanged from the base commit', () => {

@@ -1,7 +1,8 @@
 // Information-only /classroom page, served verbatim by route.ts.
 // Brief by design: three story choices, a short how-it-works, plain proposed
 // privacy terms and three owner-selected book samples. Intake is closed;
-// no forms, scripts, remote requests or sticky overlays.
+// no forms, scripts, remote requests or sticky overlays. The one link out is
+// the existing sign-in page for families holding an invitation.
 export const CLASSROOM_HTML: string = `<!doctype html>
 <html lang="en">
 <head>
@@ -171,7 +172,7 @@ footer{border-top:1px solid var(--line);padding:22px 0 40px;font:12.5px/1.6 var(
 
 <section class="sec" id="how" aria-labelledby="how-h">
 <div class="how">
-<div class="head"><span class="eyebrow">Simple steps</span><h2 id="how-h">How it works</h2></div>
+<div class="head"><span class="eyebrow">Simple steps</span><h2 id="how-h">How it works</h2><p>Room parents only pass along the private invitation Hero Story Books provides, and never collect photos or details. Families who receive one can use <a href="/group-book/sign-in">classroom sign-in</a>; nothing can be submitted until a project opens.</p></div>
 <ol class="steps">
 <li class="step"><div><h3>Parents vote on a story direction</h3><p>Once voting opens privately, participating parents choose among the three ideas. We select the most-voted direction for the book.</p></div></li>
 <li class="step"><div><h3>Families share details privately</h3><p>Only once a project opens, each family privately shares approved details about their own child. Nothing is collected now.</p></div></li>

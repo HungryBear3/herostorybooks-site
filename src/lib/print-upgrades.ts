@@ -25,6 +25,7 @@ export interface RecordPrintUpgradePaymentInput {
   targetFormat: BookFormat;
   printProvider?: PrintUpgradeProvider | null;
   shippingAddress?: ShippingAddress;
+  stripePaymentIntentId?: string;
   paidAt?: string;
 }
 
@@ -115,7 +116,16 @@ export async function recordPrintUpgradePayment(
         printUpgradeTargetFormat: input.targetFormat,
         printUpgradeAmountCents: input.amountCents,
         printUpgradeStripeSessionId: input.stripeSessionId,
+        ...(input.stripePaymentIntentId ? { printUpgradePaymentIntentId: input.stripePaymentIntentId } : {}),
         printUpgradePaidAt: paidAt,
+        // At-cost purchases reuse the printUpgrade* fields; this receipt is what
+        // keeps naming this signed payment after they do.
+        legacyPrintUpgradeSettlement: {
+          version: 1,
+          stripeSessionId: input.stripeSessionId,
+          stripePaymentIntentId: input.stripePaymentIntentId ?? null,
+          paidAt,
+        },
         printUpgradePrintProvider: input.printProvider ?? 'rpi',
         ...(input.shippingAddress ? { shippingAddress: input.shippingAddress } : {}),
         printJobId: current.printJobId ?? null,

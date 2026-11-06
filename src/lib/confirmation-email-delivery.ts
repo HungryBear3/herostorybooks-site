@@ -42,6 +42,7 @@ import {
 import { isConfirmationEmailHeldState } from './confirmation-email-state.ts';
 import {
   getOrderAuthoritative,
+  isClassroomReleaseHeld,
   withOrderTransaction,
   type OrderRecord,
   type OrderTransactionOutcome,
@@ -80,7 +81,9 @@ export type ConfirmationEmailBlockReason =
   | 'claim_active'
   // A3-4 R2 (fence F1): the record holds a frozen envelope that only the
   // frozen dispatcher (A3-5) may send.
-  | 'awaiting_frozen_dispatch';
+  | 'awaiting_frozen_dispatch'
+  // F3: a classroom-bound record is never sent the retail confirmation.
+  | 'classroom_release_held';
 
 /** A3-5: the one block reason an opted-in sweep may admit (fence F1). */
 export const CONFIRMATION_EMAIL_AWAITING_FROZEN_DISPATCH: Extract<ConfirmationEmailBlockReason, 'awaiting_frozen_dispatch'> =
@@ -191,6 +194,13 @@ export function evaluateConfirmationEmailClaimability(
 ): ConfirmationEmailBlockReason | null {
   if (order.paymentStatus !== 'paid') return 'not_paid';
   if (order.refundedAt || order.stripeRefundId || order.refundClaimId) return 'refunded';
+  // F3. A classroom-bound record (own-property binding, even null or malformed)
+  // is held from every confirmation effect. Unconditional and ahead of every
+  // state and claim rule, so the pre-read, the claim CAS, the sweep, the
+  // snapshot CAS and the frozen dispatcher's intent CAS all refuse it with the
+  // same verdict. A binding can never be added to a stored record, so a record
+  // that passes here at a CAS cannot become bound before the provider call.
+  if (isClassroomReleaseHeld(order)) return 'classroom_release_held';
   // Requirement R2 (architecture §3.9). `ACCEPTED` is a success, not a hold, so
   // it is deliberately absent from `CONFIRMATION_EMAIL_HELD_STATES` — which
   // leaves the receipt check below as the only thing that would stop it. A

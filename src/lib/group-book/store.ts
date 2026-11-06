@@ -3,12 +3,14 @@ import { del, get, put } from '@vercel/blob';
 // test fakes export only get/put/del.
 import * as blobSdk from '@vercel/blob';
 import { randomBytes } from 'node:crypto';
+import { resolveGroupBookSessionInvite } from './identity-access.ts';
+import { admitGroupBookIntakePurpose } from './pilot-retention.ts';
+import { GROUP_BOOK_INTAKE_WRITE_WINDOW_MS } from './limits.ts';
 
 import {
   familyStorageKey,
   groupBookBlobToken,
   groupBookBlobTokenProblem,
-  resolveGroupBookInviteState,
   type GroupBookInvite,
 } from './config.ts';
 
@@ -56,7 +58,21 @@ export interface GroupBookSubmission {
   status: 'submitted';
   omitFromProofAndPrint: false;
   receivedAt: string;
+  pilot?: GroupBookPilotStamp;
 }
+
+export interface GroupBookPilotStamp {
+  purpose: 'pilot_test_only';
+  registrationId: string;
+}
+const REGISTRATION_ID_RE = /^gbreg_[A-Za-z0-9_-]{8,64}$/;
+export function parsePilotStamp(value: unknown): GroupBookPilotStamp | null {
+  if (!isObject(value) || value.purpose !== 'pilot_test_only') return null;
+  if (!isText(value.registrationId) || !REGISTRATION_ID_RE.test(value.registrationId)) return null;
+  return { purpose: 'pilot_test_only', registrationId: value.registrationId };
+}
+
+
 
 export interface GroupBookWithdrawal {
   schemaVersion: 1;
@@ -135,6 +151,8 @@ export interface GroupBookAttempt {
   admittedAt: string;
   /** No photo put or record commit is started after this instant. */
   writeDeadline: string;
+  purpose?: 'pilot_test_only';
+  registrationId?: string;
 }
 
 export function groupBookAttemptPath(invite: GroupBookInvite, attemptId: string): string {
@@ -259,6 +277,7 @@ export function parseSubmission(value: unknown, invite: GroupBookFamilyIdentity)
   if (value.status !== 'submitted' || value.omitFromProofAndPrint !== false || !isTimestamp(value.receivedAt)) {
     return null;
   }
+  if (value.pilot !== undefined && !parsePilotStamp(value.pilot)) return null;
   return value as unknown as GroupBookSubmission;
 }
 
@@ -322,8 +341,8 @@ export type OwnFamilySubmission =
  * and only its own family's record; withdrawn (OMIT) families keep reading.
  * Store uncertainty throws (GroupBookStoreReadError or transport errors).
  */
-export async function loadOwnFamilySubmission(token: string): Promise<OwnFamilySubmission> {
-  const resolved = resolveGroupBookInviteState(token);
+export async function loadOwnFamilySubmission(token: string, cookieHeader = ''): Promise<OwnFamilySubmission> {
+  const resolved = await resolveGroupBookSessionInvite(token, cookieHeader);
   if (resolved.state !== 'active') return { state: 'unauthorized' };
   const submission = await loadEffectiveGroupBookSubmission(resolved.invite);
   return submission
@@ -336,6 +355,24 @@ export interface PlannedGroupBookPhoto {
   pathname: string;
   bytes: Buffer;
   mime: string;
+}
+
+// Only the durable attempt creator can authorize planned bytes. Callers cannot
+// supply a late purpose stamp or bypass ownership with a hand-built photo.
+const photoOwners = new WeakMap<PlannedGroupBookPhoto, {
+  invite: GroupBookInvite; deadline: number; attemptId: string; remaining: number; pilot: boolean;
+}>();
+
+async function settlePhoto(owner: NonNullable<ReturnType<typeof photoOwners.get>>) {
+  owner.remaining -= 1;
+  if (!owner.pilot || owner.remaining !== 0) return;
+  // Append-only proof that every provider call actually settled. A timeout or
+  // uncertain transport never writes this record and remains visible to ops.
+  try {
+    await put(`group-book/attempt-settled/${familyStorageKey(owner.invite)}/${owner.attemptId}.json`, JSON.stringify({
+      schemaVersion: 1, attemptId: owner.attemptId, familyStorageKey: familyStorageKey(owner.invite), settledAt: new Date().toISOString(),
+    }), {access:'private',token:requireToken(),addRandomSuffix:false,allowOverwrite:false,cacheControlMaxAge:0,contentType:'application/json'});
+  } catch { /* missing settlement stays attention */ }
 }
 
 export function planGroupBookPhotos(
@@ -365,6 +402,8 @@ export async function createGroupBookAttempt(
   window: { admittedAt: number; writeDeadline: number },
   now = new Date(),
 ): Promise<GroupBookAttempt | null> {
+  const purpose = await admitGroupBookIntakePurpose(invite, Date.now());
+  if (purpose.state !== 'fullbook' && purpose.state !== 'pilot') return null;
   const attempt: GroupBookAttempt = {
     schemaVersion: 1,
     attemptId: newOpaqueId('gba'),
@@ -376,6 +415,7 @@ export async function createGroupBookAttempt(
     createdAt: now.toISOString(),
     admittedAt: new Date(window.admittedAt).toISOString(),
     writeDeadline: new Date(window.writeDeadline).toISOString(),
+    ...(purpose.state === 'pilot' ? {purpose: purpose.stamp.purpose, registrationId: purpose.stamp.registrationId} : {}),
   };
   try {
     await put(groupBookAttemptPath(invite, attempt.attemptId), JSON.stringify(attempt), {
@@ -386,6 +426,8 @@ export async function createGroupBookAttempt(
       cacheControlMaxAge: 0,
       contentType: 'application/json',
     });
+    const owner = {invite, deadline: window.writeDeadline, attemptId:attempt.attemptId, remaining:photos.length, pilot:purpose.state==='pilot'};
+    for (const photo of photos) photoOwners.set(photo, owner);
     return attempt;
   } catch {
     return null;
@@ -396,6 +438,10 @@ export async function writePlannedGroupBookPhoto(
   photo: PlannedGroupBookPhoto,
   abortSignal: AbortSignal,
 ): Promise<GroupBookPhotoAsset> {
+  const owner = photoOwners.get(photo);
+  if (!owner || Date.now() >= owner.deadline) throw new Error('photo_writer_not_admitted');
+  const before = await admitGroupBookIntakePurpose(owner.invite, Date.now(), false);
+  if (before.state !== 'fullbook' && before.state !== 'pilot') throw new Error('photo_purpose_closed');
   const result = await put(photo.pathname, photo.bytes, {
     abortSignal,
     access: 'private',
@@ -405,7 +451,18 @@ export async function writePlannedGroupBookPhoto(
     cacheControlMaxAge: 0,
     contentType: photo.mime,
   });
+  const after = await admitGroupBookIntakePurpose(owner.invite, Date.now(), false);
+  if (Date.now() >= owner.deadline || (after.state !== 'fullbook' && after.state !== 'pilot')) {
+    // A close/sweep may win while the provider put is pending. Reconcile the
+    // exact owned object after it settles; uncertainty stays owned for reaping.
+    try {
+      await del(photo.pathname, {token: requireToken()});
+      if ((await probePrivateObject(photo.pathname)).state === 'absent') await settlePhoto(owner);
+    } catch { /* durable attempt remains */ }
+    throw new Error('photo_purpose_closed_after_write');
+  }
   if (result.pathname && result.pathname !== photo.pathname) throw new Error('group_book_photo_path_mismatch');
+  await settlePhoto(owner);
   return {
     assetId: photo.assetId,
     pathname: photo.pathname,
@@ -441,24 +498,11 @@ export async function uploadGroupBookPhoto(args: {
   mime: string;
   ext: string;
 }): Promise<GroupBookPhotoAsset> {
-  const assetId = newOpaqueId('gbp', 12);
-  const pathname = groupBookPhotoPath(args.invite, assetId, args.ext);
-  const result = await put(pathname, args.bytes, {
-    access: 'private',
-    token: requireToken(),
-    addRandomSuffix: false,
-    allowOverwrite: false,
-    cacheControlMaxAge: 0,
-    contentType: args.mime,
-  });
-  return {
-    assetId,
-    pathname: result.pathname ?? pathname,
-    mime: args.mime,
-    size: args.bytes.byteLength,
-    uploadedAt: new Date().toISOString(),
-    storage: 'private',
-  };
+  const planned = planGroupBookPhotos(args.invite, [args]);
+  const admittedAt = Date.now();
+  const writeDeadline = admittedAt + GROUP_BOOK_INTAKE_WRITE_WINDOW_MS;
+  if (!await createGroupBookAttempt(args.invite, newGroupBookSubmissionId(), planned, {admittedAt, writeDeadline})) throw new Error('photo_owner_unconfirmed');
+  return writePlannedGroupBookPhoto(planned[0], AbortSignal.timeout(GROUP_BOOK_INTAKE_WRITE_WINDOW_MS));
 }
 
 export async function deleteGroupBookPhotos(photos: GroupBookPhotoAsset[]): Promise<void> {
@@ -481,6 +525,7 @@ export function buildGroupBookSubmission(args: {
   policy: { version: string; digest: string };
   id?: string;
   now?: Date;
+  pilot?: GroupBookPilotStamp | null;
 }): GroupBookSubmission {
   const at = (args.now ?? new Date()).toISOString();
   return {
@@ -512,6 +557,7 @@ export function buildGroupBookSubmission(args: {
     status: 'submitted',
     omitFromProofAndPrint: false,
     receivedAt: at,
+    ...(args.pilot ? { pilot: args.pilot } : {}),
   };
 }
 
@@ -522,6 +568,10 @@ export function buildGroupBookSubmission(args: {
  */
 export async function createGroupBookSubmission(record: GroupBookSubmission): Promise<boolean> {
   try {
+    const invite = {cohortId:record.cohort.id, familySlotId:record.cohort.familySlotId, purpose:record.pilot?.purpose};
+    const admission = await admitGroupBookIntakePurpose(invite as GroupBookInvite, Date.now());
+    if (admission.state !== 'fullbook' && admission.state !== 'pilot') return false;
+    if (admission.state === 'pilot' && record.pilot?.registrationId !== admission.stamp.registrationId) return false;
     await put(`group-book/families/${record.familyStorageKey}.json`, JSON.stringify(record), {
       access: 'private',
       token: requireToken(),
@@ -530,7 +580,8 @@ export async function createGroupBookSubmission(record: GroupBookSubmission): Pr
       cacheControlMaxAge: 0,
       contentType: 'application/json',
     });
-    return true;
+    const after = await admitGroupBookIntakePurpose(invite as GroupBookInvite, Date.now(), false);
+    return after.state === 'fullbook' || after.state === 'pilot';
   } catch {
     return false;
   }
@@ -550,6 +601,8 @@ export async function createOrReconcileGroupBookSubmission(
   invite: GroupBookInvite,
   record: GroupBookSubmission,
 ): Promise<GroupBookCreateOutcome> {
+  const admission = await admitGroupBookIntakePurpose(invite, Date.now());
+  if (admission.state !== 'fullbook' && admission.state !== 'pilot') return {outcome:'unconfirmed'};
   if (await createGroupBookSubmission(record)) return { outcome: 'created' };
   let current: Awaited<ReturnType<typeof readGroupBookSubmissionState>>;
   try {
@@ -558,6 +611,8 @@ export async function createOrReconcileGroupBookSubmission(
     return { outcome: 'unconfirmed' };
   }
   if (current.state !== 'found') return { outcome: 'unconfirmed' };
+  const after = await admitGroupBookIntakePurpose(invite, Date.now(), false);
+  if (after.state !== 'fullbook' && after.state !== 'pilot') return {outcome:'unconfirmed'};
   if (current.record.id === record.id) return { outcome: 'committed' };
   return { outcome: 'conflict', winner: current.record };
 }

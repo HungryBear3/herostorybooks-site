@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 
 import { get } from '@vercel/blob';
 
-import { readOrderVersioned } from './orders.ts';
+import { isClassroomReleaseHeld, readOrderVersioned } from './orders.ts';
 import type { OrderRecord, PrivateArtifactMetadata } from './orders.ts';
 import {
   buildPrivateReviewSessionCookie,
@@ -11,6 +11,8 @@ import {
 } from './review-capability.ts';
 
 export interface RouteReply {
+  /** Internal only (never serialized): typed reason behind a non-disclosing refusal. */
+  internalReason?: 'classroom_release_held';
   status: number;
   body: Record<string, unknown> | Uint8Array;
   headers: Record<string, string>;
@@ -119,7 +121,12 @@ export async function handlePrivateReviewSessionRequest(
     || !hasAttachedPrivateReviewArtifacts(order)
     || !hasReviewCapability(order, token, now)
   ) {
+    // Existing non-disclosing envelope stays ahead of the hold.
     return { status: 403, body: { ok: false, error: 'invalid_or_missing_token' }, headers: privateReviewHeaders('application/json') };
+  }
+  if (isClassroomReleaseHeld(order)) {
+    // Authenticated capability holder: typed hold, never a cookie mint.
+    return { status: 409, body: { ok: false, error: 'classroom_release_held' }, headers: privateReviewHeaders('application/json'), internalReason: 'classroom_release_held' };
   }
   return {
     status: 200,
@@ -146,6 +153,7 @@ export async function handlePrivateReviewAssetRequest(
   const order = versioned?.order;
   const reviewToken = getReviewTokenFromRequest(request, orderId);
   const now = (deps.now ?? (() => new Date()))();
+  if (order && isClassroomReleaseHeld(order)) return { ...notFound(), internalReason: 'classroom_release_held' };
   if (!order || !hasAttachedPrivateReviewArtifacts(order)) return notFound();
   if (order.paymentStatus !== 'paid' || order.refundedAt || order.stripeRefundId || order.refundClaimId) return notFound();
   if (!hasReviewCapability(order, reviewToken, now)) return notFound();

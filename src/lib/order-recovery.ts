@@ -19,6 +19,7 @@ import {
   type OrderRecord,
   type ShippingAddress,
 } from './orders.ts';
+import { stripShippingContact } from './print-contact-store.ts';
 
 export interface RecoveryInput extends OrderInput {
   /** REQUIRED — must match the original order id from Stripe metadata / receipts. */
@@ -50,6 +51,8 @@ export interface RecoverySummary {
  * - exact `id` preserved
  * - paymentStatus forced to 'paid'
  * - optional stripeSessionId / shippingAddress / photo refs flow through
+ * - shippingAddress keeps its address fields only: the order store is public,
+ *   so a recipient name, phone or any extra key in the input never enters it
  *
  * No I/O. Safe to call from tests without a tmp dir.
  */
@@ -61,11 +64,16 @@ export function buildRecoveryOrderRecord(input: RecoveryInput): OrderRecord {
     ...base,
     paymentStatus: 'paid',
     stripeSessionId: input.stripeSessionId ?? null,
-    shippingAddress: input.shippingAddress ?? null,
+    shippingAddress: input.shippingAddress ? stripShippingContact(input.shippingAddress) : null,
     photoBlobPath: input.photoBlobPath ?? base.photoBlobPath ?? null,
     photoBlobUrl: input.photoBlobUrl ?? base.photoBlobUrl ?? null,
     photoFileName: input.photoFileName ?? base.photoFileName ?? null,
   };
+}
+
+/** Fixed text: a config entry can hold contact, so the log names only its position. */
+export function invalidRecoveryInputMessage(index: number): string {
+  return `Skipping invalid input #${index + 1} (missing id/childName/email/bookFormat)`;
 }
 
 function contentTypeForFilename(name: string): string {

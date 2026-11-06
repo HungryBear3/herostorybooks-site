@@ -51,7 +51,8 @@ const ID = 'ord_cache_coherency';
  * hold one write's ACKNOWLEDGEMENT open after the write itself has landed —
  * the shape of a slow `put()` round trip.
  */
-function makeStore() {
+function makeStore(schedule?: { events: string[]; blocked: () => void; waitDirect: Promise<void>; ackInstalled: () => void }) {
+  let blockedOnce = false;
   let record: { body: string; version: string } | null = null;
   let seq = 0;
   let holdAckFor: string | null = null;
@@ -72,14 +73,25 @@ function makeStore() {
       return { ok: true as const, version: record.version };
     },
     async replaceIfVersion(_p: string, body: string, expected: string) {
+      if (schedule && marker(body) === 'DIRECT_LANDS_LAST' && !blockedOnce) {
+        blockedOnce = true;
+        schedule.events.push('direct replacement blocked');
+        schedule.blocked();
+        await schedule.waitDirect;
+      }
       if (!record || record.version !== expected) {
+        if (schedule) schedule.events.push('direct stale replacement conflicted');
         return { ok: false as const, reason: 'version_conflict' as const };
       }
       record = { body, version: `v${++seq}` }; // the write lands here…
+      if (schedule) schedule.events.push(marker(body) === 'COMMIT_PUBLISHES_LATE' ? 'competing write landed' : 'direct retry landed');
       const result = { ok: true as const, version: record.version };
       if (holdAckFor === marker(body)) {       // …but the caller waits
         holdAckFor = null;
-        await new Promise<void>((r) => { release = r; });
+        await new Promise<void>((r) => {
+          release = r;
+          if (schedule) { schedule.events.push('competing ACK installed'); schedule.ackInstalled(); }
+        });
       }
       return result;
     },
@@ -539,44 +551,42 @@ test('TWO concurrent losing writers must not strand the generation counter', asy
 });
 
 test('a direct persist that LANDS LAST must invalidate a commit that published first', async () => {
-  // The re-claim in persistOrder's `finally` is what makes this safe, and the
-  // eviction alone is not enough: here the commit publishes AFTER persistOrder
-  // has already evicted, so only the re-claimed generation can stop its record
-  // — now superseded by the later-landing unconditional write — from persisting
-  // in the cache. No CAS retry can heal that, because nothing fails.
-  const store = makeStore();
+  const gate = () => { let release!: () => void; const promise = new Promise<void>(r => { release = r; }); return { promise, release }; };
+  const blocked = gate(), directGate = gate(), ack = gate();
+  const events: string[] = [];
+  const store = makeStore({ events, blocked: blocked.release, waitDirect: directGate.promise, ackInstalled: ack.release });
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hsb-landlast-'));
   process.env.HSB_ORDER_STORE_DIR = dir;
   delete process.env.BLOB_READ_WRITE_TOKEN;
   delete process.env.HSB_REQUIRE_DURABLE_PERSISTENCE;
+  let direct: Promise<unknown> | undefined, commit: Promise<unknown> | undefined;
   try {
     store.seed();
-
-    // persistOrder claims FIRST (synchronously), then suspends on real fs I/O.
-    const direct = persistOrder(order('DIRECT_LANDS_LAST'));
-
-    // The commit claims SECOND, so it holds the newer generation. Its write
-    // lands (in microtasks, before the fs I/O completes) but its ack is held,
-    // so it has not published yet.
+    direct = persistOrder(order('DIRECT_LANDS_LAST'));
+    await blocked.promise;
     store.holdAckFor('COMMIT_PUBLISHES_LATE');
-    const commit = commitVia('COMMIT_PUBLISHES_LATE');
-
-    // The unconditional write lands last and its `finally` runs.
+    commit = commitVia('COMMIT_PUBLISHES_LATE');
+    await ack.promise;
+    directGate.release();
     await direct;
-
-    // Only now is the commit allowed to publish — with a generation that the
-    // re-claim must have superseded.
+    events.push('direct call completed');
+    events.push('competing ACK released');
     store.releaseAck();
     await commit;
-
+    events.push('competing transaction completed');
+    assert.deepEqual(events, ['direct replacement blocked', 'competing write landed', 'competing ACK installed', 'direct stale replacement conflicted', 'direct retry landed', 'direct call completed', 'competing ACK released', 'competing transaction completed']);
+    assert.equal(store.stored()?.childName, 'DIRECT_LANDS_LAST');
     store.resetReads();
-    await observedByGuardedRead();
+    assert.equal(await observedByGuardedRead(), 'DIRECT_LANDS_LAST');
     assert.ok(
       store.reads() > 0,
       'a commit published a record already superseded by a later-landing '
       + 'unconditional write — persistOrder must re-claim, not merely evict',
     );
   } finally {
+    directGate.release();
+    store.releaseAck();
+    await Promise.allSettled([direct, commit].filter(Boolean));
     rmSync(dir, { recursive: true, force: true });
     delete process.env.HSB_ORDER_STORE_DIR;
     store.cleanup();

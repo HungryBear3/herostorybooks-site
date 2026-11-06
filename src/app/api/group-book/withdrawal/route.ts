@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
+import { classroomOriginAllowed } from '@/lib/group-book/identity-access';
 
 import { GROUP_BOOK_ACCESS_COOKIE, GROUP_BOOK_PRIVATE_HEADERS } from '@/lib/group-book/session';
 import { loadGroupBookReleaseState } from '@/lib/group-book/retention';
@@ -15,7 +16,8 @@ export const dynamic = 'force-dynamic';
 // The browser posts to /group-book/family/withdraw, which re-exports this
 // handler so the /group-book-scoped access cookie is actually sent. This API
 // path stays for compatibility; a browser never sends the cookie here.
-export async function POST() {
+export async function POST(req?: Request) {
+  if (req && !classroomOriginAllowed(req)) return NextResponse.json({ok:false,error:'invalid_origin'},{status:403,headers:GROUP_BOOK_PRIVATE_HEADERS});
   if (!groupBookStorageReady()) {
     return NextResponse.json(
       { ok: false, error: 'storage_disabled' },
@@ -26,7 +28,7 @@ export async function POST() {
   // Only an active (unexpired, unrevoked) capability may act, on its own family.
   let own: Awaited<ReturnType<typeof loadOwnFamilySubmission>>;
   try {
-    own = await loadOwnFamilySubmission(token);
+    own = await loadOwnFamilySubmission(token, (await cookies()).toString());
   } catch {
     return NextResponse.json(
       { ok: false, error: 'storage_unavailable' },

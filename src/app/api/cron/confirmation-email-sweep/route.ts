@@ -10,38 +10,11 @@
  * => 401, and neither reads or mutates any order state.
  */
 import { evaluateCronAuth } from '../../../../lib/cron-auth.ts';
-import {
-  buildDefaultConfirmationEmailSweepDeps,
-  runConfirmationEmailSweep,
-  type ConfirmationEmailSweepResult,
-} from '../../../../lib/confirmation-email-sweep.ts';
+import { getRouteDeps } from '../../../../lib/confirmation-email-sweep-route-deps.ts';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
-
-type RouteDeps = {
-  runSweep: () => Promise<ConfirmationEmailSweepResult>;
-};
-
-let routeDepsOverride: RouteDeps | null = null;
-
-export function __setConfirmationEmailSweepRouteDepsForTests(deps: Partial<RouteDeps>): void {
-  routeDepsOverride = {
-    runSweep: deps.runSweep ?? (() => runConfirmationEmailSweep(buildDefaultConfirmationEmailSweepDeps())),
-  };
-}
-
-export function __resetConfirmationEmailSweepRouteDepsForTests(): void {
-  routeDepsOverride = null;
-}
-
-function getRouteDeps(): RouteDeps {
-  if (routeDepsOverride) return routeDepsOverride;
-  return {
-    runSweep: () => runConfirmationEmailSweep(buildDefaultConfirmationEmailSweepDeps()),
-  };
-}
 
 async function handle(request: Request): Promise<Response> {
   const denied = evaluateCronAuth(request.headers.get('authorization'), process.env.CRON_SECRET);

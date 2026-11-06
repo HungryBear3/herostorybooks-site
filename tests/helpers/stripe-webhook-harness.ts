@@ -23,6 +23,7 @@ export const ANALYTICS_SETTLED = /^\[purchase-analytics\] ga4=/;
 export const CONFIRMATION_EMAIL_SETTLED = /^\[confirmation-email\] setImmediate (?:completed|failed|joined failed send) for /;
 export const FULFILLMENT_KICKOFF_SETTLED = /^\[webhook\]\[kickoff:[^\]]+\] \[setImmediate\] chain exited:/;
 export const NEWLY_PAID = [ANALYTICS_SETTLED, CONFIRMATION_EMAIL_SETTLED, FULFILLMENT_KICKOFF_SETTLED];
+const FULFILLMENT_KICKOFF_SCHEDULED = /^\[webhook\]\[kickoff:[^\]]+\] scheduling for /;
 
 const BASE_ENV = [
   'HSB_ORDER_STORE_DIR', 'HSB_PAYMENT_RECOVERY_STORE_DIR', 'HSB_REQUIRE_DURABLE_PERSISTENCE',
@@ -105,7 +106,7 @@ export interface OutboundCall { url: string; body: string }
 
 export async function runWebhook(
   event: Record<string, unknown>,
-  opts: { settledBy?: RegExp[]; deliveries?: number; onResponse?: () => void } = {},
+  opts: { settledBy?: RegExp[]; settleScheduledKickoff?: boolean; deliveries?: number; onResponse?: () => void } = {},
 ): Promise<{ statuses: number[]; lines: string[]; outbound: OutboundCall[] }> {
   const lines: string[] = [];
   const outbound: OutboundCall[] = [];
@@ -129,7 +130,9 @@ export async function runWebhook(
       opts.onResponse?.();
       return response;
     }));
-    const markers = opts.settledBy ?? [];
+    // Scheduling is logged synchronously inside POST, so every armed kickoff is already visible here.
+    const kickoffScheduled = opts.settleScheduledKickoff && lines.some((line) => FULFILLMENT_KICKOFF_SCHEDULED.test(line));
+    const markers = [...(opts.settledBy ?? []), ...(kickoffScheduled ? [FULFILLMENT_KICKOFF_SETTLED] : [])];
     const expiry = Date.now() + 30_000;
     while (!markers.every((marker) => lines.some((line) => marker.test(line))) && Date.now() < expiry) {
       await new Promise((resolve) => setTimeout(resolve, 5));

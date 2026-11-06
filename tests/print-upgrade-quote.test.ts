@@ -25,6 +25,9 @@ import {
   type PrintCostQuoteProvider,
   type PrintCostQuoteRequest,
 } from '../src/lib/print-upgrade-quote.ts';
+import { installMemoryPrintContactStore } from './support/print-contact-fixture.ts';
+
+installMemoryPrintContactStore();
 
 const APPROVED_SHA = '97312217e67bdc8845f5c03cd0d06533a1fe9a84bd030ce8fb25460e79f2ba38';
 const NOW = '2026-10-14T12:00:00.000Z';
@@ -211,7 +214,8 @@ test('quote: prices both formats from the provider, persists quotes bound to the
   assert.equal(premium.pageCount, 26);
   assert.equal(classic.issuedAt, NOW);
   assert.equal(Date.parse(classic.expiresAt) - Date.parse(NOW), PRINT_UPGRADE_QUOTE_TTL_MS);
-  assert.deepEqual(classic.shippingAddress, ADDRESS);
+  const { name: _recipient, ...publicAddress } = ADDRESS;
+  assert.deepEqual(classic.shippingAddress, publicAddress);
   assert.deepEqual(calls.map((c) => [c.targetFormat, c.pageCount]).sort(), [['classic', 32], ['premium', 26]]);
   assert.deepEqual(calls[0].shippingAddress, ADDRESS);
 

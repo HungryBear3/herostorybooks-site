@@ -164,6 +164,8 @@ jobs:
         # has passwordless sudo either way, so this is hygiene, not a privilege
         # boundary.) The update is retried once so a transient mirror failure
         # does not red a gate that is meant to be authoritative.
+        # tests/classroom-local-proof.test.ts reads proof text through the same
+        # pdftotext on PATH, or an absolute HSB_PDFTOTEXT when one is set.
         # tests/group-book-parent-intake.test.ts requires ripgrep (`rg`) to
         # enumerate route files; install it so the boundary assertion executes.
         run: |
@@ -174,7 +176,9 @@ jobs:
         run: npm ci
 
       - name: Node test suite
-        run: npm test
+        # `npm test` written out with the flag mock.module needs in file workers;
+        # the classroom suites replace 'stripe' and '@vercel/blob' through it.
+        run: node --experimental-strip-types --experimental-test-module-mocks --test --test-concurrency=1 tests/*.test.ts
         env:
           # Synthetic, throwaway. The tests override and delete this themselves;
           # it is set so that nothing can fall back to the workspace .data/orders.

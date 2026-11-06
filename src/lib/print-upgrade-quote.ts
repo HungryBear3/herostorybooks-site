@@ -22,6 +22,7 @@ import {
   type PrintUpgradeQuoteV1,
   type ShippingAddress,
 } from './orders.ts';
+import { printContactStorageProblem, stripShippingContact, writeIntendedPrintRecipient } from './print-contact-store.ts';
 import { isPrintUpgradeLockLive } from './print-upgrade-lock.ts';
 import {
   authorizePrintUpgradeOffer,
@@ -250,6 +251,10 @@ export async function quotePrintUpgradeAtCost(
   const quantity = input.quantity ?? 1;
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10) return { ok: false, reason: 'address_invalid' };
 
+  // Before the provider: a quote that cannot hold its recipient privately must
+  // not exist, because the public quote no longer carries the name.
+  if (printContactStorageProblem()) return { ok: false, reason: 'quote_unavailable' };
+
   const priced: PrintUpgradeQuoteV1[] = [];
   try {
     for (const targetFormat of PRINT_UPGRADE_TARGET_FORMATS) {
@@ -274,14 +279,17 @@ export async function quotePrintUpgradeAtCost(
         totalCents: result.totalCents,
         estimatedDeliveryStart: result.estimatedDeliveryStart ?? null,
         estimatedDeliveryEnd: result.estimatedDeliveryEnd ?? null,
-        shippingAddress: address,
+        shippingAddress: stripShippingContact(address),
         issuedAt: now,
         expiresAt: new Date(Date.parse(now) + PRINT_UPGRADE_QUOTE_TTL_MS).toISOString(),
       });
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`[print-upgrade] quote unavailable for ${orderId}: ${message.slice(0, 200)}`);
+    for (const quote of priced) {
+      await writeIntendedPrintRecipient({ orderId, offerId: offer.offerId, quoteId: quote.quoteId, address, now: nowDate.toISOString() });
+    }
+  } catch {
+    // Fixed text: a provider error can echo the submitted recipient or address.
+    console.error(`[print-upgrade] quote unavailable for ${orderId}`);
     await withOrderTransaction<OrderRecord | null>(
       orderId,
       (current) => ({
