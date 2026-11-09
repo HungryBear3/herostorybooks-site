@@ -393,7 +393,7 @@ function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' })
   const mobileLinks = [
     ['How it works', '/#how'],
     ['Sample', '/samples'],
-    ['Pricing', '/pricing'],
+    ['Pricing', '/#pricing'],
     ['FAQ', '/#faq'],
     ['Start your book', '/checkout'],
   ] as const;
@@ -414,7 +414,7 @@ function EditorialHeader({ active }: { active?: 'home' | 'sample' | 'pricing' })
         <nav className="hidden items-center gap-8 md:flex">
           <Link href="/#how" className={linkClass('home')}>How it works</Link>
           <Link href="/samples" className={linkClass('sample')}>Sample</Link>
-          <Link href="/pricing" className={linkClass('pricing')}>Pricing</Link>
+          <Link href="/#pricing" className={linkClass('pricing')}>Pricing</Link>
           <Link href="/#faq" className="text-sm font-medium text-[#695f54] transition hover:text-[#a64c4c]">FAQ</Link>
           <PrimaryCta href="/checkout" size="sm">Start your book</PrimaryCta>
         </nav>
@@ -475,7 +475,7 @@ function EditorialFooter() {
             Personalized children&apos;s books, made from your child&apos;s photo, interests, and family story. Approved by you before we print.
           </p>
         </div>
-        <FooterLinks title="Product" items={[["How it works", "/#how"], ["See a sample", "/samples"], ["Pricing", "/pricing"], ["Gift ideas", "/gifts"], ["About", "/about"], ["Start your book", "/checkout"]]} />
+        <FooterLinks title="Product" items={[["How it works", "/#how"], ["See a sample", "/samples"], ["Pricing", "/#pricing"], ["Gift ideas", "/gifts"], ["About", "/about"], ["Start your book", "/checkout"]]} />
         <FooterLinks title="Help" items={[['FAQ', '/#faq'], ['support@herostorybooks.com', 'mailto:support@herostorybooks.com'], ['Privacy', '/privacy'], ['Terms', '/terms']]} />
       </div>
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 border-t border-[#dfd2b8] px-5 py-5 text-xs text-[#695f54] md:px-8">
@@ -556,6 +556,9 @@ function HeroSection() {
           </h1>
           <p className="mt-7 max-w-xl text-lg leading-8 text-[#695f54] md:text-xl">
             Create a personalized keepsake storybook from your child&apos;s photo, interests, and family details. AI-assisted illustration and story writing come together in a full digital proof you approve before anything prints.
+          </p>
+          <p className="mt-4 max-w-xl text-sm leading-7 text-[#695f54]">
+            Looking for a birthday or family keepsake? Explore <Link href="/gifts" className="font-semibold text-[#8f3f3f] underline decoration-[#d8c6a2] underline-offset-4">personalized storybook gift ideas</Link>.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <PrimaryCta href="/checkout" size="lg">Start your book</PrimaryCta>
@@ -946,7 +949,7 @@ function PricingPreviewSection() {
       <div className="mx-auto max-w-6xl px-5 md:px-8">
         <SectionHeader eyebrow="Pricing" title="One book. Three ways to hold it." sub="Same hand-edited story and full-color illustrations in all formats. Physical books include US shipping." centered />
         <TierCards />
-        <div className="mt-8 text-center"><GhostCta href="/pricing">Compare all options</GhostCta></div>
+        <div className="mt-8 text-center"><GhostCta href="/#pricing">Compare all options</GhostCta></div>
       </div>
     </section>
   );
@@ -989,7 +992,7 @@ function SeasonalCallout() {
           <p className="mt-3 text-sm font-medium leading-6 text-[#1f1a16]">Every order includes a full digital proof before anything prints, your own page-by-page review, and no blind hardcover order.</p>
           <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
             <PrimaryCta href="/checkout?format=digital" size="md">Start the digital book</PrimaryCta>
-            <GhostCta href="/pricing">Compare digital &amp; print</GhostCta>
+            <GhostCta href="/#pricing">Compare digital &amp; print</GhostCta>
           </div>
           {fathersDay.tier !== 'past-event' && (
             <div className="mt-5">
@@ -1139,9 +1142,15 @@ export function EditorialAboutPage() {
 export function EditorialSamplesPage() {
   return (
     <EditorialPageShell active="sample">
+      <section className="mx-auto max-w-6xl px-5 pt-12 md:px-8 md:pt-16">
+        <h1 className="max-w-4xl font-serif text-5xl font-medium leading-tight md:text-6xl">Sample personalized story books</h1>
+      </section>
       <RealBookVideos />
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
         <SectionHeader eyebrow="Samples" title="A closer look inside personalized adventures." sub="Selected story pages and photos of real printed books show the art, page design, and softcover and hardcover formats. Every new paid book still receives its own proof and approval pass before delivery or print." centered />
+        <p className="mx-auto mb-8 max-w-2xl text-center text-sm leading-7 text-[#695f54]">
+          Choosing a book for someone special? Browse <Link href="/gifts" className="font-semibold text-[#8f3f3f] underline decoration-[#d8c6a2] underline-offset-4">personalized storybook gift ideas</Link>.
+        </p>
         <ShowcaseGallery />
         <div className="mt-14">
           <PhysicalBookPhotoSection />
