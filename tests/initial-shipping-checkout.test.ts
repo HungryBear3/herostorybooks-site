@@ -104,7 +104,7 @@ test('whole positive journey: quote -> select -> metadata -> lock+marker -> item
   const params = buildExpeditedStripeSessionParams({ orderId: ORDER, metadata, bookProductName: 'Classic book', ctx: ctx(), now: s.now.t,
     successUrl: 'https://example.test/thank-you', cancelUrl: 'https://example.test/checkout', customerEmail: 'parent@example.test' }) as any;
   assert.deepEqual(params.line_items.map((l: any) => l.price_data.unit_amount), [3999, 420]);
-  assert.equal(params.allow_promotion_codes, undefined); assert.equal(params.shipping_address_collection, undefined); assert.equal(params.automatic_tax, undefined);
+  assert.equal(params.allow_promotion_codes, false); assert.equal(params.shipping_address_collection, undefined); assert.equal(params.automatic_tax, undefined);
   assert.ok(params.expires_at * 1000 <= metadata.quoteWindow.expiresAtMs);
 
   // canonical order view with typed metadata
@@ -249,3 +249,60 @@ test('two attempts converge on one lock; a different canonical order is refused;
   // expired quote window before marker
   await assert.rejects(confirmExpeditedPreProvider({ ...args, now: metadata.quoteWindow.expiresAtMs }), code('session_expired'));
 }));
+
+// Expedited promotion policy: explicit false for every product/provider mode; no discount surface of any kind.
+const PROMO_BOOK_PRODUCT_ID = 'prod_syntheticBook';
+const discountKeys = (value: unknown, path = ''): string[] => {
+  if (!value || typeof value !== 'object') return [];
+  return Object.entries(value as Record<string, unknown>).flatMap(([k, v]) => [
+    ...(/coupon|discount|promotion/i.test(k) && `${path}${k}` !== 'allow_promotion_codes' ? [`${path}${k}`] : []),
+    ...discountKeys(v, `${path}${k}.`),
+  ]);
+};
+for (const [withProductId, livemode] of [[true, false], [true, true], [false, false], [false, true]] as const) {
+  const name = `expedited Stripe params disable promotion codes: bookProductId ${withProductId ? 'present' : 'absent'}, stripeLivemode ${livemode}`;
+  test(name, () => withLuluEnv(async () => {
+    const s = setup();
+    const selected = await selectedDraft(s);
+    const c = ctx({ provider: { ...PROVIDER, stripeLivemode: livemode } });
+    const metadata = buildInitialShippingMetadata({ draft: selected, selectedQuoteId: selected.selectedQuoteId!, product, bookCents: 3999, ctx: c, now: s.now.t });
+    const metadataBefore = JSON.stringify(metadata);
+    const ctxBefore = JSON.stringify(c);
+    const params = buildExpeditedStripeSessionParams({ orderId: ORDER, metadata, bookProductName: 'Classic book', ctx: c, now: s.now.t,
+      successUrl: 'https://example.test/thank-you', cancelUrl: 'https://example.test/checkout', customerEmail: 'parent@example.test',
+      ...(withProductId ? { bookProductId: PROMO_BOOK_PRODUCT_ID } : {}) }) as any;
+
+    assert.ok(Object.prototype.hasOwnProperty.call(params, 'allow_promotion_codes'), 'explicit own property');
+    assert.equal(params.allow_promotion_codes, false);
+    assert.equal(params.discounts, undefined);
+    assert.deepEqual(discountKeys(params), [], 'no discount/coupon/supplier-coupon objects');
+
+    const policy = (c.commercial as any).policy;
+    const expiresAt = Math.floor((s.now.t + policy.ttl.sessionTtlMs) / 1000);
+    assert.equal(params.expires_at, expiresAt);
+    assert.ok(params.expires_at * 1000 <= metadata.quoteWindow.expiresAtMs);
+    assert.deepEqual(params, {
+      mode: 'payment',
+      allow_promotion_codes: false,
+      payment_method_types: [...policy.paymentMethodTypes],
+      customer_email: 'parent@example.test',
+      client_reference_id: ORDER,
+      success_url: 'https://example.test/thank-you',
+      cancel_url: 'https://example.test/checkout',
+      expires_at: expiresAt,
+      line_items: [
+        { quantity: 1, price_data: { currency: 'usd', unit_amount: 3999,
+          ...(withProductId ? { product: PROMO_BOOK_PRODUCT_ID } : { product_data: { name: 'Classic book' } }) } },
+        { quantity: 1, price_data: { currency: 'usd', unit_amount: 420,
+          product_data: { name: 'Expedited shipping upgrade', description: 'Standard shipping included; this is the added cost for Expedited (shipping tax included).' } } },
+      ],
+      metadata: { orderId: ORDER, hsbShipping: 'initial_expedited_v1', hsbShippingQuote: metadata.quoteId, hsbShippingBinding: metadata.quoteBindingDigest.slice(0, 32) },
+      payment_intent_data: { metadata: { orderId: ORDER, hsbShipping: 'initial_expedited_v1' } },
+    });
+    const lineTotal = params.line_items.reduce((sum: number, l: any) => sum + l.quantity * l.price_data.unit_amount, 0);
+    assert.equal(lineTotal, metadata.totals.totalCents); assert.equal(metadata.totals.totalCents, 4419);
+
+    assert.equal(JSON.stringify(metadata), metadataBefore, 'input metadata unchanged');
+    assert.equal(JSON.stringify(c), ctxBefore, 'input context unchanged');
+  }));
+}

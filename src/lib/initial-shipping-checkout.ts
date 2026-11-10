@@ -128,7 +128,7 @@ export function buildExpeditedStripeSessionParams(args: {
   if (expiresAtSec * 1000 > m.quoteWindow.expiresAtMs) refuse('ttl_policy_unqualified');
   return {
     mode: 'payment',
-    ...(args.bookProductId ? { allow_promotion_codes: true } : {}),
+    allow_promotion_codes: false,
     payment_method_types: [...ctx.commercial.policy.paymentMethodTypes],
     customer_email: args.customerEmail,
     client_reference_id: args.orderId,

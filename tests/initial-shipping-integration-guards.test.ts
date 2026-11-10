@@ -140,7 +140,7 @@ test('order HTTP selected quote reaches shared durable provisioner and binds bef
   assert.equal(s.creates.length, 1);
   const input = s.creates[0]; assert.ok(input.order.initialShipping, 'selected shipping must not silently become standard');
   assert.deepEqual(input.expeditedParams.line_items.map((i: any) => i.price_data.unit_amount), [input.order.priceCents, 420]);
-  assert.equal(input.expeditedParams.allow_promotion_codes, true);
+  assert.equal(input.expeditedParams.allow_promotion_codes, false);
   assert.equal(input.expeditedParams.shipping_address_collection, undefined);
   const durable = await getOrderAuthoritative(input.order.id);
   assert.equal(durable?.stripeSessionId, 'cs_synthetic');
