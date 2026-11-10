@@ -123,6 +123,34 @@ export interface BrowserEventSpec {
   readonly params: Readonly<Record<string, ParamSpec>>;
 }
 
+// Shipping uses a finite vocabulary, never arbitrary policy strings or identifiers.
+export const SHIPPING_PRICING_RULES = ['landed-delta-v1'] as const;
+export type ShippingBrowserEvent = 'shipping_options_view' | 'shipping_option_selected' | 'shipping_unavailable';
+export interface ShippingMetricParams {
+  readonly service_label: 'standard' | 'expedited'; readonly book_format: 'classic' | 'premium';
+  readonly outcome: 'shown' | 'selected' | 'unavailable' | 'paid'; readonly pricing_rule: 'landed-delta-v1';
+}
+/** Read only own data descriptors: no unexpected fields, inherited values or getters. */
+export function shippingMetricParams(input: unknown): ShippingMetricParams | null {
+  try {
+    if (!input || typeof input !== 'object') return null;
+    const own = (key: string) => {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+    };
+    const service = own('service'), format = own('format'), outcome = own('outcome'), pricingRule = own('pricingRule');
+    if ((service !== 'standard' && service !== 'expedited') || (format !== 'classic' && format !== 'premium') ||
+      !['shown', 'selected', 'unavailable', 'paid'].includes(outcome) || !SHIPPING_PRICING_RULES.includes(pricingRule)) return null;
+    return Object.freeze({ service_label: service, book_format: format, outcome, pricing_rule: pricingRule });
+  } catch { return null; }
+}
+export const SHIPPING_COMPLETION_EVENT = 'shipping_payment_completed' as const;
+// Behavioral service completion only; deliberately not an acquisition/key-event decision.
+const shippingParams = (outcome: string) => ({
+  service_label: oneOf(['standard', 'expedited']), book_format: oneOf(['classic', 'premium']),
+  outcome: oneOf([outcome]), pricing_rule: oneOf(SHIPPING_PRICING_RULES),
+});
+
 const THEME_IDS = STORY_THEMES.map((theme) => theme.id);
 
 const STEP_PARAMS = {
@@ -150,6 +178,9 @@ const cover = (): BrowserEventSpec => ({ emitter: 'trackCoverEvent', decisionGra
  * declared here. `purchase` is deliberately absent.
  */
 export const BROWSER_EVENT_CONTRACT: Readonly<Record<BrowserEventName, BrowserEventSpec>> = deepFreeze({
+  shipping_options_view: tracked(false, shippingParams('shown')),
+  shipping_option_selected: tracked(false, shippingParams('selected')),
+  shipping_unavailable: tracked(false, shippingParams('unavailable')),
   page_view: tracked(true, { pathname: routePath }),
   begin_checkout: tracked(true, { bookFormat: oneOf(BOOK_FORMATS) }),
   checkout_step_view: tracked(true, STEP_PARAMS),

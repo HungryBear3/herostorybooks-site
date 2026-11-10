@@ -1159,12 +1159,15 @@ for (const seam of PAID_SEAMS) {
 
 test('the webhook calls the shadow wrapper at exactly the two paid seams', () => {
   const route = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
+  const validate = (route: string) => {
   assert.match(route, /from '\.\.\/\.\.\/\.\.\/\.\.\/lib\/hsb-control-plane-runtime\/shadow-settlement\.ts'/);
 
   const callSites = [...route.matchAll(/recordShadowCheckoutSettlement\(/g)].map((m) => m.index!);
   assert.equal(callSites.length, 2, 'exactly two call sites: newly-paid and exact replay');
 
-  const newlyPaidWrite = route.indexOf('const settlement = await settleOrderPayment(orderId,');
+  const shippingSettlement = 'const settlement = expedited ?? await settleOrderPayment(orderId,';
+  assert.equal(route.split(shippingSettlement).length - 1, 1);
+  const newlyPaidWrite = route.indexOf(shippingSettlement);
   const newlyPaidGuardEnd = route.indexOf('scheduleOrderConfirmationEmail(updated');
   assert.ok(newlyPaidWrite > 0 && newlyPaidGuardEnd > newlyPaidWrite);
 
@@ -1177,6 +1180,16 @@ test('the webhook calls the shadow wrapper at exactly the two paid seams', () =>
     'the replay seam must sit after the PaymentIntent backfill guard and before replay notification');
   assert.ok(newSeam > newlyPaidWrite && newSeam < newlyPaidGuardEnd,
     'the newly-paid seam must sit after the proven payment write and before notification scheduling');
+  };
+  validate(route);
+  for (const mutated of [
+    route.replace('expedited ?? await settleOrderPayment(orderId,', 'expedited ?? null /* removed payment write */,'),
+    route.replace('scheduleOrderConfirmationEmail(updated', 'removedNotification(updated'),
+    'recordShadowCheckoutSettlement();\n' + route,
+  ]) {
+    validate(route); assert.notEqual(mutated, route);
+    assert.throws(() => validate(mutated), { code: 'ERR_ASSERTION' });
+  }
 });
 
 test('the print-upgrade and conflict branches never reach the shadow wrapper', () => {

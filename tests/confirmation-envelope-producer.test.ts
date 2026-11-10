@@ -3579,6 +3579,69 @@ test('OU-12: both outcome switches are exhaustive — no default arm, a never ch
   }
 });
 
+test('shipping: produced terms decorate the frozen frame and bind the conditional identity', async () => {
+  const { syntheticOrderBlob, presentationOrder, withLuluEnv } = await import('./support/initial-shipping-fixture.ts');
+  const store = syntheticOrderBlob();
+  try {
+    await withLuluEnv(async () => {
+      const order = await presentationOrder(store, ORDER_ID);
+      const r = await armed({ order });
+      assertSnapshotted(r, 'committed');
+      const request = putEnvelope(r.store).request as { text: string; html: string };
+      assert.match(request.text, /Expedited shipping upgrade: \$4\.20/);
+      assert.match(request.html, /Shipping tax \(included in upgrade\)/);
+      assert.equal(request.text.split('Shipping: Expedited').length, 2);
+      const changed = { ...order, initialShipping: { ...order.initialShipping!, totals: { ...order.initialShipping!.totals, bookCents: 4000, totalCents: 4420 } } };
+      assert.notEqual(producer.confirmationRenderInputsKey(order), producer.confirmationRenderInputsKey(changed));
+    });
+  } finally { store.close(); }
+});
+
+test('shipping: canonical snapshot CAS refuses quote/refund drift and frozen consumer sends exact decorated frame once', async () => {
+  const { syntheticOrderBlob, presentationOrder, withLuluEnv } = await import('./support/initial-shipping-fixture.ts');
+  const { dispatchFrozenConfirmationRequest, decorateOrderConfirmationEmail } = await import('../src/lib/order-email.ts');
+  for (const mode of ['same', 'terms', 'refund'] as const) {
+    const orders = syntheticOrderBlob();
+    try { await withLuluEnv(async () => {
+      const order = await presentationOrder(orders, ORDER_ID);
+      const path_ = `orders/${ORDER_ID}.json`;
+      const store = strictSyntheticStoreIo({ put: ['store'], get: ['serve'], onPut() {
+        if (mode === 'same') return;
+        const cell = orders.files.get(path_)!; const current = JSON.parse(cell.body);
+        if (mode === 'refund') current.refundClaimId = 'synthetic-refund';
+        else { current.initialShipping.totals.bookCents++; current.initialShipping.totals.totalCents++; }
+        orders.files.set(path_, { body: JSON.stringify(current), version: cell.version + 1 });
+      } });
+      const sent: unknown[] = [];
+      const oldKey = process.env.HSB_RESEND_API_KEY;
+      process.env.HSB_RESEND_API_KEY = 'synthetic';
+      try { await withAmbient({}, async () => {
+        const deps = {
+          envelopeWriter: { env: writerEnv(undefined, { HSB_CONFIRMATION_FROZEN_DISPATCH: 'true' }), storeIo: store.io as never },
+          frozenDispatch: { transport: { ready: () => true, send: (request: any, key: string) => dispatchFrozenConfirmationRequest(request, key, {
+            createClient: () => ({ emails: { send: async (payload: unknown, options: unknown) => { sent.push([payload, options]); return { data: { id: 'synthetic-message' }, error: null }; } } }) as never,
+          }) } }, log() {}, errorLog() {},
+        };
+        const result = await deliverOrderConfirmationEmail(ORDER_ID, deps);
+        if (mode === 'same') {
+          assert.equal(result.status, 'sent', JSON.stringify(result));
+          const envelope = putEnvelope(store);
+          assert.deepEqual(sent, [[envelope.request, { idempotencyKey: envelope.idempotencyKey }]]);
+          const expected = decorateOrderConfirmationEmail(buildOrderConfirmationEmail(order), order);
+          assert.equal((envelope.request as any).text, expected.text);
+          assert.equal((await deliverOrderConfirmationEmail(ORDER_ID, deps)).status, 'blocked');
+          assert.equal(sent.length, 1);
+        } else {
+          assert.notEqual(result.status, 'sent'); assert.notEqual(result.status, 'snapshotted');
+          assert.equal(sent.length, 0); assert.equal(store.count('put'), 1);
+          const current = JSON.parse(orders.files.get(path_)!.body);
+          assert.ok(!current.confirmationEmailEnvelopeRef && !current.confirmationEmailSentAt && !current.emailResendClaimId);
+        }
+      }); } finally { if (oldKey === undefined) delete process.env.HSB_RESEND_API_KEY; else process.env.HSB_RESEND_API_KEY = oldKey; }
+    }); } finally { orders.close(); }
+  }
+});
+
 // ── File-end isolation evidence (ISO-1, ISO-4, ISO-8, ISO-9, SN-6, OR-17) ───
 
 test('ISO: file-end — no unscripted call, no fetch, no transport touched, no del, env and adapter seam restored', () => {

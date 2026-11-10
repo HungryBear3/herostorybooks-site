@@ -55,6 +55,19 @@ async function createDirectCheckoutSession(request: DirectCheckoutSessionRequest
   // The success URL lands in browser history, referrer headers, and anything
   // that records page location. It carries opaque reconciliation ids only —
   // the thank-you page reads the name, format, and email off the order record.
+  if (request.expeditedParams) {
+    return getStripe().checkout.sessions.create({
+      ...request.expeditedParams,
+      metadata: {
+        ...(gaClientId ? { gaClientId } : {}),
+        ...(order.checkoutTracking?.cohort ? { cohort: order.checkoutTracking.cohort } : {}),
+        ...(order.checkoutTracking?.invite ? { invite: order.checkoutTracking.invite } : {}),
+        ...checkoutAnalyticsStripeMetadata({ attribution: order.checkoutAttribution, analytics }),
+        // Immutable order/shipping authority wins over analytics projections.
+        ...(request.expeditedParams.metadata as Record<string, string>),
+      },
+    } as unknown as Parameters<ReturnType<typeof getStripe>['checkout']['sessions']['create']>[0], { idempotencyKey });
+  }
   const successParams = new URLSearchParams({ orderId: order.id });
   return getStripe().checkout.sessions.create({
     mode: 'payment',

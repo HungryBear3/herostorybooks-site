@@ -112,6 +112,9 @@ import { isStoryMediaExplicitlyDisabled } from './story-media-store.ts';
  * production uses — and the order store is already swappable at its own seam.
  */
 export interface CheckoutOrderRouteDeps<TResponse> {
+  /** SDK transport seam only; admission and private ownership are not injectable. */
+  shippingBlob?: import('./checkout-intake.ts').IntakeStoreIo;
+  shippingProvenanceTransport?: import('./orders.ts').InitialShippingProvenanceTransport;
   /** Build the route's response object. Wired to NextResponse.json. */
   json(body: Record<string, unknown>, httpStatus: number): TResponse;
   /** The provider adapters. Wired to the Stripe SDK in the route. */
@@ -191,6 +194,8 @@ function attemptSafeError(error: unknown): string {
   }
   return CHECKOUT_RECONCILIATION_SUPPORT;
 }
+
+import { openInitialShippingCheckout, initialSettlement } from './initial-shipping-checkout.ts';
 
 export async function handleCheckoutOrderPost<TResponse>(
   request: Request,
@@ -662,6 +667,16 @@ export async function handleCheckoutOrderPost<TResponse>(
         }, 409);
       }
     }
+    const shippingAuthority = directRequest.kind === 'direct' && directRequest.request.expeditedQuoteId
+      ? await openInitialShippingCheckout({ intakeId: directRequest.request.intakeId,
+        capability: directRequest.request.capability, quoteId: directRequest.request.expeditedQuoteId,
+        bookFormat: draftOrder.bookFormat, bookCents: draftOrder.priceCents, blob: deps.shippingBlob, provenanceTransport: deps.shippingProvenanceTransport }) : undefined;
+    if (shippingAuthority) {
+      draftOrder.initialShipping = shippingAuthority.metadata;
+      // Immutable accepted quote time: exact pre-provider retries must reproduce
+      // the whole pending order, including its initial unverified projection.
+      draftOrder.initialShippingSettlement = initialSettlement(new Date(shippingAuthority.metadata.quoteWindow.issuedAtMs));
+    }
     const intentMedia: CheckoutIntentMediaEntry[] = [];
     if (hasPhotoUpload) intentMedia.push({ category: 'primary_hero_photo', file: photo as File });
     for (const [index, value] of supportingPhotoFiles) {
@@ -708,7 +723,10 @@ export async function handleCheckoutOrderPost<TResponse>(
       throw new OrderPersistenceError(draftOrder.id, 'Checkout attempt index was not authoritative');
     }
 
+    if (shippingAuthority) await shippingAuthority.confirm(draftOrder);
+
     const checkoutProvisionDeps: CheckoutSessionProvisionDeps = {
+      shippingAuthority,
       createCheckoutSession: deps.createCheckoutSession,
       retrieveCheckoutSession: deps.retrieveCheckoutSession,
       renewCheckoutLease: (orderId, leaseId, fingerprint) =>

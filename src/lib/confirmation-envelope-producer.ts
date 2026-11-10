@@ -92,6 +92,8 @@ import type {
 } from './orders.ts';
 import {
   buildOrderConfirmationEmail,
+  decorateOrderConfirmationEmail,
+  confirmationShippingRenderIdentity,
   buildOrderConfirmationIdempotencyKey,
   getOrderSenderEmail,
   getSupportEmail,
@@ -499,9 +501,10 @@ export const CONFIRMATION_RENDER_INPUT_KEYS = Object.freeze([
  */
 export function confirmationRenderInputsKey(order: OrderRecord): string {
   const record = order as unknown as Record<string, unknown>;
-  return JSON.stringify(
-    CONFIRMATION_RENDER_INPUT_KEYS.map((key) => [typeof record[key], record[key] === undefined ? null : record[key]]),
-  );
+  const inputs: unknown[] = CONFIRMATION_RENDER_INPUT_KEYS.map((key) => [typeof record[key], record[key] === undefined ? null : record[key]]);
+  const shipping = confirmationShippingRenderIdentity(order);
+  if (shipping !== null) inputs.push(['initial_shipping_v1', shipping]);
+  return JSON.stringify(inputs);
 }
 
 /** The six fields the provider would receive, from the frozen render. */
@@ -545,7 +548,8 @@ function freezeSnapshotFrame(
 ): SnapshotFrame {
   const from = resolveSender?.() ?? getOrderSenderEmail();
   const supportEmail = getSupportEmail();
-  const rendered = buildOrderConfirmationEmail(observed, { supportEmail });
+  const baseRender = buildOrderConfirmationEmail(observed, { supportEmail });
+  const rendered = decorateOrderConfirmationEmail(baseRender, observed);
   return Object.freeze({
     orderId: observed.id,
     params: Object.freeze({

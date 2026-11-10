@@ -1,4 +1,21 @@
 import { Resend } from 'resend';
+import { readOrderInitialShipping } from './initial-shipping-contract.ts';
+import { confirmationShippingReady, decorateConfirmationWithShipping, shippingRenderInputs } from './initial-shipping-summary.ts';
+
+/** Decorate a SINGLE existing render; never render again or consult private state. */
+export function decorateOrderConfirmationEmail(base: { subject: string; html: string; text: string }, order: OrderRecord) {
+  const shipping = readOrderInitialShipping(order);
+  if (!confirmationShippingReady(order)) throw new Error('shipping_confirmation_not_ready');
+  return decorateConfirmationWithShipping(base, shipping.kind === 'present' ? shipping.metadata : null);
+}
+
+/** Deterministic identity only, safe in CAS. No renderer/environment/transport reach. */
+export function confirmationShippingRenderIdentity(order: OrderRecord): readonly unknown[] | null {
+  const shipping = readOrderInitialShipping(order);
+  if (shipping.kind === 'absent') return null;
+  if (shipping.kind === 'malformed') throw new Error('shipping_confirmation_not_ready');
+  return [shipping.metadata, shippingRenderInputs(shipping.metadata)];
+}
 
 import type { OrderRecord } from './orders';
 import { renderDeliveryExpectation } from './orders.ts';
@@ -294,7 +311,7 @@ export async function sendOrderConfirmationEmail(order: OrderRecord) {
 
   const resend = new Resend(apiKey);
   const supportEmail = getSupportEmail();
-  const email = buildOrderConfirmationEmail(order, { supportEmail });
+  const email = decorateOrderConfirmationEmail(buildOrderConfirmationEmail(order, { supportEmail }), order);
   const result = await resend.emails.send({
     from,
     to: [order.email],

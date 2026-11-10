@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import type { PublicShippingSummary } from '@/lib/initial-shipping-summary';
+import { InitialShippingSummary } from '@/components/initial-shipping-summary';
 
 import {
   CONFIRMATION_POLL_INTERVAL_MS,
@@ -16,10 +18,12 @@ export function PendingConfirmation({
   orderId,
   childName,
   sessionId,
+  shipping = { kind: 'standard' },
 }: {
   orderId: string | undefined;
   childName: string;
   sessionId: string | undefined;
+  shipping?: PublicShippingSummary;
 }) {
   const router = useRouter();
   const startedAt = useRef(Date.now());
@@ -118,12 +122,15 @@ export function PendingConfirmation({
             Order ID: <span className="font-mono break-all text-[var(--forest)]">{orderId}</span>
           </p>
           <p className="text-gray-700">
-            Your payment went through. We&apos;re finishing the order record now. Your confirmation email and digital proof follow from there; nothing else is needed from you.
+            {shipping.kind === 'standard'
+              ? "Your payment went through. We're finishing the order record now. Your confirmation email and digital proof follow from there; nothing else is needed from you."
+              : 'Your payment went through. Shipping service still needs verification before print release. Contact support if this does not resolve; do not pay again.'}
           </p>
           <p className="text-sm text-center text-gray-700 pt-3 border-t border-gray-200">
             Questions? <a className="font-semibold underline underline-offset-2" href={`mailto:support@herostorybooks.com?subject=Order ${encodeURIComponent(orderId ?? '')}`}>support@herostorybooks.com</a>
           </p>
         </div>
+        <InitialShippingSummary summary={shipping} />
         <div className="flex flex-col sm:flex-row gap-3 w-full max-w-md sm:justify-center">
           <a
             href={`/status/${orderId}`}
@@ -179,6 +186,7 @@ export function PendingConfirmation({
         </p>
       </div>
 
+      <InitialShippingSummary summary={shipping} />
       <div className="flex flex-col sm:flex-row gap-3 w-full max-w-md sm:justify-center">
         {showSupportState ? (
           <>

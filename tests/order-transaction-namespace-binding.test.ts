@@ -1474,9 +1474,99 @@ function withoutPrintCommerceAdditions(source: string): string {
   return result;
 }
 
+// Initial-shipping provenance supplement (SCOPE_ADMIT): exactly one parseBlobToken
+// import after the checkout-intake import and exactly one factory block right after
+// resolveOrderStoreAdapter. Inverting both must reconstruct the pre-addition file.
+const IS_PROVENANCE_IMPORT_ANCHOR =
+  "import { finalizationFingerprint, parseSelectionEntry, type FinalizedSelectionEntry } from './checkout-intake.ts';\n";
+const IS_PROVENANCE_IMPORT = "import { parseBlobToken } from './checkout-blob-identity.ts';\n";
+const IS_PROVENANCE_PREFIX = '  return localOrderStoreAdapter();\n}\n\n';
+const IS_PROVENANCE_START = '/** Narrow bound initial-shipping provenance marker access (H3).';
+const IS_PROVENANCE_END = '/** A cached commit, tagged with the write generation that published it. */';
+const IS_PROVENANCE_BLOCK_SHA256 = '054c27dbe42e2ebbd099bf2747f8f8e3b2328a5cb990b136d9d66c50be212ac3';
+const IS_PROVENANCE_PRE_ADDITION_SHA256 = '3a718b98810ac86813b7c397da687c027aebbae7a21570af0e983cd916450c2d';
+const SHIPPING_TYPE_IMPORT = "import type { InitialShippingOrderMetadataV1, InitialShippingSettlementV1 } from './initial-shipping-contract.ts';\n";
+const SHIPPING_TYPE_FIELDS = '  initialShipping?: InitialShippingOrderMetadataV1;\n  initialShippingSettlement?: InitialShippingSettlementV1;\n';
+function withoutInitialShippingTypeAddition(source: string): string {
+  const importAnchor = IS_PROVENANCE_IMPORT + SHIPPING_TYPE_IMPORT;
+  const fieldAnchor = 'export interface OrderRecord extends OrderInput {\n' + SHIPPING_TYPE_FIELDS;
+  assert.equal(source.split(SHIPPING_TYPE_IMPORT).length - 1, 1, 'exact type import once');
+  assert.equal(source.split(importAnchor).length - 1, 1, 'exact type import location');
+  assert.equal(source.split(SHIPPING_TYPE_FIELDS).length - 1, 1, 'exact optional type fields once');
+  assert.equal(source.split(fieldAnchor).length - 1, 1, 'exact type field location');
+  return source.replace(importAnchor, IS_PROVENANCE_IMPORT).replace(fieldAnchor, 'export interface OrderRecord extends OrderInput {\n');
+}
+function withoutInitialShippingProvenanceAddition(source: string): string {
+  source = withoutInitialShippingTypeAddition(source);
+  const count = (needle: string) => source.split(needle).length - 1;
+  assert.equal(count(IS_PROVENANCE_IMPORT), 1, 'provenance import exactly once');
+  assert.equal(count(IS_PROVENANCE_IMPORT_ANCHOR + IS_PROVENANCE_IMPORT), 1, 'provenance import in its exact place');
+  assert.equal(count(IS_PROVENANCE_START), 1, 'provenance factory exactly once');
+  const start = source.indexOf(IS_PROVENANCE_START);
+  assert.equal(source.slice(start - IS_PROVENANCE_PREFIX.length, start), IS_PROVENANCE_PREFIX, 'factory right after the resolver');
+  const end = source.indexOf(IS_PROVENANCE_END, start);
+  assert.ok(end > start, 'factory ends before the cached-commit declaration');
+  assert.equal(sha(source.slice(start, end)), IS_PROVENANCE_BLOCK_SHA256, 'factory bytes are the frozen authored block');
+  const withoutBlock = source.slice(0, start) + source.slice(end);
+  return withoutBlock.replace(IS_PROVENANCE_IMPORT_ANCHOR + IS_PROVENANCE_IMPORT, () => IS_PROVENANCE_IMPORT_ANCHOR);
+}
+
+test('initial shipping provenance addition has an exact inverse and rejects unauthorized mutations', () => {
+  const oracle = (source: string) => {
+    assert.equal(sha(withoutInitialShippingProvenanceAddition(source)), IS_PROVENANCE_PRE_ADDITION_SHA256);
+  };
+  oracle(ORDERS_SOURCE);
+  const start = ORDERS_SOURCE.indexOf(IS_PROVENANCE_START);
+  const block = ORDERS_SOURCE.slice(start, ORDERS_SOURCE.indexOf(IS_PROVENANCE_END, start));
+  const inBlock = (from: string, to: string) => {
+    assert.ok(block.includes(from), `block mutation anchor missing: ${from}`);
+    return ORDERS_SOURCE.replace(block, () => block.replace(from, () => to));
+  };
+  const outside = (from: string, to: string) => {
+    assert.equal(ORDERS_SOURCE.split(from).length - 1, 1, `unique outside anchor: ${from}`);
+    return ORDERS_SOURCE.replace(from, () => to);
+  };
+  const cases: Array<[string, string]> = [
+    ['missing shipping import', ORDERS_SOURCE.replace(SHIPPING_TYPE_IMPORT, '')],
+    ['missing shipping fields', ORDERS_SOURCE.replace(SHIPPING_TYPE_FIELDS, '')],
+    ['mutated shipping field', ORDERS_SOURCE.replace('initialShipping?: InitialShippingOrderMetadataV1;', 'initialShipping?: unknown;')],
+    ['required shipping field', ORDERS_SOURCE.replace('initialShipping?: InitialShippingOrderMetadataV1;', 'initialShipping: InitialShippingOrderMetadataV1;')],
+    ['extra shipping field', ORDERS_SOURCE.replace(SHIPPING_TYPE_FIELDS, SHIPPING_TYPE_FIELDS + '  shippingExtra?: string;\n')],
+    ['duplicated shipping fields', ORDERS_SOURCE.replace(SHIPPING_TYPE_FIELDS, SHIPPING_TYPE_FIELDS + SHIPPING_TYPE_FIELDS)],
+    ['missing factory', ORDERS_SOURCE.replace(block, '')],
+    ['duplicate factory', ORDERS_SOURCE.replace(block, () => block + block)],
+    ['relocated factory', ORDERS_SOURCE.replace(block, '').replace('function blobOrderStoreAdapter(', () => block + 'function blobOrderStoreAdapter(')],
+    ['missing import', ORDERS_SOURCE.replace(IS_PROVENANCE_IMPORT, '')],
+    ['duplicate import', ORDERS_SOURCE.replace(IS_PROVENANCE_IMPORT, () => IS_PROVENANCE_IMPORT + IS_PROVENANCE_IMPORT)],
+    ['reordered import', ORDERS_SOURCE.replace(IS_PROVENANCE_IMPORT_ANCHOR + IS_PROVENANCE_IMPORT, () => IS_PROVENANCE_IMPORT + IS_PROVENANCE_IMPORT_ANCHOR)],
+    ['mutated path', inBlock('`order-provenance/initial-shipping/${orderId}.json`', '`orders/${orderId}.json`')],
+    ['mutated body', inBlock('if (body !== expected) throw invalid();', 'if (!body) throw invalid();')],
+    ['mutated namespace', inBlock("namespace || '.flat'", 'namespace')],
+    ['mutated token', inBlock('const token = getBlobToken() || null;', 'const token = process.env.OTHER_TOKEN || null;')],
+    ['mutated mode', inBlock("{ access: 'private', token, useCache: false }", "{ access: 'private', token, useCache: true }")],
+    ['mutated durable', inBlock('durable || !!process.env.VERCEL', '!!process.env.VERCEL')],
+    ['no-fallback predicate removed', inBlock('if (!captured.token && captured.productionLike) throw unavailable();', '')],
+    ['weakened exact reread/drift', inBlock("if (!intact()) throw new Error('initial_shipping_provenance_context_drift');", '')],
+    ['local basename mapping', inBlock('return `${markerRoot}/${orderId}.json`;', 'return `${localRoot}/${orderId}.json`;')],
+    ['overwrite enabled', inBlock('allowOverwrite: false,', 'allowOverwrite: true,')],
+    ['broadened absence catch', inBlock('if (error instanceof BlobNotFoundError) {', 'if (error) {')],
+    ['leaked adapter/replace export', inBlock('    intact,\n      async read(orderId) {', '    intact,\n      replace: blobOrderStoreAdapter(token!).replaceIfVersion,\n      async read(orderId) {')],
+    ['leaked adapter export outside', ORDERS_SOURCE + 'export const leakedAdapter = blobOrderStoreAdapter;\n'],
+    ['resolver changed', outside('  if (token) return blobOrderStoreAdapter(token);\n', '  if (token) return localOrderStoreAdapter();\n')],
+    ['blob adapter changed', outside("        if (error instanceof BlobNotFoundError || isBlobNotFoundError(message)) return null;", "        if (error) return null;")],
+    ['local adapter changed', outside('        await link(tmp, file); // atomic exclusive create\n        return { ok: true', '        await rename(tmp, file);\n        return { ok: true')],
+    ['cache changed', outside('const recentConditionalCommits = new Map<string, CachedCommit>();', 'const recentConditionalCommits = new Map<string, CachedCommit>(); ')],
+    ['CAS body changed', outside('          ifMatch: expectedVersion,\n', '')],
+  ];
+  for (const [label, candidate] of cases) {
+    assert.notEqual(candidate, ORDERS_SOURCE, `${label}: mutation must actually change bytes`);
+    assert.throws(() => oracle(candidate), { code: 'ERR_ASSERTION' }, `${label}: unauthorized change must be rejected`);
+  }
+});
+
 test('NT-20: every existing declaration is source-identical to base; the four bound helpers differ only by the permitted hunks', () => {
   const actual: Record<string, string> = {};
-  const normalized = withoutPrintCommerceAdditions(ORDERS_SOURCE);
+  const normalized = withoutPrintCommerceAdditions(withoutInitialShippingProvenanceAddition(ORDERS_SOURCE));
   for (const head of UNCHANGED_DECLARATIONS) actual[head] = sha(declarationText(normalized, head));
   for (const [head, hunks] of BOUND_HELPERS) actual[head] = sha(revertHunks(declarationText(normalized, head), hunks));
   assert.deepEqual(actual, NT20_BASE_HASHES);

@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { preclaimShippingGate, prepareProductionDispatch, productionAuthorizationMatches, type ExpeditedDispatchAuthorization } from './initial-shipping-dispatch.ts';
+import { readOrderInitialShipping } from './initial-shipping-contract.ts';
 import { put } from '@vercel/blob';
 
 import { applyFulfillmentPatchTo, getOrder, getOrderPhotoUrl, isPrintFormat, OrderVersionConflictError, orderRequiresReferenceImage, readOrderVersioned, updateFulfillmentState, withBlobNamespace, withOrderTransaction } from './orders.ts';
@@ -90,7 +92,7 @@ export interface FulfillmentDeps {
   buildPrintCoverPdf?: (widthPoints: number, heightPoints: number, title: string, order: OrderRecord) => Buffer;
   calculateCoverDimensions?: (order: OrderRecord, interiorPageCount: number) => Promise<{ widthPt: number; heightPt: number }>;
   uploadArtifact?: (orderId: string, buffer: Buffer, filename: string) => Promise<string>;
-  submitPrint?: (order: OrderRecord) => Promise<{ jobId: string }>;
+  submitPrint?: (order: OrderRecord, options?: { authorization?: ExpeditedDispatchAuthorization }) => Promise<{ jobId: string }>;
   sleep?: (ms: number) => Promise<void>;
   getBaseUrl?: () => string;
 }
@@ -954,9 +956,11 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
   if (initialRefusal) throw new Error(`Refusing print: ${initialRefusal}`);
 
   let hydratedOrder = order;
+  let generatedCover: Buffer | undefined;
   if (!order.printCoverArtifactUrl || !order.printCoverMd5) {
     const dims = await _calculateCoverDimensions(order, order.printInteriorPageCount);
     const coverBuffer = await _buildPrintCoverPdf(dims.widthPt, dims.heightPt, order.printTitle, order);
+    generatedCover = coverBuffer;
     const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);
     const coverUrl = await _upload(order.id, coverBuffer, `${safeSlug}-cover.pdf`);
     hydratedOrder = (await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {
@@ -973,10 +977,18 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
     ? printReleaseRefusal(authoritative, ['submitting_to_print'])
     : 'order_not_found';
   if (boundaryRefusal) throw new Error(`Refusing print: ${boundaryRefusal}`);
+  if (preclaimShippingGate(order) !== 'standard' && (
+    authoritative!.proofVersion !== order.proofVersion || authoritative!.proofSourceFingerprint !== order.proofSourceFingerprint ||
+    authoritative!.printInteriorArtifactUrl !== order.printInteriorArtifactUrl || authoritative!.printInteriorMd5 !== order.printInteriorMd5 ||
+    (generatedCover && (authoritative!.printCoverArtifactUrl !== hydratedOrder.printCoverArtifactUrl || authoritative!.printCoverMd5 !== hydratedOrder.printCoverMd5))
+  )) throw new Error('shipping_hold:dispatch_artifact_drift');
 
   // Persist the ambiguity fence BEFORE the irreversible POST. A crash or lost
   // response after this write must require provider reconciliation, never an
   // ordinary retry that could create a second physical print job.
+  const preflight = await prepareProductionDispatch(authoritative!, generatedCover);
+  if (preflight.kind === 'hold') throw new Error(`shipping_hold:${preflight.reason}`);
+  const authorization = preflight.kind === 'authorized' ? preflight.authorization : undefined;
   const expectedProofVersion = authoritative!.proofVersion;
   const submissionOrder = await withOrderTransaction<OrderRecord | null>(
     order.id,
@@ -986,7 +998,8 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
         refusal ||
         current.proofVersion !== expectedProofVersion ||
         current.printInteriorProofVersion !== expectedProofVersion ||
-        current.printSubmissionAttemptedAt
+        current.printSubmissionAttemptedAt ||
+        (authorization ? !productionAuthorizationMatches(authorization, current) : preclaimShippingGate(current) !== 'standard')
       ) {
         return { abort: null };
       }
@@ -1003,7 +1016,7 @@ async function runPrintProduction(order: OrderRecord, deps: FulfillmentDeps): Pr
   if (!submissionOrder) throw new Error('Refusing print: submission_attempt_fence_failed');
   const expectedSubmissionAt = submissionOrder.printSubmissionAttemptedAt;
 
-  const result = await _submitPrint(submissionOrder);
+  const result = await _submitPrint(submissionOrder, authorization ? { authorization } : undefined);
 
   const afterPrint = await withOrderTransaction<OrderRecord | null>(
     order.id,
@@ -1491,6 +1504,13 @@ export async function approvePrintProof(
         const refusal = printReleaseRefusal(order, ['proof_ready']);
         if (refusal) return { abort: { claimed: false, ok: false, error: refusal } };
 
+        if (preclaimShippingGate(order) === 'hold') {
+          const read = readOrderInitialShipping(order);
+          const reason = read.kind === 'malformed' ? 'metadata_malformed' : read.kind === 'present' ? read.settlement.reason ?? 'refund_or_terminal' : 'metadata_malformed';
+          const next: OrderRecord = { ...order, fulfillmentStatus: 'failed_manual_review',
+            fulfillmentLastError: `shipping_hold:${reason}`, updatedAt: new Date().toISOString() };
+          return { commit: next, result: { claimed: false, ok: false, error: 'shipping_hold' } };
+        }
         const claimedOrder: OrderRecord = {
           ...order,
           fulfillmentStatus: 'submitting_to_print',
@@ -1523,8 +1543,13 @@ export async function approvePrintProof(
     await runPrintProduction(claim.order, deps);
     return { ok: true };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const current = await getOrder(orderId);
+    const expedited = readOrderInitialShipping(claim.order).kind !== 'absent';
+    const raw = error instanceof Error ? error.message : '';
+    // Never persist provider echoes/contact/transport exceptions on the public order.
+    const message = expedited
+      ? (/^shipping_hold:(dispatch_[a-z_]+|metadata_malformed|refund_or_terminal)$/.test(raw) ? raw : 'shipping_dispatch_requires_operator_review')
+      : error instanceof Error ? error.message : String(error);
+    const current = await getOrder(orderId, expedited ? { logFailures: false } : {});
     const ambiguous = Boolean(current?.printSubmissionAttemptedAt);
     await withOrderTransaction(
       orderId,

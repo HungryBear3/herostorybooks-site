@@ -46,10 +46,10 @@ test('validated lock-winning submits emit once each, including a genuine retry',
   const events: string[] = [];
   const submit = new Function('currentStepId', 'isReadyToPay', 'submitLockRef', 'track',
     'checkoutStepEventProps', 'checkoutSubmitBlockedReason', 'checkoutProgress',
-    'directMediaBlockers', 'setStepError', 'form', prefix);
+    'directMediaBlockers', 'setStepError', 'form', 'shipping', prefix);
   const run = (ready = true) => submit('review', ready, { current: lock },
     (name: string) => events.push(name), () => ({}), () => 'blocked',
-    { currentStep: 'review' }, [], () => {}, { bookFormat: 'digital' });
+    { currentStep: 'review' }, [], () => {}, { bookFormat: 'digital' }, { ready: () => true });
   run(false);
   run(); run(); run();
   assert.equal(events.filter((event) => event === 'begin_checkout').length, 1);

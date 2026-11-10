@@ -36,6 +36,8 @@
  * released to this buyer — see `chargeRisk`. "No charge was made" is a claim
  * about the buyer's money, and it is only made where it is provable.
  */
+import { readOrderInitialShipping } from './initial-shipping-contract.ts';
+import type { InitialShippingCheckoutAuthority } from './initial-shipping-checkout.ts';
 import type { CheckoutRequestAnalytics } from './checkout-analytics-context.ts';
 import {
   CHECKOUT_SESSION_SUPERSEDE_LIMIT,
@@ -48,6 +50,7 @@ import {
 } from './orders.ts';
 
 export interface ProviderCheckoutSession {
+  expires_at?: number;
   id: string;
   url: string | null;
   status: 'open' | 'complete' | 'expired' | null;
@@ -56,6 +59,7 @@ export interface ProviderCheckoutSession {
 }
 
 export interface ProviderCheckoutSessionRequest {
+  expeditedParams?: Record<string, unknown>;
   order: OrderRecord;
   stripeProductId: string;
   baseUrl: string;
@@ -66,6 +70,7 @@ export interface ProviderCheckoutSessionRequest {
 }
 
 export interface CheckoutSessionProvisionDeps {
+  shippingAuthority?: InitialShippingCheckoutAuthority;
   createCheckoutSession(request: ProviderCheckoutSessionRequest): Promise<ProviderCheckoutSession>;
   retrieveCheckoutSession(stripeSessionId: string): Promise<ProviderCheckoutSession>;
   /** Atomic proof-of-ownership. Wired to orders.renewCheckoutLease. */
@@ -196,6 +201,10 @@ export async function provisionCheckoutSession(
 ): Promise<CheckoutSessionProvisionResult> {
   const log = deps.logError ?? (() => {});
   const orderId = params.order.id;
+  const shipping = readOrderInitialShipping(params.order);
+  if (shipping.kind === 'malformed' || (shipping.kind === 'present') !== Boolean(deps.shippingAuthority)) {
+    return refused(409, 'checkout_shipping_authority_required', CHECKOUT_RECONCILIATION_SUPPORT, 'may_be_charged');
+  }
 
   // Was a checkout URL ever released to this buyer? A bound Session means yes:
   // the only way `stripeSessionId` gets set is the bind that immediately
@@ -361,6 +370,14 @@ export async function provisionCheckoutSession(
         );
       }
 
+      // Refuse knowable shipping ineligibility before creating ambiguity evidence.
+      // Recompute again after the marker, immediately before provider create.
+      try {
+        await deps.shippingAuthority?.createParams(current, params.stripeProductId, params.baseUrl);
+      } catch {
+        return refused(409, 'checkout_shipping_ineligible', CHECKOUT_RECONCILIATION_SUPPORT, risk());
+      }
+
       // ── The barrier ────────────────────────────────────────────────────
       // Durable evidence that a create is about to happen, committed under
       // the exact live lease BEFORE the provider is touched. The candidate
@@ -421,7 +438,9 @@ export async function provisionCheckoutSession(
       // Everything from here on is ambiguous about the buyer's money.
       providerAttempted = true;
       try {
+        const expeditedParams = await deps.shippingAuthority?.createParams(current, params.stripeProductId, params.baseUrl);
         session = await deps.createCheckoutSession({
+          ...(expeditedParams ? { expeditedParams } : {}),
           order: current,
           stripeProductId: params.stripeProductId,
           baseUrl: params.baseUrl,
@@ -543,6 +562,14 @@ export async function provisionCheckoutSession(
         reconciliationCopy(),
         risk(),
       );
+    }
+    if (deps.shippingAuthority) {
+      try {
+        if (!Number.isSafeInteger(session.expires_at)) throw new Error('shipping_session_expiry_missing');
+        await deps.shippingAuthority.check(released, session.expires_at! * 1000);
+      } catch {
+        return refused(409, 'checkout_shipping_release_refused', CHECKOUT_RECONCILIATION_SUPPORT, 'may_be_charged');
+      }
     }
     return { status: 'released', url: session.url, order: released };
   }

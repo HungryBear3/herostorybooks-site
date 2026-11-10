@@ -1,4 +1,6 @@
 import { normalizeShippingContact, shippingService, shippingFailure, type ShippingContact } from './shipping-selection.ts';
+import { readOrderInitialShipping, sha256, type InitialShippingProviderQualificationV1 } from './initial-shipping-contract.ts';
+import { submitAuthorizedExpedited, type ExpeditedDispatchAuthorization } from './initial-shipping-dispatch.ts';
 import type { OrderRecord } from './orders.ts';
 import {
   luluCostCalculationToQuote,
@@ -171,10 +173,43 @@ export async function calculateCoverDimensions(
 
 // ── Print job submission ───────────────────────────────────────────────────────
 
+/** Print-only operation-local auth. Does not alter legacy token cache or quote transport.
+ * Capture endpoint/account/fetch before awaiting, resolve token before canonical fencing.
+ */
+export async function prepareExpeditedPrintTransport(provider: InitialShippingProviderQualificationV1): Promise<(body: Record<string, unknown>) => Promise<LuluJobResult>> {
+  const base = getBaseUrl(); const key = process.env.LULU_CLIENT_KEY; const secret = process.env.LULU_CLIENT_SECRET;
+  const fetch = globalThis.fetch;
+  if (!key || !secret || !['https://api.lulu.com', 'https://api.sandbox.lulu.com'].includes(base) ||
+    base !== provider.endpointOrigin || sha256(key) !== provider.accountBinding) throw new Error('shipping_dispatch_account_drift');
+  let accessToken: string;
+  try {
+    const result = await fetch(base + TOKEN_PATH, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
+      headers: { Authorization: `Basic ${Buffer.from(`${key}:${secret}`).toString('base64')}`,
+        'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': LULU_USER_AGENT }, body: 'grant_type=client_credentials' });
+    const raw = await shippingJson(result) as Record<string, unknown>;
+    if (typeof raw.access_token !== 'string' || !/^[A-Za-z0-9._~-]{1,16384}$/.test(raw.access_token) ||
+      !Number.isSafeInteger(raw.expires_in) || (raw.expires_in as number) < 1) throw new Error();
+    accessToken = raw.access_token;
+  } catch { throw new Error('shipping_dispatch_auth_unavailable'); }
+  return async body => {
+    // No auth await between canonical attempt fence and irreversible POST.
+    try {
+      const result = await fetch(base + '/print-jobs/', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20000),
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'User-Agent': LULU_USER_AGENT },
+        body: JSON.stringify(body) });
+      const raw = await shippingJson(result) as Record<string, unknown>;
+      if ((typeof raw.id !== 'string' && typeof raw.id !== 'number') || !/^[A-Za-z0-9_-]{1,100}$/.test(String(raw.id))) throw new Error();
+      return { jobId: String(raw.id), status: 'submitted' };
+    } catch { throw new Error('shipping_print_submission_requires_reconciliation'); }
+  };
+}
+
+
 export async function submitPrintJob(
   order: OrderRecord,
-  deps: LuluDeps = {},
+  deps: LuluDeps & { authorization?: ExpeditedDispatchAuthorization } = {},
 ): Promise<LuluJobResult> {
+  if (readOrderInitialShipping(order).kind !== 'absent') return submitAuthorizedExpedited(order, deps.authorization);
   const clientKey = process.env.LULU_CLIENT_KEY;
   const clientSecret = process.env.LULU_CLIENT_SECRET;
 

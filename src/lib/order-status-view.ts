@@ -1,3 +1,4 @@
+import { publicShippingSummary } from './initial-shipping-summary.ts';
 import type { OrderRecord } from './orders.ts';
 import { isPrintFormat } from './orders.ts';
 import { PROOF_DELAY_SUPPORT_NOTE, PROOF_VOLUME_NOTE } from './proof-turnaround.ts';
@@ -82,6 +83,23 @@ export function buildOrderStatusView(order: OrderRecord): OrderStatusView {
     timeline: [],
     supportBlurb: `Questions? Reply to any Hero Story Books email or contact support@herostorybooks.com with order ID ${order.id}.`,
   };
+
+  const shipping = publicShippingSummary(order);
+  if (isPrint && (shipping.kind === 'held_malformed' || (shipping.kind === 'expedited' && shipping.status === 'held'))) {
+    const unknownPrint = Boolean(order.printSubmissionAttemptedAt && !order.printJobId);
+    view.headline = 'Print status needs review';
+    view.subhead = unknownPrint && payment === 'paid'
+      ? 'Payment received. We cannot confirm the outcome of the print submission. Please contact support; do not pay again.'
+      : shipping.message;
+    view.isFailed = false;
+    view.timeline = [
+      step('received', 'Order received', 'We saved your order details.', 'done'),
+      step('payment', payment === 'paid' ? 'Payment received' : 'Payment status needs review',
+        payment === 'paid' ? 'Stripe confirmed your payment.' : 'Please contact support about your payment status.', payment === 'paid' ? 'done' : 'pending'),
+      step('production', 'Print status needs review', 'Print service and production are not confirmed. Our team must reconcile this order.', 'pending'),
+    ];
+    return view;
+  }
 
   if (isFailed) {
     view.headline = `We hit a snag on ${order.childName}'s book`;

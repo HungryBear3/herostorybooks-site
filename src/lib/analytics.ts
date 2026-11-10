@@ -71,6 +71,9 @@ export function trackCheckoutStart(variant: CoverVariant) {
 //   - never throws.
 
 export type HsbEventName =
+  | 'shipping_options_view'
+  | 'shipping_option_selected'
+  | 'shipping_unavailable'
   | 'page_view'
   | 'name_preview_submitted'
   | 'begin_checkout'

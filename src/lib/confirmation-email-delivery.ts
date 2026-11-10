@@ -33,6 +33,7 @@
  * Every other path, including the legacy tail below, is unchanged.
  */
 import { randomUUID } from 'node:crypto';
+import { confirmationShippingReady } from './initial-shipping-summary.ts';
 
 import {
   buildOrderConfirmationIdempotencyKey,
@@ -191,6 +192,7 @@ export function evaluateConfirmationEmailClaimability(
 ): ConfirmationEmailBlockReason | null {
   if (order.paymentStatus !== 'paid') return 'not_paid';
   if (order.refundedAt || order.stripeRefundId || order.refundClaimId) return 'refunded';
+  if (!confirmationShippingReady(order)) return 'held_for_reconciliation';
   // Requirement R2 (architecture §3.9). `ACCEPTED` is a success, not a hold, so
   // it is deliberately absent from `CONFIRMATION_EMAIL_HELD_STATES` — which
   // leaves the receipt check below as the only thing that would stop it. A

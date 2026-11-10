@@ -5,6 +5,7 @@ import { getConfiguredAdminKey } from '@/lib/admin-auth';
 import { isAdminAuthedFromCookie } from '@/lib/admin-auth-server';
 import { listAdminIntakeAssets } from '@/lib/admin-intake-asset-route-handler';
 import { getOrder } from '@/lib/orders';
+import { adminShippingSummary } from '@/lib/initial-shipping-summary';
 import { buildOrderDiagnostics, formatDiagnosticsSummary } from '@/lib/order-diagnostics';
 import {
   describeConfirmationEmailOperatorResult,
@@ -55,6 +56,7 @@ export default async function AdminOrderDetail({ params, searchParams }: Props) 
   if (!order) notFound();
 
   const isPrint = order.bookFormat === 'classic' || order.bookFormat === 'premium';
+  const shipping = adminShippingSummary(order);
   const checkoutEvidence = readCheckoutProvisioningEvidence(order);
   const diagnostics = buildOrderDiagnostics(order);
   const supportSummary = formatDiagnosticsSummary(diagnostics);
@@ -196,6 +198,17 @@ export default async function AdminOrderDetail({ params, searchParams }: Props) 
           <Row label="Created" value={order.createdAt} />
           <Row label="Updated" value={order.updatedAt} />
         </Section>
+
+        {shipping.kind !== 'standard' ? <Section title="Initial shipping upgrade">
+          {shipping.kind === 'hold' ? <Row label="Hold reason" value={shipping.reason} tone="bad" /> : <>
+            <Row label="Service" value={shipping.service} />
+            <Row label="Payment" value={shipping.payment} />
+            <Row label="Shipping payment commitment" value={shipping.settlement} />
+            <Row label="Hold reason" value={shipping.reason ?? 'none'} tone={shipping.reason ? 'bad' : 'neutral'} />
+            <p className="text-sm">Accepted quote — not a payment receipt or print-dispatch confirmation</p>
+            {shipping.rows.map(row => <Row key={row.label} label={row.label} value={row.amount} />)}
+          </>}
+        </Section> : null}
 
         <Section title="Story source + input">
           <Row label="Story source" value={diagnostics.story.source ?? 'unknown'} tone={diagnostics.story.source === 'template_after_openai_failure' ? 'bad' : 'neutral'} />

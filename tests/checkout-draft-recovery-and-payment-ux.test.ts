@@ -80,12 +80,22 @@ test('storage denial is distinguished from readable conflicting risk evidence', 
 });
 
 test('email is adjacent to payment and the long explainer follows the payment action', () => {
+  const validate = (formSource: string) => {
   const emailAt = formSource.indexOf('Where should we send everything?');
-  const paymentAt = formSource.indexOf('Continue to secure payment${selectedFormat');
+  const paymentLabel = 'Continue to secure payment${shippingView.receipt && shippingView.status === "selected" ? ` — ${shippingMoney(shippingView.receipt.totalCents)}` : shippingView.mode === "expedited" ? "" : selectedFormat ? ` — ${selectedFormat.price}` : ""}';
+  assert.equal(formSource.split(paymentLabel).length - 1, 1);
+  const paymentAt = formSource.indexOf(paymentLabel);
   const explainerAt = formSource.indexOf('What happens next');
   assert.ok(emailAt >= 0 && paymentAt >= 0 && explainerAt >= 0);
   assert.ok(emailAt < paymentAt, 'email must be entered before payment');
   assert.ok(paymentAt < explainerAt, 'the long explainer must not separate email from payment');
+  };
+  validate(formSource);
+  for (const mutated of [formSource.replace('Where should we send everything?', ''),
+    'What happens next\n' + formSource, formSource.replaceAll('shippingMoney(shippingView.receipt.totalCents)', 'selectedFormat.price')]) {
+    validate(formSource); assert.notEqual(mutated, formSource);
+    assert.throws(() => validate(mutated), { code: 'ERR_ASSERTION' });
+  }
 });
 
 test('restored checkout drafts discard browser-only media objects but preserve entered details', () => {

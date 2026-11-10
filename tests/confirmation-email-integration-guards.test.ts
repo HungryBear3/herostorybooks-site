@@ -1237,7 +1237,7 @@ const PRODUCER_RUNTIME_IMPORT_TABLE: ProducerImportRow[] = [
   {
     module: 'order-email',
     specifier: /^\.\/order-email(?:\.ts)?$/,
-    bindings: ['buildOrderConfirmationEmail', 'buildOrderConfirmationIdempotencyKey', 'getOrderSenderEmail', 'getSupportEmail'],
+    bindings: ['buildOrderConfirmationEmail', 'decorateOrderConfirmationEmail', 'confirmationShippingRenderIdentity', 'buildOrderConfirmationIdempotencyKey', 'getOrderSenderEmail', 'getSupportEmail'],
   },
 ];
 
@@ -1289,7 +1289,7 @@ const DECIDE_FORBIDDEN_RE =
 const CLOSURE_MEMBER_FORBIDDEN_RE =
   /\bawait\b|\basync\b|\bPromise\b|\.then\s*\(|\bstore\b|\.write\s*\(|\.read\s*\(|\.verifyStoredBytes\s*\(|\bDate\.now\b|new Date\s*\(\s*\)|setTimeout|setImmediate/;
 const CLOSURE_ENVIRONMENT_TOKENS = [
-  'process.env', 'buildOrderConfirmationEmail', 'getSupportEmail', 'getOrderSenderEmail', 'getBlobNamespace',
+  'process.env', 'buildOrderConfirmationEmail', 'decorateOrderConfirmationEmail', 'decorateConfirmationWithShipping', 'getSupportEmail', 'getOrderSenderEmail', 'getBlobNamespace',
   'resolveSender', 'createConfirmationEnvelopeStore', 'resolveConfirmationEnvelopeWriterConfig',
   'resolveConfirmationEnvelopeWriterNamespace',
 ];
@@ -1408,11 +1408,14 @@ function namespaceSourceOffenders(source: string): string[] {
     offenders.push('GA-7f: process.env must appear exactly twice: the boundary read and the supplied-environment default');
   }
   const frame = declarations.get('freezeSnapshotFrame') ?? '';
-  for (const name of ['buildOrderConfirmationEmail', 'getOrderSenderEmail', 'getSupportEmail']) {
+  for (const name of ['buildOrderConfirmationEmail', 'decorateOrderConfirmationEmail', 'getOrderSenderEmail', 'getSupportEmail']) {
     const call = new RegExp(`\\b${name}\\s*\\(`);
     if (countOf(source, call) !== 1 || countOf(frame, call) !== 1) {
       offenders.push(`GA-7f: ${name}( must be called exactly once, inside freezeSnapshotFrame`);
     }
+  }
+  if (!frame.includes('const baseRender = buildOrderConfirmationEmail(observed, { supportEmail });\n  const rendered = decorateOrderConfirmationEmail(baseRender, observed);')) {
+    offenders.push('GA-7f: single base frame must be decorated exactly once before freezing');
   }
   return offenders;
 }
@@ -1632,6 +1635,8 @@ import {
 } from './orders.ts';
 import {
   buildOrderConfirmationEmail,
+  decorateOrderConfirmationEmail,
+  confirmationShippingRenderIdentity,
   buildOrderConfirmationIdempotencyKey,
   getOrderSenderEmail,
   getSupportEmail,
@@ -1713,10 +1718,11 @@ function isConfirmationEnvelopeEnrolled(order, epochMs) {
 function freezeSnapshotFrame(observed, writer, nowIso) {
   const from = getOrderSenderEmail();
   const supportEmail = getSupportEmail();
-  const render = buildOrderConfirmationEmail(observed, { supportEmail });
+  const baseRender = buildOrderConfirmationEmail(observed, { supportEmail });
+  const rendered = decorateOrderConfirmationEmail(baseRender, observed);
   return {
     params: { createdAt: nowIso, from, supportEmail, namespace: writer.namespace },
-    render,
+    render: rendered,
     idempotencyKey: buildOrderConfirmationIdempotencyKey(observed),
   };
 }
@@ -1949,7 +1955,7 @@ const FROZEN_TRANSPORT_FN = 'dispatchFrozenConfirmationRequest';
 /** I5-2: what the frozen transport may never reach, directly or through a helper. */
 const FROZEN_TRANSPORT_FORBIDDEN = [
   'sendWithFallback', 'getSupportEmail', 'getOrderSenderEmail', 'getFallbackSenderEmail',
-  'buildOrderConfirmationEmail', 'assertResendSuccess', 'formatActionableError', 'order',
+  'buildOrderConfirmationEmail', 'decorateOrderConfirmationEmail', 'decorateConfirmationWithShipping', 'confirmationShippingRenderIdentity', 'assertResendSuccess', 'formatActionableError', 'order',
   'buildOrderConfirmationIdempotencyKey', 'sendOrderConfirmationEmail',
 ];
 
@@ -2108,6 +2114,35 @@ function legacyTailDigest(source: string): string | null {
 }
 
 // ── Real-tree pins ──────────────────────────────────────────────────────────
+
+test('shipping companions reject missing, duplicate, reordered decoration and decision/transport rendering reach', () => {
+  const source = readRepoFile(PRODUCER);
+  const line = '  const rendered = decorateOrderConfirmationEmail(baseRender, observed);';
+  const base = '  const baseRender = buildOrderConfirmationEmail(observed, { supportEmail });';
+  for (const changed of [
+    variant(source, line, '  const rendered = baseRender;'),
+    variant(source, line, `${line}\n  decorateOrderConfirmationEmail(baseRender, observed);`),
+    variant(source, `${base}\n${line}`, `${line}\n${base}`),
+  ]) assert.ok(namespaceSourceOffenders(changed).some(o => o.startsWith('GA-7f')));
+  const decide = variant(MODEL_PRODUCER, MODEL_DECIDE_ANCHOR, `${MODEL_DECIDE_ANCHOR}\n  decorateOrderConfirmationEmail({}, latest);`);
+  assert.ok(decisionClosureOffenders(decide).some(o => o.includes('decorateOrderConfirmationEmail')));
+  const transport = 'export function dispatchFrozenConfirmationRequest() { return hidden(); }\nfunction hidden() { return decorateOrderConfirmationEmail({}, {}); }';
+  assert.ok(frozenTransportOffenders(transport).some(o => o.includes('decorateOrderConfirmationEmail')));
+});
+
+test('shipping base renderer exact bytes remain immutable; unrelated base changes are rejected', () => {
+  const digest = (source: string) => {
+    const start = source.indexOf('export function buildOrderConfirmationEmail(');
+    const end = source.indexOf('\n/**\n * Provider-level deduplication', start);
+    assert.ok(start >= 0 && end > start);
+    return createHash('sha256').update(source.slice(start, end)).digest('hex');
+  };
+  const source = readRepoFile(ORDER_EMAIL);
+  const expected = '373d160d6eb3fad213682715d8802b20c6c339c78206e2a736a92c3e8fc52966';
+  assert.equal(digest(source), expected);
+  assert.notEqual(digest(variant(source, "const subject = `${order.childName}'s Hero Story Books order is in`;", "const subject = 'changed';")), expected);
+  assert.notEqual(legacyTailDigest(variant(readRepoFile(DELIVERY), '  const claimId = newClaimId();', '  const claimId = newClaimId(); // drift')), LEGACY_TAIL_SHA256);
+});
 
 test('A3-5 GD-1: the frozen transport reaches no sender, renderer, fallback or record', () => {
   assert.deepEqual(frozenTransportOffenders(readRepoFile(ORDER_EMAIL)), []);

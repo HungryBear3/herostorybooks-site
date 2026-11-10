@@ -1,4 +1,5 @@
 "use client";
+import { InitialShippingClient, shippingMoney, type ShippingContact, type ShippingView } from "@/lib/initial-shipping-client";
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
@@ -104,6 +105,8 @@ import {
   createDirectIntakePreparation,
   invalidateDirectIntakeMediaSelection,
   submitCheckoutIntakeOrder,
+  prepareOrReuseDirectIntakeSubmission,
+  type PrepareDirectIntakeSubmissionParams,
   type DirectIntakePreparation,
   type DirectIntakeSubmissionCache,
   type IntakeClientTransport,
@@ -544,12 +547,39 @@ function checkoutReferralCode(): string {
 export function CheckoutForm({
   storyMediaEnabled = false,
   directUploadEnabled = false,
+  expeditedShippingEnabled = false,
 }: {
   storyMediaEnabled?: boolean;
   directUploadEnabled?: boolean;
+  expeditedShippingEnabled?: boolean;
 }) {
   const [form, setForm] = useState<FormState>(emptyForm);
+  const [shippingView, setShippingView] = useState<ShippingView>({ mode: 'standard', status: 'idle', receipt: null, message: '' });
+  const [shippingContact, setShippingContact] = useState<ShippingContact>({ name: '', phone: '', line1: '', line2: '', city: '', state: '', postalCode: '', country: 'US' });
+  const shippingMetricVisible = useRef(false);
+  const shippingRef = useRef<InitialShippingClient | null>(null);
+  if (!shippingRef.current) shippingRef.current = new InitialShippingClient(setShippingView, async body => {
+    const response = await fetch('/api/checkout/shipping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!response.ok) throw new Error('Shipping unavailable');
+    return response.json();
+  }, Date.now, (event, params) => {
+    if (shippingMetricVisible.current) track(event, { ...params });
+  });
+  const shipping = shippingRef.current;
+  const shippingEligible = expeditedShippingEnabled && directUploadEnabled && (form.bookFormat === 'classic' || form.bookFormat === 'premium');
+  const shippingCleanupEpoch = useRef(0);
+  useEffect(() => {
+    ++shippingCleanupEpoch.current;
+    const timer = setInterval(() => shipping.expire(), 1000);
+    return () => {
+      shippingMetricVisible.current = false; clearInterval(timer); shipping.invalidate();
+      const cleanup = ++shippingCleanupEpoch.current;
+      // React's synchronous development setup/cleanup probe is not terminal.
+      queueMicrotask(() => { if (shippingCleanupEpoch.current === cleanup) shipping.dispose(); });
+    };
+  }, [shipping]);
   const [currentStepId, setCurrentStepId] = useState<CheckoutStepProgress["id"]>("hero-details");
+  shippingMetricVisible.current = shippingEligible && currentStepId === 'review';
   const [supportingCharacterDraft, setSupportingCharacterDraft] = useState<SupportingCharacter | null>(null);
   const [editingSupportingCharacterId, setEditingSupportingCharacterId] = useState<string | null>(null);
   const [supportingPhotoPendingId, setSupportingPhotoPendingId] = useState<string | null>(null);
@@ -668,6 +698,7 @@ export function CheckoutForm({
   // it. There is no await in between for a parked run to wake up in, and every
   // media handler below goes through here rather than touching either ref.
   const commitDirectIntakeMediaChange = useCallback((mutate: () => void) => {
+    shippingRef.current?.invalidate();
     invalidateDirectIntakeMediaSelection({
       completed: intakeSessionRef,
       preparation: directIntakePreparationRef,
@@ -787,8 +818,10 @@ export function CheckoutForm({
     };
   }, [form.email, form.childName, form.bookFormat, form.theme]);
 
-  const set = (key: keyof FormState, value: string) =>
+  const set = (key: keyof FormState, value: string) => {
+    if (key === 'bookFormat') shipping.invalidate();
     setForm((prev) => ({ ...prev, [key]: value }));
+  };
 
   const registerStepRef = (stepId: string) => (node: HTMLElement | null) => {
     stepRefs.current[stepId] = node;
@@ -1260,9 +1293,62 @@ export function CheckoutForm({
     [processPhoto],
   );
 
+  const directParameters = (): PrepareDirectIntakeSubmissionParams => {
+    const familyCharactersForOrder = form.familyCharacters.filter(character => Boolean(character.name.trim() || character.relationshipLabel.trim() || character.notes.trim() || character.photoFile)).slice(0, SUPPORTING_CHARACTER_LIMIT);
+    const attachedStoryFile = isCustomStorySelected ? form.voiceFile : null;
+    const attachedStoryFileIsAudio = isStoryAudioFile(attachedStoryFile);
+    return {
+          enabled: directUploadEnabled && (directMediaFilesPresent || shipping.view.mode === "expedited"),
+          transport: directIntakeTransport,
+          heroPhoto: form.photoFile,
+          familyCharacterIds: familyCharactersForOrder.map((character) => character.id),
+          familyPhotos: familyCharactersForOrder.flatMap((character) =>
+            character.photoFile
+              ? [{
+                  familyCharacterId: character.id,
+                  file: character.photoFile,
+                  mimeType: character.photoFile.type,
+                }]
+              : [],
+          ),
+          guidedStills:
+            guidedCaptureEnabled && guidedConsent
+              ? guidedFrames.map((frame) => ({ file: frame.file, mimeType: frame.file.type }))
+              : [],
+          voice:
+            attachedStoryFile && attachedStoryFileIsAudio && form.voiceSource
+              ? {
+                  file: attachedStoryFile,
+                  source: form.voiceSource,
+                  consent: form.voiceConsent,
+                  mimeType: attachedStoryFile.type,
+                }
+              : null,
+          document:
+            attachedStoryFile && !attachedStoryFileIsAudio
+              ? {
+                  file: attachedStoryFile,
+                  consent: form.voiceConsent,
+                  mimeType: attachedStoryFile.type,
+                }
+              : null,
+        };
+  };
+  const getShippingQuote = async () => {
+    if (!shippingEligible || !isReadyToPay || isSubmitting) return;
+    await shipping.quote(form.bookFormat as 'classic' | 'premium', { ...shippingContact }, async () => {
+      const authority = captureDirectIntakeAttemptAuthority(directIntakePreparationRef.current);
+      const prepared = await prepareOrReuseDirectIntakeSubmission(directParameters(), intakeSessionRef.current, { preparation: directIntakePreparationRef.current });
+      assertDirectIntakeAttemptAuthorityIsCurrent(authority, directIntakePreparationRef.current);
+      if (!prepared) throw new Error('Direct checkout required');
+      intakeSessionRef.current = prepared.cache;
+      return prepared.submission.session;
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (currentStepId !== "review" || !isReadyToPay) {
+    if (currentStepId !== "review" || !isReadyToPay || !shipping.ready(form.bookFormat)) {
       track("checkout_step_blocked", {
         ...checkoutStepEventProps(currentStepId, form.bookFormat),
         reason: checkoutSubmitBlockedReason({
@@ -1288,6 +1374,7 @@ export function CheckoutForm({
     const submitDirectIntakeAuthority = captureDirectIntakeAttemptAuthority(
       directIntakePreparationRef.current,
     );
+    const submitShippingEpoch = shipping.epoch;
     setIsSubmitting(true);
     setSubmitError(null);
     // The review step is the fifth funnel step: it completes when a validated
@@ -1522,6 +1609,7 @@ export function CheckoutForm({
         submitDirectIntakeAuthority,
         directIntakePreparationRef.current,
       );
+      if (submitShippingEpoch !== shipping.epoch || !shipping.ready(form.bookFormat)) throw new CheckoutSubmitDiagnosticError("intake_preparation_failed", 'Shipping changed. Review shipping before payment.');
       checkoutAttemptIdRef.current = checkoutAttemptId;
       diagnosticPhase = "intake";
       payload.set("checkoutAttemptId", checkoutAttemptId);
@@ -1610,42 +1698,7 @@ export function CheckoutForm({
       const attachedStoryFile = isCustomStorySelected ? form.voiceFile : null;
       const attachedStoryFileIsAudio = isStoryAudioFile(attachedStoryFile);
       const { response } = await submitCheckoutIntakeOrder({
-        params: {
-          enabled: directUploadEnabled && directMediaFilesPresent,
-          transport: directIntakeTransport,
-          heroPhoto: form.photoFile,
-          familyCharacterIds: familyCharactersForOrder.map((character) => character.id),
-          familyPhotos: familyCharactersForOrder.flatMap((character) =>
-            character.photoFile
-              ? [{
-                  familyCharacterId: character.id,
-                  file: character.photoFile,
-                  mimeType: character.photoFile.type,
-                }]
-              : [],
-          ),
-          guidedStills:
-            guidedCaptureEnabled && guidedConsent
-              ? guidedFrames.map((frame) => ({ file: frame.file, mimeType: frame.file.type }))
-              : [],
-          voice:
-            attachedStoryFile && attachedStoryFileIsAudio && form.voiceSource
-              ? {
-                  file: attachedStoryFile,
-                  source: form.voiceSource,
-                  consent: form.voiceConsent,
-                  mimeType: attachedStoryFile.type,
-                }
-              : null,
-          document:
-            attachedStoryFile && !attachedStoryFileIsAudio
-              ? {
-                  file: attachedStoryFile,
-                  consent: form.voiceConsent,
-                  mimeType: attachedStoryFile.type,
-                }
-              : null,
-        },
+        params: directParameters(),
         refs: { completed: intakeSessionRef, preparation: directIntakePreparationRef },
         authority: submitDirectIntakeAuthority,
         payload,
@@ -1670,6 +1723,8 @@ export function CheckoutForm({
           assertLegacyCheckoutPayloadWithinLimit(payload);
         },
         dispatchOrder: async (payload) => {
+          try { shipping.bind(payload, submitShippingEpoch, form.bookFormat); }
+          catch { throw new CheckoutSubmitDiagnosticError("intake_preparation_failed", 'Shipping changed. Review shipping before payment.'); }
           if (!serverLeaseBacked && !markCheckoutAttemptSent(checkoutAttemptId)) {
             throw new CheckoutSubmitDiagnosticError(
               "attempt_storage_unavailable",
@@ -1755,6 +1810,8 @@ export function CheckoutForm({
         // resubmission would be rejected as an in-flight attempt.
         navigate: (url) => window.location.replace(url),
       });
+
+      if (handoff.url) shipping.dispose();
 
       if (handoff.reason === "invalid_url") {
         // Fail closed: an unexpected redirect target is a failed hand-off, not
@@ -3341,14 +3398,14 @@ export function CheckoutForm({
                     </p>
                   </div>
                   <span className="font-bold text-[#241914]">
-                    {selectedFormat?.price ?? "—"}
+                    {shippingView.mode === "expedited" ? shippingView.receipt ? shippingMoney(shippingView.receipt.bookCents) : "—" : selectedFormat?.price ?? "—"}
                   </span>
                 </div>
                 <div className="space-y-2 border-t border-[#d8c6a2] pt-3 text-sm text-[#6e6154]">
                   <div className="flex justify-between gap-3">
                     <span>{printFormat}</span>
                     <span className="font-semibold text-[#241914]">
-                      {selectedFormat?.price ?? "—"}
+                      {shippingView.mode === "expedited" ? shippingView.receipt ? shippingMoney(shippingView.receipt.bookCents) : "—" : selectedFormat?.price ?? "—"}
                     </span>
                   </div>
                   {form.familyCharacters.length > 0 && (
@@ -3361,15 +3418,19 @@ export function CheckoutForm({
                   )}
                   <div className="flex justify-between gap-3">
                     <span>
-                      Shipping {form.bookFormat === "digital" ? "" : "(US)"}
+                      {shippingView.mode === "expedited" ? "Standard shipping" : "Shipping"} {form.bookFormat === "digital" ? "" : "(US)"}
                     </span>
                     <span className="font-semibold text-[#a64c4c]">
                       {form.bookFormat === "digital" ? "—" : "Included"}
                     </span>
                   </div>
+                  {shippingView.receipt && shippingView.mode === 'expedited' && <>
+                    <div className="flex justify-between gap-3"><span>Expedited shipping upgrade</span><span>{shippingMoney(shippingView.receipt.deltaCents)}</span></div>
+                    <div className="flex justify-between gap-3"><span>Shipping tax (included in upgrade)</span><span>{shippingMoney(shippingView.receipt.deltaTaxIncludedCents)}</span></div>
+                  </>}
                   <div className="flex justify-between border-t border-[#d8c6a2] pt-3 text-lg text-[#241914]">
                     <span className="font-serif font-semibold">Total</span>
-                    <span className="font-bold">{totalPrice}</span>
+                    <span className="font-bold">{shippingView.mode === "expedited" ? shippingView.receipt ? shippingMoney(shippingView.receipt.totalCents) : "Awaiting shipping quote" : totalPrice}</span>
                   </div>
                 </div>
               </div>
@@ -3428,6 +3489,27 @@ export function CheckoutForm({
                     Hero Story Books to save them privately for this order and proof review.
                   </span>
                 </label>
+              )}
+              {currentStepId === 'review' && (shippingEligible || shippingView.mode === 'expedited' || shippingView.status !== 'idle') && (
+                <fieldset aria-label="Shipping options" className="rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-5 space-y-4">
+                  <legend className="font-semibold">Shipping options</legend>
+                  <label className="flex gap-3 items-center min-h-11"><input type="radio" name="shipping-choice" checked={shippingView.mode === 'standard' && shippingView.status === 'idle'} disabled={isSubmitting} onChange={() => void shipping.standard()} />Standard shipping — Included</label>
+                  {shippingEligible && <label className="flex gap-3 items-center min-h-11"><input type="radio" name="shipping-choice" checked={shippingView.mode === 'expedited'} disabled={isSubmitting} onChange={() => shipping.expedited()} />Expedited shipping</label>}
+                  {shippingEligible && shippingView.mode === 'expedited' && <>
+                    <p className="text-sm">US delivery recipient — use the adult recipient’s name, phone and delivery address, not the story hero’s details. These details are used privately for shipping.</p>
+                    {([['name', 'Delivery recipient name'], ['phone', 'Delivery phone'], ['line1', 'Street address'], ['line2', 'Apartment or unit (optional)'], ['city', 'City'], ['state', 'State (2 letters)'], ['postalCode', 'ZIP code']] as const).map(([key, label]) => <label key={key} className="block text-sm">{label}<input aria-label={label} autoComplete="off" type={key === 'phone' ? 'tel' : 'text'} value={shippingContact[key]} maxLength={key === 'state' ? 2 : 120} disabled={isSubmitting} onChange={event => { shipping.invalidate(); setShippingContact(previous => ({ ...previous, [key]: event.target.value })); }} className="block w-full min-w-0 rounded-xl border p-3 bg-white" /></label>)}
+                    <p className="text-sm">Country: United States</p>
+                    <button type="button" disabled={isSubmitting || !isReadyToPay || shippingView.status === 'loading'} onClick={() => void getShippingQuote()} className="rounded-xl border px-4 py-3 font-semibold disabled:opacity-50">Get shipping quote</button>
+                    {shippingView.receipt && <div aria-label="Shipping itemization">
+                      {([['Book', shippingView.receipt.bookCents], ['Standard shipping', 'Included'], ['Expedited shipping upgrade', shippingView.receipt.deltaCents], ['Shipping tax (included in upgrade)', shippingView.receipt.deltaTaxIncludedCents], ['Total', shippingView.receipt.totalCents]] as const).map(([label, amount]) => <div className="flex justify-between gap-3 py-1" key={label}><span>{label}</span><strong>{typeof amount === 'number' ? shippingMoney(amount) : amount}</strong></div>)}
+                      <p className="text-sm mt-3">{shippingView.receipt.estimate}</p>
+                      {shippingView.status === 'quoted' && <button type="button" disabled={isSubmitting} onClick={() => void shipping.select()} className="rounded-xl border px-4 py-3 font-semibold">Use this expedited quote</button>}
+                      {shippingView.status === 'selected' && <p role="status">Expedited shipping selected</p>}
+                    </div>}
+                  </>}
+                  {shippingView.message && <p role="status">{shippingView.message}</p>}
+                  {shippingView.status === 'error' && <button type="button" disabled={isSubmitting} onClick={() => void shipping.standard()} className="rounded-xl border px-4 py-3">Confirm Standard shipping</button>}
+                </fieldset>
               )}
               {/* Disabled-CTA reason. Listed before the button so a screen
                   reader / sighted reviewer immediately knows WHY the button
@@ -3520,12 +3602,12 @@ export function CheckoutForm({
               )}
               <button
                 type="submit"
-                disabled={isSubmitting || !isReadyToPay || currentStepId !== "review"}
+                disabled={isSubmitting || !isReadyToPay || !shipping.ready(form.bookFormat) || currentStepId !== "review"}
                 className="w-full rounded-2xl bg-deep-gold py-4 text-lg font-bold text-navy shadow-md transition-all hover:-translate-y-0.5 hover:bg-deep-gold/90 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
               >
                 {isSubmitting
                   ? "Processing…"
-                  : `Continue to secure payment${selectedFormat ? ` — ${selectedFormat.price}` : ""}`}
+                  : `Continue to secure payment${shippingView.receipt && shippingView.status === "selected" ? ` — ${shippingMoney(shippingView.receipt.totalCents)}` : shippingView.mode === "expedited" ? "" : selectedFormat ? ` — ${selectedFormat.price}` : ""}`}
               </button>
               <p className="text-center text-xs leading-5 text-[#8a7b6a]">
                 Secured by Stripe · Proof approval before printing · Our Privacy Policy

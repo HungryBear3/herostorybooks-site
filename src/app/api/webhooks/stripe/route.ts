@@ -1,5 +1,7 @@
 import { NextResponse, after } from 'next/server.js';
 import Stripe from 'stripe';
+import { readOrderInitialShipping } from '../../../../lib/initial-shipping-contract.ts';
+import { reconcileSignedInitialShipping, shippingCommitted, type SignedEventLike } from '../../../../lib/initial-shipping-settlement.ts';
 
 import { getOrder, isPrintFormat, recordPaymentSettlementConflict, settleOrderPayment, updateOrderPayment, type ShippingAddress } from '../../../../lib/orders.ts';
 import {
@@ -12,7 +14,7 @@ import { scheduleOrderConfirmationEmail } from '../../../../lib/order-confirmati
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '../../../../lib/stripe-env.ts';
 import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment, recordPrintUpgradeSettlementConflict } from '../../../../lib/print-upgrades.ts';
 import { isExactSettledCheckoutSession } from '../../../../lib/checkout-session-confirmation.ts';
-import { scheduleTrustedPurchaseAnalytics } from '../../../../lib/purchase-analytics.ts';
+import { scheduleTrustedShippingCompletion, scheduleTrustedPurchaseAnalytics } from '../../../../lib/purchase-analytics.ts';
 import { recordShadowCheckoutSettlement } from '../../../../lib/hsb-control-plane-runtime/shadow-settlement.ts';
 import {
   PRINT_UPGRADE_STRIPE_KIND,
@@ -311,10 +313,20 @@ export async function POST(request: Request) {
         }
         return NextResponse.json({ error: 'Order not found; recovery recorded' }, { status: 409 });
       }
-      if (
+      const expedited = readOrderInitialShipping(existing).kind !== 'absent' || session.metadata?.hsbShipping != null
+        ? await reconcileSignedInitialShipping(event as unknown as SignedEventLike, existing, () => stripe.accounts.retrieveCurrent()) : null;
+      if (expedited?.completionMetric) {
+        scheduleTrustedShippingCompletion(expedited.completionMetric, session.metadata, { afterImpl: after });
+      }
+      // Repair before every already-paid exit. Only the first financial winner with committed
+      // shipping may enter the unchanged notification/purchase/fulfillment tail below.
+      if (expedited && (!expedited.transitionedToPaid || shippingCommitted(expedited.order) !== 'committed')) {
+        return NextResponse.json({ received: true, initialShipping: expedited.order.initialShippingSettlement?.state ?? 'held' });
+      }
+      if (!expedited && (
         existing.stripeSessionId !== session.id
         || !isExactSettledCheckoutSession(session, existing, existing.stripeSessionId)
-      ) {
+      )) {
         console.error(`Stripe webhook: settlement facts do not match order ${orderId} for session ${session.id}`);
         const conflict = await recordPaymentSettlementConflict(orderId, {
           stripeSessionId: session.id,
@@ -340,7 +352,7 @@ export async function POST(request: Request) {
       //   3. More generally, for the same session_id we never overwrite
       //      a non-pending paymentStatus — only the first pending → paid
       //      transition is allowed.
-      if (existing?.stripeSessionId === session.id) {
+      if (!expedited && existing?.stripeSessionId === session.id) {
         if (existing.paymentStatus === 'paid') {
           const replayPaymentIntentId = extractPaymentIntentId(session);
           if (
@@ -435,7 +447,7 @@ export async function POST(request: Request) {
       }
 
       const shipping = extractShipping(session);
-      const settlement = await settleOrderPayment(orderId, {
+      const settlement = expedited ?? await settleOrderPayment(orderId, {
         stripeSessionId: session.id,
         ...(extractPaymentIntentId(session) ? { stripePaymentIntentId: extractPaymentIntentId(session) } : {}),
         settledAmountCents: session.amount_total!,
