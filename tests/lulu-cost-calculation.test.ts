@@ -135,3 +135,49 @@ test('Lulu cost calculation binds three extra copies and rejects a one-copy resp
   assert.equal(response.line_item_costs?.[0]?.quantity, 3);
   await assert.rejects(calculatePrintJobCost({ podPackageId: 'SC.PKG', pageCount: 32, quantity: 0, shippingAddress: ADDRESS, shippingLevel: 'MAIL' }), /quantity from 1 to 10/);
 }));
+
+test('shipping-specific cost path preserves the synthetic delivery contact instead of fallback', withEnv({ LULU_CLIENT_KEY: 'synthetic-key', LULU_CLIENT_SECRET: 'synthetic-secret', LULU_FALLBACK_PHONE: '000-000-0000' }, async () => {
+  let posted: any;
+  const input = {
+    podPackageId: 'SC.PKG', pageCount: 32, quantity: 1, shippingLevel: 'GROUND',
+    requireActualContact: true as const,
+    shippingAddress: { ...ADDRESS, name: 'Synthetic Recipient', phone: '+13125550101' },
+  };
+  await calculatePrintJobCost(input, { fetch: fakeFetch({ cost: body => {
+    posted = body;
+    return new Response(JSON.stringify(costBody()), { status: 201 });
+  } }, []) });
+  assert.equal(posted.shipping_address.phone_number, '+13125550101');
+  assert.equal(posted.shipping_address.name, 'Synthetic Recipient');
+}));
+
+test('shipping-specific cost path errors are value-free and its token never feeds the legacy cache', withEnv({ LULU_CLIENT_KEY: 'synthetic-key', LULU_CLIENT_SECRET: 'synthetic-secret' }, async () => {
+  const sentinel = 'SYNTHETIC_PRIVATE_CONTACT_ECHO';
+  const input = {
+    podPackageId: 'SC.PKG', pageCount: 32, shippingLevel: 'GROUND', requireActualContact: true as const,
+    shippingAddress: { ...ADDRESS, name: 'Synthetic Recipient', phone: '+13125550101' },
+  };
+  await assert.rejects(calculatePrintJobCost(input, { fetch: fakeFetch({ cost: () =>
+    new Response(JSON.stringify({ detail: sentinel }), { status: 400 }) }, []) }), (e: any) => {
+    assert.equal(e.message, 'SHIPPING_QUOTE_UNAVAILABLE'); assert.equal(e.cause, undefined);
+    assert.ok(!String(e.stack).includes(sentinel)); return true;
+  });
+  const seen: { url: string; init: RequestInit }[] = [];
+  await calculatePrintJobCost({ podPackageId: 'X', pageCount: 26, shippingAddress: ADDRESS, shippingLevel: 'MAIL' },
+    { fetch: fakeFetch({ cost: () => new Response(JSON.stringify(costBody()), { status: 201 }) }, seen) });
+  assert.equal(seen.filter(s => s.url.includes('/openid-connect/token')).length, 1, 'legacy path authenticated itself');
+  const strictSeen: { url: string; init: RequestInit }[] = [];
+  await calculatePrintJobCost(input, { fetch: fakeFetch({ cost: () => new Response(JSON.stringify(costBody()), { status: 201 }) }, strictSeen) });
+  assert.equal(strictSeen.filter(s => s.url.includes('/openid-connect/token')).length, 1, 'strict path did not reuse legacy token');
+}));
+
+test('shipping-specific cost path rejects missing contact before discovery or authentication', withEnv({ LULU_CLIENT_KEY: 'synthetic-key', LULU_CLIENT_SECRET: 'synthetic-secret' }, async () => {
+  const seen: { url: string; init: RequestInit }[] = [];
+  const input = {
+    podPackageId: 'SC.PKG', pageCount: 32, shippingLevel: 'GROUND',
+    requireActualContact: true as const, shippingAddress: { ...ADDRESS, name: 'Synthetic Recipient' },
+  };
+  await assert.rejects(calculatePrintJobCost(input, { fetch: fakeFetch({ cost: () =>
+    new Response(JSON.stringify(costBody()), { status: 201 }) }, seen) }), /SHIPPING_INPUT_INVALID/);
+  assert.equal(seen.length, 0);
+}));
