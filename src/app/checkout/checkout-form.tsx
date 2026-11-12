@@ -2041,9 +2041,9 @@ export function CheckoutForm({
 
         <form
           onSubmit={handleSubmit}
-          className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_340px]"
+          className="grid grid-cols-1 items-start gap-8 lg:grid-cols-[minmax(0,1fr)_340px]"
         >
-          <div className="flex flex-col gap-5">
+          <div data-testid="checkout-primary-steps" className="flex min-w-0 flex-col gap-5 lg:col-start-1 lg:row-start-1">
             {/* ── 1. Theme ── */}
             <section
               ref={(node) => {
@@ -3304,7 +3304,7 @@ export function CheckoutForm({
 
           </div>
 
-          <aside className="space-y-5 lg:sticky lg:top-6">
+          <aside data-testid="checkout-secondary-summary" className="min-w-0 space-y-5 lg:col-start-2 lg:row-start-1 lg:row-span-2">
             <section className="rounded-[1.5rem] border border-[#d8c6a2] bg-[#fbf6e9] p-5 shadow-[0_24px_70px_-58px_rgba(36,25,20,0.65)]">
               <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.22em] text-[#8a7663]">
                 Your book
@@ -3435,8 +3435,9 @@ export function CheckoutForm({
                 </div>
               </div>
             </section>
+          </aside>
 
-            <div className="space-y-3 pb-10">
+          <div data-testid="checkout-primary-review" className="min-w-0 space-y-3 pb-10 lg:col-start-1 lg:row-start-2">
               {currentStepId === "review" && (
                 <section className="rounded-[1.5rem] border border-[#d8c6a2] bg-[#fff8ec] p-5 shadow-[0_18px_50px_-44px_rgba(31,26,22,0.5)] space-y-4">
                   <div>
@@ -3491,8 +3492,8 @@ export function CheckoutForm({
                 </label>
               )}
               {currentStepId === 'review' && (shippingEligible || shippingView.mode === 'expedited' || shippingView.status !== 'idle') && (
-                <fieldset aria-label="Shipping options" className="rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-5 space-y-4">
-                  <legend className="font-semibold">Shipping options</legend>
+                <fieldset aria-label="Shipping options" data-testid="checkout-shipping-options" className="min-w-0 rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-5 space-y-4 [&>legend+*]:clear-both">
+                  <legend data-testid="checkout-shipping-options-heading" className="float-left w-full p-0 font-semibold">Shipping options</legend>
                   <label className="flex gap-3 items-center min-h-11"><input type="radio" name="shipping-choice" checked={shippingView.mode === 'standard' && shippingView.status === 'idle'} disabled={isSubmitting} onChange={() => void shipping.standard()} />Standard shipping — Included</label>
                   {shippingEligible && <label className="flex gap-3 items-center min-h-11"><input type="radio" name="shipping-choice" checked={shippingView.mode === 'expedited'} disabled={isSubmitting} onChange={() => shipping.expedited()} />Expedited shipping</label>}
                   {shippingEligible && shippingView.mode === 'expedited' && <>
@@ -3615,6 +3616,7 @@ export function CheckoutForm({
               </p>
             </div>
 
+          <aside data-testid="checkout-secondary-next-steps" className="min-w-0 lg:col-start-2 lg:row-start-3">
             <section className="rounded-[1.5rem] border border-[#d8c6a2] bg-[#ead8b8] p-5 text-[#241914]">
               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#a64c4c]">
                 What happens next
