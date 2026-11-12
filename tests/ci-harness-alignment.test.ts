@@ -694,7 +694,7 @@ function probe(preload: string, body: string): Record<string, string> {
   }
 }
 
-test('offline preload blocks every outbound primitive before any connection', () => {
+test('offline preload blocks the seven module-level outbound entry points before any connection', () => {
   const marker = 'UNEXPECTED_NETWORK_ATTEMPT_BLOCKED';
   const r = probe('ci-offline-preload.mjs', [
     `t('fetch', '${marker}', () => fetch('http://127.0.0.1:9/'));`,
@@ -727,6 +727,151 @@ test('loopback preload admits only http://127.0.0.1:3199', () => {
     otherHostFetch: 'blocked', otherPortFetch: 'blocked', httpsGet: 'blocked', httpOtherHost: 'blocked',
     netOtherPort: 'blocked', netOtherHost: 'blocked', fetchServer: 'allowed', netServer: 'allowed',
   });
+});
+
+// Transports that never pass through the seven module-level entry points:
+// direct sockets, TLS, ClientRequest agents and an agent's captured
+// createConnection. Every target is an owned 127.0.0.1 sink in the child, and
+// host names resolve only through a counting lookup spy, so an unguarded
+// preload reaches nothing but that sink. 'blocked' means exactly the fixed
+// preload marker; any error code, timeout or TCP reach is a failure.
+const TRANSPORT_PROBE = [
+  "import http from 'node:http';",
+  "import https from 'node:https';",
+  "import net from 'node:net';",
+  "import tls from 'node:tls';",
+  "import { connect as namedTlsConnect } from 'node:tls';",
+  "const MARKER = 'UNEXPECTED_NETWORK_ATTEMPT_BLOCKED';",
+  'const r = {};',
+  'const uncaught = [];',
+  "const code = (e) => (e && e.message === MARKER) ? 'marker' : String((e && e.code) || 'no-code');",
+  "process.on('uncaughtException', (e) => uncaught.push(code(e)));",
+  "process.on('unhandledRejection', (e) => uncaught.push(code(e)));",
+  "const classify = (e) => (e && e.message === MARKER) ? 'blocked' : 'other:' + String((e && e.code) || 'no-code');",
+  'let sinkHits = 0;',
+  'const accepted = new Set();',
+  'const sink = net.createServer((s) => { sinkHits += 1; accepted.add(s); s.on(\'error\', () => {}); s.destroy(); });',
+  "await new Promise((resolve) => sink.listen(0, '127.0.0.1', resolve));",
+  'const port = sink.address().port;',
+  "r.sinkListening = sink.listening ? 'listening' : 'not-listening';",
+  'let lookups = 0;',
+  'const lookup = (host, options, cb) => {',
+  '  lookups += 1;',
+  "  if (options && options.all) cb(null, [{ address: '127.0.0.1', family: 4 }]);",
+  "  else cb(null, '127.0.0.1', 4);",
+  '};',
+  'const drain = () => new Promise((resolve) => setTimeout(resolve, 50));',
+  'async function probe(key, fn) {',
+  '  const handles = [];',
+  '  const outcome = await new Promise((resolve) => {',
+  '    let done = false;',
+  '    const finish = (v) => { if (!done) { done = true; clearTimeout(timer); resolve(v); } };',
+  "    const timer = setTimeout(() => finish('timeout'), 1500);",
+  '    const watch = (em) => {',
+  "      if (!em || typeof em.on !== 'function' || handles.includes(em)) return;",
+  '      handles.push(em);',
+  "      em.on('error', (e) => finish(classify(e)));",
+  "      em.on('connect', () => finish('reached'));",
+  "      em.on('secureConnect', () => finish('reached'));",
+  "      em.on('response', () => finish('reached'));",
+  "      em.on('socket', (s) => { watch(s); });",
+  '    };',
+  '    try {',
+  '      const v = fn(watch);',
+  '      watch(v);',
+  '      if (v instanceof http.ClientRequest) v.end();',
+  '    } catch (e) {',
+  '      finish(classify(e));',
+  '    }',
+  '  });',
+  '  for (const h of handles) {',
+  "    h.removeAllListeners('connect'); h.removeAllListeners('secureConnect'); h.removeAllListeners('response');",
+  "    h.on('error', () => {});",
+  "    if (typeof h.destroy === 'function') h.destroy();",
+  '  }',
+  '  await drain();',
+  '  r[key] = outcome;',
+  '}',
+  "const target = { host: '127.0.0.1', port };",
+  "r.agentCaptured = http.Agent.prototype.createConnection !== net.createConnection ? 'captured' : 'shared';",
+  "r.namedTlsSynced = namedTlsConnect === tls.connect ? 'synced' : 'stale';",
+  "await probe('socketPositional', (w) => { const s = new net.Socket(); w(s); return s.connect(port, '127.0.0.1'); });",
+  "await probe('socketObject', (w) => { const s = new net.Socket(); w(s); return s.connect({ ...target }); });",
+  "await probe('socketLookup', (w) => { const s = new net.Socket(); w(s); return s.connect({ host: 'offhost.invalid', port, lookup }); });",
+  "await probe('netStream', (w) => { const s = new net.Stream(); w(s); return s.connect(port, '127.0.0.1'); });",
+  "await probe('tlsConnect', () => tls.connect({ ...target, servername: 'offhost.invalid', rejectUnauthorized: false }));",
+  "await probe('namedTlsConnect', () => namedTlsConnect({ ...target, servername: 'offhost.invalid', rejectUnauthorized: false }));",
+  "await probe('tlsSocketWrap', (w) => {",
+  '  const raw = new net.Socket();',
+  '  const wrapped = new tls.TLSSocket(raw, { rejectUnauthorized: false });',
+  "  r.tlsSocketSetup = 'constructed';",
+  '  w(raw); w(wrapped);',
+  "  return raw.connect(port, '127.0.0.1');",
+  '});',
+  // The TLSSocket instance's own connect, as tls.connect performs it internally.
+  "await probe('tlsSocketDirect', (w) => {",
+  '  const s = new tls.TLSSocket(undefined, { rejectUnauthorized: false });',
+  "  r.tlsSocketDirectSetup = 'constructed';",
+  '  w(s);',
+  '  return s.connect({ ...target });',
+  '});',
+  "await probe('clientRequest', () => new http.ClientRequest({ ...target, path: '/' }));",
+  "await probe('clientRequestNoAgent', () => new http.ClientRequest({ ...target, path: '/', agent: false }));",
+  "await probe('clientRequestHttpsAgent', () => new http.ClientRequest({ ...target, path: '/', protocol: 'https:', servername: 'offhost.invalid', agent: new https.Agent({ rejectUnauthorized: false }) }));",
+  "await probe('agentCreateConnection', () => { const agent = new http.Agent(); return agent.createConnection({ ...target }); });",
+  "await probe('httpsAgentCreateConnection', () => { const agent = new https.Agent({ rejectUnauthorized: false }); return agent.createConnection({ ...target, servername: 'offhost.invalid' }); });",
+  'const originalFetch = globalThis.fetch;',
+  "globalThis.fetch = async () => new Response('fake');",
+  "r.fetchOverride = await (await fetch('http://offhost.invalid/')).text();",
+  'globalThis.fetch = originalFetch;',
+  'for (const s of accepted) s.destroy();',
+  'await new Promise((resolve) => sink.close(() => resolve()));',
+  'await drain();',
+  'r.sinkHits = sinkHits;',
+  'r.lookups = lookups;',
+  'r.uncaught = uncaught;',
+  'console.log(JSON.stringify(r));',
+  'process.exit(0);',
+].join('\n');
+
+test('offline preload blocks direct socket, TLS, ClientRequest and captured agent transports', { timeout: 120_000 }, () => {
+  const file = path.join(HELPERS, 'ci-offline-preload.mjs');
+  assert.ok(existsSync(file), 'SETUP_RED: tests/helpers/ci-offline-preload.mjs does not exist yet');
+  const dir = scratchDir('hsb-align-transport-');
+  try {
+    const result = spawnSync(process.execPath, ['--import', pathToFileURL(file).href, '--input-type=module', '-e', TRANSPORT_PROBE], {
+      cwd: dir, env: cleanEnv({ TMPDIR: dir }), encoding: 'utf8', timeout: 90_000, killSignal: 'SIGKILL',
+    });
+    assert.equal(result.status, 0, `transport probe child exited ${result.status} (${result.signal ?? 'no signal'})`);
+    const lines = result.stdout.trim().split('\n');
+    const r = JSON.parse(lines[lines.length - 1] || '{}');
+    assert.deepEqual(r, {
+      sinkListening: 'listening',
+      agentCaptured: 'captured',
+      namedTlsSynced: 'synced',
+      socketPositional: 'blocked',
+      socketObject: 'blocked',
+      socketLookup: 'blocked',
+      netStream: 'blocked',
+      tlsConnect: 'blocked',
+      namedTlsConnect: 'blocked',
+      tlsSocketSetup: 'constructed',
+      tlsSocketWrap: 'blocked',
+      tlsSocketDirectSetup: 'constructed',
+      tlsSocketDirect: 'blocked',
+      clientRequest: 'blocked',
+      clientRequestNoAgent: 'blocked',
+      clientRequestHttpsAgent: 'blocked',
+      agentCreateConnection: 'blocked',
+      httpsAgentCreateConnection: 'blocked',
+      fetchOverride: 'fake',
+      sinkHits: 0,
+      lookups: 0,
+      uncaught: [],
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('native aliases resolve @/ into this checkout from any cwd and next/server to its .js entry', () => {
