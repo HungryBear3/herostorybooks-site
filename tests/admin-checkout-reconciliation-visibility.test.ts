@@ -664,8 +664,54 @@ function withoutPrintDeliveryContactGate(source: string): string {
   }
   return source;
 }
+// Print contact error privacy (SCOPE_ADMIT, correction-1 F1): one contiguous
+// hunk inside approvePrintProof's failure transaction, immediately after the
+// span pinned by SHIPPING_FULFILLMENT_INVERSE[7]. Standard-lane detail becomes a
+// finite refusal code or a fixed Lulu phase/HTTP class; expedited codes pass as
+// before. Removed first so every pinned rule and hash below sees exact bytes.
+const PRINT_ERROR_PRIVACY_PLACE = '    await withOrderTransaction(\n      orderId,\n';
+const PRINT_ERROR_PRIVACY_HEAD = [
+  '      (fresh) => {',
+  "        if (fresh.printJobId || fresh.fulfillmentStatus !== 'submitting_to_print') {",
+  '          return { abort: null };',
+  '        }',
+];
+const PRINT_ERROR_PRIVACY_NEXT = [
+  '        const next: OrderRecord = {',
+  '          ...fresh,',
+  "          fulfillmentStatus: ambiguous ? 'submitting_to_print' : 'failed_manual_review',",
+  '          fulfillmentLastError: ambiguous',
+];
+const PRINT_ERROR_PRIVACY_INVERSE = {
+  candidate: [
+    ...PRINT_ERROR_PRIVACY_HEAD,
+    '        // Standard-lane detail is a fixed refusal code or a Lulu phase/HTTP class:',
+    '        // provider and transport text can echo the delivery contact.',
+    String.raw`        const detail = expedited || /^(?:Refusing print: (?:not_print_order|order_not_paid|order_refunded|refund_in_progress|print_already_submitted|proof_not_ready|whole_book_not_approved|pages_not_accepted|incomplete_page_set|proof_unavailable|proof_stale|proof_ack_missing|proof_ack_stale|print_artifacts_missing|print_interior_stale|shipping_address_missing|shipping_contact_missing|order_not_found|submission_attempt_fence_failed)|print_job_binding_requires_reconciliation|Lulu (?:auth failed [1-5]\d\d|auth unavailable|API error [1-5]\d\d|print-job transport failed|print-job response unreadable|API success response missing print job id; outcome requires reconciliation))$/.test(message)`,
+    '          ? message',
+    "          : 'print_error_detail_withheld';",
+    ...PRINT_ERROR_PRIVACY_NEXT,
+    '            ? `print_submission_ambiguous: ${detail.slice(0, 500)}`',
+    '            : `print_submission_failed_before_attempt: ${detail.slice(0, 500)}`,',
+    '',
+  ].join('\n'),
+  base: [
+    ...PRINT_ERROR_PRIVACY_HEAD,
+    ...PRINT_ERROR_PRIVACY_NEXT,
+    '            ? `print_submission_ambiguous: ${message.slice(0, 500)}`',
+    '            : `print_submission_failed_before_attempt: ${message.slice(0, 500)}`,',
+    '',
+  ].join('\n'),
+} as const;
+function withoutPrintContactErrorPrivacy(source: string): string {
+  const { candidate, base } = PRINT_ERROR_PRIVACY_INVERSE;
+  const placed = PRINT_ERROR_PRIVACY_PLACE + candidate;
+  assert.equal(source.split(candidate).length - 1, 1, 'print error privacy hunk exactly once');
+  assert.equal(source.split(placed).length - 1, 1, 'print error privacy hunk in its exact place');
+  return source.replace(placed, () => PRINT_ERROR_PRIVACY_PLACE + base);
+}
 function withoutInitialShippingFulfillment(source: string): string {
-  source = withoutPrintDeliveryContactGate(source);
+  source = withoutPrintDeliveryContactGate(withoutPrintContactErrorPrivacy(source));
   for (const rule of SHIPPING_FULFILLMENT_INVERSE) {
     assert.equal(sha256(rule.candidate), rule.sha256);
     assert.equal(source.split(rule.candidate).length - 1, 1);
@@ -961,6 +1007,29 @@ test('shipping fulfillment exact inverse rejects missing duplicate mutated and u
     }
   }
   assert.throws(() => oracle(current + '// unrelated edit\n'), { code: 'ERR_ASSERTION' });
+});
+
+test('print contact error privacy hunk has an exact inverse and rejects unauthorized mutations', () => {
+  const current = src('src/lib/fulfillment.ts');
+  const historical = execFileSync('git', ['show', `${BASE_SHA}:src/lib/fulfillment.ts`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const oracle = (value: string) => assert.equal(withoutInitialShippingFulfillment(value), historical);
+  const { candidate, base } = PRINT_ERROR_PRIVACY_INVERSE;
+  const placed = PRINT_ERROR_PRIVACY_PLACE + candidate;
+  const cases: Array<[string, string]> = [
+    ['reverted to raw message', current.replace(candidate, () => base)],
+    ['duplicated', current.replace(candidate, () => candidate + candidate)],
+    ['relocated', current.replace(placed, () => PRINT_ERROR_PRIVACY_PLACE + '\n' + candidate)],
+    ['refusal codes widened', current.replace('Refusing print: (?:not_print_order|', () => 'Refusing print: (?:[a-z_]+|not_print_order|')],
+    ['classification widened', current.replace('|print_job_binding_requires_reconciliation|', () => '|print_job_binding_requires_reconciliation|.*|')],
+    ['expedited pass-through removed', current.replace('const detail = expedited || /', () => 'const detail = /')],
+    ['fallback leaks the raw message', current.replace(": 'print_error_detail_withheld';", () => ': message;')],
+    ['unrelated edit', current + '// unrelated edit\n'],
+  ];
+  for (const [label, mutant] of cases) {
+    oracle(current); // conforming positive control before every negative
+    assert.notEqual(mutant, current, `${label}: mutation must actually change bytes`);
+    assert.throws(() => oracle(mutant), { code: 'ERR_ASSERTION' }, `${label}: unauthorized change must be rejected`);
+  }
 });
 
 test('incident classification, stranded-order scans, and schedules are unchanged from the base commit', () => {

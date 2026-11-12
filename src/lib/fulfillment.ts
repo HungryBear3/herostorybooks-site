@@ -1566,12 +1566,17 @@ export async function approvePrintProof(
         if (fresh.printJobId || fresh.fulfillmentStatus !== 'submitting_to_print') {
           return { abort: null };
         }
+        // Standard-lane detail is a fixed refusal code or a Lulu phase/HTTP class:
+        // provider and transport text can echo the delivery contact.
+        const detail = expedited || /^(?:Refusing print: (?:not_print_order|order_not_paid|order_refunded|refund_in_progress|print_already_submitted|proof_not_ready|whole_book_not_approved|pages_not_accepted|incomplete_page_set|proof_unavailable|proof_stale|proof_ack_missing|proof_ack_stale|print_artifacts_missing|print_interior_stale|shipping_address_missing|shipping_contact_missing|order_not_found|submission_attempt_fence_failed)|print_job_binding_requires_reconciliation|Lulu (?:auth failed [1-5]\d\d|auth unavailable|API error [1-5]\d\d|print-job transport failed|print-job response unreadable|API success response missing print job id; outcome requires reconciliation))$/.test(message)
+          ? message
+          : 'print_error_detail_withheld';
         const next: OrderRecord = {
           ...fresh,
           fulfillmentStatus: ambiguous ? 'submitting_to_print' : 'failed_manual_review',
           fulfillmentLastError: ambiguous
-            ? `print_submission_ambiguous: ${message.slice(0, 500)}`
-            : `print_submission_failed_before_attempt: ${message.slice(0, 500)}`,
+            ? `print_submission_ambiguous: ${detail.slice(0, 500)}`
+            : `print_submission_failed_before_attempt: ${detail.slice(0, 500)}`,
           updatedAt: new Date().toISOString(),
         };
         return { commit: next, result: next };

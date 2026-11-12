@@ -226,7 +226,16 @@ export async function submitPrintJob(
   // request, before anything leaves the host — rather than send a placeholder.
   const contact = requirePrintDeliveryContact(order.shippingAddress);
   const _fetch = deps.fetch ?? globalThis.fetch;
-  const accessToken = await fetchAccessToken(clientKey, clientSecret, _fetch);
+  // From here the request carries the recipient contact. Provider bodies and
+  // transport/parse exceptions can echo it, so a failure carries only its phase
+  // and HTTP status.
+  let accessToken: string;
+  try {
+    accessToken = await fetchAccessToken(clientKey, clientSecret, _fetch);
+  } catch (error) {
+    const status = error instanceof Error ? /^Lulu auth failed ([1-5]\d\d): /.exec(error.message)?.[1] : undefined;
+    throw new Error(status ? `Lulu auth failed ${status}` : 'Lulu auth unavailable');
+  }
 
   const body: Record<string, unknown> = {
     external_id: order.id,
@@ -262,26 +271,37 @@ export async function submitPrintJob(
     phone_number: contact.phone,
   };
 
-  const res = await _fetch(`${getBaseUrl()}/print-jobs/`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-      'User-Agent': LULU_USER_AGENT,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Lulu API error ${res.status}: ${text.slice(0, 200)}`);
+  let res: Response;
+  try {
+    res = await _fetch(`${getBaseUrl()}/print-jobs/`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': LULU_USER_AGENT,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error('Lulu print-job transport failed');
   }
 
-  const data = await res.json() as {
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    const status = /^[1-5]\d\d$/.test(String(res.status)) ? String(res.status) : 'unknown';
+    throw new Error(`Lulu API error ${status}`);
+  }
+
+  let data: {
     id?: number | string;
     status?: string;
     estimated_shipping_dates?: { earliest?: string };
   };
+  try {
+    data = await res.json() as typeof data;
+  } catch {
+    throw new Error('Lulu print-job response unreadable');
+  }
 
   if (data.id == null || String(data.id).trim() === '') {
     throw new Error('Lulu API success response missing print job id; outcome requires reconciliation');
