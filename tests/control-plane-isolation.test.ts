@@ -13,6 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { REPO_ROOT, SQL_DIR, readAllSql, sqlFileNames } from './support/control-plane-identity.ts';
 
@@ -288,7 +289,7 @@ test('the adapter is inert by default: no URL read, no pool, no SQL while the fl
   );
 });
 
-test('no deployment, cron, or build surface references the control-plane', () => {
+test('no deployment, cron, or build surface references the control-plane', async () => {
   const surfaces = ['package.json', 'vercel.json', 'next.config.js', '.vercelignore', 'config/hsb-asset-allowlist.json'];
   for (const surface of surfaces) {
     const absolute = path.join(REPO_ROOT, surface);
@@ -300,11 +301,44 @@ test('no deployment, cron, or build surface references the control-plane', () =>
   }
 
   const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+  // Superseded 2026-11-12: the glob became a pinned launcher so the one joined
+  // browser journey can run in its own CI step. Discovery and seriality are now
+  // pinned on the launcher's actual selection and arguments instead.
   assert.equal(
     packageJson.scripts.test,
-    'node --experimental-strip-types --test --test-concurrency=1 tests/*.test.ts',
-    'the npm test script changed; control-plane discovery relies on the tests/*.test.ts glob '
-      + 'and the suite relies on --test-concurrency=1 to keep files serial',
+    'node tests/helpers/ci-node-suite.mjs',
+    'the npm test script changed; control-plane discovery relies on the canonical launcher '
+      + 'selecting every tests/*.test.ts file and keeping files serial with --test-concurrency=1',
+  );
+  const launcherFile = path.join(REPO_ROOT, 'tests/helpers/ci-node-suite.mjs');
+  const launcherSource = readFileSync(launcherFile, 'utf8');
+  for (const token of [...CONTROL_PLANE_TOKENS, 'control-plane']) {
+    assert.ok(!launcherSource.includes(token), `the suite launcher references ${token}`);
+  }
+  const launcher = await import(pathToFileURL(launcherFile).href);
+  const allTestFiles = readdirSync(path.join(REPO_ROOT, 'tests'), { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.test.ts'))
+    .map((entry) => entry.name)
+    .sort();
+  const selected: string[] = launcher.selectFiles(REPO_ROOT);
+  assert.deepEqual(
+    selected,
+    allTestFiles.filter((name) => name !== 'initial-shipping-journey.test.ts').map((name) => `tests/${name}`),
+    'the launcher must select every tests/*.test.ts file except only the joined browser journey',
+  );
+  for (const name of [
+    'control-plane-contract-identity.test.ts',
+    'control-plane-isolation.test.ts',
+    'control-plane-postgres.test.ts',
+    'control-plane-shadow-settlement.test.ts',
+    'control-plane-shadow-settlement-postgres.test.ts',
+  ]) {
+    assert.ok(selected.includes(`tests/${name}`), `${name} is not run by npm test`);
+  }
+  assert.deepEqual(
+    launcher.buildArgs(selected),
+    ['--experimental-strip-types', '--experimental-test-module-mocks', '--test', '--test-concurrency=1', ...selected],
+    'npm test must run every selected file serially with exactly the core flags',
   );
   // Superseded 2026-09-15: the shadow settlement slice adds exactly one pinned
   // driver. It stays a single exact pin, and no ORM or query builder joins it.
@@ -337,8 +371,14 @@ test('control-plane test files are discovered by the repository test glob', () =
 
 test('the offline control-plane proofs import no application source and require no new env var', () => {
   const ALLOWED_ENV = new Set(['PATH', 'HOME', 'TMPDIR', 'NODE_V8_COVERAGE']);
+  // The harness alone may read the GitHub-hosted runner identity, and only to
+  // admit its scratch directory; it never configures a connection.
+  const EXTRA_ENV: Record<string, string[]> = {
+    'tests/support/postgres-harness.ts': ['GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'RUNNER_TEMP'],
+  };
   const ownFiles = OFFLINE_PROOF_ARTIFACTS.map((artifact) => path.join(REPO_ROOT, artifact));
   for (const file of ownFiles) {
+    const allowed = new Set([...ALLOWED_ENV, ...(EXTRA_ENV[path.relative(REPO_ROOT, file)] ?? [])]);
     const source = readFileSync(file, 'utf8');
     for (const specifier of specifiersOf(source)) {
       assert.ok(!specifier.startsWith('@/'), `${path.basename(file)} imports application source: ${specifier}`);
@@ -351,7 +391,7 @@ test('the offline control-plane proofs import no application source and require 
       assert.ok(relative.startsWith('tests/'), `${path.basename(file)} imports outside tests/: ${relative}`);
     }
     for (const match of source.matchAll(/process\.env\.([A-Za-z0-9_]+)/g)) {
-      assert.ok(ALLOWED_ENV.has(match[1]), `${path.basename(file)} introduces an env var requirement: ${match[1]}`);
+      assert.ok(allowed.has(match[1]), `${path.basename(file)} introduces an env var requirement: ${match[1]}`);
     }
   }
 });

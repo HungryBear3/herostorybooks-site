@@ -1,0 +1,12 @@
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
+import { syncBuiltinESMExports } from 'node:module';
+const allowed = value => { try { const u = new URL(typeof value === 'string' || value instanceof URL ? value : `http://${value.hostname ?? value.host}:${value.port}`); return u.protocol === 'http:' && u.hostname === '127.0.0.1' && u.port === '3199'; } catch { return false; } };
+const deny = () => { throw new Error('OFFHOST_BLOCKED'); };
+const wrap = fn => function(...args) { if (!allowed(args[0])) return deny(); return fn.apply(this,args); };
+globalThis.fetch = wrap(globalThis.fetch);
+http.request = wrap(http.request); http.get = wrap(http.get); https.request = deny; https.get = deny;
+const connect = net.Socket.prototype.connect;
+net.Socket.prototype.connect = function(...args) { const a = Array.isArray(args[0]) ? args[0] : args; const v = a[0]; if (!(typeof v === 'object' ? v.host === '127.0.0.1' && Number(v.port) === 3199 : Number(v) === 3199 && a[1] === '127.0.0.1')) return deny(); return connect.apply(this,args); };
+syncBuiltinESMExports();

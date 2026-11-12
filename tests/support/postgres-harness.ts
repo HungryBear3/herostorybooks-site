@@ -91,9 +91,56 @@ function sleepSync(milliseconds: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
+export interface RunnerIdentity {
+  GITHUB_ACTIONS?: string;
+  RUNNER_ENVIRONMENT?: string;
+  RUNNER_TEMP?: string;
+}
+
+/** The only runner names this harness reads; they admit scratch, never a connection. */
+export function currentRunnerIdentity(): RunnerIdentity {
+  return {
+    GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
+    RUNNER_ENVIRONMENT: process.env.RUNNER_ENVIRONMENT,
+    RUNNER_TEMP: process.env.RUNNER_TEMP,
+  };
+}
+
+/**
+ * No runner markers: the existing local scratch. ANY marker: exactly a
+ * GitHub-hosted runner whose RUNNER_TEMP is a canonical, plainly spelled,
+ * user-owned, non-symlink directory writable by nobody else; scratch is then its
+ * fixed `hsb-scratch` child. Never falls back, never repairs permissions.
+ */
+function ownedScratchRoot(identity: RunnerIdentity): string {
+  const { GITHUB_ACTIONS: actions, RUNNER_ENVIRONMENT: environment, RUNNER_TEMP: runnerTemp } = identity;
+  if (actions === undefined && environment === undefined && runnerTemp === undefined) {
+    return path.join(homedir(), '.hermes/cache/scratch');
+  }
+  const refusal = new Error('PostgreSQL temp root must be an absolute owned scratch directory');
+  if (actions !== 'true' || environment !== 'github-hosted' || !runnerTemp || !path.isAbsolute(runnerTemp) ||
+      path.normalize(runnerTemp) !== runnerTemp || !/^[A-Za-z0-9_./-]+$/.test(runnerTemp)) {
+    throw refusal;
+  }
+  let info: ReturnType<typeof lstatSync>;
+  try {
+    info = lstatSync(runnerTemp);
+  } catch {
+    throw refusal;
+  }
+  if (!info.isDirectory() || realpathSync(runnerTemp) !== runnerTemp ||
+      info.uid !== process.getuid?.() || (info.mode & 0o022) !== 0) {
+    throw refusal;
+  }
+  return path.join(runnerTemp, 'hsb-scratch');
+}
+
 /** Filesystem-only allocation seam; TMPDIR must explicitly bind owned scratch. */
-export function createPostgresTempRoot(base: string | undefined = process.env.TMPDIR): string {
-  const owned = path.join(homedir(), '.hermes/cache/scratch');
+export function createPostgresTempRoot(
+  base: string | undefined = process.env.TMPDIR,
+  identity: RunnerIdentity = currentRunnerIdentity(),
+): string {
+  const owned = ownedScratchRoot(identity);
   // Reject before touching a caller-selected outside path. Restrict spelling also
   // because pg_ctl embeds socketDir in its server-options string.
   if (!base || !path.isAbsolute(base) || path.normalize(base) !== base ||

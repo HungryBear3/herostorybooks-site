@@ -166,19 +166,83 @@ jobs:
         # does not red a gate that is meant to be authoritative.
         # tests/group-book-parent-intake.test.ts requires ripgrep (`rg`) to
         # enumerate route files; install it so the boundary assertion executes.
+        #
+        # PostgreSQL 16 server binaries for the disposable control-plane proofs
+        # (tests/support/postgres-harness.ts runs its own private Unix-socket
+        # cluster per test; nothing connects to a system database). Only the
+        # create_main_cluster key is switched off, so installing the server
+        # creates no default cluster; the rest of createcluster.conf is kept.
         run: |
           sudo apt-get update || (sleep 5 && sudo apt-get update)
-          sudo apt-get install -y --no-install-recommends poppler-utils ripgrep
+          sudo apt-get install -y --no-install-recommends poppler-utils ripgrep postgresql-common
+          conf=/etc/postgresql-common/createcluster.conf
+          if grep -qE '^[#[:space:]]*create_main_cluster[[:space:]]*=' "$conf"; then
+            sudo sed -i -E 's/^[#[:space:]]*create_main_cluster[[:space:]]*=.*/create_main_cluster = false/' "$conf"
+          else
+            echo 'create_main_cluster = false' | sudo tee -a "$conf" > /dev/null
+          fi
+          grep -qx 'create_main_cluster = false' "$conf" || { echo "::error::create_main_cluster was not disabled"; exit 1; }
+          sudo apt-get install -y --no-install-recommends postgresql-16
+
+      - name: Select coherent PostgreSQL binaries
+        # Highest of 18/17/16 whose bin dir holds every required executable, so
+        # the harness never mixes the /usr/bin/psql wrapper with server tools.
+        run: |
+          pg_bin=''
+          for version in 18 17 16; do
+            dir="/usr/lib/postgresql/$version/bin"
+            if [ -x "$dir/initdb" ] && [ -x "$dir/pg_ctl" ] && [ -x "$dir/psql" ] && [ -x "$dir/postgres" ]; then
+              pg_bin="$dir"
+              break
+            fi
+          done
+          [ -n "$pg_bin" ] || { echo "::error::no complete PostgreSQL 18/17/16 bin directory"; exit 1; }
+          "$pg_bin/initdb" --version
+          "$pg_bin/pg_ctl" --version
+          "$pg_bin/psql" --version
+          "$pg_bin/postgres" --version
+          echo "$pg_bin" >> "$GITHUB_PATH"
+          echo "HSB_PG_BIN=$pg_bin" >> "$GITHUB_ENV"
+
+      - name: Verify the harness resolves the selected binaries
+        run: |
+          node --experimental-strip-types --input-type=module -e "
+            const { resolvePostgresTools } = await import('./tests/support/postgres-harness.ts');
+            const tools = resolvePostgresTools();
+            const dirs = [...new Set(Object.values(tools).map((tool) => tool.slice(0, tool.lastIndexOf('/'))))];
+            console.log(JSON.stringify(tools));
+            if (dirs.length !== 1 || dirs[0] !== process.env.HSB_PG_BIN) {
+              console.error('::error::harness resolved ' + JSON.stringify(dirs) + ', expected ' + process.env.HSB_PG_BIN);
+              process.exit(1);
+            }
+          "
+
+      - name: Prepare owned PostgreSQL scratch
+        # RUNNER_TEMP is validated, never modified: canonical, not a symlink,
+        # owned by this user and not group/world-writable. Only its fixed child
+        # is created, private; the harness re-checks all of it before use.
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [ -n "$RUNNER_TEMP" ] && [ -d "$RUNNER_TEMP" ] || fail "RUNNER_TEMP is not a directory"
+          [ ! -L "$RUNNER_TEMP" ] || fail "RUNNER_TEMP is a symlink"
+          [ "$(realpath "$RUNNER_TEMP")" = "$RUNNER_TEMP" ] || fail "RUNNER_TEMP is not canonical"
+          [ "$(stat -c %u "$RUNNER_TEMP")" = "$(id -u)" ] || fail "RUNNER_TEMP is not owned by the runner user"
+          [ $(( 8#$(stat -c %a "$RUNNER_TEMP") & 8#022 )) -eq 0 ] || fail "RUNNER_TEMP is group/world-writable"
+          mkdir -m 0700 "$RUNNER_TEMP/hsb-scratch"
 
       - name: Install dependencies
         run: npm ci
 
       - name: Node test suite
+        # tests/helpers/ci-node-suite.mjs: every tests/*.test.ts except the
+        # joined browser journey, which the e2e job runs (npm run test:joined).
         run: npm test
         env:
           # Synthetic, throwaway. The tests override and delete this themselves;
           # it is set so that nothing can fall back to the workspace .data/orders.
           HSB_ORDER_STORE_DIR: ${{ runner.temp }}/hsb-order-store-unit
+          # The owned 0700 scratch the PostgreSQL harness admits on this runner.
+          TMPDIR: ${{ runner.temp }}/hsb-scratch
 
       - name: Production build + TypeScript gate
         run: npm run build
@@ -191,7 +255,8 @@ jobs:
   e2e:
     name: npm run test:e2e (Chromium)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Three production builds: ordinary suite, feature-on layout, joined journey.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -222,6 +287,7 @@ jobs:
           fi
 
       - name: Install Chromium + Linux deps
+        id: chromium
         # Only Chromium. The version comes from the @playwright/test pinned in
         # package-lock.json, so browser and client cannot drift. Ordered AFTER
         # the guard so it can never fetch Playwright on a branch without it.
@@ -237,6 +303,23 @@ jobs:
         # Playwright config rather than trusting source-text patterns.
         run: npm run test:e2e
 
+      # The two steps below run even if the ordinary suite failed, so every
+      # partition reports its own verdict; any failure still fails this job.
+      - name: Playwright layout suite (feature-on, primary-layout spec only)
+        # playwright.layout.config.ts: one layout-chromium project, expedited and
+        # direct-upload flags on with synthetic non-credential markers, separate
+        # test-results-layout/, playwright-report-layout/ and .e2e-store-layout/.
+        if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
+        run: npm run test:e2e:layout
+
+      - name: Joined mounted journey (exactly 9 tests)
+        # tests/helpers/ci-joined.mjs: hermetic build, loopback server on 3199,
+        # all providers faked in-process; fails unless exactly 9 pass.
+        if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
+        run: npm run test:joined
+        env:
+          TMPDIR: ${{ runner.temp }}
+
       - name: Upload Playwright report on failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -249,5 +332,7 @@ jobs:
           path: |
             playwright-report/
             test-results/
+            playwright-report-layout/
+            test-results-layout/
           retention-days: 7
           if-no-files-found: ignore
