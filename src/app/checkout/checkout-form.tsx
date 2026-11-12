@@ -3446,6 +3446,13 @@ export function CheckoutForm({
                     </h2>
                     <p className="text-sm text-[#695f54]">
                       Enter your email here, then continue directly to secure payment.
+                      {form.bookFormat !== "digital" && shippingView.mode !== "expedited" && (
+                        <>
+                          {" "}
+                          For printed books, your shipping address and a delivery phone number
+                          are collected on the secure payment page, so we never have to ask later.
+                        </>
+                      )}
                     </p>
                   </div>
                   <label htmlFor="email" className="block text-sm font-semibold text-[#1f1a16]">

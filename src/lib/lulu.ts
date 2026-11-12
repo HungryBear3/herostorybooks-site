@@ -2,6 +2,7 @@ import { normalizeShippingContact, shippingService, shippingFailure, type Shippi
 import { readOrderInitialShipping, sha256, type InitialShippingProviderQualificationV1 } from './initial-shipping-contract.ts';
 import { submitAuthorizedExpedited, type ExpeditedDispatchAuthorization } from './initial-shipping-dispatch.ts';
 import type { OrderRecord } from './orders.ts';
+import { normalizeDeliveryPhone, requirePrintDeliveryContact } from './print-delivery-contact.ts';
 import {
   luluCostCalculationToQuote,
   type LuluCostCalculationResponse,
@@ -220,6 +221,10 @@ export async function submitPrintJob(
   }
 
   const artifacts = getPrintArtifacts(order);
+  // The recipient name and delivery phone Stripe collected at checkout. A
+  // print job cannot ship without both, so refuse here — before the auth
+  // request, before anything leaves the host — rather than send a placeholder.
+  const contact = requirePrintDeliveryContact(order.shippingAddress);
   const _fetch = deps.fetch ?? globalThis.fetch;
   const accessToken = await fetchAccessToken(clientKey, clientSecret, _fetch);
 
@@ -245,18 +250,17 @@ export async function submitPrintJob(
     ],
   };
 
-  if (order.shippingAddress) {
-    body.shipping_address = {
-      name: order.childName,
-      street1: order.shippingAddress.line1,
-      ...(order.shippingAddress.line2 ? { street2: order.shippingAddress.line2 } : {}),
-      city: order.shippingAddress.city,
-      state_code: order.shippingAddress.state,
-      postcode: order.shippingAddress.zip,
-      country_code: order.shippingAddress.country,
-      phone_number: process.env.LULU_FALLBACK_PHONE ?? '000-000-0000',
-    };
-  }
+  const shippingAddress = contact.address;
+  body.shipping_address = {
+    name: contact.name,
+    street1: shippingAddress.line1,
+    ...(shippingAddress.line2 ? { street2: shippingAddress.line2 } : {}),
+    city: shippingAddress.city,
+    state_code: shippingAddress.state,
+    postcode: shippingAddress.zip,
+    country_code: shippingAddress.country,
+    phone_number: contact.phone,
+  };
 
   const res = await _fetch(`${getBaseUrl()}/print-jobs/`, {
     method: 'POST',
@@ -410,8 +414,11 @@ export function createLuluShippingTransport(deps: LuluDeps = {}) {
 /**
  * POST /print-job-cost-calculations/ — "calculate product and shipping cost
  * without creating a Print-Job". The documented request requires street1,
- * city, country_code, postcode and phone_number; the phone falls back to the
- * same LULU_FALLBACK_PHONE the print-job submission uses.
+ * city, country_code, postcode and phone_number. Nothing ships from a cost
+ * calculation, so the phone is the saved delivery phone when the address
+ * carries one, else the operator contact LULU_FALLBACK_PHONE (a real number
+ * the business answers); with neither there is no request. The print-job
+ * submission never uses the fallback.
  */
 export async function calculatePrintJobCost(
   input: LuluCostCalculationInput,
@@ -436,9 +443,14 @@ export async function calculatePrintJobCost(
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10) {
     throw new Error('Lulu cost calculation requires a quantity from 1 to 10');
   }
+  const phoneNumber = normalizeDeliveryPhone(input.shippingAddress.phone)
+    ?? normalizeDeliveryPhone(process.env.LULU_FALLBACK_PHONE);
+  if (!phoneNumber) {
+    throw new Error('Lulu cost calculation requires a delivery phone: none saved on the address and LULU_FALLBACK_PHONE is not set');
+  }
   const _fetch = deps.fetch ?? globalThis.fetch;
   const accessToken = await fetchAccessToken(clientKey, clientSecret, _fetch);
-  const body = costRequestBody({ ...input, quantity }, process.env.LULU_FALLBACK_PHONE ?? '000-000-0000');
+  const body = costRequestBody({ ...input, quantity }, phoneNumber);
   const res = await _fetch(`${getBaseUrl()}/print-job-cost-calculations/`, {
     method: 'POST',
     headers: {

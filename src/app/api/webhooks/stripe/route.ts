@@ -3,7 +3,8 @@ import Stripe from 'stripe';
 import { readOrderInitialShipping } from '../../../../lib/initial-shipping-contract.ts';
 import { reconcileSignedInitialShipping, shippingCommitted, type SignedEventLike } from '../../../../lib/initial-shipping-settlement.ts';
 
-import { getOrder, isPrintFormat, recordPaymentSettlementConflict, settleOrderPayment, updateOrderPayment, type ShippingAddress } from '../../../../lib/orders.ts';
+import { getOrder, isPrintFormat, recordPaymentSettlementConflict, settleOrderPayment, updateOrderPayment } from '../../../../lib/orders.ts';
+import { extractStripeShippingAddress, type StripeDeliverySessionLike } from '../../../../lib/print-delivery-contact.ts';
 import {
   processStripePaymentTerminalEvent,
   recordUnmatchedPaymentSettlement,
@@ -28,7 +29,7 @@ export const maxDuration = 300;
 // kept for future use (print-vs-digital branching); referenced by tests
 void isPrintFormat;
 
-interface StripeCheckoutSession {
+interface StripeCheckoutSession extends StripeDeliverySessionLike {
   id: string;
   metadata?: Record<string, string> | null;
   client_reference_id?: string | null;
@@ -38,33 +39,10 @@ interface StripeCheckoutSession {
   mode?: string | null;
   payment_status?: string | null;
   payment_intent?: string | { id?: string | null } | null;
-  shipping_details?: {
-    address?: {
-      line1?: string | null;
-      line2?: string | null;
-      city?: string | null;
-      state?: string | null;
-      postal_code?: string | null;
-      country?: string | null;
-    } | null;
-  } | null;
 }
 
 function getStripe() {
   return new Stripe(getRequiredStripeSecretKey());
-}
-
-function extractShipping(session: StripeCheckoutSession): ShippingAddress | undefined {
-  const addr = session.shipping_details?.address;
-  if (!addr) return undefined;
-  return {
-    line1: addr.line1 ?? '',
-    line2: addr.line2 ?? null,
-    city: addr.city ?? '',
-    state: addr.state ?? '',
-    zip: addr.postal_code ?? '',
-    country: addr.country ?? '',
-  };
 }
 
 function extractPaymentIntentId(session: StripeCheckoutSession): string | undefined {
@@ -246,7 +224,7 @@ export async function POST(request: Request) {
           amountCents: session.amount_total ?? 0,
           targetFormat,
           printProvider: session.metadata?.printProvider ?? 'rpi',
-          ...(extractShipping(session) ? { shippingAddress: extractShipping(session) } : {}),
+          ...(extractStripeShippingAddress(session) ? { shippingAddress: extractStripeShippingAddress(session) } : {}),
         });
         if (!updated) {
           console.error(
@@ -446,7 +424,10 @@ export async function POST(request: Request) {
         }
       }
 
-      const shipping = extractShipping(session);
+      // Recipient name + delivery phone ride along when Stripe collected them.
+      // A legacy Session without a phone still settles; the phone stays null
+      // and the print-release gate refuses later rather than inventing one.
+      const shipping = extractStripeShippingAddress(session);
       const settlement = expedited ?? await settleOrderPayment(orderId, {
         stripeSessionId: session.id,
         ...(extractPaymentIntentId(session) ? { stripePaymentIntentId: extractPaymentIntentId(session) } : {}),

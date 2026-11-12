@@ -19,6 +19,7 @@ import { generateStoryImageResults, requireCompleteImageResults } from './image-
 import type { GeneratedImageResult } from './image-generator.ts';
 import { buildPdf, buildPrintCoverPdf, buildPrintInteriorPdf, getPrintInteriorPageCount } from './pdf-builder.ts';
 import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';
+import { printDeliveryContactRefusal } from './print-delivery-contact.ts';
 import { sendDigitalDeliveryEmail, sendProofReadyEmail, sendLifecycleEmail, sendOperatorFailureAlert } from './order-email.ts';
 import { proofRenderSourceFingerprint, proofStoryFromPageArtifacts } from './review-source-identity.ts';
 
@@ -933,6 +934,14 @@ function printReleaseRefusal(
   }
   if (!order.printInteriorProofVersion || order.printInteriorProofVersion !== order.proofVersion) {
     return 'print_interior_stale';
+  }
+  // Standard lane only: the provider needs a recipient name and delivery phone
+  // from the order's address. Refuse here, before the cover-dimension call and
+  // the print-job POST, rather than ship with a placeholder. The expedited lane
+  // carries its contact in the private draft and is decided by its own gate.
+  if (preclaimShippingGate(order) === 'standard') {
+    const contactRefusal = printDeliveryContactRefusal(order.shippingAddress);
+    if (contactRefusal) return contactRefusal;
   }
   return null;
 }

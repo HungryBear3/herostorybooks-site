@@ -377,8 +377,36 @@ function withoutInitialShippingTypeAddition(source: string): string {
   assert.equal(source.split(fieldAnchor).length - 1, 1, 'exact type field location');
   return source.replace(importAnchor, IS_PROVENANCE_IMPORT).replace(fieldAnchor, 'export interface OrderRecord extends OrderInput {\n');
 }
+// Required print delivery phone (SCOPE_ADMIT): exactly one declaration-only
+// merge onto ShippingAddress, immediately before the additive-types end marker.
+// Removed first so every accepted-HEAD/historical oracle below sees exact bytes.
+const PHONE_TYPE_ANCHOR = "  printStatus: 'awaiting_files' | 'ready_for_print' | 'submitted' | 'shipped';\n}\n";
+const PHONE_TYPE_END = '// PRINT_COMMERCE_ADDITIVE_END_TYPES\n';
+const PHONE_TYPE_BLOCK = [
+  '/**',
+  ' * Delivery contact (2026-10-29). Declaration-merged onto `ShippingAddress`',
+  ' * so the frozen base declaration above stays byte-identical. Both fields are',
+  ' * collected by Stripe hosted Checkout for standard print formats and copied',
+  ' * here by the signed webhook; `null` means never collected — nothing',
+  ' * downstream invents them, and print release refuses until an operator',
+  ' * records the contact.',
+  ' */',
+  'export interface ShippingAddress {',
+  '  /** Recipient name as Stripe collected it with the address. */',
+  '  name?: string | null;',
+  '  /** Delivery phone (E.164 when Stripe supplied it). Required by the print provider. */',
+  '  phone?: string | null;',
+  '}',
+  '',
+].join('\n');
+function withoutPrintDeliveryContactType(source: string): string {
+  const placed = PHONE_TYPE_ANCHOR + PHONE_TYPE_BLOCK + PHONE_TYPE_END;
+  assert.equal(source.split(PHONE_TYPE_BLOCK).length - 1, 1, 'delivery contact type block exactly once');
+  assert.equal(source.split(placed).length - 1, 1, 'delivery contact type block in its exact place');
+  return source.replace(placed, () => PHONE_TYPE_ANCHOR + PHONE_TYPE_END);
+}
 function withoutInitialShippingProvenanceAddition(source: string): string {
-  source = withoutInitialShippingTypeAddition(source);
+  source = withoutInitialShippingTypeAddition(withoutPrintDeliveryContactType(source));
   const count = (needle: string) => source.split(needle).length - 1;
   assert.equal(count(IS_PROVENANCE_IMPORT), 1, 'provenance import exactly once');
   assert.equal(count(IS_PROVENANCE_IMPORT_ANCHOR + IS_PROVENANCE_IMPORT), 1, 'provenance import in its exact place');
@@ -599,7 +627,45 @@ const SHIPPING_FULFILLMENT_INVERSE = [
     "sha256": "7da9b95a07eee29469945d8676123bb6a36ca613ec57e98e62bc96e5c97ce279"
   }
 ];
+// Required print delivery phone (SCOPE_ADMIT): one import and one standard-lane
+// contact refusal at the end of printReleaseRefusal, each in its exact place.
+const PHONE_FULFILLMENT_INVERSE = [
+  {
+    description: 'print delivery contact import',
+    candidate: "import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';\nimport { printDeliveryContactRefusal } from './print-delivery-contact.ts';\n",
+    base: "import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';\n",
+  },
+  {
+    description: 'standard-lane delivery contact refusal in printReleaseRefusal',
+    candidate: `    return 'print_interior_stale';
+  }
+  // Standard lane only: the provider needs a recipient name and delivery phone
+  // from the order's address. Refuse here, before the cover-dimension call and
+  // the print-job POST, rather than ship with a placeholder. The expedited lane
+  // carries its contact in the private draft and is decided by its own gate.
+  if (preclaimShippingGate(order) === 'standard') {
+    const contactRefusal = printDeliveryContactRefusal(order.shippingAddress);
+    if (contactRefusal) return contactRefusal;
+  }
+  return null;
+}
+`,
+    base: `    return 'print_interior_stale';
+  }
+  return null;
+}
+`,
+  },
+];
+function withoutPrintDeliveryContactGate(source: string): string {
+  for (const rule of PHONE_FULFILLMENT_INVERSE) {
+    assert.equal(source.split(rule.candidate).length - 1, 1, `src/lib/fulfillment.ts must carry the ${rule.description} exactly once`);
+    source = source.replace(rule.candidate, () => rule.base);
+  }
+  return source;
+}
 function withoutInitialShippingFulfillment(source: string): string {
+  source = withoutPrintDeliveryContactGate(source);
   for (const rule of SHIPPING_FULFILLMENT_INVERSE) {
     assert.equal(sha256(rule.candidate), rule.sha256);
     assert.equal(source.split(rule.candidate).length - 1, 1);
@@ -762,6 +828,32 @@ test('initial shipping provenance addition has an exact inverse and rejects unau
   ];
   for (const [label, candidate] of cases) {
     assert.notEqual(candidate, current, `${label}: mutation must actually change bytes`);
+    assert.throws(() => oracle(candidate), { code: 'ERR_ASSERTION' }, `${label}: unauthorized change must be rejected`);
+  }
+});
+
+test('print delivery contact additions have exact inverses and reject unauthorized mutations', () => {
+  const orders = src('src/lib/orders.ts');
+  const fulfillment = src('src/lib/fulfillment.ts');
+  const ordersOracle = (source: string) => {
+    assert.equal(sha256(withoutInitialShippingProvenanceAddition(source)), IS_PROVENANCE_PRE_ADDITION_SHA256);
+  };
+  const fulfillmentOracle = (source: string) => { withoutInitialShippingFulfillment(source); };
+  ordersOracle(orders);
+  fulfillmentOracle(fulfillment);
+  const [importRule, gateRule] = PHONE_FULFILLMENT_INVERSE;
+  const cases: Array<[string, string, (source: string) => void]> = [
+    ['orders block missing', orders.replace(PHONE_TYPE_BLOCK, ''), ordersOracle],
+    ['orders block duplicated', orders.replace(PHONE_TYPE_BLOCK, () => PHONE_TYPE_BLOCK + PHONE_TYPE_BLOCK), ordersOracle],
+    ['orders block relocated', orders.replace(PHONE_TYPE_BLOCK, '').replace('export type PrintUpgradeStatus =', () => PHONE_TYPE_BLOCK + 'export type PrintUpgradeStatus ='), ordersOracle],
+    ['orders block widened', orders.replace('  phone?: string | null;\n}\n', '  phone?: string | null;\n  email?: string | null;\n}\n'), ordersOracle],
+    ['fulfillment import missing', fulfillment.replace(importRule.candidate, importRule.base), fulfillmentOracle],
+    ['fulfillment gate missing', fulfillment.replace(gateRule.candidate, gateRule.base), fulfillmentOracle],
+    ['fulfillment gate unscoped', fulfillment.replace("  if (preclaimShippingGate(order) === 'standard') {\n    const contactRefusal", "  if (true) {\n    const contactRefusal"), fulfillmentOracle],
+    ['fulfillment extra refusal elsewhere', fulfillment.replace("  if (!isPrintFormat(order.bookFormat)) return 'not_print_order';", () => "  if (!isPrintFormat(order.bookFormat)) return 'not_print_order';\n  if (printDeliveryContactRefusal(order.shippingAddress)) return 'shipping_contact_missing';"), fulfillmentOracle],
+  ];
+  for (const [label, candidate, oracle] of cases) {
+    assert.notEqual(candidate, label.startsWith('orders') ? orders : fulfillment, `${label}: mutation must actually change bytes`);
     assert.throws(() => oracle(candidate), { code: 'ERR_ASSERTION' }, `${label}: unauthorized change must be rejected`);
   }
 });

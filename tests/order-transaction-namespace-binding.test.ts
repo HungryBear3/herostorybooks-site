@@ -1496,8 +1496,36 @@ function withoutInitialShippingTypeAddition(source: string): string {
   assert.equal(source.split(fieldAnchor).length - 1, 1, 'exact type field location');
   return source.replace(importAnchor, IS_PROVENANCE_IMPORT).replace(fieldAnchor, 'export interface OrderRecord extends OrderInput {\n');
 }
+// Required print delivery phone (SCOPE_ADMIT): exactly one declaration-only
+// merge onto ShippingAddress, immediately before the additive-types end marker.
+// Removed first so the pinned pre-addition hash below still sees exact bytes.
+const PHONE_TYPE_ANCHOR = "  printStatus: 'awaiting_files' | 'ready_for_print' | 'submitted' | 'shipped';\n}\n";
+const PHONE_TYPE_END = '// PRINT_COMMERCE_ADDITIVE_END_TYPES\n';
+const PHONE_TYPE_BLOCK = [
+  '/**',
+  ' * Delivery contact (2026-10-29). Declaration-merged onto `ShippingAddress`',
+  ' * so the frozen base declaration above stays byte-identical. Both fields are',
+  ' * collected by Stripe hosted Checkout for standard print formats and copied',
+  ' * here by the signed webhook; `null` means never collected — nothing',
+  ' * downstream invents them, and print release refuses until an operator',
+  ' * records the contact.',
+  ' */',
+  'export interface ShippingAddress {',
+  '  /** Recipient name as Stripe collected it with the address. */',
+  '  name?: string | null;',
+  '  /** Delivery phone (E.164 when Stripe supplied it). Required by the print provider. */',
+  '  phone?: string | null;',
+  '}',
+  '',
+].join('\n');
+function withoutPrintDeliveryContactType(source: string): string {
+  const placed = PHONE_TYPE_ANCHOR + PHONE_TYPE_BLOCK + PHONE_TYPE_END;
+  assert.equal(source.split(PHONE_TYPE_BLOCK).length - 1, 1, 'delivery contact type block exactly once');
+  assert.equal(source.split(placed).length - 1, 1, 'delivery contact type block in its exact place');
+  return source.replace(placed, () => PHONE_TYPE_ANCHOR + PHONE_TYPE_END);
+}
 function withoutInitialShippingProvenanceAddition(source: string): string {
-  source = withoutInitialShippingTypeAddition(source);
+  source = withoutInitialShippingTypeAddition(withoutPrintDeliveryContactType(source));
   const count = (needle: string) => source.split(needle).length - 1;
   assert.equal(count(IS_PROVENANCE_IMPORT), 1, 'provenance import exactly once');
   assert.equal(count(IS_PROVENANCE_IMPORT_ANCHOR + IS_PROVENANCE_IMPORT), 1, 'provenance import in its exact place');
@@ -1557,6 +1585,10 @@ test('initial shipping provenance addition has an exact inverse and rejects unau
     ['local adapter changed', outside('        await link(tmp, file); // atomic exclusive create\n        return { ok: true', '        await rename(tmp, file);\n        return { ok: true')],
     ['cache changed', outside('const recentConditionalCommits = new Map<string, CachedCommit>();', 'const recentConditionalCommits = new Map<string, CachedCommit>(); ')],
     ['CAS body changed', outside('          ifMatch: expectedVersion,\n', '')],
+    ['missing phone type block', ORDERS_SOURCE.replace(PHONE_TYPE_BLOCK, '')],
+    ['duplicate phone type block', ORDERS_SOURCE.replace(PHONE_TYPE_BLOCK, () => PHONE_TYPE_BLOCK + PHONE_TYPE_BLOCK)],
+    ['relocated phone type block', ORDERS_SOURCE.replace(PHONE_TYPE_BLOCK, '').replace('export type PrintUpgradeStatus =', () => PHONE_TYPE_BLOCK + 'export type PrintUpgradeStatus =')],
+    ['widened phone type block', ORDERS_SOURCE.replace(PHONE_TYPE_BLOCK, () => PHONE_TYPE_BLOCK.replace('  phone?: string | null;\n', '  phone?: string | null;\n  email?: string | null;\n'))],
   ];
   for (const [label, candidate] of cases) {
     assert.notEqual(candidate, ORDERS_SOURCE, `${label}: mutation must actually change bytes`);

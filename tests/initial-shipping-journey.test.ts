@@ -330,6 +330,9 @@ async function manualProof(j: any) {
       assert.equal(j.artifacts.length, 3); assert.equal(j.posts[0].shipping_address.name, CONTACT.name);
       assert.equal(j.posts[0].shipping_address.phone_number, CONTACT.phone);
       assert.equal(j.posts[0].shipping_address.country_code, 'US');
+    } else {
+      assert.equal(j.posts[0].shipping_address.name, 'Standard Recipient');
+      assert.equal(j.posts[0].shipping_address.phone_number, '+12175550123');
     }
     await approvePrintProof(id, 'synthetic-approval'); assert.equal(j.posts.length, 1);
   }
@@ -339,7 +342,8 @@ for (const mode of ['ok', 'cost-hold', 'lulu-lost']) test(`joined mounted litera
   assert.equal(j.responses[0].status, 200); assert.equal((await j.replay()).status, 200); assert.equal(j.creates.length, 1);
   const p = j.creates[0].params; const o = await j.read();
   assert.deepEqual(p.line_items.map((x: any) => x.price_data.unit_amount), [j.selected.bookCents, 420]);
-  assert.equal(p.shipping_address_collection, undefined); assert.equal(o.initialShipping.totals.totalCents, j.selected.totalCents);
+  assert.equal(p.shipping_address_collection, undefined); assert.equal(p.phone_number_collection, undefined);
+  assert.equal(o.initialShipping.totals.totalCents, j.selected.totalCents);
   assert.equal(o.initialShipping.totals.deltaTaxIncludedCents, 20);
   await settle(j, 'timely', mode === 'ok'); await manualProof(j);
 }));
@@ -348,6 +352,14 @@ for (const format of ['classic', 'digital'] as const) test(`joined mounted ${for
   const p = j.creates[0].params;
   assert.equal(p.line_items.length, 1); assert.equal(p.line_items[0].price_data.unit_amount, getBookFormatMeta(format).priceCents);
   assert.deepEqual(p.shipping_address_collection, format === 'classic' ? { allowed_countries: ['US'] } : undefined);
+  assert.deepEqual(p.phone_number_collection, format === 'classic' ? { enabled: true } : undefined);
+  if (format === 'classic') {
+    // What Stripe's current shape returns once hosted Checkout collected the delivery contact.
+    Object.assign(j.session, {
+      customer_details: { name: 'Card Holder', phone: '+12175550123', email: 'synthetic@example.invalid' },
+      collected_information: { shipping_details: { name: 'Standard Recipient', address: { line1: '1 Standard Way', line2: null, city: 'Springfield', state: 'IL', postal_code: '62701', country: 'US' } } },
+    });
+  }
   assert.ok(!(await j.read()).initialShipping); await settle(j);
   if (format === 'classic') await manualProof(j);
 }));

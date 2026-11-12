@@ -23,6 +23,7 @@ import {
   type PrintUpgradeQuoteV1,
   type ShippingAddress,
 } from './orders.ts';
+import { normalizeDeliveryPhone } from './print-delivery-contact.ts';
 import {
   authorizePrintUpgradeOffer,
   isPrintUpgradeTargetFormat,
@@ -99,6 +100,8 @@ export interface PrintUpgradeCheckoutSessionCreate {
   metadata: Record<string, string>;
   payment_intent_data: { metadata: Record<string, string> };
   line_items: PrintUpgradeCheckoutLineItem[];
+  /** The quoted address is the destination; Stripe still collects the delivery phone the provider needs. */
+  phone_number_collection: { enabled: true };
   expires_at: number;
   success_url: string;
   cancel_url: string;
@@ -119,6 +122,7 @@ export interface PrintUpgradeCheckoutSessionLike {
   client_reference_id?: string | null;
   payment_intent?: string | { id?: string | null } | null;
   metadata?: Record<string, string> | null;
+  customer_details?: { phone?: string | null; name?: string | null } | null;
 }
 
 export function printUpgradeCheckoutIdempotencyKey(orderId: string, quoteId: string): string {
@@ -358,6 +362,7 @@ export async function openPrintUpgradeCheckout(
     },
     payment_intent_data: { metadata: { orderId, kind: PRINT_UPGRADE_STRIPE_KIND, quoteId: lock.quoteId, purchaseKind: lock.purchaseKind, quantity: String(lock.quantity) } },
     line_items: buildPrintUpgradeCheckoutLineItems(quote),
+    phone_number_collection: { enabled: true },
     expires_at: Math.floor(Date.parse(lock.expiresAt) / 1000),
     success_url: `${deps.baseUrl}/upgrade/${orderId}/done?sessionId={CHECKOUT_SESSION_ID}`,
     cancel_url: `${deps.baseUrl}/upgrade/${orderId}/cancelled`,
@@ -443,8 +448,22 @@ function paymentIntentId(session: PrintUpgradeCheckoutSessionLike): string | nul
   return typeof id === 'string' && id ? id : null;
 }
 
-function stripName(address: ShippingAddress & { name: string }): ShippingAddress {
-  return { line1: address.line1, line2: address.line2 ?? null, city: address.city, state: address.state, zip: address.zip, country: address.country };
+/**
+ * The quoted destination plus the delivery phone this Session collected (null,
+ * never invented, when absent). Built field by field so no phone stored with
+ * any other address can ride along.
+ */
+function withDeliveryPhone(address: ShippingAddress & { name: string }, session: PrintUpgradeCheckoutSessionLike): ShippingAddress & { name: string } {
+  return {
+    line1: address.line1,
+    line2: address.line2 ?? null,
+    city: address.city,
+    state: address.state,
+    zip: address.zip,
+    country: address.country,
+    name: address.name,
+    phone: normalizeDeliveryPhone(session.customer_details?.phone),
+  };
 }
 
 function settlementMismatch(
@@ -520,6 +539,7 @@ export async function settlePrintUpgradeAtCostSession(
       const checked = settlementMismatch(current, session, orderId, quoteId, targetFormat);
       if ('reason' in checked) return { abort: { kind: 'conflict', reason: checked.reason } };
       const { lock, quote } = checked;
+      const destination = withDeliveryPhone(quote.shippingAddress, session);
       const purchase = {
         version: 1 as const,
         kind: lock.purchaseKind,
@@ -534,7 +554,7 @@ export async function settlePrintUpgradeAtCostSession(
         currency: 'usd' as const,
         stripeSessionId: session.id,
         stripePaymentIntentId: paymentIntentId(session),
-        shippingAddress: quote.shippingAddress,
+        shippingAddress: destination,
         estimatedDeliveryStart: quote.estimatedDeliveryStart ?? '',
         estimatedDeliveryEnd: quote.estimatedDeliveryEnd ?? '',
         paidAt: now,
@@ -547,7 +567,7 @@ export async function settlePrintUpgradeAtCostSession(
         // the signed intake contract. A later print purchase must not rewrite
         // them; its format, destination and status live in the purchase receipt.
         ...(lock.purchaseKind === 'upgrade' ? {
-          shippingAddress: stripName(quote.shippingAddress),
+          shippingAddress: destination,
         } : {}),
         printCopyPurchases: [...(current.printCopyPurchases ?? []), purchase],
         printUpgradeStatus: 'paid',

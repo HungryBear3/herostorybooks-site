@@ -982,6 +982,20 @@ export interface PrintCopyPurchaseV1 {
   printJobId: string | null;
   printStatus: 'awaiting_files' | 'ready_for_print' | 'submitted' | 'shipped';
 }
+/**
+ * Delivery contact (2026-10-29). Declaration-merged onto `ShippingAddress`
+ * so the frozen base declaration above stays byte-identical. Both fields are
+ * collected by Stripe hosted Checkout for standard print formats and copied
+ * here by the signed webhook; `null` means never collected — nothing
+ * downstream invents them, and print release refuses until an operator
+ * records the contact.
+ */
+export interface ShippingAddress {
+  /** Recipient name as Stripe collected it with the address. */
+  name?: string | null;
+  /** Delivery phone (E.164 when Stripe supplied it). Required by the print provider. */
+  phone?: string | null;
+}
 // PRINT_COMMERCE_ADDITIVE_END_TYPES
 
 export type PrintUpgradeStatus =

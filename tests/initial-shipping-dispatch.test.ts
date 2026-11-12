@@ -128,8 +128,11 @@ test('proof replacement during slow cover cannot authorize old generated cover f
   assert.equal(result.ok, false); assert.equal(j.posts.length, 0); assert.ok(!(await j.read()).printSubmissionAttemptedAt);
 }));
 test('standard approval retains original payload and never reads private dispatch artifacts', () => journey(async j => {
-  j.edit({ initialShipping: undefined, initialShippingSettlement: undefined });
+  // Standard lane: the Stripe-collected contact lives on the order (never the private expedited CONTACT).
+  j.edit({ initialShipping: undefined, initialShippingSettlement: undefined,
+    shippingAddress: { line1: '1 Standard Way', line2: null, city: 'Springfield', state: 'IL', zip: '62701', country: 'US', name: 'Standard Recipient', phone: '+12175550123' } });
   assert.equal((await j.approve()).ok, true); assert.equal(j.posts.length, 1); assert.equal(j.posts[0].shipping_level, 'MAIL');
+  assert.equal(j.posts[0].shipping_address.phone_number, '+12175550123');
   assert.equal(j.posts[0].line_items[0].interior.source_md5_sum, md5); assert.equal(j.reads.length, 0);
 }));
 for (const mode of ['uncommitted','malformed','private-malformed','wrong-account','wrong-endpoint','wrong-store','page-count','layout','md5','foreign-url','foreign-path','proof-source','refunded']) {

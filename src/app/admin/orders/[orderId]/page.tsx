@@ -435,9 +435,13 @@ export default async function AdminOrderDetail({ params, searchParams }: Props) 
             <Row label="Tracking URL" value={order.trackingUrl ?? '—'} link={order.trackingUrl ?? undefined} mono />
             <Row label="Shipped at" value={order.shippedAt ?? '—'} />
             {order.shippingAddress && (
-              <Row label="Ships to" value={
-                `${order.shippingAddress.line1}${order.shippingAddress.line2 ? ', ' + order.shippingAddress.line2 : ''}, ${order.shippingAddress.city}, ${order.shippingAddress.state} ${order.shippingAddress.zip}, ${order.shippingAddress.country}`
-              } />
+              <>
+                <Row label="Ships to" value={
+                  `${order.shippingAddress.line1}${order.shippingAddress.line2 ? ', ' + order.shippingAddress.line2 : ''}, ${order.shippingAddress.city}, ${order.shippingAddress.state} ${order.shippingAddress.zip}, ${order.shippingAddress.country}`
+                } />
+                <Row label="Recipient" value={order.shippingAddress.name ?? '— (not collected; print release will refuse)'} />
+                <Row label="Delivery phone" value={order.shippingAddress.phone ?? '— (not collected; print release will refuse)'} mono />
+              </>
             )}
           </Section>
         )}
