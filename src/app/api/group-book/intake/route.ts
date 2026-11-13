@@ -151,19 +151,28 @@ export async function POST(req: Request) {
   // loop locally but may still leave a remote commit, which stays owned by
   // the attempt record above and is removed by the scheduled retention pass.
   const uploaded: GroupBookPhotoAsset[] = [];
+  // The deadline signal of the put currently awaited (null between puts). Its
+  // timer runs on the event-loop clock, not Date.now, so it can fire while the
+  // wall clock still reads inside the window; that abort is still expiry.
+  let pendingDeadline: AbortSignal | null = null;
   try {
     for (const photo of planned) {
       if (!windowOpen()) throw new WriteWindowElapsed();
-      uploaded.push(await writePlannedGroupBookPhoto(photo, AbortSignal.timeout(Math.max(1, writeDeadline - Date.now()))));
+      pendingDeadline = AbortSignal.timeout(Math.max(1, writeDeadline - Date.now()));
+      uploaded.push(await writePlannedGroupBookPhoto(photo, pendingDeadline));
+      pendingDeadline = null;
     }
   } catch (err) {
+    // Captured before any await: only this request's own signal for the failed
+    // put counts, never an error name.
+    const ownedDeadlineFired = pendingDeadline?.aborted === true;
     // No family record references these random paths yet. Best-effort cleanup
     // only: a failed delete leaves them attributed by the owner record.
     await deleteGroupBookPhotos(planned.map((photo) => ({
       assetId: photo.assetId, pathname: photo.pathname, mime: photo.mime, size: 1, uploadedAt: '', storage: 'private',
     })));
     console.error('[group-book/intake] private upload failed:', err instanceof Error ? err.name : 'unknown');
-    if (err instanceof WriteWindowElapsed || !windowOpen()) return refuse('write_window_elapsed', 503);
+    if (err instanceof WriteWindowElapsed || ownedDeadlineFired || !windowOpen()) return refuse('write_window_elapsed', 503);
     return refuse('private_upload_failed', 502);
   }
 
