@@ -18,8 +18,11 @@ export default function GiftsPage() {
         <div className="mx-auto max-w-6xl">
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#a64c4c]">Gift ideas</p>
           <h1 className="mt-4 max-w-4xl font-serif text-5xl font-medium leading-[1.02] md:text-7xl">
-            Start with the person and the moment. We&apos;ll help shape the story.
+            Personalized storybook gifts starring the child you love
           </h1>
+          <p className="mt-5 max-w-3xl font-serif text-2xl leading-9 text-[#695f54]">
+            Start with the person and the moment. We&apos;ll help shape the story.
+          </p>
           <p className="mt-6 max-w-2xl text-base leading-8 text-[#695f54]">
             Every HeroStoryBook starts as a private digital proof. You review the whole book before
             approval, and physical books do not enter print until the proof is approved.
@@ -46,7 +49,7 @@ export default function GiftsPage() {
                 <h2 className="mt-3 font-serif text-3xl font-semibold leading-tight">{occasion.title}</h2>
                 <p className="mt-4 text-sm leading-7 text-[#695f54]">{occasion.description}</p>
                 <Link href={`/gifts/${occasion.id}`} className="mt-6 inline-flex min-h-11 items-center font-semibold text-[#8f3f3f] underline decoration-[#d8c6a2] underline-offset-4">
-                  Explore this gift
+                  {occasion.title}
                 </Link>
               </article>
             ))}

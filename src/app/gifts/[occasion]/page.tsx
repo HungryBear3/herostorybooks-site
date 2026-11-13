@@ -29,6 +29,7 @@ export default async function GiftOccasionPage({ params }: { params: Promise<{ o
   return (
     <EditorialPageShell>
       <section className="mx-auto max-w-6xl px-5 py-16 md:px-8 md:py-24">
+        <Link href="/gifts" className="mb-5 inline-flex min-h-11 items-center text-sm font-semibold text-[#8f3f3f] underline decoration-[#d8c6a2] underline-offset-4">All personalized storybook gift ideas</Link>
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#a64c4c]">{occasion.eyebrow}</p>
         <h1 className="mt-4 max-w-4xl font-serif text-5xl font-medium leading-[1.02] md:text-7xl">{occasion.title}</h1>
         <p className="mt-6 max-w-2xl text-base leading-8 text-[#695f54]">{occasion.description}</p>
