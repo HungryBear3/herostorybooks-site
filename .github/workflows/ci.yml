@@ -126,7 +126,7 @@ jobs:
   # ── Gates 1 + 3: Node suite and production build ─────────────────────────
   unit-and-build:
     name: npm test + next build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
