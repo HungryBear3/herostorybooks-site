@@ -81,7 +81,22 @@ test('webhook source: fulfillment is scheduled via setImmediate+after helper (re
 
 test('webhook source: payment write is awaited before responding (must commit before 200)', () => {
   const src = readFileSync('src/app/api/webhooks/stripe/route.ts', 'utf8');
-  assert.match(src, /const\s+settlement\s*=\s*await\s+settleOrderPayment\(/);
+  const assertAwaitedSettlement = (source: string) => {
+    const shared = /const\s+settlement\s*=\s*expedited\s*\?\?\s*await\s+settleOrderPayment\(/.exec(source);
+    assert.ok(shared, 'standard payment write remains awaited');
+    const expedited = /const\s+expedited\s*=[^;]*\?\s*await\s+reconcileSignedInitialShipping\([^;]*:\s*null\s*;/.exec(source);
+    assert.ok(expedited, 'expedited result cannot be an unawaited promise');
+    assert.ok(expedited.index < shared.index, 'awaited reconciliation precedes financial result reuse');
+  };
+  assertAwaitedSettlement(src);
+  for (const mutant of [
+    src.replace(/(expedited\s*\?\?\s*)await\s+(settleOrderPayment\()/, '$1$2'),
+    src.replace(/(\?\s*)await\s+(reconcileSignedInitialShipping\()/, '$1$2'),
+    src.replace(/expedited\s*\?\?\s*await\s+settleOrderPayment\(/, 'expedited || await settleOrderPayment('),
+  ]) {
+    assert.notEqual(mutant, src, 'mutation must reach the payment-ordering oracle');
+    assert.throws(() => assertAwaitedSettlement(mutant));
+  }
 });
 
 test('webhook source: verifies exact settlement facts and returns retryable conflicts', () => {

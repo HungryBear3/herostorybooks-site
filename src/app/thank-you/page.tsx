@@ -1,4 +1,6 @@
 import { getOrder } from '@/lib/orders';
+import { publicShippingSummary } from '@/lib/initial-shipping-summary';
+import { InitialShippingSummary } from '@/components/initial-shipping-summary';
 import {
   PROOF_DELAY_SUPPORT_NOTE,
   PROOF_REVIEW_ASSURANCE,
@@ -44,6 +46,17 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
   // we can't confirm 'paid'.
   const paymentStatus = order?.paymentStatus;
   const cleanupAttemptId = confirmedCheckoutCleanupAttemptId(order, sessionId);
+  const shipping = publicShippingSummary(order ?? {});
+
+  if (paymentStatus === 'paid' && shipping.kind !== 'standard') {
+    return <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--cream)] px-4 py-16 space-y-8">
+      {cleanupAttemptId ? <ConfirmedCheckoutCleanup attemptId={cleanupAttemptId} /> : null}
+      <h1 className="text-4xl font-bold text-[var(--forest)]">Payment received</h1>
+      <InitialShippingSummary summary={shipping} />
+      <p>{order?.confirmationEmailSentAt ? 'Your order confirmation email was sent.' : 'Your confirmation email will follow when the order is ready for confirmation.'}</p>
+      <a href={`/status/${orderId}`} className="underline">View Order Status</a>
+    </div>;
+  }
 
   if (paymentStatus === 'paid') {
     return (
@@ -60,7 +73,7 @@ export default async function ThankYouPage({ searchParams }: ThankYouPageProps) 
   }
 
   // pending OR order-not-found OR no orderId — show neutral processing state.
-  return <PendingConfirmation orderId={orderId} childName={childName} sessionId={sessionId} />;
+  return <PendingConfirmation orderId={orderId} childName={childName} sessionId={sessionId} shipping={shipping} />;
 }
 
 function SuccessView({

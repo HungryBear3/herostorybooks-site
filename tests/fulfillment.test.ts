@@ -335,6 +335,7 @@ test('print order cannot enter print_in_production without proof approval', asyn
       fulfillmentStatus: 'proof_ready',
       storyArtifactUrl: 'https://cdn.example.com/proof.pdf',
       proofApprovalToken: 'valid-token-abc',
+      shippingAddress: { line1: '123 Main St', line2: null, city: 'Springfield', state: 'IL', zip: '62701', country: 'US', name: 'Luna Parent', phone: '+12175550123' },
     }, dir);
 
     // Attempting to approve with wrong token should fail
@@ -365,6 +366,7 @@ test('valid token approves proof, creates cover artifact, and triggers print pro
       printInteriorProofVersion: 'proof-v1',
       printTitle: MOCK_STORY.title,
       proofApprovalToken: 'valid-token-abc',
+      shippingAddress: { line1: '123 Main St', line2: null, city: 'Springfield', state: 'IL', zip: '62701', country: 'US', name: 'Luna Parent', phone: '+12175550123' },
       reviewStatus: 'approved',
       pageArtifacts: padPageSet([]),
       proofVersion: 'proof-v1',

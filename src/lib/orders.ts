@@ -34,6 +34,8 @@ import type { FulfillmentStatus, LayoutVersion, PageTextLayout, ProofCardOverrid
 import type { GuidedReferencePhotoRecord } from './guided-photo-capture.ts';
 import type { CustomStoryBrief, ValidationResult } from './custom-story/index.ts';
 import { finalizationFingerprint, parseSelectionEntry, type FinalizedSelectionEntry } from './checkout-intake.ts';
+import { parseBlobToken } from './checkout-blob-identity.ts';
+import type { InitialShippingOrderMetadataV1, InitialShippingSettlementV1 } from './initial-shipping-contract.ts';
 import { validateOrderPhotoFile } from './photo-file-validation.ts';
 import { PRINT_TIMING_AFTER_APPROVAL, PROOF_TURNAROUND_PHRASE } from './proof-turnaround.ts';
 import { classifyStoryAttachment } from './story-attachment.ts';
@@ -614,6 +616,8 @@ export interface PageArtifact {
 export type FulfillmentMode = 'auto' | 'manual_hold';
 
 export interface OrderRecord extends OrderInput {
+  initialShipping?: InitialShippingOrderMetadataV1;
+  initialShippingSettlement?: InitialShippingSettlementV1;
   id: string;
   checkoutAttemptId?: string | null;
   checkoutFingerprint?: string | null;
@@ -977,6 +981,20 @@ export interface PrintCopyPurchaseV1 {
   paidAt: string;
   printJobId: string | null;
   printStatus: 'awaiting_files' | 'ready_for_print' | 'submitted' | 'shipped';
+}
+/**
+ * Delivery contact (2026-10-29). Declaration-merged onto `ShippingAddress`
+ * so the frozen base declaration above stays byte-identical. Both fields are
+ * collected by Stripe hosted Checkout for standard print formats and copied
+ * here by the signed webhook; `null` means never collected — nothing
+ * downstream invents them, and print release refuses until an operator
+ * records the contact.
+ */
+export interface ShippingAddress {
+  /** Recipient name as Stripe collected it with the address. */
+  name?: string | null;
+  /** Delivery phone (E.164 when Stripe supplied it). Required by the print provider. */
+  phone?: string | null;
 }
 // PRINT_COMMERCE_ADDITIVE_END_TYPES
 
@@ -3326,6 +3344,183 @@ function resolveOrderStoreAdapter(): OrderStoreAdapter {
     );
   }
   return localOrderStoreAdapter();
+}
+
+/** Narrow bound initial-shipping provenance marker access (H3). Never exposes token/adapter/replace/delete. */
+export interface InitialShippingProvenanceAccess {
+  readonly kind: 'blob' | 'local';
+  readonly namespace: string;
+  /** Exact marker bytes, null only on qualified synthetic absence; throws => HOLD. */
+  read(orderId: string): Promise<{ body: string } | null>;
+  /** Create-only attempt; its outcome never confirms alone (callers reread exactly). */
+  create(orderId: string, body: string): Promise<'created' | 'exists'>;
+  /** True iff the ambient order-store context still equals the captured one. */
+  intact(): boolean;
+}
+/** SDK transport seam (list/fetch/get/put) only; defaults are the real SDK and fetch. */
+export interface InitialShippingProvenanceTransport {
+  list?: PublicVersionedReadDeps['listImpl'];
+  fetch?: typeof fetch;
+  get?: (pathname: string, options: { access: 'private'; token: string; useCache: false }) => Promise<unknown>;
+  put?: (pathname: string, body: string, options: Record<string, unknown>) => Promise<unknown>;
+}
+
+/**
+ * Captures namespace, order token, store id, access mode, durable classification
+ * and (local only) the marker root synchronously. Throws
+ * `initial_shipping_provenance_unavailable` instead of falling back: a missing or
+ * invalid token in production/durable environments HOLDs even with a local dir.
+ */
+export function createInitialShippingProvenanceAccess(
+  transport: InitialShippingProvenanceTransport = {},
+): InitialShippingProvenanceAccess {
+  const unavailable = () => new Error('initial_shipping_provenance_unavailable');
+  const invalid = () => new Error('initial_shipping_provenance_invalid');
+  const captureContext = () => {
+    const namespace = getBlobNamespace();
+    const token = getBlobToken() || null;
+    const storeId = token ? parseBlobToken(token, 'order').storeId : null;
+    const mode = getBlobAccessMode();
+    const durable = requiresDurablePersistence();
+    const productionLike = durable || !!process.env.VERCEL || process.env.NODE_ENV === 'production';
+    const localRoot = token ? null : getOrderStoreDir();
+    return { namespace, token, storeId, mode, durable, productionLike, localRoot };
+  };
+  let captured: ReturnType<typeof captureContext>;
+  try {
+    captured = captureContext();
+  } catch {
+    throw unavailable();
+  }
+  if (!captured.token && captured.productionLike) throw unavailable();
+  const { namespace, token, mode, localRoot } = captured;
+  const intact = () => {
+    try {
+      const now = captureContext();
+      return now.namespace === captured.namespace && now.token === captured.token && now.storeId === captured.storeId &&
+        now.mode === captured.mode && now.durable === captured.durable && now.productionLike === captured.productionLike &&
+        now.localRoot === captured.localRoot;
+    } catch {
+      return false;
+    }
+  };
+  const canonicalId = /^ord_[a-f0-9]{16}$/;
+  const markerPathFor = (orderId: string) => {
+    if (typeof orderId !== 'string' || !canonicalId.test(orderId)) throw invalid();
+    return applyBlobNamespace(`order-provenance/initial-shipping/${orderId}.json`, namespace);
+  };
+  const assertMarkerBody = (orderId: string, body: string) => {
+    const expected = JSON.stringify({ schema: 'hsb.initial-shipping-provenance.v1', orderId, operation: 'initial_checkout_shipping' });
+    if (body !== expected) throw invalid();
+  };
+  const assertIntact = () => {
+    if (!intact()) throw new Error('initial_shipping_provenance_context_drift');
+  };
+
+  if (token) {
+    const listImpl = transport.list ?? ((options) => list(options));
+    const fetchImpl = transport.fetch ?? fetch;
+    const getImpl = transport.get ?? ((pathname, options) => get(pathname, options));
+    const putImpl = transport.put ?? ((pathname, body, options) => put(pathname, body, options as never));
+    return {
+      kind: 'blob',
+      namespace,
+      intact,
+      async read(orderId) {
+        const pathname = markerPathFor(orderId);
+        assertIntact();
+        if (mode === 'public') {
+          // Absence only from authenticated exact-path metadata; a CDN 404 retries then throws.
+          const result = await readAuthoritativeOrderBlobVersioned(pathname, token, { listImpl, fetchImpl });
+          assertIntact();
+          return result === null ? null : { body: result.body };
+        }
+        let result: unknown;
+        try {
+          result = await getImpl(pathname, { access: 'private', token, useCache: false });
+        } catch (error) {
+          // Typed SDK not-found only; never message/HTTP text.
+          if (error instanceof BlobNotFoundError) {
+            assertIntact();
+            return null;
+          }
+          throw new Error('initial_shipping_provenance_read_failed');
+        }
+        assertIntact();
+        if (result === null) return null;
+        const stream = (result as { stream?: unknown } | undefined)?.stream;
+        if (!stream) throw new Error('initial_shipping_provenance_malformed_response');
+        const body = await new Response(stream as ReadableStream).text();
+        assertIntact();
+        return { body };
+      },
+      async create(orderId, body) {
+        const pathname = markerPathFor(orderId);
+        assertMarkerBody(orderId, body);
+        assertIntact();
+        try {
+          await putImpl(pathname, body, {
+            access: mode,
+            token,
+            allowOverwrite: false,
+            addRandomSuffix: false,
+            contentType: 'application/json',
+            cacheControlMaxAge: 0,
+          });
+        } catch {
+          // Exists, lost response or outage are indistinguishable here: exact reread decides.
+          throw new Error('initial_shipping_provenance_create_uncertain');
+        }
+        assertIntact();
+        return 'created';
+      },
+    };
+  }
+
+  const markerRoot = `${localRoot}/order-provenance/initial-shipping/${namespace || '.flat'}`;
+  const localFileFor = (orderId: string) => {
+    markerPathFor(orderId);
+    return `${markerRoot}/${orderId}.json`;
+  };
+  return {
+    kind: 'local',
+    namespace,
+    intact,
+    async read(orderId) {
+      const file = localFileFor(orderId);
+      assertIntact();
+      let body: string;
+      try {
+        body = await readFile(file, 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          assertIntact();
+          return null;
+        }
+        throw new Error('initial_shipping_provenance_read_failed');
+      }
+      assertIntact();
+      return { body };
+    },
+    async create(orderId, body) {
+      const file = localFileFor(orderId);
+      assertMarkerBody(orderId, body);
+      assertIntact();
+      await mkdir(markerRoot, { recursive: true });
+      const tmp = `${file}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+      await writeFile(tmp, body, { encoding: 'utf8', flag: 'wx' });
+      try {
+        await link(tmp, file); // atomic exclusive create; never rename over a marker
+        return 'created';
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return 'exists';
+        throw error;
+      } finally {
+        await unlink(tmp).catch(() => {});
+        assertIntact();
+      }
+    },
+  };
 }
 
 /** A cached commit, tagged with the write generation that published it. */

@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { readInitialShippingFlags } from '@/lib/initial-shipping-contract';
+import { isDirectUploadServerEnabled } from '@/lib/checkout-direct-flags';
 
 import { CHECKOUT_PAUSED_MESSAGE, isCheckoutPaused } from '@/lib/checkout-pause';
 import {
@@ -62,6 +64,7 @@ export default function CheckoutPage() {
 
   return (
     <CheckoutForm
+      expeditedShippingEnabled={isDirectUploadServerEnabled() && readInitialShippingFlags(process.env).quotes && readInitialShippingFlags(process.env).checkout}
       storyMediaEnabled={isCheckoutStoryMediaEnabled()}
       directUploadEnabled={isCheckoutDirectUploadEnabled()}
     />

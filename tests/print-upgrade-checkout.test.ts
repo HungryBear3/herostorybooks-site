@@ -162,6 +162,8 @@ test('open: creates one price-locked Session for the chosen quote and binds it b
   assert.match(params.line_items[0].price_data.product_data.name, /hardcover/i);
   assert.match(params.line_items[0].price_data.product_data.name, /at cost/i);
   assert.equal('shipping_address_collection' in params, false);
+  // The quoted address is the destination; Stripe still collects the delivery phone the provider needs.
+  assert.deepEqual((params as unknown as { phone_number_collection?: unknown }).phone_number_collection, { enabled: true });
   assert.equal(params.expires_at, Math.floor((Date.parse(NOW) + PRINT_UPGRADE_CHECKOUT_SESSION_TTL_MS) / 1000));
   assert.equal(params.success_url, `${BASE_URL}/upgrade/${ORDER_ID}/done?sessionId={CHECKOUT_SESSION_ID}`);
   assert.equal(params.cancel_url, `${BASE_URL}/upgrade/${ORDER_ID}/cancelled`);
@@ -435,7 +437,7 @@ test('settle: the exact bound Session records the chosen print format without ch
   const opened = await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: premium.quoteId }, { createCheckoutSession: fakeStripe(created), baseUrl: BASE_URL, now: NOW });
   assert.ok(opened.ok);
   const paidAt = '2026-10-14T12:20:00.000Z';
-  const session = paidSession({ metadata: { kind: PRINT_UPGRADE_STRIPE_KIND, orderId: ORDER_ID, targetFormat: 'premium', quoteId: premium.quoteId } });
+  const session = { ...paidSession({ metadata: { kind: PRINT_UPGRADE_STRIPE_KIND, orderId: ORDER_ID, targetFormat: 'premium', quoteId: premium.quoteId } }), customer_details: { phone: '+13125550100' } };
   const settled = await settlePrintUpgradeAtCostSession(session, { now: paidAt });
   assert.equal(settled.outcome, 'paid');
 
@@ -454,7 +456,9 @@ test('settle: the exact bound Session records the chosen print format without ch
   assert.equal(stored.printUpgradeStripeSessionId, 'cs_test_upgrade_1');
   assert.equal(stored.printUpgradePaidAt, paidAt);
   assert.equal(stored.printUpgradePrintProvider, 'lulu');
-  assert.deepEqual(stored.shippingAddress, { line1: '1234 N Broadway', line2: null, city: 'Chicago', state: 'IL', zip: '60640', country: 'US' });
+  assert.deepEqual(stored.shippingAddress, { line1: '1234 N Broadway', line2: null, city: 'Chicago', state: 'IL', zip: '60640', country: 'US', name: 'Alexy Kaplun', phone: '+13125550100' });
+  assert.equal(stored.printCopyPurchases?.[0].shippingAddress.phone, '+13125550100');
+  assert.equal(JSON.stringify(stored.auditEvents ?? []).includes('3125550100'), false);
   assert.equal(stored.printUpgradeOffer?.consumedAt, paidAt);
   assert.equal(stored.printUpgradeLock?.status, 'paid');
   assert.equal(stored.printUpgradeLock?.stripePaymentIntentId, 'pi_test_upgrade_1');
@@ -493,6 +497,23 @@ test('settle: a duplicate webhook for the paid Session is a no-op replay', withL
   const stored = (await getOrder(ORDER_ID))!;
   assert.equal(stored.printUpgradePaidAt, '2026-10-14T12:20:00.000Z');
   assert.equal((stored.auditEvents ?? []).filter((e) => e.type === 'print_upgrade_at_cost_paid').length, 1);
+}));
+
+test('settle: the upgrade destination never inherits a phone stored with a different address', withLocalStore(async () => {
+  const { token, premium } = await quotedOffer();
+  const current = (await getOrder(ORDER_ID))!;
+  await persistOrder({
+    ...current,
+    shippingAddress: { line1: '999 Stale Lane', line2: null, city: 'Springfield', state: 'IL', zip: '62701', country: 'US', name: 'Stale Recipient', phone: '+17775550199' },
+  });
+  await openPrintUpgradeCheckout(ORDER_ID, { token, quoteId: premium.quoteId }, { createCheckoutSession: fakeStripe([]), baseUrl: BASE_URL, now: NOW });
+  const session = paidSession({ metadata: { kind: PRINT_UPGRADE_STRIPE_KIND, orderId: ORDER_ID, targetFormat: 'premium', quoteId: premium.quoteId } });
+  const settled = await settlePrintUpgradeAtCostSession(session, { now: '2026-10-14T12:20:00.000Z' });
+  assert.equal(settled.outcome, 'paid');
+  const stored = (await getOrder(ORDER_ID))!;
+  // Quoted destination + this Session's phone (none here): null, never the stale stored phone.
+  assert.deepEqual(stored.shippingAddress, { line1: '1234 N Broadway', line2: null, city: 'Chicago', state: 'IL', zip: '60640', country: 'US', name: 'Alexy Kaplun', phone: null });
+  assert.equal(stored.printCopyPurchases?.[0].shippingAddress.phone, null);
 }));
 
 test('settle: amount, session, format, quote, currency, mode or reference drift is recorded as a conflict and never applied', withLocalStore(async () => {

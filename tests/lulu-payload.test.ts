@@ -23,6 +23,8 @@ const BASE_ORDER: OrderRecord = {
     state: 'IL',
     zip: '62701',
     country: 'US',
+    name: 'Luna Parent',
+    phone: '+12175550123',
   },
 };
 

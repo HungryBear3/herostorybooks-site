@@ -19,6 +19,19 @@ import {
   type OrderRecord,
   type ShippingAddress,
 } from './orders.ts';
+import { getBlobNamespace } from './blob-namespace.ts';
+import {
+  classifyBoundRecovery,
+  classifyRecoveryProvenance,
+  openProvenanceAccess,
+  type MarkerStore,
+} from './initial-shipping-provenance.ts';
+
+export interface RecoveryProvenanceDeps {
+  /** Omitted: bound production access (existing order-store credential). null: unavailable => HOLD. */
+  provenanceStore?: MarkerStore | null;
+  namespace?: string;
+}
 
 export interface RecoveryInput extends OrderInput {
   /** REQUIRED — must match the original order id from Stripe metadata / receipts. */
@@ -118,11 +131,38 @@ export async function uploadOrderPhotoFromPath(
  * Compatible with /status/[orderId], future fulfillment trigger, and the
  * review flow once fulfillment generates pageArtifacts.
  */
-export async function recoverOrder(input: RecoveryInput): Promise<RecoverySummary> {
+export async function recoverOrder(
+  input: RecoveryInput,
+  deps: RecoveryProvenanceDeps = {},
+): Promise<RecoverySummary> {
+  // Initial expedited shipping (H3): consult the order-ID-keyed provenance marker
+  // BEFORE any photo read/upload or record write, independently of any shipping
+  // fields in the supplied JSON. Present marker refuses generic reconstruction;
+  // unreadable/unavailable/unwired provenance is a HOLD; only authoritative
+  // absence continues with the existing standard recovery.
+  // Omission selects the bound production access over the existing order-store
+  // credential; an explicit null (unavailable) stays HOLD.
+  const access = deps.provenanceStore === undefined ? openProvenanceAccess() : null;
+  const provenance = deps.provenanceStore === undefined
+    ? await classifyBoundRecovery(access, input.id)
+    : await classifyRecoveryProvenance(deps.provenanceStore, deps.namespace ?? getBlobNamespace(), input.id);
+  if ('code' in provenance) {
+    throw new Error(`order ${input.id} recovery refused: ${provenance.code}`);
+  }
+  // A namespace/store/mode/root change after classification cannot authorize
+  // effects in another context.
+  const assertProvenanceContext = () => {
+    if (access && !access.intact()) {
+      throw new Error(`order ${input.id} recovery refused: initial_shipping_provenance_hold`);
+    }
+  };
+  assertProvenanceContext();
+
   // Recovery reconstructs records that are missing from the order store. Refuse
   // an existing id before uploading a photo or writing anything: rerunning a
   // recovery must never replace an existing order (including its routing intent).
   const existing = await getOrder(input.id);
+  assertProvenanceContext();
   if (existing) {
     throw new Error(
       `order ${input.id} already exists; recovery refuses to overwrite existing records`,
@@ -166,6 +206,7 @@ export async function recoverOrder(input: RecoveryInput): Promise<RecoverySummar
     );
   }
 
+  assertProvenanceContext();
   await persistNewOrder(record);
 
   return {

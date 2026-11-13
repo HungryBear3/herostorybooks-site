@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { HISTORICAL_ORDERS_BRIDGE_SPANS_V2, type HistoricalOrdersBridgeHunk } from './support/initial-shipping-historical-orders-bridge.ts';
 
 import {
   CHECKOUT_RECONCILIATION_LABEL,
@@ -353,8 +354,118 @@ export async function retireExpiredCheckoutAttempt(observed: OrderRecord): Promi
   },
 ];
 
-function withoutStoryMediaSizeExtraction(candidate: string): string {
-  let normalized = candidate;
+// Initial-shipping provenance supplement (SCOPE_ADMIT): exactly one parseBlobToken
+// import and one factory block right after resolveOrderStoreAdapter; the inverse
+// must reconstruct the exact pre-addition orders.ts before the transforms below.
+const IS_PROVENANCE_IMPORT_ANCHOR =
+  "import { finalizationFingerprint, parseSelectionEntry, type FinalizedSelectionEntry } from './checkout-intake.ts';\n";
+const IS_PROVENANCE_IMPORT = "import { parseBlobToken } from './checkout-blob-identity.ts';\n";
+const IS_PROVENANCE_PREFIX = '  return localOrderStoreAdapter();\n}\n\n';
+const IS_PROVENANCE_START = '/** Narrow bound initial-shipping provenance marker access (H3).';
+const IS_PROVENANCE_END = '/** A cached commit, tagged with the write generation that published it. */';
+const IS_PROVENANCE_BLOCK_SHA256 = '054c27dbe42e2ebbd099bf2747f8f8e3b2328a5cb990b136d9d66c50be212ac3';
+const IS_PROVENANCE_PRE_ADDITION_SHA256 = '3a718b98810ac86813b7c397da687c027aebbae7a21570af0e983cd916450c2d';
+const sha256 = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
+const SHIPPING_TYPE_IMPORT = "import type { InitialShippingOrderMetadataV1, InitialShippingSettlementV1 } from './initial-shipping-contract.ts';\n";
+const SHIPPING_TYPE_FIELDS = '  initialShipping?: InitialShippingOrderMetadataV1;\n  initialShippingSettlement?: InitialShippingSettlementV1;\n';
+function withoutInitialShippingTypeAddition(source: string): string {
+  const importAnchor = IS_PROVENANCE_IMPORT + SHIPPING_TYPE_IMPORT;
+  const fieldAnchor = 'export interface OrderRecord extends OrderInput {\n' + SHIPPING_TYPE_FIELDS;
+  assert.equal(source.split(SHIPPING_TYPE_IMPORT).length - 1, 1, 'exact type import once');
+  assert.equal(source.split(importAnchor).length - 1, 1, 'exact type import location');
+  assert.equal(source.split(SHIPPING_TYPE_FIELDS).length - 1, 1, 'exact optional type fields once');
+  assert.equal(source.split(fieldAnchor).length - 1, 1, 'exact type field location');
+  return source.replace(importAnchor, IS_PROVENANCE_IMPORT).replace(fieldAnchor, 'export interface OrderRecord extends OrderInput {\n');
+}
+// Required print delivery phone (SCOPE_ADMIT): exactly one declaration-only
+// merge onto ShippingAddress, immediately before the additive-types end marker.
+// Removed first so every accepted-HEAD/historical oracle below sees exact bytes.
+const PHONE_TYPE_ANCHOR = "  printStatus: 'awaiting_files' | 'ready_for_print' | 'submitted' | 'shipped';\n}\n";
+const PHONE_TYPE_END = '// PRINT_COMMERCE_ADDITIVE_END_TYPES\n';
+const PHONE_TYPE_BLOCK = [
+  '/**',
+  ' * Delivery contact (2026-10-29). Declaration-merged onto `ShippingAddress`',
+  ' * so the frozen base declaration above stays byte-identical. Both fields are',
+  ' * collected by Stripe hosted Checkout for standard print formats and copied',
+  ' * here by the signed webhook; `null` means never collected — nothing',
+  ' * downstream invents them, and print release refuses until an operator',
+  ' * records the contact.',
+  ' */',
+  'export interface ShippingAddress {',
+  '  /** Recipient name as Stripe collected it with the address. */',
+  '  name?: string | null;',
+  '  /** Delivery phone (E.164 when Stripe supplied it). Required by the print provider. */',
+  '  phone?: string | null;',
+  '}',
+  '',
+].join('\n');
+function withoutPrintDeliveryContactType(source: string): string {
+  const placed = PHONE_TYPE_ANCHOR + PHONE_TYPE_BLOCK + PHONE_TYPE_END;
+  assert.equal(source.split(PHONE_TYPE_BLOCK).length - 1, 1, 'delivery contact type block exactly once');
+  assert.equal(source.split(placed).length - 1, 1, 'delivery contact type block in its exact place');
+  return source.replace(placed, () => PHONE_TYPE_ANCHOR + PHONE_TYPE_END);
+}
+function withoutInitialShippingProvenanceAddition(source: string): string {
+  source = withoutInitialShippingTypeAddition(withoutPrintDeliveryContactType(source));
+  const count = (needle: string) => source.split(needle).length - 1;
+  assert.equal(count(IS_PROVENANCE_IMPORT), 1, 'provenance import exactly once');
+  assert.equal(count(IS_PROVENANCE_IMPORT_ANCHOR + IS_PROVENANCE_IMPORT), 1, 'provenance import in its exact place');
+  assert.equal(count(IS_PROVENANCE_START), 1, 'provenance factory exactly once');
+  const start = source.indexOf(IS_PROVENANCE_START);
+  assert.equal(source.slice(start - IS_PROVENANCE_PREFIX.length, start), IS_PROVENANCE_PREFIX, 'factory right after the resolver');
+  const end = source.indexOf(IS_PROVENANCE_END, start);
+  assert.ok(end > start, 'factory ends before the cached-commit declaration');
+  assert.equal(sha256(source.slice(start, end)), IS_PROVENANCE_BLOCK_SHA256, 'factory bytes are the frozen authored block');
+  const withoutBlock = source.slice(0, start) + source.slice(end);
+  return withoutBlock.replace(IS_PROVENANCE_IMPORT_ANCHOR + IS_PROVENANCE_IMPORT, () => IS_PROVENANCE_IMPORT_ANCHOR);
+}
+
+// Historical assertion evidence, NOT a replacement expected value. The b5
+// assertion failed on exact unchanged HEAD when explicitly invoked (the HEAD
+// suite never called it). V2 supersedes that assertion rather than claiming it
+// passes: whole accepted HEAD protection + finite residual inverse + original
+// historical Git equality. Original assertion/native RED remain in the packet.
+const ORIGINAL_SEMANTIC_BLOCK_PIN = 'b5c0be87cd7fd5e23386c3ef0a3290345e2fc547d0df7931bfc8eea4b6ef7e9e';
+const ACCEPTED_ORDERS_HEAD = '46ca97bece38c92b6b8c7d39ecd607ebbe4b6e30';
+const HISTORICAL_ORDERS_SHA256 = 'f7022ce0fee47746b75820d8166033768213cd77fc75303a131dec52bacdca8b';
+const BRIDGE_V2_SHA256 = '482efbc3f82fdbd9b2fb380c85d1f70c46e9a603963528b5c7800a5561cd05c4';
+const HISTORICAL_ORDERS_BRIDGE_V2: readonly HistoricalOrdersBridgeHunk[] = loadHistoricalOrdersBridgeV2();
+function loadHistoricalOrdersBridgeV2(): readonly HistoricalOrdersBridgeHunk[] {
+  assert.equal(sha256(JSON.stringify(HISTORICAL_ORDERS_BRIDGE_SPANS_V2)),
+    '955bd80ef01c9a4c91f8de3d9f8fdaa95ff2f8d6bd23512604902eec9d2c9703', 'bridge v2 span identity');
+  const readOrigin = (revision: string) => execFileSync('git', ['show', `${revision}:src/lib/orders.ts`],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const accepted = readOrigin(ACCEPTED_ORDERS_HEAD);
+  const historical = readOrigin(BASE_SHA);
+  assert.equal(sha256(accepted), IS_PROVENANCE_PRE_ADDITION_SHA256, 'bridge v2 accepted Git origin');
+  assert.equal(sha256(historical), HISTORICAL_ORDERS_SHA256, 'bridge v2 historical Git origin');
+  const preimage = applyOriginalOrdersTransforms(accepted);
+  return HISTORICAL_ORDERS_BRIDGE_SPANS_V2.map((span) => Object.freeze({
+    id: span.id, offset: span.offset,
+    candidate: preimage.slice(span.offset, span.offset + span.length),
+    base: historical.slice(span.baseOffset, span.baseOffset + span.baseLength),
+    sha256: span.sha256, baseSha256: span.baseSha256,
+  }));
+}
+
+function assertBridgeV2Fixture(rules: readonly HistoricalOrdersBridgeHunk[]): void {
+  assert.equal(sha256(JSON.stringify(rules)), BRIDGE_V2_SHA256, 'bridge v2 fixture identity');
+}
+function invertHistoricalHunk(source: string, rule: HistoricalOrdersBridgeHunk): string {
+  assert.equal(sha256(rule.candidate), rule.sha256, `${rule.id}: candidate hash`);
+  assert.equal(sha256(rule.base), rule.baseSha256, `${rule.id}: base hash`);
+  assert.equal(source.split(rule.candidate).length - 1, 1, `${rule.id}: exact occurrence`);
+  assert.equal(source.indexOf(rule.candidate), rule.offset, `${rule.id}: exact location`);
+  return source.slice(0, rule.offset) + rule.base + source.slice(rule.offset + rule.candidate.length);
+}
+function invertHistoricalBridgeV2(source: string, rules = HISTORICAL_ORDERS_BRIDGE_V2): string {
+  assertBridgeV2Fixture(rules);
+  // Descending offsets keep each hunk's original location stable.
+  for (const rule of rules) source = invertHistoricalHunk(source, rule);
+  assert.equal(sha256(source), HISTORICAL_ORDERS_SHA256, 'bridge v2 whole historical output');
+  return source;
+}
+function applyOriginalOrdersTransforms(normalized: string): string {
   for (const rule of ORDERS_SANCTIONED_TRANSFORMS) {
     const occurrences = normalized.split(rule.candidate).length - 1;
     assert.equal(
@@ -365,21 +476,13 @@ function withoutStoryMediaSizeExtraction(candidate: string): string {
     // A function replacer: no `$&`-style expansion out of the base text.
     normalized = normalized.replace(rule.candidate, () => rule.base);
   }
-  const addedStart = 'const CHECKOUT_INTENT_FINGERPRINT =';
-  const addedEnd = 'export async function persistOrResumeCheckoutOrder';
-  const startAt = normalized.indexOf(addedStart);
-  assert.ok(startAt >= 0, 'src/lib/orders.ts must carry the semantic claim/index block');
-  assert.equal(normalized.indexOf(addedStart, startAt + 1), -1, 'semantic claim/index block must occur once');
-  const endAt = normalized.indexOf(addedEnd, startAt);
-  assert.ok(endAt > startAt, 'semantic claim/index block must end before persistOrResumeCheckoutOrder');
-  const addedBlock = normalized.slice(startAt, endAt);
-  assert.equal(
-    crypto.createHash('sha256').update(addedBlock).digest('hex'),
-    'b5c0be87cd7fd5e23386c3ef0a3290345e2fc547d0df7931bfc8eea4b6ef7e9e',
-    'semantic claim/index block differs from its exact sanctioned bytes',
-  );
-  normalized = normalized.slice(0, startAt) + normalized.slice(endAt);
   return normalized;
+}
+function withoutStoryMediaSizeExtraction(candidate: string): string {
+  const accepted = withoutInitialShippingProvenanceAddition(candidate);
+  // Protect EVERY byte, including bodies the historical inverse maps away.
+  assert.equal(sha256(accepted), IS_PROVENANCE_PRE_ADDITION_SHA256, 'accepted HEAD whole orders bytes');
+  return invertHistoricalBridgeV2(applyOriginalOrdersTransforms(accepted));
 }
 
 /** Exact sanctioned schedule additions and branch-only Preview suppression.
@@ -391,10 +494,11 @@ const VERCEL_SANCTIONED_TRANSFORMS: ReadonlyArray<{
   base: string;
 }> = [
   {
-    description: 'only the approved literal release branch disables Preview deployment',
+    description: 'only the two approved literal release branches disable Preview deployment',
     candidate: `  "git": {
     "deploymentEnabled": {
-      "rex/hsb-safeoff-20261019-jrm7sg1b": false
+      "rex/hsb-safeoff-20261019-jrm7sg1b": false,
+      "rex/hsb-expedited-shipping-20261109": false
     }
   },
 `,
@@ -462,7 +566,10 @@ const VERCEL_SANCTIONED_TRANSFORMS: ReadonlyArray<{
 
 function withoutConfirmationEmailSweepSchedule(candidate: string): string {
   assert.deepEqual(JSON.parse(candidate).git, {
-    deploymentEnabled: { 'rex/hsb-safeoff-20261019-jrm7sg1b': false },
+    deploymentEnabled: {
+      'rex/hsb-safeoff-20261019-jrm7sg1b': false,
+      'rex/hsb-expedited-shipping-20261109': false,
+    },
   }, 'the exact suppression must be the top-level Git configuration');
   let normalized = candidate;
   for (const rule of VERCEL_SANCTIONED_TRANSFORMS) {
@@ -478,10 +585,147 @@ function withoutConfirmationEmailSweepSchedule(candidate: string): string {
   return normalized;
 }
 
+const SHIPPING_FULFILLMENT_INVERSE = [
+  {
+    "candidate": "import crypto from 'node:crypto';\nimport { preclaimShippingGate, prepareProductionDispatch, productionAuthorizationMatches, type ExpeditedDispatchAuthorization } from './initial-shipping-dispatch.ts';\nimport { readOrderInitialShipping } from './initial-shipping-contract.ts';\nimport { put } from '@vercel/blob';\n\nimport { applyFulfillmentPatchTo, getOrder, getOrderPhotoUrl, isPrintFormat, OrderVersionConflictError, orderRequiresReferenceImage, readOrderVersioned, updateFulfillmentState, withBlobNamespace, withOrderTransaction } from './orders.ts';\n",
+    "base": "import crypto from 'node:crypto';\nimport { put } from '@vercel/blob';\n\nimport { applyFulfillmentPatchTo, getOrder, getOrderPhotoUrl, isPrintFormat, OrderVersionConflictError, orderRequiresReferenceImage, readOrderVersioned, updateFulfillmentState, withBlobNamespace, withOrderTransaction } from './orders.ts';\n",
+    "sha256": "4d7891c66e33e09c15c62b5ebbd2f4eacdee9cf730d04a468c0fc08fe9e60ced"
+  },
+  {
+    "candidate": "  buildPrintCoverPdf?: (widthPoints: number, heightPoints: number, title: string, order: OrderRecord) => Buffer;\n  calculateCoverDimensions?: (order: OrderRecord, interiorPageCount: number) => Promise<{ widthPt: number; heightPt: number }>;\n  uploadArtifact?: (orderId: string, buffer: Buffer, filename: string) => Promise<string>;\n  submitPrint?: (order: OrderRecord, options?: { authorization?: ExpeditedDispatchAuthorization }) => Promise<{ jobId: string }>;\n  sleep?: (ms: number) => Promise<void>;\n  getBaseUrl?: () => string;\n}\n",
+    "base": "  buildPrintCoverPdf?: (widthPoints: number, heightPoints: number, title: string, order: OrderRecord) => Buffer;\n  calculateCoverDimensions?: (order: OrderRecord, interiorPageCount: number) => Promise<{ widthPt: number; heightPt: number }>;\n  uploadArtifact?: (orderId: string, buffer: Buffer, filename: string) => Promise<string>;\n  submitPrint?: (order: OrderRecord) => Promise<{ jobId: string }>;\n  sleep?: (ms: number) => Promise<void>;\n  getBaseUrl?: () => string;\n}\n",
+    "sha256": "e8589b520792ee1b3c435228cd80c93e6a2fc6b7dfe295639d2a76f3b831ad95"
+  },
+  {
+    "candidate": "  if (initialRefusal) throw new Error(`Refusing print: ${initialRefusal}`);\n\n  let hydratedOrder = order;\n  let generatedCover: Buffer | undefined;\n  if (!order.printCoverArtifactUrl || !order.printCoverMd5) {\n    const dims = await _calculateCoverDimensions(order, order.printInteriorPageCount);\n    const coverBuffer = await _buildPrintCoverPdf(dims.widthPt, dims.heightPt, order.printTitle, order);\n    generatedCover = coverBuffer;\n    const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);\n    const coverUrl = await _upload(order.id, coverBuffer, `${safeSlug}-cover.pdf`);\n    hydratedOrder = (await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {\n",
+    "base": "  if (initialRefusal) throw new Error(`Refusing print: ${initialRefusal}`);\n\n  let hydratedOrder = order;\n  if (!order.printCoverArtifactUrl || !order.printCoverMd5) {\n    const dims = await _calculateCoverDimensions(order, order.printInteriorPageCount);\n    const coverBuffer = await _buildPrintCoverPdf(dims.widthPt, dims.heightPt, order.printTitle, order);\n    const safeSlug = order.childName.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40);\n    const coverUrl = await _upload(order.id, coverBuffer, `${safeSlug}-cover.pdf`);\n    hydratedOrder = (await updateFulfillmentState(order.id, paidFulfillmentPatch(order, {\n",
+    "sha256": "5b7d94754f43f5d0f48d36f9d93f2922d87d39e0034050830639673a904aa08d"
+  },
+  {
+    "candidate": "    ? printReleaseRefusal(authoritative, ['submitting_to_print'])\n    : 'order_not_found';\n  if (boundaryRefusal) throw new Error(`Refusing print: ${boundaryRefusal}`);\n  if (preclaimShippingGate(order) !== 'standard' && (\n    authoritative!.proofVersion !== order.proofVersion || authoritative!.proofSourceFingerprint !== order.proofSourceFingerprint ||\n    authoritative!.printInteriorArtifactUrl !== order.printInteriorArtifactUrl || authoritative!.printInteriorMd5 !== order.printInteriorMd5 ||\n    (generatedCover && (authoritative!.printCoverArtifactUrl !== hydratedOrder.printCoverArtifactUrl || authoritative!.printCoverMd5 !== hydratedOrder.printCoverMd5))\n  )) throw new Error('shipping_hold:dispatch_artifact_drift');\n\n  // Persist the ambiguity fence BEFORE the irreversible POST. A crash or lost\n  // response after this write must require provider reconciliation, never an\n  // ordinary retry that could create a second physical print job.\n  const preflight = await prepareProductionDispatch(authoritative!, generatedCover);\n  if (preflight.kind === 'hold') throw new Error(`shipping_hold:${preflight.reason}`);\n  const authorization = preflight.kind === 'authorized' ? preflight.authorization : undefined;\n  const expectedProofVersion = authoritative!.proofVersion;\n  const submissionOrder = await withOrderTransaction<OrderRecord | null>(\n    order.id,\n",
+    "base": "    ? printReleaseRefusal(authoritative, ['submitting_to_print'])\n    : 'order_not_found';\n  if (boundaryRefusal) throw new Error(`Refusing print: ${boundaryRefusal}`);\n\n  // Persist the ambiguity fence BEFORE the irreversible POST. A crash or lost\n  // response after this write must require provider reconciliation, never an\n  // ordinary retry that could create a second physical print job.\n  const expectedProofVersion = authoritative!.proofVersion;\n  const submissionOrder = await withOrderTransaction<OrderRecord | null>(\n    order.id,\n",
+    "sha256": "29488f34093b149c45ad074e9e4294a6ffdcdc475397164547005d01cb7a8965"
+  },
+  {
+    "candidate": "        refusal ||\n        current.proofVersion !== expectedProofVersion ||\n        current.printInteriorProofVersion !== expectedProofVersion ||\n        current.printSubmissionAttemptedAt ||\n        (authorization ? !productionAuthorizationMatches(authorization, current) : preclaimShippingGate(current) !== 'standard')\n      ) {\n        return { abort: null };\n      }\n",
+    "base": "        refusal ||\n        current.proofVersion !== expectedProofVersion ||\n        current.printInteriorProofVersion !== expectedProofVersion ||\n        current.printSubmissionAttemptedAt\n      ) {\n        return { abort: null };\n      }\n",
+    "sha256": "2a34aac39ae7f556936da3fa2faeb0aa04b2ef02e2881f8b88eb9bb418213146"
+  },
+  {
+    "candidate": "  if (!submissionOrder) throw new Error('Refusing print: submission_attempt_fence_failed');\n  const expectedSubmissionAt = submissionOrder.printSubmissionAttemptedAt;\n\n  const result = await _submitPrint(submissionOrder, authorization ? { authorization } : undefined);\n\n  const afterPrint = await withOrderTransaction<OrderRecord | null>(\n    order.id,\n",
+    "base": "  if (!submissionOrder) throw new Error('Refusing print: submission_attempt_fence_failed');\n  const expectedSubmissionAt = submissionOrder.printSubmissionAttemptedAt;\n\n  const result = await _submitPrint(submissionOrder);\n\n  const afterPrint = await withOrderTransaction<OrderRecord | null>(\n    order.id,\n",
+    "sha256": "855beaf59d4100be41a655b63ca135019bfd5f58caf8fac6d1e910ec01640192"
+  },
+  {
+    "candidate": "        const refusal = printReleaseRefusal(order, ['proof_ready']);\n        if (refusal) return { abort: { claimed: false, ok: false, error: refusal } };\n\n        if (preclaimShippingGate(order) === 'hold') {\n          const read = readOrderInitialShipping(order);\n          const reason = read.kind === 'malformed' ? 'metadata_malformed' : read.kind === 'present' ? read.settlement.reason ?? 'refund_or_terminal' : 'metadata_malformed';\n          const next: OrderRecord = { ...order, fulfillmentStatus: 'failed_manual_review',\n            fulfillmentLastError: `shipping_hold:${reason}`, updatedAt: new Date().toISOString() };\n          return { commit: next, result: { claimed: false, ok: false, error: 'shipping_hold' } };\n        }\n        const claimedOrder: OrderRecord = {\n          ...order,\n          fulfillmentStatus: 'submitting_to_print',\n",
+    "base": "        const refusal = printReleaseRefusal(order, ['proof_ready']);\n        if (refusal) return { abort: { claimed: false, ok: false, error: refusal } };\n\n        const claimedOrder: OrderRecord = {\n          ...order,\n          fulfillmentStatus: 'submitting_to_print',\n",
+    "sha256": "d3cbbcb15438b20969c2aa3cb530d2b010f62543374c48d97345f1ed0e9eb20a"
+  },
+  {
+    "candidate": "    await runPrintProduction(claim.order, deps);\n    return { ok: true };\n  } catch (error) {\n    const expedited = readOrderInitialShipping(claim.order).kind !== 'absent';\n    const raw = error instanceof Error ? error.message : '';\n    // Never persist provider echoes/contact/transport exceptions on the public order.\n    const message = expedited\n      ? (/^shipping_hold:(dispatch_[a-z_]+|metadata_malformed|refund_or_terminal)$/.test(raw) ? raw : 'shipping_dispatch_requires_operator_review')\n      : error instanceof Error ? error.message : String(error);\n    const current = await getOrder(orderId, expedited ? { logFailures: false } : {});\n    const ambiguous = Boolean(current?.printSubmissionAttemptedAt);\n    await withOrderTransaction(\n      orderId,\n",
+    "base": "    await runPrintProduction(claim.order, deps);\n    return { ok: true };\n  } catch (error) {\n    const message = error instanceof Error ? error.message : String(error);\n    const current = await getOrder(orderId);\n    const ambiguous = Boolean(current?.printSubmissionAttemptedAt);\n    await withOrderTransaction(\n      orderId,\n",
+    "sha256": "7da9b95a07eee29469945d8676123bb6a36ca613ec57e98e62bc96e5c97ce279"
+  }
+];
+// Required print delivery phone (SCOPE_ADMIT): one import and one standard-lane
+// contact refusal at the end of printReleaseRefusal, each in its exact place.
+const PHONE_FULFILLMENT_INVERSE = [
+  {
+    description: 'print delivery contact import',
+    candidate: "import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';\nimport { printDeliveryContactRefusal } from './print-delivery-contact.ts';\n",
+    base: "import { calculateCoverDimensions, submitPrintJob } from './lulu.ts';\n",
+  },
+  {
+    description: 'standard-lane delivery contact refusal in printReleaseRefusal',
+    candidate: `    return 'print_interior_stale';
+  }
+  // Standard lane only: the provider needs a recipient name and delivery phone
+  // from the order's address. Refuse here, before the cover-dimension call and
+  // the print-job POST, rather than ship with a placeholder. The expedited lane
+  // carries its contact in the private draft and is decided by its own gate.
+  if (preclaimShippingGate(order) === 'standard') {
+    const contactRefusal = printDeliveryContactRefusal(order.shippingAddress);
+    if (contactRefusal) return contactRefusal;
+  }
+  return null;
+}
+`,
+    base: `    return 'print_interior_stale';
+  }
+  return null;
+}
+`,
+  },
+];
+function withoutPrintDeliveryContactGate(source: string): string {
+  for (const rule of PHONE_FULFILLMENT_INVERSE) {
+    assert.equal(source.split(rule.candidate).length - 1, 1, `src/lib/fulfillment.ts must carry the ${rule.description} exactly once`);
+    source = source.replace(rule.candidate, () => rule.base);
+  }
+  return source;
+}
+// Print contact error privacy (SCOPE_ADMIT, correction-1 F1): one contiguous
+// hunk inside approvePrintProof's failure transaction, immediately after the
+// span pinned by SHIPPING_FULFILLMENT_INVERSE[7]. Standard-lane detail becomes a
+// finite refusal code or a fixed Lulu phase/HTTP class; expedited codes pass as
+// before. Removed first so every pinned rule and hash below sees exact bytes.
+const PRINT_ERROR_PRIVACY_PLACE = '    await withOrderTransaction(\n      orderId,\n';
+const PRINT_ERROR_PRIVACY_HEAD = [
+  '      (fresh) => {',
+  "        if (fresh.printJobId || fresh.fulfillmentStatus !== 'submitting_to_print') {",
+  '          return { abort: null };',
+  '        }',
+];
+const PRINT_ERROR_PRIVACY_NEXT = [
+  '        const next: OrderRecord = {',
+  '          ...fresh,',
+  "          fulfillmentStatus: ambiguous ? 'submitting_to_print' : 'failed_manual_review',",
+  '          fulfillmentLastError: ambiguous',
+];
+const PRINT_ERROR_PRIVACY_INVERSE = {
+  candidate: [
+    ...PRINT_ERROR_PRIVACY_HEAD,
+    '        // Standard-lane detail is a fixed refusal code or a Lulu phase/HTTP class:',
+    '        // provider and transport text can echo the delivery contact.',
+    String.raw`        const detail = expedited || /^(?:Refusing print: (?:not_print_order|order_not_paid|order_refunded|refund_in_progress|print_already_submitted|proof_not_ready|whole_book_not_approved|pages_not_accepted|incomplete_page_set|proof_unavailable|proof_stale|proof_ack_missing|proof_ack_stale|print_artifacts_missing|print_interior_stale|shipping_address_missing|shipping_contact_missing|order_not_found|submission_attempt_fence_failed)|print_job_binding_requires_reconciliation|Lulu (?:auth failed [1-5]\d\d|auth unavailable|API error [1-5]\d\d|print-job transport failed|print-job response unreadable|API success response missing print job id; outcome requires reconciliation))$/.test(message)`,
+    '          ? message',
+    "          : 'print_error_detail_withheld';",
+    ...PRINT_ERROR_PRIVACY_NEXT,
+    '            ? `print_submission_ambiguous: ${detail.slice(0, 500)}`',
+    '            : `print_submission_failed_before_attempt: ${detail.slice(0, 500)}`,',
+    '',
+  ].join('\n'),
+  base: [
+    ...PRINT_ERROR_PRIVACY_HEAD,
+    ...PRINT_ERROR_PRIVACY_NEXT,
+    '            ? `print_submission_ambiguous: ${message.slice(0, 500)}`',
+    '            : `print_submission_failed_before_attempt: ${message.slice(0, 500)}`,',
+    '',
+  ].join('\n'),
+} as const;
+function withoutPrintContactErrorPrivacy(source: string): string {
+  const { candidate, base } = PRINT_ERROR_PRIVACY_INVERSE;
+  const placed = PRINT_ERROR_PRIVACY_PLACE + candidate;
+  assert.equal(source.split(candidate).length - 1, 1, 'print error privacy hunk exactly once');
+  assert.equal(source.split(placed).length - 1, 1, 'print error privacy hunk in its exact place');
+  return source.replace(placed, () => PRINT_ERROR_PRIVACY_PLACE + base);
+}
+function withoutInitialShippingFulfillment(source: string): string {
+  source = withoutPrintDeliveryContactGate(withoutPrintContactErrorPrivacy(source));
+  for (const rule of SHIPPING_FULFILLMENT_INVERSE) {
+    assert.equal(sha256(rule.candidate), rule.sha256);
+    assert.equal(source.split(rule.candidate).length - 1, 1);
+    source = source.replace(rule.candidate, () => rule.base);
+  }
+  assert.equal(sha256(source), "778b848403bcab3f342c8891c3ba4540dd2ab4fe5f9d154a250c520171d104dd");
+  return source;
+}
+
 /** Files frozen except for a declared, reversible transformation. */
 const FREEZE_NORMALIZERS: Readonly<Record<string, (source: string) => string>> = {
   'src/lib/orders.ts': withoutStoryMediaSizeExtraction,
   'vercel.json': withoutConfirmationEmailSweepSchedule,
+  'src/lib/fulfillment.ts': withoutInitialShippingFulfillment,
 };
 
 test('the operator copy says what the state is and forbids automatic retry', () => {
@@ -532,8 +776,17 @@ test('the runbook documents read-only verification and forbids automatic retry',
 test('freeze oracle rejects Git, schedule, incident, and stranded-scan deviations', () => {
   const vercel = src('vercel.json');
   const branch = 'rex/hsb-safeoff-20261019-jrm7sg1b';
+  const shipping = 'rex/hsb-expedited-shipping-20261109';
   const gitBlock = VERCEL_SANCTIONED_TRANSFORMS[0].candidate;
   const cases: Array<[string, string, string]> = [
+    ['shipping wrong prefix', 'vercel.json', vercel.replace(shipping, `other/${shipping}`)],
+    ['shipping similar prefix', 'vercel.json', vercel.replace(shipping, `${shipping}-other`)],
+    ['shipping substituted main', 'vercel.json', vercel.replace(shipping, 'main')],
+    ['shipping enabled', 'vercel.json', vercel.replace(`"${shipping}": false`, `"${shipping}": true`)],
+    ['shipping missing', 'vercel.json', vercel.replace(`,\n      "${shipping}": false`, '')],
+    ['old missing', 'vercel.json', vercel.replace(`      "${branch}": false,\n`, '')],
+    ['shipping extra rule', 'vercel.json', vercel.replace(`"${shipping}": false`, `"${shipping}": false, "other": false`)],
+    ['shipping duplicate key', 'vercel.json', vercel.replace(`"${shipping}": false`, `"${shipping}": false, "${shipping}": false`)],
     ['nested git block', 'vercel.json', vercel.replace(gitBlock, '').replace('          "type": "host",', gitBlock + '          "type": "host",')],
     ['wrong branch', 'vercel.json', vercel.replace(branch, `${branch}-other`)],
     ['main disabled', 'vercel.json', vercel.replace(branch, 'main')],
@@ -566,6 +819,216 @@ test('freeze oracle rejects Git, schedule, incident, and stranded-scan deviation
     assert.notEqual(candidate, src(path), `${label}: mutation must actually change bytes`);
     assert.throws(() => assert.equal(normalize(candidate), committed),
       { code: 'ERR_ASSERTION' }, `${label}: unauthorized change must be rejected`);
+  }
+});
+
+test('initial shipping provenance addition has an exact inverse and rejects unauthorized mutations', () => {
+  const current = src('src/lib/orders.ts');
+  const oracle = (source: string) => {
+    assert.equal(sha256(withoutInitialShippingProvenanceAddition(source)), IS_PROVENANCE_PRE_ADDITION_SHA256);
+  };
+  oracle(current);
+  const start = current.indexOf(IS_PROVENANCE_START);
+  const block = current.slice(start, current.indexOf(IS_PROVENANCE_END, start));
+  const inBlock = (from: string, to: string) => {
+    assert.ok(block.includes(from), `block mutation anchor missing: ${from}`);
+    return current.replace(block, () => block.replace(from, () => to));
+  };
+  const outside = (from: string, to: string) => {
+    assert.equal(current.split(from).length - 1, 1, `unique outside anchor: ${from}`);
+    return current.replace(from, () => to);
+  };
+  const cases: Array<[string, string]> = [
+    ['missing type import', current.replace(SHIPPING_TYPE_IMPORT, '')],
+    ['duplicate type import', current.replace(SHIPPING_TYPE_IMPORT, SHIPPING_TYPE_IMPORT + SHIPPING_TYPE_IMPORT)],
+    ['moved type import', current.replace(IS_PROVENANCE_IMPORT + SHIPPING_TYPE_IMPORT, SHIPPING_TYPE_IMPORT + IS_PROVENANCE_IMPORT)],
+    ['mutated type import', current.replace(SHIPPING_TYPE_IMPORT, SHIPPING_TYPE_IMPORT.replace('import type', 'import'))],
+    ['missing type fields', current.replace(SHIPPING_TYPE_FIELDS, '')],
+    ['duplicate type fields', current.replace(SHIPPING_TYPE_FIELDS, SHIPPING_TYPE_FIELDS + SHIPPING_TYPE_FIELDS)],
+    ['reordered type fields', current.replace(SHIPPING_TYPE_FIELDS, SHIPPING_TYPE_FIELDS.split('\n').filter(Boolean).reverse().join('\n') + '\n')],
+    ['mutated type fields', current.replace(SHIPPING_TYPE_FIELDS, SHIPPING_TYPE_FIELDS.replace('initialShipping?', 'initialShipping'))],
+    ['missing factory', current.replace(block, '')],
+    ['duplicate factory', current.replace(block, () => block + block)],
+    ['relocated factory', current.replace(block, '').replace('function blobOrderStoreAdapter(', () => block + 'function blobOrderStoreAdapter(')],
+    ['missing import', current.replace(IS_PROVENANCE_IMPORT, '')],
+    ['duplicate import', current.replace(IS_PROVENANCE_IMPORT, () => IS_PROVENANCE_IMPORT + IS_PROVENANCE_IMPORT)],
+    ['reordered import', current.replace(IS_PROVENANCE_IMPORT_ANCHOR + IS_PROVENANCE_IMPORT, () => IS_PROVENANCE_IMPORT + IS_PROVENANCE_IMPORT_ANCHOR)],
+    ['mutated path', inBlock('`order-provenance/initial-shipping/${orderId}.json`', '`orders/${orderId}.json`')],
+    ['mutated body', inBlock('if (body !== expected) throw invalid();', 'if (!body) throw invalid();')],
+    ['mutated namespace', inBlock("namespace || '.flat'", 'namespace')],
+    ['mutated token', inBlock('const token = getBlobToken() || null;', 'const token = process.env.OTHER_TOKEN || null;')],
+    ['mutated mode', inBlock("{ access: 'private', token, useCache: false }", "{ access: 'private', token, useCache: true }")],
+    ['mutated durable', inBlock('durable || !!process.env.VERCEL', '!!process.env.VERCEL')],
+    ['no-fallback predicate removed', inBlock('if (!captured.token && captured.productionLike) throw unavailable();', '')],
+    ['weakened exact reread/drift', inBlock("if (!intact()) throw new Error('initial_shipping_provenance_context_drift');", '')],
+    ['local basename mapping', inBlock('return `${markerRoot}/${orderId}.json`;', 'return `${localRoot}/${orderId}.json`;')],
+    ['overwrite enabled', inBlock('allowOverwrite: false,', 'allowOverwrite: true,')],
+    ['broadened absence catch', inBlock('if (error instanceof BlobNotFoundError) {', 'if (error) {')],
+    ['leaked adapter/replace export', inBlock('    intact,\n      async read(orderId) {', '    intact,\n      replace: blobOrderStoreAdapter(token!).replaceIfVersion,\n      async read(orderId) {')],
+    ['leaked adapter export outside', current + 'export const leakedAdapter = blobOrderStoreAdapter;\n'],
+    ['resolver changed', outside('  if (token) return blobOrderStoreAdapter(token);\n', '  if (token) return localOrderStoreAdapter();\n')],
+    ['blob adapter changed', outside("        if (error instanceof BlobNotFoundError || isBlobNotFoundError(message)) return null;", "        if (error) return null;")],
+    ['local adapter changed', outside('        await link(tmp, file); // atomic exclusive create\n        return { ok: true', '        await rename(tmp, file);\n        return { ok: true')],
+    ['cache changed', outside('const recentConditionalCommits = new Map<string, CachedCommit>();', 'const recentConditionalCommits = new Map<string, CachedCommit>(); ')],
+    ['CAS body changed', outside('          ifMatch: expectedVersion,\n', '')],
+  ];
+  for (const [label, candidate] of cases) {
+    assert.notEqual(candidate, current, `${label}: mutation must actually change bytes`);
+    assert.throws(() => oracle(candidate), { code: 'ERR_ASSERTION' }, `${label}: unauthorized change must be rejected`);
+  }
+});
+
+test('print delivery contact additions have exact inverses and reject unauthorized mutations', () => {
+  const orders = src('src/lib/orders.ts');
+  const fulfillment = src('src/lib/fulfillment.ts');
+  const ordersOracle = (source: string) => {
+    assert.equal(sha256(withoutInitialShippingProvenanceAddition(source)), IS_PROVENANCE_PRE_ADDITION_SHA256);
+  };
+  const fulfillmentOracle = (source: string) => { withoutInitialShippingFulfillment(source); };
+  ordersOracle(orders);
+  fulfillmentOracle(fulfillment);
+  const [importRule, gateRule] = PHONE_FULFILLMENT_INVERSE;
+  const cases: Array<[string, string, (source: string) => void]> = [
+    ['orders block missing', orders.replace(PHONE_TYPE_BLOCK, ''), ordersOracle],
+    ['orders block duplicated', orders.replace(PHONE_TYPE_BLOCK, () => PHONE_TYPE_BLOCK + PHONE_TYPE_BLOCK), ordersOracle],
+    ['orders block relocated', orders.replace(PHONE_TYPE_BLOCK, '').replace('export type PrintUpgradeStatus =', () => PHONE_TYPE_BLOCK + 'export type PrintUpgradeStatus ='), ordersOracle],
+    ['orders block widened', orders.replace('  phone?: string | null;\n}\n', '  phone?: string | null;\n  email?: string | null;\n}\n'), ordersOracle],
+    ['fulfillment import missing', fulfillment.replace(importRule.candidate, importRule.base), fulfillmentOracle],
+    ['fulfillment gate missing', fulfillment.replace(gateRule.candidate, gateRule.base), fulfillmentOracle],
+    ['fulfillment gate unscoped', fulfillment.replace("  if (preclaimShippingGate(order) === 'standard') {\n    const contactRefusal", "  if (true) {\n    const contactRefusal"), fulfillmentOracle],
+    ['fulfillment extra refusal elsewhere', fulfillment.replace("  if (!isPrintFormat(order.bookFormat)) return 'not_print_order';", () => "  if (!isPrintFormat(order.bookFormat)) return 'not_print_order';\n  if (printDeliveryContactRefusal(order.shippingAddress)) return 'shipping_contact_missing';"), fulfillmentOracle],
+  ];
+  for (const [label, candidate, oracle] of cases) {
+    assert.notEqual(candidate, label.startsWith('orders') ? orders : fulfillment, `${label}: mutation must actually change bytes`);
+    assert.throws(() => oracle(candidate), { code: 'ERR_ASSERTION' }, `${label}: unauthorized change must be rejected`);
+  }
+});
+
+test('versioned historical orders bridge v2 preserves exact accepted HEAD and original whole-file baseline', () => {
+  const historical = execFileSync('git', ['show', `${BASE_SHA}:src/lib/orders.ts`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const accepted = execFileSync('git', ['show', `${ACCEPTED_ORDERS_HEAD}:src/lib/orders.ts`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  assert.equal(withoutInitialShippingProvenanceAddition(src('src/lib/orders.ts')), accepted);
+  assert.equal(withoutStoryMediaSizeExtraction(src('src/lib/orders.ts')), historical);
+});
+
+// These tests enter the exact hunk guard directly; a later whole-file hash is
+// NOT allowed to masquerade as an occurrence/location/hash rejection.
+for (const rule of HISTORICAL_ORDERS_BRIDGE_V2) {
+  test(`historical bridge v2 ${rule.id}: exact inverse and targeted negative controls`, () => {
+    const input = applyOriginalOrdersTransforms(withoutInitialShippingProvenanceAddition(src('src/lib/orders.ts')));
+    assertBridgeV2Fixture(HISTORICAL_ORDERS_BRIDGE_V2);
+    const expected = input.replace(rule.candidate, () => rule.base);
+    assert.equal(invertHistoricalHunk(input, rule), expected, 'positive hunk inverse first');
+    assert.notEqual(expected, input, 'inverse must actually transform bytes');
+    const cases: Array<[string, string, string]> = [
+      ['missing', input.replace(rule.candidate, ''), 'exact occurrence'],
+      ['duplicate', input.replace(rule.candidate, () => rule.candidate + rule.candidate), 'exact occurrence'],
+      ['mutated', input.replace(rule.candidate, () => '!' + rule.candidate.slice(1)), 'exact occurrence'],
+      ['relocated', '!' + input, 'exact location'],
+    ];
+    for (const [label, mutant, guard] of cases) {
+      assert.equal(invertHistoricalHunk(input, rule), expected, `${label}: positive control`);
+      assert.notEqual(mutant, input, `${label}: mutation applied`);
+      assert.throws(() => invertHistoricalHunk(mutant, rule),
+        { code: 'ERR_ASSERTION', message: new RegExp(`${rule.id}: ${guard}`) }, `${label}: intended guard`);
+    }
+    for (const field of ['candidate', 'base'] as const) {
+      const altered = { ...rule, [field]: rule[field] + '!' };
+      assert.notEqual(altered[field], rule[field]);
+      assert.throws(() => invertHistoricalHunk(input, altered),
+        { code: 'ERR_ASSERTION', message: new RegExp(`${rule.id}: ${field} hash`) });
+    }
+    const moved = { ...rule, offset: rule.offset + 1 };
+    assert.notEqual(moved.offset, rule.offset);
+    assert.throws(() => invertHistoricalHunk(input, moved),
+      { code: 'ERR_ASSERTION', message: new RegExp(`${rule.id}: exact location`) });
+  });
+}
+
+test('historical bridge v2 rejects missing duplicate reordered and coordinated-rebound fixture hunks', () => {
+  const input = applyOriginalOrdersTransforms(withoutInitialShippingProvenanceAddition(src('src/lib/orders.ts')));
+  const historical = execFileSync('git', ['show', `${BASE_SHA}:src/lib/orders.ts`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  assert.equal(invertHistoricalBridgeV2(input), historical);
+  for (const [index, rule] of HISTORICAL_ORDERS_BRIDGE_V2.entries()) {
+    const changed = rule.candidate + '!';
+    const rebound = { ...rule, candidate: changed, sha256: sha256(changed) };
+    const alteredBase = rule.base + '!';
+    const cases = [
+      HISTORICAL_ORDERS_BRIDGE_V2.filter((_, i) => i !== index),
+      [...HISTORICAL_ORDERS_BRIDGE_V2, rule],
+      [...HISTORICAL_ORDERS_BRIDGE_V2].reverse(),
+      HISTORICAL_ORDERS_BRIDGE_V2.map((r, i) => i === index ? rebound : r),
+      HISTORICAL_ORDERS_BRIDGE_V2.map((r, i) => i === index ? { ...r, base: alteredBase, baseSha256: sha256(alteredBase) } : r),
+    ];
+    for (const rules of cases) {
+      assertBridgeV2Fixture(HISTORICAL_ORDERS_BRIDGE_V2);
+      assert.notEqual(JSON.stringify(rules), JSON.stringify(HISTORICAL_ORDERS_BRIDGE_V2));
+      assert.throws(() => invertHistoricalBridgeV2(input, rules),
+        { code: 'ERR_ASSERTION', message: /bridge v2 fixture identity/ });
+    }
+    const reboundInput = input.replace(rule.candidate, () => changed);
+    assert.notEqual(reboundInput, input);
+    // Even with candidate + candidate hash rebound together, fixed manifest wins.
+    assert.throws(() => invertHistoricalBridgeV2(reboundInput,
+      HISTORICAL_ORDERS_BRIDGE_V2.map((r, i) => i === index ? rebound : r)),
+      { code: 'ERR_ASSERTION', message: /bridge v2 fixture identity/ });
+  }
+});
+
+test('historical bridge v2 whole accepted-base guard rejects protected body mutations before normalization', () => {
+  const current = src('src/lib/orders.ts');
+  const historical = execFileSync('git', ['show', `${BASE_SHA}:src/lib/orders.ts`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const targets = [
+    ['transaction', 'const outcome = await mutate(current.order);', 'const outcome = { abort: undefined };'],
+    ['cache', 'const recentConditionalCommits = new Map<string, CachedCommit>();', 'const recentConditionalCommits = new Map<string, CachedCommit>(injectedCommits);'],
+    ['namespace', 'return applyBlobNamespace(`orders/${orderId}.json`, binding.namespace);', 'return applyBlobNamespace(`orders/${orderId}.json`, "");'],
+    ['parser', 'const order = scrubRetiredPrivateFields(JSON.parse(serialized) as OrderRecord);', 'const order = JSON.parse(serialized) as OrderRecord;'],
+    ['claim generation', 'if (claim.retiredOrderIds.includes(proposedOrderId)) {', 'if (false) {'],
+  ];
+  for (const [label, target, replacement] of targets) {
+    assert.equal(withoutStoryMediaSizeExtraction(current), historical, `${label}: positive first`);
+    assert.equal(current.split(target).length - 1, 1, `${label}: unique mutation target`);
+    const mutant = current.replace(target, () => replacement);
+    assert.notEqual(mutant, current, `${label}: changed`);
+    assert.throws(() => withoutStoryMediaSizeExtraction(mutant),
+      { code: 'ERR_ASSERTION', message: /accepted HEAD whole orders bytes/ }, `${label}: exact guard reached`);
+  }
+});
+
+test('shipping fulfillment exact inverse rejects missing duplicate mutated and unrelated edits', () => {
+  const current = src('src/lib/fulfillment.ts');
+  const historical = execFileSync('git', ['show', `${BASE_SHA}:src/lib/fulfillment.ts`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const oracle = (value: string) => assert.equal(withoutInitialShippingFulfillment(value), historical);
+  oracle(current);
+  for (const rule of SHIPPING_FULFILLMENT_INVERSE) {
+    for (const replacement of ['', rule.candidate + rule.candidate, rule.candidate + '/* unauthorized */']) {
+      oracle(current);
+      assert.throws(() => oracle(current.replace(rule.candidate, () => replacement)), { code: 'ERR_ASSERTION' });
+    }
+  }
+  assert.throws(() => oracle(current + '// unrelated edit\n'), { code: 'ERR_ASSERTION' });
+});
+
+test('print contact error privacy hunk has an exact inverse and rejects unauthorized mutations', () => {
+  const current = src('src/lib/fulfillment.ts');
+  const historical = execFileSync('git', ['show', `${BASE_SHA}:src/lib/fulfillment.ts`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const oracle = (value: string) => assert.equal(withoutInitialShippingFulfillment(value), historical);
+  const { candidate, base } = PRINT_ERROR_PRIVACY_INVERSE;
+  const placed = PRINT_ERROR_PRIVACY_PLACE + candidate;
+  const cases: Array<[string, string]> = [
+    ['reverted to raw message', current.replace(candidate, () => base)],
+    ['duplicated', current.replace(candidate, () => candidate + candidate)],
+    ['relocated', current.replace(placed, () => PRINT_ERROR_PRIVACY_PLACE + '\n' + candidate)],
+    ['refusal codes widened', current.replace('Refusing print: (?:not_print_order|', () => 'Refusing print: (?:[a-z_]+|not_print_order|')],
+    ['classification widened', current.replace('|print_job_binding_requires_reconciliation|', () => '|print_job_binding_requires_reconciliation|.*|')],
+    ['expedited pass-through removed', current.replace('const detail = expedited || /', () => 'const detail = /')],
+    ['fallback leaks the raw message', current.replace(": 'print_error_detail_withheld';", () => ': message;')],
+    ['unrelated edit', current + '// unrelated edit\n'],
+  ];
+  for (const [label, mutant] of cases) {
+    oracle(current); // conforming positive control before every negative
+    assert.notEqual(mutant, current, `${label}: mutation must actually change bytes`);
+    assert.throws(() => oracle(mutant), { code: 'ERR_ASSERTION' }, `${label}: unauthorized change must be rejected`);
   }
 });
 

@@ -115,6 +115,8 @@ test('rebuildProofFromPageArtifacts clears proofReviewedAt on success', async ()
     await seed({ proofReviewedAt: '2026-04-27T09:00:00Z' });
     const r = await rebuildProofFromPageArtifacts('ord_ack_inv', {
       buildPdf: async () => Buffer.from('%PDF rebuilt'),
+      // Classic rebuild also renders its print interior; never fetch fixture image URLs.
+      buildPrintInteriorPdf: async () => Buffer.from('%PDF synthetic print interior'),
       uploadArtifact: async (orderId, _buf, name) => `https://cdn.example.com/${orderId}/${name}`,
     });
     assert.equal(r.ok, true);

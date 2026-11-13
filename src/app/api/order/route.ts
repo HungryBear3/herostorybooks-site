@@ -55,6 +55,19 @@ async function createDirectCheckoutSession(request: DirectCheckoutSessionRequest
   // The success URL lands in browser history, referrer headers, and anything
   // that records page location. It carries opaque reconciliation ids only —
   // the thank-you page reads the name, format, and email off the order record.
+  if (request.expeditedParams) {
+    return getStripe().checkout.sessions.create({
+      ...request.expeditedParams,
+      metadata: {
+        ...(gaClientId ? { gaClientId } : {}),
+        ...(order.checkoutTracking?.cohort ? { cohort: order.checkoutTracking.cohort } : {}),
+        ...(order.checkoutTracking?.invite ? { invite: order.checkoutTracking.invite } : {}),
+        ...checkoutAnalyticsStripeMetadata({ attribution: order.checkoutAttribution, analytics }),
+        // Immutable order/shipping authority wins over analytics projections.
+        ...(request.expeditedParams.metadata as Record<string, string>),
+      },
+    } as unknown as Parameters<ReturnType<typeof getStripe>['checkout']['sessions']['create']>[0], { idempotencyKey });
+  }
   const successParams = new URLSearchParams({ orderId: order.id });
   return getStripe().checkout.sessions.create({
     mode: 'payment',
@@ -78,8 +91,13 @@ async function createDirectCheckoutSession(request: DirectCheckoutSessionRequest
       },
       quantity: 1,
     }],
+    // Printed books: Stripe collects the US shipping address AND a required
+    // delivery phone (the print provider needs both). Digital collects neither.
     ...(isPrintFormat(order.bookFormat)
-      ? { shipping_address_collection: { allowed_countries: ['US'] as const } }
+      ? {
+          shipping_address_collection: { allowed_countries: ['US'] as const },
+          phone_number_collection: { enabled: true },
+        }
       : {}),
     success_url: `${baseUrl}/thank-you?${successParams.toString()}&sessionId={CHECKOUT_SESSION_ID}`,
     cancel_url: `${baseUrl}/checkout`,

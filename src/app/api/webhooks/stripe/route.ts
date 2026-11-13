@@ -1,7 +1,10 @@
 import { NextResponse, after } from 'next/server.js';
 import Stripe from 'stripe';
+import { readOrderInitialShipping } from '../../../../lib/initial-shipping-contract.ts';
+import { reconcileSignedInitialShipping, shippingCommitted, type SignedEventLike } from '../../../../lib/initial-shipping-settlement.ts';
 
-import { getOrder, isPrintFormat, recordPaymentSettlementConflict, settleOrderPayment, updateOrderPayment, type ShippingAddress } from '../../../../lib/orders.ts';
+import { getOrder, isPrintFormat, recordPaymentSettlementConflict, settleOrderPayment, updateOrderPayment } from '../../../../lib/orders.ts';
+import { extractStripeShippingAddress, type StripeDeliverySessionLike } from '../../../../lib/print-delivery-contact.ts';
 import {
   processStripePaymentTerminalEvent,
   recordUnmatchedPaymentSettlement,
@@ -12,7 +15,7 @@ import { scheduleOrderConfirmationEmail } from '../../../../lib/order-confirmati
 import { getRequiredStripeSecretKey, getRequiredStripeWebhookSecret } from '../../../../lib/stripe-env.ts';
 import { calculatePrintUpgrade, parsePrintUpgradeTargetFormat, recordPrintUpgradePayment, recordPrintUpgradeSettlementConflict } from '../../../../lib/print-upgrades.ts';
 import { isExactSettledCheckoutSession } from '../../../../lib/checkout-session-confirmation.ts';
-import { scheduleTrustedPurchaseAnalytics } from '../../../../lib/purchase-analytics.ts';
+import { scheduleTrustedShippingCompletion, scheduleTrustedPurchaseAnalytics } from '../../../../lib/purchase-analytics.ts';
 import { recordShadowCheckoutSettlement } from '../../../../lib/hsb-control-plane-runtime/shadow-settlement.ts';
 import {
   PRINT_UPGRADE_STRIPE_KIND,
@@ -26,7 +29,7 @@ export const maxDuration = 300;
 // kept for future use (print-vs-digital branching); referenced by tests
 void isPrintFormat;
 
-interface StripeCheckoutSession {
+interface StripeCheckoutSession extends StripeDeliverySessionLike {
   id: string;
   metadata?: Record<string, string> | null;
   client_reference_id?: string | null;
@@ -36,33 +39,10 @@ interface StripeCheckoutSession {
   mode?: string | null;
   payment_status?: string | null;
   payment_intent?: string | { id?: string | null } | null;
-  shipping_details?: {
-    address?: {
-      line1?: string | null;
-      line2?: string | null;
-      city?: string | null;
-      state?: string | null;
-      postal_code?: string | null;
-      country?: string | null;
-    } | null;
-  } | null;
 }
 
 function getStripe() {
   return new Stripe(getRequiredStripeSecretKey());
-}
-
-function extractShipping(session: StripeCheckoutSession): ShippingAddress | undefined {
-  const addr = session.shipping_details?.address;
-  if (!addr) return undefined;
-  return {
-    line1: addr.line1 ?? '',
-    line2: addr.line2 ?? null,
-    city: addr.city ?? '',
-    state: addr.state ?? '',
-    zip: addr.postal_code ?? '',
-    country: addr.country ?? '',
-  };
 }
 
 function extractPaymentIntentId(session: StripeCheckoutSession): string | undefined {
@@ -244,7 +224,7 @@ export async function POST(request: Request) {
           amountCents: session.amount_total ?? 0,
           targetFormat,
           printProvider: session.metadata?.printProvider ?? 'rpi',
-          ...(extractShipping(session) ? { shippingAddress: extractShipping(session) } : {}),
+          ...(extractStripeShippingAddress(session) ? { shippingAddress: extractStripeShippingAddress(session) } : {}),
         });
         if (!updated) {
           console.error(
@@ -311,10 +291,20 @@ export async function POST(request: Request) {
         }
         return NextResponse.json({ error: 'Order not found; recovery recorded' }, { status: 409 });
       }
-      if (
+      const expedited = readOrderInitialShipping(existing).kind !== 'absent' || session.metadata?.hsbShipping != null
+        ? await reconcileSignedInitialShipping(event as unknown as SignedEventLike, existing, () => stripe.accounts.retrieveCurrent()) : null;
+      if (expedited?.completionMetric) {
+        scheduleTrustedShippingCompletion(expedited.completionMetric, session.metadata, { afterImpl: after });
+      }
+      // Repair before every already-paid exit. Only the first financial winner with committed
+      // shipping may enter the unchanged notification/purchase/fulfillment tail below.
+      if (expedited && (!expedited.transitionedToPaid || shippingCommitted(expedited.order) !== 'committed')) {
+        return NextResponse.json({ received: true, initialShipping: expedited.order.initialShippingSettlement?.state ?? 'held' });
+      }
+      if (!expedited && (
         existing.stripeSessionId !== session.id
         || !isExactSettledCheckoutSession(session, existing, existing.stripeSessionId)
-      ) {
+      )) {
         console.error(`Stripe webhook: settlement facts do not match order ${orderId} for session ${session.id}`);
         const conflict = await recordPaymentSettlementConflict(orderId, {
           stripeSessionId: session.id,
@@ -340,7 +330,7 @@ export async function POST(request: Request) {
       //   3. More generally, for the same session_id we never overwrite
       //      a non-pending paymentStatus — only the first pending → paid
       //      transition is allowed.
-      if (existing?.stripeSessionId === session.id) {
+      if (!expedited && existing?.stripeSessionId === session.id) {
         if (existing.paymentStatus === 'paid') {
           const replayPaymentIntentId = extractPaymentIntentId(session);
           if (
@@ -434,8 +424,11 @@ export async function POST(request: Request) {
         }
       }
 
-      const shipping = extractShipping(session);
-      const settlement = await settleOrderPayment(orderId, {
+      // Recipient name + delivery phone ride along when Stripe collected them.
+      // A legacy Session without a phone still settles; the phone stays null
+      // and the print-release gate refuses later rather than inventing one.
+      const shipping = extractStripeShippingAddress(session);
+      const settlement = expedited ?? await settleOrderPayment(orderId, {
         stripeSessionId: session.id,
         ...(extractPaymentIntentId(session) ? { stripePaymentIntentId: extractPaymentIntentId(session) } : {}),
         settledAmountCents: session.amount_total!,

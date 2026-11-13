@@ -341,6 +341,7 @@ export async function runDirectIntakeCheckout(
     gaClientId: params.gaClientId,
     analytics: params.analytics ?? null,
   }, {
+    shippingAuthority: deps.shippingAuthority,
     createCheckoutSession: deps.createCheckoutSession,
     retrieveCheckoutSession: deps.retrieveCheckoutSession,
     renewCheckoutLease: deps.renewCheckoutLease,

@@ -23,10 +23,10 @@
  * deterministic transaction_id, so GA4's transaction dedup covers the one
  * remaining window — two concurrent first deliveries of the same event.
  */
-import { GA4_PURCHASE_ITEMS, GA4_TRANSACTION_ID_PATTERN } from './analytics-event-contract.ts';
+import { shippingMetricParams, type ShippingMetricParams, GA4_PURCHASE_ITEMS, GA4_TRANSACTION_ID_PATTERN } from './analytics-event-contract.ts';
 import { attributionFromStripeMetadata, type AttributionState } from './attribution-contract.ts';
 import { sanitizeGaClientId, sanitizeGaSessionId, sanitizeGaSessionNumber } from './ga-cookie-identity.ts';
-import { Ga4PurchaseError, sendGa4Purchase, type Ga4PurchaseFailureCode } from './ga4-purchase.ts';
+import { Ga4PurchaseError, sendGa4ShippingCompletion, sendGa4Purchase, type Ga4PurchaseFailureCode } from './ga4-purchase.ts';
 
 export interface TrustedPurchaseSettlement {
   /** Stripe Checkout Session id: the deterministic GA4 transaction_id. */
@@ -144,6 +144,32 @@ export async function dispatchTrustedPurchaseAnalytics(
   }
 }
 
+/** Called only with the reconciler's durable public-commit winner projection. */
+export async function dispatchTrustedShippingCompletion(params: ShippingMetricParams, metadata: unknown,
+  deps: PurchaseAnalyticsDeps = {}): Promise<PurchaseAnalyticsOutcome> {
+  try {
+    const safe = shippingMetricParams({ service: params.service_label, format: params.book_format, outcome: params.outcome, pricingRule: params.pricing_rule });
+    if (!safe || safe.outcome !== 'paid' || safe.service_label !== 'expedited') return { status: 'skipped', reason: 'unverified_settlement' };
+    const env = deps.env ?? process.env;
+    if (env.VERCEL_ENV !== 'production') return { status: 'skipped', reason: 'not_production' };
+    const context = readTrustedPurchaseAnalytics(metadata, deps.now ?? Date.now());
+    // No new identifier or hashed shipping surrogate when existing GA identity is unavailable.
+    if (!context.gaClientId) return { status: 'skipped', reason: 'unverified_settlement' };
+    const result = await sendGa4ShippingCompletion({ params: safe, clientId: context.gaClientId,
+      sessionId: context.gaSessionId, sessionNumber: context.gaSessionNumber }, { env, fetchImpl: deps.fetchImpl, timeoutMs: deps.timeoutMs });
+    return result === 'sent' ? { status: 'sent' } : { status: 'skipped', reason: 'not_configured' };
+  } catch (error) { return { status: 'failed', code: error instanceof Ga4PurchaseError ? error.code : 'ga4_unexpected' }; }
+}
+export function scheduleTrustedShippingCompletion(params: ShippingMetricParams, metadata: unknown,
+  deps: SchedulePurchaseAnalyticsDeps = {}): void {
+  scheduleAnalyticsOnce(() => dispatchTrustedShippingCompletion(params, metadata, deps), outcome => {
+    try {
+      const line = `[shipping-analytics] ga4=${describeOutcome(outcome)}`;
+      if (deps.log) deps.log(line); else if (outcome.status === 'failed') console.warn(line);
+    } catch { /* analytics logging cannot affect payment */ }
+  }, deps);
+}
+
 function describeOutcome(outcome: PurchaseAnalyticsOutcome): string {
   switch (outcome.status) {
     case 'sent':
@@ -179,9 +205,14 @@ export function scheduleTrustedPurchaseAnalytics(
     }
   };
 
+  scheduleAnalyticsOnce(() => dispatchTrustedPurchaseAnalytics(input, deps), emit, deps);
+}
+
+function scheduleAnalyticsOnce(dispatch: () => Promise<PurchaseAnalyticsOutcome>, emit: (outcome: PurchaseAnalyticsOutcome) => void,
+  deps: SchedulePurchaseAnalyticsDeps) {
   let run: Promise<void> | null = null;
   const start = (): Promise<void> => {
-    if (!run) run = dispatchTrustedPurchaseAnalytics(input, deps).then(emit, () => {});
+    if (!run) run = dispatch().then(emit, () => {});
     return run;
   };
 

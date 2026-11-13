@@ -9,6 +9,7 @@
  * and is used everywhere we previously hardcoded 'private'.
  */
 
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -71,6 +72,36 @@ test('getBlobAccessMode: ignores garbage values, falls back to public default', 
  */
 const STORY_MEDIA_CREDENTIAL_RESOLVER = /export function assertPrivateStorySourceStorage[\s\S]*?\n}\n/;
 
+function withoutExactShippingFactory(source: string): string {
+  const start = '/** Narrow bound initial-shipping provenance marker access (H3).';
+  const end = '/** A cached commit, tagged with the write generation that published it. */';
+  assert.equal(source.split(start).length - 1, 1);
+  assert.equal(source.split(end).length - 1, 1);
+  const at = source.indexOf(start); const stop = source.indexOf(end, at);
+  const prefix = '  return localOrderStoreAdapter();\n}\n\n';
+  assert.equal(source.slice(at - prefix.length, at), prefix);
+  assert.ok(stop > at);
+  assert.equal(createHash('sha256').update(source.slice(at, stop)).digest('hex'), '054c27dbe42e2ebbd099bf2747f8f8e3b2328a5cb990b136d9d66c50be212ac3');
+  return source.slice(0, at) + source.slice(stop);
+}
+function assertModeSource(source: string, orders: boolean) {
+  const normalized = (orders ? withoutExactShippingFactory(source) : source).replace(STORY_MEDIA_CREDENTIAL_RESOLVER, '');
+  assert.doesNotMatch(normalized, /access:\s*['"]private['"]/i);
+  assert.doesNotMatch(normalized, /PRIVATE_BLOB_ACCESS/);
+}
+test('private marker exception is exact and unrelated hardcodes remain forbidden', async () => {
+  const source = await readFile('src/lib/orders.ts', 'utf8');
+  assertModeSource(source, true);
+  for (const mutation of [
+    source + "\nconst unrelated = { access: 'private' };\n",
+    source.replace('/** Narrow bound initial-shipping provenance marker access (H3).', '/** changed factory'),
+    source.replace('initial_shipping_provenance_context_drift', 'unauthorized_context_drift'),
+  ]) {
+    assert.notEqual(mutation, source);
+    assert.throws(() => assertModeSource(mutation, true), { code: 'ERR_ASSERTION' });
+  }
+});
+
 test('source-level: no remaining hardcoded private access in order/recovery code', async () => {
   const files = [
     'src/lib/orders.ts',
@@ -79,7 +110,7 @@ test('source-level: no remaining hardcoded private access in order/recovery code
   ];
   for (const f of files) {
     const whole = await readFile(f, 'utf8');
-    const src = whole.replace(STORY_MEDIA_CREDENTIAL_RESOLVER, '');
+    const src = (f === 'src/lib/orders.ts' ? withoutExactShippingFactory(whole) : whole).replace(STORY_MEDIA_CREDENTIAL_RESOLVER, '');
     assert.equal(
       /access:\s*['"]private['"]/i.test(src),
       false,

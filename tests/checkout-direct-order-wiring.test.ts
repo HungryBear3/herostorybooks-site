@@ -233,7 +233,11 @@ test('checkout form delegates mutually-exclusive direct and legacy media shape t
   const dispatch = FORM.indexOf('dispatchOrder: async (payload) => {', boundary);
   const fetchOrder = FORM.indexOf('fetch("/api/order"', dispatch);
   assert.ok(boundary > -1 && dispatch > boundary && fetchOrder > dispatch);
-  assert.doesNotMatch(FORM, /prepareOrReuseDirectIntakeSubmission|applyPrimaryAndSupportingMediaToOrderPayload/);
+  assert.doesNotMatch(FORM, /applyPrimaryAndSupportingMediaToOrderPayload/);
+  // Pre-payment shipping uses the same cached preparation, not another media/order engine.
+  assert.match(FORM, /prepareOrReuseDirectIntakeSubmission\(directParameters\(\), intakeSessionRef.current/);
+  assert.match(FORM, /params: directParameters\(\)/);
+  assert.match(FORM, /shipping.bind\(payload, submitShippingEpoch, form.bookFormat\)/);
   const flow = readFileSync('src/lib/checkout-intake-client-flow.ts', 'utf8');
   const helper = flow.slice(flow.indexOf('export async function submitCheckoutIntakeOrder'));
   assert.match(helper, /applyPrimaryAndSupportingMediaToOrderPayload\(payload/);

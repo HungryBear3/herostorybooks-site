@@ -26,6 +26,8 @@ const BASE_ORDER: OrderRecord = {
     state: 'IL',
     zip: '62701',
     country: 'US',
+    name: 'Luna Parent',
+    phone: '+12175550123',
   },
 };
 
@@ -113,16 +115,14 @@ test('submitPrintJob: returns jobId and estimatedShipDate on success', withCreds
   assert.equal(result.estimatedShipDate, '2026-05-01');
 }));
 
-test('submitPrintJob: works without shippingAddress', withCreds(async () => {
+test('submitPrintJob: refuses without shippingAddress before any network call', withCreds(async () => {
+  // A print job cannot ship to nowhere. The provider is never contacted.
   const orderNoShipping: OrderRecord = { ...BASE_ORDER, shippingAddress: null };
-  const _fetch = mockFetch([
-    { ok: true, body: TOKEN_RESPONSE },
-    { ok: true, body: { id: 11111111, status: 'CREATED' } },
-  ]);
+  let calls = 0;
+  const _fetch = async (): Promise<Response> => { calls += 1; throw new Error('must not call'); };
 
-  const result = await submitPrintJob(orderNoShipping, { fetch: _fetch });
-  assert.equal(result.jobId, '11111111');
-  assert.equal(result.estimatedShipDate, undefined);
+  await assert.rejects(() => submitPrintJob(orderNoShipping, { fetch: _fetch }), /shipping_address_missing/);
+  assert.equal(calls, 0);
 }));
 
 test('submitPrintJob: fails closed when id is missing from response', withCreds(async () => {

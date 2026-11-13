@@ -1,4 +1,8 @@
+import { normalizeShippingContact, shippingService, shippingFailure, type ShippingContact } from './shipping-selection.ts';
+import { readOrderInitialShipping, sha256, type InitialShippingProviderQualificationV1 } from './initial-shipping-contract.ts';
+import { submitAuthorizedExpedited, type ExpeditedDispatchAuthorization } from './initial-shipping-dispatch.ts';
 import type { OrderRecord } from './orders.ts';
+import { normalizeDeliveryPhone, requirePrintDeliveryContact } from './print-delivery-contact.ts';
 import {
   luluCostCalculationToQuote,
   type LuluCostCalculationResponse,
@@ -170,10 +174,43 @@ export async function calculateCoverDimensions(
 
 // ── Print job submission ───────────────────────────────────────────────────────
 
+/** Print-only operation-local auth. Does not alter legacy token cache or quote transport.
+ * Capture endpoint/account/fetch before awaiting, resolve token before canonical fencing.
+ */
+export async function prepareExpeditedPrintTransport(provider: InitialShippingProviderQualificationV1): Promise<(body: Record<string, unknown>) => Promise<LuluJobResult>> {
+  const base = getBaseUrl(); const key = process.env.LULU_CLIENT_KEY; const secret = process.env.LULU_CLIENT_SECRET;
+  const fetch = globalThis.fetch;
+  if (!key || !secret || !['https://api.lulu.com', 'https://api.sandbox.lulu.com'].includes(base) ||
+    base !== provider.endpointOrigin || sha256(key) !== provider.accountBinding) throw new Error('shipping_dispatch_account_drift');
+  let accessToken: string;
+  try {
+    const result = await fetch(base + TOKEN_PATH, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
+      headers: { Authorization: `Basic ${Buffer.from(`${key}:${secret}`).toString('base64')}`,
+        'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': LULU_USER_AGENT }, body: 'grant_type=client_credentials' });
+    const raw = await shippingJson(result) as Record<string, unknown>;
+    if (typeof raw.access_token !== 'string' || !/^[A-Za-z0-9._~-]{1,16384}$/.test(raw.access_token) ||
+      !Number.isSafeInteger(raw.expires_in) || (raw.expires_in as number) < 1) throw new Error();
+    accessToken = raw.access_token;
+  } catch { throw new Error('shipping_dispatch_auth_unavailable'); }
+  return async body => {
+    // No auth await between canonical attempt fence and irreversible POST.
+    try {
+      const result = await fetch(base + '/print-jobs/', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20000),
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'User-Agent': LULU_USER_AGENT },
+        body: JSON.stringify(body) });
+      const raw = await shippingJson(result) as Record<string, unknown>;
+      if ((typeof raw.id !== 'string' && typeof raw.id !== 'number') || !/^[A-Za-z0-9_-]{1,100}$/.test(String(raw.id))) throw new Error();
+      return { jobId: String(raw.id), status: 'submitted' };
+    } catch { throw new Error('shipping_print_submission_requires_reconciliation'); }
+  };
+}
+
+
 export async function submitPrintJob(
   order: OrderRecord,
-  deps: LuluDeps = {},
+  deps: LuluDeps & { authorization?: ExpeditedDispatchAuthorization } = {},
 ): Promise<LuluJobResult> {
+  if (readOrderInitialShipping(order).kind !== 'absent') return submitAuthorizedExpedited(order, deps.authorization);
   const clientKey = process.env.LULU_CLIENT_KEY;
   const clientSecret = process.env.LULU_CLIENT_SECRET;
 
@@ -184,8 +221,21 @@ export async function submitPrintJob(
   }
 
   const artifacts = getPrintArtifacts(order);
+  // The recipient name and delivery phone Stripe collected at checkout. A
+  // print job cannot ship without both, so refuse here — before the auth
+  // request, before anything leaves the host — rather than send a placeholder.
+  const contact = requirePrintDeliveryContact(order.shippingAddress);
   const _fetch = deps.fetch ?? globalThis.fetch;
-  const accessToken = await fetchAccessToken(clientKey, clientSecret, _fetch);
+  // From here the request carries the recipient contact. Provider bodies and
+  // transport/parse exceptions can echo it, so a failure carries only its phase
+  // and HTTP status.
+  let accessToken: string;
+  try {
+    accessToken = await fetchAccessToken(clientKey, clientSecret, _fetch);
+  } catch (error) {
+    const status = error instanceof Error ? /^Lulu auth failed ([1-5]\d\d): /.exec(error.message)?.[1] : undefined;
+    throw new Error(status ? `Lulu auth failed ${status}` : 'Lulu auth unavailable');
+  }
 
   const body: Record<string, unknown> = {
     external_id: order.id,
@@ -209,39 +259,49 @@ export async function submitPrintJob(
     ],
   };
 
-  if (order.shippingAddress) {
-    body.shipping_address = {
-      name: order.childName,
-      street1: order.shippingAddress.line1,
-      ...(order.shippingAddress.line2 ? { street2: order.shippingAddress.line2 } : {}),
-      city: order.shippingAddress.city,
-      state_code: order.shippingAddress.state,
-      postcode: order.shippingAddress.zip,
-      country_code: order.shippingAddress.country,
-      phone_number: process.env.LULU_FALLBACK_PHONE ?? '000-000-0000',
-    };
-  }
+  const shippingAddress = contact.address;
+  body.shipping_address = {
+    name: contact.name,
+    street1: shippingAddress.line1,
+    ...(shippingAddress.line2 ? { street2: shippingAddress.line2 } : {}),
+    city: shippingAddress.city,
+    state_code: shippingAddress.state,
+    postcode: shippingAddress.zip,
+    country_code: shippingAddress.country,
+    phone_number: contact.phone,
+  };
 
-  const res = await _fetch(`${getBaseUrl()}/print-jobs/`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-      'User-Agent': LULU_USER_AGENT,
-    },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await _fetch(`${getBaseUrl()}/print-jobs/`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': LULU_USER_AGENT,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error('Lulu print-job transport failed');
+  }
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Lulu API error ${res.status}: ${text.slice(0, 200)}`);
+    await res.body?.cancel().catch(() => {});
+    const status = /^[1-5]\d\d$/.test(String(res.status)) ? String(res.status) : 'unknown';
+    throw new Error(`Lulu API error ${status}`);
   }
 
-  const data = await res.json() as {
+  let data: {
     id?: number | string;
     status?: string;
     estimated_shipping_dates?: { earliest?: string };
   };
+  try {
+    data = await res.json() as typeof data;
+  } catch {
+    throw new Error('Lulu print-job response unreadable');
+  }
 
   if (data.id == null || String(data.id).trim() === '') {
     throw new Error('Lulu API success response missing print job id; outcome requires reconciliation');
@@ -263,20 +323,134 @@ export interface LuluCostCalculationInput {
   podPackageId: string;
   pageCount: number;
   quantity?: number;
-  shippingAddress: PrintUpgradeShippingAddress;
+  shippingAddress: PrintUpgradeShippingAddress & { phone?: string; isBusiness?: boolean; isPostbox?: boolean };
   shippingLevel: string;
+  requireActualContact?: true;
+}
+
+function costRequestBody(input: LuluCostCalculationInput, phone: string, business?: boolean) {
+  const address = input.shippingAddress;
+  return {
+    line_items: [{ pod_package_id: input.podPackageId, page_count: input.pageCount, quantity: input.quantity ?? 1 }],
+    shipping_address: {
+      name: address.name, street1: address.line1, ...(address.line2 ? { street2: address.line2 } : {}),
+      city: address.city, state_code: address.state, postcode: address.zip, country_code: address.country,
+      phone_number: phone, ...(business === undefined ? {} : { is_business: business }),
+    },
+    shipping_option: input.shippingLevel,
+  };
+}
+
+export interface LuluShippingRequest {
+  readonly podPackageId: string; readonly pageCount: number; readonly quantity: 1;
+  readonly currency: 'USD'; readonly address: ShippingContact;
+}
+function shippingRequest(input: LuluShippingRequest): LuluShippingRequest {
+  const address = normalizeShippingContact(input.address);
+  if (typeof input.podPackageId !== 'string' || !input.podPackageId.trim() || input.podPackageId.length > 100 ||
+    !Number.isSafeInteger(input.pageCount) || input.pageCount < 1 || input.quantity !== 1 || input.currency !== 'USD') {
+    throw shippingFailure('SHIPPING_INPUT_INVALID');
+  }
+  return Object.freeze({ address, podPackageId: input.podPackageId.trim(), pageCount: input.pageCount, quantity: 1, currency: 'USD' });
+}
+
+/** Bounded value-free JSON reader for the new shipping lane only. */
+async function shippingJson(response: Response): Promise<unknown> {
+  if (!response.ok || !response.body) {
+    await response.body?.cancel().catch(() => {});
+    throw shippingFailure('SHIPPING_QUOTE_UNAVAILABLE');
+  }
+  const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
+  try {
+    while (true) {
+      const item = await reader.read(); if (item.done) break;
+      size += item.value.byteLength;
+      if (size > 256 * 1024) { await reader.cancel().catch(() => {}); throw shippingFailure('SHIPPING_QUOTE_UNAVAILABLE'); }
+      chunks.push(item.value);
+    }
+    const bytes = new Uint8Array(size); let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } finally { reader.releaseLock(); }
+}
+
+/** Real shipping discovery/cost transport. New operation-local auth never shares legacy _cache.
+ * Endpoint, credentials and fetch are captured before any await. Only injected fetch is used in tests.
+ */
+export function createLuluShippingTransport(deps: LuluDeps = {}) {
+  let base: string;
+  try {
+    const url = new URL(getBaseUrl());
+    if (url.protocol !== 'https:' || !['api.lulu.com', 'api.sandbox.lulu.com'].includes(url.hostname) ||
+      url.port || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) throw new Error();
+    base = url.origin;
+  } catch { throw shippingFailure('SHIPPING_QUOTE_UNAVAILABLE'); }
+  const clientKey = process.env.LULU_CLIENT_KEY; const clientSecret = process.env.LULU_CLIENT_SECRET;
+  const fetch = deps.fetch ?? globalThis.fetch;
+  let cached: { token: string; until: number } | null = null;
+  async function token(): Promise<string> {
+    if (!clientKey || !clientSecret) throw shippingFailure('SHIPPING_QUOTE_UNAVAILABLE');
+    if (cached && cached.until > Date.now() + 30000) return cached.token;
+    const res = await fetch(base + TOKEN_PATH, { method: 'POST', signal: AbortSignal.timeout(10000),
+      headers: { Authorization: `Basic ${Buffer.from(`${clientKey}:${clientSecret}`).toString('base64')}`,
+        'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': LULU_USER_AGENT }, body: 'grant_type=client_credentials' });
+    const raw = await shippingJson(res) as Record<string, unknown>;
+    if (!raw || typeof raw.access_token !== 'string' || !/^[A-Za-z0-9._~-]{1,16384}$/.test(raw.access_token) ||
+      !Number.isSafeInteger(raw.expires_in) || (raw.expires_in as number) < 1 || (raw.expires_in as number) > 86400) {
+      throw shippingFailure('SHIPPING_QUOTE_UNAVAILABLE');
+    }
+    cached = { token: raw.access_token, until: Date.now() + (raw.expires_in as number) * 1000 };
+    return cached.token;
+  }
+  async function post(path: string, body: unknown, authenticated: boolean): Promise<unknown> {
+    try {
+      const auth = authenticated ? await token() : null;
+      return await shippingJson(await fetch(base + path, { method: 'POST', signal: AbortSignal.timeout(10000),
+        headers: { 'Content-Type': 'application/json', 'User-Agent': LULU_USER_AGENT,
+          ...(auth === null ? {} : { Authorization: `Bearer ${auth}` }) }, body: JSON.stringify(body) }));
+    } catch { throw shippingFailure('SHIPPING_QUOTE_UNAVAILABLE'); }
+  }
+  return Object.freeze({
+    /** Separate auth await so a caller can recheck its clock before any cost request is sent. */
+    async authorize(): Promise<void> {
+      try { await token(); } catch { throw shippingFailure('SHIPPING_QUOTE_UNAVAILABLE'); }
+    },
+    async discover(value: LuluShippingRequest): Promise<unknown> {
+      const r = shippingRequest(value); const a = r.address;
+      return post('/shipping-options/', { currency: r.currency,
+        line_items: [{ pod_package_id: r.podPackageId, page_count: r.pageCount, quantity: r.quantity }],
+        shipping_address: { name: a.name, phone_number: a.phone, street1: a.line1, ...(a.line2 ? { street2: a.line2 } : {}),
+          city: a.city, country: a.country, state: a.state, postcode: a.zip, is_business: a.isBusiness, is_postbox: a.isPostbox } }, false);
+    },
+    async cost(value: LuluShippingRequest, service: string): Promise<LuluCostCalculationResponse> {
+      const r = shippingRequest(value); const level = shippingService(service);
+      const body = costRequestBody({ podPackageId: r.podPackageId, pageCount: r.pageCount, quantity: r.quantity,
+        shippingAddress: r.address, shippingLevel: level }, r.address.phone, r.address.isBusiness);
+      return await post('/print-job-cost-calculations/', body, true) as LuluCostCalculationResponse;
+    },
+  });
 }
 
 /**
  * POST /print-job-cost-calculations/ — "calculate product and shipping cost
  * without creating a Print-Job". The documented request requires street1,
- * city, country_code, postcode and phone_number; the phone falls back to the
- * same LULU_FALLBACK_PHONE the print-job submission uses.
+ * city, country_code, postcode and phone_number. Nothing ships from a cost
+ * calculation, so the phone is the saved delivery phone when the address
+ * carries one, else the operator contact LULU_FALLBACK_PHONE (a real number
+ * the business answers); with neither there is no request. The print-job
+ * submission never uses the fallback.
  */
 export async function calculatePrintJobCost(
   input: LuluCostCalculationInput,
   deps: LuluDeps = {},
 ): Promise<LuluCostCalculationResponse> {
+  if (input.requireActualContact === true) {
+    const address = normalizeShippingContact(input.shippingAddress);
+    const request = shippingRequest({ address, podPackageId: input.podPackageId, pageCount: input.pageCount,
+      quantity: (input.quantity ?? 1) as 1, currency: 'USD' });
+    const service = shippingService(input.shippingLevel);
+    return createLuluShippingTransport(deps).cost(request, service);
+  }
   const clientKey = process.env.LULU_CLIENT_KEY;
   const clientSecret = process.env.LULU_CLIENT_SECRET;
   if (!clientKey || !clientSecret) {
@@ -289,23 +463,14 @@ export async function calculatePrintJobCost(
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10) {
     throw new Error('Lulu cost calculation requires a quantity from 1 to 10');
   }
+  const phoneNumber = normalizeDeliveryPhone(input.shippingAddress.phone)
+    ?? normalizeDeliveryPhone(process.env.LULU_FALLBACK_PHONE);
+  if (!phoneNumber) {
+    throw new Error('Lulu cost calculation requires a delivery phone: none saved on the address and LULU_FALLBACK_PHONE is not set');
+  }
   const _fetch = deps.fetch ?? globalThis.fetch;
   const accessToken = await fetchAccessToken(clientKey, clientSecret, _fetch);
-  const address = input.shippingAddress;
-  const body = {
-    line_items: [{ pod_package_id: input.podPackageId, page_count: input.pageCount, quantity }],
-    shipping_address: {
-      name: address.name,
-      street1: address.line1,
-      ...(address.line2 ? { street2: address.line2 } : {}),
-      city: address.city,
-      state_code: address.state,
-      postcode: address.zip,
-      country_code: address.country,
-      phone_number: process.env.LULU_FALLBACK_PHONE ?? '000-000-0000',
-    },
-    shipping_option: input.shippingLevel,
-  };
+  const body = costRequestBody({ ...input, quantity }, phoneNumber);
   const res = await _fetch(`${getBaseUrl()}/print-job-cost-calculations/`, {
     method: 'POST',
     headers: {

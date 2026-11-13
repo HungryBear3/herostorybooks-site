@@ -26,7 +26,23 @@ test('confirmation email sends under one immutable, order-scoped Resend identity
 });
 
 test('webhook durably writes payment but defers confirmation email and fulfillment', () => {
-  assert.match(webhookRoute, /const\s+settlement\s*=\s*await\s+settleOrderPayment\(/);
+  const assertAwaitedSettlement = (source: string) => {
+    // Standard still awaits its canonical writer; expedited may reuse only an already-awaited result.
+    const shared = /const\s+settlement\s*=\s*expedited\s*\?\?\s*await\s+settleOrderPayment\(/.exec(source);
+    assert.ok(shared, 'standard financial write must remain awaited');
+    const expedited = /const\s+expedited\s*=[^;]*\?\s*await\s+reconcileSignedInitialShipping\([^;]*:\s*null\s*;/.exec(source);
+    assert.ok(expedited, 'expedited reconciliation must be awaited before reuse');
+    assert.ok(expedited.index < shared.index, 'reconciliation must precede the shared effects tail');
+  };
+  assertAwaitedSettlement(webhookRoute);
+  for (const mutant of [
+    webhookRoute.replace(/(expedited\s*\?\?\s*)await\s+(settleOrderPayment\()/, '$1$2'),
+    webhookRoute.replace(/(\?\s*)await\s+(reconcileSignedInitialShipping\()/, '$1$2'),
+    webhookRoute.replace(/expedited\s*\?\?\s*await\s+settleOrderPayment\(/, 'expedited || await settleOrderPayment('),
+  ]) {
+    assert.notEqual(mutant, webhookRoute, 'control must change the guarded statement');
+    assert.throws(() => assertAwaitedSettlement(mutant));
+  }
   assert.doesNotMatch(webhookRoute, /await\s+sendOrderConfirmationEmail\(updated\)/);
   assert.match(webhookRoute, /scheduleOrderConfirmationEmail\(updated,\s*\{\s*afterImpl:\s*after\s*\}\)/);
   assert.match(webhookRoute, /scheduleFulfillmentKickoff\(orderId,\s*\{\s*afterImpl:\s*after\s*\}\)/);

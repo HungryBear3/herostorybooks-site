@@ -1,4 +1,5 @@
 import type { OrderRecord } from './orders.ts';
+import { readOrderInitialShipping } from './initial-shipping-contract.ts';
 
 export interface CheckoutSessionForConfirmation {
   id: string;
@@ -66,7 +67,10 @@ export async function confirmCheckoutPayment(
   }
 
   if (order.paymentStatus === 'paid') {
-    return { status: 'paid', order, verifiedViaStripe: false };
+    const shipping = readOrderInitialShipping(order);
+    return { status: 'paid', order, verifiedViaStripe: false,
+      ...(shipping.kind === 'malformed' || (shipping.kind === 'present' && shipping.settlement.state !== 'committed')
+        ? { reason: 'paid_observed_shipping_held' } : {}) };
   }
 
   if (
@@ -92,6 +96,16 @@ export async function confirmCheckoutPayment(
   }
 
   const session = await deps.retrieveSession(sessionId);
+  const shipping = readOrderInitialShipping(order);
+  if (shipping.kind !== 'absent') {
+    // Observation only. Even an exact provider read cannot substitute for signed-event timing
+    // and the private durable receipt. Never run the shipping reconciler from a redirect.
+    const observed = shipping.kind === 'present' && order.stripeSessionId === sessionId &&
+      session.payment_status === 'paid' && isExactSettledCheckoutSession(session, order, sessionId,
+        shipping.metadata.totals.bookCents + shipping.metadata.totals.deltaCents);
+    return { status: observed ? 'paid' : 'pending', order, verifiedViaStripe: observed,
+      reason: observed ? 'paid_observed_shipping_held' : 'stripe_not_verified' };
+  }
   if (!isExactSettledCheckoutSession(session, order, sessionId)) {
     return {
       status: 'pending',

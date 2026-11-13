@@ -68,6 +68,7 @@ function printOrder(id: string, overrides: Partial<OrderRecord> = {}): OrderReco
     printInteriorPageCount: 32,
     printInteriorProofVersion: 'proof-v1',
     printTitle: 'Synthetic Hero Story',
+    shippingAddress: { line1: '1 Synthetic Way', line2: null, city: 'Springfield', state: 'IL', zip: '62701', country: 'US', name: 'Synthetic Parent', phone: '+12175550123' },
     ...overrides,
   };
   if (overrides.proofSourceFingerprint === undefined) {

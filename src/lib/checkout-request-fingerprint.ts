@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { shippingFingerprintTuple } from './initial-shipping-checkout.ts';
 
 import { CHECKOUT_ANALYTICS_FORM_FIELDS } from './checkout-analytics-context.ts';
 import { CHECKOUT_FINGERPRINT_EXCLUDED_FIELDS } from './checkout-direct-order-request.ts';
@@ -150,6 +151,7 @@ function normalizedPayableContract(order: OrderRecord): Record<string, unknown> 
     documentSource: order.documentSource,
     customStoryBrief: order.customStoryBrief,
     customStoryValidation: order.customStoryValidation,
+    ...shippingFingerprintTuple(order.initialShipping),
   };
 }
 

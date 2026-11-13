@@ -21,6 +21,7 @@
  * request fingerprint — a secret must not become a hashed input that any later
  * change to fingerprint logging could expose.
  */
+import { isQuoteId } from './initial-shipping-contract.ts';
 import type { CheckoutFinalizeSelection, FamilyCharacterBinding } from './checkout-finalize.ts';
 import { INTAKE_CATEGORY_POLICY } from './checkout-intake.ts';
 
@@ -56,6 +57,7 @@ const SELECTION_KEYS = [
 const BINDING_KEYS = ['assetId', 'familyCharacterId'] as const;
 
 export interface DirectIntakeOrderRequest {
+  expeditedQuoteId?: string;
   intakeId: string;
   /** In-memory only. Never persisted, logged, or folded into the fingerprint. */
   capability: string;
@@ -173,7 +175,9 @@ function parseSelection(
 export function parseDirectIntakeOrderRequest(form: DirectIntakeFormLike): DirectIntakeOrderRequestParse {
   const rawPayload = form.get(DIRECT_INTAKE_FIELD);
   const rawCapability = form.get(DIRECT_INTAKE_CAPABILITY_FIELD);
-  if (rawPayload == null && rawCapability == null) return { kind: 'legacy' };
+  const selected = [...form.entries()].filter(([key]) => key === 'expeditedQuoteId').map(([, value]) => value);
+  if (selected.length > 1 || (selected.length === 1 && !isQuoteId(selected[0]))) return invalid('expedited_selection_invalid');
+  if (rawPayload == null && rawCapability == null) return selected.length ? invalid('expedited_direct_required') : { kind: 'legacy' };
 
   if (carriesRawMedia(form)) return invalid('direct_intake_media_forbidden');
 
@@ -220,6 +224,7 @@ export function parseDirectIntakeOrderRequest(form: DirectIntakeFormLike): Direc
   return {
     kind: 'direct',
     request: {
+      ...(selected.length ? { expeditedQuoteId: selected[0] as string } : {}),
       intakeId: payload.intakeId,
       capability: rawCapability,
       checkoutAttemptId,

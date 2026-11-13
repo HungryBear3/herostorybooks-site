@@ -70,7 +70,9 @@ export default defineConfig({
     {
       name: 'desktop-chromium',
       use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } },
-      testIgnore: /mobile\.spec\.ts$/,
+      // The primary-layout spec needs the expedited flags on; it runs only under
+      // playwright.layout.config.ts, never feature-off here.
+      testIgnore: [/mobile\.spec\.ts$/, /checkout-primary-layout\.spec\.ts$/],
     },
     {
       // Real mobile emulation: 393x851, touch enabled, no mouse.

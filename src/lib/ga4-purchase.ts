@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { SHIPPING_COMPLETION_EVENT, shippingMetricParams, type ShippingMetricParams } from './analytics-event-contract.ts';
 
 import type { AttributionState, AttributionTouch } from './attribution-contract.ts';
 import {
@@ -86,7 +87,7 @@ function isVerifiedPayment(status: string | null | undefined): boolean {
  * whose cookie issued it and to the client it belongs to.
  */
 function sessionParams(
-  input: Ga4PurchaseInput,
+  input: Pick<Ga4PurchaseInput, 'sessionId' | 'sessionNumber'>,
   measurementId: string,
   clientId: string | null,
 ): Record<string, number> {
@@ -138,16 +139,7 @@ export async function sendGa4Purchase(
   const realClientId = sanitizeGaClientId(input.clientId);
   const clientId = realClientId
     ?? `hsb.${createHash('sha256').update(input.transactionId).digest('hex').slice(0, 24)}`;
-  const endpoint = new URL('https://www.google-analytics.com/mp/collect');
-  endpoint.searchParams.set('measurement_id', config.measurementId);
-  endpoint.searchParams.set('api_secret', config.apiSecret);
-
-  let response: Response;
-  try {
-    response = await (deps.fetchImpl ?? fetch)(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+  return sendMeasurementProtocol({
         client_id: clientId,
         events: [{
           name: 'purchase',
@@ -167,19 +159,40 @@ export async function sendGa4Purchase(
             ...touchParams('hsb_lt', input.attribution?.lastNonDirectTouch),
           },
         }],
-      }),
+      }, config, deps);
+}
+
+/** Single MP transport boundary shared by purchase and closed shipping completion. */
+async function sendMeasurementProtocol(body: unknown, config: { measurementId: string; apiSecret: string }, deps: Ga4PurchaseDeps): Promise<'sent'> {
+  const endpoint = new URL('https://www.google-analytics.com/mp/collect');
+  endpoint.searchParams.set('measurement_id', config.measurementId);
+  endpoint.searchParams.set('api_secret', config.apiSecret);
+
+  let response: Response;
+  try {
+    response = await (deps.fetchImpl ?? fetch)(endpoint, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
       signal: AbortSignal.timeout(deps.timeoutMs ?? GA4_PURCHASE_TIMEOUT_MS),
     });
-  } catch (error) {
-    throw new Ga4PurchaseError(isTimeout(error) ? 'ga4_timeout' : 'ga4_network');
-  }
-
-  if (!response.ok) {
-    throw new Ga4PurchaseError(
-      response.status >= 500 ? 'ga4_http_5xx' : response.status >= 400 ? 'ga4_http_4xx' : 'ga4_http_other',
-    );
-  }
+  } catch (error) { throw new Ga4PurchaseError(isTimeout(error) ? 'ga4_timeout' : 'ga4_network'); }
+  if (!response.ok) throw new Ga4PurchaseError(response.status >= 500 ? 'ga4_http_5xx' : response.status >= 400 ? 'ga4_http_4xx' : 'ga4_http_other');
   return 'sent';
+}
+
+export interface Ga4ShippingCompletionInput {
+  params: ShippingMetricParams; clientId: string | null; sessionId?: string | null; sessionNumber?: string | null;
+}
+/** No purchase, attribution, transaction or shipping identifier in this event. */
+export async function sendGa4ShippingCompletion(input: Ga4ShippingCompletionInput, deps: Ga4PurchaseDeps = {}): Promise<'sent' | 'skipped'> {
+  const env = deps.env ?? process.env;
+  const config = configured(env);
+  const clientId = sanitizeGaClientId(input.clientId);
+  const params = shippingMetricParams({ service: input.params.service_label, format: input.params.book_format,
+    outcome: input.params.outcome, pricingRule: input.params.pricing_rule });
+  if (env.VERCEL_ENV !== 'production' || !config || !clientId || !params || params.outcome !== 'paid' || params.service_label !== 'expedited') return 'skipped';
+  return sendMeasurementProtocol({ client_id: clientId, events: [{ name: SHIPPING_COMPLETION_EVENT, params: {
+    ...params, engagement_time_msec: PURCHASE_ENGAGEMENT_TIME_MSEC, ...sessionParams(input, config.measurementId, clientId),
+  } }] }, config, deps);
 }
 
 /** Schedule analytics after the webhook response and swallow every failure. */

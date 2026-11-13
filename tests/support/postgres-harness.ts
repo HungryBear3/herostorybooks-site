@@ -16,7 +16,8 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 
 import { SQL_DIR, sqlFileNames } from './control-plane-identity.ts';
@@ -90,10 +91,83 @@ function sleepSync(milliseconds: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
-function shortTempRoot(): string {
-  // The Unix socket path has a hard ~103 byte limit, so prefer a short root.
-  const base = existsSync('/tmp') && statSync('/tmp').isDirectory() ? '/tmp' : (process.env.TMPDIR ?? '/tmp');
-  return mkdtempSync(path.join(base, 'hsb-cp-'));
+export interface RunnerIdentity {
+  GITHUB_ACTIONS?: string;
+  RUNNER_ENVIRONMENT?: string;
+  RUNNER_TEMP?: string;
+}
+
+/** The only runner names this harness reads; they admit scratch, never a connection. */
+export function currentRunnerIdentity(): RunnerIdentity {
+  return {
+    GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
+    RUNNER_ENVIRONMENT: process.env.RUNNER_ENVIRONMENT,
+    RUNNER_TEMP: process.env.RUNNER_TEMP,
+  };
+}
+
+/**
+ * No runner markers: the existing local scratch. ANY marker: exactly a
+ * GitHub-hosted runner whose RUNNER_TEMP is a canonical, plainly spelled,
+ * user-owned, non-symlink directory writable by nobody else; scratch is then its
+ * fixed `hsb-scratch` child. Never falls back, never repairs permissions.
+ */
+function ownedScratchRoot(identity: RunnerIdentity): string {
+  const { GITHUB_ACTIONS: actions, RUNNER_ENVIRONMENT: environment, RUNNER_TEMP: runnerTemp } = identity;
+  if (actions === undefined && environment === undefined && runnerTemp === undefined) {
+    return path.join(homedir(), '.hermes/cache/scratch');
+  }
+  const refusal = new Error('PostgreSQL temp root must be an absolute owned scratch directory');
+  if (actions !== 'true' || environment !== 'github-hosted' || !runnerTemp || !path.isAbsolute(runnerTemp) ||
+      path.normalize(runnerTemp) !== runnerTemp || !/^[A-Za-z0-9_./-]+$/.test(runnerTemp)) {
+    throw refusal;
+  }
+  let info: ReturnType<typeof lstatSync>;
+  try {
+    info = lstatSync(runnerTemp);
+  } catch {
+    throw refusal;
+  }
+  if (!info.isDirectory() || realpathSync(runnerTemp) !== runnerTemp ||
+      info.uid !== process.getuid?.() || (info.mode & 0o022) !== 0) {
+    throw refusal;
+  }
+  return path.join(runnerTemp, 'hsb-scratch');
+}
+
+/** Filesystem-only allocation seam; TMPDIR must explicitly bind owned scratch. */
+export function createPostgresTempRoot(
+  base: string | undefined = process.env.TMPDIR,
+  identity: RunnerIdentity = currentRunnerIdentity(),
+): string {
+  const owned = ownedScratchRoot(identity);
+  // Reject before touching a caller-selected outside path. Restrict spelling also
+  // because pg_ctl embeds socketDir in its server-options string.
+  if (!base || !path.isAbsolute(base) || path.normalize(base) !== base ||
+      !/^[A-Za-z0-9_./-]+$/.test(base) ||
+      (base !== owned && !base.startsWith(`${owned}${path.sep}`))) {
+    throw new Error('PostgreSQL temp root must be an absolute owned scratch directory');
+  }
+  const checkDirectory = (directory: string): void => {
+    const info = lstatSync(directory);
+    if (!info.isDirectory() || realpathSync(directory) !== directory ||
+        info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o700) {
+      throw new Error('PostgreSQL temp root must be canonical, user-owned and mode 0700');
+    }
+  };
+  checkDirectory(owned);
+  checkDirectory(base);
+  // mkdtemp appends exactly six characters. Include the actual prefix, socket
+  // subdirectory and the longest valid port spelling BEFORE allocating/initdb.
+  if (Buffer.byteLength(path.join(base, 'hsb-cp-XXXXXX', 's', '.s.PGSQL.65535')) > 103) {
+    throw new Error('PostgreSQL temp root would exceed the 103-byte Unix socket path limit');
+  }
+  const root = mkdtempSync(path.join(base, 'hsb-cp-'));
+  // No same-user concurrent writers are admitted. Refuse any unexpected identity
+  // instead of deleting a path whose ownership can no longer be established.
+  checkDirectory(root);
+  if (path.dirname(root) !== base) throw new Error('PostgreSQL temp root escaped its base');
+  return root;
 }
 
 export interface CommandResult {
@@ -142,7 +216,7 @@ function childEnv(homeDir: string): NodeJS.ProcessEnv {
 
 export function startDisposableCluster(): PostgresCluster {
   const tools = resolvePostgresTools();
-  const root = shortTempRoot();
+  const root = createPostgresTempRoot();
   const dataDir = path.join(root, 'data');
   const socketDir = path.join(root, 's');
   const homeDir = path.join(root, 'home');
