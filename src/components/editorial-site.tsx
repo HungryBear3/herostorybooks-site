@@ -560,6 +560,12 @@ function HeroSection() {
           <p className="mt-4 max-w-xl text-sm leading-7 text-[#695f54]">
             Looking for a birthday or family keepsake? Explore <Link href="/gifts" className="font-semibold text-[#8f3f3f] underline decoration-[#d8c6a2] underline-offset-4">personalized storybook gift ideas</Link>.
           </p>
+          <aside aria-labelledby="holiday-gift-notice" className="mt-6 max-w-xl rounded-2xl border border-[#d8c6a2] bg-[#fff8ec] p-5 text-sm leading-6 text-[#51483f]">
+            <h2 id="holiday-gift-notice" className="font-semibold text-[#1f1a16]">Planning a holiday gift?</h2>
+            <p className="mt-2">Printed-book arrival before Christmas is not guaranteed. Printing begins only after you approve your proof, and production and shipping times vary.</p>
+            <p className="mt-2">Digital PDF orders have no printing or shipping step; story creation and proof preparation still take time.</p>
+            <Link href="#faq" className="mt-3 inline-block font-semibold text-[#8f3f3f] underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-4">See delivery details</Link>
+          </aside>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <PrimaryCta href="/checkout" size="lg">Start your book</PrimaryCta>
             <GhostCta href="/samples">See a sample</GhostCta>
