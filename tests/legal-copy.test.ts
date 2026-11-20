@@ -35,6 +35,6 @@ test('Fable-required legal copy covers no templates, no voiceprints, and transcr
 test('materially amended legal pages show the current review date', () => {
   const privacy = readFileSync('src/app/privacy/page.tsx', 'utf8');
   const terms = readFileSync('src/app/terms/page.tsx', 'utf8');
-  assert.match(privacy, /Last updated October 31, 2026/);
+  assert.match(privacy, /Last updated November 20, 2026/);
   assert.match(terms, /Last updated October 31, 2026/);
 });
